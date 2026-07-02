@@ -44,6 +44,7 @@ from runtimes.network_supervisor.compat_wire_emitter import (
 )
 from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
 from runtimes.network_supervisor.service import network_supervisor_service
+from runtimes.network_supervisor.neighbor import network_neighbor_service
 from core.headscale_admin import (
     clear_headscale_api_key,
     client_from_provider,
@@ -675,6 +676,80 @@ async def get_network_supervisor_status():
     return network_supervisor_service.status_payload()
 
 
+@router.get("/network-supervisor/neighbors/status")
+async def get_network_supervisor_neighbors_status():
+    return network_neighbor_service.status_payload()
+
+
+@router.post("/network-supervisor/neighbors/switch")
+async def post_network_supervisor_neighbors_switch(payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return await network_neighbor_service.set_switch(
+        enabled=bool(body.get("enabled")),
+        display_name=str(body.get("displayName") or "").strip() or None,
+    )
+
+
+@router.get("/network-supervisor/neighbors/candidates")
+async def get_network_supervisor_neighbors_candidates():
+    return network_neighbor_service.list_candidates()
+
+
+@router.get("/network-supervisor/neighbors/links")
+async def get_network_supervisor_neighbors_links():
+    return network_neighbor_service.list_links()
+
+
+@router.post("/network-supervisor/neighbors/pairing/invitations")
+async def post_network_supervisor_neighbors_pairing_invitations(payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return network_neighbor_service.create_pairing_invitation(
+        ttl_seconds=int(body.get("ttlSeconds") or 300),
+        local_role=str(body.get("localRole") or "primary"),
+        local_nickname=str(body.get("localNickname") or "").strip() or None,
+    )
+
+
+@router.post("/network-supervisor/neighbors/pairing/consume")
+async def post_network_supervisor_neighbors_pairing_consume(payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return await network_neighbor_service.consume_pairing_invitation(
+        peer_id=str(body.get("peerId") or "").strip(),
+        code=str(body.get("code") or "").strip(),
+        local_nickname=str(body.get("localNickname") or "").strip() or None,
+    )
+
+
+@router.patch("/network-supervisor/neighbors/{link_id}")
+async def patch_network_supervisor_neighbor_link(link_id: str, payload: dict[str, Any] | None = None):
+    return network_neighbor_service.update_link(link_id, dict(payload or {}))
+
+
+@router.delete("/network-supervisor/neighbors/{link_id}")
+async def delete_network_supervisor_neighbor_link(link_id: str):
+    return network_neighbor_service.revoke_link(link_id)
+
+
+@router.post("/network-supervisor/neighbors/{link_id}/messages")
+async def post_network_supervisor_neighbor_message(link_id: str, payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return await network_neighbor_service.send_message(
+        link_id=link_id,
+        body=str(body.get("body") or body.get("content") or ""),
+        wake_supervisor=bool(body.get("wakeSupervisor")),
+        workspace_binding=dict(body.get("workspaceBinding") or {}) if isinstance(body.get("workspaceBinding"), dict) else None,
+    )
+
+
+@router.get("/network-supervisor/neighbors/{link_id}/timeline")
+async def get_network_supervisor_neighbor_timeline(
+    link_id: str,
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50),
+):
+    return network_neighbor_service.timeline(link_id, cursor=cursor, limit=limit)
+
+
 @router.get("/network-supervisor/openai/compat/tokens")
 async def get_network_supervisor_openai_compat_tokens(
     x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
@@ -870,6 +945,22 @@ async def post_network_supervisor_peer_wake(
 ):
     network_supervisor_service.verify_inbound_peer_token(x_v8_peer_token)
     response = network_supervisor_service.handle_peer_wake_request(envelope)
+    return response.model_dump(by_alias=True)
+
+
+@router.post("/network-supervisor/peer/neighbors/pairing/consume")
+async def post_network_supervisor_peer_neighbor_pairing_consume(envelope: NetworkEnvelope):
+    response = network_neighbor_service.handle_pairing_consume(envelope)
+    return response.model_dump(by_alias=True)
+
+
+@router.post("/network-supervisor/peer/neighbors/messages")
+async def post_network_supervisor_peer_neighbor_message(
+    envelope: NetworkEnvelope,
+    x_v8_peer_token: str | None = Header(default=None, alias="X-V8-Peer-Token"),
+):
+    network_supervisor_service.verify_inbound_peer_token(x_v8_peer_token)
+    response = await network_neighbor_service.handle_peer_message(envelope)
     return response.model_dump(by_alias=True)
 
 

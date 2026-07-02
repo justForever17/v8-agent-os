@@ -42,6 +42,7 @@ from runtimes.network_supervisor.models import (
     NetworkDelegationRequestPayload,
     TrustedPeerConfig,
 )
+from runtimes.network_supervisor.neighbor_workspace import resolve_network_neighbor_workspace_binding
 
 
 def _utc_now() -> datetime:
@@ -79,6 +80,8 @@ def _state_default() -> dict[str, Any]:
     return {
         "discoveredPeers": {},
         "delegations": {},
+        "neighborPairingInvites": {},
+        "neighborPairingConsumed": {},
         "seenNonces": {},
     }
 
@@ -2053,6 +2056,13 @@ class NetworkSupervisorService:
             owner_agent_id="network_supervisor",
             input_payload={"delegationId": delegation_id, "childSessionId": child_session_id},
         )
+        workspace_binding = resolve_network_neighbor_workspace_binding(
+            peer_id=envelope.from_peer_id,
+            local_role="companion",
+            remote_project_id=str(envelope.payload.get("projectId") or "").strip() or None,
+            remote_workspace_id=str(envelope.payload.get("workspaceId") or "").strip() or None,
+            remote_workspace_path=str(envelope.payload.get("workspacePath") or "").strip() or None,
+        )
         request = ChatRequest.model_validate(
             {
                 "messages": [{"role": "user", "content": str(envelope.payload.get("task") or "").strip()}],
@@ -2060,9 +2070,9 @@ class NetworkSupervisorService:
                 "sessionId": child_session_id,
                 "conversationId": child_session_id,
                 "userId": "network-peer",
-                "projectId": str(envelope.payload.get("projectId") or "").strip() or None,
-                "workspaceId": str(envelope.payload.get("workspaceId") or "").strip() or None,
-                "workspacePath": str(envelope.payload.get("workspacePath") or "").strip() or None,
+                "projectId": workspace_binding.get("projectId"),
+                "workspaceId": workspace_binding.get("workspaceId"),
+                "workspacePath": workspace_binding.get("workspacePath"),
                 "scopeHint": str(envelope.payload.get("scopeHint") or "").strip() or None,
             }
         )

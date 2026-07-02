@@ -181,6 +181,45 @@ type DiagState = {
     task: string;
     result: string;
 };
+type NeighborLink = {
+    linkId: string;
+    peerId: string;
+    displayName?: string;
+    localNickname?: string;
+    remoteNickname?: string;
+    localRole?: "primary" | "companion";
+    remoteRole?: "primary" | "companion";
+    online?: boolean;
+    lastSeenAt?: string | null;
+    workspaceBinding?: Record<string, unknown>;
+};
+type NeighborStatus = {
+    enabled: boolean;
+    started: boolean;
+    node?: { peerId?: string; displayName?: string };
+    discovery?: { lanEnabled?: boolean; candidateCount?: number; connectedCount?: number; lastAnnounceAt?: string | null };
+    links?: NeighborLink[];
+};
+type NeighborCandidate = {
+    peerId: string;
+    displayName?: string;
+    online?: boolean;
+    lastSeenAt?: string | null;
+    source?: string;
+    baseUrl?: string;
+    address?: string;
+};
+type NeighborMessage = {
+    messageId: string;
+    seq: number;
+    direction: "inbound" | "outbound";
+    fromNickname?: string;
+    role?: string;
+    preview?: string;
+    body?: string;
+    status?: string;
+    receivedAt?: string;
+};
 type OpenAICompatToken = {
     id: string;
     label: string;
@@ -271,6 +310,7 @@ const EMPTY_STATUS: RuntimeStatus = {
 const EMPTY_PEERS: PeersPayload = { items: [], trustedItems: [], discoveredItems: [], meshCandidates: [] };
 const EMPTY_PEER_FORM: PeerForm = { peerId: "", displayName: "", baseUrl: "", wsUrl: "", publicKey: "", allowedScopes: "", allowedWorkspaces: "", peerToken: "", transportProfileId: "", peerBaseUrl: "", deviceClass: "", requiresApproval: false };
 const EMPTY_DIAG: DiagState = { peerId: "", note: "", task: "", result: "" };
+const EMPTY_NEIGHBOR_STATUS: NeighborStatus = { enabled: false, started: false, links: [], discovery: { candidateCount: 0, connectedCount: 0 } };
 const csv = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
 const lines = (value: string) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
 const joinCsv = (value?: string[]) => Array.isArray(value) ? value.join(", ") : "";
@@ -361,6 +401,17 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const [config, setConfig] = React.useState<RuntimeConfig>(DEFAULT_CONFIG);
     const [status, setStatus] = React.useState<RuntimeStatus>(EMPTY_STATUS);
     const [peers, setPeers] = React.useState<PeersPayload>(EMPTY_PEERS);
+    const [neighborStatus, setNeighborStatus] = React.useState<NeighborStatus>(EMPTY_NEIGHBOR_STATUS);
+    const [neighborCandidates, setNeighborCandidates] = React.useState<NeighborCandidate[]>([]);
+    const [neighborLinks, setNeighborLinks] = React.useState<NeighborLink[]>([]);
+    const [selectedNeighborLinkId, setSelectedNeighborLinkId] = React.useState("");
+    const [pairingInvite, setPairingInvite] = React.useState<{ code: string; expiresAt: string; inviteId: string } | null>(null);
+    const [pairingPeerId, setPairingPeerId] = React.useState("");
+    const [pairingCode, setPairingCode] = React.useState("");
+    const [neighborTimeline, setNeighborTimeline] = React.useState<NeighborMessage[]>([]);
+    const [neighborMessage, setNeighborMessage] = React.useState("");
+    const [neighborBusy, setNeighborBusy] = React.useState("");
+    const [linkDraft, setLinkDraft] = React.useState<{ localNickname: string; remoteNickname: string; localRole: "primary" | "companion" }>({ localNickname: "", remoteNickname: "", localRole: "primary" });
     const [peerForm, setPeerForm] = React.useState<PeerForm>(EMPTY_PEER_FORM);
     const [diag, setDiag] = React.useState<DiagState>(EMPTY_DIAG);
     const [loading, setLoading] = React.useState(true);
@@ -414,6 +465,66 @@ response = client.chat.completions.create(
 ANTHROPIC_AUTH_TOKEN=${primaryToken || "<API_KEY>"}
 ANTHROPIC_MODEL=${primaryModelAlias}`;
     const portNotices = bridgeDiagnostics?.notices || [];
+    const neighborCopy = locale === "zh-CN"
+        ? {
+            title: "邻居设备",
+            description: "打开开关，发现附近 V8 设备，用连接码建立信任，然后在专用对话里交流。",
+            enabled: "已开启",
+            disabled: "未开启",
+            switchOn: "开启邻居设备",
+            switchOff: "关闭邻居设备",
+            createCode: "生成连接码",
+            codeHint: "连接码短时有效，只用于设备组网，不是手机登录码。",
+            candidates: "附近设备",
+            connected: "已连接设备",
+            noCandidates: "暂未发现附近设备。开启后保持两台设备在同一局域网或 Tailscale/Headscale 网络内。",
+            noLinks: "还没有连接的邻居设备。",
+            connect: "连接",
+            consumeCode: "使用连接码",
+            localNickname: "本机昵称",
+            remoteNickname: "对方昵称",
+            role: "本机角色",
+            primary: "主设备",
+            companion: "副设备",
+            save: "保存",
+            revoke: "移除",
+            timeline: "邻居对话",
+            send: "发送",
+            sendWake: "发送并唤醒主理人",
+            messagePlaceholder: "给邻居设备发消息…",
+            advanced: "高级诊断与三方应用接入",
+            advancedHint: "保留 OpenAI/Anthropic 兼容、Headscale、手工 peer 和原始诊断；普通邻居连接无需查看这些项。",
+        }
+        : {
+            title: "Neighbor devices",
+            description: "Turn it on, find nearby V8 devices, pair with a short code, and talk in a dedicated timeline.",
+            enabled: "On",
+            disabled: "Off",
+            switchOn: "Enable neighbors",
+            switchOff: "Disable neighbors",
+            createCode: "Create code",
+            codeHint: "The code is short-lived and separate from phone login pairing.",
+            candidates: "Nearby devices",
+            connected: "Connected devices",
+            noCandidates: "No nearby devices yet. Keep both devices on the same LAN or Tailscale/Headscale network.",
+            noLinks: "No connected neighbor devices yet.",
+            connect: "Connect",
+            consumeCode: "Use code",
+            localNickname: "Local nickname",
+            remoteNickname: "Remote nickname",
+            role: "Local role",
+            primary: "Primary",
+            companion: "Companion",
+            save: "Save",
+            revoke: "Remove",
+            timeline: "Neighbor conversation",
+            send: "Send",
+            sendWake: "Send & wake supervisor",
+            messagePlaceholder: "Message a neighbor device…",
+            advanced: "Advanced diagnostics and third-party app API",
+            advancedHint: "OpenAI/Anthropic compatibility, Headscale, manual peers, and raw diagnostics stay here; ordinary neighbor setup does not need them.",
+        };
+    const selectedNeighborLink = neighborLinks.find((item) => item.linkId === selectedNeighborLinkId) || neighborLinks[0] || null;
     const availabilityReason = React.useCallback((reason: string) => {
         switch (reason) {
             case "runtime_disabled":
@@ -472,17 +583,23 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
         setLoading(true);
         setLoadError(null);
         try {
-            const [configRes, statusRes, peerRes, tokenRes] = await Promise.all([
+            const [configRes, statusRes, peerRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes] = await Promise.all([
                 fetch("/api/config-registry/network-supervisor-runtime", { cache: "no-store" }),
                 fetch("/api/network-supervisor/status", { cache: "no-store" }),
                 fetch("/api/network-supervisor/peers", { cache: "no-store" }),
                 fetch("/api/network-supervisor/openai/tokens", { cache: "no-store" }),
+                fetch("/api/network-supervisor/neighbors/status", { cache: "no-store" }),
+                fetch("/api/network-supervisor/neighbors/candidates", { cache: "no-store" }),
+                fetch("/api/network-supervisor/neighbors/links", { cache: "no-store" }),
             ]);
-            const [configData, statusData, peerData, tokenData] = await Promise.all([
+            const [configData, statusData, peerData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData] = await Promise.all([
                 configRes.json().catch(() => ({})),
                 statusRes.json().catch(() => ({})),
                 peerRes.json().catch(() => ({})),
                 tokenRes.json().catch(() => ({})),
+                neighborStatusRes.json().catch(() => ({})),
+                neighborCandidatesRes.json().catch(() => ({})),
+                neighborLinksRes.json().catch(() => ({})),
             ]);
             if (!configRes.ok)
                 throw new Error(detail(configData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d2fb12f")));
@@ -492,12 +609,23 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                 throw new Error(detail(peerData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k66ef1038")));
             if (!tokenRes.ok)
                 throw new Error(detail(tokenData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokensReadFailed")));
+            if (!neighborStatusRes.ok)
+                throw new Error(detail(neighborStatusData, "邻居设备状态读取失败"));
+            if (!neighborCandidatesRes.ok)
+                throw new Error(detail(neighborCandidatesData, "附近设备读取失败"));
+            if (!neighborLinksRes.ok)
+                throw new Error(detail(neighborLinksData, "已连接设备读取失败"));
             setConfig(mergeConfig((configData as {
                 data?: Partial<RuntimeConfig>;
             }).data));
             setStatus(normalizeStatus(statusData));
             setPeers(normalizePeers(peerData));
             setTokens(Array.isArray((tokenData as { items?: OpenAICompatToken[] }).items) ? (tokenData as { items: OpenAICompatToken[] }).items : []);
+            setNeighborStatus((neighborStatusData && typeof neighborStatusData === "object" ? neighborStatusData : EMPTY_NEIGHBOR_STATUS) as NeighborStatus);
+            setNeighborCandidates(Array.isArray((neighborCandidatesData as { items?: NeighborCandidate[] }).items) ? (neighborCandidatesData as { items: NeighborCandidate[] }).items : []);
+            const nextLinks = Array.isArray((neighborLinksData as { items?: NeighborLink[] }).items) ? (neighborLinksData as { items: NeighborLink[] }).items : [];
+            setNeighborLinks(nextLinks);
+            setSelectedNeighborLinkId((prev) => prev && nextLinks.some((item) => item.linkId === prev) ? prev : (nextLinks[0]?.linkId || ""));
         }
         catch (error) {
             const message = error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k105089b2");
@@ -511,6 +639,150 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
     React.useEffect(() => {
         void loadAll();
     }, [loadAll]);
+    const loadNeighborTimeline = React.useCallback(async (linkId: string) => {
+        if (!linkId) {
+            setNeighborTimeline([]);
+            return;
+        }
+        try {
+            const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(linkId)}/timeline`, { cache: "no-store" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "邻居对话读取失败"));
+            setNeighborTimeline(Array.isArray((payload as { items?: NeighborMessage[] }).items) ? (payload as { items: NeighborMessage[] }).items : []);
+        } catch (error) {
+            toast({ variant: "destructive", title: "邻居对话读取失败", description: error instanceof Error ? error.message : String(error) });
+        }
+    }, [toast]);
+    React.useEffect(() => {
+        if (!selectedNeighborLink) {
+            setLinkDraft({ localNickname: "", remoteNickname: "", localRole: "primary" });
+            setNeighborTimeline([]);
+            return;
+        }
+        setLinkDraft({
+            localNickname: selectedNeighborLink.localNickname || "",
+            remoteNickname: selectedNeighborLink.remoteNickname || selectedNeighborLink.displayName || "",
+            localRole: selectedNeighborLink.localRole || "primary",
+        });
+        void loadNeighborTimeline(selectedNeighborLink.linkId);
+    }, [loadNeighborTimeline, selectedNeighborLink]);
+    const toggleNeighbors = React.useCallback(async () => {
+        setNeighborBusy("switch");
+        try {
+            const response = await fetch("/api/network-supervisor/neighbors/switch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: !neighborStatus.enabled }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "邻居设备开关失败"));
+            await loadAll();
+        } catch (error) {
+            toast({ variant: "destructive", title: "邻居设备开关失败", description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setNeighborBusy("");
+        }
+    }, [loadAll, neighborStatus.enabled, toast]);
+    const createPairingInvite = React.useCallback(async () => {
+        setNeighborBusy("invite");
+        try {
+            const response = await fetch("/api/network-supervisor/neighbors/pairing/invitations", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ localRole: "primary", localNickname: neighborStatus.node?.displayName || "" }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "连接码生成失败"));
+            setPairingInvite(payload as { code: string; expiresAt: string; inviteId: string });
+        } catch (error) {
+            toast({ variant: "destructive", title: "连接码生成失败", description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setNeighborBusy("");
+        }
+    }, [neighborStatus.node?.displayName, toast]);
+    const consumePairingInvite = React.useCallback(async () => {
+        const peerId = pairingPeerId.trim();
+        if (!peerId || !pairingCode.trim()) {
+            toast({ variant: "destructive", title: "请输入设备和连接码" });
+            return;
+        }
+        setNeighborBusy("pair");
+        try {
+            const response = await fetch("/api/network-supervisor/neighbors/pairing/consume", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ peerId, code: pairingCode.trim(), localNickname: neighborStatus.node?.displayName || "" }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "连接失败"));
+            setPairingCode("");
+            setPairingPeerId("");
+            await loadAll();
+        } catch (error) {
+            toast({ variant: "destructive", title: "连接失败", description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setNeighborBusy("");
+        }
+    }, [loadAll, neighborStatus.node?.displayName, pairingCode, pairingPeerId, toast]);
+    const saveNeighborLink = React.useCallback(async () => {
+        if (!selectedNeighborLink)
+            return;
+        setNeighborBusy("link");
+        try {
+            const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(selectedNeighborLink.linkId)}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(linkDraft),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "邻居设备保存失败"));
+            await loadAll();
+        } catch (error) {
+            toast({ variant: "destructive", title: "邻居设备保存失败", description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setNeighborBusy("");
+        }
+    }, [linkDraft, loadAll, selectedNeighborLink, toast]);
+    const revokeNeighborLink = React.useCallback(async (linkId: string) => {
+        setNeighborBusy("revoke");
+        try {
+            const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(linkId)}`, { method: "DELETE" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "移除邻居设备失败"));
+            await loadAll();
+        } catch (error) {
+            toast({ variant: "destructive", title: "移除邻居设备失败", description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setNeighborBusy("");
+        }
+    }, [loadAll, toast]);
+    const sendNeighborMessage = React.useCallback(async (wakeSupervisor: boolean) => {
+        if (!selectedNeighborLink || !neighborMessage.trim())
+            return;
+        setNeighborBusy(wakeSupervisor ? "sendWake" : "send");
+        try {
+            const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(selectedNeighborLink.linkId)}/messages`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ body: neighborMessage.trim(), wakeSupervisor }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "邻居消息发送失败"));
+            setNeighborMessage("");
+            await loadNeighborTimeline(selectedNeighborLink.linkId);
+        } catch (error) {
+            toast({ variant: "destructive", title: "邻居消息发送失败", description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setNeighborBusy("");
+        }
+    }, [loadNeighborTimeline, neighborMessage, selectedNeighborLink, toast]);
     const setNode = React.useCallback((patch: Partial<RuntimeConfig["node"]>) => {
         setConfig((prev) => ({ ...prev, node: { ...prev.node, ...patch } }));
     }, []);
@@ -847,6 +1119,169 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                         </ul>
                     </div>
                 </ConfigCard>) : null}
+
+            <ConfigCard title={neighborCopy.title} description={neighborCopy.description} variant="editor" bodyHeight="auto">
+                <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+                    <div className="space-y-4">
+                        <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-950 to-slate-800 p-5 text-white shadow-sm">
+                            <div className="flex items-start justify-between gap-4">
+                                <div>
+                                    <div className="text-sm text-slate-300">{neighborStatus.node?.displayName || "V8 Device"}</div>
+                                    <div className="mt-2 text-2xl font-semibold">{neighborStatus.enabled ? neighborCopy.enabled : neighborCopy.disabled}</div>
+                                    <div className="mt-2 text-xs text-slate-400">{neighborStatus.node?.peerId || "peer pending"}</div>
+                                </div>
+                                <Button variant={neighborStatus.enabled ? "secondary" : "default"} onClick={() => void toggleNeighbors()} disabled={neighborBusy === "switch"}>
+                                    {neighborStatus.enabled ? neighborCopy.switchOff : neighborCopy.switchOn}
+                                </Button>
+                            </div>
+                            <div className="mt-5 grid grid-cols-3 gap-2 text-center text-xs">
+                                <div className="rounded-2xl bg-white/10 px-3 py-2">
+                                    <div className="text-lg font-semibold">{neighborStatus.discovery?.candidateCount || neighborCandidates.length}</div>
+                                    <div className="text-slate-300">{neighborCopy.candidates}</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/10 px-3 py-2">
+                                    <div className="text-lg font-semibold">{neighborStatus.discovery?.connectedCount || neighborLinks.length}</div>
+                                    <div className="text-slate-300">{neighborCopy.connected}</div>
+                                </div>
+                                <div className="rounded-2xl bg-white/10 px-3 py-2">
+                                    <div className="text-lg font-semibold">{neighborStatus.discovery?.lanEnabled ? "LAN" : "—"}</div>
+                                    <div className="text-slate-300">Discovery</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="flex items-center justify-between gap-3">
+                                <div>
+                                    <div className="text-sm font-semibold text-slate-900">{neighborCopy.createCode}</div>
+                                    <div className="mt-1 text-xs text-slate-500">{neighborCopy.codeHint}</div>
+                                </div>
+                                <Button variant="outline" size="sm" onClick={() => void createPairingInvite()} disabled={neighborBusy === "invite"}>
+                                    {neighborCopy.createCode}
+                                </Button>
+                            </div>
+                            {pairingInvite ? (
+                                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                                    <div className="font-mono text-2xl font-semibold tracking-[0.3em] text-emerald-950">{pairingInvite.code}</div>
+                                    <div className="mt-1 text-xs text-emerald-700">{pairingInvite.expiresAt}</div>
+                                </div>
+                            ) : null}
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex items-center justify-between">
+                                <div className="text-sm font-semibold text-slate-900">{neighborCopy.candidates}</div>
+                                <Badge variant="outline">{neighborCandidates.length}</Badge>
+                            </div>
+                            {neighborCandidates.length ? (
+                                <div className="space-y-2">
+                                    {neighborCandidates.map((candidate) => (
+                                        <div key={candidate.peerId} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-50 px-3 py-3">
+                                            <div className="min-w-0">
+                                                <div className="truncate text-sm font-medium text-slate-900">{candidate.displayName || candidate.peerId}</div>
+                                                <div className="truncate text-xs text-slate-500">{candidate.baseUrl || candidate.address || candidate.source || candidate.peerId}</div>
+                                            </div>
+                                            <Button size="sm" variant="outline" onClick={() => setPairingPeerId(candidate.peerId)}>
+                                                {neighborCopy.connect}
+                                            </Button>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="rounded-2xl bg-slate-50 px-3 py-4 text-sm text-slate-500">{neighborCopy.noCandidates}</div>
+                            )}
+                            <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_0.7fr_auto]">
+                                <Input value={pairingPeerId} onChange={(event) => setPairingPeerId(event.target.value)} placeholder="peer_xxx"/>
+                                <Input value={pairingCode} onChange={(event) => setPairingCode(event.target.value.toUpperCase())} placeholder="CODE"/>
+                                <Button onClick={() => void consumePairingInvite()} disabled={neighborBusy === "pair"}>
+                                    {neighborCopy.consumeCode}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex items-center justify-between">
+                                <div className="text-sm font-semibold text-slate-900">{neighborCopy.connected}</div>
+                                <Badge variant="outline">{neighborLinks.length}</Badge>
+                            </div>
+                            {neighborLinks.length ? (
+                                <div className="grid gap-2">
+                                    {neighborLinks.map((link) => (
+                                        <button key={link.linkId} type="button" onClick={() => setSelectedNeighborLinkId(link.linkId)} className={`rounded-2xl border px-4 py-3 text-left transition ${selectedNeighborLink?.linkId === link.linkId ? "border-slate-900 bg-slate-950 text-white" : "border-slate-200 bg-slate-50 text-slate-900 hover:border-slate-300"}`}>
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="truncate text-sm font-semibold">{link.remoteNickname || link.displayName || link.peerId}</div>
+                                                    <div className={`truncate text-xs ${selectedNeighborLink?.linkId === link.linkId ? "text-slate-300" : "text-slate-500"}`}>{link.localRole === "primary" ? neighborCopy.primary : neighborCopy.companion} · {link.online ? "online" : "offline"}</div>
+                                                </div>
+                                                <Badge variant={link.online ? "default" : "secondary"}>{link.online ? "●" : "○"}</Badge>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="rounded-2xl bg-slate-50 px-3 py-4 text-sm text-slate-500">{neighborCopy.noLinks}</div>
+                            )}
+                        </div>
+
+                        {selectedNeighborLink ? (
+                            <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                    <div className="grid gap-2">
+                                        <Label>{neighborCopy.localNickname}</Label>
+                                        <Input value={linkDraft.localNickname} onChange={(event) => setLinkDraft((prev) => ({ ...prev, localNickname: event.target.value }))}/>
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label>{neighborCopy.remoteNickname}</Label>
+                                        <Input value={linkDraft.remoteNickname} onChange={(event) => setLinkDraft((prev) => ({ ...prev, remoteNickname: event.target.value }))}/>
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label>{neighborCopy.role}</Label>
+                                        <Select value={linkDraft.localRole} onValueChange={(value) => setLinkDraft((prev) => ({ ...prev, localRole: value === "companion" ? "companion" : "primary" }))}>
+                                            <SelectTrigger><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="primary">{neighborCopy.primary}</SelectItem>
+                                                <SelectItem value="companion">{neighborCopy.companion}</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+                                <div className="mt-3 flex justify-end gap-2">
+                                    <Button variant="outline" onClick={() => void revokeNeighborLink(selectedNeighborLink.linkId)} disabled={neighborBusy === "revoke"}>{neighborCopy.revoke}</Button>
+                                    <Button onClick={() => void saveNeighborLink()} disabled={neighborBusy === "link"}>{neighborCopy.save}</Button>
+                                </div>
+                            </div>
+                        ) : null}
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 text-sm font-semibold text-slate-900">{neighborCopy.timeline}</div>
+                            <div className="max-h-72 space-y-2 overflow-auto rounded-2xl bg-slate-50 p-3">
+                                {neighborTimeline.length ? neighborTimeline.map((message) => (
+                                    <div key={message.messageId} className={`rounded-2xl px-3 py-2 text-sm ${message.direction === "outbound" ? "ml-8 bg-slate-900 text-white" : "mr-8 bg-white text-slate-900"}`}>
+                                        <div className="text-xs opacity-70">{message.fromNickname || message.role || message.status}</div>
+                                        <div className="mt-1 whitespace-pre-wrap break-words">{message.preview || message.body}</div>
+                                    </div>
+                                )) : (
+                                    <div className="py-8 text-center text-sm text-slate-500">{neighborCopy.timeline}</div>
+                                )}
+                            </div>
+                            <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                                <Input value={neighborMessage} onChange={(event) => setNeighborMessage(event.target.value)} placeholder={neighborCopy.messagePlaceholder}/>
+                                <Button variant="outline" onClick={() => void sendNeighborMessage(false)} disabled={!selectedNeighborLink || neighborBusy === "send"}>{neighborCopy.send}</Button>
+                                <Button onClick={() => void sendNeighborMessage(true)} disabled={!selectedNeighborLink || neighborBusy === "sendWake"}>{neighborCopy.sendWake}</Button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </ConfigCard>
+
+            <details className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                <summary className="cursor-pointer list-none text-sm font-semibold text-slate-900">
+                    {neighborCopy.advanced}
+                    <span className="ml-3 text-xs font-normal text-slate-500">{neighborCopy.advancedHint}</span>
+                </summary>
+                <div className="mt-4 space-y-4">
 
             <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTitle"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatDescription"} variant="editor" bodyHeight="auto">
                 <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
@@ -1434,6 +1869,8 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                     </div>
                 </div>
             </ConfigCard>
+                </div>
+            </details>
             <DocumentationGuideDialog
                 open={guideOpen}
                 onOpenChange={setGuideOpen}

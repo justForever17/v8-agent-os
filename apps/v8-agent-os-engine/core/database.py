@@ -396,6 +396,46 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_neighbor_links (
+                    id TEXT PRIMARY KEY,
+                    peer_id TEXT NOT NULL UNIQUE,
+                    local_nickname TEXT,
+                    remote_nickname TEXT,
+                    local_role TEXT NOT NULL DEFAULT 'primary',
+                    remote_role TEXT NOT NULL DEFAULT 'companion',
+                    trust_status TEXT NOT NULL DEFAULT 'trusted',
+                    workspace_binding_json TEXT,
+                    metadata_json TEXT,
+                    paired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_neighbor_messages (
+                    id TEXT PRIMARY KEY,
+                    link_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    direction TEXT NOT NULL,
+                    from_peer_id TEXT NOT NULL,
+                    from_nickname TEXT,
+                    role TEXT,
+                    body TEXT NOT NULL,
+                    preview TEXT,
+                    status TEXT NOT NULL DEFAULT 'stored',
+                    run_id TEXT,
+                    workspace_binding_json TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (link_id) REFERENCES network_neighbor_links (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS skill_safety_reviews (
                     id TEXT PRIMARY KEY,
                     skill_id TEXT,
@@ -949,6 +989,11 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_run_id ON session_lane_queue_entries (run_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_user_message_queue_session_state ON chat_user_message_queue (session_id, state, ordinal ASC, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_user_message_queue_run_id ON chat_user_message_queue (run_id, state, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_links_peer_id ON network_neighbor_links (peer_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_links_updated_at ON network_neighbor_links (updated_at DESC)')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_network_neighbor_messages_link_seq ON network_neighbor_messages (link_id, seq)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_messages_link_received ON network_neighbor_messages (link_id, received_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_messages_run_id ON network_neighbor_messages (run_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_pending_approvals_session_id ON pending_approvals (session_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_session_id ON ask_user_interactions (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_run_id ON ask_user_interactions (run_id, created_at DESC)')
@@ -3748,6 +3793,217 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
         return self.get_chat_user_message_queue_item(queue_id)
+
+    # --- Network Neighbor Operations ---
+
+    def _hydrate_network_neighbor_link_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["linkId"] = data.get("id")
+        data["peerId"] = data.get("peer_id")
+        data["localNickname"] = data.get("local_nickname") or ""
+        data["remoteNickname"] = data.get("remote_nickname") or ""
+        data["localRole"] = data.get("local_role") or "primary"
+        data["remoteRole"] = data.get("remote_role") or "companion"
+        data["trustStatus"] = data.get("trust_status") or "trusted"
+        data["workspaceBinding"] = json.loads(data["workspace_binding_json"]) if data.get("workspace_binding_json") else {}
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        data["pairedAt"] = data.get("paired_at")
+        data["lastSeenAt"] = data.get("last_seen_at")
+        data["createdAt"] = data.get("created_at")
+        data["updatedAt"] = data.get("updated_at")
+        return data
+
+    def upsert_network_neighbor_link(
+        self,
+        *,
+        link_id: str,
+        peer_id: str,
+        local_nickname: str,
+        remote_nickname: str,
+        local_role: str,
+        remote_role: str,
+        trust_status: str = "trusted",
+        workspace_binding: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        last_seen_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO network_neighbor_links
+                    (id, peer_id, local_nickname, remote_nickname, local_role, remote_role, trust_status, workspace_binding_json, metadata_json, paired_at, last_seen_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(peer_id) DO UPDATE SET
+                        id = excluded.id,
+                        local_nickname = excluded.local_nickname,
+                        remote_nickname = excluded.remote_nickname,
+                        local_role = excluded.local_role,
+                        remote_role = excluded.remote_role,
+                        trust_status = excluded.trust_status,
+                        workspace_binding_json = excluded.workspace_binding_json,
+                        metadata_json = excluded.metadata_json,
+                        last_seen_at = COALESCE(excluded.last_seen_at, network_neighbor_links.last_seen_at),
+                        updated_at = excluded.updated_at
+                    ''',
+                    (
+                        link_id,
+                        peer_id,
+                        local_nickname,
+                        remote_nickname,
+                        local_role or "primary",
+                        remote_role or "companion",
+                        trust_status or "trusted",
+                        json.dumps(to_jsonable(workspace_binding or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        now_iso,
+                        last_seen_at or now_iso,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_link_by_peer(peer_id) or {}
+
+    def get_network_neighbor_link(self, link_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(link_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_links WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_link_row(dict(row)) if row else None
+
+    def get_network_neighbor_link_by_peer(self, peer_id: str) -> Optional[Dict[str, Any]]:
+        normalized_peer_id = str(peer_id or "").strip()
+        if not normalized_peer_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_links WHERE peer_id = ?', (normalized_peer_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_link_row(dict(row)) if row else None
+
+    def list_network_neighbor_links(self) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_links ORDER BY updated_at DESC, paired_at DESC')
+            return [self._hydrate_network_neighbor_link_row(dict(row)) for row in cursor.fetchall()]
+
+    def delete_network_neighbor_link(self, link_id: str) -> bool:
+        normalized_id = str(link_id or "").strip()
+        if not normalized_id:
+            return False
+
+        def _write():
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM network_neighbor_links WHERE id = ?', (normalized_id,))
+                conn.commit()
+                return cursor.rowcount > 0
+
+        return bool(self._run_write_with_retry(_write))
+
+    def _hydrate_network_neighbor_message_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["messageId"] = data.get("id")
+        data["linkId"] = data.get("link_id")
+        data["fromPeerId"] = data.get("from_peer_id")
+        data["fromNickname"] = data.get("from_nickname") or ""
+        data["workspaceBinding"] = json.loads(data["workspace_binding_json"]) if data.get("workspace_binding_json") else {}
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        data["createdAt"] = data.get("created_at")
+        data["receivedAt"] = data.get("received_at")
+        return data
+
+    def _next_network_neighbor_message_seq(self, conn, link_id: str) -> int:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM network_neighbor_messages WHERE link_id = ?',
+            (link_id,),
+        )
+        row = cursor.fetchone()
+        return int(row["next_seq"]) if row else 1
+
+    def add_network_neighbor_message(
+        self,
+        *,
+        message_id: str,
+        link_id: str,
+        direction: str,
+        from_peer_id: str,
+        from_nickname: str,
+        role: str,
+        body: str,
+        preview: str,
+        status: str = "stored",
+        run_id: Optional[str] = None,
+        workspace_binding: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                seq = self._next_network_neighbor_message_seq(conn, link_id)
+                conn.execute(
+                    '''
+                    INSERT INTO network_neighbor_messages
+                    (id, link_id, seq, direction, from_peer_id, from_nickname, role, body, preview, status, run_id, workspace_binding_json, metadata_json, created_at, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        message_id,
+                        link_id,
+                        seq,
+                        direction,
+                        from_peer_id,
+                        from_nickname,
+                        role,
+                        body,
+                        preview,
+                        status or "stored",
+                        run_id,
+                        json.dumps(to_jsonable(workspace_binding or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.execute('UPDATE network_neighbor_links SET updated_at = ?, last_seen_at = ? WHERE id = ?', (now_iso, now_iso, link_id))
+                conn.commit()
+                return seq
+
+        self._run_write_with_retry(_write)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_messages WHERE id = ?', (message_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_message_row(dict(row)) if row else {}
+
+    def list_network_neighbor_messages(
+        self,
+        *,
+        link_id: str,
+        after_seq: Optional[int] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        params: list[Any] = [link_id]
+        query = 'SELECT * FROM network_neighbor_messages WHERE link_id = ?'
+        if after_seq is not None:
+            query += ' AND seq > ?'
+            params.append(int(after_seq))
+        query += ' ORDER BY seq ASC LIMIT ?'
+        params.append(max(1, min(int(limit or 50), 200)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_network_neighbor_message_row(dict(row)) for row in cursor.fetchall()]
 
     def claim_next_pending_chat_user_message(self, *, session_id: str, consumed_run_id: str) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()

@@ -15,6 +15,11 @@ if str(ENGINE_ROOT) not in sys.path:
 from core.llm_factory import llm_factory  # noqa: E402
 from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata  # noqa: E402
 
+try:  # noqa: E402
+    from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency may be absent in partial dev envs
+    ChatGoogleGenerativeAI = None  # type: ignore
+
 
 REPORT_ROOT = Path.home() / ".v8-agent-os" / "reports" / "model_reasoning_effort_request_dry_run"
 LEVELS = ("auto", "low", "medium", "high")
@@ -160,6 +165,28 @@ def _expect_unsupported(level: str, kwargs: dict[str, Any]) -> bool:
     return not _has_any_reasoning_knob(kwargs)
 
 
+def _probe_gemini_adapter(level: str, kwargs: dict[str, Any], request_style: str) -> dict[str, Any]:
+    if ChatGoogleGenerativeAI is None:
+        return {"status": "skipped", "reason": "langchain_google_genai_not_installed"}
+    try:
+        client = ChatGoogleGenerativeAI(**kwargs)
+    except Exception as exc:  # pragma: no cover - failure is surfaced in dry-run payload
+        return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+    observed = {
+        "thinkingLevel": getattr(client, "thinking_level", None),
+        "thinkingBudget": getattr(client, "thinking_budget", None),
+        "maxOutputTokens": getattr(client, "max_output_tokens", None),
+        "timeout": getattr(client, "timeout", None),
+    }
+    if request_style == "gemini_thinking_level":
+        accepted = observed["thinkingLevel"] == (None if level == "auto" else level)
+    elif request_style == "gemini_thinking_budget":
+        accepted = observed["thinkingBudget"] == (None if level == "auto" else GEMINI_BUDGET_BY_LEVEL[level])
+    else:
+        accepted = True
+    return {"status": "accepted" if accepted else "mismatch", "observed": observed}
+
+
 def _cases() -> list[dict[str, Any]]:
     return [
         {
@@ -239,6 +266,7 @@ def _cases() -> list[dict[str, Any]]:
             ),
             "builder": _build_gemini,
             "expect": _expect_gemini_level,
+            "adapterProbe": "gemini",
         },
         {
             "id": "gemini25_thinking_budget",
@@ -253,6 +281,7 @@ def _cases() -> list[dict[str, Any]]:
             ),
             "builder": _build_gemini,
             "expect": _expect_gemini_budget,
+            "adapterProbe": "gemini",
         },
         {
             "id": "embedding_excluded",
@@ -277,6 +306,7 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
     requests_by_level = {}
     checks_by_level = {}
     shapes_by_level = {}
+    adapter_probe_by_level = {}
     builder: Callable[..., dict[str, Any]] = case["builder"]
     expect: Callable[[str, dict[str, Any]], bool] = case["expect"]
     for level in LEVELS:
@@ -284,6 +314,15 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
         requests_by_level[level] = _redact(kwargs)
         shapes_by_level[level] = _request_shape(kwargs)
         checks_by_level[level] = expect(level, kwargs)
+        if case.get("adapterProbe") == "gemini":
+            adapter_probe = _probe_gemini_adapter(
+                level,
+                kwargs,
+                str((case["meta"].get("reasoning_effort_control") or {}).get("requestStyle") or ""),
+            )
+            adapter_probe_by_level[level] = adapter_probe
+            if adapter_probe.get("status") not in {"accepted", "skipped"}:
+                checks_by_level[level] = False
     return {
         "id": case["id"],
         "provider": case["provider"],
@@ -293,6 +332,7 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
         "passed": all(checks_by_level.values()),
         "checksByLevel": checks_by_level,
         "requestShapeByLevel": shapes_by_level,
+        "adapterProbeByLevel": adapter_probe_by_level,
         "clientKwargsByLevel": requests_by_level,
     }
 
@@ -320,6 +360,14 @@ def _write_markdown(payload: dict[str, Any], path: Path) -> None:
                 "",
             ]
         )
+        if item.get("adapterProbeByLevel"):
+            lines.extend(
+                [
+                    "- Adapter probe:",
+                    f"  `{json.dumps(item['adapterProbeByLevel'], ensure_ascii=False)}`",
+                    "",
+                ]
+            )
         for level, shape in item["requestShapeByLevel"].items():
             lines.extend(
                 [

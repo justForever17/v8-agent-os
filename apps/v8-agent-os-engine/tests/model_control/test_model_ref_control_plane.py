@@ -15,6 +15,11 @@ from core.model_thinking_control import (
 )
 from core.model_ref import make_model_ref, parse_model_ref
 
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:  # pragma: no cover - optional in partial dev environments
+    ChatGoogleGenerativeAI = None
+
 
 def test_model_ref_roundtrip():
     ref = make_model_ref("codex-oauth", "gpt-5.5")
@@ -1543,3 +1548,60 @@ def test_gemini_kwargs_apply_reasoning_effort_controls_without_instantiating_opt
 
     assert level_kwargs["thinking_level"] == "medium"
     assert budget_kwargs["thinking_budget"] == 8192
+
+
+@pytest.mark.skipif(ChatGoogleGenerativeAI is None, reason="langchain-google-genai is not installed")
+def test_gemini_reasoning_effort_kwargs_are_accepted_by_langchain_google_genai():
+    level_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "gemini-api",
+            "api_standard": "gemini",
+            "model_id": "gemini-3.1-pro-preview",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+    budget_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "gemini-api",
+            "api_standard": "gemini",
+            "model_id": "gemini-2.5-pro",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+
+    level_kwargs = llm_factory._build_gemini_kwargs(
+        "gemini-3.1-pro-preview",
+        {
+            "api_key": "dry-run-key",
+            "provider_id": "gemini-api",
+            "api_standard": "gemini",
+            "model_id": "gemini-3.1-pro-preview",
+            "reasoning_effort_control": level_control,
+            "request_reasoning_effort": "medium",
+        },
+        max_tokens=1234,
+        timeout=12,
+    )
+    budget_kwargs = llm_factory._build_gemini_kwargs(
+        "gemini-2.5-pro",
+        {
+            "api_key": "dry-run-key",
+            "provider_id": "gemini-api",
+            "api_standard": "gemini",
+            "model_id": "gemini-2.5-pro",
+            "reasoning_effort_control": budget_control,
+            "request_reasoning_effort": "high",
+        },
+        max_tokens=1234,
+        timeout=12,
+    )
+
+    level_client = ChatGoogleGenerativeAI(**level_kwargs)
+    budget_client = ChatGoogleGenerativeAI(**budget_kwargs)
+
+    assert level_client.thinking_level == "medium"
+    assert level_client.thinking_budget is None
+    assert level_client.max_output_tokens == 1234
+    assert level_client.timeout == 12
+    assert budget_client.thinking_level is None
+    assert budget_client.thinking_budget == 8192

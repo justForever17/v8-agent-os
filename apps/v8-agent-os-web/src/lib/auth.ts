@@ -26,8 +26,30 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             name: "Device pairing",
             credentials: {
                 pairingUri: { label: "Pairing link", type: "text" },
+                adminBaseUrl: { label: "Admin URL", type: "text" },
+                localSession: { label: "Local session", type: "text" },
             },
             async authorize(credentials) {
+                const localSession = String(credentials?.localSession || "").trim() === "1";
+                if (localSession) {
+                    const adminBaseUrl = String(credentials?.adminBaseUrl || "http://127.0.0.1:9528").trim().replace(/\/+$/, "");
+                    if (!adminBaseUrl) return null;
+                    try {
+                        const response = await fetch(`${adminBaseUrl}/api/client/auth/local-session`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                surface: "web",
+                                deviceName: "v8-web-local",
+                            }),
+                        });
+                        const payload = await response.json().catch(() => ({}));
+                        return response.ok && payload?.user ? payload.user : null;
+                    } catch {
+                        return null;
+                    }
+                }
+
                 const pairingUri = String(credentials?.pairingUri || "").trim();
                 if (!pairingUri) {
                     return null;

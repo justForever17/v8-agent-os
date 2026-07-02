@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
 import {
     CheckCircle2,
     Loader2,
@@ -33,6 +34,17 @@ type ConnectionPayload = {
     connection?: AdminConnection | null;
     error?: string;
 };
+
+const DEFAULT_LOCAL_ADMIN_BASE_URL = "http://127.0.0.1:9528";
+
+function isLoopbackAdminUrl(value: string) {
+    try {
+        const parsed = new URL(value);
+        return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1";
+    } catch {
+        return false;
+    }
+}
 
 function formatLastUsed(value: string | undefined, locale: Locale) {
     if (!value) return pickLocalizedText(locale, lt("未知", "Unknown"));
@@ -164,6 +176,7 @@ export function AdminConnectionManager({
             silent?: boolean;
             redirectOnSuccess?: boolean;
             preferredProfileId?: string | null;
+            localSession?: boolean;
         },
     ) => {
         setSaving(true);
@@ -182,6 +195,17 @@ export function AdminConnectionManager({
             }
 
             persistActivatedConnection(payload.connection, options?.preferredProfileId || null);
+
+            if (options?.localSession) {
+                const result = await signIn("credentials", {
+                    localSession: "1",
+                    adminBaseUrl: payload.connection.adminBaseUrl,
+                    redirect: false,
+                });
+                if (!result?.ok || result.error) {
+                    throw new Error(t(lt("本机自动登录失败", "Local sign-in failed")));
+                }
+            }
 
             if (!options?.silent) {
                 setMessage({ type: "success", text: t(lt("连接已保存。", "Connection saved.")) });
@@ -209,16 +233,15 @@ export function AdminConnectionManager({
             return;
         }
         const profile = findAdminConnectionProfileById(profiles, activeProfileId);
-        if (!profile) {
-            return;
-        }
         autoRestoreAttemptedRef.current = true;
-        void activateConnection(profile.adminBaseUrl, {
+        const targetAdminBaseUrl = profile?.adminBaseUrl || DEFAULT_LOCAL_ADMIN_BASE_URL;
+        void activateConnection(targetAdminBaseUrl, {
             silent: true,
             redirectOnSuccess: variant === "page",
-            preferredProfileId: profile.id,
+            preferredProfileId: profile?.id,
+            localSession: isLoopbackAdminUrl(targetAdminBaseUrl),
         }).catch(() => {
-            setMessage({ type: "error", text: t(lt("已恢复上次地址，但自动重连失败。", "Last address restored, but auto-reconnect failed.")) });
+            setMessage({ type: "error", text: t(lt("本机自动连接失败，请确认 Admin 已启动。", "Local auto-connect failed. Make sure Admin is running.")) });
         });
     }, [activateConnection, activeProfileId, autoRestore, connection, loading, profiles, t, variant]);
 
@@ -254,7 +277,10 @@ export function AdminConnectionManager({
             setMessage({ type: "error", text: t(lt("请先填写管理台地址。", "Please enter the admin console URL first.")) });
             return;
         }
-        await activateConnection(normalized, { redirectOnSuccess: variant === "page" });
+        await activateConnection(normalized, {
+            redirectOnSuccess: variant === "page",
+            localSession: variant === "page" && isLoopbackAdminUrl(normalized),
+        });
     };
 
     const handleActivateProfile = async (profile: AdminConnectionProfile) => {
@@ -263,6 +289,7 @@ export function AdminConnectionManager({
             await activateConnection(profile.adminBaseUrl, {
                 redirectOnSuccess: variant === "page",
                 preferredProfileId: profile.id,
+                localSession: variant === "page" && isLoopbackAdminUrl(profile.adminBaseUrl),
             });
         } finally {
             setSwitchingProfileId(null);

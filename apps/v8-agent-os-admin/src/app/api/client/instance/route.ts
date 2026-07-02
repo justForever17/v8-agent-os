@@ -20,6 +20,8 @@ export async function GET(req: NextRequest) {
         warnings: manifest.warnings,
         capabilities: {
             pairing: true,
+            localTrustedSession: true,
+            localTrustedSurfaces: ["web", "cyber"],
             passwordLoginFallback: true,
             publicRegistration: false,
         },

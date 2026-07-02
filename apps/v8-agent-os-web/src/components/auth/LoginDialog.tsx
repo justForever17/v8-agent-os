@@ -19,6 +19,8 @@ import { Label } from "@/components/ui/label";
 import { useT } from "@/components/providers/LocaleProvider";
 import { lt } from "@/lib/locale";
 
+const DEFAULT_LOCAL_ADMIN_BASE_URL = "http://127.0.0.1:9528";
+
 function parsePairingAdminBaseUrl(pairingUri: string) {
     const parsed = new URL(String(pairingUri || "").trim());
     const adminBaseUrl = String(parsed.searchParams.get("admin") || "").trim();
@@ -80,6 +82,36 @@ export function LoginDialog() {
         }
     }
 
+    async function handleLocalConnect() {
+        setIsLoading(true);
+        setError("");
+        try {
+            const connectionResponse = await fetch("/api/connection", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ adminBaseUrl: DEFAULT_LOCAL_ADMIN_BASE_URL, persist: true }),
+            });
+            if (!connectionResponse.ok) {
+                const payload = await connectionResponse.json().catch(() => ({}));
+                throw new Error(String(payload?.error || t(lt("无法连接本机 V8 OS 实例", "Cannot reach the local V8 OS instance"))));
+            }
+            const result = await signIn("credentials", {
+                localSession: "1",
+                adminBaseUrl: DEFAULT_LOCAL_ADMIN_BASE_URL,
+                redirect: false,
+            });
+            if (!result?.ok || result.error) {
+                throw new Error(t(lt("本机自动登录失败", "Local sign-in failed")));
+            }
+            resetForm();
+            setOpen(false);
+        } catch (nextError) {
+            setError(nextError instanceof Error ? nextError.message : t(lt("本机连接失败", "Local connection failed")));
+        } finally {
+            setIsLoading(false);
+        }
+    }
+
     return (
         <Dialog open={open} onOpenChange={(nextOpen) => {
             setOpen(nextOpen);
@@ -97,7 +129,7 @@ export function LoginDialog() {
                         {t(lt("连接 V8 OS", "Connect to V8 OS"))}
                     </DialogTitle>
                     <DialogDescription className="text-center text-white/60">
-                        {t(lt("粘贴 Admin 生成的一次性链接，无需填写地址或创建账号。", "Paste the single-use link from Admin. No address or account creation is needed."))}
+                        {t(lt("本机桌面会自动连接；远程或备用场景可粘贴 Admin 的一次性配对链接。", "Local desktop connects automatically; paste an Admin pairing link for remote or fallback use."))}
                     </DialogDescription>
                 </DialogHeader>
 
@@ -114,13 +146,23 @@ export function LoginDialog() {
                 </div>
 
                 <DialogFooter>
-                    <Button
-                        onClick={() => void handlePairing()}
-                        disabled={isLoading || !pairingUri.trim()}
-                        className="w-full bg-white text-black hover:bg-white/90"
-                    >
-                        {isLoading ? t(lt("连接中...", "Connecting...")) : t(lt("连接此设备", "Connect this device"))}
-                    </Button>
+                    <div className="flex w-full flex-col gap-2">
+                        <Button
+                            onClick={() => void handleLocalConnect()}
+                            disabled={isLoading}
+                            className="w-full bg-white text-black hover:bg-white/90"
+                        >
+                            {isLoading ? t(lt("连接中...", "Connecting...")) : t(lt("连接本机 V8 OS", "Connect local V8 OS"))}
+                        </Button>
+                        <Button
+                            onClick={() => void handlePairing()}
+                            disabled={isLoading || !pairingUri.trim()}
+                            variant="outline"
+                            className="w-full border-white/20 bg-white/5 text-white hover:bg-white/10"
+                        >
+                            {t(lt("使用配对链接", "Use pairing link"))}
+                        </Button>
+                    </div>
                 </DialogFooter>
             </DialogContent>
         </Dialog>

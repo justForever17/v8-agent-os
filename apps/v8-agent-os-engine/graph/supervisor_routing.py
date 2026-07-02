@@ -38,6 +38,7 @@ def create_robust_invoke(
     llm_factory,
     model_control_plane,
     model_failover_service,
+    supervisor_reasoning_effort: str = "auto",
 ):
     def _robust_invoke(base_llm_instance, messages, tools=None, *, role="supervisor", preferred_model_id="", build_model=None):
         import logging
@@ -45,9 +46,13 @@ def create_robust_invoke(
         logger = logging.getLogger("v8chat.supervisor")
         resolved_config = model_control_plane.get_config()
         target_model_id = preferred_model_id or sup_model_name
-        model_builder = build_model or (
-            lambda candidate_model_id: llm_factory.create_chat_model(candidate_model_id, streaming=False, timeout=180, _role=role)
-        )
+        def _default_model_builder(candidate_model_id):
+            kwargs = {"streaming": False, "timeout": 180, "_role": role}
+            if role == "supervisor" and supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
+                kwargs["_reasoning_effort"] = supervisor_reasoning_effort
+            return llm_factory.create_chat_model(candidate_model_id, **kwargs)
+
+        model_builder = build_model or _default_model_builder
 
         logger.info(
             "[RobustInvoke] role=%s preferred_model=%s tools=%s",

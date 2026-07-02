@@ -97,6 +97,7 @@ import {
     getConversationTimelineSync,
     getProjectsRegistry,
     getRealtimeSnapshot,
+    getSupervisorReasoningEffortControl,
     getSessionProcesses,
     getSessionScope,
     listWorkspaceFolders,
@@ -114,6 +115,7 @@ import {
     speechToText,
     streamRealtimeSession,
     uploadAttachment,
+    type SupervisorReasoningEffortControl,
 } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { localDatabase } from "@/src/services/LocalDatabaseService";
@@ -170,6 +172,8 @@ type SendComposerOptions = {
     files?: UploadedWorkspaceFile[];
     preserveComposer?: boolean;
 };
+
+type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
 
 type ComposerMentionItem =
     | { kind: "skill"; key: string; skill: SkillReferenceSummary }
@@ -2120,6 +2124,8 @@ export default function ChatScreen() {
     const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
     const [activeQueryText, setActiveQueryText] = useState("");
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
+    const [reasoningEffortControl, setReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
+    const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffortLevel>("auto");
     const [bottomLayerHeight, setBottomLayerHeight] = useState(132);
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
@@ -2143,6 +2149,43 @@ export default function ChatScreen() {
     const queryTerm = activeQueryText.trim().toLowerCase();
     const commandPickerOpen = activeQueryMode === "command" && !selectedCommand;
     const skillPickerOpen = activeQueryMode === "skill";
+    const reasoningEffortLevels = useMemo<ReasoningEffortLevel[]>(() => {
+        const rawLevels = Array.isArray(reasoningEffortControl?.levels) ? reasoningEffortControl.levels : [];
+        const allowed = new Set(rawLevels.map((level) => String(level || "").trim().toLowerCase()));
+        const levels: ReasoningEffortLevel[] = ["auto", "low", "medium", "high"].filter((level): level is ReasoningEffortLevel =>
+            level === "auto" || allowed.has(level)
+        );
+        return levels.includes("auto") ? levels : ["auto", ...levels];
+    }, [reasoningEffortControl?.levels]);
+    const reasoningEffortVisible = Boolean(reasoningEffortControl?.visible && reasoningEffortLevels.length > 1);
+
+    useEffect(() => {
+        if (status !== "authenticated") {
+            setReasoningEffortControl(null);
+            return;
+        }
+        let cancelled = false;
+        void getSupervisorReasoningEffortControl(authorizedFetch)
+            .then((payload) => {
+                if (!cancelled) {
+                    setReasoningEffortControl(payload && typeof payload === "object" ? payload : null);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setReasoningEffortControl(null);
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [authorizedFetch, status]);
+
+    useEffect(() => {
+        if (!reasoningEffortVisible || !reasoningEffortLevels.includes(reasoningEffort)) {
+            setReasoningEffort("auto");
+        }
+    }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
     const filteredCommands = useMemo(() => {
         if (!queryTerm) {
             return commands;
@@ -5804,6 +5847,7 @@ export default function ChatScreen() {
                         fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                         attachments: buildUploadedFileAttachments(pendingFiles),
                         taskPlanningMode: pendingTaskPlanningMode,
+                        supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
                     },
                 );
                 if (submitResult.accepted === false) {
@@ -5967,6 +6011,7 @@ export default function ChatScreen() {
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
                     taskPlanningMode: pendingTaskPlanningMode,
+                    supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
                 },
             );
             if (submitResult.accepted === false) {
@@ -6096,6 +6141,8 @@ export default function ChatScreen() {
         projection.runControlState.runId,
         projection.runControlState.status,
         queuedMessages.length,
+        reasoningEffort,
+        reasoningEffortVisible,
         selectedCommand,
         selectedSkills,
         selectedSubagentFamilies,
@@ -6379,6 +6426,10 @@ export default function ChatScreen() {
                     selectedSubagentFamilies={selectedSubagentFamilies}
                     taskPlanningMode={taskPlanningMode}
                     onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
+                    reasoningEffortVisible={reasoningEffortVisible}
+                    reasoningEffortLevels={reasoningEffortLevels}
+                    reasoningEffort={reasoningEffort}
+                    onChangeReasoningEffort={setReasoningEffort}
                     uploadedFiles={uploadedFiles}
                     onRemoveUploadedFile={(file) => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
                     adminBaseUrl={adminBaseUrl}

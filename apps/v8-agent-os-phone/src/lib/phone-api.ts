@@ -892,6 +892,23 @@ export async function getRealtimeSnapshot(authorizedFetch: AuthorizedFetch, conv
     );
 }
 
+export type SupervisorReasoningEffortControl = {
+    visible?: boolean;
+    supported?: boolean;
+    levels?: string[];
+    defaultLevel?: string;
+    modelRef?: string;
+};
+
+export async function getSupervisorReasoningEffortControl(authorizedFetch: AuthorizedFetch) {
+    return authorizedJson<SupervisorReasoningEffortControl>(
+        authorizedFetch,
+        "/api/client/models/supervisor-reasoning-effort",
+        translateCurrent("src.lib.phone_api.text_32"),
+        { cache: "no-store" },
+    );
+}
+
 export async function streamRealtimeSession(
     authorizedRealtimeStream: AuthorizedRealtimeStream,
     conversationId: string,
@@ -929,6 +946,7 @@ export async function submitChatMessage(
                 specMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
+                supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
                         name: skill.name,
@@ -1184,6 +1202,7 @@ type SendChatOptions = {
     attachments?: Array<Record<string, unknown>>;
     taskPlanningMode?: boolean;
     specMode?: boolean;
+    supervisorReasoningEffort?: string;
 };
 
 export async function sendChatMessageStream(
@@ -1211,6 +1230,7 @@ export async function sendChatMessageStream(
                 specMode: options.taskPlanningMode ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
+                supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
                         name: skill.name,

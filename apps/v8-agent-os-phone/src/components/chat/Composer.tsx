@@ -25,6 +25,8 @@ import { radii } from "@/src/theme/tokens";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import type { CommandPresetSummary, SkillReferenceSummary, SubagentFamilySummary, UploadedWorkspaceFile } from "@/src/types/admin";
 
+type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+
 function fileExtension(name?: string) {
     const ext = String(name || "").split(".").pop()?.trim();
     return ext && ext !== name ? ext.slice(0, 4).toUpperCase() : "FILE";
@@ -214,6 +216,10 @@ export const Composer = memo(function Composer({
     selectedSubagentFamilies,
     taskPlanningMode,
     onToggleTaskPlanningMode,
+    reasoningEffortVisible = false,
+    reasoningEffortLevels = ["auto"],
+    reasoningEffort = "auto",
+    onChangeReasoningEffort,
     uploadedFiles,
     onRemoveUploadedFile,
     adminBaseUrl,
@@ -241,6 +247,10 @@ export const Composer = memo(function Composer({
     selectedSubagentFamilies: SubagentFamilySummary[];
     taskPlanningMode: boolean;
     onToggleTaskPlanningMode: () => void;
+    reasoningEffortVisible?: boolean;
+    reasoningEffortLevels?: ReasoningEffortLevel[];
+    reasoningEffort?: ReasoningEffortLevel;
+    onChangeReasoningEffort?: (level: ReasoningEffortLevel) => void;
     uploadedFiles: UploadedWorkspaceFile[];
     onRemoveUploadedFile: (file: UploadedWorkspaceFile) => void;
     adminBaseUrl: string;
@@ -260,6 +270,18 @@ export const Composer = memo(function Composer({
     const canSend = hasPayload && !busy && (!isRunning || allowQueueWhileRunning);
     const canAct = canSend || (stopAvailable && !hasPayload);
     const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || activeQueryMode);
+    const reasoningEffortLabelMap: Record<ReasoningEffortLevel, string> = {
+        auto: t("src.components.chat.composer.reasoning_effort_auto_short"),
+        low: t("src.components.chat.composer.reasoning_effort_low_short"),
+        medium: t("src.components.chat.composer.reasoning_effort_medium_short"),
+        high: t("src.components.chat.composer.reasoning_effort_high_short"),
+    };
+    const cycleReasoningEffort = () => {
+        if (!reasoningEffortVisible || !onChangeReasoningEffort) return;
+        const levels: ReasoningEffortLevel[] = reasoningEffortLevels.length > 0 ? reasoningEffortLevels : ["auto"];
+        const index = Math.max(0, levels.indexOf(reasoningEffort));
+        onChangeReasoningEffort(levels[(index + 1) % levels.length] || "auto");
+    };
     const actionMode: "send" | "queue" | "stop" | "busy" = canQueue
         ? "queue"
         : stopAvailable
@@ -480,6 +502,40 @@ export const Composer = memo(function Composer({
                                     color={taskPlanningMode ? colors.primaryDeep : colors.textMuted}
                                 />
                             </Pressable>
+
+                            {reasoningEffortVisible ? (
+                                <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t("src.components.chat.composer.reasoning_effort")}
+                                    style={[
+                                        styles.reasoningEffortButton,
+                                        {
+                                            backgroundColor: reasoningEffort === "auto"
+                                                ? "transparent"
+                                                : themeMode === "dark" ? "rgba(245,158,11,0.18)" : "rgba(251,191,36,0.16)",
+                                            borderColor: reasoningEffort === "auto"
+                                                ? "transparent"
+                                                : themeMode === "dark" ? "rgba(245,158,11,0.28)" : "rgba(217,119,6,0.22)",
+                                        },
+                                    ]}
+                                    onPress={cycleReasoningEffort}
+                                >
+                                    <MaterialCommunityIcons
+                                        name="brain"
+                                        size={14}
+                                        color={reasoningEffort === "auto" ? colors.textMuted : colors.warning}
+                                    />
+                                    <Text
+                                        style={[
+                                            styles.reasoningEffortText,
+                                            { color: reasoningEffort === "auto" ? colors.textMuted : colors.warning },
+                                        ]}
+                                        numberOfLines={1}
+                                    >
+                                        {t("src.components.chat.composer.reasoning_effort_prefix")}·{reasoningEffortLabelMap[reasoningEffort] || reasoningEffortLabelMap.auto}
+                                    </Text>
+                                </Pressable>
+                            ) : null}
 
                             <Pressable
                                 style={[styles.inlineButton, attachmentBusy && styles.disabled]}
@@ -721,6 +777,22 @@ const styles = StyleSheet.create({
         justifyContent: "center",
         borderRadius: 12,
         borderWidth: 1,
+    },
+    reasoningEffortButton: {
+        height: 32,
+        maxWidth: 74,
+        paddingHorizontal: 8,
+        borderRadius: 14,
+        borderWidth: 1,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+    },
+    reasoningEffortText: {
+        fontSize: 11,
+        lineHeight: 14,
+        fontWeight: "800",
     },
     inlineButton: {
         width: 32,

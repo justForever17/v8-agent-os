@@ -76,6 +76,9 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const agentId = root.agentId;
     const specMode = data.specMode === true;
     const taskPlanningMode = !specMode && data.taskPlanningMode === true;
+    const supervisorReasoningEffort = typeof data.supervisorReasoningEffort === "string"
+        ? data.supervisorReasoningEffort
+        : undefined;
 
     return {
         conversationId: String(conversationId),
@@ -128,6 +131,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 taskPlanningMode,
                 taskPlanningSource: typeof data.taskPlanningSource === "string" ? data.taskPlanningSource : undefined,
                 taskPlanningRequestedByComposer: data.taskPlanningRequestedByComposer === true,
+                supervisorReasoningEffort,
                 skillReferences: Array.isArray(data.skillReferences) ? data.skillReferences : undefined,
             },
         },

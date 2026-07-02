@@ -16,6 +16,12 @@ _VOLCENGINE_ARK_PROVIDERS = {"volcengine-ark", "volcengine-coding"}
 _DEEPSEEK_NO_THINK_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
 _MINIMAX_NO_THINK_MODELS = {"minimax-m3"}
 _XIAOMI_MIMO_NO_THINK_MODELS = {"mimo-v2.5", "mimo-v2.5-flash", "mimo-v2.5-pro"}
+_REASONING_EFFORT_LEVELS = ("auto", "low", "medium", "high")
+_REASONING_EFFORT_PROVIDER_STYLES = {
+    "openai": "openai_reasoning_effort",
+    "openrouter": "openrouter_reasoning_effort",
+}
+_REASONING_EFFORT_EXCLUDED_CLASSES = {"embedding", "reranker", "rerank", "media_generation"}
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -36,6 +42,37 @@ def _model_supports_reasoning(model_record: Mapping[str, Any] | None) -> bool:
     tags = {str(item).strip().lower() for item in record.get("capabilityTags") or []}
     raw_type = str(record.get("capabilityClass") or record.get("type") or "").lower()
     return bool(capabilities.get("reasoning") or "reasoning" in tags or "reasoning" in raw_type)
+
+
+def normalize_reasoning_effort(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "": "auto",
+        "default": "auto",
+        "none": "auto",
+        "off": "auto",
+        "balanced": "medium",
+        "mid": "medium",
+        "normal": "medium",
+        "deep": "high",
+        "strong": "high",
+        "max": "high",
+        "maximum": "high",
+    }
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in _REASONING_EFFORT_LEVELS else "auto"
+
+
+def _excluded_from_reasoning_effort(model_record: Mapping[str, Any] | None) -> bool:
+    record = _as_dict(model_record)
+    raw_type = str(record.get("type") or "").strip().lower()
+    capability_class = str(record.get("capabilityClass") or record.get("capability_class") or "").strip().lower()
+    capabilities = _as_dict(record.get("capabilities"))
+    return (
+        capability_class in _REASONING_EFFORT_EXCLUDED_CLASSES
+        or raw_type in _REASONING_EFFORT_EXCLUDED_CLASSES
+        or bool(capabilities.get("embedding") or capabilities.get("rerank") or capabilities.get("mediaGeneration"))
+    )
 
 
 def _is_volcengine_ark_no_think_model(model_id: str) -> bool:
@@ -105,6 +142,37 @@ def resolve_thinking_control_for_metadata(
     }
 
 
+def resolve_reasoning_effort_control_for_metadata(
+    metadata: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    meta = _as_dict(metadata)
+    provider_id = _normalize_provider_id(meta.get("provider_id") or meta.get("providerId"))
+    model_id = _normalize_model_id(meta.get("model_id") or meta.get("modelId"))
+    model_record = _as_dict(meta.get("model_record") or meta.get("modelRecord"))
+    if meta.get("capabilities") and not model_record.get("capabilities"):
+        model_record["capabilities"] = _as_dict(meta.get("capabilities"))
+    if meta.get("capability_class") and not model_record.get("capabilityClass"):
+        model_record["capabilityClass"] = meta.get("capability_class")
+
+    request_style = _REASONING_EFFORT_PROVIDER_STYLES.get(provider_id, "")
+    if not request_style:
+        return {}
+    if _excluded_from_reasoning_effort(model_record):
+        return {}
+    if not _model_supports_reasoning(model_record):
+        return {}
+
+    return {
+        "supportsReasoningEffort": True,
+        "requestStyle": request_style,
+        "levels": list(_REASONING_EFFORT_LEVELS),
+        "defaultLevel": "auto",
+        "source": "provider_model_match",
+        "providerId": provider_id,
+        "modelId": model_id,
+    }
+
+
 def no_think_request_patch(thinking_control: Mapping[str, Any] | None) -> Dict[str, Any]:
     control = _as_dict(thinking_control)
     if not control.get("supportsNoThink") or not control.get("disabled"):
@@ -117,6 +185,23 @@ def no_think_request_patch(thinking_control: Mapping[str, Any] | None) -> Dict[s
         return {"extra_body": {"thinking": {"type": "disabled"}}}
     if style in {"openai_reasoning_effort_none", "openrouter_reasoning_effort_none"}:
         return {"reasoning": {"effort": "none"}}
+    return {}
+
+
+def reasoning_effort_request_patch(
+    reasoning_effort_control: Mapping[str, Any] | None,
+    requested_effort: Any,
+) -> Dict[str, Any]:
+    control = _as_dict(reasoning_effort_control)
+    if not control.get("supportsReasoningEffort"):
+        return {}
+    level = normalize_reasoning_effort(requested_effort)
+    if level == "auto":
+        return {}
+
+    style = str(control.get("requestStyle") or "").strip()
+    if style in {"openai_reasoning_effort", "openrouter_reasoning_effort"}:
+        return {"reasoning": {"effort": level}}
     return {}
 
 

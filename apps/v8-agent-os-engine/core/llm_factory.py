@@ -37,6 +37,8 @@ from core.model_telemetry import model_telemetry_service
 from core.model_thinking_control import (
     merge_model_request_patch,
     no_think_request_patch,
+    reasoning_effort_request_patch,
+    resolve_reasoning_effort_control_for_metadata,
     resolve_thinking_control_for_metadata,
 )
 from core.oauth_credentials import resolve_oauth_reference, resolve_provider_oauth_credential
@@ -874,6 +876,18 @@ class LLMFactory:
                         "capabilities": capabilities,
                     }
                 ),
+                "reasoning_effort_control": resolve_reasoning_effort_control_for_metadata(
+                    {
+                        "provider_id": p_name,
+                        "model_id": upstream_model_id,
+                        "model_ref": model_ref,
+                        "provider_record": p_conf,
+                        "model_record": meta,
+                        "api_standard": api_standard,
+                        "capabilities": capabilities,
+                        "capability_class": capability_class,
+                    }
+                ),
                 "cost_per_input": meta.get("costPerInput"),
                 "cost_per_output": meta.get("costPerOutput"),
                 "tokenizer_family": meta.get("tokenizerFamily") or meta.get("tokenizer_family") or "",
@@ -943,6 +957,13 @@ class LLMFactory:
                 final_kwargs[key] = value
 
         final_kwargs = merge_model_request_patch(final_kwargs, no_think_request_patch(meta.get("thinking_control")))
+        final_kwargs = merge_model_request_patch(
+            final_kwargs,
+            reasoning_effort_request_patch(
+                meta.get("reasoning_effort_control"),
+                meta.get("request_reasoning_effort"),
+            ),
+        )
         return final_kwargs
 
     @classmethod
@@ -1076,6 +1097,7 @@ class LLMFactory:
         role = str(kwargs.pop("_role", "") or "")
         request_kind = str(kwargs.pop("_request_kind", "") or "chat")
         capability_class_override = str(kwargs.pop("_capability_class", "") or "")
+        requested_reasoning_effort = str(kwargs.pop("_reasoning_effort", "") or "")
         if role and ("temperature" not in kwargs or kwargs.get("temperature") is None):
             role_temperature = model_control_plane.get_role_temperature(role)
             if role_temperature is not None:
@@ -1120,6 +1142,8 @@ class LLMFactory:
             )
 
         api_standard = str(meta.get("api_standard", "openai")).lower()
+        if requested_reasoning_effort:
+            meta = {**meta, "request_reasoning_effort": requested_reasoning_effort}
         wire_model_id = str(meta.get("model_id") or model_id)
         try:
             if api_standard == "anthropic":

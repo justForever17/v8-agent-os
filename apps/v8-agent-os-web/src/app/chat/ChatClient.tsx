@@ -114,6 +114,14 @@ interface RunRecordView {
     metadata?: Record<string, unknown>;
 }
 
+interface SupervisorReasoningEffortControl {
+    visible?: boolean;
+    supported?: boolean;
+    levels?: string[];
+    defaultLevel?: string;
+    modelRef?: string;
+}
+
 type SessionProjectionView = AuthoritativeSessionView & {
     contextGovernance?: Record<string, unknown> | null;
     contextGovernanceHistory?: Record<string, unknown>[];
@@ -521,6 +529,7 @@ export default function ChatClient() {
     const [scopeLoading, setScopeLoading] = useState(false);
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
+    const [supervisorReasoningEffortControl, setSupervisorReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
     const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
@@ -1535,6 +1544,29 @@ export default function ChatClient() {
     }, [loadProjects, status]);
 
     useEffect(() => {
+        if (status !== "authenticated") {
+            setSupervisorReasoningEffortControl(null);
+            return;
+        }
+        let cancelled = false;
+        void fetch("/api/models/supervisor-reasoning-effort", { cache: "no-store" })
+            .then((res) => res.ok ? res.json() : null)
+            .then((payload) => {
+                if (!cancelled) {
+                    setSupervisorReasoningEffortControl(payload && typeof payload === "object" ? payload : null);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setSupervisorReasoningEffortControl(null);
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [status]);
+
+    useEffect(() => {
         if (activeConversationId) {
             setWorkspaceChooserVisible(false);
             return;
@@ -2309,6 +2341,7 @@ export default function ChatClient() {
                                     onStop={stop}
                                     selectedAgentName={t(lt("智能主管", "Supervisor"))}
                                     shellClassName="w-full"
+                                    reasoningEffortControl={supervisorReasoningEffortControl}
                                 />
                             ) : (
                                 <div className="rounded-2xl border border-dashed border-border/60 bg-background/70 px-4 py-3 text-center text-sm text-muted-foreground">

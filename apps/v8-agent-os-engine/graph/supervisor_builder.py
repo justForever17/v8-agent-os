@@ -9,6 +9,7 @@ from core.models.factory import llm_factory
 from core.models.control_plane import model_control_plane
 from core.model_failover_service import model_failover_service
 from core.system_tools.native import NATIVE_TOOLS
+from core.model_thinking_control import normalize_reasoning_effort
 from core.plugin_host.tool_registry import plugin_host_tool_registry
 from core.runtime.extensions_runtime import extensions_runtime_service
 from runtimes.network_supervisor.openai_compat import build_external_langchain_tools
@@ -30,6 +31,7 @@ class SupervisorRuntimeBundle:
     robust_invoke: Callable
     supervisor_tools: list[Any]
     agent_nodes_map: dict[str, Callable]
+    supervisor_reasoning_effort: str = "auto"
 
 
 def _is_request_model_override(config: EngineConfig, default_role_model: str | None) -> bool:
@@ -72,7 +74,12 @@ def build_supervisor_runtime_bundle(
     if not sup_model_name:
         sup_model_name = default_role_model or config.model_name
 
-    supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=False, **caller_kwargs)
+    supervisor_reasoning_effort = normalize_reasoning_effort(getattr(config, "supervisor_reasoning_effort", None))
+    supervisor_model_kwargs = dict(caller_kwargs)
+    if supervisor_reasoning_effort != "auto":
+        supervisor_model_kwargs["_reasoning_effort"] = supervisor_reasoning_effort
+
+    supervisor_base_llm = llm_factory.create_chat_model(sup_model_name, streaming=False, **supervisor_model_kwargs)
     default_agent_model_id = sup_model_name if request_model_override else (storage.get_default_agent_model_id() or sup_model_name)
     if not default_agent_model_id:
         default_agent_llm = supervisor_base_llm
@@ -95,6 +102,7 @@ def build_supervisor_runtime_bundle(
         llm_factory=llm_factory,
         model_control_plane=model_control_plane,
         model_failover_service=model_failover_service,
+        supervisor_reasoning_effort=supervisor_reasoning_effort,
     )
 
     agent_nodes_map = build_specialist_agent_components(
@@ -131,6 +139,7 @@ def build_supervisor_runtime_bundle(
         robust_invoke=robust_invoke,
         supervisor_tools=supervisor_tools,
         agent_nodes_map=agent_nodes_map,
+        supervisor_reasoning_effort=supervisor_reasoning_effort,
     )
 
 
@@ -165,6 +174,7 @@ def build_supervisor_node(
             supervisor_base_llm=bundle.supervisor_base_llm,
             sup_model_name=bundle.sup_model_name,
             caller_kwargs=bundle.caller_kwargs,
+            supervisor_reasoning_effort=bundle.supervisor_reasoning_effort,
             llm_factory=llm_factory,
             sanitize_response_tool_calls=sanitize_response_tool_calls,
         )

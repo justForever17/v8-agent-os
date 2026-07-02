@@ -8,7 +8,11 @@ from core.llm_factory import llm_factory
 from core.model_capability_registry import model_capability_registry
 from core.model_control_plane import DEFAULT_ROLE_MAP, DEFAULT_ROUTING_POLICIES, MODULE_DEFINITIONS, ROLE_DEFINITIONS, model_control_plane
 from core.model_provider_catalog import ModelProviderCatalog, model_provider_catalog
-from core.model_thinking_control import resolve_thinking_control_for_metadata
+from core.model_thinking_control import (
+    reasoning_effort_request_patch,
+    resolve_reasoning_effort_control_for_metadata,
+    resolve_thinking_control_for_metadata,
+)
 from core.model_ref import make_model_ref, parse_model_ref
 
 
@@ -1272,3 +1276,106 @@ def test_no_think_request_patch_merges_existing_extra_body():
 
     assert kwargs["extra_body"]["caching"] == {"prefix": True}
     assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+
+def test_reasoning_effort_control_is_limited_to_openai_reasoning_families():
+    openai_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "openai",
+            "model_id": "gpt-5.5",
+            "model_record": {
+                "capabilityClass": "chat_reasoning",
+                "capabilities": {"chat": True, "reasoning": True},
+            },
+        }
+    )
+    openrouter_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "openrouter",
+            "model_id": "deepseek/deepseek-r1",
+            "model_record": {
+                "capabilityClass": "chat_reasoning",
+                "capabilities": {"chat": True, "reasoning": True},
+            },
+        }
+    )
+    minimax_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "minimax-cn",
+            "model_id": "MiniMax-M3",
+            "model_record": {
+                "capabilityClass": "vision_multimodal",
+                "capabilities": {"chat": True, "reasoning": True},
+            },
+        }
+    )
+    embedding_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "openai",
+            "model_id": "text-embedding-3-large",
+            "model_record": {
+                "capabilityClass": "embedding",
+                "capabilities": {"embedding": True, "reasoning": True},
+            },
+        }
+    )
+
+    assert openai_control["requestStyle"] == "openai_reasoning_effort"
+    assert openrouter_control["requestStyle"] == "openrouter_reasoning_effort"
+    assert minimax_control == {}
+    assert embedding_control == {}
+
+
+def test_reasoning_effort_request_patch_uses_normalized_levels():
+    control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "openai",
+            "model_id": "gpt-5.5",
+            "model_record": {
+                "capabilityClass": "chat_reasoning",
+                "capabilities": {"chat": True, "reasoning": True},
+            },
+        }
+    )
+
+    assert reasoning_effort_request_patch(control, "auto") == {}
+    assert reasoning_effort_request_patch(control, "medium") == {"reasoning": {"effort": "medium"}}
+    assert reasoning_effort_request_patch(control, "max") == {"reasoning": {"effort": "high"}}
+
+
+def test_openai_kwargs_apply_supervisor_reasoning_effort_after_no_think():
+    thinking_control = resolve_thinking_control_for_metadata(
+        {
+            "provider_id": "openai",
+            "model_id": "gpt-5.5",
+            "model_record": {
+                "capabilityClass": "chat_reasoning",
+                "capabilities": {"chat": True, "reasoning": True},
+                "thinkingControl": {"disabled": True},
+            },
+        }
+    )
+    reasoning_effort_control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "openai",
+            "model_id": "gpt-5.5",
+            "model_record": {
+                "capabilityClass": "chat_reasoning",
+                "capabilities": {"chat": True, "reasoning": True},
+            },
+        }
+    )
+
+    kwargs = llm_factory._build_openai_kwargs(
+        "gpt-5.5",
+        {
+            "api_key": "sk-test",
+            "provider_id": "openai",
+            "model_id": "gpt-5.5",
+            "thinking_control": thinking_control,
+            "reasoning_effort_control": reasoning_effort_control,
+            "request_reasoning_effort": "high",
+        },
+    )
+
+    assert kwargs["reasoning"] == {"effort": "high"}

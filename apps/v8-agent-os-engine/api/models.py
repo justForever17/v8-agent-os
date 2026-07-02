@@ -74,6 +74,7 @@ class EngineConfig(BaseModel):
     system_prompt: Optional[str] = Field(default=None, description="The final system prompt to inject")
     allowed_tools: Optional[List[str]] = Field(default=None, description="List of explicitly allowed agent tools")
     external_tools: Optional[List[ExternalToolSpec]] = Field(default=None, alias="externalTools", description="Per-request external tools exposed via the OpenAI compat branch")
+    supervisor_reasoning_effort: Optional[str] = Field(default=None, alias="supervisorReasoningEffort")
 
 
 class CommandPresetSelection(BaseModel):
@@ -146,6 +147,7 @@ class ChatRequestData(BaseModel):
     planner_mode: Optional[str] = Field(default=None, alias="plannerMode")
     planner_dispatch_mode: Optional[str] = Field(default=None, alias="plannerDispatchMode")
     engineering_mode: Optional[str] = Field(default=None, alias="engineeringMode")
+    supervisor_reasoning_effort: Optional[str] = Field(default=None, alias="supervisorReasoningEffort")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
     context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")

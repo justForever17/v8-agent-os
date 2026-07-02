@@ -18,6 +18,7 @@ from core.model_control_plane import model_control_plane
 from core.model_ref import make_model_ref
 from core.model_provider_catalog import model_provider_catalog
 from core.model_role_doctor import diagnose_models
+from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.mcp_config_service import McpConfigValidationError, validate_mcp_server_map
@@ -897,6 +898,51 @@ async def get_model_control_plane():
     try:
         config = model_control_plane.get_config()
         return model_control_plane.build_payload(config)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/models/supervisor-reasoning-effort")
+async def get_supervisor_reasoning_effort_control():
+    try:
+        config = model_control_plane.get_config()
+        resolution = model_control_plane.resolve_model_for_role("supervisor", config)
+        provider_id = str(resolution.get("resolvedProviderId") or "").strip()
+        model_id = str(resolution.get("resolvedModelId") or "").strip()
+        model_ref = str(resolution.get("resolvedModelRef") or "").strip()
+        model_record = dict(resolution.get("resolvedModel") or {})
+        provider_record = dict(resolution.get("resolvedProvider") or {})
+        control = resolve_reasoning_effort_control_for_metadata(
+            {
+                "provider_id": provider_id,
+                "model_id": model_id,
+                "model_ref": model_ref,
+                "provider_record": provider_record,
+                "model_record": model_record,
+                "api_standard": provider_record.get("api_standard") or provider_record.get("apiStandard") or "openai",
+                "capabilities": dict(model_record.get("capabilities") or {}),
+                "capability_class": model_record.get("capabilityClass") or model_record.get("capability_class") or "",
+            }
+        )
+        supported = bool(control.get("supportsReasoningEffort"))
+        reason = ""
+        if not model_id:
+            reason = "supervisor_model_unbound"
+        elif not supported:
+            reason = "supervisor_model_does_not_support_normalized_reasoning_effort"
+        return {
+            "role": "supervisor",
+            "modelRef": model_ref,
+            "modelId": model_id,
+            "providerId": provider_id,
+            "bindingState": resolution.get("bindingState") or "",
+            "supported": supported,
+            "visible": supported,
+            "defaultLevel": control.get("defaultLevel") or "auto",
+            "levels": list(control.get("levels") or []),
+            "requestStyle": control.get("requestStyle") or "",
+            "reason": reason,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

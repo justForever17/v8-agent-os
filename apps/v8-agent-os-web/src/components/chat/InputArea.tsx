@@ -5,7 +5,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, FileText, AtSign } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, FileText, AtSign, Brain } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -162,6 +162,17 @@ interface InputAreaProps {
     onStop?: () => void;
     selectedAgentName?: string;
     shellClassName?: string;
+    reasoningEffortControl?: ReasoningEffortControl | null;
+}
+
+type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+
+interface ReasoningEffortControl {
+    visible?: boolean;
+    supported?: boolean;
+    levels?: string[];
+    defaultLevel?: string;
+    modelRef?: string;
 }
 
 interface VoiceAudioMessageData {
@@ -227,6 +238,7 @@ export function InputArea({
     onStop,
     selectedAgentName,
     shellClassName,
+    reasoningEffortControl,
 }: InputAreaProps) {
     const t = useT();
     const [commandPresets, setCommandPresets] = React.useState<CommandPresetSummary[]>([]);
@@ -240,6 +252,8 @@ export function InputArea({
     const [selectedSkills, setSelectedSkills] = React.useState<SkillReferenceSummary[]>([]);
     const [selectedSubagentFamilies, setSelectedSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
     const [taskPlanningMode, setTaskPlanningMode] = React.useState(false);
+    const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffortLevel>("auto");
+    const [reasoningEffortOpen, setReasoningEffortOpen] = React.useState(false);
     const [files, setFiles] = React.useState<File[]>([]);
     const [uploadedUrls, setUploadedUrls] = React.useState<string[]>([]);
     const [uploading, setUploading] = React.useState(false);
@@ -261,6 +275,24 @@ export function InputArea({
     // Lightbox state
     const [viewerOpen, setViewerOpen] = React.useState(false);
     const [viewerStartingIndex, setViewerStartingIndex] = React.useState(0);
+    const reasoningEffortLevels = React.useMemo<ReasoningEffortLevel[]>(() => {
+        const rawLevels = Array.isArray(reasoningEffortControl?.levels) ? reasoningEffortControl.levels : [];
+        const allowed = new Set(rawLevels.map((level) => String(level || "").trim().toLowerCase()));
+        const levels: ReasoningEffortLevel[] = ["auto", "low", "medium", "high"].filter((level): level is ReasoningEffortLevel =>
+            level === "auto" || allowed.has(level)
+        );
+        return levels.includes("auto") ? levels : ["auto", ...levels];
+    }, [reasoningEffortControl?.levels]);
+    const reasoningEffortVisible = Boolean(reasoningEffortControl?.visible && reasoningEffortLevels.length > 1);
+    const reasoningEffortLabel = React.useMemo(() => {
+        const labels: Record<ReasoningEffortLevel, string> = {
+            auto: t(lt("自", "Auto")),
+            low: t(lt("低", "Low")),
+            medium: t(lt("中", "Med")),
+            high: t(lt("高", "High")),
+        };
+        return labels[reasoningEffort] || labels.auto;
+    }, [reasoningEffort, t]);
 
     const slashQuery = React.useMemo(() => {
         if (selectedCommandPreset) return "";
@@ -429,6 +461,13 @@ export function InputArea({
             void loadSkills();
         }
     }, [isSkillPickerOpen, loadSkills]);
+
+    React.useEffect(() => {
+        if (!reasoningEffortVisible || !reasoningEffortLevels.includes(reasoningEffort)) {
+            setReasoningEffort("auto");
+            setReasoningEffortOpen(false);
+        }
+    }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
 
     const selectCommandPreset = React.useCallback((preset: CommandPresetSummary) => {
         setSelectedCommandPreset(preset);
@@ -806,6 +845,9 @@ export function InputArea({
                 if (contextMentions.length > 0) {
                     nextData.contextMentions = contextMentions;
                 }
+                if (reasoningEffortVisible) {
+                    nextData.supervisorReasoningEffort = reasoningEffort;
+                }
                 if (pendingTaskPlanningMode) {
                     nextData.plannerMode = "off";
                     nextData.specMode = true;
@@ -1111,6 +1153,55 @@ export function InputArea({
                             <FileText className="mr-1 h-3.5 w-3.5" />
                             Spec
                         </Button>
+                        {reasoningEffortVisible ? (
+                            <div className="relative">
+                                <button
+                                    type="button"
+                                    onClick={() => setReasoningEffortOpen((current) => !current)}
+                                    className={cn(
+                                        "group inline-flex h-[28px] items-center gap-1 rounded-full border px-2 text-[10px] font-semibold tracking-[0.04em] transition-all",
+                                        reasoningEffort === "auto"
+                                            ? "border-zinc-200/70 bg-white/55 text-zinc-500 hover:border-amber-300/60 hover:text-zinc-700 dark:border-zinc-700/60 dark:bg-zinc-900/40 dark:text-zinc-400 dark:hover:border-amber-400/35"
+                                            : "border-amber-300/60 bg-amber-100/70 text-amber-800 shadow-[0_4px_18px_rgba(245,158,11,0.16)] hover:bg-amber-100 dark:border-amber-400/35 dark:bg-amber-500/12 dark:text-amber-100"
+                                    )}
+                                    title={t(lt("临时调节本轮 Supervisor 推理强度", "Temporarily adjust Supervisor reasoning effort for this turn"))}
+                                >
+                                    <Brain className="h-3.5 w-3.5" />
+                                    <span>{t(lt("推", "Think"))}·{reasoningEffortLabel}</span>
+                                </button>
+                                {reasoningEffortOpen ? (
+                                    <div className="absolute bottom-full left-0 z-30 mb-2 flex overflow-hidden rounded-2xl border border-zinc-200/70 bg-white/95 p-1 shadow-[0_14px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-zinc-700/70 dark:bg-zinc-950/95">
+                                        {reasoningEffortLevels.map((level) => {
+                                            const active = level === reasoningEffort;
+                                            const labels: Record<ReasoningEffortLevel, string> = {
+                                                auto: t(lt("自动", "Auto")),
+                                                low: t(lt("低", "Low")),
+                                                medium: t(lt("中", "Medium")),
+                                                high: t(lt("高", "High")),
+                                            };
+                                            return (
+                                                <button
+                                                    key={level}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setReasoningEffort(level);
+                                                        setReasoningEffortOpen(false);
+                                                    }}
+                                                    className={cn(
+                                                        "h-7 rounded-xl px-2.5 text-[11px] font-medium transition",
+                                                        active
+                                                            ? "bg-amber-500 text-white shadow-sm"
+                                                            : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                                                    )}
+                                                >
+                                                    {labels[level]}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+                            </div>
+                        ) : null}
                         <input type="file" multiple className="hidden" ref={fileInputRef} onChange={handleFileSelect} />
                         <Button
                             type="button"

@@ -933,6 +933,7 @@ def execute_supervisor_turn(
     supervisor_base_llm,
     sup_model_name,
     caller_kwargs,
+    supervisor_reasoning_effort="auto",
     llm_factory,
     sanitize_response_tool_calls,
 ):
@@ -1168,8 +1169,12 @@ def execute_supervisor_turn(
         debug_supervisor_messages(prepared_messages)
         invoke_llm = supervisor_base_llm
         invoke_caller_kwargs = caller_kwargs
+        if supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
+            invoke_caller_kwargs = {**invoke_caller_kwargs, "_reasoning_effort": supervisor_reasoning_effort}
         if fast_first_turn_route:
             invoke_caller_kwargs = _fast_first_turn_caller_kwargs(caller_kwargs)
+            if supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
+                invoke_caller_kwargs = {**invoke_caller_kwargs, "_reasoning_effort": supervisor_reasoning_effort}
             try:
                 invoke_llm = llm_factory.create_chat_model(
                     sup_model_name,

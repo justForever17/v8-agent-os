@@ -108,6 +108,10 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
             self.assertIn("creative_media_rank_models", agent.system_prompt)
             self.assertIn("creative_media_sample_approval_packet", agent.system_prompt)
             self.assertIn("creative_media_qa_check", agent.system_prompt)
+            self.assertIn("Reference media is a gate", agent.system_prompt)
+            self.assertIn("Sample approval is a gate", agent.system_prompt)
+            self.assertIn("Complex final delivery must pass QA first", agent.system_prompt)
+            self.assertIn("providerLock", agent.system_prompt)
             self.assertIn("music.generate", agent.system_prompt)
             self.assertIn("model3d.generate", agent.system_prompt)
             self.assertIn("artifact IDs", agent.system_prompt)
@@ -160,10 +164,14 @@ class AgentCapabilitySnapshotTests(unittest.TestCase):
         self.assertIn("artifact IDs", artifact_desc)
         self.assertIn("provider raw JSON", artifact_desc)
         self.assertIn("CreativeMediaProductionPack", pack_desc)
+        self.assertIn("final handoff checklist", pack_desc)
         self.assertIn("selector surface", rank_desc)
         self.assertIn("reference audio/image/video/files", reference_desc)
+        self.assertIn("Missing analysis is a blocker", reference_desc)
         self.assertIn("ask_user", approval_desc)
+        self.assertIn("ProductionPack.sampleApproval", approval_desc)
         self.assertIn("file existence", qa_desc)
+        self.assertIn("complex media delivery", qa_desc)
 
 
 if __name__ == "__main__":

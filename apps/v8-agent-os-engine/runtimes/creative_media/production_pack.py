@@ -159,6 +159,9 @@ def production_pack_markdown(pack: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
+            "### 回流要求",
+            "- subagent 回流必须保留 providerLock、sampleApproval、artifactProof、qa 状态；缺任一项时只能标记为待补齐或降级，不能声称复杂媒体交付完成。",
+            "",
             "下一步：先完成样片审批，再批量生成；最终交付前运行 `creative_media_qa_check`。",
         ]
     )
@@ -257,7 +260,14 @@ def reference_media_markdown(pack: dict[str, Any]) -> str:
         lines.extend(f"- {_bullet(item)}" for item in media)
     missing = _as_list(pack.get("missing"), limit=8)
     if missing:
-        lines.extend(["", "下一步：先用 `vision_media_analyzer` 或文件读取工具补齐：" + ", ".join(str(item) for item in missing)])
+        lines.extend(
+            [
+                "",
+                "下一步：先用 `vision_media_analyzer` 或文件读取工具补齐："
+                + ", ".join(str(item) for item in missing),
+                "参考媒体分析未补齐前，不要进入批量生成。",
+            ]
+        )
     return "\n".join(lines).strip()
 
 
@@ -305,6 +315,7 @@ def sample_approval_markdown(packet: dict[str, Any]) -> str:
     lines.append("- media/artifacts: 上方样片列表")
     lines.append("- selection_mode: " + str(packet.get("selection_mode") or "single"))
     lines.append("- questions: 保留多轮选择题；用户回答后再批量生成")
+    lines.append("- productionPack: 用户决定写回 ProductionPack.sampleApproval，再继续批量生成")
     return "\n".join(lines).strip()
 
 

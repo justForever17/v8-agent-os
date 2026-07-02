@@ -467,11 +467,12 @@ def creative_media_resolutions(detail_level: str = "summary") -> str:
 def creative_media_production_pack(request: dict[str, Any]) -> str:
     """Build or update a clean CreativeMediaProductionPack.
 
-    Use this as the production contract for complex media work. The pack has
+    Use this as the production contract and final handoff checklist for complex media work. The pack has
     stable stages: brief, proposal, script, scene_plan, asset_manifest,
     edit_decisions, render_report, final_review. Keep sample approval,
     provider lock, artifact proof, and QA status here instead of scattering
-    them across raw job outputs.
+    them across raw job outputs. A complex delivery is not complete until the
+    subagent handoff preserves providerLock, sampleApproval, artifactProof, and qa.
     """
     try:
         from runtimes.creative_media.production_pack import build_production_pack, production_pack_markdown
@@ -517,7 +518,8 @@ def creative_media_reference_media_brief(request: dict[str, Any]) -> str:
     Use before generation when the task has reference audio/image/video/files.
     The brief tracks audio transcript, visual style, shot structure, and reusable
     assets. Fill missing analysis by calling vision_media_analyzer or file read
-    tools before batch generation.
+    tools before batch generation. Missing analysis is a blocker for batch work,
+    not a reason to skip the reference.
     """
     try:
         from runtimes.creative_media.production_pack import build_reference_media_pack, reference_media_markdown
@@ -534,7 +536,8 @@ def creative_media_sample_approval_packet(request: dict[str, Any]) -> str:
     Use after producing sample images/video/audio/music/3D previews and before
     batch production. The returned Markdown tells the worker which question,
     media/artifacts, selection mode, and multi-step questions to pass into
-    ask_user; it is not a separate approval system.
+    ask_user; it is not a separate approval system. Write the user decision back
+    to ProductionPack.sampleApproval before continuing.
     """
     try:
         from runtimes.creative_media.production_pack import build_sample_approval_packet, sample_approval_markdown
@@ -551,7 +554,8 @@ def creative_media_qa_check(request: dict[str, Any]) -> str:
     Checks file existence, basic playability metadata when ffprobe is available,
     duration/resolution/audio-stream hints, subtitle file presence, and required
     artifact kinds. Returns Markdown for the agent; raw provider payloads stay
-    out of the visible surface.
+    out of the visible surface. Run this before claiming a complex media delivery
+    is complete.
     """
     try:
         from runtimes.creative_media.production_pack import artifact_qa_markdown, run_artifact_qa

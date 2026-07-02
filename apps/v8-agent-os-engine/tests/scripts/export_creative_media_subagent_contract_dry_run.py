@@ -138,6 +138,15 @@ def build_matrix() -> dict[str, Any]:
             prompt,
             ["CreativeMediaProductionPack", "sample before batch", "provider/model", "Artifact proof"],
         ),
+        "prompt_has_hard_production_gates": _contains_all(
+            prompt,
+            [
+                "Reference media is a gate",
+                "Sample approval is a gate",
+                "Complex final delivery must pass QA first",
+                "providerLock",
+            ],
+        ),
         "prompt_explains_sample_approval_and_qa": _contains_all(
             prompt,
             ["creative_media_sample_approval_packet", "ask_user", "creative_media_qa_check"],
@@ -156,7 +165,14 @@ def build_matrix() -> dict[str, Any]:
         ),
         "tool_descriptions_explain_pack_approval_and_qa": _contains_all(
             joined_tool_descriptions,
-            ["CreativeMediaProductionPack", "ask_user", "file existence", "selector surface"],
+            [
+                "CreativeMediaProductionPack",
+                "final handoff checklist",
+                "ask_user",
+                "ProductionPack.sampleApproval",
+                "file existence",
+                "selector surface",
+            ],
         ),
     }
     return {

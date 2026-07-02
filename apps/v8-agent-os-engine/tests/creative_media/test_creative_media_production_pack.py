@@ -42,6 +42,8 @@ def test_production_pack_has_stable_stage_contract_and_markdown_surface():
     assert "Provider Lock" in markdown
     assert "Sample Approval" in markdown
     assert "Artifact Proof" in markdown
+    assert "回流要求" in markdown
+    assert "providerLock、sampleApproval、artifactProof、qa" in markdown
 
 
 def test_rank_candidates_markdown_is_compact_and_not_raw_json():
@@ -92,6 +94,7 @@ def test_reference_media_pack_surfaces_required_analysis_slots():
     assert "视觉风格：Soft UI" in markdown
     assert "镜头结构：待分析" in markdown
     assert "vision_media_analyzer" in markdown
+    assert "不要进入批量生成" in markdown
     assert "ref-image" in markdown
 
 
@@ -117,6 +120,7 @@ def test_sample_approval_packet_maps_to_ask_user_arguments():
     assert packet["media"][0]["artifactId"] == "sample-a"
     assert "ask_user" in markdown
     assert "media/artifacts" in markdown
+    assert "ProductionPack.sampleApproval" in markdown
     assert not markdown.lstrip().startswith(("{", "["))
 
 

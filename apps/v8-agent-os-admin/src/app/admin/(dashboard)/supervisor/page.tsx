@@ -305,7 +305,7 @@ export default function SupervisorPage() {
                 <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
             </div>;
   }
-  return <div className="p-6 lg:p-8 space-y-8 max-w-7xl mx-auto">
+  return <div className="w-full space-y-8 p-6 lg:p-8">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-4">
                     <div>
@@ -674,4 +674,3 @@ export default function SupervisorPage() {
             </div>
         </div>;
 }
-

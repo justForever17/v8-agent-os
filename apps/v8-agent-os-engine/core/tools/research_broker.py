@@ -2989,7 +2989,8 @@ def research_broker(
 
     Use this when quick web reading is not enough: current provider/API facts, freshness-sensitive questions,
     multi-source comparison, source confidence, conflicting claims, reusable experience packs, or research that
-    benefits from parallel query decomposition. For a single known URL or one small lookup, use `web_broker`.
+    benefits from parallel query decomposition. Use it when another runtime needs a research handoff, or when a
+    user-facing answer needs sources and limitations. For a single known URL or one small lookup, use `web_broker`.
 
     Search experience packs first for repeat topics; run new research only when prior packs are missing, stale,
     low confidence, or conflict with the current need.

@@ -1423,7 +1423,7 @@ export default function SubagentsPage() {
       });
     }
   }, [fetchData, t, toast]);
-  return <div className="mx-auto max-w-[1600px] w-full space-y-8 p-6 lg:p-8">
+  return <div className="w-full space-y-8 p-6 lg:p-8">
             <div className="flex items-center justify-between gap-3">
                 <div className="flex items-start gap-4">
                     <div>

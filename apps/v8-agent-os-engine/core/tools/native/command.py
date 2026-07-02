@@ -467,13 +467,13 @@ def execute_system_command(
     cwd: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Execute a synchronous system command (bash on Linux/Mac, cmd/powershell on Windows) and return its output.
+    """Run one short, non-interactive shell command and return a bounded result.
     
     CRITICAL USAGE RULES:
-    1. This tool blocks execution. If the command asks for user input (e.g., 'y/n', selecting from a menu), IT WILL HANG AND TIMEOUT.
-    2. Therefore, you MUST ALWAYS provide non-interactive flags (like `-y`, `--no-fund`, `--silent`) when using this tool.
-    3. If you CANNOT avoid interaction, or if the command is a long-running server/process, use `run_system_command(mode="auto")` instead.
-    4. Do not use this tool for project scaffolding, dependency installs, dev servers, or CLIs that may prompt; `run_system_command(mode="auto")` will choose the recoverable path.
+    1. Use this for quick checks such as versions, directory listing, git status, grep/rg, or one short script.
+    2. This tool blocks execution. If the command asks for user input, it can hang and time out.
+    3. For installers, scaffolding, dev servers, TUI menus, password prompts, or long-running/watch commands, use `run_system_command(mode="auto")` so V8OS can open an observable terminal session.
+    4. Do not use shell writes as a shortcut for known source/text edits; read the file first and use file tools when possible.
     
     Arguments:
         command (str): The command to execute natively.
@@ -2802,13 +2802,12 @@ def run_system_command(
     cwd: str = "",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Run a command or start an observable terminal session.
+    """Run shell work with V8OS choosing the safest command path.
 
     Use this for shell work the task actually needs: checking the environment, running tests, launching scripts,
-    installing dependencies, starting dev servers, or executing a user-requested command. For a quick command,
-    keep mode=auto and let V8OS decide whether it can finish synchronously. For installers, dev servers, TUI
-    prompts, or password/confirmation flows, mode=auto will start a visible terminal session that can be observed
-    or controlled later.
+    installing dependencies, starting dev servers, or executing a user-requested command. Keep mode=auto by
+    default. V8OS will run quick commands directly, and will open an observable terminal session for installers,
+    scaffolding, dev servers, TUI prompts, password/confirmation flows, and long-running/watch commands.
 
     Do not use this just to read or write a known text/JSON/Markdown/source file. Use `read_native_file` and
     `write_native_file` for file content. If the same command purpose fails twice, stop changing shell wrappers;
@@ -3165,7 +3164,7 @@ def command_session_broker(
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Control an observable terminal session after one is needed.
+    """Manage an observable terminal session after one is needed.
 
     Use this for long-running or interactive terminal work: dev servers, dependency installers, TUI menus,
     password prompts, AI CLIs, or commands already returned with a sessionId/commandId. For ordinary one-shot

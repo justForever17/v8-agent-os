@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Archive, Box, ChevronDown, ChevronRight, Clapperboard, FolderOpen, RefreshCw, Save, Sparkles, Trash2, UserRound } from "lucide-react";
 
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
+import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -429,21 +431,17 @@ export default function CreativeMediaPage() {
     }, [fetchData, t]);
 
     return (
-        <div className="space-y-6">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                    <div className="flex items-center gap-2">
-                        <Sparkles className="h-7 w-7 text-violet-600" />
-                        <h1 className="text-3xl font-bold tracking-tight">
-                            {t("app.admin.dashboard.creativeMedia.title")}
-                        </h1>
-                    </div>
-                </div>
-                <Button variant="outline" onClick={() => void fetchData()} disabled={loading}>
-                    <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                    {t("app.admin.dashboard.creativeMedia.refresh")}
-                </Button>
-            </div>
+        <AdminPageShell className="max-w-none gap-5">
+            <AdminPageHeader
+                title="app.admin.dashboard.creativeMedia.title"
+                description="app.admin.dashboard.creativeMedia.description"
+                actions={(
+                    <Button variant="outline" onClick={() => void fetchData()} disabled={loading}>
+                        <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                        {t("app.admin.dashboard.creativeMedia.refresh")}
+                    </Button>
+                )}
+            />
 
             {error ? (
                 <Card className="border-rose-200 bg-rose-50">
@@ -460,7 +458,7 @@ export default function CreativeMediaPage() {
                     { key: "keyframes", label: t("app.admin.dashboard.creativeMedia.statKeyframesJobs"), value: `${data.keyframes.length} / ${data.jobs.length}`, icon: Clapperboard },
                     { key: "qualityCost", label: t("app.admin.dashboard.creativeMedia.statQualityCost"), value: `${data.qualityJobs.length} / ${data.costEntries.length}`, icon: Clapperboard },
                 ].map((item) => (
-                    <Card key={item.key}>
+                    <Card key={item.key} className="border-slate-200 bg-white/90 shadow-sm">
                         <CardContent className="flex items-center gap-3 p-4">
                             <item.icon className="h-5 w-5 text-muted-foreground" />
                             <div>
@@ -472,7 +470,7 @@ export default function CreativeMediaPage() {
                 ))}
             </div>
 
-            <Card>
+            <Card className="border-slate-200 bg-white/95 shadow-sm">
                 <CardHeader>
                     <CardTitle>
                         <AdminHoverInfo
@@ -579,7 +577,7 @@ export default function CreativeMediaPage() {
                 </CardContent>
             </Card>
 
-            <Card>
+            <Card className="border-slate-200 bg-white/95 shadow-sm">
                 <CardHeader>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
@@ -599,105 +597,107 @@ export default function CreativeMediaPage() {
                     </div>
                 </CardHeader>
                 {modelPreferencesOpen ? <CardContent>
-                    <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableEnabled")}</TableHead>
-                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableMedia")}</TableHead>
-                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableOperation")}</TableHead>
-                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableModel")}</TableHead>
-                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableFallback")}</TableHead>
-                                <TableHead>{t("app.admin.dashboard.creativeMedia.tablePriority")}</TableHead>
-                                <TableHead>{t("app.admin.dashboard.creativeMedia.tableAvailable")}</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {operationRows.length ? operationRows.map((row) => {
-                                const rowCandidates = connectedModelOptions
-                                    .filter((candidate) => candidate.operationKind === row.operationKind);
-                                const options = rowCandidates
-                                    .map((candidate) => asModelSelectOption(candidate, candidateWarningReason(t, candidate)));
-                                const rowWarning = rowCandidates.find((candidate) => candidate.briefOnly || candidate.available === false);
-                                const rowWarningReason = rowWarning ? candidateWarningReason(t, rowWarning) : "";
-                                const selected = row.selectedModelRefs || [];
-                                return (
-                                    <TableRow key={row.operationKind}>
-                                        <TableCell>
-                                            <Switch
-                                                checked={row.enabled !== false && selected.length > 0}
-                                                disabled={options.length === 0}
-                                                onCheckedChange={(checked) => updateOperationRow(row.operationKind, { enabled: checked })}
-                                            />
-                                        </TableCell>
-                                        <TableCell>
-                                            <Badge variant="outline">{modalityLabel(t, row.modality)}</Badge>
-                                        </TableCell>
-                                        <TableCell className="font-mono text-xs">{text(row.operationKind)}</TableCell>
-                                        <TableCell className="min-w-72">
-                                            {options.length ? (
-                                                <div>
-                                                    <ModelSelect
-                                                        models={options}
-                                                        value={selected[0] || ""}
-                                                        emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
-                                                        placeholder={t("app.admin.dashboard.creativeMedia.selectPrimaryModel")}
-                                                        onValueChange={(value) => setOperationModelRef(row.operationKind, 0, value)}
-                                                        showCompatibilityHint={false}
-                                                    />
-                                                </div>
-                                            ) : (
-                                                <div className="space-y-2">
-                                                    <div className="text-sm text-muted-foreground">
-                                                        {t("app.admin.dashboard.creativeMedia.noConnectedModels")}
+                    <div className="overflow-x-auto">
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableEnabled")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableMedia")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableOperation")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableModel")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableFallback")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tablePriority")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableAvailable")}</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {operationRows.length ? operationRows.map((row) => {
+                                    const rowCandidates = connectedModelOptions
+                                        .filter((candidate) => candidate.operationKind === row.operationKind);
+                                    const options = rowCandidates
+                                        .map((candidate) => asModelSelectOption(candidate, candidateWarningReason(t, candidate)));
+                                    const rowWarning = rowCandidates.find((candidate) => candidate.briefOnly || candidate.available === false);
+                                    const rowWarningReason = rowWarning ? candidateWarningReason(t, rowWarning) : "";
+                                    const selected = row.selectedModelRefs || [];
+                                    return (
+                                        <TableRow key={row.operationKind}>
+                                            <TableCell>
+                                                <Switch
+                                                    checked={row.enabled !== false && selected.length > 0}
+                                                    disabled={options.length === 0}
+                                                    onCheckedChange={(checked) => updateOperationRow(row.operationKind, { enabled: checked })}
+                                                />
+                                            </TableCell>
+                                            <TableCell>
+                                                <Badge variant="outline">{modalityLabel(t, row.modality)}</Badge>
+                                            </TableCell>
+                                            <TableCell className="font-mono text-xs">{text(row.operationKind)}</TableCell>
+                                            <TableCell className="min-w-72">
+                                                {options.length ? (
+                                                    <div>
+                                                        <ModelSelect
+                                                            models={options}
+                                                            value={selected[0] || ""}
+                                                            emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
+                                                            placeholder={t("app.admin.dashboard.creativeMedia.selectPrimaryModel")}
+                                                            onValueChange={(value) => setOperationModelRef(row.operationKind, 0, value)}
+                                                            showCompatibilityHint={false}
+                                                        />
                                                     </div>
-                                                    <a className="text-sm font-medium text-primary hover:underline" href="/admin/model-hub">
-                                                        {t("app.admin.dashboard.creativeMedia.openModelHub")}
-                                                    </a>
+                                                ) : (
+                                                    <div className="flex min-w-72 flex-wrap items-center gap-2 text-sm">
+                                                        <span className="text-muted-foreground">
+                                                            {t("app.admin.dashboard.creativeMedia.noConnectedModels")}
+                                                        </span>
+                                                        <a className="font-medium text-primary hover:underline" href="/admin/model-hub">
+                                                            {t("app.admin.dashboard.creativeMedia.openModelHub")}
+                                                        </a>
+                                                    </div>
+                                                )}
+                                            </TableCell>
+                                            <TableCell className="min-w-80">
+                                                <div className="grid gap-2 md:grid-cols-2">
+                                                    {[1, 2].map((index) => (
+                                                        <ModelSelect
+                                                            key={`${row.operationKind}-${index}`}
+                                                            models={options}
+                                                            value={selected[index] || ""}
+                                                            emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
+                                                            placeholder={index === 1 ? t("app.admin.dashboard.creativeMedia.selectFallbackOne") : t("app.admin.dashboard.creativeMedia.selectFallbackTwo")}
+                                                            onValueChange={(value) => setOperationModelRef(row.operationKind, index, value)}
+                                                            showCompatibilityHint={false}
+                                                        />
+                                                    ))}
                                                 </div>
-                                            )}
-                                        </TableCell>
-                                        <TableCell className="min-w-80">
-                                            <div className="grid gap-2 md:grid-cols-2">
-                                                {[1, 2].map((index) => (
-                                                    <ModelSelect
-                                                        key={`${row.operationKind}-${index}`}
-                                                        models={options}
-                                                        value={selected[index] || ""}
-                                                        emptyLabel={t("app.admin.dashboard.creativeMedia.selectNone")}
-                                                        placeholder={index === 1 ? t("app.admin.dashboard.creativeMedia.selectFallbackOne") : t("app.admin.dashboard.creativeMedia.selectFallbackTwo")}
-                                                        onValueChange={(value) => setOperationModelRef(row.operationKind, index, value)}
-                                                        showCompatibilityHint={false}
-                                                    />
-                                                ))}
-                                            </div>
-                                        </TableCell>
-                                        <TableCell>
-                                            <Input
-                                                className="w-24"
-                                                type="number"
-                                                min={1}
-                                                max={999}
-                                                value={Number(row.priority || 100)}
-                                                onChange={(event) => updateOperationRow(row.operationKind, { priority: Number(event.target.value || 100) })}
-                                            />
-                                        </TableCell>
-                                        <TableCell>
-                                            <div className="flex items-center gap-2">
-                                                <Badge variant={options.length ? "default" : "secondary"}>
-                                                    {options.length ? `${options.length}` : t("app.admin.dashboard.creativeMedia.unavailable")}
-                                                </Badge>
-                                                {rowWarningReason ? (
-                                                    <span title={rowWarningReason} aria-label={rowWarningReason} className="shrink-0">
-                                                        <AlertTriangle className="h-4 w-4 text-rose-500" />
-                                                    </span>
-                                                ) : null}
-                                            </div>
-                                        </TableCell>
-                                    </TableRow>
-                                );
-                            }) : <EmptyRow colSpan={7} label={t("app.admin.dashboard.creativeMedia.emptyModelPreferences")} />}
-                        </TableBody>
-                    </Table>
+                                            </TableCell>
+                                            <TableCell>
+                                                <Input
+                                                    className="w-24"
+                                                    type="number"
+                                                    min={1}
+                                                    max={999}
+                                                    value={Number(row.priority || 100)}
+                                                    onChange={(event) => updateOperationRow(row.operationKind, { priority: Number(event.target.value || 100) })}
+                                                />
+                                            </TableCell>
+                                            <TableCell>
+                                                <div className="flex items-center gap-2">
+                                                    <Badge variant={options.length ? "default" : "secondary"}>
+                                                        {options.length ? `${options.length}` : t("app.admin.dashboard.creativeMedia.unavailable")}
+                                                    </Badge>
+                                                    {rowWarningReason ? (
+                                                        <span title={rowWarningReason} aria-label={rowWarningReason} className="shrink-0">
+                                                            <AlertTriangle className="h-4 w-4 text-rose-500" />
+                                                        </span>
+                                                    ) : null}
+                                                </div>
+                                            </TableCell>
+                                        </TableRow>
+                                    );
+                                }) : <EmptyRow colSpan={7} label={t("app.admin.dashboard.creativeMedia.emptyModelPreferences")} />}
+                            </TableBody>
+                        </Table>
+                    </div>
                     <details className="mt-4 rounded-lg border bg-background p-3">
                         <summary className="cursor-pointer text-sm font-medium">
                             {t("app.admin.dashboard.creativeMedia.diagnosticCandidatesTitle")}
@@ -1040,6 +1040,6 @@ export default function CreativeMediaPage() {
                 </Card>
             </div>
             </>)}
-        </div>
+        </AdminPageShell>
     );
 }

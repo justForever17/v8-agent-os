@@ -79,8 +79,8 @@ export const PRODUCT_VOCABULARY = {
     },
     creativeMedia: {
         canonicalId: "creative_media",
-        zh: "多媒体创作",
-        en: "Creative Media",
+        zh: "多媒体生成",
+        en: "Media Generation",
         descriptionZh: "图片、视频、语音、音乐和 3D 素材生成。",
         descriptionEn: "Image, video, voice, music, and 3D asset generation.",
     },

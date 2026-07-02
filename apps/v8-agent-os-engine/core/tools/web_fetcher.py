@@ -3999,12 +3999,12 @@ def web_broker(
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
-    """Public-web quick tool for one URL or one query.
+    """Quick public-web helper for one URL, one small lookup, or one page extraction.
 
-    Use `web_broker` to quickly read a page, search a small question, or extract page structure. It is the
+    Use `web_broker` to quickly read a page, search a narrow question, or extract page structure. It is the
     fast path for "look this up" or "read this URL", not the evidence-building path. For multi-source facts,
-    fresh provider/API details, source ranking, conflicting claims, or reusable research results, request
-    深度调研 and use `research_broker`.
+    fresh provider/API details, source ranking, conflicting claims, reusable research results, or decisions
+    that need citations, request 深度调研 and use `research_broker` instead of chaining many quick web calls.
 
     mode:
     - fetch: smart unified entrypoint; URLs auto-route to read, non-URLs auto-route to search

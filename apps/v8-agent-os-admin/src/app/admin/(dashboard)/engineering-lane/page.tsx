@@ -618,7 +618,7 @@ export default function EngineeringLanePage() {
   const healthTone = !config.enabled ? "slate" : selectedRisk === "outside_write_set" || selectedRisk === "missing_write_set" ? "amber" : "emerald";
 
   return (
-    <AdminPageShell>
+    <AdminPageShell className="max-w-none">
             <AdminPageHeader
         title="app.admin.dashboard.engineeringLane.title"
         description="app.admin.dashboard.engineeringLane.description"

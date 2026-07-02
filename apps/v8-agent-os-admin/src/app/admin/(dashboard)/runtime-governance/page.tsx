@@ -7,7 +7,7 @@ import { RuntimeGovernanceWorkbench } from "@/components/runtime/RuntimeGovernan
 
 export default function RuntimeGovernancePage() {
     return (
-        <AdminPageShell>
+        <AdminPageShell className="max-w-none">
             <AdminPageHeader
                 title="app.admin.dashboard.runtime.governance.page.ke6fff179"
                 description="app.admin.dashboard.runtime.governance.page.kdfdc5c07"

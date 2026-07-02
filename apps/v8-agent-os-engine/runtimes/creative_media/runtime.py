@@ -1263,6 +1263,14 @@ class CreativeMediaRuntime:
         items = list(dict(store.get("workOrders") or {}).values())
         if status:
             items = [item for item in items if str(item.get("status") or "") == status]
+        else:
+            items = [
+                item
+                for item in items
+                if not item.get("archivedAt")
+                and not item.get("deletedAt")
+                and str(item.get("status") or "").lower() not in {"archived", "deleted"}
+            ]
         if requesting_runtime:
             items = [
                 item
@@ -1271,6 +1279,118 @@ class CreativeMediaRuntime:
             ]
         items.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
         return items
+
+    def get_work_order(self, work_order_id: str) -> dict[str, Any] | None:
+        store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
+        item = dict((store.get("workOrders") or {}).get(str(work_order_id)) or {})
+        return item or None
+
+    def archive_work_order(self, work_order_id: str) -> dict[str, Any]:
+        return self._update_work_order_lifecycle(work_order_id, action="archive")
+
+    def delete_work_order(self, work_order_id: str) -> dict[str, Any]:
+        return self._update_work_order_lifecycle(work_order_id, action="delete")
+
+    def _work_order_recipe_ids(self, work_order: dict[str, Any]) -> list[str]:
+        recipe_refs = _list_of_strings(work_order.get("recipeRefs"))
+        recipe_ids = _list_of_strings(work_order.get("recipeIds"))
+        return _list_of_strings(
+            [
+                work_order.get("recipeId"),
+                *recipe_refs,
+                *recipe_ids,
+            ]
+        )
+
+    def _update_work_order_lifecycle(self, work_order_id: str, *, action: str) -> dict[str, Any]:
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"archive", "delete"}:
+            raise ValueError("creative media work order lifecycle action must be archive or delete")
+        store = self._read_versioned_store(WORK_ORDER_STORE_FILE, "workOrders")
+        values = dict(store.get("workOrders") or {})
+        work_order = dict(values.get(str(work_order_id)) or {})
+        if not work_order:
+            raise ValueError("creative media work order not found")
+        now = utc_now_iso()
+        if normalized_action == "archive":
+            work_order["archivedAt"] = work_order.get("archivedAt") or now
+            work_order["status"] = "archived"
+        else:
+            work_order["deletedAt"] = work_order.get("deletedAt") or now
+            work_order["status"] = "deleted"
+        work_order["updatedAt"] = now
+        recipe_ids = self._work_order_recipe_ids(work_order)
+        related_jobs = self._mark_related_jobs_lifecycle(
+            recipe_ids=recipe_ids,
+            work_order_ids=[str(work_order_id)],
+            action=normalized_action,
+        )
+        related_recipes = creative_recipe_compiler.mark_recipe_lifecycle(
+            recipe_ids,
+            action=normalized_action,
+            reason=f"work_order:{work_order_id}",
+        )
+        related_assets = creative_recipe_compiler.mark_assets_lifecycle(
+            recipe_ids=recipe_ids,
+            work_order_ids=[str(work_order_id)],
+            action=normalized_action,
+            reason=f"work_order:{work_order_id}",
+        )
+        work_order["lifecycleScope"] = {
+            "action": normalized_action,
+            "recipeIds": recipe_ids,
+            "jobIds": [str(item.get("jobId") or "") for item in related_jobs if item.get("jobId")],
+            "assetIds": [str(item.get("assetId") or "") for item in related_assets if item.get("assetId")],
+            "recipeCount": len(related_recipes),
+            "assetCount": len(related_assets),
+            "jobCount": len(related_jobs),
+        }
+        values[str(work_order_id)] = work_order
+        self._write_versioned_store(WORK_ORDER_STORE_FILE, "workOrders", values)
+        return dict(work_order)
+
+    def _mark_related_jobs_lifecycle(
+        self,
+        *,
+        recipe_ids: Iterable[str],
+        work_order_ids: Iterable[str],
+        action: str,
+    ) -> list[dict[str, Any]]:
+        recipe_id_set = {str(item).strip() for item in recipe_ids if str(item).strip()}
+        work_order_id_set = {str(item).strip() for item in work_order_ids if str(item).strip()}
+        if not recipe_id_set and not work_order_id_set:
+            return []
+        payload = self._read_jobs()
+        jobs = dict(payload.get("jobs") or {})
+        now = utc_now_iso()
+        changed: list[dict[str, Any]] = []
+        for job_id, raw_job in jobs.items():
+            job = dict(raw_job or {})
+            request = dict(job.get("request") or {})
+            job_recipe_ids = {
+                str(job.get("recipeId") or "").strip(),
+                str(request.get("recipeId") or request.get("recipe_id") or "").strip(),
+            }
+            job_work_order_ids = {
+                str(job.get("workOrderId") or "").strip(),
+                str(request.get("workOrderId") or request.get("work_order_id") or "").strip(),
+            }
+            if not (recipe_id_set.intersection(job_recipe_ids) or work_order_id_set.intersection(job_work_order_ids)):
+                continue
+            if action == "archive":
+                job["archivedAt"] = job.get("archivedAt") or now
+                if str(job.get("status") or "").lower() not in {"succeeded", "failed", "cancelled"}:
+                    job["status"] = "archived"
+            else:
+                job["deletedAt"] = job.get("deletedAt") or now
+                job["status"] = "deleted"
+            job["updatedAt"] = now
+            jobs[str(job_id)] = job
+            changed.append(dict(job))
+        if changed:
+            payload["jobs"] = jobs
+            self._write_jobs(payload)
+        return changed
 
     def compile_work_order(self, request: dict[str, Any]) -> dict[str, Any]:
         payload = dict(request or {})

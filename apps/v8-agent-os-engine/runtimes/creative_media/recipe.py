@@ -463,6 +463,41 @@ class CreativeRecipeCompiler:
         result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return result
 
+    def mark_recipe_lifecycle(
+        self,
+        recipe_ids: Iterable[str],
+        *,
+        action: str,
+        reason: str = "",
+    ) -> list[dict[str, Any]]:
+        normalized_action = _clean_str(action).lower()
+        if normalized_action not in {"archive", "delete"}:
+            raise ValueError("creative media recipe lifecycle action must be archive or delete")
+        ids = {_clean_str(item) for item in recipe_ids if _clean_str(item)}
+        if not ids:
+            return []
+        store = _read_store(RECIPE_STORE_FILE, "recipes")
+        recipes = dict(store.get("recipes") or {})
+        now = utc_now_iso()
+        changed: list[dict[str, Any]] = []
+        for recipe_id in ids:
+            recipe = dict(recipes.get(recipe_id) or {})
+            if not recipe:
+                continue
+            if normalized_action == "archive":
+                recipe["archivedAt"] = recipe.get("archivedAt") or now
+                recipe["status"] = "archived"
+            else:
+                recipe["deletedAt"] = recipe.get("deletedAt") or now
+                recipe["status"] = "deleted"
+            recipe["lifecycleReason"] = reason or normalized_action
+            recipe["updatedAt"] = now
+            recipes[recipe_id] = recipe
+            changed.append(deepcopy(recipe))
+        if changed:
+            _write_store(RECIPE_STORE_FILE, "recipes", recipes)
+        return changed
+
     def create_character_bible(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = dict(payload or {})
         bible_id = (
@@ -610,6 +645,55 @@ class CreativeRecipeCompiler:
             result.append(dict(asset))
         result.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return result
+
+    def mark_assets_lifecycle(
+        self,
+        *,
+        recipe_ids: Iterable[str] = (),
+        work_order_ids: Iterable[str] = (),
+        action: str,
+        reason: str = "",
+    ) -> list[dict[str, Any]]:
+        normalized_action = _clean_str(action).lower()
+        if normalized_action not in {"archive", "delete"}:
+            raise ValueError("creative media asset lifecycle action must be archive or delete")
+        recipe_id_set = {_clean_str(item) for item in recipe_ids if _clean_str(item)}
+        work_order_id_set = {_clean_str(item) for item in work_order_ids if _clean_str(item)}
+        if not recipe_id_set and not work_order_id_set:
+            return []
+        ledger = _read_store(ASSET_LEDGER_FILE, "assets")
+        assets = dict(ledger.get("assets") or {})
+        now = utc_now_iso()
+        changed: list[dict[str, Any]] = []
+        for asset_id, raw_asset in assets.items():
+            asset = dict(raw_asset or {})
+            lineage = dict(asset.get("lineage") or {})
+            source_refs = {_clean_str(item) for item in _list_of_strings(asset.get("sourceRefs")) if _clean_str(item)}
+            asset_recipe_ids = {
+                _clean_str(lineage.get("recipeId")),
+                _clean_str(asset.get("recipeId")),
+                *source_refs,
+            }
+            asset_work_order_ids = {
+                _clean_str(lineage.get("workOrderId")),
+                _clean_str(asset.get("workOrderId")),
+                *source_refs,
+            }
+            if not (recipe_id_set.intersection(asset_recipe_ids) or work_order_id_set.intersection(asset_work_order_ids)):
+                continue
+            if normalized_action == "archive":
+                asset["archivedAt"] = asset.get("archivedAt") or now
+                asset["status"] = "archived"
+            else:
+                asset["deletedAt"] = asset.get("deletedAt") or now
+                asset["status"] = "deleted"
+            asset["lifecycleReason"] = reason or normalized_action
+            asset["updatedAt"] = now
+            assets[str(asset_id)] = asset
+            changed.append(deepcopy(asset))
+        if changed:
+            _write_store(ASSET_LEDGER_FILE, "assets", assets)
+        return changed
 
     def _lineage_from_request(self, request: dict[str, Any], *, previous: Any = None) -> dict[str, Any]:
         lineage = {**dict(previous or {}), **dict(request.get("lineage") or {})}

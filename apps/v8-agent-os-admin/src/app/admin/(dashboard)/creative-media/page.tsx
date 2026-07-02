@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Box, ChevronDown, ChevronRight, Clapperboard, RefreshCw, Save, Sparkles, UserRound } from "lucide-react";
+import { AlertTriangle, Archive, Box, ChevronDown, ChevronRight, Clapperboard, FolderOpen, RefreshCw, Save, Sparkles, Trash2, UserRound } from "lucide-react";
 
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
@@ -82,6 +82,44 @@ const EMPTY_DATA: CreativeMediaData = {
     safetyEvents: [],
 };
 
+const DEFAULT_OPERATION_ROWS: CreativeOperationRow[] = [
+    { operationKind: "image.edit", modality: "image", priority: 100 },
+    { operationKind: "image.generate", modality: "image", priority: 100 },
+    { operationKind: "model3d.generate", modality: "model3d", priority: 100 },
+    { operationKind: "music.brief", modality: "music", priority: 5 },
+    { operationKind: "music.cover", modality: "music", priority: 100 },
+    { operationKind: "music.generate", modality: "music", priority: 100 },
+    { operationKind: "video.action_transfer", modality: "video", priority: 100 },
+    { operationKind: "video.avatar", modality: "video", priority: 100 },
+    { operationKind: "video.first_last_frame", modality: "video", priority: 100 },
+    { operationKind: "video.image_to_video", modality: "video", priority: 100 },
+    { operationKind: "video.lipsync", modality: "video", priority: 100 },
+    { operationKind: "video.reference_to_video", modality: "video", priority: 100 },
+    { operationKind: "video.replacement", modality: "video", priority: 100 },
+    { operationKind: "video.style_repaint", modality: "video", priority: 100 },
+    { operationKind: "video.text_to_video", modality: "video", priority: 100 },
+    { operationKind: "video.video_edit", modality: "video", priority: 100 },
+    { operationKind: "voice.tts", modality: "voice", priority: 100 },
+];
+
+function mergeOperationRows(rows?: CreativeOperationRow[]) {
+    const byOperation = new Map<string, CreativeOperationRow>();
+    for (const row of DEFAULT_OPERATION_ROWS) {
+        byOperation.set(row.operationKind, { ...row, selectedModelRefs: [] });
+    }
+    for (const row of rows || []) {
+        const key = String(row.operationKind || "").trim();
+        if (!key) continue;
+        byOperation.set(key, {
+            ...(byOperation.get(key) || {}),
+            ...row,
+            modality: row.modality || byOperation.get(key)?.modality || "image",
+            selectedModelRefs: Array.isArray(row.selectedModelRefs) ? row.selectedModelRefs : [],
+        });
+    }
+    return Array.from(byOperation.values());
+}
+
 function text(value: unknown, fallback = "-") {
     const normalized = String(value || "").trim();
     return normalized || fallback;
@@ -108,6 +146,8 @@ function modalityLabel(t: ReturnType<typeof useT>, modality: string) {
 function creativeMediaStatusLabel(t: ReturnType<typeof useT>, status: unknown) {
     const normalized = String(status || "").toLowerCase();
     const keyMap: Record<string, string> = {
+        archived: "app.admin.dashboard.creativeMedia.status.archived",
+        deleted: "app.admin.dashboard.creativeMedia.status.deleted",
         rendering: "app.admin.dashboard.creativeMedia.status.rendering",
         completed: "app.admin.dashboard.creativeMedia.status.completed",
         failed: "app.admin.dashboard.creativeMedia.status.failed",
@@ -118,6 +158,71 @@ function creativeMediaStatusLabel(t: ReturnType<typeof useT>, status: unknown) {
         waiting_approval: "app.admin.dashboard.creativeMedia.status.waiting_approval",
     };
     return keyMap[normalized] ? t(keyMap[normalized]) : text(status);
+}
+
+function listOfStrings(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value.map((item) => text(item, "")).filter(Boolean);
+    }
+    const normalized = text(value, "");
+    return normalized ? [normalized] : [];
+}
+
+function nestedText(value: unknown, key: string) {
+    if (!value || typeof value !== "object") return "";
+    return text((value as Record<string, unknown>)[key], "");
+}
+
+function productionTitle(workOrder: Record<string, unknown>) {
+    return (
+        text(workOrder.title, "") ||
+        text(workOrder.brief, "") ||
+        text(workOrder.intent, "") ||
+        text(workOrder.workOrderKind, "") ||
+        text(workOrder.workOrderId)
+    );
+}
+
+function productionWorkspace(workOrder: Record<string, unknown>) {
+    return (
+        text(workOrder.workspacePath, "") ||
+        text(workOrder.workspace, "") ||
+        text(workOrder.workspaceId, "") ||
+        text(workOrder.projectId, "")
+    );
+}
+
+function productionRecipeIds(workOrder: Record<string, unknown>) {
+    return listOfStrings([
+        text(workOrder.recipeId, ""),
+        ...listOfStrings(workOrder.recipeIds),
+        ...listOfStrings(workOrder.recipeRefs),
+    ].filter(Boolean));
+}
+
+function sourceRefs(record: Record<string, unknown>) {
+    return new Set([
+        ...listOfStrings(record.sourceRefs),
+        text(record.recipeId, ""),
+        text(record.workOrderId, ""),
+        nestedText(record.lineage, "recipeId"),
+        nestedText(record.lineage, "workOrderId"),
+        nestedText(record.request, "recipeId"),
+        nestedText(record.request, "workOrderId"),
+    ].filter(Boolean));
+}
+
+function relatedCount(records: Array<Record<string, unknown>>, workOrder: Record<string, unknown>, extraKeys: string[] = []) {
+    const workOrderId = text(workOrder.workOrderId, "");
+    const recipeIds = new Set(productionRecipeIds(workOrder));
+    return records.filter((record) => {
+        const refs = sourceRefs(record);
+        if (workOrderId && refs.has(workOrderId)) return true;
+        for (const recipeId of recipeIds) {
+            if (refs.has(recipeId)) return true;
+        }
+        return extraKeys.some((key) => workOrderId && text(record[key], "") === workOrderId);
+    }).length;
 }
 
 function candidateWarningReason(t: ReturnType<typeof useT>, candidate: CreativeModelCandidate) {
@@ -169,7 +274,8 @@ export default function CreativeMediaPage() {
     const [loading, setLoading] = useState(true);
     const [savingModels, setSavingModels] = useState(false);
     const [error, setError] = useState("");
-    const [modelPreferencesOpen, setModelPreferencesOpen] = useState(true);
+    const [modelPreferencesOpen, setModelPreferencesOpen] = useState(false);
+    const [workingWorkOrderId, setWorkingWorkOrderId] = useState("");
 
     const fetchData = useCallback(async () => {
         setLoading(true);
@@ -229,13 +335,16 @@ export default function CreativeMediaPage() {
     const musicRecipes = data.recipes.filter((item) => text(item.modality, "") === "music");
     const connectedModelOptions = data.modelPreferences?.connectedOptions || [];
     const diagnosticCandidates = data.modelPreferences?.diagnosticCandidates || [];
-    const operationRows = data.modelPreferences?.operationRows || [];
+    const operationRows = useMemo(
+        () => mergeOperationRows(data.modelPreferences?.operationRows),
+        [data.modelPreferences?.operationRows],
+    );
     const updateOperationRow = useCallback((operationKind: string, patch: Partial<CreativeOperationRow>) => {
         setData((current) => ({
             ...current,
             modelPreferences: {
                 ...(current.modelPreferences || { candidates: [] }),
-                operationRows: (current.modelPreferences?.operationRows || []).map((row) => (
+                operationRows: mergeOperationRows(current.modelPreferences?.operationRows).map((row) => (
                     row.operationKind === operationKind ? { ...row, ...patch } : row
                 )),
             },
@@ -246,7 +355,7 @@ export default function CreativeMediaPage() {
             ...current,
             modelPreferences: {
                 ...(current.modelPreferences || { candidates: [] }),
-                operationRows: (current.modelPreferences?.operationRows || []).map((row) => {
+                operationRows: mergeOperationRows(current.modelPreferences?.operationRows).map((row) => {
                     if (row.operationKind !== operationKind) return row;
                     const selected = [...(row.selectedModelRefs || [])];
                     selected[index] = modelRef;
@@ -264,7 +373,7 @@ export default function CreativeMediaPage() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    selections: (data.modelPreferences?.operationRows || []).map((row) => ({
+                    selections: operationRows.map((row) => ({
                         operationKind: row.operationKind,
                         modelRefs: (row.selectedModelRefs || []).filter(Boolean).slice(0, 3),
                         enabled: row.enabled !== false && (row.selectedModelRefs || []).filter(Boolean).length > 0,
@@ -293,7 +402,31 @@ export default function CreativeMediaPage() {
         } finally {
             setSavingModels(false);
         }
-    }, [data.modelPreferences?.operationRows]);
+    }, [operationRows]);
+
+    const mutateWorkOrder = useCallback(async (workOrderId: string, action: "archive" | "delete") => {
+        if (!workOrderId) return;
+        const confirmKey = action === "archive"
+            ? "app.admin.dashboard.creativeMedia.archiveWorkOrderConfirm"
+            : "app.admin.dashboard.creativeMedia.deleteWorkOrderConfirm";
+        if (!window.confirm(t(confirmKey))) return;
+        setWorkingWorkOrderId(workOrderId);
+        setError("");
+        try {
+            const response = await fetch(`/api/creative-media/work-orders/${encodeURIComponent(workOrderId)}/${action}`, {
+                method: "POST",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(String(payload.detail || payload.error || response.statusText));
+            }
+            await fetchData();
+        } catch (err) {
+            setError(`${t("app.admin.dashboard.creativeMedia.workOrderActionFailed")}: ${String(err)}`);
+        } finally {
+            setWorkingWorkOrderId("");
+        }
+    }, [fetchData, t]);
 
     return (
         <div className="space-y-6">
@@ -355,54 +488,93 @@ export default function CreativeMediaPage() {
                     </CardTitle>
                     <CardDescription>{t("app.admin.dashboard.creativeMedia.workflowsDescription")}</CardDescription>
                 </CardHeader>
-                <CardContent className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-                    <div className="grid gap-3 md:grid-cols-2">
-                        <div className="rounded-xl border bg-background p-4">
-                            <div className="flex items-center justify-between gap-2">
-                                <div className="font-semibold">{t("app.admin.dashboard.creativeMedia.simpleAssetTitle")}</div>
-                                <Badge variant="secondary">simple_asset</Badge>
-                            </div>
-                            <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                                {t("app.admin.dashboard.creativeMedia.simpleAssetDescription")}
-                            </p>
+                <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <div className="rounded-lg border bg-muted/20 p-3">
+                            <div className="text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.productionStepPlanTitle")}</div>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.creativeMedia.productionStepPlanDescription")}</p>
                         </div>
-                        <div className="rounded-xl border bg-background p-4">
-                            <div className="flex items-center justify-between gap-2">
-                                <div className="font-semibold">{t("app.admin.dashboard.creativeMedia.storyboardVideoTitle")}</div>
-                                <Badge variant="secondary">storyboard_to_video</Badge>
-                            </div>
-                            <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                                {t("app.admin.dashboard.creativeMedia.storyboardVideoDescription")}
-                            </p>
+                        <div className="rounded-lg border bg-muted/20 p-3">
+                            <div className="text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.productionStepGenerateTitle")}</div>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.creativeMedia.productionStepGenerateDescription")}</p>
+                        </div>
+                        <div className="rounded-lg border bg-muted/20 p-3">
+                            <div className="text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.productionStepReviewTitle")}</div>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.creativeMedia.productionStepReviewDescription")}</p>
                         </div>
                     </div>
-                    <div className="rounded-xl border">
-                        <div className="border-b px-4 py-3 text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.recentWorkOrdersTitle")}</div>
-                        <div className="max-h-64 overflow-auto">
-                            <Table>
-                                <TableHeader>
-                                    <TableRow>
-                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableType")}</TableHead>
-                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableSource")}</TableHead>
-                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableStatus")}</TableHead>
-                                        <TableHead>{t("app.admin.dashboard.creativeMedia.tableUpdated")}</TableHead>
-                                    </TableRow>
-                                </TableHeader>
-                                <TableBody>
-                                    {data.workOrders.length ? data.workOrders.slice(0, 8).map((workOrder) => (
-                                        <TableRow key={text(workOrder.workOrderId)}>
-                                            <TableCell>
-                                                <div className="font-medium">{text(workOrder.workOrderKind)}</div>
-                                                <div className="max-w-56 truncate text-xs text-muted-foreground">{text(workOrder.brief, "")}</div>
-                                            </TableCell>
-                                            <TableCell>{text(workOrder.requestingRuntime, t("app.admin.dashboard.creativeMedia.manualSource"))}</TableCell>
-                                            <TableCell><Badge variant="outline">{creativeMediaStatusLabel(t, workOrder.status)}</Badge></TableCell>
-                                            <TableCell className="text-xs text-muted-foreground">{text(workOrder.updatedAt || workOrder.createdAt)}</TableCell>
-                                        </TableRow>
-                                    )) : <EmptyRow colSpan={4} label={t("app.admin.dashboard.creativeMedia.emptyWorkOrders")} />}
-                                </TableBody>
-                            </Table>
-                        </div>
+                    <div>
+                        <div className="mb-3 text-sm font-semibold">{t("app.admin.dashboard.creativeMedia.recentWorkOrdersTitle")}</div>
+                        {data.workOrders.length ? (
+                            <div className="grid gap-3 xl:grid-cols-2">
+                                {data.workOrders.slice(0, 8).map((workOrder) => {
+                                    const workOrderId = text(workOrder.workOrderId, "");
+                                    const workspace = productionWorkspace(workOrder);
+                                    const recipeIds = productionRecipeIds(workOrder);
+                                    const assetCount = relatedCount(data.assets, workOrder);
+                                    const jobCount = relatedCount(data.jobs, workOrder);
+                                    const disabled = workingWorkOrderId === workOrderId;
+                                    return (
+                                        <div key={workOrderId || productionTitle(workOrder)} className="rounded-xl border bg-background p-4">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <Badge variant="outline">{creativeMediaStatusLabel(t, workOrder.status)}</Badge>
+                                                        <Badge variant="secondary">{text(workOrder.workOrderKind, text(workOrder.intent))}</Badge>
+                                                    </div>
+                                                    <div className="mt-2 truncate text-sm font-semibold" title={productionTitle(workOrder)}>
+                                                        {productionTitle(workOrder)}
+                                                    </div>
+                                                </div>
+                                                <div className="flex shrink-0 items-center gap-1">
+                                                    <Button
+                                                        aria-label={t("app.admin.dashboard.creativeMedia.archiveWorkOrder")}
+                                                        size="icon"
+                                                        variant="ghost"
+                                                        disabled={disabled}
+                                                        onClick={() => void mutateWorkOrder(workOrderId, "archive")}
+                                                    >
+                                                        <Archive className="h-4 w-4" />
+                                                    </Button>
+                                                    <Button
+                                                        aria-label={t("app.admin.dashboard.creativeMedia.deleteWorkOrder")}
+                                                        size="icon"
+                                                        variant="ghost"
+                                                        disabled={disabled}
+                                                        onClick={() => void mutateWorkOrder(workOrderId, "delete")}
+                                                    >
+                                                        <Trash2 className="h-4 w-4 text-rose-500" />
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                            <div className="mt-3 grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
+                                                <AdminHoverInfo
+                                                    content={<span>{workspace || t("app.admin.dashboard.creativeMedia.productionCardUnknownWorkspace")}</span>}
+                                                    panelClassName="max-w-md text-xs leading-5"
+                                                >
+                                                    <span className="flex min-w-0 items-center gap-1">
+                                                        <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                                                        <span className="truncate">
+                                                            {workspace || t("app.admin.dashboard.creativeMedia.productionCardUnknownWorkspace")}
+                                                        </span>
+                                                    </span>
+                                                </AdminHoverInfo>
+                                                <span>{t("app.admin.dashboard.creativeMedia.productionCardUpdated")}: {text(workOrder.updatedAt || workOrder.createdAt)}</span>
+                                            </div>
+                                            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                                                <Badge variant="outline">{t("app.admin.dashboard.creativeMedia.productionCardPlans")}: {recipeIds.length}</Badge>
+                                                <Badge variant="outline">{t("app.admin.dashboard.creativeMedia.productionCardAssets")}: {assetCount}</Badge>
+                                                <Badge variant="outline">{t("app.admin.dashboard.creativeMedia.productionCardJobs")}: {jobCount}</Badge>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                                {t("app.admin.dashboard.creativeMedia.emptyWorkOrders")}
+                            </div>
+                        )}
                     </div>
                 </CardContent>
             </Card>
@@ -412,6 +584,7 @@ export default function CreativeMediaPage() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                             <CardTitle>{t("app.admin.dashboard.creativeMedia.modelPreferencesTitle")}</CardTitle>
+                            <CardDescription>{t("app.admin.dashboard.creativeMedia.modelPreferencesReminder")}</CardDescription>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                             <Button variant="outline" onClick={() => setModelPreferencesOpen((value) => !value)}>

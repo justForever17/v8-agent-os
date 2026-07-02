@@ -82,6 +82,26 @@ async def list_creative_media_work_orders(status: str | None = None, requestingR
     }
 
 
+@router.post("/work-orders/{work_order_id}/archive")
+async def archive_creative_media_work_order(work_order_id: str):
+    try:
+        return {"workOrder": creative_media_runtime.archive_work_order(work_order_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/work-orders/{work_order_id}/delete")
+async def delete_creative_media_work_order(work_order_id: str):
+    try:
+        return {"workOrder": creative_media_runtime.delete_work_order(work_order_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc).lower() else 422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.post("/assets")
 async def register_creative_media_asset(body: dict = Body(...)):
     try:

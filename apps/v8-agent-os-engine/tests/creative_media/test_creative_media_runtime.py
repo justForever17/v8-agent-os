@@ -21,6 +21,7 @@ from runtimes.creative_media.catalog import (
 )
 from runtimes.creative_media.recipe import CreativeRecipeCompiler, prepare_provider_prompt_policy
 from runtimes.creative_media.runtime import (
+    JOB_STORE_FILE,
     _build_agnes_image_payload,
     _build_agnes_video_payload,
     _build_openai_image_payload,
@@ -251,6 +252,62 @@ def test_simple_asset_work_order_prefers_gpt_image_2(monkeypatch):
     assert work_order["providerPlan"]["imageGeneration"]["primary"]["modelId"] == "gpt-image-2"
     assert work_order["recipeRefs"]
     assert work_order["dryRunOnly"] is True
+
+
+def test_work_order_archive_marks_related_plans_assets_and_jobs(monkeypatch):
+    fake = FakeJsonStorage()
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    monkeypatch.setattr("runtimes.creative_media.recipe.storage", fake)
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_preferred_model_candidates",
+        lambda operation_kind: {
+            "image.generate": [
+                _candidate("gpt-image-2", operation_kind="image.generate", modality="image", provider_id="openai", priority=10),
+            ]
+        }.get(operation_kind, []),
+    )
+
+    work_order = creative_media_runtime.compile_work_order(
+        {
+            "intent": "simple_asset",
+            "assetRole": "thumbnail",
+            "brief": "A compact launch thumbnail.",
+            "workspacePath": "E:/Projects/test1",
+            "requestingRuntime": "creative_media",
+        }
+    )
+    recipe_id = work_order["recipeRefs"][0]
+    creative_media_runtime.register_asset(
+        {
+            "assetId": "asset-archive-smoke",
+            "role": "thumbnail",
+            "modality": "image",
+            "artifactId": "artifact-thumb",
+            "lineage": {"recipeId": recipe_id, "workOrderId": work_order["workOrderId"]},
+        }
+    )
+    creative_media_runtime._save_job(
+        {
+            "jobId": "job-archive-smoke",
+            "status": "running",
+            "recipeId": recipe_id,
+            "workOrderId": work_order["workOrderId"],
+            "request": {"operationKind": "image.generate"},
+        }
+    )
+
+    archived = creative_media_runtime.archive_work_order(work_order["workOrderId"])
+
+    assert archived["status"] == "archived"
+    assert archived["lifecycleScope"]["recipeCount"] == 1
+    assert archived["lifecycleScope"]["assetCount"] == 1
+    assert archived["lifecycleScope"]["jobCount"] == 1
+    assert creative_media_runtime.list_work_orders() == []
+    assert creative_media_runtime.list_work_orders(status="archived")[0]["workOrderId"] == work_order["workOrderId"]
+    assert creative_media_runtime.get_recipe(recipe_id)["status"] == "archived"
+    assert creative_media_runtime.list_assets()[0]["status"] == "archived"
+    assert fake.payloads[JOB_STORE_FILE]["jobs"]["job-archive-smoke"]["status"] == "archived"
 
 
 def test_storyboard_work_order_prefers_seedance_2_over_seed_lite(monkeypatch):

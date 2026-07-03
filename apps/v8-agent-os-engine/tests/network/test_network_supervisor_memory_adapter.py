@@ -197,6 +197,50 @@ class NetworkSupervisorMemoryAdapterTests(unittest.TestCase):
         self.assertLess(len(kwargs["fact"]), 1800)
         self.assertNotIn(huge_result, kwargs["fact"])
 
+    def test_completed_tool_round_trip_is_audit_only_without_explicit_persist(self):
+        payload = {
+            "messages": [
+                {"role": "user", "content": "请查文档并总结。"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_wire_1",
+                            "type": "function",
+                            "function": {"name": "search_docs", "arguments": "{\"query\":\"memory\"}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_wire_1",
+                    "name": "search_docs",
+                    "content": "Memory docs summary",
+                },
+            ]
+        }
+        events = [{"type": "text_chunk", "content": "总结完成。"}, {"type": "done", "status": "completed"}]
+
+        with self._patch_side_effects() as patched:
+            result = network_supervisor_memory_adapter.record_openai_compat_delta(
+                payload=payload,
+                chat_request=_chat_request(external_tools=_search_tool()),
+                run_id="run_5",
+                events=events,
+                response_payload={"choices": [{"finish_reason": "stop"}]},
+                project_id="project-1",
+                workspace_id="workspace-1",
+                external_thread_id="thread-1",
+            )
+
+        self.assertEqual(result["adapterStatus"], "audit_only")
+        self.assertEqual(result["reason"], "compat_memory_persistence_disabled")
+        self.assertEqual(result["memoryPolicy"], "compat_audit_only")
+        self.assertEqual(result["toolRoundTripState"], "completed")
+        self.assertEqual(result["resolvedScope"], "project:project-1")
+        patched["memory_runtime"].add_knowledge.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

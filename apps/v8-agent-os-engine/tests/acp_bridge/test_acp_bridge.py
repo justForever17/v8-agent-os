@@ -355,3 +355,30 @@ def test_stdio_server_accepts_newline_json_rpc():
     payload = json.loads(stdout.getvalue().strip())
     assert payload["id"] == 1
     assert payload["result"]["agent"]["displayName"] == "V8OS Agent"
+
+
+def _content_length_frame(payload: dict) -> str:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"Content-Length: {len(body.encode('utf-8'))}\r\n\r\n{body}"
+
+
+def _content_length_payload(output: str) -> dict:
+    header, sep, body = output.partition("\r\n\r\n")
+    assert sep
+    name, _, value = header.partition(":")
+    assert name.lower() == "content-length"
+    assert len(body.encode("utf-8")) == int(value.strip())
+    return json.loads(body)
+
+
+def test_stdio_server_accepts_content_length_json_rpc():
+    backend = FakeBackend()
+    bridge = AcpBridge(backend=backend)
+    stdin = StringIO(_content_length_frame({"jsonrpc": "2.0", "id": "测试-7", "method": "initialize", "params": {}}))
+    stdout = StringIO()
+
+    assert run_stdio_server(stdin=stdin, stdout=stdout, bridge=bridge) == 0
+
+    payload = _content_length_payload(stdout.getvalue())
+    assert payload["id"] == "测试-7"
+    assert payload["result"]["agent"]["displayName"] == "V8OS Agent"

@@ -583,32 +583,38 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const anthropicCompatModelsUrl = `${anthropicCompatBaseUrl}/v1/models`;
     const primaryModelAlias = (config.openaiCompat.modelAliases || ["v8os"]).find((item) => String(item || "").trim()) || "v8os";
     const primaryToken = tokens[0]?.token || "";
+    const primaryApiKey = primaryToken || "<API_KEY>";
     const scopeModeOptions = getAdminOptions("networkScopeMode");
     const enrollmentModeOptions = getAdminOptions("networkEnrollmentMode");
     const hasCurrentScopeModeOption = scopeModeOptions.some((option) => option.value === config.openaiCompat.defaultScopeMode);
     const hasCurrentEnrollmentModeOption = enrollmentModeOptions.some((option) => option.value === config.trust.enrollmentMode);
-    const curlExample = `curl ${compatChatUrl} \\
-  -H "Authorization: Bearer ${primaryToken || "<API_KEY>"}" \\
+    const compatMemoryHint = locale === "zh-CN"
+        ? "# 默认不写入 V8OS 记忆；需要持久化紧凑记忆时，额外添加：-H \"X-V8-Compat-Memory: persist\""
+        : "# Memory is audit-only by default; add this only when compact memory persistence is desired: -H \"X-V8-Compat-Memory: persist\"";
+    const curlExample = `${compatMemoryHint}
+curl ${compatChatUrl} \\
+  -H "Authorization: Bearer ${primaryApiKey}" \\
   -H "Content-Type: application/json" \\
   -d "{\\"model\\":\\"${primaryModelAlias}\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]}"`;
     const sdkExample = `from openai import OpenAI
 
 client = OpenAI(
     base_url="${compatBaseUrl}",
-    api_key="${primaryToken || "<API_KEY>"}",
+    api_key="${primaryApiKey}",
 )
 
 response = client.chat.completions.create(
     model="${primaryModelAlias}",
     messages=[{"role": "user", "content": "ping"}],
+    # extra_headers={"X-V8-Compat-Memory": "persist"},  # optional compact memory persistence
 )`;
     const anthropicCurlExample = `curl ${anthropicCompatMessagesUrl} \\
-  -H "x-api-key: ${primaryToken || "<API_KEY>"}" \\
+  -H "x-api-key: ${primaryApiKey}" \\
   -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
   -d "{\\"model\\":\\"${primaryModelAlias}\\",\\"max_tokens\\":256,\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]}"`;
     const claudeCodeExample = `ANTHROPIC_BASE_URL=${anthropicCompatBaseUrl}
-ANTHROPIC_AUTH_TOKEN=${primaryToken || "<API_KEY>"}
+ANTHROPIC_AUTH_TOKEN=${primaryApiKey}
 ANTHROPIC_MODEL=${primaryModelAlias}`;
     const acpCommand = "v8os acp";
     const acpSourceCommand = "python apps/v8-agent-os-engine/scripts/v8os_acp_agent.py";
@@ -616,21 +622,25 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
         {
             title: "OpenAI-compatible",
             purpose: locale === "zh-CN" ? "给 OpenAI SDK、Continue、Cherry Studio 等兼容客户端使用。" : "For OpenAI SDK, Continue, Cherry Studio, and compatible clients.",
-            endpointLabel: "Base URL",
+            endpointLabel: "baseURL",
             endpoint: compatBaseUrl,
-            auth: "Bearer <API Key>",
+            credentialLabel: "apiKey",
+            credential: primaryApiKey,
+            modelLabel: "modelName",
             model: primaryModelAlias,
-            example: `base_url: ${compatBaseUrl}\napi_key: ${primaryToken || "<API_KEY>"}\nmodel: ${primaryModelAlias}`,
+            example: `baseURL: ${compatBaseUrl}\napiKey: ${primaryApiKey}\nmodelName: ${primaryModelAlias}\nX-V8-Compat-Memory: persist  # optional`,
             canonicalId: "network_supervisor.openai_compat",
         },
         {
             title: "Anthropic-compatible",
             purpose: locale === "zh-CN" ? "给 Claude Code、Anthropic SDK 等兼容客户端使用。" : "For Claude Code, Anthropic SDK, and compatible clients.",
-            endpointLabel: "Base URL",
+            endpointLabel: "baseURL",
             endpoint: anthropicCompatBaseUrl,
-            auth: "x-api-key / Bearer <API Key>",
+            credentialLabel: "apiKey",
+            credential: primaryApiKey,
+            modelLabel: "modelName",
             model: primaryModelAlias,
-            example: `ANTHROPIC_BASE_URL=${anthropicCompatBaseUrl}\nANTHROPIC_AUTH_TOKEN=${primaryToken || "<API_KEY>"}\nANTHROPIC_MODEL=${primaryModelAlias}`,
+            example: `baseURL: ${anthropicCompatBaseUrl}\napiKey: ${primaryApiKey}\nmodelName: ${primaryModelAlias}`,
             canonicalId: "network_supervisor.anthropic_compat",
         },
         {
@@ -638,13 +648,15 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             purpose: locale === "zh-CN" ? "给 Zed 等支持 Agent Client Protocol 的编辑器使用。" : "For editors that support Agent Client Protocol, such as Zed.",
             endpointLabel: locale === "zh-CN" ? "命令" : "Command",
             endpoint: acpCommand,
-            auth: `V8OS_CLIENT_TOKEN=${primaryToken || "<API_KEY>"}`,
+            credentialLabel: "V8OS_CLIENT_TOKEN",
+            credential: primaryApiKey,
+            modelLabel: locale === "zh-CN" ? "智能体" : "Agent",
             model: "V8OS Agent",
             example: `command: ${acpCommand}
 source checkout: ${acpSourceCommand}
 env:
   V8OS_ADMIN_URL=${adminOrigin}
-  V8OS_CLIENT_TOKEN=${primaryToken || "<API_KEY>"}`,
+  V8OS_CLIENT_TOKEN=${primaryApiKey}`,
             canonicalId: "acp_bridge",
         },
     ];
@@ -1697,9 +1709,9 @@ env:
                                 </div>
                                 <div className="truncate rounded-xl bg-slate-50 px-3 py-2 font-mono text-slate-700">{card.endpoint}</div>
                                 <div className="grid grid-cols-[88px_1fr] gap-2 text-slate-600">
-                                    <span className="text-slate-400">Auth</span>
-                                    <span className="truncate">{card.auth}</span>
-                                    <span className="text-slate-400">Model</span>
+                                    <span className="text-slate-400">{card.credentialLabel}</span>
+                                    <span className="truncate font-mono">{card.credential}</span>
+                                    <span className="text-slate-400">{card.modelLabel}</span>
                                     <span className="truncate font-mono">{card.model}</span>
                                 </div>
                                 <div className="flex justify-end">

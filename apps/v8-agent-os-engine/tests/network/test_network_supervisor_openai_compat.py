@@ -1434,6 +1434,50 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertEqual(payload["model"], "v8os")
         self.assertEqual(payload["choices"][0]["message"]["content"], "Hello")
 
+    def test_openai_compat_memory_persist_header_reaches_adapter(self):
+        class FakeRequest:
+            headers = {"authorization": "Bearer compat-token", "x-v8-compat-memory": "persist"}
+
+            async def json(self):
+                return {
+                    "model": "v8os",
+                    "messages": [{"role": "user", "content": "请记住：这个外部用户喜欢短回答。"}],
+                }
+
+        async def fake_stream_legacy_events(*_args, **_kwargs):
+            yield {"type": "text_chunk", "content": "已记录"}
+            yield {"type": "done", "status": "completed"}
+
+        config = self._enabled_network_config()
+        with patch("api.network_supervisor_routes.get_internal_secret", return_value="secret"), patch.object(
+            network_supervisor_service,
+            "verify_openai_compat_token",
+        ) as verify_token, patch.object(network_supervisor_service, "get_config_model", return_value=config), patch(
+            "api.network_supervisor_routes.chat_runtime.stream_legacy_events",
+            fake_stream_legacy_events,
+        ), patch(
+            "api.network_supervisor_routes.network_supervisor_memory_adapter.record_openai_compat_delta",
+            return_value={"adapterStatus": "extracted", "reason": "fixture"},
+        ) as adapter, patch(
+            "api.network_supervisor_routes.network_supervisor_service.record_openai_compat_memory_adapter_status",
+        ) as status_recorder:
+            response = asyncio.run(
+                post_network_supervisor_openai_chat_completions(
+                    FakeRequest(),
+                    authorization="Bearer compat-token",
+                    x_v8_agent_os_secret="secret",
+                    x_v8_compat_memory="persist",
+                )
+            )
+
+        verify_token.assert_called_once_with("compat-token")
+        adapter.assert_called_once()
+        self.assertIs(adapter.call_args.kwargs.get("allow_persist"), True)
+        status_recorder.assert_called_once()
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["model"], "v8os")
+        self.assertEqual(payload["choices"][0]["message"]["content"], "已记录")
+
     def test_openai_compat_route_rejects_unknown_facade_model(self):
         class FakeRequest:
             headers = {"authorization": "Bearer compat-token"}

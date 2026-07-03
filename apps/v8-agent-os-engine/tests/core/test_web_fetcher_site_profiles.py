@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from unittest.mock import patch
+
 from bs4 import BeautifulSoup
 
 from core.tools import web_fetcher
@@ -45,10 +48,12 @@ def test_github_profile_keeps_readme_and_preserves_star_metadata() -> None:
         <nav class="UnderlineNav">Code Issues Pull requests</nav>
         <a href="/owner/repo/stargazers" aria-label="1.2k users starred this repository">1.2k</a>
         <div data-testid="readme">
-          <article class="markdown-body">
-            <h1>Project</h1>
-            <p>README body for the project.</p>
-          </article>
+          <div class="OverviewRepoFiles-module__Box_2__zsLGk">
+            <article class="markdown-body">
+              <h1>Project</h1>
+              <p>README body for the project.</p>
+            </article>
+          </div>
         </div>
       </main>
     </body></html>
@@ -136,3 +141,48 @@ def test_stackoverflow_profile_keeps_question_and_answers_without_comments() -> 
     assert "Accepted answer body." in text
     assert "noisy comments" not in text
     assert "hot network questions" not in text
+
+
+def test_auto_fetch_uses_reader_fallback_after_static_challenge_and_browser_unavailable() -> None:
+    class _StaticFetcher:
+        @staticmethod
+        def get(_url: str, **_kwargs: object) -> object:
+            return type(
+                "Response",
+                (),
+                {
+                    "html_content": "<html><head><title>Just a moment...</title></head><body></body></html>",
+                    "url": "https://www.npmjs.com/package/react",
+                    "status": 403,
+                },
+            )()
+
+    class _ReaderResponse:
+        status_code = 200
+        text = (
+            "Title: react\n\n"
+            "URL Source: https://www.npmjs.com/package/react\n\n"
+            "Markdown Content:\n"
+            "## `react`\n\n"
+            "React is a JavaScript library for creating user interfaces."
+        )
+
+    with patch("core.tools.web_fetcher._try_import_static_fetcher", return_value=(_StaticFetcher, None)), patch(
+        "core.tools.web_fetcher._try_import_dynamic_fetcher",
+        return_value=(None, "playwright browser missing"),
+    ), patch(
+        "core.tools.web_fetcher._try_import_stealth_fetcher",
+        return_value=(None, "playwright browser missing"),
+    ), patch(
+        "core.tools.web_fetcher.requests.get",
+        return_value=_ReaderResponse(),
+    ) as reader_get:
+        payload = json.loads(web_fetcher.web_read.func(url="https://www.npmjs.com/package/react", mode="auto"))
+
+    assert payload["ok"] is True
+    assert payload["fetchMode"] == "reader"
+    assert payload["attemptedModes"] == ["static", "dynamic", "stealth", "reader"]
+    assert payload["metadata"]["readerFallbackProvider"] == "jina"
+    assert "React is a JavaScript library" in payload["text"]
+    reader_get.assert_called_once()
+    assert reader_get.call_args.args[0] == "https://r.jina.ai/https://www.npmjs.com/package/react"

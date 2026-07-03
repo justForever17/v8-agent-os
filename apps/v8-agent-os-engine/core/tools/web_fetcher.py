@@ -149,6 +149,17 @@ BUILTIN_WEB_FETCH_SITE_PROFILES: dict[str, dict[str, Any]] = {
                     ".toolbar",
                     ".album-list",
                 ),
+                "skipMarkerTokens": (
+                    "catalog",
+                    "relation",
+                    "module",
+                    "side-content",
+                    "basic-info",
+                    "toolbar",
+                    "album-list",
+                    "top-tool",
+                    "promotion",
+                ),
             }
         },
     },
@@ -573,6 +584,7 @@ MAX_TEXT_CHARS = 12000
 MAX_LINKS = 20
 MAX_MEDIA = 12
 WEB_READ_TIMEOUT_SECONDS = 45.0
+WEB_READER_FALLBACK_ENDPOINT = "https://r.jina.ai/"
 WEB_SEARCH_PROVIDER_TIMEOUT_SECONDS = 20.0
 WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 45.0
 METASO_HOME_URL = "https://metaso.cn/"
@@ -1396,6 +1408,11 @@ def _dependency_status() -> dict[str, dict[str, Any]]:
             "driver": "StealthyFetcher",
             "error": stealth_error,
         },
+        "reader": {
+            "available": True,
+            "driver": "JinaReader",
+            "error": None,
+        },
     }
 
 
@@ -1592,6 +1609,18 @@ def _fetch_with_scrapling_internal(
             agent_browser_profile_dir=agent_browser_profile_dir,
         )
 
+    def _fetch_reader() -> WebPagePayload:
+        return _fetch_with_reader_fallback(
+            url,
+            requested_mode=mode,
+            referer_mode=referer_mode,
+            referer_url=referer_url,
+            attempted_modes=list(attempted_modes),
+            available_modes=available_modes,
+            timeout_seconds=per_mode_timeout,
+            warnings=list(warnings),
+        )
+
     plans: list[tuple[str, Any]]
     if mode == "static":
         plans = [("static", _fetch_static)]
@@ -1604,6 +1633,7 @@ def _fetch_with_scrapling_internal(
             ("static", _fetch_static),
             ("dynamic", _fetch_dynamic),
             ("stealth", _fetch_stealth),
+            ("reader", _fetch_reader),
         ]
     if use_agent_browser_profile:
         plans = [(label, runner) for label, runner in plans if label in {"dynamic", "stealth"}]
@@ -1670,6 +1700,95 @@ def _fetch_with_scrapling_internal(
     elapsed = round(time.monotonic() - started_at, 2)
     details = "; ".join(f"{key}={value}" for key, value in errors.items())
     raise RuntimeError(f"网页抓取失败。attempted={attempted_modes}; elapsed={elapsed}s; deadline={total_timeout}s; errors={details}")
+
+
+def _fetch_with_reader_fallback(
+    url: str,
+    *,
+    requested_mode: str,
+    referer_mode: str,
+    referer_url: str,
+    attempted_modes: list[str],
+    available_modes: dict[str, dict[str, Any]],
+    timeout_seconds: float,
+    warnings: list[str],
+) -> WebPagePayload:
+    reader_url = WEB_READER_FALLBACK_ENDPOINT + url
+    try:
+        with _bypass_proxy_env(_should_bypass_proxy_env()):
+            response = requests.get(
+                reader_url,
+                headers={
+                    "Accept": "text/plain, text/markdown;q=0.9, */*;q=0.1",
+                    "User-Agent": "V8 Agent OS Web Reader/1.0",
+                },
+                timeout=max(1.0, float(timeout_seconds)),
+            )
+    except Exception as exc:
+        raise RuntimeError(f"reader_fallback_request_failed: {exc}") from exc
+
+    if response.status_code >= 400:
+        body = _safe_text(getattr(response, "text", ""))[:300]
+        raise RuntimeError(f"reader_fallback_http_status_{response.status_code}: {body}")
+
+    raw_text = _safe_text(getattr(response, "text", ""))
+    title, markdown_text, reader_metadata = _parse_reader_fallback_text(raw_text, url)
+    if len(markdown_text) > MAX_TEXT_CHARS:
+        markdown_text = markdown_text[:MAX_TEXT_CHARS] + f"\n\n...[TRUNCATED] ({len(markdown_text)} chars total)"
+
+    metadata = {
+        "readerFallbackProvider": "jina",
+        "readerFallbackUrl": reader_url,
+        "readerSourceUrl": url,
+        **reader_metadata,
+    }
+    return WebPagePayload(
+        url=url,
+        final_url=url,
+        requested_mode=requested_mode,
+        referer_mode=referer_mode,
+        referer_url=referer_url,
+        fetch_mode="reader",
+        attempted_modes=attempted_modes,
+        available_modes=available_modes,
+        status=response.status_code,
+        tls_strategy="requests",
+        ca_bundle_path=certifi.where(),
+        proxy_bypass_used=_should_bypass_proxy_env(),
+        title=title,
+        text=markdown_text,
+        html="",
+        metadata=metadata,
+        links=[],
+        media=[],
+        warnings=[*warnings, "已使用 Jina Reader fallback 获取页面正文。"],
+    )
+
+
+def _parse_reader_fallback_text(raw_text: str, source_url: str) -> tuple[str, str, dict[str, str]]:
+    text = _safe_text(raw_text)
+    metadata: dict[str, str] = {}
+    title = ""
+    content = text
+
+    marker = "\nMarkdown Content:\n"
+    if marker in text:
+        header, content = text.split(marker, 1)
+        for line in header.splitlines():
+            normalized = _safe_text(line)
+            if normalized.startswith("Title:"):
+                title = _safe_text(normalized.removeprefix("Title:"))
+                metadata["readerTitle"] = title
+            elif normalized.startswith("URL Source:"):
+                metadata["readerUrlSource"] = _safe_text(normalized.removeprefix("URL Source:"))
+            elif normalized.startswith("Published Time:"):
+                metadata["readerPublishedTime"] = _safe_text(normalized.removeprefix("Published Time:"))
+    if not title:
+        first_line = next((line.strip("# ").strip() for line in content.splitlines() if line.strip()), "")
+        title = _safe_text(first_line)[:200] or source_url
+    if title and title.lower() not in content[:240].lower():
+        content = f"# {title}\n\n{content}"
+    return title, content.strip(), metadata
 
 
 def _builtin_site_profile(url: str) -> dict[str, Any]:
@@ -1770,18 +1889,25 @@ def _append_profiled_text_node(fragment: BeautifulSoup, parent: Any, node: Any) 
 
 
 def _site_profile_node_should_skip(node: Any, *, url: str, extract: WebExtractMode) -> bool:
-    if not _builtin_extract_profile(url, extract):
+    profile = _builtin_extract_profile(url, extract)
+    if not profile:
         return False
-    noisy_tokens = (
-        "catalog",
-        "relation",
-        "module",
-        "side-content",
-        "basic-info",
-        "toolbar",
-        "album-list",
-        "top-tool",
-        "promotion",
+    noisy_tokens = tuple(
+        _safe_text(token).lower()
+        for token in (
+            profile.get("skipMarkerTokens")
+            or (
+                "catalog",
+                "relation",
+                "side-content",
+                "basic-info",
+                "toolbar",
+                "album-list",
+                "top-tool",
+                "promotion",
+            )
+        )
+        if _safe_text(token)
     )
     current = node
     while current is not None and getattr(current, "name", None):

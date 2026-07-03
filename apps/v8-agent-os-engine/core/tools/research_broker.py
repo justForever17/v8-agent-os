@@ -2997,8 +2997,10 @@ def research_broker(
     Search experience packs first for repeat topics; run new research only when prior packs are missing, stale,
     low confidence, or conflict with the current need.
 
-    useAgentBrowserProfile defaults to false. Set it to true only for an explicit login-backed research need;
-    the target source domains must match systemBase.webFetch.agentBrowserProfileAllowlist.
+    When Admin enables systemBase.webFetch.useAgentBrowserProfile and a target source domain matches
+    systemBase.webFetch.agentBrowserProfileAllowlist, browser-backed web/research reads automatically reuse the
+    Agent dedicated browser profile. Set useAgentBrowserProfile=true only when research should skip public/static
+    attempts and directly use that login-backed profile.
     """
     config = _research_config()
     normalized_mode = _safe_text(mode).lower() or "plan"

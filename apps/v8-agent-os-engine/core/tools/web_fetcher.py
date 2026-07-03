@@ -1436,6 +1436,12 @@ def _agent_browser_profile_allowed(url: str) -> tuple[bool, str | None]:
     return agent_browser_profile_allowed_for_url(url, config.get("agentBrowserProfileAllowlist") or [])
 
 
+def _auto_agent_browser_profile_allowed(url: str, mode: str) -> tuple[bool, str | None]:
+    if str(mode or "").strip().lower() == "static":
+        return False, None
+    return _agent_browser_profile_allowed(url)
+
+
 def _provider_prefers_agent_browser_profile(provider: str) -> bool:
     return str(provider or "").strip().lower() in {"metaso", "baidu"}
 
@@ -1807,7 +1813,10 @@ def _fetch_with_scrapling_internal(
             ("stealth", _fetch_stealth),
             ("reader", _fetch_reader),
         ]
-    if use_agent_browser_profile:
+    requested_agent_browser_profile = bool(use_agent_browser_profile)
+    auto_agent_browser_profile, auto_matched_host = _auto_agent_browser_profile_allowed(url, mode)
+    effective_agent_browser_profile = requested_agent_browser_profile or auto_agent_browser_profile
+    if requested_agent_browser_profile:
         plans = [(label, runner) for label, runner in plans if label in {"dynamic", "stealth"}]
         if not plans:
             raise RuntimeError("agent_browser_profile_requires_browser_mode: use dynamic/stealth/auto when useAgentBrowserProfile=true.")
@@ -1815,7 +1824,7 @@ def _fetch_with_scrapling_internal(
     per_mode_timeout = max(5.0, total_timeout / max(len(plans), 1))
     agent_browser_profile_dir = ""
     agent_browser_profile_host = ""
-    if use_agent_browser_profile:
+    if effective_agent_browser_profile:
         allowed, matched_host = _agent_browser_profile_allowed(url)
         if not allowed:
             raise RuntimeError(
@@ -1824,7 +1833,7 @@ def _fetch_with_scrapling_internal(
                 " and a matching agentBrowserProfileAllowlist domain."
             )
         agent_browser_profile_dir = str(configured_agent_browser_profile_dir("chrome"))
-        agent_browser_profile_host = matched_host or ""
+        agent_browser_profile_host = matched_host or auto_matched_host or ""
     static_fetch_options, browser_fetch_options = _build_fetch_options(
         headless=headless,
         referer_mode=referer_mode,
@@ -3099,7 +3108,7 @@ def _render_error_payload(
             "recommendedNextAction": (
                 "该 URL 当前不可达；不要等待 watchdog。请换可访问来源、改用 research_broker 多源调研，或把失败源标记为 unavailable。"
                 if failure_class == "network_timeout"
-                else "目标可能需要登录。请在 Admin / Desktop Automation 打开 Agent 专用浏览器完成登录；若要让 web/research 使用该登录态，需要显式 useAgentBrowserProfile=true 且域名命中 allowlist。"
+                else "目标可能需要登录。请在 Admin / Desktop Automation 打开 Agent 专用浏览器完成登录；Admin 开启 Agent profile 且目标域名命中 allowlist 后，web/research 的浏览器读取路径会自动复用该登录态。"
                 if failure_class == "needs_login"
                 else "Agent 浏览器 profile 未启用或目标域名未命中 allowlist；请在 Admin / System Base 配置 useAgentBrowserProfile 与 allowlist，或改用无登录公开来源。"
                 if failure_class == "agent_browser_profile_not_allowed"
@@ -3137,7 +3146,7 @@ def _render_needs_login_payload(*, page: WebPagePayload, use_agent_browser_profi
                 else {"used": False}
             ),
             "retryable": True,
-            "recommendedNextAction": "请在 Admin / Desktop Automation 点击“打开 Agent 专用浏览器”并手动登录目标网站；登录后可用 useAgentBrowserProfile=true 重试，目标域名必须在 systemBase.webFetch.agentBrowserProfileAllowlist 中。",
+            "recommendedNextAction": "请在 Admin / Desktop Automation 点击“打开 Agent 专用浏览器”并手动登录目标网站；登录后确认 systemBase.webFetch.useAgentBrowserProfile 已开启且目标域名在 agentBrowserProfileAllowlist 中，web/research 会在浏览器读取路径自动复用该登录态。",
             "textPreview": text_preview,
         },
         ensure_ascii=False,
@@ -4119,7 +4128,8 @@ def web_read(
     - stealth: 仅反反爬抓取
 
     useAgentBrowserProfile:
-    - 默认 false。只有目标域名命中 systemBase.webFetch.agentBrowserProfileAllowlist 且 Admin 已开启该能力时，才可设为 true 使用 Agent 专用浏览器登录态。
+    - Admin 已开启 systemBase.webFetch.useAgentBrowserProfile 且目标域名命中 allowlist 时，
+      auto/dynamic/stealth 会自动复用 Agent 专用浏览器登录态；显式 true 会直接使用该 profile。
     """
     allowed, error_message = _guard_url(url, tool_call_id=tool_call_id)
     if not allowed:
@@ -4186,7 +4196,7 @@ def web_extract(
     - raw_html: 返回用于 DOM/UI/选择器分析的 HTML 片段；普通阅读不要使用
     - ui_snapshot: 返回轻量结构快照，适合参考页面 UI/表单/按钮结构
 
-    useAgentBrowserProfile 同 web_read：必须显式为 true，且目标域名命中 allowlist。
+    useAgentBrowserProfile 同 web_read：allowlist 命中时浏览器模式会自动复用 Agent 专用浏览器登录态；显式 true 会直接使用该 profile。
     """
     allowed, error_message = _guard_url(url, tool_call_id=tool_call_id)
     if not allowed:
@@ -4327,7 +4337,7 @@ def web_search(
     - academic: 学术
     - image/video/podcast: 图片/视频/播客
 
-    useAgentBrowserProfile 仅用于需要登录态的 browser-backed 搜索/读取路径；默认不用 Agent 浏览器 profile。
+    useAgentBrowserProfile 仅用于需要登录态的 browser-backed 搜索/读取路径；allowlist 命中时会自动复用 Agent 浏览器 profile。
     """
     requested_provider = str(search_engine or "auto").strip().lower()
     requested_vertical = _normalize_search_vertical(str(search_vertical or "all"))
@@ -4828,7 +4838,7 @@ def web_fetch(
     - extract: 返回结构化内容；UI/DOM 参考用 raw_html 或 ui_snapshot
     - search: 通过 Source Router 选择国内/海外 provider，并返回清洗后的搜索结果
 
-    useAgentBrowserProfile 必须显式为 true，并且目标域名命中 Admin/System Base 的 allowlist。
+    useAgentBrowserProfile 显式为 true 时会直接使用 Agent 浏览器 profile；未显式设置但目标域名命中 Admin/System Base allowlist 时，浏览器读取路径也会自动复用。
     """
     normalized_intent = str(intent or "auto").strip().lower()
     if normalized_intent == "auto":
@@ -4919,7 +4929,7 @@ def web_broker(
     - true 时把 transport / TLS / fallback / selector 等调试字段放进 debug 子对象
 
     useAgentBrowserProfile:
-    - 默认 false。遇到登录墙时工具会返回 needs_login；需要登录态时，先让用户在 Admin 打开 Agent 专用浏览器登录，再显式传 true。
+    - Admin 开启 Agent profile 且目标域名命中 allowlist 时，浏览器读取路径会自动复用登录态；显式 true 可强制直接使用该 profile。
     """
     normalized_mode = str(mode or "fetch").strip().lower()
     if normalized_mode not in {"fetch", "read", "extract", "search"}:

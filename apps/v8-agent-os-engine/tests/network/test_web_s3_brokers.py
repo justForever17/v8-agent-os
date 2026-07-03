@@ -115,6 +115,72 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertTrue(payload["fallbackUsed"])
         self.assertIn("verification_or_anti_crawl", " ".join(payload["warnings"]))
 
+    def test_web_read_auto_uses_allowlisted_agent_browser_profile_without_explicit_flag(self):
+        captured_browser_kwargs = {}
+
+        class _StaticFetcher:
+            @staticmethod
+            def get(_url, **_kwargs):
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "html_content": "<html><head><title>Login required</title></head><body>请登录后继续访问</body></html>",
+                        "url": "https://example.com/private",
+                        "status": 403,
+                    },
+                )()
+
+        class _DynamicFetcher:
+            @staticmethod
+            def fetch(url, **kwargs):
+                captured_browser_kwargs.update(kwargs)
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "html_content": (
+                            "<html><head><title>Private page</title></head><body><main>"
+                            "<h1>Private page</h1>"
+                            "<p>This login-backed content is now available from the Agent browser profile. "
+                            "The page includes enough private article text to pass the normal extraction "
+                            "quality gate after static fetching reports a login challenge. This proves that "
+                            "allowlisted web and research reads can reuse the dedicated browser session without "
+                            "requiring every caller to pass an explicit useAgentBrowserProfile flag. The content "
+                            "stays inside browser-backed fetching and cookies are not exported to the model.</p>"
+                            "</main></body></html>"
+                        ),
+                        "url": url,
+                        "status": 200,
+                    },
+                )()
+
+        with patch(
+            "core.tools.web_fetcher.get_web_fetch_config",
+            return_value={"useAgentBrowserProfile": True, "agentBrowserProfileAllowlist": ["example.com"]},
+        ), patch(
+            "core.tools.web_fetcher.configured_agent_browser_profile_dir",
+            return_value="E:/tmp/v8-agent-browser-profile",
+        ), patch(
+            "core.tools.web_fetcher._try_import_static_fetcher",
+            return_value=(_StaticFetcher, None),
+        ), patch(
+            "core.tools.web_fetcher._try_import_dynamic_fetcher",
+            return_value=(_DynamicFetcher, None),
+        ), patch(
+            "core.tools.web_fetcher._resolve_verify_candidates",
+            return_value=[("default", True)],
+        ):
+            payload = json.loads(web_read.func(url="https://example.com/private", mode="auto"))
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["fetchMode"], "dynamic")
+        self.assertEqual(payload["attemptedModes"], ["static", "dynamic"])
+        self.assertEqual(captured_browser_kwargs["user_data_dir"], "E:/tmp/v8-agent-browser-profile")
+        self.assertTrue(payload["agentBrowserProfile"]["used"])
+        self.assertEqual(payload["agentBrowserProfile"]["matchedHost"], "example.com")
+        self.assertIn("login-backed content", payload["text"])
+
     def test_web_read_baidu_baike_profile_prefers_summary_and_paragraphs(self):
         html = """
         <html><head><title>李白_百度百科</title></head><body>

@@ -5,7 +5,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, FileText, AtSign, Brain } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, FileText, AtSign, Gauge } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -1166,7 +1166,7 @@ export function InputArea({
                                     )}
                                     title={t(lt("临时调节本轮 Supervisor 推理强度", "Temporarily adjust Supervisor reasoning effort for this turn"))}
                                 >
-                                    <Brain className="h-3.5 w-3.5" />
+                                    <Gauge className="h-3.5 w-3.5" />
                                     <span>{t(lt("推", "Think"))}·{reasoningEffortLabel}</span>
                                 </button>
                                 {reasoningEffortOpen ? (

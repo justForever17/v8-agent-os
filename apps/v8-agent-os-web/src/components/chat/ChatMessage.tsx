@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { User, Copy, Trash2, Check, Sparkles, TerminalSquare, ChevronDown, BrainCircuit } from "lucide-react";
+import { User, Copy, Trash2, Check, Sparkles, TerminalSquare, ChevronDown, Orbit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo } from "react";
 import { groupTimelineNodes } from "@/lib/chat/timeline-grouper";
@@ -699,7 +699,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-zinc-500/10 dark:bg-zinc-400/10 text-muted-foreground",
                                             hasActiveProgress && "animate-pulse text-amber-500 bg-amber-500/10"
                                         )}>
-                                            <BrainCircuit className="h-4 w-4" />
+                                            <Orbit className="h-4 w-4" />
                                         </div>
                                         <div className="min-w-0 flex-1">
                                             <div className="text-xs font-semibold text-foreground/90">

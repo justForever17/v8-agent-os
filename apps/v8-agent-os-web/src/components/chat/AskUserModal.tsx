@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Pause, Play, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, Pause, Play, X } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -259,7 +259,7 @@ function AskUserMediaCard({
                     ) : null}
                     {selected ? (
                         <span className="absolute right-1.5 top-1.5 rounded-full bg-primary p-0.5 text-primary-foreground">
-                            <Check className="h-3 w-3" />
+                            <CheckCircle2 className="h-3 w-3" />
                         </span>
                     ) : null}
                 </div>
@@ -503,7 +503,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                                             className={`flex h-8 min-w-0 items-center justify-between gap-1 rounded-lg px-2 text-left text-xs transition ${selected ? "bg-primary/8 text-primary" : "hover:bg-muted/60"}`}
                                                         >
                                                             <span className="min-w-0 truncate">{label}</span>
-                                                            {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                                                            {selected ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : null}
                                                         </button>
                                                     </TooltipTrigger>
                                                     {(detail || label) ? (

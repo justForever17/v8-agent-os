@@ -11,6 +11,7 @@ if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
 from core.system_doctor import system_doctor_service  # noqa: E402
+from acp_bridge.stdio_server import main as acp_stdio_main  # noqa: E402
 
 
 def _print_human_report(payload: dict) -> None:
@@ -47,7 +48,11 @@ def main(argv: list[str] | None = None) -> int:
     doctor = subparsers.add_parser("doctor", help="Run local system doctor")
     doctor.add_argument("--json", action="store_true", help="Print JSON output")
     doctor.add_argument("--repair-plan", action="store_true", help="Print only the repair plan")
+    subparsers.add_parser("acp", help="Run the V8OS ACP stdio bridge")
     args = parser.parse_args(argv)
+
+    if args.command == "acp":
+        return acp_stdio_main()
 
     if args.command == "doctor":
         payload = system_doctor_service.run()

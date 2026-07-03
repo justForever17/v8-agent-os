@@ -21,6 +21,7 @@ V8OS 下一阶段要从“源码目录里启动 Engine/Admin”正规化为三�
 - 桌面 GUI 和 Phone 是正式用户交互面；`os-web` 是桌面 GUI 的本地 shell/回归面，不再独立叙述成正式桌面客户端。
 - CyberCore 是桌面 GUI 的伴侣层/最小化形态，不再作为和 Phone/Web 平级的长期主入口。
 - `v8os chat` 可作为开发者/高级用户入口；普通用户主路径是桌面 GUI 或 Phone。
+- `v8os acp` 是第三方编辑器 / Agent Client 标准接入适配器入口，用于 Zed 等外部客户端把 V8OS 当成编程 Agent；它不是 Phone/Web/CyberCore 的内部连接协议。
 - 不再公开细分 `v8os ask` / `v8os run`；若未来保留，只能作为隐藏兼容 alias。
 - 未注册路径首次进入会话类命令时，用左右键 `Yes/No` 询问是否信任并创建持久工作区。
 - `v8os link` 是设备/客户端连接入口，优先服务 Phone、Custom Client，以及开发/回归用 Web；桌面 GUI 本地组件不要求用户手动 link。
@@ -42,8 +43,11 @@ V8OS 下一阶段要从“源码目录里启动 Engine/Admin”正规化为三�
 | CyberCore | GUI 最小化/伴侣层 | 曾被叙述成独立桌面客户端 | 嵌入桌面 GUI 生命周期，不单独承担账号/工作区主链 |
 | TUI | 类 Claude Code 的终端交互客户端 | 文档尚未展开 TUI | 设计终端聊天、运行态、审批/ask_user、文件/工作区、link/doctor 的交互壳 |
 | CLI | 配置、doctor、接入管理 | 仍混有较重 chat 叙事 | 主打 `doctor/config/link/provider/mcp/logs`，chat 保留高级入口 |
+| ACP Bridge | 第三方编辑器 / Agent Client 标准接入 | 尚未成为安装包入口 | 通过 `v8os acp` 暴露 stdio JSON-RPC 桥接，内部仍走 Admin BFF + Engine WS |
 
 可行性判断：这个目标真实可行，但不能理解为“把现有 dev server 包一层壳”。真正的产品化缺口在五件事：统一 launcher 托管生命周期、单 Owner + device pairing、地址免记忆和 Tailscale/LAN 可达性、桌面 GUI/CyberCore 生命周期整合、TUI 与 CLI 的职责拆分。只要这些里程碑逐步完成，当前 Engine/Admin/Phone/Web/CyberCore 代码可以演进到目标形态，不需要推倒重做。
+
+ACP 是这个产品形态里的外部标准入口：它服务 Zed/编辑器/第三方 Agent Client 接入，不服务普通 Phone/Web/CyberCore 会话同步，也不改变 V8OS 内部 runtime episode、Spec、Memory、Artifact、Approval 的真相。
 
 ### 1.2 产品词汇与 canonical id 边界
 

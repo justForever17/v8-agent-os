@@ -161,7 +161,7 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                                         animate={{ opacity: 1, y: 0 }}
                                         transition={{ delay: 0.1, type: "spring", stiffness: 300, damping: 25 }}
                                     >
-                                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Agent 可见输出</div>
+                                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">输出</div>
                                         <div className="custom-scrollbar max-h-56 overflow-x-auto rounded-lg border border-black/5 bg-black/5 p-2.5 shadow-inner dark:border-white/5 dark:bg-black/20">
                                             <pre className="text-[11px] font-mono text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-all">
                                                 {readableResult}

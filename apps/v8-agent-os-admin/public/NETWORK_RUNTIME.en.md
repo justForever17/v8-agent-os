@@ -78,6 +78,90 @@ Flow:
 
 Phone nodes are marked as requiring approval because a regular phone is not automatically a V8OS peer. It needs dedicated V8 Phone peer support plus token, public key, and challenge success.
 
+## Public connection / V8 Relay
+
+V8 Relay carries neighbor messages when two devices are not on the same LAN or mesh network. It is not a Phone login code, and it is not the OpenAI or Anthropic compatible API. It only forwards V8 signed envelopes; trust is still enforced by short-code pairing, peer tokens, public keys, nonces, expiry, and local Safety.
+
+### When to use it
+
+- Two V8 devices cannot connect directly, but both can reach the same public relay.
+- You want offline delivery without depending on a WebSocket staying connected.
+- You want the option to switch between self-hosted Relay, Cloudflare Relay, and future V8 Cloud Relay.
+
+If LAN, Tailscale, or Headscale is already reliable, prefer direct connection.
+
+### How delivery works
+
+1. When Engine sends a neighbor message, it first writes to local `network_relay_outbox`.
+2. Relay Transport calls the active adapter’s `POST /v1/relay/publish`.
+3. Relay Worker stores the signed envelope in the target device mailbox.
+4. The target Engine incrementally pulls `GET /v1/relay/mailbox/{peerId}?cursor=...`.
+5. The target Engine verifies the envelope and hands it to the neighbor message pool.
+6. After successful processing, it calls `POST /v1/relay/ack`.
+7. WebSocket is only an online push hint; scheduled pull still recovers messages after disconnects.
+
+### Cloudflare adapter preparation
+
+Prepare these pieces in your own Cloudflare account:
+
+- Worker: public HTTP / WebSocket ingress.
+- Durable Object: stateful coordination and mailbox indexes for each peer mailbox / room.
+- Durable Object storage: pullable messages, cursors, and ACK state.
+- Queue: delayed retry and dead-letter handling only; it is not the mailbox source of truth.
+- Optional custom domain: the public Relay URL.
+
+### Deployment templates
+
+The Engine repository provides templates:
+
+- `apps/v8-agent-os-engine/runtimes/network_supervisor/relay_templates/cloudflare_worker.mjs`
+- `apps/v8-agent-os-engine/runtimes/network_supervisor/relay_templates/wrangler.toml.example`
+
+Recommended flow:
+
+1. Copy the templates into a Cloudflare Worker project.
+2. Create Durable Object and Queue bindings according to `wrangler.toml.example`.
+3. Deploy the Worker with Wrangler.
+4. Open `https://<relay-domain>/.well-known/v8-relay`; it should report `v8-relay.v1`.
+5. Return to the Admin “Public connection (V8 Relay)” card and choose Cloudflare Relay.
+6. Fill in the public Relay URL, Worker name, Queue name, and Durable Object namespace.
+7. Save the configuration.
+8. Both devices still need normal neighbor short-code pairing first; Relay does not establish trust automatically.
+
+### Self-hosted adapter
+
+When “Self-hosted Relay” is selected, the service only needs to implement the same HTTP / WebSocket endpoints:
+
+- `GET /.well-known/v8-relay`
+- `POST /v1/relay/publish`
+- `GET /v1/relay/mailbox/{peerId}?cursor=...&limit=...`
+- `POST /v1/relay/ack`
+- `GET /v1/relay/ws?peerId=...`
+
+### Verification
+
+- Admin status shows Relay as ready.
+- When sending a neighbor message, local outbox does not stay in `queued`, `retry`, or `leased` for long.
+- The target device sees the message in the neighbor conversation timeline.
+- After target ACK, the Relay mailbox does not redeliver the message.
+- After WebSocket disconnects, scheduled pull can still receive messages.
+
+### Common errors
+
+- `relay_disabled`: Relay is not enabled.
+- `runtime_disabled`: Network Runtime is disabled.
+- `active_adapter_not_configured`: the active adapter has no public Relay URL.
+- `missing_target_peer_id`: publish request has no target peer.
+- `Envelope signature verification failed`: pairing, public keys, or message integrity failed.
+- Message enters dead-letter: expired, malformed, unpaired target, or repeated failures.
+
+### Safety boundaries
+
+- Relay only forwards signed envelopes; it cannot establish trust for a device.
+- Relay does not execute local files, shell commands, or workspace paths.
+- Remote `workspacePath` is only source metadata; executable paths are resolved by the local workspace resolver.
+- Cloudflare tokens are not saved into V8 config; the Admin Relay card only stores public ingress and adapter metadata.
+
 ## External compatible APIs
 
 Network Runtime exposes OpenAI and Anthropic compatible endpoints:

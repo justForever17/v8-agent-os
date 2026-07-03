@@ -694,6 +694,7 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             e2e: "要求端到端签名 envelope",
             storeForward: "要求离线信箱 / store-forward",
             save: "保存 Relay 配置",
+            guide: "部署教程",
             protocol: "协议",
             active: "当前",
         }
@@ -720,6 +721,7 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             e2e: "Require end-to-end signed envelope",
             storeForward: "Require offline mailbox / store-forward",
             save: "Save Relay config",
+            guide: "Deployment guide",
             protocol: "Protocol",
             active: "Active",
         };
@@ -1503,9 +1505,14 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                             <Badge variant="outline">{status.relay?.protocol?.version || config.relay.protocolVersion || "v8-relay.v1"}</Badge>
                             {relayStatusAdapter?.status ? <Badge variant="outline">{relayStatusAdapter.status}</Badge> : null}
                         </div>
-                        <Button type="button" onClick={() => void saveConfig()} disabled={savingConfig}>
-                            {savingConfig ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc225e8a3") : relayCopy.save}
-                        </Button>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button type="button" variant="outline" onClick={() => void loadDocumentation()}>
+                                {relayCopy.guide}
+                            </Button>
+                            <Button type="button" onClick={() => void saveConfig()} disabled={savingConfig}>
+                                {savingConfig ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc225e8a3") : relayCopy.save}
+                            </Button>
+                        </div>
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-2">

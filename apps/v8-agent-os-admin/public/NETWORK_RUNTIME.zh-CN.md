@@ -77,6 +77,90 @@ Tailscale / Headscale 节点会进入 **候选节点**，但不会自动加入�
 
 手机节点会被标记为需要审批，因为普通手机并不天然具备 V8OS peer 能力。只有经过专门 V8 Phone peer 支持、并完成 token/public key/challenge 的手机节点，才允许加入。
 
+## 公网连接 / V8 Relay
+
+V8 Relay 用来在两台设备不在同一 LAN / Mesh 时传递邻居消息。它不是 Phone 登录码，也不是 OpenAI / Anthropic 兼容 API。它只转发 V8 signed envelope；真正的信任仍由短码配对、peer token、public key、nonce、expiry 和本机 Safety 处理。
+
+### 什么时候需要
+
+- 两台 V8 设备无法直连，但都能访问同一个公网 Relay。
+- 希望离线消息可恢复，不依赖 WebSocket 一直在线。
+- 希望未来可以在自托管 Relay、Cloudflare Relay、V8 Cloud Relay 之间切换。
+
+如果 LAN / Tailscale / Headscale 已稳定可达，优先用直连。
+
+### 架构关系
+
+1. Engine 发邻居消息时先写本地 `network_relay_outbox`。
+2. Relay Transport 调用当前 adapter 的 `POST /v1/relay/publish`。
+3. Relay Worker 将 signed envelope 存入目标设备 mailbox。
+4. 目标 Engine 通过 `GET /v1/relay/mailbox/{peerId}?cursor=...` 增量拉取。
+5. 目标 Engine 校验 envelope 后交给邻居消息池。
+6. 处理成功后调用 `POST /v1/relay/ack`。
+7. WebSocket 只做在线推送提示；断线后仍靠定时 pull 恢复。
+
+### Cloudflare 适配器准备
+
+需要你在自己的 Cloudflare 账号中准备：
+
+- Worker：公网 HTTP / WebSocket 入口。
+- Durable Object：每个 peer mailbox / room 的有状态协调与消息索引。
+- Durable Object storage：保存可拉取消息、cursor、ACK 状态。
+- Queue：仅用于延迟重试和 dead-letter，不作为 mailbox 真相。
+- 可选自定义域名：作为 Relay 公网地址。
+
+### 部署模板
+
+Engine 仓库提供模板：
+
+- `apps/v8-agent-os-engine/runtimes/network_supervisor/relay_templates/cloudflare_worker.mjs`
+- `apps/v8-agent-os-engine/runtimes/network_supervisor/relay_templates/wrangler.toml.example`
+
+推荐流程：
+
+1. 将模板复制到 Cloudflare Worker 项目。
+2. 按 `wrangler.toml.example` 创建 Durable Object 和 Queue 绑定。
+3. 使用 Wrangler 部署 Worker。
+4. 访问 `https://<relay-domain>/.well-known/v8-relay`，应返回 `v8-relay.v1`。
+5. 回到 Admin 的“公网连接（V8 Relay）”卡片，选择 Cloudflare Relay。
+6. 填入 Relay 公网地址、Worker 名称、Queue 名称、Durable Object 命名空间。
+7. 保存配置。
+8. 两台设备仍需先完成邻居设备短码配对；Relay 不会自动建立信任。
+
+### 自托管适配器
+
+选择“自托管 Relay”时，只要求服务实现同一组 HTTP / WebSocket 端点：
+
+- `GET /.well-known/v8-relay`
+- `POST /v1/relay/publish`
+- `GET /v1/relay/mailbox/{peerId}?cursor=...&limit=...`
+- `POST /v1/relay/ack`
+- `GET /v1/relay/ws?peerId=...`
+
+### 验证方式
+
+- Admin 状态显示 Relay 为可用。
+- 发送邻居消息时，本机 outbox 不长期卡在 `queued`、`retry` 或 `leased`。
+- 目标设备能在邻居对话时间线看到消息。
+- 目标设备 ACK 后 Relay mailbox 不重复投递。
+- 断开 WebSocket 后，定时 pull 仍能收到消息。
+
+### 常见错误
+
+- `relay_disabled`：Relay 开关未开。
+- `runtime_disabled`：Network Runtime 未启用。
+- `active_adapter_not_configured`：当前 adapter 缺少 Relay 公网地址。
+- `missing_target_peer_id`：发布请求里缺少目标 peer。
+- `Envelope signature verification failed`：两端配对、公钥或消息被篡改。
+- 消息进 dead-letter：过期、无法解析、目标未配对或重复失败。
+
+### 安全边界
+
+- Relay 只能转发 signed envelope，不能替设备建立信任。
+- Relay 不执行本机文件、shell 或 workspace path。
+- 远端传来的 workspacePath 只能作为来源元信息；执行路径由本机 workspace resolver 决定。
+- Cloudflare token 不保存进 V8 config；Admin Relay 卡片只保存公网入口和 adapter 元信息。
+
 ## 外部兼容 API
 
 Network Runtime 提供 OpenAI / Anthropic 兼容入口，常见路径如下：

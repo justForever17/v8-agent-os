@@ -4,11 +4,18 @@ import sys
 from pathlib import Path
 
 
-ENGINE_ROOT = Path(__file__).resolve().parents[1]
-if str(ENGINE_ROOT) not in sys.path:
-    sys.path.insert(0, str(ENGINE_ROOT))
+def _add_engine_root_to_path() -> None:
+    engine_root = Path(__file__).resolve().parents[1]
+    root = str(engine_root)
+    if root not in sys.path:
+        sys.path.insert(0, root)
 
-from acp_bridge.stdio_server import main  # noqa: E402
+
+def main() -> int:
+    _add_engine_root_to_path()
+    from acp_bridge.stdio_server import main as stdio_main
+
+    return int(stdio_main() or 0)
 
 
 if __name__ == "__main__":

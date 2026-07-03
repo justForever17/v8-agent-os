@@ -611,6 +611,7 @@ response = client.chat.completions.create(
 ANTHROPIC_AUTH_TOKEN=${primaryToken || "<API_KEY>"}
 ANTHROPIC_MODEL=${primaryModelAlias}`;
     const acpCommand = "v8os acp";
+    const acpSourceCommand = "python apps/v8-agent-os-engine/scripts/v8os_acp_agent.py";
     const thirdPartyConnectionCards = [
         {
             title: "OpenAI-compatible",
@@ -637,9 +638,13 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             purpose: locale === "zh-CN" ? "给 Zed 等支持 Agent Client Protocol 的编辑器使用。" : "For editors that support Agent Client Protocol, such as Zed.",
             endpointLabel: locale === "zh-CN" ? "命令" : "Command",
             endpoint: acpCommand,
-            auth: locale === "zh-CN" ? "本机 stdio，无需远程地址" : "Local stdio, no remote URL",
+            auth: `V8OS_CLIENT_TOKEN=${primaryToken || "<API_KEY>"}`,
             model: "V8OS Agent",
-            example: `command: ${acpCommand}`,
+            example: `command: ${acpCommand}
+source checkout: ${acpSourceCommand}
+env:
+  V8OS_ADMIN_URL=${adminOrigin}
+  V8OS_CLIENT_TOKEN=${primaryToken || "<API_KEY>"}`,
             canonicalId: "acp_bridge",
         },
     ];

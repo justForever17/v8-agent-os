@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .backend import AdminBffBackend, V8Backend, V8PromptResult
+from .launch import ACP_PROTOCOL_VERSION, build_launch_manifest
 from .protocol import JsonRpcError, JsonRpcMessage, error_response, notification, require_object, result_response
 from .surface import PRODUCT_AGENT_NAME, compact_runtime_event, markdown_update_from_v8, permission_event_kind
 
@@ -16,6 +17,9 @@ class AcpSession:
     v8_session_id: str
     workspace_path: str | None = None
     title: str | None = None
+    current_run_id: str | None = None
+    last_client_message_id: str | None = None
+    pending_permissions: dict[str, dict[str, Any]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -37,6 +41,8 @@ class AcpBridge:
         try:
             if payload.get("jsonrpc") != "2.0":
                 raise JsonRpcError(-32600, "Only JSON-RPC 2.0 messages are supported.")
+            if not method and request_id is not None and ("result" in payload or "error" in payload):
+                return self._handle_client_response(payload)
             if not method:
                 raise JsonRpcError(-32600, "Missing JSON-RPC method.")
             params = require_object(payload.get("params"), field_name="params")
@@ -71,11 +77,32 @@ class AcpBridge:
             return self.terminal_kill(params), []
         if method == "_v8os/permission/classify":
             return self.permission_classify(params), []
+        if method == "_v8os/permission/request":
+            return self.permission_request(params)
+        if method == "_v8os/permission/respond":
+            return self.permission_respond(params)
         raise JsonRpcError(-32601, f"Unsupported ACP method: {method}")
 
     def initialize(self, params: dict[str, Any]) -> dict[str, Any]:
+        agent_info = {
+            "name": PRODUCT_AGENT_NAME,
+            "version": "0.1.0",
+            "description": "V8OS external Agent Client adapter",
+        }
+        agent_capabilities = {
+            "loadSession": True,
+            "promptCapabilities": {
+                "image": True,
+                "audio": True,
+                "embeddedContext": True,
+            },
+            "mcpCapabilities": {},
+        }
         return {
-            "protocolVersion": "0.1",
+            "protocolVersion": ACP_PROTOCOL_VERSION,
+            "agentInfo": agent_info,
+            "agentCapabilities": agent_capabilities,
+            "authMethods": [],
             "agent": {
                 "name": PRODUCT_AGENT_NAME,
                 "displayName": "V8OS Agent",
@@ -92,6 +119,7 @@ class AcpBridge:
                     "canonicalId": "acp_bridge",
                     "surface": "third_party_agent_client",
                     "clientInfo": params.get("clientInfo") if isinstance(params.get("clientInfo"), dict) else None,
+                    "launch": build_launch_manifest(),
                 }
             },
         }
@@ -161,6 +189,8 @@ class AcpBridge:
                 "clientMessageId": str(params.get("clientMessageId") or f"acp_msg_{uuid.uuid4().hex[:12]}"),
             },
         )
+        session.current_run_id = result.run_id
+        session.last_client_message_id = str(params.get("clientMessageId") or "").strip() or session.last_client_message_id
         notifications = self._updates_for_prompt_result(session, result)
         return {
             "accepted": result.accepted,
@@ -178,13 +208,19 @@ class AcpBridge:
 
     def session_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._require_session(params)
-        result = self.backend.cancel_session(session_id=session.v8_session_id)
+        requested_run_id = str(params.get("runId") or params.get("run_id") or session.current_run_id or "").strip() or None
+        result = self.backend.cancel_session(session_id=session.v8_session_id, run_id=requested_run_id)
+        cancelled_run_id = str(result.get("runId") or result.get("run_id") or requested_run_id or "").strip() or None
+        if cancelled_run_id and cancelled_run_id == session.current_run_id:
+            session.current_run_id = None
         return {
             "ok": bool(result.get("ok", True)),
             "sessionId": session.acp_session_id,
             "v8SessionId": session.v8_session_id,
+            "requestedRunId": requested_run_id,
+            "cancelledRunId": cancelled_run_id,
             "status": result.get("status") or ("cancelled" if result.get("ok", True) else "cancel_failed"),
-            "_meta": {"v8os": {"sessionId": session.v8_session_id, "canonicalId": "acp_bridge"}},
+            "_meta": {"v8os": {"sessionId": session.v8_session_id, "runId": cancelled_run_id, "canonicalId": "acp_bridge"}},
         }
 
     def _require_session(self, params: dict[str, Any]) -> AcpSession:
@@ -300,3 +336,125 @@ class AcpBridge:
             "mapsToAskUser": kind == "ask_user",
             "mapsToSpecApproval": kind == "spec_approval",
         }
+
+    def permission_request(self, params: dict[str, Any]) -> tuple[dict[str, Any], list[JsonRpcMessage]]:
+        kind = permission_event_kind(params.get("kind") or params.get("type") or params.get("event"))
+        if kind != "permission":
+            return {
+                **self.permission_classify(params),
+                "status": "not_acp_permission",
+                "recommendedChannel": "ask_user" if kind == "ask_user" else "spec_approval" if kind == "spec_approval" else "diagnostic",
+            }, []
+        session = self._require_session(params)
+        permission_id = str(params.get("permissionId") or f"perm_{uuid.uuid4().hex[:12]}").strip()
+        acp_request_id = f"acp_permission_{permission_id}"
+        reason = str(params.get("reason") or params.get("summary") or params.get("message") or "V8OS 需要一次安全授权。").strip()
+        request_payload = {
+            "permissionId": permission_id,
+            "requestId": acp_request_id,
+            "sessionId": session.acp_session_id,
+            "status": "pending",
+            "title": str(params.get("title") or "需要授权").strip(),
+            "reason": reason,
+            "action": str(params.get("action") or "").strip() or None,
+            "target": str(params.get("target") or "").strip() or None,
+            "toolCall": {
+                "toolCallId": str(params.get("toolCallId") or params.get("tool_call_id") or f"call_v8_{permission_id}"),
+                "title": str(params.get("title") or params.get("action") or "V8OS 安全授权").strip(),
+                "kind": str(params.get("action") or "permission").strip(),
+                "status": "pending",
+            },
+            "options": [
+                {"id": "approve", "optionId": "approve", "label": "同意并继续", "name": "同意并继续", "kind": "allow_once"},
+                {"id": "deny", "optionId": "deny", "label": "拒绝", "name": "拒绝", "kind": "reject_once"},
+            ],
+            "_meta": {
+                "v8os": {
+                    "sessionId": session.v8_session_id,
+                    "runId": session.current_run_id,
+                    "detailRef": params.get("detailRef") or params.get("rawRef"),
+                    "canonicalId": "acp_bridge.permission",
+                }
+            },
+        }
+        session.pending_permissions[permission_id] = request_payload
+        update = {
+            "role": "assistant",
+            "kind": "permission_request",
+            "status": "pending",
+            "content": f"需要授权：{reason}",
+            "_meta": request_payload["_meta"],
+        }
+        return request_payload, [
+            JsonRpcMessage({"jsonrpc": "2.0", "id": acp_request_id, "method": "session/request_permission", "params": request_payload}),
+            notification("session/update", {"sessionId": session.acp_session_id, "update": update}),
+        ]
+
+    def permission_respond(self, params: dict[str, Any]) -> tuple[dict[str, Any], list[JsonRpcMessage]]:
+        session = self._require_session(params)
+        permission_id = str(params.get("permissionId") or "").strip()
+        if not permission_id:
+            request_id = str(params.get("requestId") or "").strip()
+            for candidate_id, record in session.pending_permissions.items():
+                if record.get("requestId") == request_id:
+                    permission_id = candidate_id
+                    break
+        if not permission_id or permission_id not in session.pending_permissions:
+            raise JsonRpcError(-32602, "_v8os/permission/respond requires a pending permissionId.")
+        decision = str(params.get("decision") or params.get("status") or "").strip().lower()
+        approved = decision in {"approve", "approved", "allow", "allowed", "yes", "true"}
+        record = session.pending_permissions.pop(permission_id)
+        return self._permission_response_messages(session, permission_id, approved, params.get("comment"), record)
+
+    def _handle_client_response(self, payload: dict[str, Any]) -> list[JsonRpcMessage]:
+        request_id = str(payload.get("id") or "").strip()
+        if not request_id:
+            return []
+        for session in self.sessions.values():
+            for permission_id, record in list(session.pending_permissions.items()):
+                if record.get("requestId") != request_id:
+                    continue
+                if payload.get("error"):
+                    approved = False
+                    comment = "ACP client returned an error for the permission request."
+                else:
+                    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+                    outcome = result.get("outcome") if isinstance(result.get("outcome"), dict) else result
+                    option = str(
+                        outcome.get("optionId")
+                        or outcome.get("option_id")
+                        or outcome.get("decision")
+                        or outcome.get("status")
+                        or ""
+                    ).strip().lower()
+                    approved = option in {"approve", "approved", "allow", "allowed", "yes", "true"}
+                    comment = str(outcome.get("comment") or result.get("comment") or "").strip() or None
+                session.pending_permissions.pop(permission_id, None)
+                _, notifications = self._permission_response_messages(session, permission_id, approved, comment, record)
+                return notifications
+        return []
+
+    def _permission_response_messages(
+        self,
+        session: AcpSession,
+        permission_id: str,
+        approved: bool,
+        comment: Any,
+        record: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[JsonRpcMessage]]:
+        result = {
+            "permissionId": permission_id,
+            "requestId": record.get("requestId"),
+            "sessionId": session.acp_session_id,
+            "status": "approved" if approved else "denied",
+            "comment": str(comment or "").strip() or None,
+            "_meta": record.get("_meta") or {},
+        }
+        update = {
+            "role": "assistant",
+            "kind": "permission_response",
+            "status": result["status"],
+            "content": "授权已通过，V8OS 可以继续。" if approved else "授权被拒绝，V8OS 会停止相关操作。",
+            "_meta": result["_meta"],
+        }
+        return result, [notification("session/update", {"sessionId": session.acp_session_id, "update": update})]

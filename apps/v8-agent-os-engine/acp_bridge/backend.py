@@ -22,6 +22,9 @@ class V8PromptUpdate:
     text: str
     status: str = "completed"
     role: str = "assistant"
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    file_changes: list[dict[str, Any]] = field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
     detail_ref: str | None = None
     raw_ref: str | None = None
     run_id: str | None = None
@@ -48,7 +51,7 @@ class V8Backend(Protocol):
     def submit_prompt(self, *, session_id: str, prompt: str, metadata: dict[str, Any]) -> V8PromptResult:
         ...
 
-    def cancel_session(self, *, session_id: str) -> dict[str, Any]:
+    def cancel_session(self, *, session_id: str, run_id: str | None = None) -> dict[str, Any]:
         ...
 
 
@@ -88,6 +91,12 @@ class AdminBffBackend:
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            if exc.code in {401, 403}:
+                raise RuntimeError(
+                    f"{method} {url} returned {exc.code}: ACP bridge is not authorized. "
+                    "Set V8OS_CLIENT_TOKEN (preferred) or V8OS_ADMIN_TOKEN from the Admin connection card, "
+                    f"then retry. Response: {body[:500]}"
+                ) from exc
             raise RuntimeError(f"{method} {url} returned {exc.code}: {body[:800]}") from exc
         except Exception as exc:
             raise RuntimeError(f"{method} {url} failed: {exc}") from exc
@@ -98,6 +107,16 @@ class AdminBffBackend:
             "workspacePath": workspace_path,
             "scopeMode": "explicit",
             "scopeHint": metadata.get("scopeHint"),
+            "externalSurface": "acp_bridge",
+            "clientGroup": "acp_bridge",
+            "source": "acp_bridge",
+            "metadata": {
+                **(metadata or {}),
+                "source": "acp_bridge",
+                "externalSurface": "acp_bridge",
+                "clientGroup": "acp_bridge",
+                "historyGroup": "external_agent_clients",
+            },
         }
         data = self._request("POST", f"{self.admin_url}/api/client/conversations", payload)
         session_id = str(data.get("id") or data.get("sessionId") or data.get("conversationId") or "").strip()
@@ -121,8 +140,12 @@ class AdminBffBackend:
             "clientMessageId": metadata.get("clientMessageId"),
             "workspacePath": metadata.get("workspacePath"),
             "data": {
+                "externalSurface": "acp_bridge",
+                "clientGroup": "acp_bridge",
+                "source": "acp_bridge",
                 "compatIngressDiagnostics": {
                     "source": "acp_bridge",
+                    "externalSurface": "acp_bridge",
                     "acpSessionId": metadata.get("acpSessionId"),
                 }
             },
@@ -144,16 +167,20 @@ class AdminBffBackend:
             raw=data,
         )
 
-    def cancel_session(self, *, session_id: str) -> dict[str, Any]:
+    def cancel_session(self, *, session_id: str, run_id: str | None = None) -> dict[str, Any]:
         # Current run cancellation is owned by Engine run control. If the local
         # Admin BFF is not available, expose a clean no-op rather than inventing
         # ACP-owned cancellation state.
         try:
-            return self._request("POST", f"{self.engine_url}/runs/cancel", {"sessionId": session_id})
+            payload = {"sessionId": session_id}
+            if run_id:
+                payload["runId"] = run_id
+            return self._request("POST", f"{self.engine_url}/runs/cancel", payload)
         except Exception as exc:
             return {
                 "ok": False,
                 "sessionId": session_id,
+                "runId": run_id,
                 "reason": "cancel_endpoint_unavailable",
                 "message": str(exc),
             }

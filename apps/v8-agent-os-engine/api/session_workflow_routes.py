@@ -261,7 +261,10 @@ def _derive_session_source(session_row: dict, run_record: dict | None = None) ->
 
 def _is_hidden_compat_session(session_row: dict, metadata: dict) -> bool:
     transport = str(metadata.get("transport") or "").strip()
+    external_surface = str(metadata.get("externalSurface") or metadata.get("external_surface") or "").strip()
     session_id = str(session_row.get("id") or "").strip()
+    if external_surface == "acp_bridge":
+        return False
     return (
         bool(metadata.get("hideFromChatHistory"))
         or bool(metadata.get("compatEphemeral"))
@@ -319,10 +322,21 @@ async def create_session(data: dict = Body(...)):
     """Create a new session placeholder."""
     try:
         session_id = str(uuid.uuid4())
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        metadata = dict(metadata)
+        for key in ("externalSurface", "clientGroup", "source"):
+            value = str(data.get(key) or "").strip()
+            if value:
+                metadata[key] = value
+        if metadata.get("externalSurface") == "acp_bridge":
+            metadata.setdefault("source", "acp_bridge")
+            metadata.setdefault("clientGroup", "acp_bridge")
+            metadata.setdefault("historyGroup", "external_agent_clients")
         db.create_or_update_session(
             session_id=session_id,
             title=data.get("title", "New Chat"),
             user_id=data.get("userId", "anonymous"),
+            metadata=metadata or None,
         )
         if data.get("projectId") or data.get("workspaceId") or data.get("workspacePath") or data.get("scopeHint"):
             scope_resolution_service.resolve(

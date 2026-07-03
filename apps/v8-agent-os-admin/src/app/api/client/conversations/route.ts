@@ -66,6 +66,9 @@ export async function POST(req: NextRequest) {
     try {
         const body = await req.json().catch(() => ({}));
         const nextTitle = typeof body?.title === "string" ? body.title : undefined;
+        const metadata = body?.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+            ? body.metadata
+            : undefined;
         const response = await fetch(`${ENGINE_URL}/sessions`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -77,6 +80,10 @@ export async function POST(req: NextRequest) {
                 workspacePath: body?.workspacePath,
                 scopeHint: body?.scopeHint,
                 scopeMode: body?.scopeMode || "explicit",
+                externalSurface: body?.externalSurface,
+                clientGroup: body?.clientGroup,
+                source: body?.source,
+                metadata,
             }),
         });
 

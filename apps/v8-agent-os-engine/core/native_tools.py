@@ -103,6 +103,7 @@ from core.tools.native.runtime import *  # runtime broker tool family compatibil
 from core.tools.native.mcp import *  # MCP config tool family compatibility exports
 from core.tools.native.computer_use import *  # computer use tool family compatibility exports
 from core.tools.native.memory import *  # memory broker tool family compatibility exports
+from core.tools.native.network import *  # network neighbor broker tool family compatibility exports
 from core.tools.native.rpa import *  # standalone RPA tool family compatibility exports
 from core.tools.native.spec import *  # spec broker tool family compatibility exports
 from core.tools.native.todo import *  # supervisor todo tool family compatibility exports

@@ -253,6 +253,8 @@ type NeighborLink = {
     online?: boolean;
     lastSeenAt?: string | null;
     workspaceBinding?: Record<string, unknown>;
+    capabilityTags?: string[];
+    description?: string;
 };
 type NeighborStatus = {
     enabled: boolean;
@@ -280,6 +282,30 @@ type NeighborMessage = {
     body?: string;
     status?: string;
     receivedAt?: string;
+};
+type NeighborTaskSettings = {
+    resultWakePolicy: "inbox" | "per_result";
+};
+type NeighborTaskAssignment = {
+    assignmentId: string;
+    peerId?: string;
+    status?: string;
+    delivery?: { status?: string };
+};
+type NeighborTaskResult = {
+    resultId: string;
+    status?: string;
+    summary?: string;
+    body?: string;
+};
+type NeighborTaskItem = {
+    taskId: string;
+    title?: string;
+    status?: string;
+    wakePolicy?: string;
+    requiredCapabilities?: string[];
+    assignments?: NeighborTaskAssignment[];
+    results?: NeighborTaskResult[];
 };
 type OpenAICompatToken = {
     id: string;
@@ -427,6 +453,7 @@ const EMPTY_PEERS: PeersPayload = { items: [], trustedItems: [], discoveredItems
 const EMPTY_PEER_FORM: PeerForm = { peerId: "", displayName: "", baseUrl: "", wsUrl: "", publicKey: "", allowedScopes: "", allowedWorkspaces: "", peerToken: "", transportProfileId: "", peerBaseUrl: "", deviceClass: "", requiresApproval: false };
 const EMPTY_DIAG: DiagState = { peerId: "", note: "", task: "", result: "" };
 const EMPTY_NEIGHBOR_STATUS: NeighborStatus = { enabled: false, started: false, links: [], discovery: { candidateCount: 0, connectedCount: 0 } };
+const EMPTY_NEIGHBOR_TASK_SETTINGS: NeighborTaskSettings = { resultWakePolicy: "inbox" };
 const csv = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
 const lines = (value: string) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
 const joinCsv = (value?: string[]) => Array.isArray(value) ? value.join(", ") : "";
@@ -557,7 +584,11 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const [neighborTimeline, setNeighborTimeline] = React.useState<NeighborMessage[]>([]);
     const [neighborMessage, setNeighborMessage] = React.useState("");
     const [neighborBusy, setNeighborBusy] = React.useState("");
-    const [linkDraft, setLinkDraft] = React.useState<{ localNickname: string; remoteNickname: string; localRole: "primary" | "companion" }>({ localNickname: "", remoteNickname: "", localRole: "primary" });
+    const [neighborTaskSettings, setNeighborTaskSettings] = React.useState<NeighborTaskSettings>(EMPTY_NEIGHBOR_TASK_SETTINGS);
+    const [neighborTasks, setNeighborTasks] = React.useState<NeighborTaskItem[]>([]);
+    const [neighborTaskBody, setNeighborTaskBody] = React.useState("");
+    const [neighborTaskCapabilities, setNeighborTaskCapabilities] = React.useState("");
+    const [linkDraft, setLinkDraft] = React.useState<{ localNickname: string; remoteNickname: string; localRole: "primary" | "companion"; capabilityTags: string; description: string }>({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "" });
     const [peerForm, setPeerForm] = React.useState<PeerForm>(EMPTY_PEER_FORM);
     const [diag, setDiag] = React.useState<DiagState>(EMPTY_DIAG);
     const [loading, setLoading] = React.useState(true);
@@ -680,6 +711,10 @@ env:
             localNickname: "本机昵称",
             remoteNickname: "对方昵称",
             role: "本机角色",
+            capabilityTags: "设备能力",
+            capabilityPlaceholder: "例如：research, mac, gpu",
+            deviceDescription: "能力说明",
+            descriptionPlaceholder: "一句话说明这台设备擅长什么",
             primary: "主设备",
             companion: "副设备",
             save: "保存",
@@ -688,6 +723,16 @@ env:
             send: "发送",
             sendWake: "发送并唤醒主理人",
             messagePlaceholder: "给邻居设备发消息…",
+            tasks: "邻居任务",
+            taskHint: "主设备按能力标签定向派发；多设备只有选择全部时才扇出。",
+            resultPolicy: "结果处理",
+            inboxOnly: "只入池",
+            wakeEach: "每条唤醒",
+            taskPlaceholder: "写给邻居设备的任务…",
+            taskCapabilities: "需要能力",
+            sendTask: "派发给当前设备",
+            sendTaskAll: "派发给全部",
+            noTasks: "暂无邻居任务。",
             advanced: "高级诊断与三方应用接入",
             advancedHint: "保留 OpenAI/Anthropic 兼容、Headscale、手工 peer 和原始诊断；普通邻居连接无需查看这些项。",
         }
@@ -709,6 +754,10 @@ env:
             localNickname: "Local nickname",
             remoteNickname: "Remote nickname",
             role: "Local role",
+            capabilityTags: "Device abilities",
+            capabilityPlaceholder: "e.g. research, mac, gpu",
+            deviceDescription: "Ability note",
+            descriptionPlaceholder: "One sentence about what this device is good at",
             primary: "Primary",
             companion: "Companion",
             save: "Save",
@@ -717,6 +766,16 @@ env:
             send: "Send",
             sendWake: "Send & wake supervisor",
             messagePlaceholder: "Message a neighbor device…",
+            tasks: "Neighbor tasks",
+            taskHint: "The primary device routes by ability tags; fan-out happens only when sending to all.",
+            resultPolicy: "Result handling",
+            inboxOnly: "Inbox only",
+            wakeEach: "Wake per result",
+            taskPlaceholder: "Task for neighbor devices…",
+            taskCapabilities: "Required abilities",
+            sendTask: "Send to selected",
+            sendTaskAll: "Send to all",
+            noTasks: "No neighbor tasks yet.",
             advanced: "Advanced diagnostics and third-party app API",
             advancedHint: "OpenAI/Anthropic compatibility, Headscale, manual peers, and raw diagnostics stay here; ordinary neighbor setup does not need them.",
         };
@@ -838,7 +897,7 @@ env:
         setLoading(true);
         setLoadError(null);
         try {
-            const [configRes, statusRes, peerRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes] = await Promise.all([
+            const [configRes, statusRes, peerRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes, neighborTaskSettingsRes, neighborTasksRes] = await Promise.all([
                 fetch("/api/config-registry/network-supervisor-runtime", { cache: "no-store" }),
                 fetch("/api/network-supervisor/status", { cache: "no-store" }),
                 fetch("/api/network-supervisor/peers", { cache: "no-store" }),
@@ -846,8 +905,10 @@ env:
                 fetch("/api/network-supervisor/neighbors/status", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/candidates", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/links", { cache: "no-store" }),
+                fetch("/api/network-supervisor/neighbors/task-settings", { cache: "no-store" }),
+                fetch("/api/network-supervisor/neighbors/tasks?limit=20", { cache: "no-store" }),
             ]);
-            const [configData, statusData, peerData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData] = await Promise.all([
+            const [configData, statusData, peerData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData, neighborTaskSettingsData, neighborTasksData] = await Promise.all([
                 configRes.json().catch(() => ({})),
                 statusRes.json().catch(() => ({})),
                 peerRes.json().catch(() => ({})),
@@ -855,6 +916,8 @@ env:
                 neighborStatusRes.json().catch(() => ({})),
                 neighborCandidatesRes.json().catch(() => ({})),
                 neighborLinksRes.json().catch(() => ({})),
+                neighborTaskSettingsRes.json().catch(() => ({})),
+                neighborTasksRes.json().catch(() => ({})),
             ]);
             if (!configRes.ok)
                 throw new Error(detail(configData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d2fb12f")));
@@ -870,6 +933,10 @@ env:
                 throw new Error(detail(neighborCandidatesData, "附近设备读取失败"));
             if (!neighborLinksRes.ok)
                 throw new Error(detail(neighborLinksData, "已连接设备读取失败"));
+            if (!neighborTaskSettingsRes.ok)
+                throw new Error(detail(neighborTaskSettingsData, "邻居任务设置读取失败"));
+            if (!neighborTasksRes.ok)
+                throw new Error(detail(neighborTasksData, "邻居任务读取失败"));
             setConfig(mergeConfig((configData as {
                 data?: Partial<RuntimeConfig>;
             }).data));
@@ -881,6 +948,9 @@ env:
             const nextLinks = Array.isArray((neighborLinksData as { items?: NeighborLink[] }).items) ? (neighborLinksData as { items: NeighborLink[] }).items : [];
             setNeighborLinks(nextLinks);
             setSelectedNeighborLinkId((prev) => prev && nextLinks.some((item) => item.linkId === prev) ? prev : (nextLinks[0]?.linkId || ""));
+            const taskSettings = neighborTaskSettingsData as Partial<NeighborTaskSettings>;
+            setNeighborTaskSettings({ resultWakePolicy: taskSettings.resultWakePolicy === "per_result" ? "per_result" : "inbox" });
+            setNeighborTasks(Array.isArray((neighborTasksData as { items?: NeighborTaskItem[] }).items) ? (neighborTasksData as { items: NeighborTaskItem[] }).items : []);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k105089b2");
@@ -911,7 +981,7 @@ env:
     }, [toast]);
     React.useEffect(() => {
         if (!selectedNeighborLink) {
-            setLinkDraft({ localNickname: "", remoteNickname: "", localRole: "primary" });
+            setLinkDraft({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "" });
             setNeighborTimeline([]);
             return;
         }
@@ -919,6 +989,8 @@ env:
             localNickname: selectedNeighborLink.localNickname || "",
             remoteNickname: selectedNeighborLink.remoteNickname || selectedNeighborLink.displayName || "",
             localRole: selectedNeighborLink.localRole || "primary",
+            capabilityTags: joinCsv(selectedNeighborLink.capabilityTags),
+            description: selectedNeighborLink.description || "",
         });
         void loadNeighborTimeline(selectedNeighborLink.linkId);
     }, [loadNeighborTimeline, selectedNeighborLink]);
@@ -1038,6 +1110,56 @@ env:
             setNeighborBusy("");
         }
     }, [loadNeighborTimeline, neighborMessage, selectedNeighborLink, toast]);
+    const saveNeighborTaskSettings = React.useCallback(async (resultWakePolicy: NeighborTaskSettings["resultWakePolicy"]) => {
+        setNeighborTaskSettings({ resultWakePolicy });
+        try {
+            const response = await fetch("/api/network-supervisor/neighbors/task-settings", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ resultWakePolicy }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "邻居任务设置保存失败"));
+            setNeighborTaskSettings({ resultWakePolicy: payload.resultWakePolicy === "per_result" ? "per_result" : "inbox" });
+        } catch (error) {
+            toast({ variant: "destructive", title: "邻居任务设置保存失败", description: error instanceof Error ? error.message : String(error) });
+            await loadAll();
+        }
+    }, [loadAll, toast]);
+    const dispatchNeighborTask = React.useCallback(async (targetMode: "selected" | "all") => {
+        if (!neighborTaskBody.trim())
+            return;
+        if (targetMode === "selected" && !selectedNeighborLink)
+            return;
+        setNeighborBusy(targetMode === "all" ? "taskAll" : "task");
+        try {
+            const response = await fetch("/api/network-supervisor/neighbors/tasks", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    body: neighborTaskBody.trim(),
+                    target: targetMode === "all" ? "all" : undefined,
+                    linkId: targetMode === "selected" ? selectedNeighborLink?.linkId : undefined,
+                    requiredCapabilities: csv(neighborTaskCapabilities),
+                    wakePolicy: neighborTaskSettings.resultWakePolicy,
+                }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok)
+                throw new Error(detail(payload, "邻居任务派发失败"));
+            setNeighborTaskBody("");
+            const tasksResponse = await fetch("/api/network-supervisor/neighbors/tasks?limit=20", { cache: "no-store" });
+            const tasksPayload = await tasksResponse.json().catch(() => ({}));
+            setNeighborTasks(Array.isArray((tasksPayload as { items?: NeighborTaskItem[] }).items) ? (tasksPayload as { items: NeighborTaskItem[] }).items : []);
+            if (selectedNeighborLink)
+                await loadNeighborTimeline(selectedNeighborLink.linkId);
+        } catch (error) {
+            toast({ variant: "destructive", title: "邻居任务派发失败", description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            setNeighborBusy("");
+        }
+    }, [loadNeighborTimeline, neighborTaskBody, neighborTaskCapabilities, neighborTaskSettings.resultWakePolicy, selectedNeighborLink, toast]);
     const setNode = React.useCallback((patch: Partial<RuntimeConfig["node"]>) => {
         setConfig((prev) => ({ ...prev, node: { ...prev.node, ...patch } }));
     }, []);
@@ -1484,6 +1606,9 @@ env:
                                                 <div className="min-w-0">
                                                     <div className="truncate text-sm font-semibold">{link.remoteNickname || link.displayName || link.peerId}</div>
                                                     <div className={`truncate text-xs ${selectedNeighborLink?.linkId === link.linkId ? "text-slate-300" : "text-slate-500"}`}>{link.localRole === "primary" ? neighborCopy.primary : neighborCopy.companion} · {link.online ? "online" : "offline"}</div>
+                                                    {link.capabilityTags?.length ? (
+                                                        <div className={`mt-1 truncate text-[11px] ${selectedNeighborLink?.linkId === link.linkId ? "text-slate-300" : "text-slate-500"}`}>{link.capabilityTags.join(" · ")}</div>
+                                                    ) : null}
                                                 </div>
                                                 <Badge variant={link.online ? "default" : "secondary"}>{link.online ? "●" : "○"}</Badge>
                                             </div>
@@ -1517,6 +1642,16 @@ env:
                                         </Select>
                                     </div>
                                 </div>
+                                <div className="mt-3 grid gap-3 sm:grid-cols-[0.8fr_1.2fr]">
+                                    <div className="grid gap-2">
+                                        <Label>{neighborCopy.capabilityTags}</Label>
+                                        <Input value={linkDraft.capabilityTags} onChange={(event) => setLinkDraft((prev) => ({ ...prev, capabilityTags: event.target.value }))} placeholder={neighborCopy.capabilityPlaceholder}/>
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label>{neighborCopy.deviceDescription}</Label>
+                                        <Input value={linkDraft.description} onChange={(event) => setLinkDraft((prev) => ({ ...prev, description: event.target.value }))} placeholder={neighborCopy.descriptionPlaceholder}/>
+                                    </div>
+                                </div>
                                 <div className="mt-3 flex justify-end gap-2">
                                     <Button variant="outline" onClick={() => void revokeNeighborLink(selectedNeighborLink.linkId)} disabled={neighborBusy === "revoke"}>{neighborCopy.revoke}</Button>
                                     <Button onClick={() => void saveNeighborLink()} disabled={neighborBusy === "link"}>{neighborCopy.save}</Button>
@@ -1540,6 +1675,52 @@ env:
                                 <Input value={neighborMessage} onChange={(event) => setNeighborMessage(event.target.value)} placeholder={neighborCopy.messagePlaceholder}/>
                                 <Button variant="outline" onClick={() => void sendNeighborMessage(false)} disabled={!selectedNeighborLink || neighborBusy === "send"}>{neighborCopy.send}</Button>
                                 <Button onClick={() => void sendNeighborMessage(true)} disabled={!selectedNeighborLink || neighborBusy === "sendWake"}>{neighborCopy.sendWake}</Button>
+                            </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                    <div className="text-sm font-semibold text-slate-900">{neighborCopy.tasks}</div>
+                                    <div className="mt-1 text-xs text-slate-500">{neighborCopy.taskHint}</div>
+                                </div>
+                                <div className="grid min-w-40 gap-1">
+                                    <Label className="text-xs">{neighborCopy.resultPolicy}</Label>
+                                    <Select value={neighborTaskSettings.resultWakePolicy} onValueChange={(value) => void saveNeighborTaskSettings(value === "per_result" ? "per_result" : "inbox")}>
+                                        <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="inbox">{neighborCopy.inboxOnly}</SelectItem>
+                                            <SelectItem value="per_result">{neighborCopy.wakeEach}</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                            <div className="grid gap-2">
+                                <Textarea value={neighborTaskBody} onChange={(event) => setNeighborTaskBody(event.target.value)} placeholder={neighborCopy.taskPlaceholder} rows={3}/>
+                                <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                                    <Input value={neighborTaskCapabilities} onChange={(event) => setNeighborTaskCapabilities(event.target.value)} placeholder={neighborCopy.taskCapabilities}/>
+                                    <Button variant="outline" onClick={() => void dispatchNeighborTask("selected")} disabled={!selectedNeighborLink || neighborBusy === "task" || !neighborTaskBody.trim()}>{neighborCopy.sendTask}</Button>
+                                    <Button onClick={() => void dispatchNeighborTask("all")} disabled={!neighborLinks.length || neighborBusy === "taskAll" || !neighborTaskBody.trim()}>{neighborCopy.sendTaskAll}</Button>
+                                </div>
+                            </div>
+                            <div className="mt-4 max-h-64 space-y-2 overflow-auto rounded-2xl bg-slate-50 p-3">
+                                {neighborTasks.length ? neighborTasks.map((task) => (
+                                    <div key={task.taskId} className="rounded-2xl bg-white px-3 py-3 text-sm">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="truncate font-semibold text-slate-900">{task.title || task.taskId}</div>
+                                                <div className="mt-1 truncate text-xs text-slate-500">{task.taskId} · {task.requiredCapabilities?.join(", ") || "auto"}</div>
+                                            </div>
+                                            <Badge variant={task.status === "completed" ? "default" : "secondary"}>{task.status || "queued"}</Badge>
+                                        </div>
+                                        <div className="mt-2 grid gap-2 text-xs text-slate-500 sm:grid-cols-2">
+                                            <div>{task.assignments?.length || 0} assignments</div>
+                                            <div>{task.results?.length || 0} results · {task.wakePolicy || "inbox"}</div>
+                                        </div>
+                                    </div>
+                                )) : (
+                                    <div className="py-8 text-center text-sm text-slate-500">{neighborCopy.noTasks}</div>
+                                )}
                             </div>
                         </div>
                     </div>

@@ -45,6 +45,7 @@ from runtimes.network_supervisor.compat_wire_emitter import (
 from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
 from runtimes.network_supervisor.service import network_supervisor_service
 from runtimes.network_supervisor.neighbor import network_neighbor_service
+from runtimes.network_supervisor.neighbor_tasks import network_neighbor_task_service
 from core.headscale_admin import (
     clear_headscale_api_key,
     client_from_provider,
@@ -745,6 +746,44 @@ async def post_network_supervisor_neighbors_pairing_consume(payload: dict[str, A
     )
 
 
+@router.get("/network-supervisor/neighbors/task-settings")
+async def get_network_supervisor_neighbor_task_settings():
+    return network_neighbor_task_service.settings_payload()
+
+
+@router.patch("/network-supervisor/neighbors/task-settings")
+async def patch_network_supervisor_neighbor_task_settings(payload: dict[str, Any] | None = None):
+    return network_neighbor_task_service.update_settings(dict(payload or {}))
+
+
+@router.post("/network-supervisor/neighbors/tasks")
+async def post_network_supervisor_neighbor_task(payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return await network_neighbor_task_service.dispatch_task(
+        title=str(body.get("title") or "").strip() or None,
+        body=str(body.get("body") or body.get("task") or ""),
+        target=str(body.get("target") or "").strip() or None,
+        link_id=str(body.get("linkId") or "").strip() or None,
+        link_ids=[str(item).strip() for item in list(body.get("linkIds") or []) if str(item).strip()],
+        required_capabilities=body.get("requiredCapabilities") or body.get("capabilityTags"),
+        wake_policy=str(body.get("wakePolicy") or "").strip() or None,
+        origin_session_id=str(body.get("originSessionId") or "").strip() or None,
+        origin_run_id=str(body.get("originRunId") or "").strip() or None,
+        workspace_binding=dict(body.get("workspaceBinding") or {}) if isinstance(body.get("workspaceBinding"), dict) else None,
+        max_assignments=int(body.get("maxAssignments") or 1),
+    )
+
+
+@router.get("/network-supervisor/neighbors/tasks")
+async def get_network_supervisor_neighbor_tasks(limit: int = Query(default=50)):
+    return network_neighbor_task_service.list_tasks(limit=limit)
+
+
+@router.get("/network-supervisor/neighbors/tasks/{task_id}")
+async def get_network_supervisor_neighbor_task(task_id: str):
+    return network_neighbor_task_service.read_task(task_id)
+
+
 @router.patch("/network-supervisor/neighbors/{link_id}")
 async def patch_network_supervisor_neighbor_link(link_id: str, payload: dict[str, Any] | None = None):
     return network_neighbor_service.update_link(link_id, dict(payload or {}))
@@ -986,6 +1025,16 @@ async def post_network_supervisor_peer_neighbor_message(
 ):
     network_supervisor_service.verify_inbound_peer_token(x_v8_peer_token)
     response = await network_neighbor_service.handle_peer_message(envelope)
+    return response.model_dump(by_alias=True)
+
+
+@router.post("/network-supervisor/peer/neighbors/tasks")
+async def post_network_supervisor_peer_neighbor_task(
+    envelope: NetworkEnvelope,
+    x_v8_peer_token: str | None = Header(default=None, alias="X-V8-Peer-Token"),
+):
+    network_supervisor_service.verify_inbound_peer_token(x_v8_peer_token)
+    response = await network_neighbor_task_service.handle_task_envelope(envelope)
     return response.model_dump(by_alias=True)
 
 

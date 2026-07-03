@@ -84,6 +84,26 @@ def _message_text(value: str | None) -> tuple[str, str, bool]:
     return body, preview, truncated
 
 
+def _clean_capability_tags(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.replace("，", ",").replace("；", ",").replace("\n", ",").split(",")
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        tag = str(item or "").strip().lower().replace(" ", "_")
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        tags.append(tag[:40])
+        if len(tags) >= 12:
+            break
+    return tags
+
+
 class NetworkNeighborService:
     def __init__(self) -> None:
         self._wake_queue_task: asyncio.Task | None = None
@@ -142,12 +162,24 @@ class NetworkNeighborService:
             workspace_binding = dict(payload.get("workspaceBinding") or {})
             if not link or not inbound_message:
                 raise RuntimeError("Wake queue item is missing link or inbound message payload")
-            await self._execute_neighbor_supervisor_message(
-                link=link,
-                inbound_message=inbound_message,
-                workspace_binding=workspace_binding,
-                run_id=str(item.get("runId") or item.get("run_id") or ""),
-            )
+            if str(payload.get("kind") or "").strip() == "neighbor_task_assignment":
+                from runtimes.network_supervisor.neighbor_tasks import network_neighbor_task_service
+
+                await network_neighbor_task_service.execute_assignment(
+                    link=link,
+                    task=dict(payload.get("task") or {}),
+                    assignment=dict(payload.get("assignment") or {}),
+                    inbound_message=inbound_message,
+                    workspace_binding=workspace_binding,
+                    run_id=str(item.get("runId") or item.get("run_id") or ""),
+                )
+            else:
+                await self._execute_neighbor_supervisor_message(
+                    link=link,
+                    inbound_message=inbound_message,
+                    workspace_binding=workspace_binding,
+                    run_id=str(item.get("runId") or item.get("run_id") or ""),
+                )
             db.complete_network_neighbor_wake_item(queue_id)
         except Exception as exc:
             db.fail_network_neighbor_wake_item(queue_id, error=str(exc), retry_delay_seconds=30)
@@ -549,12 +581,15 @@ class NetworkNeighborService:
         for link in db.list_network_neighbor_links():
             peer_id = str(link.get("peerId") or "").strip()
             peer = peer_views.get(peer_id, {})
+            metadata = dict(link.get("metadata") or {})
             items.append(
                 {
                     **link,
                     "online": bool(peer.get("online")),
                     "lastSeenAt": peer.get("lastSeenAt") or link.get("lastSeenAt"),
                     "displayName": peer.get("displayName") or link.get("remoteNickname") or peer_id,
+                    "capabilityTags": _clean_capability_tags(metadata.get("capabilityTags") or metadata.get("capability_tags")),
+                    "description": str(metadata.get("description") or "").strip(),
                 }
             )
         return {"ok": True, "items": items}
@@ -575,6 +610,11 @@ class NetworkNeighborService:
                 remote_workspace_path=str(workspace_payload.get("remoteWorkspacePath") or workspace_payload.get("workspacePath") or "").strip() or None,
                 configured_binding=workspace_payload,
             )
+        metadata = dict(link.get("metadata") or {})
+        if "capabilityTags" in payload or "capability_tags" in payload:
+            metadata["capabilityTags"] = _clean_capability_tags(payload.get("capabilityTags", payload.get("capability_tags")))
+        if "description" in payload:
+            metadata["description"] = str(payload.get("description") or "").strip()[:240]
         updated = db.upsert_network_neighbor_link(
             link_id=str(link.get("linkId") or link_id),
             peer_id=str(link.get("peerId") or ""),
@@ -584,7 +624,7 @@ class NetworkNeighborService:
             remote_role=next_remote_role,
             trust_status=str(link.get("trustStatus") or "trusted"),
             workspace_binding=workspace_binding,
-            metadata=dict(link.get("metadata") or {}),
+            metadata=metadata,
             last_seen_at=str(link.get("lastSeenAt") or "") or None,
         )
         return {"ok": True, "link": updated}
@@ -670,6 +710,10 @@ class NetworkNeighborService:
         return {"ok": True, "message": local_message, "delivery": ack}
 
     async def handle_peer_message(self, envelope: NetworkEnvelope) -> NetworkEnvelope:
+        if str(envelope.message_type or "").strip().startswith("neighbor.task."):
+            from runtimes.network_supervisor.neighbor_tasks import network_neighbor_task_service
+
+            return await network_neighbor_task_service.handle_task_envelope(envelope)
         network_supervisor_service.verify_envelope(envelope)
         link = self._link_for_peer_or_404(envelope.from_peer_id)
         payload = dict(envelope.payload or {})

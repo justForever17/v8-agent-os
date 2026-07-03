@@ -151,6 +151,7 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "http_request",
         ),
     ),
+    ("network_supervisor", ("network_neighbor_broker",)),
     (
         "workspace_file",
         (

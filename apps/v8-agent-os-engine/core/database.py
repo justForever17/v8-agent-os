@@ -459,6 +459,72 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_neighbor_tasks (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    body TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    target_mode TEXT NOT NULL DEFAULT 'auto',
+                    origin_session_id TEXT,
+                    origin_run_id TEXT,
+                    wake_policy TEXT NOT NULL DEFAULT 'inbox',
+                    required_capabilities_json TEXT,
+                    workspace_binding_json TEXT,
+                    metadata_json TEXT,
+                    deadline_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_neighbor_assignments (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    link_id TEXT NOT NULL,
+                    peer_id TEXT NOT NULL,
+                    parent_assignment_id TEXT,
+                    depth INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    body TEXT NOT NULL,
+                    required_capabilities_json TEXT,
+                    wake_policy TEXT NOT NULL DEFAULT 'inbox',
+                    run_id TEXT,
+                    result_id TEXT,
+                    error TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TIMESTAMP,
+                    FOREIGN KEY (task_id) REFERENCES network_neighbor_tasks (id) ON DELETE CASCADE,
+                    FOREIGN KEY (link_id) REFERENCES network_neighbor_links (id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_neighbor_task_results (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    assignment_id TEXT NOT NULL,
+                    link_id TEXT NOT NULL,
+                    peer_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    summary TEXT,
+                    body TEXT,
+                    needs_attention INTEGER NOT NULL DEFAULT 0,
+                    requested_capabilities_json TEXT,
+                    handoff_reason TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (task_id) REFERENCES network_neighbor_tasks (id) ON DELETE CASCADE,
+                    FOREIGN KEY (assignment_id) REFERENCES network_neighbor_assignments (id) ON DELETE CASCADE,
+                    FOREIGN KEY (link_id) REFERENCES network_neighbor_links (id) ON DELETE CASCADE
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS network_relay_outbox (
                     id TEXT PRIMARY KEY,
                     target_peer_id TEXT NOT NULL,
@@ -1076,6 +1142,13 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_state ON network_neighbor_wake_queue (state, available_at ASC, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_link ON network_neighbor_wake_queue (link_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_run ON network_neighbor_wake_queue (run_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_tasks_status ON network_neighbor_tasks (status, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_tasks_origin_session ON network_neighbor_tasks (origin_session_id, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_assignments_task ON network_neighbor_assignments (task_id, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_assignments_link ON network_neighbor_assignments (link_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_assignments_status ON network_neighbor_assignments (status, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_task_results_task ON network_neighbor_task_results (task_id, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_task_results_assignment ON network_neighbor_task_results (assignment_id, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_relay_outbox_state ON network_relay_outbox (state, available_at ASC, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_relay_outbox_target_peer ON network_relay_outbox (target_peer_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_relay_outbox_message ON network_relay_outbox (local_message_id)')
@@ -4299,6 +4372,371 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, params)
             return [self._hydrate_network_neighbor_wake_queue_row(dict(row)) for row in cursor.fetchall()]
+
+    def _hydrate_network_neighbor_task_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["taskId"] = data.get("id")
+        data["targetMode"] = data.get("target_mode") or "auto"
+        data["originSessionId"] = data.get("origin_session_id")
+        data["originRunId"] = data.get("origin_run_id")
+        data["wakePolicy"] = data.get("wake_policy") or "inbox"
+        data["requiredCapabilities"] = json.loads(data["required_capabilities_json"]) if data.get("required_capabilities_json") else []
+        data["workspaceBinding"] = json.loads(data["workspace_binding_json"]) if data.get("workspace_binding_json") else {}
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        data["deadlineAt"] = data.get("deadline_at")
+        data["createdAt"] = data.get("created_at")
+        data["updatedAt"] = data.get("updated_at")
+        data["completedAt"] = data.get("completed_at")
+        return data
+
+    def upsert_network_neighbor_task(
+        self,
+        *,
+        task_id: str,
+        body: str,
+        title: str | None = None,
+        status: str = "queued",
+        target_mode: str = "auto",
+        origin_session_id: str | None = None,
+        origin_run_id: str | None = None,
+        wake_policy: str = "inbox",
+        required_capabilities: Optional[list[str]] = None,
+        workspace_binding: Optional[dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        deadline_at: str | None = None,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO network_neighbor_tasks
+                    (id, title, body, status, target_mode, origin_session_id, origin_run_id, wake_policy, required_capabilities_json, workspace_binding_json, metadata_json, deadline_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        body = excluded.body,
+                        status = excluded.status,
+                        target_mode = excluded.target_mode,
+                        origin_session_id = COALESCE(excluded.origin_session_id, network_neighbor_tasks.origin_session_id),
+                        origin_run_id = COALESCE(excluded.origin_run_id, network_neighbor_tasks.origin_run_id),
+                        wake_policy = excluded.wake_policy,
+                        required_capabilities_json = excluded.required_capabilities_json,
+                        workspace_binding_json = excluded.workspace_binding_json,
+                        metadata_json = excluded.metadata_json,
+                        deadline_at = COALESCE(excluded.deadline_at, network_neighbor_tasks.deadline_at),
+                        updated_at = excluded.updated_at
+                    ''',
+                    (
+                        task_id,
+                        title,
+                        body,
+                        status or "queued",
+                        target_mode or "auto",
+                        origin_session_id,
+                        origin_run_id,
+                        wake_policy or "inbox",
+                        json.dumps(to_jsonable(required_capabilities or []), ensure_ascii=False),
+                        json.dumps(to_jsonable(workspace_binding or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        deadline_at,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_task(task_id) or {}
+
+    def get_network_neighbor_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(task_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_tasks WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_task_row(dict(row)) if row else None
+
+    def update_network_neighbor_task_status(self, task_id: str, *, status: str, completed: bool = False) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE network_neighbor_tasks
+                    SET status = ?,
+                        completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (status, 1 if completed else 0, now_iso, now_iso, task_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_task(task_id)
+
+    def list_network_neighbor_tasks(self, *, statuses: Optional[list[str]] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        normalized_statuses = [str(item).strip() for item in (statuses or []) if str(item).strip()]
+        params: list[Any] = []
+        query = 'SELECT * FROM network_neighbor_tasks WHERE 1=1'
+        if normalized_statuses:
+            placeholders = ",".join("?" for _ in normalized_statuses)
+            query += f' AND status IN ({placeholders})'
+            params.extend(normalized_statuses)
+        query += ' ORDER BY updated_at DESC, created_at DESC LIMIT ?'
+        params.append(max(1, min(int(limit or 50), 200)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_network_neighbor_task_row(dict(row)) for row in cursor.fetchall()]
+
+    def _hydrate_network_neighbor_assignment_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["assignmentId"] = data.get("id")
+        data["taskId"] = data.get("task_id")
+        data["linkId"] = data.get("link_id")
+        data["peerId"] = data.get("peer_id")
+        data["parentAssignmentId"] = data.get("parent_assignment_id")
+        data["requiredCapabilities"] = json.loads(data["required_capabilities_json"]) if data.get("required_capabilities_json") else []
+        data["wakePolicy"] = data.get("wake_policy") or "inbox"
+        data["runId"] = data.get("run_id")
+        data["resultId"] = data.get("result_id")
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        data["createdAt"] = data.get("created_at")
+        data["updatedAt"] = data.get("updated_at")
+        data["completedAt"] = data.get("completed_at")
+        data["depth"] = int(data.get("depth") or 0)
+        return data
+
+    def upsert_network_neighbor_assignment(
+        self,
+        *,
+        assignment_id: str,
+        task_id: str,
+        link_id: str,
+        peer_id: str,
+        body: str,
+        parent_assignment_id: str | None = None,
+        depth: int = 0,
+        status: str = "queued",
+        required_capabilities: Optional[list[str]] = None,
+        wake_policy: str = "inbox",
+        run_id: str | None = None,
+        result_id: str | None = None,
+        error: str | None = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO network_neighbor_assignments
+                    (id, task_id, link_id, peer_id, parent_assignment_id, depth, status, body, required_capabilities_json, wake_policy, run_id, result_id, error, metadata_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        status = excluded.status,
+                        body = excluded.body,
+                        required_capabilities_json = excluded.required_capabilities_json,
+                        wake_policy = excluded.wake_policy,
+                        run_id = COALESCE(excluded.run_id, network_neighbor_assignments.run_id),
+                        result_id = COALESCE(excluded.result_id, network_neighbor_assignments.result_id),
+                        error = COALESCE(excluded.error, network_neighbor_assignments.error),
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    ''',
+                    (
+                        assignment_id,
+                        task_id,
+                        link_id,
+                        peer_id,
+                        parent_assignment_id,
+                        max(0, int(depth or 0)),
+                        status or "queued",
+                        body,
+                        json.dumps(to_jsonable(required_capabilities or []), ensure_ascii=False),
+                        wake_policy or "inbox",
+                        run_id,
+                        result_id,
+                        error,
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_assignment(assignment_id) or {}
+
+    def get_network_neighbor_assignment(self, assignment_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(assignment_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_assignments WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_assignment_row(dict(row)) if row else None
+
+    def update_network_neighbor_assignment_status(
+        self,
+        assignment_id: str,
+        *,
+        status: str,
+        run_id: str | None = None,
+        result_id: str | None = None,
+        error: str | None = None,
+        completed: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE network_neighbor_assignments
+                    SET status = ?,
+                        run_id = COALESCE(?, run_id),
+                        result_id = COALESCE(?, result_id),
+                        error = COALESCE(?, error),
+                        completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,
+                        updated_at = ?
+                    WHERE id = ?
+                    ''',
+                    (status, run_id, result_id, error, 1 if completed else 0, now_iso, now_iso, assignment_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_assignment(assignment_id)
+
+    def list_network_neighbor_assignments(
+        self,
+        *,
+        task_id: str | None = None,
+        link_id: str | None = None,
+        statuses: Optional[list[str]] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        params: list[Any] = []
+        query = 'SELECT * FROM network_neighbor_assignments WHERE 1=1'
+        if task_id:
+            query += ' AND task_id = ?'
+            params.append(task_id)
+        if link_id:
+            query += ' AND link_id = ?'
+            params.append(link_id)
+        normalized_statuses = [str(item).strip() for item in (statuses or []) if str(item).strip()]
+        if normalized_statuses:
+            placeholders = ",".join("?" for _ in normalized_statuses)
+            query += f' AND status IN ({placeholders})'
+            params.extend(normalized_statuses)
+        query += ' ORDER BY created_at ASC LIMIT ?'
+        params.append(max(1, min(int(limit or 100), 500)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_network_neighbor_assignment_row(dict(row)) for row in cursor.fetchall()]
+
+    def _hydrate_network_neighbor_task_result_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["resultId"] = data.get("id")
+        data["taskId"] = data.get("task_id")
+        data["assignmentId"] = data.get("assignment_id")
+        data["linkId"] = data.get("link_id")
+        data["peerId"] = data.get("peer_id")
+        data["needsAttention"] = bool(data.get("needs_attention"))
+        data["requestedCapabilities"] = json.loads(data["requested_capabilities_json"]) if data.get("requested_capabilities_json") else []
+        data["handoffReason"] = data.get("handoff_reason")
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        data["createdAt"] = data.get("created_at")
+        return data
+
+    def add_network_neighbor_task_result(
+        self,
+        *,
+        result_id: str,
+        task_id: str,
+        assignment_id: str,
+        link_id: str,
+        peer_id: str,
+        status: str = "completed",
+        summary: str | None = None,
+        body: str | None = None,
+        needs_attention: bool = False,
+        requested_capabilities: Optional[list[str]] = None,
+        handoff_reason: str | None = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT OR IGNORE INTO network_neighbor_task_results
+                    (id, task_id, assignment_id, link_id, peer_id, status, summary, body, needs_attention, requested_capabilities_json, handoff_reason, metadata_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        result_id,
+                        task_id,
+                        assignment_id,
+                        link_id,
+                        peer_id,
+                        status or "completed",
+                        summary,
+                        body,
+                        1 if needs_attention else 0,
+                        json.dumps(to_jsonable(requested_capabilities or []), ensure_ascii=False),
+                        handoff_reason,
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_neighbor_task_result(result_id) or {}
+
+    def get_network_neighbor_task_result(self, result_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(result_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_neighbor_task_results WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_neighbor_task_result_row(dict(row)) if row else None
+
+    def list_network_neighbor_task_results(
+        self,
+        *,
+        task_id: str | None = None,
+        assignment_id: str | None = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        params: list[Any] = []
+        query = 'SELECT * FROM network_neighbor_task_results WHERE 1=1'
+        if task_id:
+            query += ' AND task_id = ?'
+            params.append(task_id)
+        if assignment_id:
+            query += ' AND assignment_id = ?'
+            params.append(assignment_id)
+        query += ' ORDER BY created_at ASC LIMIT ?'
+        params.append(max(1, min(int(limit or 100), 500)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_network_neighbor_task_result_row(dict(row)) for row in cursor.fetchall()]
 
     def _hydrate_network_relay_outbox_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         data = dict(row)

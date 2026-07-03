@@ -101,6 +101,50 @@ class NetworkDelegationConfig(BaseModel):
     default_timeout_seconds: int = Field(default=120, alias="defaultTimeoutSeconds")
 
 
+class NetworkRelayAdapterConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    kind: Literal["self_hosted", "cloudflare"] = "self_hosted"
+    display_name: str = Field(default="", alias="displayName")
+    enabled: bool = True
+    base_url: str = Field(default="", alias="baseUrl")
+    websocket_url: Optional[str] = Field(default=None, alias="websocketUrl")
+    rendezvous_path: str = Field(default="/v1/relay/rendezvous", alias="rendezvousPath")
+    mailbox_path: str = Field(default="/v1/relay/mailbox", alias="mailboxPath")
+    websocket_path: str = Field(default="/v1/relay/ws", alias="websocketPath")
+    cloudflare_account_hint: str = Field(default="", alias="cloudflareAccountHint")
+    cloudflare_worker_name: str = Field(default="", alias="cloudflareWorkerName")
+    cloudflare_queue_name: str = Field(default="", alias="cloudflareQueueName")
+    cloudflare_durable_object_namespace: str = Field(default="", alias="cloudflareDurableObjectNamespace")
+
+
+class NetworkRelayConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    enabled: bool = False
+    active_adapter_id: str = Field(default="self-hosted", alias="activeAdapterId")
+    protocol_version: str = Field(default="v8-relay.v1", alias="protocolVersion")
+    end_to_end_envelope_required: bool = Field(default=True, alias="endToEndEnvelopeRequired")
+    store_and_forward_required: bool = Field(default=True, alias="storeAndForwardRequired")
+    default_ttl_seconds: int = Field(default=300, alias="defaultTtlSeconds")
+    max_payload_bytes: int = Field(default=262144, alias="maxPayloadBytes")
+    adapters: List[NetworkRelayAdapterConfig] = Field(
+        default_factory=lambda: [
+            NetworkRelayAdapterConfig(
+                id="self-hosted",
+                kind="self_hosted",
+                displayName="Self-hosted V8 Relay",
+            ),
+            NetworkRelayAdapterConfig(
+                id="cloudflare",
+                kind="cloudflare",
+                displayName="Cloudflare Workers Relay",
+            ),
+        ],
+    )
+
+
 class NetworkOpenAICompatConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -135,6 +179,7 @@ class NetworkSupervisorRuntimeConfig(BaseModel):
     trust: NetworkTrustConfig = Field(default_factory=NetworkTrustConfig)
     wake: NetworkWakeConfig = Field(default_factory=NetworkWakeConfig)
     delegation: NetworkDelegationConfig = Field(default_factory=NetworkDelegationConfig)
+    relay: NetworkRelayConfig = Field(default_factory=NetworkRelayConfig)
     openai_compat: NetworkOpenAICompatConfig = Field(default_factory=NetworkOpenAICompatConfig, alias="openaiCompat")
 
 

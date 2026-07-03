@@ -35,6 +35,7 @@ from runtimes.chat.runtime import chat_runtime
 from runtimes.network_supervisor.compat_ingress_filter import get_recent_compat_ingress_events
 from runtimes.network_supervisor.models import (
     NetworkEnvelope,
+    NetworkRelayConfig,
     NetworkSupervisorRuntimeConfig,
     NetworkTraceContext,
     NetworkPeerMutationPayload,
@@ -74,6 +75,23 @@ def _fingerprint(raw: str) -> str:
 
 def _generate_peer_id() -> str:
     return f"peer_{uuid.uuid4().hex[:12]}"
+
+
+def _join_url(base_url: str, path: str) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    suffix = str(path or "").strip() or "/"
+    if not suffix.startswith("/"):
+        suffix = f"/{suffix}"
+    return f"{base}{suffix}" if base else suffix
+
+
+def _default_ws_url(base_url: str, path: str) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if base.startswith("https://"):
+        base = f"wss://{base.removeprefix('https://')}"
+    elif base.startswith("http://"):
+        base = f"ws://{base.removeprefix('http://')}"
+    return _join_url(base, path)
 
 
 def _state_default() -> dict[str, Any]:
@@ -1126,6 +1144,132 @@ class NetworkSupervisorService:
             "reasons": reasons,
         }
 
+    def _relay_adapter_payload(self, relay_config: NetworkRelayConfig, adapter: Any) -> dict[str, Any]:
+        base_url = str(getattr(adapter, "base_url", "") or "").strip().rstrip("/")
+        websocket_url = str(getattr(adapter, "websocket_url", "") or "").strip()
+        adapter_id = str(getattr(adapter, "id", "") or "").strip()
+        kind = str(getattr(adapter, "kind", "") or "self_hosted").strip()
+        enabled = bool(getattr(adapter, "enabled", True))
+        configured = bool(base_url and enabled)
+        warnings: list[str] = []
+        if kind == "cloudflare":
+            warnings.append("cloudflare_adapter_requires_external_worker")
+        if relay_config.enabled and enabled and not base_url:
+            warnings.append("missing_relay_base_url")
+        return {
+            "id": adapter_id,
+            "kind": kind,
+            "displayName": str(getattr(adapter, "display_name", "") or adapter_id or kind).strip(),
+            "enabled": enabled,
+            "configured": configured,
+            "status": "ready" if relay_config.enabled and configured else ("needs_configuration" if relay_config.enabled and enabled else "disabled"),
+            "baseUrl": base_url,
+            "websocketUrl": websocket_url or (_default_ws_url(base_url, getattr(adapter, "websocket_path", "/v1/relay/ws")) if base_url else ""),
+            "endpoints": {
+                "wellKnown": _join_url(base_url, "/.well-known/v8-relay") if base_url else "",
+                "rendezvous": _join_url(base_url, getattr(adapter, "rendezvous_path", "/v1/relay/rendezvous")) if base_url else "",
+                "mailbox": _join_url(base_url, getattr(adapter, "mailbox_path", "/v1/relay/mailbox")) if base_url else "",
+                "websocket": websocket_url or (_default_ws_url(base_url, getattr(adapter, "websocket_path", "/v1/relay/ws")) if base_url else ""),
+            },
+            "cloudflare": {
+                "accountHint": str(getattr(adapter, "cloudflare_account_hint", "") or "").strip(),
+                "workerName": str(getattr(adapter, "cloudflare_worker_name", "") or "").strip(),
+                "queueName": str(getattr(adapter, "cloudflare_queue_name", "") or "").strip(),
+                "durableObjectNamespace": str(getattr(adapter, "cloudflare_durable_object_namespace", "") or "").strip(),
+            } if kind == "cloudflare" else None,
+            "warnings": warnings,
+        }
+
+    def relay_status_payload(self) -> dict[str, Any]:
+        config = self.get_config_model()
+        identity = self._local_identity()
+        relay_config = config.relay
+        adapters = [self._relay_adapter_payload(relay_config, item) for item in list(relay_config.adapters or [])]
+        active_adapter_id = str(relay_config.active_adapter_id or "").strip()
+        active_adapter = next((item for item in adapters if item.get("id") == active_adapter_id), None)
+        if active_adapter is None and adapters:
+            active_adapter = adapters[0]
+            active_adapter_id = str(active_adapter.get("id") or "")
+        reasons: list[str] = []
+        if not config.enabled:
+            reasons.append("runtime_disabled")
+        if not relay_config.enabled:
+            reasons.append("relay_disabled")
+        if not active_adapter:
+            reasons.append("no_relay_adapter")
+        elif not bool(active_adapter.get("configured")):
+            reasons.append("active_adapter_not_configured")
+        return {
+            "enabled": bool(relay_config.enabled),
+            "available": len(reasons) == 0,
+            "reasons": reasons,
+            "activeAdapterId": active_adapter_id,
+            "activeAdapter": active_adapter or {},
+            "adapters": adapters,
+            "protocol": {
+                "name": "V8 Relay",
+                "version": str(relay_config.protocol_version or "v8-relay.v1"),
+                "wireEnvelope": "network_supervisor.signed_envelope",
+                "delivery": ["rendezvous", "mailbox", "websocket"],
+                "trust": "short_code_pairing_then_peer_token",
+                "endToEndEnvelopeRequired": bool(relay_config.end_to_end_envelope_required),
+                "storeAndForwardRequired": bool(relay_config.store_and_forward_required),
+                "selfHostable": True,
+                "cloudflareAdapter": "optional",
+                "workspacePathPolicy": "remote_workspace_path_is_metadata_only",
+                "defaultTtlSeconds": int(relay_config.default_ttl_seconds or 300),
+                "maxPayloadBytes": int(relay_config.max_payload_bytes or 262144),
+            },
+            "localNode": {
+                "peerId": identity.get("peerId") or "",
+                "displayName": identity.get("displayName") or "",
+                "publicKeyFingerprint": identity.get("publicKeyFingerprint") or "",
+            },
+        }
+
+    def save_relay_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self.get_config_model()
+        incoming = dict(payload.get("relay") if "relay" in payload else payload)
+        current = config.relay.model_dump(by_alias=True)
+        if isinstance(incoming.get("adapters"), list):
+            current_adapters = {
+                str(item.get("id") or "").strip(): dict(item)
+                for item in list(current.get("adapters") or [])
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            }
+            for item in list(incoming.get("adapters") or []):
+                if not isinstance(item, dict):
+                    continue
+                adapter_id = str(item.get("id") or "").strip()
+                if not adapter_id:
+                    continue
+                current_adapters[adapter_id] = {**dict(current_adapters.get(adapter_id) or {}), **dict(item), "id": adapter_id}
+            incoming["adapters"] = list(current_adapters.values())
+        config.relay = NetworkRelayConfig.model_validate({**current, **incoming})
+        self.save_config_model(config)
+        return {"ok": True, "relay": config.relay.model_dump(by_alias=True), "status": self.relay_status_payload()}
+
+    def build_relay_probe_envelope(self, *, adapter_id: str | None = None) -> dict[str, Any]:
+        status = self.relay_status_payload()
+        identity = self._local_identity()
+        envelope = self.build_envelope(
+            message_type="relay.probe",
+            to_peer_id=str(identity.get("peerId") or ""),
+            payload={
+                "protocol": status.get("protocol"),
+                "adapterId": str(adapter_id or status.get("activeAdapterId") or "").strip(),
+                "intent": "relay_config_probe",
+            },
+            trace=NetworkTraceContext(),
+            expires_in_seconds=60,
+        )
+        return {
+            "ok": True,
+            "protocol": status.get("protocol"),
+            "adapter": status.get("activeAdapter"),
+            "envelope": envelope.model_dump(by_alias=True),
+        }
+
     def record_openai_compat_memory_adapter_status(self, result: dict[str, Any]) -> dict[str, Any]:
         state = self.read_state()
         payload = dict(result or {})
@@ -1182,6 +1326,7 @@ class NetworkSupervisorService:
                 "activeInbound": len([item for item in self._active_inbound_tasks.values() if not item.done()]),
                 "trackedCount": len(delegations),
             },
+            "relay": self.relay_status_payload(),
             "openaiCompat": {
                 "enabled": bool(config.openai_compat.enabled),
                 "adminRelayOnly": bool(config.openai_compat.admin_relay_only),

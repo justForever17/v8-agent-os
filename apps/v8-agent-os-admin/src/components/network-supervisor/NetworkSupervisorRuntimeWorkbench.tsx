@@ -57,6 +57,65 @@ type PeersPayload = {
     discoveredItems: PeerItem[];
     meshCandidates: MeshCandidate[];
 };
+type RelayAdapterConfig = {
+    id: string;
+    kind: "self_hosted" | "cloudflare";
+    displayName: string;
+    enabled: boolean;
+    baseUrl: string;
+    websocketUrl?: string | null;
+    rendezvousPath?: string;
+    mailboxPath?: string;
+    websocketPath?: string;
+    cloudflareAccountHint?: string;
+    cloudflareWorkerName?: string;
+    cloudflareQueueName?: string;
+    cloudflareDurableObjectNamespace?: string;
+};
+type RelayStatusAdapter = RelayAdapterConfig & {
+    configured?: boolean;
+    status?: string;
+    endpoints?: {
+        wellKnown?: string;
+        rendezvous?: string;
+        mailbox?: string;
+        websocket?: string;
+    };
+    warnings?: string[];
+    cloudflare?: {
+        accountHint?: string;
+        workerName?: string;
+        queueName?: string;
+        durableObjectNamespace?: string;
+    } | null;
+};
+type RelayConfig = {
+    enabled: boolean;
+    activeAdapterId: string;
+    protocolVersion: string;
+    endToEndEnvelopeRequired: boolean;
+    storeAndForwardRequired: boolean;
+    defaultTtlSeconds: number;
+    maxPayloadBytes: number;
+    adapters: RelayAdapterConfig[];
+};
+type RelayStatus = {
+    enabled: boolean;
+    available: boolean;
+    reasons: string[];
+    activeAdapterId: string;
+    activeAdapter?: RelayStatusAdapter;
+    adapters: RelayStatusAdapter[];
+    protocol?: {
+        version?: string;
+        selfHostable?: boolean;
+        cloudflareAdapter?: string;
+        endToEndEnvelopeRequired?: boolean;
+        storeAndForwardRequired?: boolean;
+        defaultTtlSeconds?: number;
+        maxPayloadBytes?: number;
+    };
+};
 type RuntimeConfig = {
     enabled: boolean;
     node: {
@@ -87,6 +146,7 @@ type RuntimeConfig = {
         maxConcurrent: number;
         defaultTimeoutSeconds: number;
     };
+    relay: RelayConfig;
     openaiCompat: {
         enabled: boolean;
         modelAliases: string[];
@@ -125,6 +185,7 @@ type RuntimeStatus = {
         activeInbound: number;
         trackedCount: number;
     };
+    relay?: RelayStatus;
     openaiCompat?: {
         enabled: boolean;
         adminRelayOnly: boolean;
@@ -231,6 +292,34 @@ type OpenAICompatToken = {
 type NetworkSupervisorRuntimeWorkbenchProps = {
     bridgeDiagnostics?: CanonicalConfigDiagnostics;
 };
+const DEFAULT_RELAY_ADAPTERS: RelayAdapterConfig[] = [
+    {
+        id: "self-hosted",
+        kind: "self_hosted",
+        displayName: "Self-hosted V8 Relay",
+        enabled: true,
+        baseUrl: "",
+        websocketUrl: "",
+        rendezvousPath: "/v1/relay/rendezvous",
+        mailboxPath: "/v1/relay/mailbox",
+        websocketPath: "/v1/relay/ws",
+    },
+    {
+        id: "cloudflare",
+        kind: "cloudflare",
+        displayName: "Cloudflare Workers Relay",
+        enabled: true,
+        baseUrl: "",
+        websocketUrl: "",
+        rendezvousPath: "/v1/relay/rendezvous",
+        mailboxPath: "/v1/relay/mailbox",
+        websocketPath: "/v1/relay/ws",
+        cloudflareAccountHint: "",
+        cloudflareWorkerName: "",
+        cloudflareQueueName: "",
+        cloudflareDurableObjectNamespace: "",
+    },
+];
 const DEFAULT_CONFIG: RuntimeConfig = {
     enabled: false,
     node: {
@@ -250,6 +339,16 @@ const DEFAULT_CONFIG: RuntimeConfig = {
     trust: { enrollmentMode: "manual", allowedScopes: [], trustedPeers: [] },
     wake: { enabled: true, ackTimeoutSeconds: 10 },
     delegation: { enabled: true, maxConcurrent: 2, defaultTimeoutSeconds: 120 },
+    relay: {
+        enabled: false,
+        activeAdapterId: "self-hosted",
+        protocolVersion: "v8-relay.v1",
+        endToEndEnvelopeRequired: true,
+        storeAndForwardRequired: true,
+        defaultTtlSeconds: 300,
+        maxPayloadBytes: 262144,
+        adapters: DEFAULT_RELAY_ADAPTERS,
+    },
     openaiCompat: {
         enabled: false,
         modelAliases: ["v8os"],
@@ -273,6 +372,23 @@ const EMPTY_STATUS: RuntimeStatus = {
     },
     discovery: { lanEnabled: false, wanBootstrapPeers: [], lastAnnounceAt: null, onlinePeerCount: 0, discoveredPeerCount: 0 },
     delegation: { enabled: false, maxConcurrent: 0, activeInbound: 0, trackedCount: 0 },
+    relay: {
+        enabled: false,
+        available: false,
+        reasons: ["relay_disabled"],
+        activeAdapterId: "self-hosted",
+        activeAdapter: undefined,
+        adapters: [],
+        protocol: {
+            version: "v8-relay.v1",
+            selfHostable: true,
+            cloudflareAdapter: "optional",
+            endToEndEnvelopeRequired: true,
+            storeAndForwardRequired: true,
+            defaultTtlSeconds: 300,
+            maxPayloadBytes: 262144,
+        },
+    },
     openaiCompat: {
         enabled: false,
         adminRelayOnly: true,
@@ -315,6 +431,25 @@ const csv = (value: string) => value.split(",").map((item) => item.trim()).filte
 const lines = (value: string) => value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
 const joinCsv = (value?: string[]) => Array.isArray(value) ? value.join(", ") : "";
 const joinLines = (value?: string[]) => Array.isArray(value) ? value.join("\n") : "";
+function normalizeRelayAdapters(value?: RelayAdapterConfig[]): RelayAdapterConfig[] {
+    const byId = new Map(DEFAULT_RELAY_ADAPTERS.map((item) => [item.id, { ...item }]));
+    for (const item of Array.isArray(value) ? value : []) {
+        const id = String(item?.id || "").trim();
+        if (!id)
+            continue;
+        const fallback = byId.get(id) || {};
+        byId.set(id, { ...fallback, ...item, id } as RelayAdapterConfig);
+    }
+    return Array.from(byId.values());
+}
+function mergeRelayConfig(value?: Partial<RelayConfig>): RelayConfig {
+    const payload = value || {};
+    return {
+        ...DEFAULT_CONFIG.relay,
+        ...payload,
+        adapters: normalizeRelayAdapters(payload.adapters as RelayAdapterConfig[] | undefined),
+    };
+}
 const detail = (value: unknown, fallback: string) => {
     if (!value || typeof value !== "object")
         return fallback;
@@ -331,6 +466,7 @@ function mergeConfig(value?: Partial<RuntimeConfig>): RuntimeConfig {
         trust: { ...DEFAULT_CONFIG.trust, ...(payload.trust || {}) },
         wake: { ...DEFAULT_CONFIG.wake, ...(payload.wake || {}) },
         delegation: { ...DEFAULT_CONFIG.delegation, ...(payload.delegation || {}) },
+        relay: mergeRelayConfig(payload.relay),
         openaiCompat: { ...DEFAULT_CONFIG.openaiCompat, ...(payload.openaiCompat || {}) },
     };
 }
@@ -340,12 +476,22 @@ function normalizeStatus(value: unknown): RuntimeStatus {
     const anthropicCompat = (payload.anthropicCompat || {}) as NonNullable<RuntimeStatus["anthropicCompat"]>;
     const compatIngress = (payload.compatIngress || {}) as NonNullable<RuntimeStatus["compatIngress"]>;
     const pendingExternalTools = (payload.pendingExternalTools || {}) as NonNullable<RuntimeStatus["pendingExternalTools"]>;
+    const relay = (payload.relay || {}) as NonNullable<RuntimeStatus["relay"]>;
     return {
         ...EMPTY_STATUS,
         ...payload,
         node: { ...EMPTY_STATUS.node, ...(payload.node || {}) },
         discovery: { ...EMPTY_STATUS.discovery, ...(payload.discovery || {}) },
         delegation: { ...EMPTY_STATUS.delegation, ...(payload.delegation || {}) },
+        relay: {
+            ...EMPTY_STATUS.relay,
+            ...relay,
+            activeAdapterId: String(relay.activeAdapterId || EMPTY_STATUS.relay?.activeAdapterId || "self-hosted"),
+            activeAdapter: relay.activeAdapter,
+            adapters: Array.isArray(relay.adapters) ? relay.adapters : [],
+            reasons: Array.isArray(relay.reasons) ? relay.reasons : [],
+            protocol: { ...EMPTY_STATUS.relay?.protocol, ...(relay.protocol || {}) },
+        },
         openaiCompat: {
             enabled: Boolean(openaiCompat.enabled),
             adminRelayOnly: openaiCompat.adminRelayOnly !== false,
@@ -524,7 +670,64 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             advanced: "Advanced diagnostics and third-party app API",
             advancedHint: "OpenAI/Anthropic compatibility, Headscale, manual peers, and raw diagnostics stay here; ordinary neighbor setup does not need them.",
         };
+    const relayCopy = locale === "zh-CN"
+        ? {
+            title: "公网连接（V8 Relay）",
+            description: "V8 Relay 是可自托管的公网中继协议；Cloudflare Workers / Durable Objects / Queues 只是其中一种适配器。",
+            enabled: "启用 Relay",
+            disabled: "未启用",
+            ready: "可用",
+            needsConfig: "待配置",
+            selfHosted: "自托管 Relay",
+            selfHostedHint: "适合团队自有服务器、内网网关或未来 V8 Cloud Relay。",
+            cloudflare: "Cloudflare Relay",
+            cloudflareHint: "使用 Workers 做公网入口，Durable Objects / Queues 承载房间和信箱。",
+            baseUrl: "Relay 公网地址",
+            websocketUrl: "WebSocket 地址（可选）",
+            endpointHint: "只保存入口信息，不保存 Cloudflare token；设备消息仍走签名 envelope。",
+            workerName: "Worker 名称",
+            queueName: "Queue 名称",
+            durableObject: "Durable Object 命名空间",
+            accountHint: "Cloudflare 账号提示",
+            ttl: "默认消息有效期（秒）",
+            maxPayload: "最大消息体（bytes）",
+            e2e: "要求端到端签名 envelope",
+            storeForward: "要求离线信箱 / store-forward",
+            save: "保存 Relay 配置",
+            protocol: "协议",
+            active: "当前",
+        }
+        : {
+            title: "Public connection (V8 Relay)",
+            description: "V8 Relay is a self-hostable public relay protocol; Cloudflare Workers / Durable Objects / Queues are just one adapter.",
+            enabled: "Enable Relay",
+            disabled: "Off",
+            ready: "Ready",
+            needsConfig: "Needs config",
+            selfHosted: "Self-hosted Relay",
+            selfHostedHint: "For your own server, private gateway, or future V8 Cloud Relay.",
+            cloudflare: "Cloudflare Relay",
+            cloudflareHint: "Use Workers as ingress, with Durable Objects / Queues for rooms and mailbox delivery.",
+            baseUrl: "Relay public URL",
+            websocketUrl: "WebSocket URL (optional)",
+            endpointHint: "Only endpoint metadata is saved; Cloudflare tokens are not stored here. Device messages still use signed envelopes.",
+            workerName: "Worker name",
+            queueName: "Queue name",
+            durableObject: "Durable Object namespace",
+            accountHint: "Cloudflare account hint",
+            ttl: "Default message TTL (seconds)",
+            maxPayload: "Max payload bytes",
+            e2e: "Require end-to-end signed envelope",
+            storeForward: "Require offline mailbox / store-forward",
+            save: "Save Relay config",
+            protocol: "Protocol",
+            active: "Active",
+        };
     const selectedNeighborLink = neighborLinks.find((item) => item.linkId === selectedNeighborLinkId) || neighborLinks[0] || null;
+    const relayAdapters = normalizeRelayAdapters(config.relay.adapters);
+    const selectedRelayAdapter = relayAdapters.find((item) => item.id === config.relay.activeAdapterId) || relayAdapters[0];
+    const relayStatusAdapter = status.relay?.activeAdapter;
+    const relayAvailable = Boolean(status.relay?.available);
     const availabilityReason = React.useCallback((reason: string) => {
         switch (reason) {
             case "runtime_disabled":
@@ -797,6 +1000,21 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
     }, []);
     const setDelegation = React.useCallback((patch: Partial<RuntimeConfig["delegation"]>) => {
         setConfig((prev) => ({ ...prev, delegation: { ...prev.delegation, ...patch } }));
+    }, []);
+    const setRelay = React.useCallback((patch: Partial<RelayConfig>) => {
+        setConfig((prev) => ({ ...prev, relay: mergeRelayConfig({ ...prev.relay, ...patch }) }));
+    }, []);
+    const selectRelayAdapter = React.useCallback((adapterId: string) => {
+        setConfig((prev) => ({ ...prev, relay: mergeRelayConfig({ ...prev.relay, enabled: true, activeAdapterId: adapterId }) }));
+    }, []);
+    const setRelayAdapter = React.useCallback((adapterId: string, patch: Partial<RelayAdapterConfig>) => {
+        setConfig((prev) => ({
+            ...prev,
+            relay: mergeRelayConfig({
+                ...prev.relay,
+                adapters: normalizeRelayAdapters(prev.relay.adapters).map((adapter) => adapter.id === adapterId ? { ...adapter, ...patch } : adapter),
+            }),
+        }));
     }, []);
     const setOpenAICompat = React.useCallback((patch: Partial<RuntimeConfig["openaiCompat"]>) => {
         setConfig((prev) => ({ ...prev, openaiCompat: { ...prev.openaiCompat, ...patch } }));
@@ -1273,6 +1491,135 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                             </div>
                         </div>
                     </div>
+                </div>
+            </ConfigCard>
+
+            <ConfigCard title={relayCopy.title} description={relayCopy.description} variant="editor" bodyHeight="auto">
+                <div className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={config.relay.enabled ? "default" : "secondary"}>{config.relay.enabled ? relayCopy.enabled : relayCopy.disabled}</Badge>
+                            <Badge variant={relayAvailable ? "default" : "secondary"}>{relayAvailable ? relayCopy.ready : relayCopy.needsConfig}</Badge>
+                            <Badge variant="outline">{status.relay?.protocol?.version || config.relay.protocolVersion || "v8-relay.v1"}</Badge>
+                            {relayStatusAdapter?.status ? <Badge variant="outline">{relayStatusAdapter.status}</Badge> : null}
+                        </div>
+                        <Button type="button" onClick={() => void saveConfig()} disabled={savingConfig}>
+                            {savingConfig ? t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.kc225e8a3") : relayCopy.save}
+                        </Button>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                        {relayAdapters.map((adapter) => {
+                            const active = adapter.id === config.relay.activeAdapterId;
+                            const adapterStatus = status.relay?.adapters?.find((item) => item.id === adapter.id);
+                            const title = adapter.kind === "cloudflare" ? relayCopy.cloudflare : relayCopy.selfHosted;
+                            const hint = adapter.kind === "cloudflare" ? relayCopy.cloudflareHint : relayCopy.selfHostedHint;
+                            return (
+                                <button
+                                    key={adapter.id}
+                                    type="button"
+                                    onClick={() => selectRelayAdapter(adapter.id)}
+                                    className={`group rounded-3xl border p-4 text-left transition ${active ? "border-slate-950 bg-slate-950 text-white shadow-sm" : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"}`}
+                                >
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <div className={`text-sm font-semibold ${active ? "text-white" : "text-slate-950"}`}>{title}</div>
+                                            <div className={`mt-1 text-xs leading-5 ${active ? "text-slate-300" : "text-slate-500"}`}>{hint}</div>
+                                        </div>
+                                        <Badge variant={adapterStatus?.configured ? "default" : "secondary"}>{active ? relayCopy.active : (adapterStatus?.configured ? relayCopy.ready : relayCopy.needsConfig)}</Badge>
+                                    </div>
+                                    <div className={`mt-4 truncate rounded-2xl px-3 py-2 font-mono text-xs ${active ? "bg-white/10 text-slate-200" : "bg-slate-50 text-slate-500"}`}>
+                                        {adapter.baseUrl || adapterStatus?.baseUrl || "https://relay.example.com"}
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {selectedRelayAdapter ? (
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
+                                <div className="space-y-4">
+                                    <SettingToggleCard
+                                        title={<span className="text-sm font-medium text-slate-900">{relayCopy.enabled}</span>}
+                                        description={relayCopy.endpointHint}
+                                        checked={config.relay.enabled}
+                                        onCheckedChange={(checked) => {
+                                            setConfig((prev) => ({ ...prev, enabled: checked ? true : prev.enabled, relay: mergeRelayConfig({ ...prev.relay, enabled: checked }) }));
+                                        }}
+                                        className="rounded-2xl border border-slate-200 px-4 py-3 bg-slate-50 shadow-none hover:bg-slate-50"
+                                    />
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <Label htmlFor="relay-base-url">{relayCopy.baseUrl}</Label>
+                                            <Input id="relay-base-url" value={selectedRelayAdapter.baseUrl || ""} onChange={(event) => setRelayAdapter(selectedRelayAdapter.id, { baseUrl: event.target.value })} placeholder="https://relay.example.com"/>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label htmlFor="relay-websocket-url">{relayCopy.websocketUrl}</Label>
+                                            <Input id="relay-websocket-url" value={selectedRelayAdapter.websocketUrl || ""} onChange={(event) => setRelayAdapter(selectedRelayAdapter.id, { websocketUrl: event.target.value })} placeholder="wss://relay.example.com/v1/relay/ws"/>
+                                        </div>
+                                    </div>
+                                    {selectedRelayAdapter.kind === "cloudflare" ? (
+                                        <div className="grid gap-3 sm:grid-cols-2">
+                                            <div className="space-y-2">
+                                                <Label htmlFor="relay-cf-worker">{relayCopy.workerName}</Label>
+                                                <Input id="relay-cf-worker" value={selectedRelayAdapter.cloudflareWorkerName || ""} onChange={(event) => setRelayAdapter(selectedRelayAdapter.id, { cloudflareWorkerName: event.target.value })} placeholder="v8-relay"/>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label htmlFor="relay-cf-queue">{relayCopy.queueName}</Label>
+                                                <Input id="relay-cf-queue" value={selectedRelayAdapter.cloudflareQueueName || ""} onChange={(event) => setRelayAdapter(selectedRelayAdapter.id, { cloudflareQueueName: event.target.value })} placeholder="v8-relay-mailbox"/>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label htmlFor="relay-cf-do">{relayCopy.durableObject}</Label>
+                                                <Input id="relay-cf-do" value={selectedRelayAdapter.cloudflareDurableObjectNamespace || ""} onChange={(event) => setRelayAdapter(selectedRelayAdapter.id, { cloudflareDurableObjectNamespace: event.target.value })} placeholder="V8RelayRoom"/>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label htmlFor="relay-cf-account">{relayCopy.accountHint}</Label>
+                                                <Input id="relay-cf-account" value={selectedRelayAdapter.cloudflareAccountHint || ""} onChange={(event) => setRelayAdapter(selectedRelayAdapter.id, { cloudflareAccountHint: event.target.value })} placeholder="team@example.com"/>
+                                            </div>
+                                        </div>
+                                    ) : null}
+                                </div>
+
+                                <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="text-sm font-semibold text-slate-900">{relayCopy.protocol}</div>
+                                        <Badge variant="outline">{config.relay.protocolVersion}</Badge>
+                                    </div>
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <Label htmlFor="relay-ttl">{relayCopy.ttl}</Label>
+                                            <Input id="relay-ttl" type="number" min={60} value={String(config.relay.defaultTtlSeconds)} onChange={(event) => setRelay({ defaultTtlSeconds: Number(event.target.value || 300) })}/>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label htmlFor="relay-max-payload">{relayCopy.maxPayload}</Label>
+                                            <Input id="relay-max-payload" type="number" min={4096} value={String(config.relay.maxPayloadBytes)} onChange={(event) => setRelay({ maxPayloadBytes: Number(event.target.value || 262144) })}/>
+                                        </div>
+                                    </div>
+                                    <div className="grid gap-3">
+                                        <SettingToggleCard
+                                            title={<span className="text-sm font-medium text-slate-900">{relayCopy.e2e}</span>}
+                                            checked={config.relay.endToEndEnvelopeRequired}
+                                            onCheckedChange={(checked) => setRelay({ endToEndEnvelopeRequired: checked })}
+                                            className="border-none bg-transparent p-0 shadow-none hover:bg-transparent"
+                                        />
+                                        <SettingToggleCard
+                                            title={<span className="text-sm font-medium text-slate-900">{relayCopy.storeForward}</span>}
+                                            checked={config.relay.storeAndForwardRequired}
+                                            onCheckedChange={(checked) => setRelay({ storeAndForwardRequired: checked })}
+                                            className="border-none bg-transparent p-0 shadow-none hover:bg-transparent"
+                                        />
+                                    </div>
+                                    <div className="space-y-2 text-xs leading-5 text-slate-500">
+                                        <div className="truncate">well-known: {relayStatusAdapter?.endpoints?.wellKnown || "—"}</div>
+                                        <div className="truncate">mailbox: {relayStatusAdapter?.endpoints?.mailbox || "—"}</div>
+                                        <div className="truncate">websocket: {relayStatusAdapter?.endpoints?.websocket || "—"}</div>
+                                        {status.relay?.reasons?.length ? <div>{status.relay.reasons.join(" · ")}</div> : null}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    ) : null}
                 </div>
             </ConfigCard>
 

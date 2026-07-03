@@ -676,6 +676,22 @@ async def get_network_supervisor_status():
     return network_supervisor_service.status_payload()
 
 
+@router.get("/network-supervisor/relay/status")
+async def get_network_supervisor_relay_status():
+    return network_supervisor_service.relay_status_payload()
+
+
+@router.patch("/network-supervisor/relay/config")
+async def patch_network_supervisor_relay_config(payload: dict[str, Any] | None = None):
+    return network_supervisor_service.save_relay_config(dict(payload or {}))
+
+
+@router.post("/network-supervisor/relay/probe-envelope")
+async def post_network_supervisor_relay_probe_envelope(payload: dict[str, Any] | None = None):
+    body = dict(payload or {})
+    return network_supervisor_service.build_relay_probe_envelope(adapter_id=str(body.get("adapterId") or "").strip() or None)
+
+
 @router.get("/network-supervisor/neighbors/status")
 async def get_network_supervisor_neighbors_status():
     return network_neighbor_service.status_payload()

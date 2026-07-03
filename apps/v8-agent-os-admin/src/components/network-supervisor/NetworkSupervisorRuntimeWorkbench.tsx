@@ -734,7 +734,7 @@ env:
             sendTaskAll: "派发给全部",
             noTasks: "暂无邻居任务。",
             advanced: "高级诊断与三方应用接入",
-            advancedHint: "保留 OpenAI/Anthropic 兼容、Headscale、手工 peer 和原始诊断；普通邻居连接无需查看这些项。",
+            advancedHint: "这里只保留兼容模型客户端的接入参数；邻居设备、任务和 Relay 请使用上方卡片。",
         }
         : {
             title: "Neighbor devices",
@@ -777,7 +777,7 @@ env:
             sendTaskAll: "Send to all",
             noTasks: "No neighbor tasks yet.",
             advanced: "Advanced diagnostics and third-party app API",
-            advancedHint: "OpenAI/Anthropic compatibility, Headscale, manual peers, and raw diagnostics stay here; ordinary neighbor setup does not need them.",
+            advancedHint: "Only compatible model-client access settings stay here; use the cards above for neighbor devices, tasks, and Relay.",
         };
     const relayCopy = locale === "zh-CN"
         ? {
@@ -897,10 +897,9 @@ env:
         setLoading(true);
         setLoadError(null);
         try {
-            const [configRes, statusRes, peerRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes, neighborTaskSettingsRes, neighborTasksRes] = await Promise.all([
+            const [configRes, statusRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes, neighborTaskSettingsRes, neighborTasksRes] = await Promise.all([
                 fetch("/api/config-registry/network-supervisor-runtime", { cache: "no-store" }),
                 fetch("/api/network-supervisor/status", { cache: "no-store" }),
-                fetch("/api/network-supervisor/peers", { cache: "no-store" }),
                 fetch("/api/network-supervisor/openai/tokens", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/status", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/candidates", { cache: "no-store" }),
@@ -908,10 +907,9 @@ env:
                 fetch("/api/network-supervisor/neighbors/task-settings", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/tasks?limit=20", { cache: "no-store" }),
             ]);
-            const [configData, statusData, peerData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData, neighborTaskSettingsData, neighborTasksData] = await Promise.all([
+            const [configData, statusData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData, neighborTaskSettingsData, neighborTasksData] = await Promise.all([
                 configRes.json().catch(() => ({})),
                 statusRes.json().catch(() => ({})),
-                peerRes.json().catch(() => ({})),
                 tokenRes.json().catch(() => ({})),
                 neighborStatusRes.json().catch(() => ({})),
                 neighborCandidatesRes.json().catch(() => ({})),
@@ -923,8 +921,6 @@ env:
                 throw new Error(detail(configData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d2fb12f")));
             if (!statusRes.ok)
                 throw new Error(detail(statusData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5dcce62e")));
-            if (!peerRes.ok)
-                throw new Error(detail(peerData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k66ef1038")));
             if (!tokenRes.ok)
                 throw new Error(detail(tokenData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokensReadFailed")));
             if (!neighborStatusRes.ok)
@@ -941,7 +937,6 @@ env:
                 data?: Partial<RuntimeConfig>;
             }).data));
             setStatus(normalizeStatus(statusData));
-            setPeers(normalizePeers(peerData));
             setTokens(Array.isArray((tokenData as { items?: OpenAICompatToken[] }).items) ? (tokenData as { items: OpenAICompatToken[] }).items : []);
             setNeighborStatus((neighborStatusData && typeof neighborStatusData === "object" ? neighborStatusData : EMPTY_NEIGHBOR_STATUS) as NeighborStatus);
             setNeighborCandidates(Array.isArray((neighborCandidatesData as { items?: NeighborCandidate[] }).items) ? (neighborCandidatesData as { items: NeighborCandidate[] }).items : []);
@@ -2128,6 +2123,9 @@ env:
                 </div>
             </ConfigCard>
 
+            {/* 旧 Network Links 的手工 peer / mesh / raw diagnostic UI 不再作为 Admin 入口展示；底层 API 保留给兼容和诊断。 */}
+            {false ? (
+                <>
             <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
                 <ConfigCard title={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.networkNodeTitle"} description={"components.network.supervisor.NetworkSupervisorRuntimeWorkbench.networkNodeDescription"} variant="editor" bodyHeight="auto">
                     <div className="grid gap-5 lg:grid-cols-2">
@@ -2499,6 +2497,8 @@ env:
                     </div>
                 </div>
             </ConfigCard>
+                </>
+            ) : null}
                 </div>
             </details>
             <DocumentationGuideDialog

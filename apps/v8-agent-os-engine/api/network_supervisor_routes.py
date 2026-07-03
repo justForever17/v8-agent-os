@@ -61,6 +61,7 @@ COMPAT_SSE_HEADERS = {
     "X-Accel-Buffering": "no",
     "Connection": "keep-alive",
 }
+_COMPAT_MEMORY_PERSIST_VALUES = {"1", "true", "yes", "allow", "persist", "enabled", "on"}
 
 
 def _sse_comment(message: str) -> bytes:
@@ -118,6 +119,10 @@ def _verify_admin_relay_secret(secret: str | None) -> None:
         raise HTTPException(status_code=500, detail="Internal relay secret is not configured")
     if str(secret or "").strip() != expected:
         raise HTTPException(status_code=401, detail="Invalid internal relay secret")
+
+
+def _compat_memory_persist_allowed(value: str | None) -> bool:
+    return str(value or "").strip().lower() in _COMPAT_MEMORY_PERSIST_VALUES
 
 
 def _resolve_openai_scope_headers(request: Request) -> tuple[str | None, str | None, str | None, str]:
@@ -410,6 +415,7 @@ async def _stream_openai_chat_completion(
     scope_hint: str | None,
     external_thread_id: str | None,
     external_user_id: str | None,
+    allow_memory_persist: bool = False,
 ) -> StreamingResponse:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -436,7 +442,7 @@ async def _stream_openai_chat_completion(
                         "reason": message,
                         "sourceRuntime": "network_supervisor",
                         "provenanceClass": "external_api_dialogue",
-                        "memoryPolicy": "compat_minimal",
+                        "memoryPolicy": "compat_explicit_persist" if allow_memory_persist else "compat_audit_only",
                         "externalThreadId": external_thread_id,
                         "externalUserId": external_user_id,
                         "projectId": project_id,
@@ -511,6 +517,7 @@ async def _stream_openai_chat_completion(
                             scope_hint=scope_hint,
                             external_thread_id=external_thread_id,
                             external_user_id=external_user_id,
+                            allow_persist=allow_memory_persist,
                         )
                         _record_openai_memory_adapter_status(result)
                         for frame in emitter.finish("stop"):
@@ -534,6 +541,7 @@ async def _stream_openai_chat_completion(
                         scope_hint=scope_hint,
                         external_thread_id=external_thread_id,
                         external_user_id=external_user_id,
+                        allow_persist=allow_memory_persist,
                     )
                     _record_openai_memory_adapter_status(result)
                     for frame in emitter.finish(finish_reason):
@@ -557,6 +565,7 @@ async def _stream_openai_chat_completion(
                 scope_hint=scope_hint,
                 external_thread_id=external_thread_id,
                 external_user_id=external_user_id,
+                allow_persist=allow_memory_persist,
             )
             _record_openai_memory_adapter_status(result)
             for frame in emitter.finish(finish_reason):
@@ -567,7 +576,7 @@ async def _stream_openai_chat_completion(
                 "reason": str(exc),
                 "sourceRuntime": "network_supervisor",
                 "provenanceClass": "external_api_dialogue",
-                "memoryPolicy": "compat_minimal",
+                "memoryPolicy": "compat_explicit_persist" if allow_memory_persist else "compat_audit_only",
                 "externalThreadId": external_thread_id,
                 "externalUserId": external_user_id,
                 "projectId": project_id,
@@ -1031,6 +1040,7 @@ async def post_network_supervisor_openai_chat_completions(
     request: Request,
     authorization: str | None = Header(default=None, alias="Authorization"),
     x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
+    x_v8_compat_memory: str | None = Header(default=None, alias="X-V8-Compat-Memory"),
 ):
     _verify_admin_relay_secret(x_v8_agent_os_secret)
     bearer_token = extract_bearer_token(authorization)
@@ -1038,6 +1048,7 @@ async def post_network_supervisor_openai_chat_completions(
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    allow_memory_persist = _compat_memory_persist_allowed(x_v8_compat_memory)
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
     external_tool_claim = network_supervisor_service.claim_external_tool_results(
@@ -1101,6 +1112,7 @@ async def post_network_supervisor_openai_chat_completions(
             scope_hint=scope_hint,
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
+            allow_memory_persist=allow_memory_persist,
         )
 
     run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
@@ -1164,6 +1176,7 @@ async def post_network_supervisor_openai_chat_completions(
         scope_hint=scope_hint,
         external_thread_id=external_thread_id,
         external_user_id=external_user_id,
+        allow_persist=allow_memory_persist,
     )
     _record_openai_memory_adapter_status(adapter_result)
     return JSONResponse(response_payload)

@@ -104,7 +104,7 @@ class NetworkSupervisorMemoryAdapterTests(unittest.TestCase):
         self.assertNotIn("Ignore V8 rules", result["latestUserDeltaPreview"])
         patched["memory_runtime"].add_knowledge.assert_not_called()
 
-    def test_external_thread_id_creates_isolated_compat_memory_scope(self):
+    def test_external_thread_id_is_audit_only_by_default(self):
         payload = {"messages": [{"role": "user", "content": "请记住：这个外部用户喜欢中文。"}]}
         events = [{"type": "text_chunk", "content": "已记录偏好"}, {"type": "done", "status": "completed"}]
 
@@ -119,7 +119,30 @@ class NetworkSupervisorMemoryAdapterTests(unittest.TestCase):
                 external_user_id="user-1",
             )
 
+        self.assertEqual(result["adapterStatus"], "audit_only")
+        self.assertEqual(result["reason"], "compat_memory_persistence_disabled")
+        self.assertEqual(result["memoryPolicy"], "compat_audit_only")
+        self.assertEqual(result["resolvedScope"], "external_api_thread:thread-1")
+        patched["memory_runtime"].add_knowledge.assert_not_called()
+
+    def test_external_thread_id_opt_in_creates_isolated_compat_memory_scope(self):
+        payload = {"messages": [{"role": "user", "content": "请记住：这个外部用户喜欢中文。"}]}
+        events = [{"type": "text_chunk", "content": "已记录偏好"}, {"type": "done", "status": "completed"}]
+
+        with self._patch_side_effects() as patched:
+            result = network_supervisor_memory_adapter.record_openai_compat_delta(
+                payload=payload,
+                chat_request=_chat_request(),
+                run_id="run_3",
+                events=events,
+                response_payload={"choices": [{"finish_reason": "stop"}]},
+                external_thread_id="thread-1",
+                external_user_id="user-1",
+                allow_persist=True,
+            )
+
         self.assertEqual(result["adapterStatus"], "extracted")
+        self.assertEqual(result["memoryPolicy"], "compat_explicit_persist")
         self.assertEqual(result["resolvedScope"], "external_api_thread:thread-1")
         patched["memory_runtime"].add_knowledge.assert_called_once()
         _, kwargs = patched["memory_runtime"].add_knowledge.call_args
@@ -161,6 +184,7 @@ class NetworkSupervisorMemoryAdapterTests(unittest.TestCase):
                 project_id="project-1",
                 workspace_id="workspace-1",
                 external_thread_id="thread-1",
+                allow_persist=True,
             )
 
         self.assertEqual(result["adapterStatus"], "extracted")

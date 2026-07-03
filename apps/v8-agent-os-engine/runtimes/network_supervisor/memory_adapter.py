@@ -50,6 +50,7 @@ class NetworkSupervisorMemoryDelta:
     assistant_final_text: str
     tool_round_trip_state: ToolRoundTripState
     external_tool_summary: list[dict[str, Any]]
+    allow_persist: bool = False
 
 
 def _clip(value: str, limit: int) -> str:
@@ -243,6 +244,7 @@ class NetworkSupervisorMemoryAdapter:
         scope_hint: str | None = None,
         external_thread_id: str | None = None,
         external_user_id: str | None = None,
+        allow_persist: bool = False,
     ) -> dict[str, Any]:
         try:
             external_tool_calls = extract_external_tool_calls_from_events(
@@ -260,7 +262,7 @@ class NetworkSupervisorMemoryAdapter:
             delta = NetworkSupervisorMemoryDelta(
                 source_runtime="network_supervisor",
                 provenance_class="external_api_dialogue",
-                memory_policy="compat_minimal",
+                memory_policy="compat_explicit_persist" if allow_persist else "compat_audit_only",
                 session_id=session_id,
                 run_id=str(run_id or "").strip(),
                 external_thread_id=str(external_thread_id or "").strip() or None,
@@ -278,6 +280,7 @@ class NetworkSupervisorMemoryAdapter:
                 assistant_final_text=_clip(assistant_final_text, _MAX_TEXT_PREVIEW),
                 tool_round_trip_state=_tool_round_trip_state(finish_reason=finish_reason, payload=payload),
                 external_tool_summary=_summarize_tool_messages(payload),
+                allow_persist=bool(allow_persist),
             )
 
             if delta.tool_round_trip_state == "pending":
@@ -288,6 +291,8 @@ class NetworkSupervisorMemoryAdapter:
                 return self._finalize(delta=delta, status="audit_only", reason=f"non_terminal_finish_reason:{finish_reason}")
             if not _has_durable_signal(delta):
                 return self._finalize(delta=delta, status="audit_only", reason="no_durable_compat_delta")
+            if not delta.allow_persist:
+                return self._finalize(delta=delta, status="audit_only", reason="compat_memory_persistence_disabled")
 
             fact = _build_compact_fact(delta)
             fact_id = memory_runtime.add_knowledge(
@@ -305,7 +310,7 @@ class NetworkSupervisorMemoryAdapter:
                 "reason": str(exc),
                 "sourceRuntime": "network_supervisor",
                 "provenanceClass": "external_api_dialogue",
-                "memoryPolicy": "compat_minimal",
+                "memoryPolicy": "compat_explicit_persist" if allow_persist else "compat_audit_only",
                 "externalThreadId": str(external_thread_id or "").strip() or None,
                 "externalUserId": str(external_user_id or "").strip() or None,
                 "projectId": str(project_id or "").strip() or None,

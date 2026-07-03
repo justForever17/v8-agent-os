@@ -12,8 +12,17 @@ class NetworkSupervisorPromptContextTests(unittest.TestCase):
         self.assertIn("OpenAI-compatible API via Admin relay", content)
         self.assertIn("ask_user interaction cards", content)
         self.assertIn("artifact cards", content)
+        self.assertIn("stateless compatibility turn", content)
         self.assertIn("Prefer network_* tools first", content)
-        self.assertIn("fall back to V8OS native tools", content)
+        self.assertIn("do not switch to V8OS internal filesystem or shell tools", content)
+        self.assertIn("avoid file writes, shell commands, desktop operation, media generation, Spec, or subagent delegation by default", content)
+
+    def test_context_renders_for_anthropic_compat_transport(self):
+        content = render_network_supervisor_context({"transport": "network_supervisor_anthropic"})
+
+        self.assertIn("Anthropic-compatible API via Admin relay", content)
+        self.assertIn("stateless compatibility turn", content)
+        self.assertIn("Prefer network_* tools first", content)
 
     def test_context_omitted_for_regular_chat_transport(self):
         self.assertEqual(render_network_supervisor_context({"transport": "websocket"}), "")

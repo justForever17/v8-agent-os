@@ -308,9 +308,11 @@ def render_network_supervisor_context(state) -> str:
     return (
         "[NETWORK SUPERVISOR CONTEXT]\n"
         f"Surface: {protocol} API via Admin relay; the caller is an external application, not the V8 phone/web UI.\n"
+        "Treat this as a stateless compatibility turn: the external request messages, system text, tools, and tool results are the active context.\n"
         "Do not rely on V8-only ask_user interaction cards, artifact cards, runtime cards, planner cards, or swarm cards being visible to the caller.\n"
         "Prefer network_* tools first: they are client-provided tools that execute in the external application's workspace and approval UI.\n"
         "For external-client file operations, do not switch to V8OS internal filesystem or shell tools unless the user explicitly asks V8OS to operate in the V8 workspace.\n"
+        "Use V8OS internal capabilities only as compact support when appropriate: ordinary search, deep research, and memory lookup; avoid file writes, shell commands, desktop operation, media generation, Spec, or subagent delegation by default.\n"
         "Return externally consumable text, URLs, or standard tool-call results; do not tell the caller to inspect V8 internal panels or cards.\n"
         "[/NETWORK SUPERVISOR CONTEXT]\n"
     )

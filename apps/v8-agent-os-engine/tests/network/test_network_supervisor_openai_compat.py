@@ -47,11 +47,13 @@ from api.network_supervisor_routes import (  # noqa: E402
     _apply_external_tool_resume_claim,
     _approval_notice_text,
     _compat_background_request_kind,
+    _compat_memory_persist_allowed,
     get_network_supervisor_anthropic_models,
     get_network_supervisor_openai_models,
     post_network_supervisor_anthropic_messages,
     post_network_supervisor_openai_chat_completions,
 )
+from api.session_workflow_routes import _is_hidden_compat_session  # noqa: E402
 from api.models import ChatMessage, ChatRequest, ExternalToolSpec  # noqa: E402
 from runtimes.chat.runtime import ChatRuntime  # noqa: E402
 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop  # noqa: E402
@@ -66,6 +68,25 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         config.enabled = True
         config.openai_compat.enabled = True
         return config
+
+    def test_compat_memory_persist_header_is_explicit_opt_in(self):
+        self.assertFalse(_compat_memory_persist_allowed(None))
+        self.assertFalse(_compat_memory_persist_allowed(""))
+        self.assertFalse(_compat_memory_persist_allowed("audit_only"))
+        self.assertTrue(_compat_memory_persist_allowed("persist"))
+        self.assertTrue(_compat_memory_persist_allowed("TRUE"))
+
+    def test_network_compat_sessions_are_hidden_from_normal_history(self):
+        self.assertTrue(_is_hidden_compat_session({"id": "network_openai_abc"}, {}))
+        self.assertTrue(_is_hidden_compat_session({"id": "network_anthropic_abc"}, {}))
+        self.assertTrue(
+            _is_hidden_compat_session(
+                {"id": "session-1"},
+                {"transport": "network_supervisor_anthropic"},
+            )
+        )
+        self.assertTrue(_is_hidden_compat_session({"id": "session-2"}, {"compatEphemeral": True}))
+        self.assertFalse(_is_hidden_compat_session({"id": "normal-chat"}, {"transport": "web"}))
 
     def test_verify_openai_compat_token_accepts_legacy_strings_and_managed_objects(self):
         config = self._enabled_network_config()
@@ -1406,6 +1427,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
 
         verify_token.assert_called_once_with("compat-token")
         adapter.assert_called_once()
+        self.assertIs(adapter.call_args.kwargs.get("allow_persist"), False)
         status_recorder.assert_called_once()
         terminal_hook.assert_not_called()
         payload = json.loads(response.body.decode("utf-8"))

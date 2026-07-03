@@ -113,6 +113,7 @@ from runtimes.network_supervisor.openai_compat import build_external_tool_alias_
 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 
 
+_NETWORK_SUPERVISOR_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "ask_user",
     "fetch_skill_instructions",
@@ -125,6 +126,10 @@ _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "web_broker",
     "write_todos",
 }
+
+
+def _is_network_supervisor_compat_transport(transport: str | None) -> bool:
+    return str(transport or "").strip() in _NETWORK_SUPERVISOR_COMPAT_TRANSPORTS
 
 
 def _chat_runtime_readonly_command_allowed(command: str) -> bool:
@@ -4015,6 +4020,7 @@ class ChatRuntime:
         else:
             title_source = prepared.latest_user_content or (prepared.request.messages[0].content if prepared.request.messages else "New Chat")
             title = f"{title_source[:50]}..." if len(title_source) > 50 else (title_source or "New Chat")
+            compat_ephemeral = _is_network_supervisor_compat_transport(transport)
             db.create_or_update_session(
                 session_id=prepared.session_id,
                 title=title,
@@ -4024,8 +4030,10 @@ class ChatRuntime:
                     "provider": prepared.request.config.provider,
                     "conversation_id": prepared.conversation_id,
                     "transport": transport,
-                    "externalSurface": "network_supervisor_openai" if transport == "network_supervisor_openai" else None,
-                    "hideFromChatHistory": bool(transport == "network_supervisor_openai"),
+                    "externalSurface": transport if compat_ephemeral else None,
+                    "hideFromChatHistory": compat_ephemeral,
+                    "compatEphemeral": compat_ephemeral,
+                    "historyPolicy": "compat_ephemeral" if compat_ephemeral else None,
                 },
             )
             existing_binding = session_scope_binding_service.get_binding(prepared.session_id)

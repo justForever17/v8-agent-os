@@ -233,6 +233,7 @@ def external_api_isolation_case() -> dict[str, Any]:
             response_payload={"choices": [{"finish_reason": "stop"}]},
             external_thread_id="thread-a",
             external_user_id="user-a",
+            allow_persist=True,
         )
         _, kwargs_a = memory_runtime.add_knowledge.call_args
         memory_runtime.add_knowledge.reset_mock()
@@ -244,6 +245,7 @@ def external_api_isolation_case() -> dict[str, Any]:
             response_payload={"choices": [{"finish_reason": "stop"}]},
             external_thread_id="thread-b",
             external_user_id="user-b",
+            allow_persist=True,
         )
         _, kwargs_b = memory_runtime.add_knowledge.call_args
     passed = (

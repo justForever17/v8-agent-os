@@ -447,6 +447,7 @@ def _check_external_api_isolation() -> dict[str, Any]:
             response_payload={"choices": [{"finish_reason": "stop"}]},
             external_thread_id="thread-memory-eval",
             external_user_id="user-memory-eval",
+            allow_persist=True,
         )
         _, kwargs = patched["memory_runtime"].add_knowledge.call_args
     passed = result.get("resolvedScope") == "external_api_thread:thread-memory-eval" and kwargs.get("scope") == "external_api_thread:thread-memory-eval"

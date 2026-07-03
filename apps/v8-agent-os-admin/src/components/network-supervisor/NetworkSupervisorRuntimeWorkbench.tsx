@@ -610,6 +610,39 @@ response = client.chat.completions.create(
     const claudeCodeExample = `ANTHROPIC_BASE_URL=${anthropicCompatBaseUrl}
 ANTHROPIC_AUTH_TOKEN=${primaryToken || "<API_KEY>"}
 ANTHROPIC_MODEL=${primaryModelAlias}`;
+    const acpCommand = "v8os acp";
+    const thirdPartyConnectionCards = [
+        {
+            title: "OpenAI-compatible",
+            purpose: locale === "zh-CN" ? "给 OpenAI SDK、Continue、Cherry Studio 等兼容客户端使用。" : "For OpenAI SDK, Continue, Cherry Studio, and compatible clients.",
+            endpointLabel: "Base URL",
+            endpoint: compatBaseUrl,
+            auth: "Bearer <API Key>",
+            model: primaryModelAlias,
+            example: `base_url: ${compatBaseUrl}\napi_key: ${primaryToken || "<API_KEY>"}\nmodel: ${primaryModelAlias}`,
+            canonicalId: "network_supervisor.openai_compat",
+        },
+        {
+            title: "Anthropic-compatible",
+            purpose: locale === "zh-CN" ? "给 Claude Code、Anthropic SDK 等兼容客户端使用。" : "For Claude Code, Anthropic SDK, and compatible clients.",
+            endpointLabel: "Base URL",
+            endpoint: anthropicCompatBaseUrl,
+            auth: "x-api-key / Bearer <API Key>",
+            model: primaryModelAlias,
+            example: `ANTHROPIC_BASE_URL=${anthropicCompatBaseUrl}\nANTHROPIC_AUTH_TOKEN=${primaryToken || "<API_KEY>"}\nANTHROPIC_MODEL=${primaryModelAlias}`,
+            canonicalId: "network_supervisor.anthropic_compat",
+        },
+        {
+            title: locale === "zh-CN" ? "编辑器连接 ACP" : "Editor ACP",
+            purpose: locale === "zh-CN" ? "给 Zed 等支持 Agent Client Protocol 的编辑器使用。" : "For editors that support Agent Client Protocol, such as Zed.",
+            endpointLabel: locale === "zh-CN" ? "命令" : "Command",
+            endpoint: acpCommand,
+            auth: locale === "zh-CN" ? "本机 stdio，无需远程地址" : "Local stdio, no remote URL",
+            model: "V8OS Agent",
+            example: `command: ${acpCommand}`,
+            canonicalId: "acp_bridge",
+        },
+    ];
     const portNotices = bridgeDiagnostics?.notices || [];
     const neighborCopy = locale === "zh-CN"
         ? {
@@ -1627,6 +1660,51 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
                             </div>
                         </div>
                     ) : null}
+                </div>
+            </ConfigCard>
+
+            <ConfigCard
+                title={locale === "zh-CN" ? "第三方应用连接" : "Third-party app connection"}
+                description={locale === "zh-CN" ? "把 V8OS 接到编辑器或兼容模型客户端。默认是临时会话，不进入普通聊天历史。" : "Connect V8OS to editors or compatible model clients. These are ephemeral by default and do not enter normal chat history."}
+                variant="editor"
+                bodyHeight="auto"
+            >
+                <div className="grid gap-3 xl:grid-cols-3">
+                    {thirdPartyConnectionCards.map((card) => (
+                        <div key={card.canonicalId} className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+                                        {card.title}
+                                        <AdminHoverInfo content={`canonical id: ${card.canonicalId}`}>
+                                            <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-100 text-[10px] text-slate-500">i</span>
+                                        </AdminHoverInfo>
+                                    </div>
+                                    <p className="mt-1 text-xs leading-5 text-slate-500">{card.purpose}</p>
+                                </div>
+                            </div>
+                            <div className="mt-4 space-y-2 text-xs">
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-slate-500">{card.endpointLabel}</span>
+                                    <Button type="button" size="sm" variant="outline" onClick={() => void copyText(card.endpoint, card.endpointLabel)}>
+                                        {locale === "zh-CN" ? "复制" : "Copy"}
+                                    </Button>
+                                </div>
+                                <div className="truncate rounded-xl bg-slate-50 px-3 py-2 font-mono text-slate-700">{card.endpoint}</div>
+                                <div className="grid grid-cols-[88px_1fr] gap-2 text-slate-600">
+                                    <span className="text-slate-400">Auth</span>
+                                    <span className="truncate">{card.auth}</span>
+                                    <span className="text-slate-400">Model</span>
+                                    <span className="truncate font-mono">{card.model}</span>
+                                </div>
+                                <div className="flex justify-end">
+                                    <Button type="button" size="sm" variant="ghost" onClick={() => void copyText(card.example, `${card.title} example`)}>
+                                        {locale === "zh-CN" ? "复制示例" : "Copy example"}
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
                 </div>
             </ConfigCard>
 

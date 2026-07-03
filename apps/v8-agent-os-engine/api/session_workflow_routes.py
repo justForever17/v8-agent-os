@@ -52,6 +52,8 @@ from runtimes.memory.scope_resolution import (
 
 
 router = APIRouter()
+_NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
+_NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
 
 
 def _now_perf_ms() -> float:
@@ -257,6 +259,17 @@ def _derive_session_source(session_row: dict, run_record: dict | None = None) ->
     return "web"
 
 
+def _is_hidden_compat_session(session_row: dict, metadata: dict) -> bool:
+    transport = str(metadata.get("transport") or "").strip()
+    session_id = str(session_row.get("id") or "").strip()
+    return (
+        bool(metadata.get("hideFromChatHistory"))
+        or bool(metadata.get("compatEphemeral"))
+        or transport in _NETWORK_COMPAT_TRANSPORTS
+        or session_id.startswith(_NETWORK_COMPAT_SESSION_PREFIXES)
+    )
+
+
 @router.get("/sessions")
 async def get_sessions():
     """Retrieve all sessions handled by the Python DB Engine."""
@@ -264,11 +277,7 @@ async def get_sessions():
         sessions = []
         for row in db.get_sessions():
             metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            if (
-                bool(metadata.get("hideFromChatHistory"))
-                or str(metadata.get("transport") or "").strip() == "network_supervisor_openai"
-                or str(row.get("id") or "").startswith("network_openai_")
-            ):
+            if _is_hidden_compat_session(row, metadata):
                 continue
             workflow_view = {
                 "workflowId": row.get("workflowId"),

@@ -1358,6 +1358,7 @@ class NetworkSupervisorService:
                 "maxWorkflowHintTokens": int(config.openai_compat.max_workflow_hint_tokens or 0),
                 "allowWorkspaceHeaders": bool(config.openai_compat.allow_workspace_headers),
                 "allowRawWorkspacePath": bool(config.openai_compat.allow_raw_workspace_path),
+                "v8MainChainModeEnabled": bool(config.openai_compat.v8_main_chain_mode_enabled),
                 "defaultScopeMode": str(config.openai_compat.default_scope_mode or "explicit"),
                 "memoryAdapter": dict(state.get("openaiCompatMemoryAdapter") or {}),
                 "recentMemoryAdapter": [

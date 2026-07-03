@@ -153,6 +153,7 @@ type RuntimeConfig = {
         adminRelayOnly: boolean;
         allowWorkspaceHeaders: boolean;
         allowRawWorkspacePath: boolean;
+        v8MainChainModeEnabled: boolean;
         maxExternalTools: number;
         defaultScopeMode: string;
     };
@@ -198,6 +199,7 @@ type RuntimeStatus = {
         maxExternalTools: number;
         allowWorkspaceHeaders: boolean;
         allowRawWorkspacePath: boolean;
+        v8MainChainModeEnabled: boolean;
         defaultScopeMode: string;
     };
     anthropicCompat?: {
@@ -379,8 +381,9 @@ const DEFAULT_CONFIG: RuntimeConfig = {
         enabled: false,
         modelAliases: ["v8os"],
         adminRelayOnly: true,
-        allowWorkspaceHeaders: true,
+        allowWorkspaceHeaders: false,
         allowRawWorkspacePath: false,
+        v8MainChainModeEnabled: false,
         maxExternalTools: 256,
         defaultScopeMode: "explicit",
     },
@@ -425,8 +428,9 @@ const EMPTY_STATUS: RuntimeStatus = {
         chatCompletionsPath: "/chat/completions",
         modelsPath: "/models",
         maxExternalTools: 256,
-        allowWorkspaceHeaders: true,
+        allowWorkspaceHeaders: false,
         allowRawWorkspacePath: false,
+        v8MainChainModeEnabled: false,
         defaultScopeMode: "explicit",
     },
     anthropicCompat: {
@@ -529,8 +533,9 @@ function normalizeStatus(value: unknown): RuntimeStatus {
             chatCompletionsPath: String(openaiCompat.chatCompletionsPath || EMPTY_STATUS.openaiCompat?.chatCompletionsPath || ""),
             modelsPath: String(openaiCompat.modelsPath || EMPTY_STATUS.openaiCompat?.modelsPath || "/models"),
             maxExternalTools: Number(openaiCompat.maxExternalTools || EMPTY_STATUS.openaiCompat?.maxExternalTools || 0),
-            allowWorkspaceHeaders: openaiCompat.allowWorkspaceHeaders !== false,
+            allowWorkspaceHeaders: Boolean(openaiCompat.allowWorkspaceHeaders),
             allowRawWorkspacePath: Boolean(openaiCompat.allowRawWorkspacePath),
+            v8MainChainModeEnabled: Boolean(openaiCompat.v8MainChainModeEnabled),
             defaultScopeMode: String(openaiCompat.defaultScopeMode || EMPTY_STATUS.openaiCompat?.defaultScopeMode || "explicit"),
         },
         anthropicCompat: {
@@ -619,11 +624,7 @@ export function NetworkSupervisorRuntimeWorkbench({ bridgeDiagnostics }: Network
     const enrollmentModeOptions = getAdminOptions("networkEnrollmentMode");
     const hasCurrentScopeModeOption = scopeModeOptions.some((option) => option.value === config.openaiCompat.defaultScopeMode);
     const hasCurrentEnrollmentModeOption = enrollmentModeOptions.some((option) => option.value === config.trust.enrollmentMode);
-    const compatMemoryHint = locale === "zh-CN"
-        ? "# 默认不写入 V8OS 记忆；需要持久化紧凑记忆时，额外添加：-H \"X-V8-Compat-Memory: persist\""
-        : "# Memory is audit-only by default; add this only when compact memory persistence is desired: -H \"X-V8-Compat-Memory: persist\"";
-    const curlExample = `${compatMemoryHint}
-curl ${compatChatUrl} \\
+    const curlExample = `curl ${compatChatUrl} \\
   -H "Authorization: Bearer ${primaryApiKey}" \\
   -H "Content-Type: application/json" \\
   -d "{\\"model\\":\\"${primaryModelAlias}\\",\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]}"`;
@@ -637,7 +638,6 @@ client = OpenAI(
 response = client.chat.completions.create(
     model="${primaryModelAlias}",
     messages=[{"role": "user", "content": "ping"}],
-    # extra_headers={"X-V8-Compat-Memory": "persist"},  # optional compact memory persistence
 )`;
     const anthropicCurlExample = `curl ${anthropicCompatMessagesUrl} \\
   -H "x-api-key: ${primaryApiKey}" \\
@@ -659,7 +659,7 @@ ANTHROPIC_MODEL=${primaryModelAlias}`;
             credential: primaryApiKey,
             modelLabel: "modelName",
             model: primaryModelAlias,
-            example: `baseURL: ${compatBaseUrl}\napiKey: ${primaryApiKey}\nmodelName: ${primaryModelAlias}\nX-V8-Compat-Memory: persist  # optional`,
+            example: `baseURL: ${compatBaseUrl}\napiKey: ${primaryApiKey}\nmodelName: ${primaryModelAlias}`,
             canonicalId: "network_supervisor.openai_compat",
         },
         {
@@ -1188,6 +1188,21 @@ env:
     const setOpenAICompat = React.useCallback((patch: Partial<RuntimeConfig["openaiCompat"]>) => {
         setConfig((prev) => ({ ...prev, openaiCompat: { ...prev.openaiCompat, ...patch } }));
     }, []);
+    const setOpenAICompatMainChainMode = React.useCallback((checked: boolean) => {
+        if (checked && typeof window !== "undefined" && !window.confirm(t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMainChainConfirm"))) {
+            return;
+        }
+        setConfig((prev) => ({
+            ...prev,
+            openaiCompat: {
+                ...prev.openaiCompat,
+                v8MainChainModeEnabled: checked,
+                allowWorkspaceHeaders: checked ? prev.openaiCompat.allowWorkspaceHeaders : false,
+                allowRawWorkspacePath: checked ? prev.openaiCompat.allowRawWorkspacePath : false,
+                defaultScopeMode: checked ? prev.openaiCompat.defaultScopeMode : "explicit",
+            },
+        }));
+    }, [t]);
     const copyText = React.useCallback(async (value: string, label: string) => {
         if (!value) {
             toast({
@@ -2055,44 +2070,71 @@ env:
                             />
                             <SettingToggleCard
                                 title={
-                                    <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeadersDescription")} panelClassName="text-xs leading-5">
-                                        <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</span>
+                                    <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMainChainModeDescription")} panelClassName="text-xs leading-5">
+                                        <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMainChainMode")}</span>
                                     </AdminHoverInfo>
                                 }
-                                checked={config.openaiCompat.allowWorkspaceHeaders}
-                                onCheckedChange={(checked) => setOpenAICompat({ allowWorkspaceHeaders: checked })}
+                                checked={config.openaiCompat.v8MainChainModeEnabled}
+                                onCheckedChange={(checked) => setOpenAICompatMainChainMode(checked)}
                                 className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
                             />
-                            <SettingToggleCard
-                                title={
-                                    <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePathDescription")} panelClassName="text-xs leading-5">
-                                        <span className="cursor-help text-sm font-medium text-amber-950">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</span>
-                                    </AdminHoverInfo>
-                                }
-                                checked={config.openaiCompat.allowRawWorkspacePath}
-                                onCheckedChange={(checked) => setOpenAICompat({ allowRawWorkspacePath: checked })}
-                                className="border-amber-200 bg-amber-50 px-3 py-3 shadow-none hover:bg-amber-100/50"
-                            />
-                            <div className="grid gap-4 sm:grid-cols-2">
-                                <div className="space-y-2">
-                                    <Label htmlFor="openai-compat-max-tools">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMaxExternalTools")}</Label>
-                                    <Input id="openai-compat-max-tools" type="number" min={0} value={String(config.openaiCompat.maxExternalTools)} onChange={(event) => setOpenAICompat({ maxExternalTools: Number(event.target.value || 0) })}/>
+                            {config.openaiCompat.v8MainChainModeEnabled ? (
+                                <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
+                                    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatAdvancedTitle")}</div>
+                                    <SettingToggleCard
+                                        title={
+                                            <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeadersDescription")} panelClassName="text-xs leading-5">
+                                                <span className="cursor-help text-sm font-medium text-slate-900">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatWorkspaceHeaders")}</span>
+                                            </AdminHoverInfo>
+                                        }
+                                        checked={config.openaiCompat.allowWorkspaceHeaders}
+                                        onCheckedChange={(checked) => setOpenAICompat({ allowWorkspaceHeaders: checked })}
+                                        className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
+                                    />
+                                    <SettingToggleCard
+                                        title={
+                                            <AdminHoverInfo content={t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePathDescription")} panelClassName="text-xs leading-5">
+                                                <span className="cursor-help text-sm font-medium text-amber-950">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatRawWorkspacePath")}</span>
+                                            </AdminHoverInfo>
+                                        }
+                                        checked={config.openaiCompat.allowRawWorkspacePath}
+                                        onCheckedChange={(checked) => setOpenAICompat({ allowRawWorkspacePath: checked })}
+                                        className="border-none bg-transparent hover:bg-transparent p-0 shadow-none"
+                                    />
+                                    <div className="grid gap-4 sm:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <Label htmlFor="openai-compat-max-tools">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatMaxExternalTools")}</Label>
+                                            <Input id="openai-compat-max-tools" type="number" min={0} value={String(config.openaiCompat.maxExternalTools)} onChange={(event) => setOpenAICompat({ maxExternalTools: Number(event.target.value || 0) })}/>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label htmlFor="openai-compat-scope-mode">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatScopeMode")}</Label>
+                                            <Select value={config.openaiCompat.defaultScopeMode} onValueChange={(value) => setOpenAICompat({ defaultScopeMode: value })}>
+                                                <SelectTrigger id="openai-compat-scope-mode">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {!hasCurrentScopeModeOption && config.openaiCompat.defaultScopeMode ? <SelectItem value={config.openaiCompat.defaultScopeMode}>{resolveAdminLabel(t, "networkScopeMode", config.openaiCompat.defaultScopeMode)}</SelectItem> : null}
+                                                    {scopeModeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="openai-compat-scope-mode">{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatScopeMode")}</Label>
-                                    <Select value={config.openaiCompat.defaultScopeMode} onValueChange={(value) => setOpenAICompat({ defaultScopeMode: value })}>
-                                        <SelectTrigger id="openai-compat-scope-mode">
-                                            <SelectValue />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {!hasCurrentScopeModeOption && config.openaiCompat.defaultScopeMode ? <SelectItem value={config.openaiCompat.defaultScopeMode}>{resolveAdminLabel(t, "networkScopeMode", config.openaiCompat.defaultScopeMode)}</SelectItem> : null}
-                                            {scopeModeOptions.map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                            </div>
+                            ) : null}
                             <Button type="button" onClick={() => {
-                        setConfig((prev) => ({ ...prev, enabled: true, openaiCompat: { ...prev.openaiCompat, enabled: true, adminRelayOnly: true } }));
+                        setConfig((prev) => ({
+                            ...prev,
+                            enabled: true,
+                            openaiCompat: {
+                                ...prev.openaiCompat,
+                                enabled: true,
+                                adminRelayOnly: true,
+                                v8MainChainModeEnabled: false,
+                                allowWorkspaceHeaders: false,
+                                allowRawWorkspacePath: false,
+                                defaultScopeMode: "explicit",
+                            },
+                        }));
                     }}>
                                 {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatQuickEnable")}
                             </Button>

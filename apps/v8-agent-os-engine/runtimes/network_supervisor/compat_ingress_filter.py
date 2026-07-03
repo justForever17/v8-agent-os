@@ -474,7 +474,13 @@ def _detect_client_profile(*, protocol: str, payload: dict[str, Any], rows: list
     return "plain_chat"
 
 
-def classify_compat_turn(protocol: str, payload: dict[str, Any], *, raw_ref: str | None = None) -> CompatTurnClassification:
+def classify_compat_turn(
+    protocol: str,
+    payload: dict[str, Any],
+    *,
+    raw_ref: str | None = None,
+    v8_main_chain_mode: bool = False,
+) -> CompatTurnClassification:
     normalized_protocol = str(protocol or "").strip().lower()
     if normalized_protocol == "anthropic":
         rows = _anthropic_message_texts(payload)
@@ -521,15 +527,18 @@ def classify_compat_turn(protocol: str, payload: dict[str, Any], *, raw_ref: str
     else:
         execution_policy = "reject_or_minimal_reply"
 
-    # RAG is keyed by the human utterance, not by the transport. External-agent
-    # compat requests may still contain a real user turn; once we have cleaned
-    # and identified it, passive RAG should use that text instead of being
-    # blanket-disabled for compat.
-    suppress_passive_rag = request_kind != "human_turn"
-    suppress_extensions_prefilter = execution_policy != "v8_orchestration_allowed"
+    if v8_main_chain_mode:
+        suppress_passive_rag = request_kind != "human_turn"
+        suppress_extensions_prefilter = execution_policy != "v8_orchestration_allowed"
+    else:
+        suppress_passive_rag = True
+        suppress_extensions_prefilter = True
     skip_reason = None
     if suppress_passive_rag:
-        skip_reason = f"compat_{request_kind}_{execution_policy}_suppresses_passive_rag"
+        if v8_main_chain_mode:
+            skip_reason = f"compat_{request_kind}_{execution_policy}_suppresses_passive_rag"
+        else:
+            skip_reason = "compat_third_party_managed_suppresses_passive_rag"
 
     return CompatTurnClassification(
         protocol=normalized_protocol,
@@ -622,7 +631,45 @@ def get_recent_compat_ingress_events(limit: int = 5) -> list[dict[str, Any]]:
     return [dict(item) for item in list(_RECENT_INGRESS_EVENTS)[:safe_limit]]
 
 
-def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 1_000_000) -> CompatIngressResult:
+def _third_party_managed_result(
+    *,
+    protocol: str,
+    cloned: dict[str, Any],
+    raw_ref: str | None,
+    payload_tokens: int,
+    non_tool_payload_tokens: int | None = None,
+    message_count: int,
+    client_tool_count: int,
+    tool_result_count: int,
+    classification: CompatTurnClassification,
+) -> CompatIngressResult:
+    diagnostics = {
+        "protocol": protocol,
+        "compatContextMode": "third_party_managed",
+        "rawRef": raw_ref,
+        "payloadTokens": payload_tokens,
+        "messageCount": message_count,
+        "toolResultCount": tool_result_count,
+        "clientToolCount": client_tool_count,
+        "recoveryHints": [],
+        "systemPromptCleaning": {"applied": False, "mode": "third_party_managed"},
+        "systemReminderOmittedCount": 0,
+        "systemReminderOmittedChars": 0,
+        **classification.as_diagnostics(),
+        "backgroundRequestKind": classification.background_request_kind or None,
+    }
+    if non_tool_payload_tokens is not None:
+        diagnostics["nonToolPayloadTokens"] = non_tool_payload_tokens
+    _remember_ingress_event(diagnostics)
+    return CompatIngressResult(payload=cloned, raw_ref=raw_ref, diagnostics=diagnostics)
+
+
+def filter_openai_payload(
+    payload: dict[str, Any],
+    *,
+    max_payload_tokens: int = 1_000_000,
+    v8_main_chain_mode: bool = False,
+) -> CompatIngressResult:
     cloned = _safe_clone(payload)
     payload_tokens = _payload_tokens(cloned)
     if payload_tokens > int(max_payload_tokens):
@@ -638,7 +685,18 @@ def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 
             "clientToolCount": len([item for item in list(cloned.get("tools") or []) if isinstance(item, dict)]),
         },
     )
-    classification = classify_compat_turn("openai", cloned, raw_ref=raw_ref)
+    classification = classify_compat_turn("openai", cloned, raw_ref=raw_ref, v8_main_chain_mode=v8_main_chain_mode)
+    if not v8_main_chain_mode:
+        return _third_party_managed_result(
+            protocol="openai",
+            cloned=cloned,
+            raw_ref=raw_ref,
+            payload_tokens=payload_tokens,
+            message_count=len(messages),
+            client_tool_count=len([item for item in list(cloned.get("tools") or []) if isinstance(item, dict)]),
+            tool_result_count=_count_openai_tool_results(cloned),
+            classification=classification,
+        )
 
     tool_result_count = 0
     latest_user = ""
@@ -716,6 +774,7 @@ def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 
     cloned["messages"] = sanitized_messages
     diagnostics = {
         "protocol": "openai",
+        "compatContextMode": "v8_main_chain",
         "rawRef": raw_ref,
         "payloadTokens": payload_tokens,
         "messageCount": len(messages),
@@ -736,7 +795,12 @@ def filter_openai_payload(payload: dict[str, Any], *, max_payload_tokens: int = 
     )
 
 
-def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int = 1_000_000) -> CompatIngressResult:
+def filter_anthropic_payload(
+    payload: dict[str, Any],
+    *,
+    max_payload_tokens: int = 1_000_000,
+    v8_main_chain_mode: bool = False,
+) -> CompatIngressResult:
     cloned = _safe_clone(payload)
     payload_tokens = _payload_tokens(cloned)
     if payload_tokens > int(max_payload_tokens):
@@ -759,7 +823,19 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
         cloned,
         metadata={"estimatedTokens": payload_tokens, "messageCount": len(messages), "clientToolCount": len(tools)},
     )
-    classification = classify_compat_turn("anthropic", cloned, raw_ref=raw_ref)
+    classification = classify_compat_turn("anthropic", cloned, raw_ref=raw_ref, v8_main_chain_mode=v8_main_chain_mode)
+    if not v8_main_chain_mode:
+        return _third_party_managed_result(
+            protocol="anthropic",
+            cloned=cloned,
+            raw_ref=raw_ref,
+            payload_tokens=payload_tokens,
+            non_tool_payload_tokens=non_tool_payload_tokens,
+            message_count=len(messages),
+            client_tool_count=len(tools),
+            tool_result_count=_count_anthropic_tool_blocks(cloned, "tool_result"),
+            classification=classification,
+        )
 
     system_text = _flatten_anthropic_content(cloned.get("system")).strip()
     system_prompt_cleaning: dict[str, Any] | None = None
@@ -875,6 +951,7 @@ def filter_anthropic_payload(payload: dict[str, Any], *, max_payload_tokens: int
     cloned["messages"] = sanitized_messages
     diagnostics = {
         "protocol": "anthropic",
+        "compatContextMode": "v8_main_chain",
         "rawRef": raw_ref,
         "payloadTokens": payload_tokens,
         "nonToolPayloadTokens": non_tool_payload_tokens,

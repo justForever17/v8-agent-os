@@ -33,7 +33,7 @@ def test_claude_code_tool_result_user_message_is_not_human_turn():
     assert result.external_tools_primary is True
 
 
-def test_claude_code_human_text_with_external_tools_keeps_rag_query():
+def test_claude_code_human_text_with_external_tools_suppresses_rag_by_default():
     payload = {
         "model": "v8",
         "messages": [
@@ -49,6 +49,30 @@ def test_claude_code_human_text_with_external_tools_keeps_rag_query():
     }
 
     result = classify_compat_turn("anthropic", payload, raw_ref="raw:test")
+
+    assert result.request_kind == "human_turn"
+    assert result.latest_human_utterance == "请根据之前的实现继续补 network runtime compat。"
+    assert result.suppress_passive_rag is True
+    assert result.external_tools_primary is True
+    assert result.suppress_extensions_prefilter is True
+
+
+def test_claude_code_human_text_with_external_tools_keeps_rag_query_in_v8_main_chain_mode():
+    payload = {
+        "model": "v8",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "old result"},
+                    {"type": "text", "text": "请根据之前的实现继续补 network runtime compat。"},
+                ],
+            }
+        ],
+        "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+    }
+
+    result = classify_compat_turn("anthropic", payload, raw_ref="raw:test", v8_main_chain_mode=True)
 
     assert result.request_kind == "human_turn"
     assert result.latest_human_utterance == "请根据之前的实现继续补 network runtime compat。"
@@ -77,7 +101,7 @@ def test_claude_code_side_question_keeps_text_after_system_reminder():
 
     assert result.request_kind == "human_turn"
     assert result.latest_human_utterance == "这个设计会影响 RAG 吗？"
-    assert result.suppress_passive_rag is False
+    assert result.suppress_passive_rag is True
 
 
 def test_compat_budget_uses_configured_context_window(monkeypatch):

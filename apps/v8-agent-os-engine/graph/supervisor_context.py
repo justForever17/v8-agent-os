@@ -305,17 +305,46 @@ def render_network_supervisor_context(state) -> str:
     if transport not in {"network_supervisor_openai", "network_supervisor_anthropic"}:
         return ""
     protocol = "Anthropic-compatible" if transport == "network_supervisor_anthropic" else "OpenAI-compatible"
+    diagnostics = route_context.get("compatIngressDiagnostics") or route_context.get("compat_ingress_diagnostics")
+    mode = str((diagnostics or {}).get("compatContextMode") or "third_party_managed").strip().lower() if isinstance(diagnostics, dict) else "third_party_managed"
+    if mode == "v8_main_chain":
+        return (
+            "[NETWORK SUPERVISOR CONTEXT]\n"
+            f"Surface: {protocol} API via Admin relay; the caller is an external application, not the V8 phone/web UI.\n"
+            "V8OS main-chain enhanced mode is active. You may use broader V8OS context, route suggestions, and governed tools, but still respect the external application's current messages, tools, and workspace discipline.\n"
+            "Do not expose internal tool names such as runtime_broker or delegation_broker in user-facing wording; use product words and plain text.\n"
+            "Return externally consumable text, URLs, or standard tool-call results; do not tell the caller to inspect V8 internal panels or cards unless explicitly asked for V8 diagnostics.\n"
+            "[/NETWORK SUPERVISOR CONTEXT]\n"
+        )
     return (
         "[NETWORK SUPERVISOR CONTEXT]\n"
         f"Surface: {protocol} API via Admin relay; the caller is an external application, not the V8 phone/web UI.\n"
-        "Treat this as a stateless compatibility turn: the external request messages, system text, tools, and tool results are the active context.\n"
-        "Do not rely on V8-only ask_user interaction cards, artifact cards, runtime cards, planner cards, or swarm cards being visible to the caller.\n"
-        "Prefer network_* tools first: they are client-provided tools that execute in the external application's workspace and approval UI.\n"
-        "For external-client file operations, do not switch to V8OS internal filesystem or shell tools unless the user explicitly asks V8OS to operate in the V8 workspace.\n"
-        "Use V8OS internal capabilities only as compact support when appropriate: ordinary search, deep research, and memory lookup; avoid file writes, shell commands, desktop operation, media generation, Spec, or subagent delegation by default.\n"
-        "Return externally consumable text, URLs, or standard tool-call results; do not tell the caller to inspect V8 internal panels or cards.\n"
+        "Default mode is third-party app managed. Treat the external request messages, system text, tools, and tool results as the only active context.\n"
+        "The third-party application owns history, compression, workspace, and external tool execution. Do not reinterpret or replace its workspace rules with V8OS workspace assumptions.\n"
+        "Prefer network_* tools first when the external client provides tools; they execute in the external application's workspace and approval UI.\n"
+        "Only use V8OS support tools for low-side-effect help: ordinary web search, deep research, global memory/knowledge lookup, or detailRef reading.\n"
+        "Do not use V8OS file writes, shell commands, desktop operation, media generation, Spec mode, or subagent collaboration in this default mode.\n"
+        "Memory is only reference evidence; the external application's current context wins when there is conflict.\n"
+        "Return externally consumable text, URLs, or standard tool-call results; do not tell the caller to inspect V8 internal panels or cards, and do not say internal tool names to the user.\n"
         "[/NETWORK SUPERVISOR CONTEXT]\n"
     )
+
+
+def _network_supervisor_third_party_managed(state) -> bool:
+    if not isinstance(state, dict):
+        return False
+    route_context = dict(state.get("current_route_context") or {})
+    transport = str(
+        state.get("transport")
+        or route_context.get("transport")
+        or route_context.get("triggerSource")
+        or ""
+    ).strip()
+    if transport not in {"network_supervisor_openai", "network_supervisor_anthropic"}:
+        return False
+    diagnostics = route_context.get("compatIngressDiagnostics") or route_context.get("compat_ingress_diagnostics")
+    mode = str((diagnostics or {}).get("compatContextMode") or "third_party_managed").strip().lower() if isinstance(diagnostics, dict) else "third_party_managed"
+    return mode != "v8_main_chain"
 
 
 def _render_engineering_context(state: dict) -> tuple[str, list[dict[str, object]]]:
@@ -1213,6 +1242,8 @@ def build_supervisor_system_content(
         target_role="supervisor",
     )
     network_supervisor_context = render_network_supervisor_context(state)
+    if network_supervisor_context and _network_supervisor_third_party_managed(state):
+        memory_context = ""
     memory_budget_diagnostics: list[dict[str, object]] = []
     if network_supervisor_context and memory_context:
         memory_budget = enforce_prompt_budget(

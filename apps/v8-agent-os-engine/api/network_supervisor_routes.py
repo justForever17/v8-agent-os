@@ -129,12 +129,19 @@ def _compat_memory_persist_allowed(value: str | None) -> bool:
 def _resolve_openai_scope_headers(request: Request) -> tuple[str | None, str | None, str | None, str]:
     config = network_supervisor_service.get_config_model().openai_compat
     raw_workspace_path = request.headers.get("x-v8-workspace-path")
-    if raw_workspace_path and not config.allow_raw_workspace_path:
-        raise HTTPException(status_code=400, detail="Raw workspace path headers are not allowed")
-
     project_id = str(request.headers.get("x-v8-project-id") or "").strip() or None
     workspace_id = str(request.headers.get("x-v8-workspace-id") or "").strip() or None
     scope_hint = str(request.headers.get("x-v8-scope-hint") or "").strip() or None
+    if not config.v8_main_chain_mode_enabled:
+        if any([project_id, workspace_id, scope_hint, raw_workspace_path]):
+            raise HTTPException(
+                status_code=403,
+                detail="Workspace headers require V8OS main-chain enhanced mode",
+            )
+        return None, None, None, "explicit"
+
+    if raw_workspace_path and not config.allow_raw_workspace_path:
+        raise HTTPException(status_code=400, detail="Raw workspace path headers are not allowed")
     if not config.allow_workspace_headers and any([project_id, workspace_id, scope_hint]):
         raise HTTPException(status_code=403, detail="Workspace headers are disabled for OpenAI compat")
     return project_id, workspace_id, scope_hint, str(config.default_scope_mode or "explicit").strip() or "explicit"
@@ -1126,6 +1133,7 @@ async def post_network_supervisor_openai_chat_completions(
             max_external_payload_tokens=budget.max_external_payload_tokens,
             max_external_tools_payload_tokens=budget.max_external_tools_payload_tokens,
             budget_diagnostics=budget.as_diagnostics(),
+            v8_main_chain_mode=bool(compat_config.v8_main_chain_mode_enabled),
         )
         _apply_external_tool_resume_claim(chat_request, external_tool_claim)
     except ValueError as exc:
@@ -1272,6 +1280,7 @@ async def post_network_supervisor_anthropic_messages(
             max_external_payload_tokens=budget.max_external_payload_tokens,
             max_external_tools_payload_tokens=budget.max_external_tools_payload_tokens,
             budget_diagnostics=budget.as_diagnostics(),
+            v8_main_chain_mode=bool(compat_config.v8_main_chain_mode_enabled),
         )
         _apply_external_tool_resume_claim(chat_request, external_tool_claim)
     except ValueError as exc:

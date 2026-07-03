@@ -167,19 +167,43 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertTrue(items[0]["id"].startswith("legacy_"))
         self.assertEqual(items[1]["id"], "oct_test")
 
-    def test_scope_headers_reject_raw_workspace_path_and_respect_workspace_header_gate(self):
+    def test_scope_headers_are_disabled_until_v8_main_chain_mode(self):
         config = self._enabled_network_config()
+        with patch.object(network_supervisor_service, "get_config_model", return_value=config):
+            with self.assertRaises(HTTPException) as raised:
+                _resolve_openai_scope_headers(SimpleNamespace(headers={"x-v8-workspace-path": "C:\\unsafe"}))
+            self.assertEqual(raised.exception.status_code, 403)
+            self.assertIn("main-chain enhanced mode", str(raised.exception.detail))
+
+        config = self._enabled_network_config()
+        config.openai_compat.v8_main_chain_mode_enabled = True
         with patch.object(network_supervisor_service, "get_config_model", return_value=config):
             with self.assertRaises(HTTPException) as raised:
                 _resolve_openai_scope_headers(SimpleNamespace(headers={"x-v8-workspace-path": "C:\\unsafe"}))
             self.assertEqual(raised.exception.status_code, 400)
 
         config = self._enabled_network_config()
+        config.openai_compat.v8_main_chain_mode_enabled = True
         config.openai_compat.allow_workspace_headers = False
         with patch.object(network_supervisor_service, "get_config_model", return_value=config):
             with self.assertRaises(HTTPException) as raised:
                 _resolve_openai_scope_headers(SimpleNamespace(headers={"x-v8-project-id": "project-1"}))
             self.assertEqual(raised.exception.status_code, 403)
+
+        config = self._enabled_network_config()
+        config.openai_compat.v8_main_chain_mode_enabled = True
+        config.openai_compat.allow_workspace_headers = True
+        with patch.object(network_supervisor_service, "get_config_model", return_value=config):
+            project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(
+                SimpleNamespace(
+                    headers={
+                        "x-v8-project-id": "project-1",
+                        "x-v8-workspace-id": "workspace-1",
+                        "x-v8-scope-hint": "docs",
+                    }
+                )
+            )
+        self.assertEqual((project_id, workspace_id, scope_hint, scope_mode), ("project-1", "workspace-1", "docs", "explicit"))
 
     def test_external_thread_headers_are_parsed_without_touching_openai_body(self):
         external_thread_id, external_user_id = _resolve_openai_external_headers(
@@ -637,6 +661,9 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         tools = [
             SimpleNamespace(name="network_write"),
             SimpleNamespace(name="network_read"),
+            SimpleNamespace(name="web_broker"),
+            SimpleNamespace(name="research_broker"),
+            SimpleNamespace(name="memory_broker"),
             SimpleNamespace(name="tool_observation_detail"),
             SimpleNamespace(name="write_native_file"),
             SimpleNamespace(name="run_system_command"),
@@ -644,7 +671,10 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
 
         filtered = _filter_network_supervisor_compat_tools(tools)
 
-        self.assertEqual([item.name for item in filtered], ["network_write", "network_read", "tool_observation_detail"])
+        self.assertEqual(
+            [item.name for item in filtered],
+            ["network_write", "network_read", "web_broker", "research_broker", "memory_broker", "tool_observation_detail"],
+        )
 
     def test_external_messages_fail_closed_but_tools_enter_reservoir(self):
         with self.assertRaisesRegex(ValueError, "External system message is too large"):
@@ -1049,7 +1079,28 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         payload = json.loads(response.body.decode("utf-8"))
         self.assertEqual(payload["content"][0]["text"], "你好")
 
-    def test_compat_ingress_filters_tool_results_into_raw_refs(self):
+    def test_compat_ingress_default_mode_keeps_external_payload_unchanged(self):
+        payload = {
+            "model": "v8os",
+            "messages": [
+                {"role": "system", "content": "client system"},
+                {"role": "user", "content": "run a client tool"},
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "read_file",
+                    "content": "token=secret-value",
+                },
+            ],
+        }
+
+        result = filter_openai_payload(payload)
+
+        self.assertEqual(result.payload, payload)
+        self.assertEqual(result.diagnostics["compatContextMode"], "third_party_managed")
+        self.assertEqual(result.diagnostics["systemPromptCleaning"]["applied"], False)
+
+    def test_compat_ingress_filters_tool_results_into_raw_refs_in_v8_main_chain_mode(self):
         result = filter_openai_payload(
             {
                 "model": "v8os",
@@ -1063,7 +1114,8 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                         "content": "token=secret-value\n" + ("A" * 9000),
                     },
                 ],
-            }
+            },
+            v8_main_chain_mode=True,
         )
 
         messages = result.payload["messages"]
@@ -1073,7 +1125,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertIn("preview:", tool_message["content"])
         self.assertNotIn("secret-value", tool_message["content"])
 
-    def test_compat_ingress_adds_recovery_hint_for_read_before_write_errors(self):
+    def test_compat_ingress_adds_recovery_hint_for_read_before_write_errors_in_v8_main_chain_mode(self):
         result = filter_openai_payload(
             {
                 "model": "v8os",
@@ -1086,7 +1138,8 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                         "content": "File has not been read yet. Read it first before writing to it.",
                     },
                 ],
-            }
+            },
+            v8_main_chain_mode=True,
         )
 
         summary = result.payload["messages"][0]["content"]
@@ -1098,7 +1151,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "external_payload_too_large"):
             filter_openai_payload({"messages": [{"role": "user", "content": "too large"}]}, max_payload_tokens=1)
 
-    def test_anthropic_compat_ingress_filters_tool_results(self):
+    def test_anthropic_compat_ingress_filters_tool_results_in_v8_main_chain_mode(self):
         result = filter_anthropic_payload(
             {
                 "model": "v8os",
@@ -1116,7 +1169,8 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                         ],
                     },
                 ],
-            }
+            },
+            v8_main_chain_mode=True,
         )
 
         user_with_tool = result.payload["messages"][-1]
@@ -1124,7 +1178,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertIn("rawRef: toolobs://", block["content"])
         self.assertNotIn("very-secret-value", block["content"])
 
-    def test_anthropic_compat_ingress_omits_claude_code_system_reminders(self):
+    def test_anthropic_compat_ingress_omits_claude_code_system_reminders_in_v8_main_chain_mode(self):
         result = filter_anthropic_payload(
             {
                 "model": "v8os",
@@ -1141,7 +1195,8 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                         ],
                     }
                 ],
-            }
+            },
+            v8_main_chain_mode=True,
         )
 
         rendered = json.dumps(result.payload, ensure_ascii=False)

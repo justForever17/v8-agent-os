@@ -213,6 +213,14 @@ def _compat_external_tools_primary(state) -> bool:
     return False
 
 
+def _compat_v8_main_chain_mode(state) -> bool:
+    diagnostics = _compat_ingress_diagnostics_from_state(state)
+    mode = str(diagnostics.get("compatContextMode") or "").strip().lower()
+    if mode:
+        return mode == "v8_main_chain"
+    return False
+
+
 def _compat_suppress_extensions_prefilter(state) -> bool:
     diagnostics = _compat_ingress_diagnostics_from_state(state)
     if "suppressExtensionsPrefilter" in diagnostics:
@@ -230,7 +238,10 @@ def _compat_suppress_passive_rag(state) -> tuple[bool, str]:
 
 
 _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
+    "memory_broker",
+    "research_broker",
     "tool_observation_detail",
+    "web_broker",
 }
 
 
@@ -969,7 +980,7 @@ def execute_supervisor_turn(
             response = _runtime_recoverable_failure_final_response(state)
             extensions_runtime_service.emit_execution_completed(response=response)
             return response
-        if _is_network_supervisor_compat_transport(state) and _compat_external_tools_primary(state):
+        if _is_network_supervisor_compat_transport(state) and not _compat_v8_main_chain_mode(state):
             visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()
         fast_first_turn_route = _should_use_fast_first_turn_route(state, user_query)

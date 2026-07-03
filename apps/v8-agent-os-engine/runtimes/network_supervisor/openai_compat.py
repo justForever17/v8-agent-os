@@ -740,8 +740,13 @@ def build_engine_chat_request_from_openai(
     max_external_payload_tokens: int = COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
     max_external_tools_payload_tokens: int = COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS,
     budget_diagnostics: dict[str, Any] | None = None,
+    v8_main_chain_mode: bool = False,
 ) -> ChatRequest:
-    ingress = filter_openai_payload(payload, max_payload_tokens=max_external_payload_tokens)
+    ingress = filter_openai_payload(
+        payload,
+        max_payload_tokens=max_external_payload_tokens,
+        v8_main_chain_mode=v8_main_chain_mode,
+    )
     payload = ingress.payload
     raw_tools = [dict(item) for item in list(payload.get("tools") or []) if isinstance(item, dict)]
     external_tools = select_external_tools_for_request(

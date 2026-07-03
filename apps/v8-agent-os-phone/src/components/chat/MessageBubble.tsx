@@ -391,9 +391,7 @@ function buildTraceGroupSummary(
             ? "console-line"
             : toolCount > 0
                 ? "tools"
-                : reasoningCount > 0
-                    ? "brain"
-                    : "progress-clock";
+                : "orbit";
 
     return {
         title,

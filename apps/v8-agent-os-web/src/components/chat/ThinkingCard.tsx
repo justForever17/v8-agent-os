@@ -1,4 +1,4 @@
-import { ChevronDown, Cpu } from "lucide-react";
+import { ChevronDown, Atom } from "lucide-react";
 import { useState, memo, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
@@ -114,7 +114,7 @@ export const ThinkingCard = memo(({
                                 ? "bg-violet-500/20 border-violet-500/50 text-violet-600 dark:text-violet-400" 
                                 : "bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-500"
                         )}>
-                            <Cpu className={cn("h-3 w-3", isStreaming && "animate-pulse")} />
+                            <Atom className={cn("h-3 w-3", isStreaming && "animate-pulse")} />
                             {isStreaming && (
                                 <span className="absolute inset-0 rounded-md ring-1 ring-violet-500 animate-ping opacity-30" />
                             )}

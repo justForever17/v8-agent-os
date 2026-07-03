@@ -80,6 +80,27 @@ def test_baidu_baike_is_ranked_as_background_encyclopedic_source():
     assert "source_catalog:encyclopedic_background" in quality["reasons"]
 
 
+def test_chinese_community_sources_stay_low_confidence_evidence():
+    urls = (
+        "https://www.zhihu.com/question/123/answer/456",
+        "https://juejin.cn/post/123",
+        "https://blog.csdn.net/example/article/details/123",
+        "https://www.cnblogs.com/example/p/123.html",
+    )
+
+    for url in urls:
+        quality = research_module._source_quality(
+            url,
+            allowed_domains=[],
+            source_policy="authoritative",
+            title="社区经验文章",
+            snippet="实践记录与个人经验。",
+        )
+
+        assert quality["tier"] == "weak"
+        assert "low_quality_host_hint" in quality["reasons"]
+
+
 def test_context7_mcp_error_payload_is_not_usable_text():
     payload = {
         "result": {

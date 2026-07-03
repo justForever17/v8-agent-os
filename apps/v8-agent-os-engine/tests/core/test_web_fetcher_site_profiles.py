@@ -88,6 +88,19 @@ def test_p0_site_profiles_are_registered() -> None:
         assert web_fetcher._builtin_extract_profile(url, "article"), url
 
 
+def test_p2_community_site_profiles_are_registered() -> None:
+    urls = (
+        "https://stackoverflow.com/questions/1/example",
+        "https://www.zhihu.com/question/123/answer/456",
+        "https://juejin.cn/post/123",
+        "https://blog.csdn.net/example/article/details/123",
+        "https://www.cnblogs.com/example/p/123.html",
+    )
+
+    for url in urls:
+        assert web_fetcher._builtin_extract_profile(url, "article"), url
+
+
 def test_official_docs_generic_profile_applies_to_docs_paths() -> None:
     html = """
     <html><body>
@@ -128,6 +141,9 @@ def test_stackoverflow_profile_keeps_question_and_answers_without_comments() -> 
           <div class="answer accepted-answer">
             <div class="js-post-body"><p>Accepted answer body.</p></div>
           </div>
+          <div class="answer" data-score="98">
+            <div class="js-post-body"><p>High-vote answer body.</p></div>
+          </div>
         </div>
         <aside id="sidebar">hot network questions</aside>
       </main>
@@ -139,8 +155,72 @@ def test_stackoverflow_profile_keeps_question_and_answers_without_comments() -> 
     assert "How do I parse HTML?" in text
     assert "Question body." in text
     assert "Accepted answer body." in text
+    assert "High-vote answer body." in text
     assert "noisy comments" not in text
     assert "hot network questions" not in text
+
+
+def test_chinese_community_profiles_clean_body_without_authority_boost() -> None:
+    cases = (
+        (
+            "https://www.zhihu.com/question/123/answer/456",
+            """
+            <html><body><main>
+              <h1 class="QuestionHeader-title">知乎问题标题</h1>
+              <aside class="Question-sideColumn">侧栏推荐</aside>
+              <div class="AnswerItem"><div class="RichContent-inner"><p>知乎答案正文。</p></div></div>
+              <div class="ContentItem-actions">点赞按钮</div>
+            </main></body></html>
+            """,
+            "知乎答案正文。",
+            "侧栏推荐",
+        ),
+        (
+            "https://juejin.cn/post/123",
+            """
+            <html><body><main>
+              <h1 class="article-title">掘金文章标题</h1>
+              <article class="markdown-body"><p>掘金文章正文。</p><pre>code()</pre></article>
+              <aside class="sidebar">作者推荐</aside>
+            </main></body></html>
+            """,
+            "掘金文章正文。",
+            "作者推荐",
+        ),
+        (
+            "https://blog.csdn.net/example/article/details/123",
+            """
+            <html><body><main id="mainBox">
+              <h1 class="title-article">CSDN文章标题</h1>
+              <div id="content_views"><p>CSDN文章正文。</p></div>
+              <aside class="blog_container_aside">侧边栏广告</aside>
+            </main></body></html>
+            """,
+            "CSDN文章正文。",
+            "侧边栏广告",
+        ),
+        (
+            "https://www.cnblogs.com/example/p/123.html",
+            """
+            <html><body><div id="mainContent">
+              <a class="postTitle">博客园文章标题</a>
+              <div id="cnblogs_post_body"><p>博客园文章正文。</p></div>
+              <div id="sideBar">侧边栏目录</div>
+            </div></body></html>
+            """,
+            "博客园文章正文。",
+            "侧边栏目录",
+        ),
+    )
+
+    for url, html, expected, noise in cases:
+        text = web_fetcher._extract_main_text(_soup(html), url)
+        hints = web_fetcher._search_result_quality_hints(url)
+
+        assert expected in text
+        assert noise not in text
+        assert hints["tier"] == "weak"
+        assert "low_quality_host_hint" in hints["signals"]
 
 
 def test_auto_fetch_uses_reader_fallback_after_static_challenge_and_browser_unavailable() -> None:

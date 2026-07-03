@@ -62,7 +62,9 @@ _LOW_QUALITY_HOST_HINTS = (
     "reddit.",
     "medium.",
     "zhihu.",
+    "juejin.",
     "csdn.",
+    "cnblogs.",
     "stackoverflow.com/questions",
 )
 _RESEARCH_SOURCE_CATALOG_PATH = Path(__file__).resolve().parents[2] / "runtimes" / "research" / "assets" / "source_quality_catalog.json"

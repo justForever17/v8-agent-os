@@ -1,0 +1,22 @@
+name = "v8-relay"
+main = "cloudflare_worker.mjs"
+compatibility_date = "2026-07-03"
+
+[[durable_objects.bindings]]
+name = "V8_RELAY_ROOM"
+class_name = "V8RelayRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["V8RelayRoom"]
+
+[[queues.producers]]
+binding = "RELAY_RETRY_QUEUE"
+queue = "v8-relay-retry"
+
+[[queues.consumers]]
+queue = "v8-relay-retry"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "v8-relay-dead-letter"

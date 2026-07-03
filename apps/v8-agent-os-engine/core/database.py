@@ -459,6 +459,62 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_relay_outbox (
+                    id TEXT PRIMARY KEY,
+                    target_peer_id TEXT NOT NULL,
+                    link_id TEXT,
+                    local_message_id TEXT,
+                    envelope_json TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'queued',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 5,
+                    available_at TIMESTAMP,
+                    claimed_by TEXT,
+                    lease_expires_at TIMESTAMP,
+                    relay_message_id TEXT,
+                    last_error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    published_at TIMESTAMP,
+                    failed_at TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_relay_inbox_cursor (
+                    peer_id TEXT PRIMARY KEY,
+                    cursor TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_relay_delivery_acks (
+                    id TEXT PRIMARY KEY,
+                    peer_id TEXT NOT NULL,
+                    relay_message_id TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'acked',
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    acked_at TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS network_relay_dead_letters (
+                    id TEXT PRIMARY KEY,
+                    direction TEXT NOT NULL,
+                    peer_id TEXT,
+                    relay_message_id TEXT,
+                    outbox_id TEXT,
+                    envelope_json TEXT,
+                    reason TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS skill_safety_reviews (
                     id TEXT PRIMARY KEY,
                     skill_id TEXT,
@@ -1020,6 +1076,11 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_state ON network_neighbor_wake_queue (state, available_at ASC, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_link ON network_neighbor_wake_queue (link_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_wake_queue_run ON network_neighbor_wake_queue (run_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_relay_outbox_state ON network_relay_outbox (state, available_at ASC, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_relay_outbox_target_peer ON network_relay_outbox (target_peer_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_relay_outbox_message ON network_relay_outbox (local_message_id)')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_network_relay_delivery_acks_message ON network_relay_delivery_acks (relay_message_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_network_relay_dead_letters_peer ON network_relay_dead_letters (peer_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_pending_approvals_session_id ON pending_approvals (session_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_session_id ON ask_user_interactions (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_ask_user_interactions_run_id ON ask_user_interactions (run_id, created_at DESC)')
@@ -4238,6 +4299,346 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, params)
             return [self._hydrate_network_neighbor_wake_queue_row(dict(row)) for row in cursor.fetchall()]
+
+    def _hydrate_network_relay_outbox_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["outboxId"] = data.get("id")
+        data["targetPeerId"] = data.get("target_peer_id")
+        data["linkId"] = data.get("link_id")
+        data["localMessageId"] = data.get("local_message_id")
+        data["envelope"] = json.loads(data["envelope_json"]) if data.get("envelope_json") else {}
+        data["attemptCount"] = int(data.get("attempt_count") or 0)
+        data["maxAttempts"] = int(data.get("max_attempts") or 0)
+        data["availableAt"] = data.get("available_at")
+        data["claimedBy"] = data.get("claimed_by")
+        data["leaseExpiresAt"] = data.get("lease_expires_at")
+        data["relayMessageId"] = data.get("relay_message_id")
+        data["lastError"] = data.get("last_error")
+        data["createdAt"] = data.get("created_at")
+        data["updatedAt"] = data.get("updated_at")
+        data["publishedAt"] = data.get("published_at")
+        data["failedAt"] = data.get("failed_at")
+        return data
+
+    def add_network_relay_outbox_item(
+        self,
+        *,
+        outbox_id: str,
+        target_peer_id: str,
+        envelope: dict[str, Any],
+        link_id: str | None = None,
+        local_message_id: str | None = None,
+        max_attempts: int = 5,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO network_relay_outbox
+                    (id, target_peer_id, link_id, local_message_id, envelope_json, state, attempt_count, max_attempts, available_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)
+                    ''',
+                    (
+                        outbox_id,
+                        target_peer_id,
+                        link_id,
+                        local_message_id,
+                        json.dumps(to_jsonable(envelope or {}), ensure_ascii=False),
+                        max(1, min(int(max_attempts or 5), 20)),
+                        now_iso,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_relay_outbox_item(outbox_id) or {}
+
+    def get_network_relay_outbox_item(self, outbox_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(outbox_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_relay_outbox WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_network_relay_outbox_row(dict(row)) if row else None
+
+    def claim_next_network_relay_outbox_item(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int = 180,
+    ) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+        lease_expires_at = latest_utc_iso(datetime.now(timezone.utc) + timedelta(seconds=max(30, int(lease_seconds or 180))))
+
+        def _write():
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    SELECT *
+                    FROM network_relay_outbox
+                    WHERE attempt_count < max_attempts
+                      AND (
+                        (state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?))
+                        OR (state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+                      )
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    ''',
+                    (now_iso, now_iso),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                outbox_id = row["id"]
+                cursor.execute(
+                    '''
+                    UPDATE network_relay_outbox
+                    SET state = 'leased',
+                        attempt_count = attempt_count + 1,
+                        claimed_by = ?,
+                        lease_expires_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                      AND attempt_count < max_attempts
+                      AND (
+                        (state IN ('queued', 'retry') AND (available_at IS NULL OR available_at <= ?))
+                        OR (state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+                      )
+                    ''',
+                    (worker_id, lease_expires_at, now_iso, outbox_id, now_iso, now_iso),
+                )
+                if cursor.rowcount != 1:
+                    conn.commit()
+                    return None
+                cursor.execute('SELECT * FROM network_relay_outbox WHERE id = ?', (outbox_id,))
+                claimed = cursor.fetchone()
+                conn.commit()
+                return self._hydrate_network_relay_outbox_row(dict(claimed)) if claimed else None
+
+        return self._run_write_with_retry(_write)
+
+    def complete_network_relay_outbox_item(self, outbox_id: str, *, relay_message_id: str | None = None) -> Optional[Dict[str, Any]]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE network_relay_outbox
+                    SET state = 'published',
+                        relay_message_id = COALESCE(?, relay_message_id),
+                        published_at = ?,
+                        available_at = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE id = ? AND state = 'leased'
+                    ''',
+                    (relay_message_id, now_iso, now_iso, outbox_id),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_network_relay_outbox_item(outbox_id)
+
+    def fail_network_relay_outbox_item(
+        self,
+        outbox_id: str,
+        *,
+        error: str,
+        retry_delay_seconds: int = 30,
+    ) -> Optional[Dict[str, Any]]:
+        existing = self.get_network_relay_outbox_item(outbox_id)
+        if not existing:
+            return None
+        now_iso = utc_now_iso()
+        exhausted = int(existing.get("attemptCount") or 0) >= int(existing.get("maxAttempts") or 1)
+        next_state = "dead_letter" if exhausted else "retry"
+        available_at = latest_utc_iso(datetime.now(timezone.utc) + timedelta(seconds=max(1, int(retry_delay_seconds or 30))))
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    UPDATE network_relay_outbox
+                    SET state = ?,
+                        available_at = ?,
+                        lease_expires_at = NULL,
+                        last_error = ?,
+                        failed_at = CASE WHEN ? = 'dead_letter' THEN ? ELSE failed_at END,
+                        updated_at = ?
+                    WHERE id = ? AND state = 'leased'
+                    ''',
+                    (
+                        next_state,
+                        None if exhausted else available_at,
+                        str(error or "")[:1000],
+                        next_state,
+                        now_iso,
+                        now_iso,
+                        outbox_id,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        if exhausted:
+            self.add_network_relay_dead_letter(
+                direction="outbound",
+                peer_id=str(existing.get("targetPeerId") or ""),
+                outbox_id=outbox_id,
+                envelope=existing.get("envelope") or {},
+                reason=str(error or "")[:1000],
+                metadata={"attemptCount": existing.get("attemptCount"), "maxAttempts": existing.get("maxAttempts")},
+            )
+        return self.get_network_relay_outbox_item(outbox_id)
+
+    def list_network_relay_outbox(
+        self,
+        *,
+        states: Optional[list[str]] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        normalized_states = [str(item).strip() for item in (states or []) if str(item).strip()]
+        params: list[Any] = []
+        query = 'SELECT * FROM network_relay_outbox WHERE 1=1'
+        if normalized_states:
+            placeholders = ",".join("?" for _ in normalized_states)
+            query += f' AND state IN ({placeholders})'
+            params.extend(normalized_states)
+        query += ' ORDER BY created_at DESC LIMIT ?'
+        params.append(max(1, min(int(limit or 50), 200)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_network_relay_outbox_row(dict(row)) for row in cursor.fetchall()]
+
+    def get_network_relay_cursor(self, peer_id: str) -> str:
+        normalized_peer_id = str(peer_id or "").strip()
+        if not normalized_peer_id:
+            return ""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT cursor FROM network_relay_inbox_cursor WHERE peer_id = ?', (normalized_peer_id,))
+            row = cursor.fetchone()
+            return str(row["cursor"] or "") if row else ""
+
+    def upsert_network_relay_cursor(self, *, peer_id: str, cursor: str | None) -> dict[str, Any]:
+        normalized_peer_id = str(peer_id or "").strip()
+        if not normalized_peer_id:
+            return {}
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO network_relay_inbox_cursor (peer_id, cursor, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(peer_id) DO UPDATE SET
+                        cursor = excluded.cursor,
+                        updated_at = excluded.updated_at
+                    ''',
+                    (normalized_peer_id, str(cursor or ""), now_iso),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return {"peerId": normalized_peer_id, "cursor": str(cursor or ""), "updatedAt": now_iso}
+
+    def add_network_relay_delivery_ack(
+        self,
+        *,
+        peer_id: str,
+        relay_message_id: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        ack_id = f"nrack_{uuid.uuid4().hex}"
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT OR IGNORE INTO network_relay_delivery_acks
+                    (id, peer_id, relay_message_id, state, metadata_json, created_at, acked_at)
+                    VALUES (?, ?, ?, 'acked', ?, ?, ?)
+                    ''',
+                    (
+                        ack_id,
+                        str(peer_id or "").strip(),
+                        str(relay_message_id or "").strip(),
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return {"id": ack_id, "peerId": str(peer_id or "").strip(), "relayMessageId": str(relay_message_id or "").strip(), "state": "acked"}
+
+    def add_network_relay_dead_letter(
+        self,
+        *,
+        direction: str,
+        peer_id: str | None = None,
+        relay_message_id: str | None = None,
+        outbox_id: str | None = None,
+        envelope: Optional[dict[str, Any]] = None,
+        reason: str | None = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        dead_letter_id = f"nrdl_{uuid.uuid4().hex}"
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO network_relay_dead_letters
+                    (id, direction, peer_id, relay_message_id, outbox_id, envelope_json, reason, metadata_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        dead_letter_id,
+                        str(direction or "inbound").strip() or "inbound",
+                        peer_id,
+                        relay_message_id,
+                        outbox_id,
+                        json.dumps(to_jsonable(envelope or {}), ensure_ascii=False) if envelope is not None else None,
+                        str(reason or "")[:1000],
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return {"id": dead_letter_id, "direction": direction, "peerId": peer_id, "relayMessageId": relay_message_id, "reason": str(reason or "")[:1000]}
+
+    def list_network_relay_dead_letters(self, *, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM network_relay_dead_letters ORDER BY created_at DESC LIMIT ?', (max(1, min(int(limit or 50), 200)),))
+            payload: list[dict[str, Any]] = []
+            for row in cursor.fetchall():
+                data = dict(row)
+                data["deadLetterId"] = data.get("id")
+                data["peerId"] = data.get("peer_id")
+                data["relayMessageId"] = data.get("relay_message_id")
+                data["outboxId"] = data.get("outbox_id")
+                data["envelope"] = json.loads(data["envelope_json"]) if data.get("envelope_json") else {}
+                data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+                data["createdAt"] = data.get("created_at")
+                payload.append(data)
+            return payload
 
     def claim_next_pending_chat_user_message(self, *, session_id: str, consumed_run_id: str) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()

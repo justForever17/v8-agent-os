@@ -1185,6 +1185,14 @@ class NetworkSupervisorService:
         identity = self._local_identity()
         relay_config = config.relay
         adapters = [self._relay_adapter_payload(relay_config, item) for item in list(relay_config.adapters or [])]
+        outbox_items = db.list_network_relay_outbox(states=["queued", "retry", "leased", "published", "dead_letter"], limit=200)
+        outbox_counts = {
+            "queued": len([item for item in outbox_items if item.get("state") == "queued"]),
+            "retry": len([item for item in outbox_items if item.get("state") == "retry"]),
+            "leased": len([item for item in outbox_items if item.get("state") == "leased"]),
+            "published": len([item for item in outbox_items if item.get("state") == "published"]),
+            "deadLetter": len([item for item in outbox_items if item.get("state") == "dead_letter"]),
+        }
         active_adapter_id = str(relay_config.active_adapter_id or "").strip()
         active_adapter = next((item for item in adapters if item.get("id") == active_adapter_id), None)
         if active_adapter is None and adapters:
@@ -1224,6 +1232,10 @@ class NetworkSupervisorService:
                 "peerId": identity.get("peerId") or "",
                 "displayName": identity.get("displayName") or "",
                 "publicKeyFingerprint": identity.get("publicKeyFingerprint") or "",
+            },
+            "runtime": {
+                "outbox": outbox_counts,
+                "deadLetterCount": len(db.list_network_relay_dead_letters(limit=50)),
             },
         }
 

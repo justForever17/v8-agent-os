@@ -643,7 +643,30 @@ class NetworkNeighborService:
             trace=NetworkTraceContext(delegation_id=f"neighbor_{uuid.uuid4().hex[:12]}"),
             expires_in_seconds=120,
         )
-        ack = await network_supervisor_service._post_peer(str(link.get("peerId") or ""), "peer/neighbors/messages", envelope)
+        try:
+            from runtimes.network_supervisor.relay_runtime import network_relay_worker_service
+        except Exception:
+            network_relay_worker_service = None
+        if network_relay_worker_service is not None and network_relay_worker_service.relay_available():
+            queued = network_relay_worker_service.enqueue_outbox(
+                target_peer_id=str(link.get("peerId") or ""),
+                link_id=str(link.get("linkId") or link_id),
+                local_message_id=message_id,
+                envelope=envelope,
+            )
+            return {"ok": True, "message": local_message, "delivery": {"status": "queued_via_relay", "outboxId": queued.get("outboxId")}}
+        try:
+            ack = await network_supervisor_service._post_peer(str(link.get("peerId") or ""), "peer/neighbors/messages", envelope)
+        except Exception as exc:
+            if network_relay_worker_service is not None and network_relay_worker_service.relay_available():
+                queued = network_relay_worker_service.enqueue_outbox(
+                    target_peer_id=str(link.get("peerId") or ""),
+                    link_id=str(link.get("linkId") or link_id),
+                    local_message_id=message_id,
+                    envelope=envelope,
+                )
+                return {"ok": True, "message": local_message, "delivery": {"status": "queued_via_relay", "outboxId": queued.get("outboxId"), "directError": str(exc)}}
+            raise
         return {"ok": True, "message": local_message, "delivery": ack}
 
     async def handle_peer_message(self, envelope: NetworkEnvelope) -> NetworkEnvelope:

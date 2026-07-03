@@ -276,6 +276,37 @@ def test_neighbor_message_pool_truncates_preview_not_body(neighbor_service):
     assert len(timeline["items"][0]["preview"]) < len(body)
 
 
+def test_send_message_queues_relay_when_relay_available(monkeypatch, neighbor_service):
+    svc, fake_network, temp_db, _tmp_path = neighbor_service
+    link = temp_db.upsert_network_neighbor_link(
+        link_id="nlink_relay",
+        peer_id="peer_remote",
+        local_nickname="Main",
+        remote_nickname="Remote",
+        local_role="primary",
+        remote_role="companion",
+        workspace_binding={},
+    )
+    queued: list[dict] = []
+
+    import runtimes.network_supervisor.relay_runtime as relay_runtime_module
+
+    monkeypatch.setattr(relay_runtime_module.network_relay_worker_service, "relay_available", lambda: True)
+    monkeypatch.setattr(
+        relay_runtime_module.network_relay_worker_service,
+        "enqueue_outbox",
+        lambda **kwargs: queued.append(kwargs) or {"outboxId": "nrout_test"},
+    )
+
+    result = asyncio.run(svc.send_message(link_id=link["linkId"], body="hello relay"))
+
+    assert result["delivery"]["status"] == "queued_via_relay"
+    assert result["delivery"]["outboxId"] == "nrout_test"
+    assert queued[0]["target_peer_id"] == "peer_remote"
+    assert queued[0]["local_message_id"]
+    assert not fake_network.posted
+
+
 def test_wake_supervisor_message_schedules_run(monkeypatch, neighbor_service):
     svc, fake_network, temp_db, _tmp_path = neighbor_service
     link = temp_db.upsert_network_neighbor_link(

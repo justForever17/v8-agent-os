@@ -46,6 +46,10 @@ def _get_network_supervisor_service():
     return importlib.import_module("runtimes.network_supervisor.service").network_supervisor_service
 
 
+def _get_network_relay_worker_service():
+    return importlib.import_module("runtimes.network_supervisor.relay_runtime").network_relay_worker_service
+
+
 def _get_project_registry_service():
     return importlib.import_module("runtimes.memory.project_registry").project_registry_service
 
@@ -1114,6 +1118,10 @@ def _save_network_supervisor_runtime_domain(payload: dict[str, Any]) -> dict[str
         loop = None
     if loop is not None:
         loop.create_task(_get_network_supervisor_service().reload())
+        if bool(data.get("enabled", False)):
+            loop.create_task(_get_network_relay_worker_service().start())
+        else:
+            loop.create_task(_get_network_relay_worker_service().stop())
     return _build_network_supervisor_runtime_domain()
 
 

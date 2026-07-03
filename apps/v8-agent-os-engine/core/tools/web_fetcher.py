@@ -152,6 +152,421 @@ BUILTIN_WEB_FETCH_SITE_PROFILES: dict[str, dict[str, Any]] = {
             }
         },
     },
+    "wikipedia.org": {
+        "description": "Wikipedia article pages: keep title, lead, headings, paragraphs and lists; skip navigation, edit links, reference chrome and category boxes.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "main",
+                    "article",
+                    "#content",
+                    ".mw-body",
+                    ".mw-parser-output",
+                    "body",
+                ),
+                "articleSelectors": (
+                    "#firstHeading",
+                    ".mw-parser-output > .shortdescription",
+                    ".mw-parser-output > p",
+                    ".mw-parser-output > h2",
+                    ".mw-parser-output > h3",
+                    ".mw-parser-output > h4",
+                    ".mw-parser-output > ul",
+                    ".mw-parser-output > ol",
+                    ".mw-parser-output > blockquote",
+                    ".mw-parser-output > pre",
+                ),
+                "removeSelectors": (
+                    "#toc",
+                    ".toc",
+                    ".vector-toc",
+                    ".mw-editsection",
+                    ".mw-empty-elt",
+                    ".navbox",
+                    ".vertical-navbox",
+                    ".metadata",
+                    ".ambox",
+                    ".hatnote",
+                    ".reflist",
+                    ".reference",
+                    ".mw-references-wrap",
+                    ".catlinks",
+                    ".printfooter",
+                    ".noprint",
+                    ".sistersitebox",
+                    ".side-box",
+                    ".mw-footer",
+                    ".vector-page-toolbar",
+                    ".vector-header",
+                    ".mw-indicators",
+                    "table",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                ),
+            }
+        },
+    },
+    "developer.mozilla.org": {
+        "description": "MDN documentation pages: keep main reference/tutorial body; skip menus, breadcrumbs, sidebars, toc, feedback and newsletter chrome.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "main",
+                    "article",
+                    ".main-page-content",
+                    ".section-content",
+                    "#content",
+                    "body",
+                ),
+                "articleSelectors": (
+                    "main h1",
+                    ".main-page-content",
+                    "article",
+                    ".section-content",
+                    "#content",
+                ),
+                "removeSelectors": (
+                    ".sidebar",
+                    ".toc",
+                    ".table-of-contents",
+                    ".breadcrumb",
+                    ".breadcrumbs",
+                    ".document-toc",
+                    ".metadata",
+                    ".page-footer",
+                    ".newsletter",
+                    ".feedback",
+                    ".notecard.deprecated",
+                    ".language-menu",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                    "form",
+                ),
+            }
+        },
+    },
+    "learn.microsoft.com": {
+        "description": "Microsoft Learn pages: keep article content and reference body; skip left rail, toc, feedback, rating and contribution chrome.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "main",
+                    "article",
+                    "[data-bi-name='content']",
+                    ".content",
+                    ".mainContainer",
+                    "body",
+                ),
+                "articleSelectors": (
+                    "main h1",
+                    "main article",
+                    "article",
+                    "[data-bi-name='content']",
+                    ".content",
+                    ".mainContainer",
+                ),
+                "removeSelectors": (
+                    "#left-container",
+                    "#right-container",
+                    ".left-container",
+                    ".right-container",
+                    ".toc",
+                    ".table-of-contents",
+                    ".breadcrumb",
+                    ".breadcrumbs",
+                    ".feedback-section",
+                    ".feedback-verbatim",
+                    ".rating",
+                    ".contributors",
+                    ".metadata",
+                    ".page-metadata",
+                    ".is-hidden",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                    "form",
+                ),
+            }
+        },
+    },
+    "github.com": {
+        "description": "GitHub repository, README, release and issue pages: keep markdown body and issue/release content; skip repository chrome while preserving repository popularity metadata.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "main",
+                    "article",
+                    "[data-testid='readme']",
+                    ".repository-content",
+                    ".js-issue-title",
+                    ".js-issue-body",
+                    "body",
+                ),
+                "articleSelectors": (
+                    "[data-testid='readme'] article.markdown-body",
+                    "[data-testid='readme'] article",
+                    "article.markdown-body",
+                    ".repository-content .markdown-body",
+                    ".Box-body .markdown-body",
+                    ".release-entry .markdown-body",
+                    ".release .markdown-body",
+                    ".markdown-body",
+                    ".js-issue-title",
+                    ".js-issue-body .markdown-body",
+                    "[data-testid='issue-body']",
+                    ".js-comment-body",
+                    ".comment-body",
+                ),
+                "removeSelectors": (
+                    ".Header",
+                    ".AppHeader",
+                    ".UnderlineNav",
+                    ".reponav",
+                    ".file-navigation",
+                    ".file-header",
+                    ".js-file-line-container",
+                    ".js-reactions-container",
+                    ".timeline-comment-actions",
+                    ".social-count",
+                    ".tooltipped",
+                    ".octicon",
+                    "clipboard-copy",
+                    "relative-time",
+                    "include-fragment",
+                    "details-menu",
+                    "nav",
+                    "footer",
+                    "header",
+                    "form",
+                    "button",
+                ),
+            }
+        },
+    },
+    "arxiv.org": {
+        "description": "arXiv abstract pages: keep title, authors, abstract, subjects and submission history; skip global navigation and service chrome.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "#abs",
+                    "main",
+                    "article",
+                    "body",
+                ),
+                "articleSelectors": (
+                    "#abs h1.title",
+                    "#abs .authors",
+                    "#abs blockquote.abstract",
+                    "#abs .dateline",
+                    "#abs .subjects",
+                    "#abs .submission-history",
+                    "#abs .comments",
+                    "#abs .msc-classes",
+                    "#abs .acm-classes",
+                ),
+                "removeSelectors": (
+                    ".extra-services",
+                    ".full-text",
+                    ".leftcolumn",
+                    ".mobile-submission-download",
+                    ".submission-history-extra",
+                    ".browse",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                    "form",
+                ),
+            }
+        },
+    },
+    "npmjs.com": {
+        "description": "npm package pages: keep package summary and README; skip package chrome, tabs, install widgets and sidebars.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "main",
+                    "article",
+                    "[data-testid='package-readme']",
+                    ".markdown",
+                    "body",
+                ),
+                "articleSelectors": (
+                    "main h1",
+                    "[data-testid='package-name']",
+                    "[data-testid='package-description']",
+                    "[data-testid='package-readme']",
+                    "article",
+                    ".markdown",
+                ),
+                "removeSelectors": (
+                    "[data-testid='tabs']",
+                    "[data-testid='sidebar']",
+                    "[data-testid='install-command']",
+                    ".package__sidebar",
+                    ".sidebar",
+                    ".toc",
+                    ".breadcrumb",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                    "form",
+                    "button",
+                ),
+            }
+        },
+    },
+    "pypi.org": {
+        "description": "PyPI project pages: keep package header and project description; skip navigation, sidebars and release history chrome.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "main",
+                    ".package-header",
+                    ".project-description",
+                    "#description",
+                    "body",
+                ),
+                "articleSelectors": (
+                    ".package-header",
+                    ".project-description",
+                    "#description",
+                    ".description",
+                    ".markdown",
+                    "main",
+                ),
+                "removeSelectors": (
+                    ".sidebar-section",
+                    ".vertical-tabs",
+                    ".release-timeline",
+                    ".breadcrumb",
+                    ".sponsors",
+                    ".meta",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                    "form",
+                    "button",
+                ),
+            }
+        },
+    },
+    "stackoverflow.com": {
+        "description": "Stack Overflow question pages: keep question title, accepted answer and answer bodies; skip votes, comments, menus, ads and sidebars.",
+        "extracts": {
+            "article": {
+                "containerSelectors": (
+                    "main",
+                    "#mainbar",
+                    "#question",
+                    "#answers",
+                    "body",
+                ),
+                "articleSelectors": (
+                    "#question-header h1",
+                    "#question .js-post-body",
+                    "#answers .answer.accepted-answer .js-post-body",
+                    "#answers .answer .js-post-body",
+                    ".js-post-body",
+                ),
+                "removeSelectors": (
+                    ".comments",
+                    ".js-comments-container",
+                    ".post-menu",
+                    ".votecell",
+                    ".js-voting-container",
+                    ".js-post-menu",
+                    ".js-post-notice",
+                    ".s-sidebarwidget",
+                    "#sidebar",
+                    "#left-sidebar",
+                    ".question-status",
+                    ".everyonelovesstackoverflow",
+                    ".js-consent-banner",
+                    "aside",
+                    "nav",
+                    "footer",
+                    "header",
+                    "form",
+                    "button",
+                ),
+            }
+        },
+    },
+}
+OFFICIAL_DOCS_GENERIC_SITE_PROFILE: dict[str, Any] = {
+    "description": "Official documentation pages: keep main docs/reference body; skip navigation, toc, version switchers, feedback and marketing chrome.",
+    "extracts": {
+        "article": {
+            "containerSelectors": (
+                "main",
+                "article",
+                "[role='main']",
+                ".docs-content",
+                ".documentation",
+                ".docMainContainer",
+                ".theme-doc-markdown",
+                ".markdown",
+                ".markdown-body",
+                ".prose",
+                ".sl-markdown-content",
+                "#content",
+                "body",
+            ),
+            "articleSelectors": (
+                "main article",
+                "main",
+                "article",
+                "[role='main']",
+                ".docs-content",
+                ".documentation",
+                ".docMainContainer",
+                ".theme-doc-markdown",
+                ".markdown",
+                ".markdown-body",
+                ".prose",
+                ".sl-markdown-content",
+                "#content",
+            ),
+            "removeSelectors": (
+                ".sidebar",
+                ".toc",
+                ".table-of-contents",
+                ".on-this-page",
+                ".breadcrumbs",
+                ".breadcrumb",
+                ".feedback",
+                ".rating",
+                ".pagination",
+                ".pager",
+                ".prev-next",
+                ".theme-doc-sidebar-container",
+                ".theme-doc-toc-desktop",
+                ".theme-doc-footer",
+                ".version",
+                ".version-selector",
+                ".language-selector",
+                ".announcement",
+                ".banner",
+                ".cookie",
+                "[aria-label='breadcrumb']",
+                "[aria-label='Table of contents']",
+                "[role='navigation']",
+                "aside",
+                "nav",
+                "footer",
+                "header",
+                "form",
+            ),
+        }
+    },
 }
 
 MAX_TEXT_CHARS = 12000
@@ -1262,7 +1677,56 @@ def _builtin_site_profile(url: str) -> dict[str, Any]:
     for profile_host, profile in BUILTIN_WEB_FETCH_SITE_PROFILES.items():
         if host == profile_host or host.endswith(f".{profile_host}"):
             return profile
+    if _looks_like_official_docs_site(url):
+        return OFFICIAL_DOCS_GENERIC_SITE_PROFILE
     return {}
+
+
+def _looks_like_official_docs_site(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    if not host:
+        return False
+    if host.startswith("docs.") or ".docs." in host:
+        return True
+
+    official_docs_hosts = (
+        "ai.google.dev",
+        "cloud.google.com",
+        "developer.apple.com",
+        "developers.google.com",
+        "docs.anthropic.com",
+        "docs.aws.amazon.com",
+        "docs.expo.dev",
+        "docs.oracle.com",
+        "docs.python.org",
+        "docs.rs",
+        "learn.microsoft.com",
+        "nextjs.org",
+        "platform.openai.com",
+        "react.dev",
+        "reactnative.dev",
+        "tailwindcss.com",
+        "vercel.com",
+        "www.typescriptlang.org",
+    )
+    if host in official_docs_hosts or any(host.endswith(f".{item}") for item in official_docs_hosts):
+        return True
+
+    docs_path_markers = (
+        "/api/",
+        "/api-reference/",
+        "/docs/",
+        "/documentation/",
+        "/guide/",
+        "/guides/",
+        "/learn/",
+        "/manual/",
+        "/reference/",
+    )
+    normalized_path = f"/{path.strip('/')}/" if path.strip("/") else "/"
+    return any(marker in normalized_path for marker in docs_path_markers)
 
 
 def _builtin_extract_profile(url: str, extract: WebExtractMode) -> dict[str, Any]:
@@ -1398,7 +1862,7 @@ def _build_payload(
 
     text = _extract_main_text(soup, final_url)
     links = _extract_links(soup, final_url)
-    metadata = _extract_metadata(soup)
+    metadata = _extract_metadata(soup, final_url)
     media = _extract_media(soup, final_url)
     return WebPagePayload(
         url=requested_url,
@@ -1594,14 +2058,147 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> list[dict[str, str]]:
     return links
 
 
-def _extract_metadata(soup: BeautifulSoup) -> dict[str, Any]:
+def _extract_metadata(soup: BeautifulSoup, url: str = "") -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     for meta in soup.select("meta"):
         key = _safe_text(meta.get("name") or meta.get("property") or meta.get("http-equiv"))
         value = _safe_text(meta.get("content"))
         if key and value and key not in metadata:
             metadata[key] = value[:500]
+    metadata.update(_extract_site_profile_metadata(soup, url))
     return metadata
+
+
+def _extract_site_profile_metadata(soup: BeautifulSoup, url: str) -> dict[str, Any]:
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    if host == "github.com" or host.endswith(".github.com"):
+        return _extract_github_metadata(soup, parsed.path or "")
+    return {}
+
+
+def _extract_github_metadata(soup: BeautifulSoup, path: str) -> dict[str, Any]:
+    owner, repo = _github_repository_from_path(path)
+    metadata: dict[str, Any] = {}
+    if owner and repo:
+        metadata["githubOwner"] = owner
+        metadata["githubRepo"] = repo
+        metadata["githubRepository"] = f"{owner}/{repo}"
+
+    star_text = _extract_github_star_text(soup, owner=owner, repo=repo)
+    star_count = _parse_compact_count(star_text)
+    if star_text:
+        metadata["githubStarsText"] = star_text[:80]
+    if star_count is not None:
+        metadata["githubStars"] = star_count
+    return metadata
+
+
+def _github_repository_from_path(path: str) -> tuple[str, str]:
+    parts = [part for part in (path or "").strip("/").split("/") if part]
+    if len(parts) < 2:
+        return "", ""
+    blocked_roots = {
+        "apps",
+        "collections",
+        "contact",
+        "customer-stories",
+        "enterprise",
+        "events",
+        "explore",
+        "features",
+        "issues",
+        "login",
+        "marketplace",
+        "new",
+        "notifications",
+        "orgs",
+        "organizations",
+        "pricing",
+        "pulls",
+        "search",
+        "settings",
+        "sponsors",
+        "topics",
+    }
+    owner = _safe_text(parts[0])
+    repo = _safe_text(parts[1])
+    if owner.lower() in blocked_roots or not owner or not repo:
+        return "", ""
+    return owner, repo
+
+
+def _extract_github_star_text(soup: BeautifulSoup, *, owner: str, repo: str) -> str:
+    selectors: list[str] = []
+    if owner and repo:
+        selectors.extend(
+            [
+                f'a[href="/{owner}/{repo}/stargazers"]',
+                f'a[href="/{owner}/{repo}/stargazers/"]',
+                f'a[href$="/{owner}/{repo}/stargazers"]',
+                f'a[href$="/{owner}/{repo}/stargazers/"]',
+            ]
+        )
+    selectors.extend(
+        [
+            'a[href$="/stargazers"]',
+            'a[href$="/stargazers/"]',
+            '[data-testid="stargazers"]',
+            '[aria-label*="star" i]',
+        ]
+    )
+    for selector in selectors:
+        try:
+            matches = list(soup.select(selector))
+        except Exception:
+            continue
+        for match in matches:
+            candidates = (
+                _safe_text(match.get("aria-label")) if hasattr(match, "get") else "",
+                _safe_text(match.get("title")) if hasattr(match, "get") else "",
+                _safe_text(match.get_text(" ", strip=True)),
+            )
+            for candidate in candidates:
+                if _looks_like_github_star_text(candidate):
+                    return candidate
+
+    page_text = _safe_text(soup.get_text(" ", strip=True))
+    for pattern in (
+        r"([0-9][0-9,]*(?:\.[0-9]+)?\s*[kKmM]?)\s+(?:stars?|stargazers?)\b",
+        r"\bStar\s+([0-9][0-9,]*(?:\.[0-9]+)?\s*[kKmM]?)\b",
+        r"\bstargazers?\s+([0-9][0-9,]*(?:\.[0-9]+)?\s*[kKmM]?)\b",
+    ):
+        match = re.search(pattern, page_text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _looks_like_github_star_text(text: str) -> bool:
+    normalized = _safe_text(text)
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if any(token in lowered for token in ("star", "stargazer", "users starred")):
+        return _parse_compact_count(normalized) is not None
+    return _parse_compact_count(normalized) is not None and len(normalized) <= 24
+
+
+def _parse_compact_count(text: str) -> int | None:
+    normalized = _safe_text(text).replace("\xa0", " ")
+    match = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?)", normalized)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    suffix = (match.group(2) or "").lower()
+    if suffix == "k":
+        value *= 1_000
+    elif suffix == "m":
+        value *= 1_000_000
+    return int(round(value))
 
 
 def _extract_media(soup: BeautifulSoup, base_url: str) -> list[dict[str, str]]:

@@ -72,6 +72,24 @@ class CronManager:
         ):
             if job_cfg.get(key) is not None:
                 payload[key] = job_cfg.get(key)
+        execute_kwargs: Dict[str, Any] = {
+            "trigger": "cron",
+            "cron_job_id": job_cfg["id"],
+        }
+        for key in (
+            "session_id",
+            "conversation_id",
+            "parent_session_id",
+            "user_id",
+            "project_id",
+            "workspace_id",
+            "workspace_path",
+            "resolved_scope",
+            "scope_source",
+            "scope_chain",
+        ):
+            if job_cfg.get(key) is not None:
+                execute_kwargs[key] = job_cfg.get(key)
         
         try:
             # We assume cron typically uses an async wrapper 
@@ -81,8 +99,7 @@ class CronManager:
                 target=target,
                 is_async=True, # Always spin job out as async task so scheduler isn't blocked 
                 payload=payload,
-                trigger="cron",
-                cron_job_id=job_cfg["id"]
+                **execute_kwargs,
             )
         except Exception as e:
             print(f"[CronManager] Execution of job {job_cfg.get('id')} failed: {e}")

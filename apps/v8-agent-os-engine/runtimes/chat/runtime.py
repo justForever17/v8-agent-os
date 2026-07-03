@@ -355,6 +355,9 @@ class ChatStreamState:
     supervisor_project_write_count: int = 0
     supervisor_direct_scope_exceeded_emitted: bool = False
     supervisor_direct_scope_gate_active: bool = False
+    supervisor_thinking_active_run_ids: set[str] = field(default_factory=set)
+    supervisor_thinking_started_run_ids: set[str] = field(default_factory=set)
+    supervisor_thinking_finished_run_ids: set[str] = field(default_factory=set)
 
 
 canonical_transcript_builder = CanonicalTranscriptBuilder()
@@ -6482,6 +6485,103 @@ class ChatRuntime:
         stream_state.text_emitted_chunks += 1
         return text_event
 
+    def _fire_supervisor_thinking_hook(
+        self,
+        event_name: str,
+        *,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        model_run_id: str,
+        reason: str,
+    ) -> None:
+        try:
+            from core.automation.hooks import hooks_manager
+
+            hooks_manager.execute_hook(
+                event_name,
+                parent_session_id=chat_run.session_id,
+                parent_run_id=chat_run.active_run_id,
+                source_session_id=chat_run.session_id,
+                source_run_id=chat_run.active_run_id,
+                agent_name=stream_state.current_agent,
+                agent_id=stream_state.current_agent,
+                model_run_id=model_run_id,
+                reason=reason,
+            )
+        except Exception as exc:
+            chat_run.emit_runtime_event(
+                "hook.supervisor_thinking.failed",
+                {
+                    "eventName": event_name,
+                    "modelRunId": model_run_id,
+                    "reason": reason,
+                    "error": str(exc),
+                },
+                agent_id=stream_state.current_agent,
+                node="hooks_manager",
+            )
+
+    def _maybe_fire_supervisor_thinking_start(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        model_run_id: str,
+    ) -> None:
+        owner = self._resolve_event_owner(stream_state)
+        if not bool(owner.get("displayInMessage")):
+            return
+        run_key = self._normalized_stream_run_id(model_run_id)
+        if run_key in stream_state.supervisor_thinking_started_run_ids:
+            return
+        stream_state.supervisor_thinking_started_run_ids.add(run_key)
+        stream_state.supervisor_thinking_active_run_ids.add(run_key)
+        self._fire_supervisor_thinking_hook(
+            "on_supervisor_thinking_start",
+            chat_run=chat_run,
+            stream_state=stream_state,
+            model_run_id=model_run_id,
+            reason="reasoning_delta",
+        )
+
+    def _maybe_fire_supervisor_thinking_end(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        model_run_id: str,
+        reason: str,
+    ) -> None:
+        run_key = self._normalized_stream_run_id(model_run_id)
+        if run_key not in stream_state.supervisor_thinking_active_run_ids:
+            return
+        if run_key in stream_state.supervisor_thinking_finished_run_ids:
+            return
+        stream_state.supervisor_thinking_active_run_ids.discard(run_key)
+        stream_state.supervisor_thinking_finished_run_ids.add(run_key)
+        self._fire_supervisor_thinking_hook(
+            "on_supervisor_thinking_end",
+            chat_run=chat_run,
+            stream_state=stream_state,
+            model_run_id=model_run_id,
+            reason=reason,
+        )
+
+    def _finish_active_supervisor_thinking_hooks(
+        self,
+        chat_run: ChatRunContext,
+        stream_state: ChatStreamState,
+        *,
+        reason: str,
+    ) -> None:
+        for run_key in list(stream_state.supervisor_thinking_active_run_ids):
+            self._maybe_fire_supervisor_thinking_end(
+                chat_run,
+                stream_state,
+                model_run_id=run_key,
+                reason=reason,
+            )
+
     def _emit_reasoning_delta(
         self,
         chat_run: ChatRunContext,
@@ -8233,6 +8333,11 @@ class ChatRuntime:
                         continue
                     stream_state.watchdog.note_text_progress()
                     stream_state.reasoning_buffer.append(reasoning_delta)
+                    self._maybe_fire_supervisor_thinking_start(
+                        chat_run,
+                        stream_state,
+                        model_run_id=model_run_id,
+                    )
                     reasoning_event = self._emit_reasoning_delta(
                         chat_run,
                         stream_state,
@@ -8264,8 +8369,10 @@ class ChatRuntime:
             final_snapshot = stream_state.text_snapshots_by_run.get(self._normalized_stream_run_id(model_run_id))
             if final_snapshot:
                 stream_state.authoritative_final_text = final_snapshot
+            model_end_run_ids = {model_run_id}
             for model_event in model_events:
                 canonical_event_at_ms = self._now_timestamp_ms()
+                model_end_run_ids.add(model_event.model_run_id)
                 if model_event.event_type == "text_delta":
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
@@ -8344,6 +8451,11 @@ class ChatRuntime:
                         continue
                     stream_state.watchdog.note_text_progress()
                     stream_state.reasoning_buffer.append(reasoning_delta)
+                    self._maybe_fire_supervisor_thinking_start(
+                        chat_run,
+                        stream_state,
+                        model_run_id=model_event.model_run_id,
+                    )
                     reasoning_event = self._emit_reasoning_delta(
                         chat_run,
                         stream_state,
@@ -8357,6 +8469,13 @@ class ChatRuntime:
                     )
                     if reasoning_event is not None:
                         emitted_events.append(reasoning_event)
+            for ended_model_run_id in model_end_run_ids:
+                self._maybe_fire_supervisor_thinking_end(
+                    chat_run,
+                    stream_state,
+                    model_run_id=ended_model_run_id,
+                    reason="chat_model_end",
+                )
             return emitted_events
 
         if kind == "on_tool_start":
@@ -8656,6 +8775,11 @@ class ChatRuntime:
 
     async def flush_stream_state(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
+        self._finish_active_supervisor_thinking_hooks(
+            chat_run,
+            stream_state,
+            reason="stream_flush",
+        )
         self._clear_text_flush_deadline(stream_state)
         owner = self._resolve_event_owner(stream_state)
         display_in_message = bool(owner.get("displayInMessage"))

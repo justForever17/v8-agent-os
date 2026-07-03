@@ -1,6 +1,7 @@
 import os
 from core.storage import storage
 from core.action_executor import ActionExecutor
+from erc.runtime_context import get_runtime_context
 
 class HooksManager:
     """
@@ -44,6 +45,26 @@ class HooksManager:
                 
             try:
                 execution_kwargs = dict(kwargs)
+                runtime_context = get_runtime_context()
+                for key in (
+                    "user_id",
+                    "project_id",
+                    "workspace_id",
+                    "workspace_path",
+                    "resolved_scope",
+                    "scope_source",
+                    "scope_chain",
+                ):
+                    if execution_kwargs.get(key) is None and runtime_context.get(key) is not None:
+                        execution_kwargs[key] = runtime_context.get(key)
+                context_session_id = runtime_context.get("session_id")
+                context_run_id = runtime_context.get("run_id")
+                if execution_kwargs.get("session_id") is None and context_session_id is not None:
+                    execution_kwargs.setdefault("parent_session_id", context_session_id)
+                    execution_kwargs.setdefault("source_session_id", context_session_id)
+                if execution_kwargs.get("run_id") is None and context_run_id is not None:
+                    execution_kwargs.setdefault("parent_run_id", context_run_id)
+                    execution_kwargs.setdefault("source_run_id", context_run_id)
                 execution_kwargs.setdefault("trigger", f"hook:{event_name}")
                 execution_kwargs.setdefault("task_name", hook.get("name") or f"hook:{event_name}")
                 execution_kwargs.setdefault("hook_name", hook.get("name"))

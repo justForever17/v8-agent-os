@@ -36,6 +36,8 @@ Best for:
 ### Session lifecycle
 
 - `on_supervisor_start`: lead flow begins
+- `on_supervisor_thinking_start`: Supervisor starts producing a recognizable reasoning stream
+- `on_supervisor_thinking_end`: Supervisor reasoning stream ends for this model run
 - `on_supervisor_end`: lead flow ends
 - `on_chat_end`: one full chat turn finishes
 
@@ -52,6 +54,21 @@ Best for:
 - `on_tool_execute_end`: tool execution ends
 
 Use commas to watch multiple events. Use `*` to watch all events.
+
+Note: thinking events only describe the Supervisor model reasoning phase. They do not mean the whole chat turn is finished; use `on_chat_end` for cleanup. In-run Supervisor / tool events carry `parent_session_id` / `parent_run_id` as the source by default instead of taking over the active conversation lane, so synchronous hooks do not wait on the chat turn that is currently waiting on them. Tool events wrap actual tool execution and are best for audit, blocking, or light logging, not long blocking work.
+
+## Breakpoint acceptance matrix
+
+When configuring or debugging hooks, check these breakpoints:
+
+| Breakpoint | Expected result |
+| :--- | :--- |
+| Event match | Event names are spelled correctly; `*` is used only when all events are intentionally watched |
+| Supervisor start/end | `on_supervisor_start` and `on_supervisor_end` are not mistaken for ordinary background chat turns |
+| Thinking stream | One model reasoning stream fires one start and one end, not one hook call per chunk |
+| Tool call | `on_tool_execute_start/end` receives the tool name; failures or timeouts remain observable |
+| Session source | In-run hooks retain `parent_session_id` / `parent_run_id` as source; terminal `on_chat_end` can safely attach to the original session |
+| Failure handling | Hook errors are logged or surfaced as runtime events instead of polluting normal chat text |
 
 ## Action types
 

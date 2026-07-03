@@ -218,6 +218,14 @@ def _derive_source_group(record: Dict[str, Any], *, source_hint: str | None = No
         return explicit
 
     metadata = _parse_metadata(record.get("metadata") or summary.get("metadata"))
+    metadata_explicit = _normalize_source_group(
+        metadata.get("sourceGroup")
+        or metadata.get("source_group")
+        or metadata.get("historyGroup")
+        or metadata.get("history_group")
+    )
+    if metadata_explicit in {"web", "cron", "hooks"}:
+        return metadata_explicit
     source = _normalize_source(
         record.get("source")
         or summary.get("source")

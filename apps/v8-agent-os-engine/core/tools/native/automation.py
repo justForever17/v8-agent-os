@@ -195,6 +195,12 @@ def manage_cron(
         payload (dict, optional): Keyword arguments or standard input for the target.
         name (str, optional): Human readable display name for the task.
 
+    IMPORTANT - When this tool is called by the Supervisor inside an active chat,
+        the scheduled job is bound to the current session. Future runs append to
+        the same conversation history instead of creating a separate cron
+        conversation. Admin-created cron jobs remain standalone unless configured
+        otherwise.
+
     IMPORTANT - To schedule tasks that require the Supervisor team (with sub-agents and all tools):
         Use action_type="agent", target="supervisor", and put the task description in payload:
         Example: manage_cron(action="add", job_id="daily-news", expression="0 11 * * *",
@@ -215,6 +221,7 @@ def manage_cron(
         from core.storage import storage
         from core.cron_manager import cron_manager
 
+        runtime_context = get_runtime_context()
         config = storage.get_cron_config()
         jobs = config.get("jobs", [])
 
@@ -250,6 +257,23 @@ def manage_cron(
                 "payload": payload or {},
                 "enabled": True
             }
+            current_session_id = str(runtime_context.get("session_id") or "").strip()
+            if current_session_id:
+                source_metadata = {
+                    "configuredBy": "manage_cron",
+                    "configuredBySessionId": current_session_id,
+                }
+                configured_by_run_id = str(runtime_context.get("run_id") or "").strip()
+                if configured_by_run_id:
+                    source_metadata["configuredByRunId"] = configured_by_run_id
+                new_job.update(
+                    {
+                        "session_id": current_session_id,
+                        "conversation_id": current_session_id,
+                        "sourceGroup": "web",
+                        "sourceMetadata": source_metadata,
+                    }
+                )
             jobs.append(new_job)
             storage.save_cron_config({"jobs": jobs})
             cron_manager.sync_jobs_to_scheduler()
@@ -300,6 +324,13 @@ def manage_hook(
     Use this only when the user explicitly asks to inspect or change lifecycle
     event behavior such as on_chat_end/on_agent_start automation. Ordinary chat,
     Spec, runtime, memory lookup, or task execution should not mutate hooks.
+    Supported Supervisor events include on_supervisor_start,
+    on_supervisor_thinking_start, on_supervisor_thinking_end,
+    on_supervisor_end, on_chat_end, and tool execution events
+    on_tool_execute_start/on_tool_execute_end.
+    In-run Supervisor/tool hooks receive parent_session_id/parent_run_id as
+    source context by default; use on_chat_end for terminal cleanup that can
+    safely attach to the completed chat session.
 
     Arguments:
         action (str): "list" or "add".

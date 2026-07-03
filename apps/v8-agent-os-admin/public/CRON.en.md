@@ -48,12 +48,35 @@ Example:
 supervisor
 ```
 
+## Session attachment
+
+When the Supervisor creates a cron job from an active chat through the Agent tool, the job is bound to that current session. Later scheduled runs should return messages, run state, and recovery markers to the same conversation instead of creating a separate “Cron” conversation in history.
+
+This rule applies to Agent-created jobs only:
+
+- If the user asks in chat for a daily reminder or weekly project digest, later output should stay in that chat.
+- Jobs created manually from Admin can still be standalone system automation.
+- If a job needs to post to an external channel, configure that channel explicitly in the payload instead of pretending it is a normal chat turn.
+
 ## Practical tips
 
 - Lower the frequency first for risky tasks
 - Avoid short intervals for long-running jobs
 - Use JSON for structured payloads
 - Test with Run now before leaving a job enabled
+
+## Breakpoint acceptance matrix
+
+When configuring or debugging cron, check these breakpoints:
+
+| Breakpoint | Expected result |
+| :--- | :--- |
+| Job creation | Agent-created jobs carry the current `session_id`; Admin-created jobs are not forced into a chat |
+| Run now / scheduled run | Execution passes `session_id`, workspace context, and payload into Automation Runtime |
+| Conversation history | Attached jobs do not create a separate Cron-group conversation |
+| Concurrent trigger | If the same job is still running, the next trigger is skipped or observable instead of writing concurrently into the same session |
+| Mid-run failure | The run lands in failed / cancelled / review_required or another diagnosable state and writes audit logs |
+| Recovery | Recoverable jobs keep the original run/session binding instead of resuming into a new session |
 
 ## If something breaks
 

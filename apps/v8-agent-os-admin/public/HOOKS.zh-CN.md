@@ -36,6 +36,8 @@
 ### 会话相关
 
 - `on_supervisor_start`：主流程开始时
+- `on_supervisor_thinking_start`：Supervisor 开始产生可识别思考流时
+- `on_supervisor_thinking_end`：Supervisor 本轮思考流结束时
 - `on_supervisor_end`：主流程结束时
 - `on_chat_end`：一轮对话全部完成后
 
@@ -52,6 +54,21 @@
 - `on_tool_execute_end`：工具执行结束时
 
 如果想监听多个事件，可以用英文逗号分隔；如果想全部监听，可以填写 `*`。
+
+注意：思考流事件只表示 Supervisor 的模型 reasoning 阶段进入或结束，不代表整轮对话已经完成；如果要做收尾整理，应优先使用 `on_chat_end`。运行中的 Supervisor / 工具事件默认携带来源 `parent_session_id` / `parent_run_id`，不直接抢占当前会话 lane，避免同步 hook 和正在执行的对话互相等待。工具事件围绕实际工具执行，适合审计、阻断或轻量记录，不适合长时间阻塞。
+
+## 断点验收矩阵
+
+配置或排查 Hooks 时，至少确认这些断点：
+
+| 断点 | 期望结果 |
+| --- | --- |
+| 事件命中 | 事件名拼写正确，`*` 只用于明确需要监听全部事件的场景 |
+| Supervisor 开始/结束 | `on_supervisor_start` 和 `on_supervisor_end` 不被后台 hook 误触发成普通聊天 |
+| 思考流 | 一次模型 reasoning 流只触发一次 start 和一次 end，不按每个 chunk 重复执行 |
+| 工具调用 | `on_tool_execute_start/end` 能拿到工具名，失败或超时不会让 run 静默丢失 |
+| 会话来源 | 运行中 hook 保留 `parent_session_id` / `parent_run_id` 作为来源；终态后的 `on_chat_end` 可安全附着原 session |
+| 故障处理 | hook 报错应写日志或 runtime 事件，不应污染普通聊天正文 |
 
 ## 触发类型怎么选
 

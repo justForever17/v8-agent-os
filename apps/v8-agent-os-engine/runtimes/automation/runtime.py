@@ -382,12 +382,30 @@ class AutomationRuntime:
             kwargs=kwargs,
         )
         existing_session = db.get_session(session_id) or {}
-        session_metadata = {
-            "runtime": "automation",
-            "trigger_source": trigger_source,
-            "action_type": action_type,
-            "action_target": target,
-        }
+        existing_metadata = coerce_json_dict(existing_session.get("metadata")) if existing_session else {}
+        attached_to_existing_session = bool(kwargs.get("session_id")) and bool(existing_session)
+        if attached_to_existing_session:
+            session_metadata = {
+                "attachedAutomation": True,
+                "lastAutomationTriggerSource": trigger_source,
+                "lastAutomationActionType": action_type,
+                "lastAutomationActionTarget": target,
+                "source": existing_metadata.get("source") or "web",
+                "sourceGroup": (
+                    existing_metadata.get("sourceGroup")
+                    or existing_metadata.get("source_group")
+                    or existing_metadata.get("historyGroup")
+                    or existing_metadata.get("history_group")
+                    or "web"
+                ),
+            }
+        else:
+            session_metadata = {
+                "runtime": "automation",
+                "trigger_source": trigger_source,
+                "action_type": action_type,
+                "action_target": target,
+            }
         # Hook/automation can piggyback on an existing chat session. In that case,
         # keep the human-facing chat title instead of replacing it with an internal label.
         existing_title = str(existing_session.get("title") or "").strip()

@@ -9,7 +9,7 @@ import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
 
-type PairingSurface = "phone" | "cyber" | "web" | "custom";
+type PairingSurface = "phone" | "cyber" | "custom";
 
 type PairingTicket = {
     pairingId: string;
@@ -150,7 +150,6 @@ export function DevicePairingPanel() {
                     >
                         <option value="phone">Phone</option>
                         <option value="cyber">CyberCore</option>
-                        <option value="web">Web</option>
                         <option value="custom">{t("components.admin.DevicePairingPanel.customClient")}</option>
                     </select>
                     <Button type="button" onClick={() => void createTicket()} disabled={busy}>

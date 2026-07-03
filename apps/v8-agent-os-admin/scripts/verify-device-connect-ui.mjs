@@ -77,6 +77,9 @@ try {
     await connectButton.click();
     await page.getByRole("dialog").waitFor();
     await page.getByText("当前 Admin URL", { exact: true }).waitFor();
+    const dialogText = await page.getByRole("dialog").textContent();
+    assert.match(dialogText || "", /Web (使用|通过)本机可信会话/);
+    assert.equal(await page.locator('select option[value="web"]').count(), 0, "Web should not be exposed as an Admin pairing surface");
     await page.getByRole("button", { name: "生成配对链接" }).click();
     await page.getByText("配对链接", { exact: true }).waitFor();
     const phoneQrImage = page.getByAltText("设备配对二维码");
@@ -87,7 +90,7 @@ try {
     await page.locator("select").selectOption("cyber");
     await page.getByRole("button", { name: "生成配对链接" }).click();
     await page.getByText("配对链接", { exact: true }).waitFor();
-    assert.equal(await page.getByAltText("设备配对二维码").count(), 0, "Desktop clients should use copy/link pairing instead of QR scanning");
+    assert.equal(await page.getByAltText("设备配对二维码").count(), 0, "CyberCore pairing should not render a QR code");
     assert.equal(pageErrors.length, 0, `Browser page errors: ${pageErrors.join(" | ")}`);
 
     const screenshot = path.join(reportRoot, "admin-device-connect-dialog.png");
@@ -98,8 +101,9 @@ try {
         checks: [
             "topbar_connect_button_visible",
             "admin_url_visible",
+            "web_pairing_surface_hidden_for_local_trusted_session",
             "phone_pairing_qr_code_rendered_locally",
-            "desktop_pairing_uses_copy_link",
+            "cybercore_pairing_copy_link_without_qr",
             "no_browser_page_errors",
         ],
     }, null, 2));

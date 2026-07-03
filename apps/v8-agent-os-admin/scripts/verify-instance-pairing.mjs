@@ -65,6 +65,9 @@ async function main() {
     assert.equal(initialManifest.initialized, false);
     assert.equal(initialManifest.clientGateway, "admin_bff");
     assert.equal(initialManifest.capabilities.publicRegistration, false);
+    assert.equal(initialManifest.capabilities.localTrustedSession, true);
+    assert.ok(initialManifest.capabilities.localTrustedSurfaces.includes("web"));
+    assert.ok(initialManifest.capabilities.localTrustedSurfaces.includes("cyber"));
     assert.ok(!("engine" in initialManifest));
 
     const rootRedirect = await request("/", { redirect: "manual" });
@@ -84,6 +87,25 @@ async function main() {
         body: JSON.stringify({ login: "owner", name: "Owner", password: "owner-test-password" }),
     });
     assert.equal(bootstrap.status, 200, JSON.stringify(await json(bootstrap)));
+
+    const localWebSession = await request("/api/client/auth/local-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ surface: "web", deviceName: "test-web-local" }),
+    });
+    const localWebPayload = await json(localWebSession);
+    assert.equal(localWebSession.status, 200, JSON.stringify(localWebPayload));
+    assert.equal(localWebPayload.surface, "web");
+    assert.equal(localWebPayload.trustedLocal, true);
+    assert.ok(localWebPayload.accessToken);
+    assert.ok(localWebPayload.refreshToken);
+    assert.ok(!("engine" in localWebPayload.linkManifest));
+    const localWebMe = await request("/api/client/auth/me", {
+        headers: { Authorization: `Bearer ${localWebPayload.accessToken}` },
+    });
+    const localWebMePayload = await json(localWebMe);
+    assert.equal(localWebMe.status, 200, JSON.stringify(localWebMePayload));
+    assert.equal(localWebMePayload.user.role, "ADMIN");
 
     const adminRegistration = await request("/api/auth/register", {
         method: "POST",
@@ -249,13 +271,14 @@ async function main() {
             "single_owner_manifest",
             "legacy_user_does_not_block_owner_bootstrap",
             "client_manifest_exposes_admin_bff_only",
+            "web_local_trusted_session_uses_admin_bff_token",
             "root_redirects_to_login",
             "registration_routes_removed",
             "owner_bootstrap_and_login",
             "phone_pairing_single_use",
             "expired_pairing_ticket_rejected",
             "device_revocation_invalidates_new_access_tokens",
-            "web_identity_pairing_without_device_token",
+            "legacy_web_pairing_compat_without_device_token",
             "cybercore_pairing_uses_admin_bff_device_token",
             "instance_manifest_contains_no_secret",
         ],

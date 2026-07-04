@@ -9,6 +9,76 @@ from runtimes.network_supervisor.anthropic_compat import build_anthropic_message
 from runtimes.network_supervisor.openai_compat import build_openai_completion_response
 
 
+class InlineThinkStreamFilter:
+    """Statefully split provider inline <think> tags across stream chunks."""
+
+    _START = "<think>"
+    _END = "</think>"
+
+    def __init__(self) -> None:
+        self._inside_think = False
+        self._pending = ""
+        self._strip_next_visible_prefix = False
+
+    @staticmethod
+    def _suffix_prefix_len(value: str, marker: str) -> int:
+        max_len = min(len(value), len(marker) - 1)
+        for length in range(max_len, 0, -1):
+            if marker.startswith(value[-length:]):
+                return length
+        return 0
+
+    def feed(self, content: str) -> tuple[str, str]:
+        text = self._pending + str(content or "")
+        self._pending = ""
+        visible_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        index = 0
+
+        while index < len(text):
+            marker = self._END if self._inside_think else self._START
+            marker_index = text.find(marker, index)
+            target_parts = reasoning_parts if self._inside_think else visible_parts
+
+            if marker_index >= 0:
+                target_parts.append(text[index:marker_index])
+                index = marker_index + len(marker)
+                was_inside_think = self._inside_think
+                self._inside_think = not self._inside_think
+                if was_inside_think and not self._inside_think:
+                    self._strip_next_visible_prefix = True
+                continue
+
+            tail = text[index:]
+            keep_len = self._suffix_prefix_len(tail, marker)
+            if keep_len:
+                target_parts.append(tail[:-keep_len])
+                self._pending = tail[-keep_len:]
+            else:
+                target_parts.append(tail)
+            break
+
+        visible = "".join(visible_parts)
+        if self._strip_next_visible_prefix and visible:
+            visible = visible.lstrip()
+            if visible:
+                self._strip_next_visible_prefix = False
+        return visible, "".join(reasoning_parts)
+
+    def flush(self) -> tuple[str, str]:
+        if not self._pending:
+            return "", ""
+        pending = self._pending
+        self._pending = ""
+        if self._inside_think:
+            return "", pending
+        if self._strip_next_visible_prefix:
+            pending = pending.lstrip()
+            if pending:
+                self._strip_next_visible_prefix = False
+        return pending, ""
+
+
 def openai_sse_frame(payload: dict[str, object] | str, *, event_id: str | None = None) -> bytes:
     if isinstance(payload, str):
         data = payload
@@ -38,6 +108,7 @@ class OpenAIStreamTimelineEmitter:
         self.created = int(created or time.time())
         self._role_emitted = False
         self._event_counter = 0
+        self._think_filter = InlineThinkStreamFilter()
 
     def _next_event_id(self) -> str:
         self._event_counter += 1
@@ -64,7 +135,13 @@ class OpenAIStreamTimelineEmitter:
     def text_delta(self, content: str) -> list[bytes]:
         if not content:
             return []
-        return [*self.ensure_role(), self._chunk({"content": content})]
+        visible_text, inline_reasoning = self._think_filter.feed(content)
+        frames: list[bytes] = []
+        if inline_reasoning:
+            frames.extend(self.reasoning_delta(inline_reasoning))
+        if visible_text:
+            frames.extend([*self.ensure_role(), self._chunk({"content": visible_text})])
+        return frames
 
     def reasoning_delta(self, content: str) -> list[bytes]:
         if not content:
@@ -101,7 +178,13 @@ class OpenAIStreamTimelineEmitter:
         return self.text_delta(notice)
 
     def finish(self, finish_reason: str) -> list[bytes]:
-        return [*self.ensure_role(), self._chunk({}, finish_reason=finish_reason), openai_sse_frame("[DONE]", event_id=self._next_event_id())]
+        visible_text, inline_reasoning = self._think_filter.flush()
+        frames: list[bytes] = []
+        if inline_reasoning:
+            frames.extend(self.reasoning_delta(inline_reasoning))
+        if visible_text:
+            frames.extend([*self.ensure_role(), self._chunk({"content": visible_text})])
+        return [*frames, *self.ensure_role(), self._chunk({}, finish_reason=finish_reason), openai_sse_frame("[DONE]", event_id=self._next_event_id())]
 
 
 class AnthropicStreamTimelineEmitter:
@@ -112,13 +195,15 @@ class AnthropicStreamTimelineEmitter:
     immediately as required by the wire format.
     """
 
-    def __init__(self, *, response_id: str, model_name: str) -> None:
+    def __init__(self, *, response_id: str, model_name: str, emit_inline_thinking: bool = False) -> None:
         self.response_id = response_id
         self.model_name = model_name
+        self.emit_inline_thinking = bool(emit_inline_thinking)
         self._next_block_index = 0
         self._active_block_index: int | None = None
         self._active_block_type = ""
         self._event_counter = 0
+        self._think_filter = InlineThinkStreamFilter()
 
     def _next_event_id(self) -> str:
         self._event_counter += 1
@@ -172,7 +257,14 @@ class AnthropicStreamTimelineEmitter:
     def text_delta(self, content: str) -> list[bytes]:
         if not content:
             return []
-        frames, block_index = self._ensure_block("text", {"type": "text", "text": ""})
+        content, inline_reasoning = self._think_filter.feed(content)
+        frames: list[bytes] = []
+        if self.emit_inline_thinking and inline_reasoning:
+            frames.extend(self.thinking_delta(inline_reasoning))
+        if not content:
+            return frames
+        block_frames, block_index = self._ensure_block("text", {"type": "text", "text": ""})
+        frames.extend(block_frames)
         frames.append(
             self._frame(
                 "content_block_delta",
@@ -226,7 +318,14 @@ class AnthropicStreamTimelineEmitter:
         return self.text_delta(notice)
 
     def finish(self, stop_reason: str) -> list[bytes]:
+        visible_text, inline_reasoning = self._think_filter.flush()
+        frames: list[bytes] = []
+        if self.emit_inline_thinking and inline_reasoning:
+            frames.extend(self.thinking_delta(inline_reasoning))
+        if visible_text:
+            frames.extend(self.text_delta(visible_text))
         return [
+            *frames,
             *self._close_active_block(),
             self._frame(
                 "message_delta",

@@ -110,7 +110,7 @@ from runtimes.memory.scope_resolution import (
     session_scope_binding_service,
 )
 from runtimes.network_supervisor.openai_compat import build_external_tool_alias_maps
-from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
+from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop, CompatExternalToolRequest
 
 
 _NETWORK_SUPERVISOR_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
@@ -10487,6 +10487,23 @@ class ChatRuntime:
             self.persist_final_assistant_message(chat_run, stream_state)
             self.emit_task_planning_mode_decision(chat_run, stream_state)
             yield self.finalize_success_run(chat_run, stream_state)
+        except CompatExternalToolRequest as exc:
+            payload = dict(getattr(exc, "payload", {}) or {})
+            interrupted_signal = {
+                "command": "external_tool_requested",
+                "reason": "external_tool",
+                "payload": {
+                    "tool_call_id": str(payload.get("toolCallId") or payload.get("tool_call_id") or "").strip()
+                    or None,
+                    "external_wire_name": str(payload.get("externalWireName") or "").strip() or None,
+                    "internal_alias_name": str(payload.get("internalAliasName") or payload.get("toolName") or "").strip()
+                    or None,
+                },
+            }
+            if stream_state is not None:
+                stream_state.interrupted_signal = interrupted_signal
+            for final_event in self.finalize_interrupted_run(chat_run, interrupted_signal, stream_state):
+                yield final_event
         except Exception as exc:
             logging.getLogger("v8chat.chat_runtime").exception(
                 "Chat run '%s' failed during stream execution",

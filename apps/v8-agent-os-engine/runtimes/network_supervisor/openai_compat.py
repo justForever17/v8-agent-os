@@ -13,8 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData, ChatToolCall, ChatToolFunction, EngineConfig, ExternalToolSpec
 from core.prompt_budget import estimate_prompt_tokens
+from core.reasoning_payload_contract import THINK_TAG_PATTERN
 from erc.safety_guardian import safety_guardian
-from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
+from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop, CompatExternalToolRequest
 from runtimes.network_supervisor.compat_ingress_filter import filter_openai_payload
 
 _ALIAS_SANITIZE_RE = re.compile(r"[^a-z0-9_]+")
@@ -493,6 +494,76 @@ def build_external_tool_alias_maps(external_tools: list[ExternalToolSpec] | None
     return wire_to_internal, internal_to_wire
 
 
+def _missing_langgraph_interrupt_context(exc: BaseException) -> bool:
+    return "__pregel_scratchpad" in str(exc)
+
+
+def _external_tool_waiting_payload(
+    *,
+    wire_name: str,
+    internal_alias_name: str,
+    tool_call_id: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "kind": "external_tool_requested",
+        "status": "waiting_external_tool",
+        "externalWireName": wire_name,
+        "internalAliasName": internal_alias_name,
+        "toolName": internal_alias_name,
+        "toolCallId": tool_call_id,
+        "params": params,
+    }
+
+
+def _extract_external_tool_resume_content(
+    response: dict[str, Any],
+    *,
+    wire_name: str,
+    internal_alias_name: str,
+    tool_call_id: str,
+) -> str | None:
+    if str(response.get("kind") or "").strip() != "external_tool_result":
+        return None
+    candidates = response.get("toolResults")
+    if not isinstance(candidates, list):
+        return None
+    strict_matches: list[str] = []
+    name_matches: list[str] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        wire_id = str(item.get("wireToolCallId") or item.get("tool_call_id") or item.get("toolUseId") or "").strip()
+        external_name = str(item.get("externalWireName") or "").strip()
+        internal_name = str(item.get("internalAliasName") or "").strip()
+        if external_name and external_name != wire_name:
+            continue
+        if internal_name and internal_name != internal_alias_name:
+            continue
+        content = str(item.get("content") or "")
+        if tool_call_id and wire_id and wire_id == tool_call_id:
+            strict_matches.append(content)
+        else:
+            name_matches.append(content)
+    if strict_matches:
+        return strict_matches[0]
+    if len(name_matches) == 1:
+        return name_matches[0]
+    return None
+
+
+def _external_tool_result_followup_text(*, tool_name: str | None, tool_call_id: str | None, content: str) -> str:
+    label = str(tool_name or tool_call_id or "external_tool").strip()
+    body = str(content or "").strip()
+    return (
+        "[EXTERNAL TOOL RESULT RECEIVED]\n"
+        f"Tool: {label}\n"
+        "Use this result to answer the user's current request. Do not call the same external tool again unless another result is needed.\n\n"
+        f"{body}\n"
+        "[/EXTERNAL TOOL RESULT RECEIVED]"
+    )
+
+
 def normalize_openai_messages_to_chat_messages(
     raw_messages: list[dict[str, Any]] | None,
     *,
@@ -570,6 +641,17 @@ def normalize_openai_messages_to_chat_messages(
                 tool_calls=tool_calls or None,
             )
         )
+        if role == "tool":
+            normalized.append(
+                ChatMessage(
+                    role="user",
+                    content=_external_tool_result_followup_text(
+                        tool_name=name,
+                        tool_call_id=str(raw.get("tool_call_id") or raw.get("toolCallId") or "").strip() or None,
+                        content=content,
+                    ),
+                )
+            )
     return normalized
 
 
@@ -649,19 +731,38 @@ def build_external_langchain_tools(external_tools: list[ExternalToolSpec] | None
                         safety_decision.reason or f"External tool '{_wire_name}' rejected by Safety approval.",
                         failure_class=safety_decision.risk_code or "external_tool_local_system_review",
                     )
-            response = interrupt(
+            request_payload = _external_tool_waiting_payload(
+                wire_name=_wire_name,
+                internal_alias_name=_internal_alias_name,
+                tool_call_id=tool_call_id,
+                params=dict(kwargs),
+            )
+            request_payload.update(
                 {
                     "interactionKind": "external_tool",
                     "approvalKind": "external_tool",
                     "externalOrigin": "network_client",
-                    "externalWireName": _wire_name,
-                    "internalAliasName": _internal_alias_name,
-                    "toolName": _internal_alias_name,
-                    "toolCallId": tool_call_id,
-                    "params": dict(kwargs),
                 }
             )
+            try:
+                response = interrupt(request_payload)
+            except Exception as exc:
+                if not _missing_langgraph_interrupt_context(exc):
+                    raise
+                # Compat clients such as Claude Code own external tool
+                # execution. When this path is outside an interrupt-capable
+                # LangGraph node, signal the ChatRuntime to pause instead of
+                # feeding a fake JSON tool result back to the model.
+                raise CompatExternalToolRequest(request_payload) from exc
             if isinstance(response, dict):
+                resume_content = _extract_external_tool_resume_content(
+                    response,
+                    wire_name=_wire_name,
+                    internal_alias_name=_internal_alias_name,
+                    tool_call_id=tool_call_id,
+                )
+                if resume_content is not None:
+                    return resume_content
                 return json.dumps(response, ensure_ascii=False)
             return str(response or "")
 
@@ -848,20 +949,40 @@ def extract_text_from_events(events: list[dict[str, Any]]) -> str:
         content = str(event.get("content") or "")
         if content:
             parts.append(content)
-    return "".join(parts)
+    text, _reasoning = split_inline_think_tags("".join(parts))
+    return text
 
 
 def extract_reasoning_from_events(events: list[dict[str, Any]]) -> str:
     parts: list[str] = []
+    inline_reasoning_parts: list[str] = []
     for event in list(events or []):
         if not isinstance(event, dict):
             continue
-        if str(event.get("type") or "").strip() != "reasoning_chunk":
+        event_type = str(event.get("type") or "").strip()
+        if event_type == "text_chunk":
+            _text, inline_reasoning = split_inline_think_tags(str(event.get("content") or ""))
+            if inline_reasoning:
+                inline_reasoning_parts.append(inline_reasoning)
+            continue
+        if event_type != "reasoning_chunk":
             continue
         content = str(event.get("content") or "")
         if content:
             parts.append(content)
-    return "".join(parts)
+    return "".join([*parts, *inline_reasoning_parts])
+
+
+def split_inline_think_tags(text: str) -> tuple[str, str]:
+    raw = str(text or "")
+    if "<think" not in raw.lower():
+        return raw, ""
+    reasoning_parts = [match.group(0) for match in THINK_TAG_PATTERN.finditer(raw)]
+    if not reasoning_parts:
+        return raw, ""
+    reasoning = "\n".join(re.sub(r"</?think\b[^>]*>", "", part, flags=re.IGNORECASE).strip() for part in reasoning_parts).strip()
+    visible = THINK_TAG_PATTERN.sub("", raw).strip()
+    return visible, reasoning
 
 
 def openai_finish_reason_from_events(

@@ -60,7 +60,7 @@ from api.network_supervisor_routes import (  # noqa: E402
 from api.session_workflow_routes import _is_hidden_compat_session  # noqa: E402
 from api.models import ChatMessage, ChatRequest, ExternalToolSpec  # noqa: E402
 from runtimes.chat.runtime import ChatRuntime  # noqa: E402
-from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop  # noqa: E402
+from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop, CompatExternalToolRequest  # noqa: E402
 from runtimes.network_supervisor.models import NetworkSupervisorRuntimeConfig  # noqa: E402
 from runtimes.network_supervisor.service import network_supervisor_service  # noqa: E402
 from graph.supervisor_turn import _filter_network_supervisor_compat_tools, _should_force_memory_broker_first  # noqa: E402
@@ -223,6 +223,85 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.failure_class, "external_tool_local_system_hard_stop")
 
+    def test_external_bash_waits_for_client_when_langgraph_interrupt_context_missing(self):
+        tools = build_external_langchain_tools(
+            [
+                ExternalToolSpec.model_validate(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Bash",
+                            "internalAliasName": "network_bash",
+                            "description": "Run a shell command in the external client.",
+                            "toolKind": "shell",
+                            "sideEffect": "process_or_shell",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                                "required": ["command"],
+                            },
+                        },
+                    }
+                )
+            ]
+        )
+
+        with patch(
+            "runtimes.network_supervisor.openai_compat.interrupt",
+            side_effect=RuntimeError("__pregel_scratchpad is unavailable"),
+        ):
+            with self.assertRaises(CompatExternalToolRequest) as raised:
+                tools[0].invoke({"command": "pwd"})
+
+        payload = raised.exception.payload
+        self.assertEqual(payload["kind"], "external_tool_requested")
+        self.assertEqual(payload["status"], "waiting_external_tool")
+        self.assertEqual(payload["externalWireName"], "Bash")
+        self.assertEqual(payload["internalAliasName"], "network_bash")
+        self.assertEqual(payload["params"], {"command": "pwd"})
+
+    def test_external_tool_resume_returns_client_result_text_to_model(self):
+        tools = build_external_langchain_tools(
+            [
+                ExternalToolSpec.model_validate(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "Bash",
+                            "internalAliasName": "network_bash",
+                            "description": "Run a shell command in the external client.",
+                            "toolKind": "shell",
+                            "sideEffect": "process_or_shell",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"command": {"type": "string"}},
+                                "required": ["command"],
+                            },
+                        },
+                    }
+                )
+            ]
+        )
+
+        with patch(
+            "runtimes.network_supervisor.openai_compat.interrupt",
+            return_value={
+                "kind": "external_tool_result",
+                "protocol": "anthropic",
+                "toolResults": [
+                    {
+                        "wireToolCallId": "toolu_1",
+                        "externalWireName": "Bash",
+                        "internalAliasName": "network_bash",
+                        "content": "E:\\Projects\\v8chat",
+                    }
+                ],
+            },
+        ):
+            result = tools[0].invoke({"command": "pwd"}, config={"tool_call_id": "internal_call_1"})
+
+        self.assertEqual(result, "E:\\Projects\\v8chat")
+
     def test_list_openai_compat_tokens_returns_plaintext_for_admin_control_plane(self):
         secrets_payload = {
             "openaiCompatTokens": [
@@ -290,7 +369,7 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertEqual(external_thread_id, "thread-123")
         self.assertEqual(external_user_id, "user-456")
 
-    def test_external_tool_result_claim_builds_resume_value(self):
+    def test_external_tool_result_claim_default_does_not_resume_internal_run(self):
         state = {
             "pendingExternalTools": {
                 "openai:global:call_wire_1": {
@@ -317,11 +396,41 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
                 tool_results=[{"wireToolCallId": "call_wire_1", "content": "created"}],
             )
 
+        self.assertIsNone(claim["resumeRunId"])
+        self.assertIsNone(claim["resumeValue"])
+        self.assertEqual(claim["matched"][0]["externalWireName"], "Write")
+        self.assertEqual(written[0]["pendingExternalTools"]["openai:global:call_wire_1"]["status"], "external_tool_result_received")
+
+    def test_external_tool_result_claim_builds_resume_value_for_checkpoint_pending(self):
+        state = {
+            "pendingExternalTools": {
+                "openai:global:call_wire_1": {
+                    "protocol": "openai",
+                    "runId": "run_waiting",
+                    "wireToolCallId": "call_wire_1",
+                    "internalAliasName": "network_write",
+                    "externalWireName": "Write",
+                    "checkpointResumeSupported": True,
+                    "status": "waiting_external_tool",
+                    "createdAt": "2026-05-01T00:00:00+00:00",
+                    "expiresAtTs": 9999999999,
+                }
+            }
+        }
+        with patch.object(network_supervisor_service, "read_state", return_value=state), patch.object(
+            network_supervisor_service,
+            "write_state",
+        ):
+            claim = network_supervisor_service.claim_external_tool_results(
+                protocol="openai",
+                wire_tool_call_ids=["call_wire_1"],
+                tool_results=[{"wireToolCallId": "call_wire_1", "content": "created"}],
+            )
+
         self.assertEqual(claim["resumeRunId"], "run_waiting")
         self.assertEqual(claim["resumeValue"]["kind"], "external_tool_result")
         self.assertEqual(claim["resumeValue"]["toolResults"][0]["externalWireName"], "Write")
         self.assertIn("created", claim["resumeValue"]["toolResults"][0]["content"])
-        self.assertEqual(written[0]["pendingExternalTools"]["openai:global:call_wire_1"]["status"], "external_tool_result_received")
 
     def test_external_tool_pending_timeout_marks_abandoned(self):
         state = {
@@ -662,6 +771,9 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertEqual(normalized[0].tool_calls[0].function.name, "network_search_docs")
         self.assertEqual(normalized[1].role, "tool")
         self.assertEqual(normalized[1].name, "network_search_docs")
+        self.assertEqual(normalized[2].role, "user")
+        self.assertIn("[EXTERNAL TOOL RESULT RECEIVED]", normalized[2].content)
+        self.assertIn("found", normalized[2].content)
 
     def test_external_system_message_is_downgraded_to_untrusted_user_instruction(self):
         normalized = normalize_openai_messages_to_chat_messages(
@@ -988,6 +1100,9 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertEqual(normalized[1].tool_calls[0].function.name, "network_search_docs")
         self.assertEqual(normalized[2].role, "tool")
         self.assertEqual(normalized[2].name, "network_search_docs")
+        self.assertEqual(normalized[3].role, "user")
+        self.assertIn("[EXTERNAL TOOL RESULT RECEIVED]", normalized[3].content)
+        self.assertIn("found", normalized[3].content)
 
     def test_build_anthropic_message_response_exposes_only_external_tool_use_and_optional_thinking(self):
         external_tools = select_external_tools_from_anthropic(
@@ -1037,6 +1152,18 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         tool_block = response["content"][2]
         self.assertEqual(tool_block["name"], "search_docs")
         self.assertEqual(tool_block["input"], {"query": "memory runtime"})
+
+    def test_build_anthropic_message_response_strips_inline_think_from_visible_text(self):
+        response = build_anthropic_message_response(
+            response_id="msg_test",
+            model_name="v8os",
+            include_thinking=False,
+            events=[
+                {"type": "text_chunk", "content": "<think>private plan</think>\n\nVisible answer."},
+            ],
+        )
+
+        self.assertEqual(response["content"], [{"type": "text", "text": "Visible answer."}])
 
     def test_anthropic_compat_route_uses_shared_token_and_text_response(self):
         class FakeRequest:
@@ -1346,6 +1473,33 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertIn("id: chatcmpl_stream:1", body)
         self.assertIn("data: [DONE]", body)
 
+    def test_openai_stream_emitter_strips_inline_think_from_text_delta(self):
+        emitter = OpenAIStreamTimelineEmitter(response_id="chatcmpl_stream", model_name="v8os")
+
+        body = "".join(frame.decode("utf-8") for frame in emitter.text_delta("<think>private plan</think>\n\nVisible answer."))
+
+        self.assertIn('"reasoning_content":"private plan"', body)
+        self.assertIn('"content":"Visible answer."', body)
+        self.assertNotIn("<think>", body)
+
+    def test_openai_stream_emitter_strips_split_inline_think_tags(self):
+        emitter = OpenAIStreamTimelineEmitter(response_id="chatcmpl_stream", model_name="v8os")
+
+        frames = [
+            *emitter.text_delta("<thi"),
+            *emitter.text_delta("nk>private"),
+            *emitter.text_delta(" plan</th"),
+            *emitter.text_delta("ink>Visible"),
+            *emitter.finish("stop"),
+        ]
+        body = "".join(frame.decode("utf-8") for frame in frames)
+
+        self.assertIn('"reasoning_content":"private"', body)
+        self.assertIn('"reasoning_content":" plan"', body)
+        self.assertIn('"content":"Visible"', body)
+        self.assertNotIn("<think>", body)
+        self.assertNotIn("</think>", body)
+
     def test_anthropic_stream_emitter_keeps_thinking_text_and_tool_blocks_ordered(self):
         emitter = AnthropicStreamTimelineEmitter(response_id="msg_stream", model_name="v8os")
 
@@ -1366,6 +1520,33 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertLess(body.index('"text":"B"'), body.index('"type":"tool_use"'))
         self.assertIn("id: msg_stream:1", body)
         self.assertIn('"partial_json":"{\\"file_path\\": \\"README.md\\"}"', body)
+
+    def test_anthropic_stream_emitter_strips_inline_think_from_text_delta(self):
+        emitter = AnthropicStreamTimelineEmitter(response_id="msg_stream", model_name="v8os")
+
+        body = "".join(frame.decode("utf-8") for frame in emitter.text_delta("<think>private plan</think>\n\nVisible answer."))
+
+        self.assertIn('"text":"Visible answer."', body)
+        self.assertNotIn("private plan", body)
+        self.assertNotIn("<think>", body)
+
+    def test_anthropic_stream_emitter_strips_split_inline_think_tags(self):
+        emitter = AnthropicStreamTimelineEmitter(response_id="msg_stream", model_name="v8os")
+
+        frames = [
+            emitter.message_start(),
+            *emitter.text_delta("<thi"),
+            *emitter.text_delta("nk>private"),
+            *emitter.text_delta(" plan</th"),
+            *emitter.text_delta("ink>Visible"),
+            *emitter.finish("end_turn"),
+        ]
+        body = "".join(frame.decode("utf-8") for frame in frames)
+
+        self.assertIn('"text":"Visible"', body)
+        self.assertNotIn("private plan", body)
+        self.assertNotIn("<think>", body)
+        self.assertNotIn("</think>", body)
 
     def test_openai_stream_preserves_small_text_reasoning_deltas(self):
         class FakeRequest:
@@ -1516,6 +1697,19 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertEqual(len(tool_calls), 1)
         self.assertEqual(tool_calls[0]["function"]["name"], "search_docs")
         self.assertEqual(response["choices"][0]["finish_reason"], "tool_calls")
+
+    def test_build_openai_completion_response_strips_inline_think_from_visible_text(self):
+        response = build_openai_completion_response(
+            response_id="chatcmpl_test",
+            model_name="v8os",
+            events=[
+                {"type": "text_chunk", "content": "<think>private plan</think>\n\nVisible answer."},
+            ],
+        )
+
+        message = response["choices"][0]["message"]
+        self.assertEqual(message["content"], "Visible answer.")
+        self.assertEqual(message["reasoning_content"], "private plan")
 
     def test_compat_wire_emitter_wraps_openai_and_anthropic_payloads(self):
         events = [{"type": "text_chunk", "content": "pong"}]

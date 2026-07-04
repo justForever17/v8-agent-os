@@ -738,7 +738,7 @@ async def _stream_anthropic_message(
 
     async def _generator():
         run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
-        emitter = AnthropicStreamTimelineEmitter(response_id=response_id, model_name=response_model_name)
+        emitter = AnthropicStreamTimelineEmitter(response_id=response_id, model_name=response_model_name, emit_inline_thinking=include_thinking)
         tool_uses_seen = False
         external_tool_stop_requested = False
         yield emitter.message_start()

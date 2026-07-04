@@ -16,6 +16,7 @@ from runtimes.network_supervisor.openai_compat import (
     COMPAT_MAX_EXTERNAL_TOOL_DESCRIPTION_TOKENS,
     COMPAT_MAX_EXTERNAL_TOOL_SCHEMA_BYTES,
     COMPAT_MAX_EXTERNAL_TOOLS,
+    _external_tool_result_followup_text,
     build_external_tool_alias_maps,
     extract_reasoning_from_events,
     extract_text_from_events,
@@ -238,14 +239,22 @@ def normalize_anthropic_messages_to_chat_messages(
                 tool_id = str(block.get("tool_use_id") or "").strip()
                 result_text = _flatten_anthropic_content(block.get("content"))
                 total_message_tokens += estimate_prompt_tokens(result_text)
+                tool_name = tool_id_to_internal_name.get(tool_id)
                 normalized.append(
                     ChatMessage(
                         role="tool",
-                        name=tool_id_to_internal_name.get(tool_id),
+                        name=tool_name,
                         tool_call_id=tool_id or None,
                         content=result_text,
                     )
                 )
+                followup_text = _external_tool_result_followup_text(
+                    tool_name=tool_name,
+                    tool_call_id=tool_id or None,
+                    content=result_text,
+                )
+                total_message_tokens += estimate_prompt_tokens(followup_text)
+                normalized.append(ChatMessage(role="user", content=followup_text))
             elif block_type == "text":
                 text = str(block.get("text") or "").strip()
                 if text:

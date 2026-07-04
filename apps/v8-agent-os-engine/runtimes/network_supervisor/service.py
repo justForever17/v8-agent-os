@@ -267,6 +267,7 @@ class NetworkSupervisorService:
         external_thread_id: str | None = None,
         external_user_id: str | None = None,
         ttl_seconds: int = 900,
+        checkpoint_resume_supported: bool = False,
     ) -> None:
         wire_id = str(wire_tool_call_id or "").strip()
         if not wire_id:
@@ -284,6 +285,7 @@ class NetworkSupervisorService:
             "wireToolCallId": wire_id,
             "internalAliasName": str(internal_alias_name or "").strip(),
             "externalWireName": str(external_wire_name or "").strip(),
+            "checkpointResumeSupported": bool(checkpoint_resume_supported),
             "status": "waiting_external_tool",
             "createdAt": _utc_iso(now),
             "expiresAt": _utc_iso(now + timedelta(seconds=max(30, int(ttl_seconds or 900)))),
@@ -307,6 +309,7 @@ class NetworkSupervisorService:
                 "protocol": str(protocol or "").strip().lower(),
                 "internalAliasName": str(internal_alias_name or "").strip(),
                 "externalWireName": str(external_wire_name or "").strip(),
+                "checkpointResumeSupported": bool(checkpoint_resume_supported),
                 "expiresAt": pending[key].get("expiresAt"),
             },
         )
@@ -404,7 +407,12 @@ class NetworkSupervisorService:
             state["pendingExternalTools"] = pending
             self.write_state(state)
 
-        run_ids = [str(item.get("runId") or "").strip() for item in matched if str(item.get("runId") or "").strip()]
+        checkpoint_matched = [item for item in matched if bool(item.get("checkpointResumeSupported"))]
+        run_ids = [
+            str(item.get("runId") or "").strip()
+            for item in checkpoint_matched
+            if str(item.get("runId") or "").strip()
+        ]
         resume_run_id = run_ids[0] if run_ids and all(item == run_ids[0] for item in run_ids) else None
         resume_value = None
         if resume_run_id:

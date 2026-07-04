@@ -1120,6 +1120,13 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
         )
     except Exception as execution_err:
         _raise_runtime_governance_exception_if_needed(execution_err)
+        try:
+            from runtimes.network_supervisor.compat_errors import CompatExternalToolRequest
+
+            if isinstance(execution_err, CompatExternalToolRequest):
+                raise
+        except ImportError:
+            pass
         error_msg = str(execution_err)
         print(f"[ToolWrapper] Tool {tool_name} failed: {error_msg}")
         if str(tool_name or "").startswith("network_") and "__pregel_scratchpad" in error_msg:

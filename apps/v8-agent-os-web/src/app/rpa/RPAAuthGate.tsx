@@ -18,7 +18,7 @@ export function RPAAuthGate() {
                 <div className="mt-5 space-y-2">
                     <h1 className="text-2xl font-semibold tracking-tight">{t(lt("本机连接未就绪", "Local connection is not ready"))}</h1>
                     <p className="text-sm leading-6 text-muted-foreground">
-                        {t(lt("请先回到聊天页完成自动连接，再打开 RPA。", "Open Chat first to finish local auto-connect, then return to RPA."))}
+                        {t(lt("请先回到聊天页完成自动连接，再打开 RPA 自动化。", "Open Chat first to finish local auto-connect, then return to RPA automation."))}
                     </p>
                 </div>
                 <div className="mt-6 flex justify-center">

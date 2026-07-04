@@ -19,6 +19,8 @@ import {
     formatRelativeRuntimeTime,
     getRuntimeDescriptor,
 } from "@/lib/runtime-stage";
+import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { lt } from "@/lib/locale";
 import { ContentDispatcher } from "./ContentDispatcher";
 import { Activity, AlertTriangle, Blocks, Bot, Box, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, Sparkles, TerminalSquare, Workflow, X } from "lucide-react";
 
@@ -159,16 +161,18 @@ function getEngineeringLabel(activity: RuntimeStageActivity): { title: string; m
     };
 }
 
-const episodeKindLabels: Record<string, string> = {
-    runtime: "运行时",
-    engineering: "工程运行时",
-    research: "调研运行时",
-    creative_media: "创意媒体",
-    computer_use: "桌面 / 浏览器",
-    rpa: "RPA",
-    delegation: "子代理",
-    handoff: "交接",
-};
+function buildEpisodeKindLabels(t: ReturnType<typeof useT>): Record<string, string> {
+    return {
+        runtime: t(lt("运行时", "Runtime")),
+        engineering: t(lt("工程运行时", "Engineering runtime")),
+        research: t(lt("调研运行时", "Research runtime")),
+        creative_media: t(lt("创意媒体", "Creative media")),
+        computer_use: t(lt("computer use", "computer use")),
+        rpa: t(lt("RPA 自动化", "RPA automation")),
+        delegation: t(lt("子代理", "Subagent")),
+        handoff: t(lt("交接", "Handoff")),
+    };
+}
 
 function toRuntimeEpisodeGraphActivities(activities: RuntimeStageActivity[]): RuntimeEpisodeGraphActivity[] {
     return activities.map((activity) => ({
@@ -381,12 +385,14 @@ function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) 
 }
 
 export function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageActivity[] }) {
+    const t = useT();
+    const episodeKindLabels = React.useMemo(() => buildEpisodeKindLabels(t), [t]);
     const nodes = React.useMemo(
         () => buildRuntimeEpisodeGraph(toRuntimeEpisodeGraphActivities(activities), {
             rootLabel: "Supervisor",
             kindLabels: episodeKindLabels,
         }),
-        [activities],
+        [activities, episodeKindLabels],
     );
     const visibleNodes = nodes.filter((node) => node.id !== "supervisor" || nodes.length > 1);
     const activeIds = new Set(nodes.filter((node) => node.status === "active").map((node) => node.id));
@@ -398,18 +404,18 @@ export function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageAc
         attempted: "bg-amber-500 text-amber-700 dark:text-amber-300",
     };
     const statusLabel: Record<SwarmNodeStatus, string> = {
-        active: "运行",
-        completed: "完成",
-        failed: "失败",
-        pending: "等待",
-        attempted: "未确认",
+        active: t(lt("运行", "Active")),
+        completed: t(lt("完成", "Done")),
+        failed: t(lt("失败", "Failed")),
+        pending: t(lt("等待", "Pending")),
+        attempted: t(lt("未确认", "Unconfirmed")),
     };
 
     if (visibleNodes.length <= 1) return null;
 
     return (
         <div className="space-y-3 rounded-[22px] border border-stone-200/80 bg-white/86 p-3.5 shadow-[0_12px_32px_rgba(15,23,42,0.05)] dark:border-white/10 dark:bg-white/[0.03]">
-            <div className="text-[13px] font-semibold tracking-tight text-foreground">执行地图</div>
+            <div className="text-[13px] font-semibold tracking-tight text-foreground">{t(lt("执行地图", "Execution map"))}</div>
             <div className="space-y-2.5">
                 {visibleNodes.map((node) => {
                     const activeLine = Boolean(node.parentId && activeIds.has(node.id));
@@ -749,10 +755,11 @@ export function RuntimeTimelinePanel({
     contextGovernanceHistory,
     onSelectRuntime,
 }: RuntimeTimelinePanelProps) {
+    const { locale } = useLocale();
     const runtimeId = selectedRuntimeId && model.items.some((item) => item.id === selectedRuntimeId)
         ? selectedRuntimeId
         : model.activeRuntimeId || model.items[0]?.id || null;
-    const runtime = runtimeId ? getRuntimeDescriptor(runtimeId) : null;
+    const runtime = runtimeId ? getRuntimeDescriptor(runtimeId, locale) : null;
     const Icon = runtimeId ? runtimeIcons[runtimeId] : Cpu;
     const activities = runtimeId
         ? model.activities.filter((activity) => activity.runtimeId === runtimeId)

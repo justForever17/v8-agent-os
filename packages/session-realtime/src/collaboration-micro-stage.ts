@@ -360,7 +360,7 @@ function stepLabel(cue: CollaborationMicroStageCue, kind: CollaborationMicroStag
     research: "查阅资料",
     engineering: "工程执行",
     creative: "素材生成",
-    desktop: "桌面操作",
+  desktop: "computer use",
     rpa: "流程执行",
     waiting: "等待接单",
     handoff: "结果回流",

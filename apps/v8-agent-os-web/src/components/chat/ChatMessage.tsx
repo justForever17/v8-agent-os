@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { User, Copy, Trash2, Check, Sparkles, TerminalSquare, ChevronDown, Orbit } from "lucide-react";
+import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, Orbit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo } from "react";
 import { groupTimelineNodes } from "@/lib/chat/timeline-grouper";
@@ -30,6 +30,7 @@ import { lt } from "@/lib/locale";
 import { parseContentToBlocks } from "@/lib/chat/content-detector";
 import { CollaborationMicroStageScene, type CollaborationMicroStageDetailTarget } from "./collaboration/CollaborationMicroStageScene";
 import type { RuntimeStageActivity } from "@/lib/runtime-stage";
+import { DEFAULT_AVATAR } from "@/lib/chat-stream-state";
 
 interface ChatMessageProps {
     message: Message;
@@ -612,13 +613,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         "bg-white/80 dark:bg-zinc-800/80 border-white/50 dark:border-white/10 backdrop-blur-md",
                         isLoading && isLast ? "shadow-[0_0_15px_rgba(139,92,246,0.3)] border-violet-500/30" : ""
                     )}>
-                        {message.agentAvatar ? (
-                            <img src={message.agentAvatar} alt={message.agentName} className="w-full h-full object-cover" />
-                        ) : (
-                            <div className="w-full h-full bg-gradient-to-br from-violet-500 to-primary flex items-center justify-center text-white">
-                                <Sparkles className="h-[18px] w-[18px] sm:h-5 sm:w-5" />
-                            </div>
-                        )}
+                        <img src={message.agentAvatar || DEFAULT_AVATAR} alt={message.agentName || "Supervisor"} className="w-full h-full object-cover" />
                     </div>
                     {/* Status Dot */}
                     {isLoading && isLast && (

@@ -15,6 +15,7 @@ import {
     type AuthoritativeRuntimeTimelineEntry,
     type SessionRuntimeId,
 } from "@v8/session-realtime";
+import type { Locale } from "@/lib/locale";
 
 export type RuntimeId = SessionRuntimeId | "context_governance";
 export type RuntimeCardStatus = "active" | "attention" | "recent" | "idle";
@@ -61,18 +62,19 @@ export interface RuntimeStageModel {
     activities: RuntimeStageActivity[];
 }
 
-const RUNTIME_DESCRIPTORS: Record<RuntimeId, RuntimeDescriptor> = Object.fromEntries(
-    SESSION_RUNTIME_ORDER.map((runtimeId) => {
-        const descriptor = getRuntimeRegistryEntry(runtimeId, "zh-CN");
-        return [runtimeId, descriptor];
-    }),
-) as Record<RuntimeId, RuntimeDescriptor>;
-
-RUNTIME_DESCRIPTORS.context_governance = {
-    id: "context_governance",
-    label: "上下文治理",
-    shortLabel: "治理",
-    description: "查看上下文预算、压缩与召回注入。",
+const CONTEXT_GOVERNANCE_DESCRIPTOR: Record<Locale, RuntimeDescriptor> = {
+    "zh-CN": {
+        id: "context_governance",
+        label: "上下文治理",
+        shortLabel: "治理",
+        description: "查看上下文预算、压缩与召回注入。",
+    },
+    en: {
+        id: "context_governance",
+        label: "Context governance",
+        shortLabel: "Govern",
+        description: "Inspect context budget, compaction, and recall injection.",
+    },
 };
 
 const RUNTIME_ORDER: RuntimeId[] = [...SESSION_RUNTIME_ORDER, "context_governance"];
@@ -378,12 +380,15 @@ export function formatRelativeRuntimeTime(timestamp?: number): string {
     return `${diffDays} 天前`;
 }
 
-export function getRuntimeDescriptor(runtimeId: RuntimeId): RuntimeDescriptor {
-    return RUNTIME_DESCRIPTORS[runtimeId];
+export function getRuntimeDescriptor(runtimeId: RuntimeId, locale: Locale = "zh-CN"): RuntimeDescriptor {
+    if (runtimeId === "context_governance") {
+        return CONTEXT_GOVERNANCE_DESCRIPTOR[locale];
+    }
+    return getRuntimeRegistryEntry(runtimeId, locale);
 }
 
-export function getRuntimeDescriptors(): RuntimeDescriptor[] {
-    return VISIBLE_RUNTIME_ORDER.map((runtimeId) => RUNTIME_DESCRIPTORS[runtimeId]);
+export function getRuntimeDescriptors(locale: Locale = "zh-CN"): RuntimeDescriptor[] {
+    return VISIBLE_RUNTIME_ORDER.map((runtimeId) => getRuntimeDescriptor(runtimeId, locale));
 }
 
 interface BuildRuntimeStageModelOptions {
@@ -396,6 +401,7 @@ interface BuildRuntimeStageModelOptions {
     memoryInsight?: MemoryRuntimeInsight | null;
     governanceDigest?: ContextGovernanceDigest | null;
     governanceHistory?: ContextGovernanceDigest[] | null;
+    locale?: Locale;
 }
 
 export function buildRuntimeStageModel(
@@ -561,7 +567,7 @@ export function buildRuntimeStageModel(
     ));
 
     const items = visibleRuntimeOrder.map((runtimeId) => {
-        const descriptor = getRuntimeDescriptor(runtimeId);
+        const descriptor = getRuntimeDescriptor(runtimeId, options?.locale || "zh-CN");
         const runtimeActivities = runtimeId === "chat"
             ? activities.filter((activity) => activity.runtimeId === "chat" || activity.runtimeId === "subagent_swarm" || isRuntimeEpisodeActivity(activity))
             : activities.filter((activity) => activity.runtimeId === runtimeId);

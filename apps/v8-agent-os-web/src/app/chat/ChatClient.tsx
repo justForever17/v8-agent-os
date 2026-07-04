@@ -937,7 +937,8 @@ export default function ChatClient() {
         memoryInsight: projectionMemoryInsight,
         governanceDigest: projectionContextGovernance,
         governanceHistory: projectionContextGovernanceHistory,
-    }), [effectivePendingApproval, effectiveStatus, messages, projectionContextGovernance, projectionContextGovernanceHistory, projectionMemoryInsight, projectionRuntimeTimeline, sessionProjection?.recoverable?.recoverable, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
+        locale,
+    }), [effectivePendingApproval, effectiveStatus, locale, messages, projectionContextGovernance, projectionContextGovernanceHistory, projectionMemoryInsight, projectionRuntimeTimeline, sessionProjection?.recoverable?.recoverable, sessionProjection?.summary?.currentStepTitle, sessionProjection?.summary?.ownerRuntime, sessionProjection?.workflow?.currentStepTitle, sessionProjection?.workflow?.ownerRuntime]);
     const historyPreview = useMemo(
         () => deriveHistoryPreview(messages, sessionProjection?.summary),
         [messages, sessionProjection?.summary],

@@ -39,7 +39,7 @@ export function Topbar() {
                 <Link href="/rpa">
                     <Button variant="ghost" size="sm" className="gap-2 px-2 sm:px-3">
                         <Workflow className="h-4 w-4" />
-                        <span className="hidden sm:inline">RPA</span>
+                        <span className="hidden sm:inline">{t(lt("RPA 自动化", "RPA automation"))}</span>
                     </Button>
                 </Link>
                 <LocaleToggle />

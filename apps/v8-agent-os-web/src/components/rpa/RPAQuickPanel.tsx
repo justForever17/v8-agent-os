@@ -342,11 +342,11 @@ export function RPAQuickPanel() {
                         </Link>
                     </Button>
                         <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-                            RPA
+                            {t(lt("RPA 自动化", "RPA automation"))}
                         </div>
                         <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight sm:text-3xl">
                             <Workflow className="h-6 w-6 text-primary sm:h-7 sm:w-7" />
-                            {t(lt("自动流程", "Workflows"))}
+                            {t(lt("RPA 自动化", "RPA automation"))}
                         </h1>
                         <p className="mt-2 text-sm leading-6 text-muted-foreground">{t(lt("生成、运行、审批。", "Build, run, review."))}</p>
                     </div>

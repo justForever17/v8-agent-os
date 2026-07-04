@@ -129,20 +129,20 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
   },
   computer_use: {
     id: "computer_use",
-    label: { zh: "桌面操作", en: "Computer use" },
-    shortLabel: { zh: "桌面", en: "Desktop" },
+    label: { zh: "computer use", en: "computer use" },
+    shortLabel: { zh: "computer use", en: "computer use" },
     description: {
-      zh: "执行桌面观察、点击、输入与 GUI 操作。",
-      en: "Performs desktop observation, clicks, typing, and GUI actions.",
+      zh: "执行 computer use 观察、点击、输入与 GUI 操作。",
+      en: "Performs computer use observation, clicks, typing, and GUI actions.",
     },
   },
   rpa: {
     id: "rpa",
-    label: { zh: "自动流程执行", en: "RPA runtime" },
+    label: { zh: "RPA 自动化", en: "RPA automation" },
     shortLabel: { zh: "RPA", en: "RPA" },
     description: {
-      zh: "复用和执行 RPA 草稿与流程链。",
-      en: "Runs and reuses RPA drafts and execution chains.",
+      zh: "复用和执行 RPA 自动化草稿与流程链。",
+      en: "Runs and reuses RPA automation drafts and execution chains.",
     },
   },
   desktop_live: {

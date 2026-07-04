@@ -814,15 +814,9 @@ export function RPAWorkbench() {
   const [activeRecording, setActiveRecording] = useState<RecordingSessionPayload | null>(null);
   const [recordingName, setRecordingName] = useState("");
   const [recordingGoal, setRecordingGoal] = useState("");
-  const [latestComputerObservation, setLatestComputerObservation] = useState<Record<string, unknown> | null>(null);
   const [computerSampling, setComputerSampling] = useState(false);
-  const [recordAndForward, setRecordAndForward] = useState(false);
-  const [browserCaptureActive, setBrowserCaptureActive] = useState(false);
-  const [browserCapturePolling, setBrowserCapturePolling] = useState(false);
   const [captureAssistantActive, setCaptureAssistantActive] = useState(false);
   const [captureAssistantStage, setCaptureAssistantStage] = useState<CaptureAssistantStage>("idle");
-  const [nativeInspectorStatus, setNativeInspectorStatus] = useState<Record<string, unknown> | null>(null);
-  const [nativeInspectorStatusLoaded, setNativeInspectorStatusLoaded] = useState(false);
   const [computerApps, setComputerApps] = useState<ComputerUseAppPayload[]>([]);
   const [computerAppsLoading, setComputerAppsLoading] = useState(false);
   const [computerAppsError, setComputerAppsError] = useState("");
@@ -1136,64 +1130,20 @@ export function RPAWorkbench() {
     };
     return t(keyByStage[captureAssistantStage]);
   }, [captureAssistantStage, t]);
-  const displayCaptureGesture = "LeftClick";
-  const displayCancelGesture = "Esc";
-  useEffect(() => {
-    let cancelled = false;
-    const loadStatus = async () => {
-      try {
-        const res = await fetch("/api/rpa/native-inspector/status", { cache: "no-store" });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || cancelled) return;
-        setNativeInspectorStatus(data);
-      } catch {
-        // Native inspector status is advisory; the capture button will still surface endpoint errors.
-      } finally {
-        if (!cancelled) setNativeInspectorStatusLoaded(true);
-      }
-    };
-    void loadStatus();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  useEffect(() => {
-    if (!nativeInspectorStatusLoaded) return;
-    const timer = window.setTimeout(() => {
-      void fetch("/api/rpa/native-inspector/config", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          backend: "auto",
-          captureGesture: displayCaptureGesture,
-          cancelGesture: displayCancelGesture,
-          highlightOverlay: true,
-          hoverSampleHz: 12,
-        })
-      }).then(async res => {
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-          setNativeInspectorStatus(current => ({ ...(current || {}), ...data }));
-        }
-      }).catch(() => undefined);
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [displayCancelGesture, displayCaptureGesture, nativeInspectorStatusLoaded]);
-  const nativeHotkeyBackend = useMemo(() => {
-    const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
-    const backend = assistant.nativeHotkeyBackend;
-    if (isPlainRecord(backend)) return backend;
-    const statusBackend = nativeInspectorStatus && isPlainRecord(nativeInspectorStatus.nativeHotkeyBackend) ? nativeInspectorStatus.nativeHotkeyBackend : null;
-    return isPlainRecord(statusBackend) ? statusBackend : null;
-  }, [activeRecording, nativeInspectorStatus]);
   const captureAssistantDiagnostic = useMemo(() => {
     const assistant = isPlainRecord(activeRecording?.captureAssistant) ? activeRecording.captureAssistant as Record<string, unknown> : {};
     const result = isPlainRecord(latestResult) ? latestResult as Record<string, unknown> : {};
     const resultAssistant = isPlainRecord(result.assistant) ? result.assistant as Record<string, unknown> : {};
-    return firstString(result.diagnosticTail, result.reason, result.error, resultAssistant.diagnosticTail, resultAssistant.lastError, assistant.diagnosticTail, assistant.lastError);
+    return firstString(result.diagnosticTail, result.reason, result.error, result.recommendedNextAction, resultAssistant.diagnosticTail, resultAssistant.lastError, assistant.diagnosticTail, assistant.lastError);
   }, [activeRecording, latestResult]);
+  const latestInspectorSession = useMemo(() => {
+    const result = isPlainRecord(latestResult) ? latestResult as Record<string, unknown> : {};
+    return isPlainRecord(result.session) ? result.session as Record<string, unknown> : null;
+  }, [latestResult]);
+  const latestInspectorSidecar = useMemo(() => {
+    const sidecar = latestInspectorSession && isPlainRecord(latestInspectorSession.sidecar) ? latestInspectorSession.sidecar : null;
+    return isPlainRecord(sidecar) ? sidecar as Record<string, unknown> : null;
+  }, [latestInspectorSession]);
   const objectLibraryItems = useMemo(() => Array.isArray(activeRecording?.objectLibrary) ? activeRecording.objectLibrary : Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [], [activeRecording, selectedDraft]);
   const selectableElements = useMemo(() => [
     ...objectLibraryItems.map(item => ({ ...item, sourceBucket: "library" as const, optionId: item.elementId || item.sourceTempElementId || item.tempElementId || captureItemLabel(item) })),
@@ -1421,83 +1371,6 @@ export function RPAWorkbench() {
     cwd: cwd.trim() || undefined,
     outputDir: outputDir.trim() || undefined
   });
-  const handleBrowserCaptureStart = async () => {
-    if (!activeRecording?.recordingSessionId) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.noActiveRecording"),
-        description: t("components.rpa.RPAWorkbench.startRecordingFirst")
-      });
-      return;
-    }
-    const data = await runAction(`recording:browser-start:${activeRecording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/browser-capture/start`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        appId: canvasTargetAppId === "desktop" ? undefined : canvasTargetAppId,
-        windowTitle: firstString(latestComputerObservation?.summary && isPlainRecord(latestComputerObservation.summary) ? latestComputerObservation.summary.windowTitle : undefined)
-      })
-    }), t("components.rpa.RPAWorkbench.browserCaptureStarted"));
-    if (data?.ok) {
-      setBrowserCaptureActive(true);
-    }
-  };
-  const handleBrowserCapturePoll = useCallback(async (options?: { quiet?: boolean }) => {
-    if (!activeRecording?.recordingSessionId || browserCapturePolling) return;
-    setBrowserCapturePolling(true);
-    try {
-      const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/browser-capture/poll`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          appId: canvasTargetAppId === "desktop" ? undefined : canvasTargetAppId,
-          maxEvents: 80
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (!options?.quiet) {
-          throw new Error(data?.detail || data?.error || t("components.rpa.RPAWorkbench.browserCapturePollFailed"));
-        }
-        return;
-      }
-      if (data?.recording) {
-        setActiveRecording(data.recording as RecordingSessionPayload);
-      }
-      if (!options?.quiet && Number(data?.appendedCount || 0) > 0) {
-        toast({
-          title: t("components.rpa.RPAWorkbench.browserCapturePolled"),
-          description: t("components.rpa.RPAWorkbench.browserCaptureEvents", {
-            count: Number(data.appendedCount || 0)
-          })
-        });
-      }
-      setLatestResult(data);
-    } catch (error) {
-      if (!options?.quiet) {
-        toast({
-          variant: "destructive",
-          title: t("components.rpa.RPAWorkbench.browserCapturePollFailed"),
-          description: error instanceof Error ? error.message : String(error)
-        });
-      }
-    } finally {
-      setBrowserCapturePolling(false);
-    }
-  }, [activeRecording?.recordingSessionId, browserCapturePolling, canvasTargetAppId, t, toast]);
-  useEffect(() => {
-    if (!browserCaptureActive || !activeRecording?.recordingSessionId || activeRecording.state !== "recording") {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void handleBrowserCapturePoll({ quiet: true });
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [activeRecording?.recordingSessionId, activeRecording?.state, browserCaptureActive, handleBrowserCapturePoll]);
   const refreshRecording = useCallback(async (recordingId: string) => {
     const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(recordingId)}`);
     const data = await res.json().catch(() => ({}));
@@ -1688,17 +1561,6 @@ export function RPAWorkbench() {
     }
     try {
       setCaptureAssistantStage("creating");
-      await fetch("/api/rpa/native-inspector/start-service", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          backend: "auto",
-          captureGesture: displayCaptureGesture,
-          cancelGesture: displayCancelGesture
-        })
-      }).catch(() => undefined);
       const recording = await ensureActiveRecording(captureContext);
       if (!recording?.recordingSessionId) {
         setCaptureAssistantStage("failed");
@@ -1717,6 +1579,10 @@ export function RPAWorkbench() {
           targetLock: captureContext.targetLock,
           appId: captureContext.appId || "desktop",
           label: captureContext.label,
+          browserKind: captureContext.mode === "agent_browser" ? "chrome" : undefined,
+          browserProfilePolicy: "agent_browser_only",
+          openMode: "reuse_current_tab",
+          allowUserBrowser: false,
         })
       });
       const inspectorData = await inspectorRes.json().catch(() => ({}));
@@ -1736,94 +1602,9 @@ export function RPAWorkbench() {
         }, 800);
         return;
       }
-      setCaptureAssistantStage("preparing");
-      const prepared = await runAction(`recording:capture-assistant:prepare:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/capture-assistant/prepare-target`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          stepId: captureContext.stepId,
-          selectedStepKey: captureContext.stepKey,
-          workflowSnapshot: captureContext.workflowSnapshot,
-          launchStep: captureContext.launchStepSnapshot,
-          targetStep: captureContext.targetStepSnapshot,
-          captureIntent: "step_target",
-          mode: captureContext.mode,
-          appId: captureContext.appId || "desktop",
-          label: captureContext.label,
-          ignoreAdminSurface: true,
-          consoleTargetBlocked: Boolean(captureContext.targetLock.consoleTargetBlocked),
-          targetLock: captureContext.targetLock,
-        })
-      }), t("components.rpa.RPAWorkbench.studioCaptureTargetPrepared"));
-      if (prepared?.recording) {
-        setActiveRecording(prepared.recording as RecordingSessionPayload);
-      }
-      let forceCoordinateFallback = false;
-      if (prepared?.ok === false) {
-        const status = firstString(prepared.status);
-        setLatestResult(prepared);
-        const targetCandidates = Array.isArray(prepared.targetCandidates) ? prepared.targetCandidates : [];
-        const canCoordinateFallback = status === "manual_coordinate_available" || status === "launched_no_visible_window";
-        if (status === "target_candidates_required" || targetCandidates.length > 0 || !canCoordinateFallback) {
-          setCaptureAssistantActive(false);
-          setCaptureAssistantStage(status === "target_candidates_required" ? "selecting" : status === "manual_coordinate_available" ? "coordinate" : "failed");
-          toast({
-            variant: status === "target_candidates_required" || status === "launched_no_visible_window" ? "default" : "destructive",
-            title: t("components.rpa.RPAWorkbench.studioCaptureTargetPrepareFailed"),
-            description: prepared?.reason || prepared?.detail || prepared?.error || t("components.rpa.RPAWorkbench.studioHotkeyNotArmedTargetNotReady")
-          });
-          return;
-        }
-        forceCoordinateFallback = true;
-        setCaptureAssistantActive(false);
-        setCaptureAssistantStage("coordinate");
-        toast({
-          variant: "default",
-          title: t("components.rpa.RPAWorkbench.studioCaptureTargetPrepareFailed"),
-          description: t("components.rpa.RPAWorkbench.studioCoordinateFallbackStarting")
-        });
-      }
-      setCaptureAssistantStage("starting");
-      const data = await runAction(`recording:native-inspector:start:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/native-inspector/start`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          stepId: captureContext.stepId,
-          selectedStepKey: captureContext.stepKey,
-          workflowSnapshot: captureContext.workflowSnapshot,
-          launchStep: captureContext.launchStepSnapshot,
-          targetStep: captureContext.targetStepSnapshot,
-          captureIntent: "step_target",
-          action: "click",
-          backend: forceCoordinateFallback ? "fallback_overlay" : "auto",
-          mode: "capture_only",
-          captureGesture: displayCaptureGesture,
-          cancelGesture: displayCancelGesture,
-          persistent: true,
-          highlightOverlay: true,
-          recordAndForward,
-          targetLock: captureContext.targetLock,
-          reusePreparedTarget: !forceCoordinateFallback,
-          preparedTarget: forceCoordinateFallback ? undefined : prepared?.targetWindow,
-          allowManualCoordinateFallback: forceCoordinateFallback,
-        })
-      }), t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"));
-      if (data?.recording) {
-        setActiveRecording(data.recording as RecordingSessionPayload);
-      }
-      if (data?.ok === false) {
-        throw new Error(data?.reason || data?.detail || data?.error || t("components.rpa.RPAWorkbench.studioCaptureAssistantFailed"));
-      }
-      const armed = Boolean(data?.armed);
-      setCaptureAssistantActive(armed || data?.status === "capture_assistant_started");
-      setCaptureAssistantStage(armed ? "armed" : "active");
-      window.setTimeout(() => {
-        void refreshRecording(recording.recordingSessionId);
-      }, 1800);
+      setCaptureAssistantActive(false);
+      setCaptureAssistantStage("failed");
+      throw new Error(inspectorData?.reason || inspectorData?.detail || inspectorData?.error || t("components.rpa.RPAWorkbench.studioCaptureAssistantFailed"));
     } catch (error) {
       setCaptureAssistantStage("failed");
       toast({
@@ -2120,11 +1901,7 @@ export function RPAWorkbench() {
       const candidates = extractObservationCandidates(data);
       const capturePoolItemsFromResult = Array.isArray(data?.capturePoolItems) ? data.capturePoolItems : [];
       const summary = summarizeObservation(data, candidates);
-      setLatestComputerObservation({
-        summary,
-        candidates: candidates.slice(0, 8)
-      });
-      setLatestResult(data);
+      setLatestResult(isPlainRecord(data) ? { ...data, observationSummary: summary, observationCandidates: candidates.slice(0, 8) } : data);
       const insertedCount = capturePoolItemsFromResult.length || Number(data?.capturePoolAdded || 0);
       toast({
         title: insertedCount > 0 ? t("components.rpa.RPAWorkbench.studioCapturePoolAddedTitle") : t("components.rpa.RPAWorkbench.computerSampled"),
@@ -2895,7 +2672,6 @@ export function RPAWorkbench() {
                                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                     <Badge variant="outline">{orderedDraftSteps.length} steps</Badge>
                                     <Badge variant={activeRecording?.state === "recording" ? "default" : "secondary"}>{activeRecording?.state || "idle"}</Badge>
-                                    {browserCaptureActive ? <Badge variant="outline">browser capture</Badge> : null}
                                     {latestResult ? <span className="truncate">{t("components.rpa.RPAWorkbench.studioRecentResult")}{firstString((latestResult as Record<string, unknown>)?.status) || firstString((latestResult as Record<string, unknown>)?.message) || t("components.rpa.RPAWorkbench.studioResultUpdated")}</span> : <span>{t("components.rpa.RPAWorkbench.studioRunLogPlaceholder")}</span>}
                                 </div>
                             </div>
@@ -3107,23 +2883,15 @@ export function RPAWorkbench() {
                                             {t("components.rpa.RPAWorkbench.studioStopCaptureAssistant")}
                                         </Button>
                                         <Button size="sm" variant="outline" onClick={() => void handleSampleComputerUse()} disabled={!selectedBuilderStep || computerSampling}>{t("components.rpa.RPAWorkbench.studioSampleElements")}</Button>
-                                        {selectedBuilderActionKind === "browser" ? <Button size="sm" variant="outline" onClick={() => void handleBrowserCaptureStart()} disabled={!activeRecording || browserCaptureActive}>{t("components.rpa.RPAWorkbench.studioBrowserCapture")}</Button> : null}
                                     </div>
-                                    <label className="flex items-center gap-2 rounded-xl border border-border/60 p-2.5 text-xs">
-                                        <input type="checkbox" checked={recordAndForward} onChange={event => setRecordAndForward(event.target.checked)} />
-                                        {t("components.rpa.RPAWorkbench.studioRecordAndForwardTargetDebug")}
-                                    </label>
                                     <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
-                                        {t("components.rpa.RPAWorkbench.studioNativeHotkeyBackend")}：
-                                        {firstString(nativeHotkeyBackend?.backend) || "fallback_overlay"}
+                                        {t("components.rpa.RPAWorkbench.studioInspectorSidecar")}：
+                                        {firstString(latestInspectorSidecar?.kind) || (canvasTargetMode === "agent_browser" ? "rpa_playwright_node_sidecar" : "flaui_inspector_panel")}
                                         {" · "}
-                                        {firstString(nativeHotkeyBackend?.state) || t("components.rpa.RPAWorkbench.studioNativeHotkeyFallback")}
-                                    </div>
-                                    <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
-                                        {t("components.rpa.RPAWorkbench.studioCaptureGestureHelp", { captureGesture: displayCaptureGesture, cancelGesture: displayCancelGesture })}
+                                        {firstString(latestInspectorSession?.status, latestInspectorSidecar?.status, latestInspectorSidecar?.state) || t("components.rpa.RPAWorkbench.studioInspectorSidecarIdle")}
                                     </div>
                                     {(captureAssistantActive && (captureAssistantStage === "armed" || captureAssistantStage === "active")) ? <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-primary">
-                                            {t("components.rpa.RPAWorkbench.studioCaptureHotkeyHelp", { hotkey: displayCaptureGesture, cancelHotkey: displayCancelGesture })}
+                                            {t("components.rpa.RPAWorkbench.studioInspectorSidecarActive")}
                                         </div> : null}
                                     {captureAssistantStage === "failed" ? <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-2.5 text-[11px] text-destructive">
                                             <div>{t("components.rpa.RPAWorkbench.studioCaptureFailedHelp")}</div>

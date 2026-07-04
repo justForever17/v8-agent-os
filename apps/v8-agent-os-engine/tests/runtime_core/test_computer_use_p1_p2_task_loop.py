@@ -165,6 +165,38 @@ def test_browser_lane_auto_starts_managed_debug_browser_when_no_existing_port(mo
     assert decision.reason == "managed_debug_browser_started"
 
 
+def test_agent_browser_attach_does_not_start_new_profile_when_closed(monkeypatch, tmp_path: Path):
+    helper = tmp_path / "browser_cdp_proxy.mjs"
+    helper.write_text("console.log('ok')", encoding="utf-8")
+    provider = BrowserAutomationProvider()
+    provider.configure({"browserLane": {"enabled": True, "allowManagedLaunch": True, "userDataDir": str(tmp_path)}})
+    provider._node_path = "node"
+    monkeypatch.setattr(provider, "_helper_script_path", lambda: helper)
+    monkeypatch.setattr(provider, "_probe_playwright_dependency", lambda: {"available": True})
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
+    monkeypatch.setattr(
+        provider,
+        "_start_managed_chromium_debug_browser",
+        lambda **_kwargs: pytest.fail("agent_browser_attach_context must not launch a new browser profile"),
+    )
+
+    result = provider.agent_browser_attach_context()
+
+    assert result["ok"] is False
+    assert result["status"] == "agent_browser_not_open"
+    assert result["profileMode"] == "dedicated_debug_profile"
+
+
+def test_agent_browser_attach_rejects_user_browser_without_explicit_allow(tmp_path: Path):
+    provider = BrowserAutomationProvider()
+    provider.configure({"browserLane": {"enabled": True, "userDataDir": str(tmp_path)}})
+
+    result = provider.agent_browser_attach_context(browser_profile_policy="user_browser_explicit", allow_user_browser=False)
+
+    assert result["ok"] is False
+    assert result["status"] == "user_browser_attach_requires_explicit_request"
+
+
 class _FakeRunHandle:
     run_id = "run-github-star"
     session_id = "session-github-star"

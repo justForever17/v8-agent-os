@@ -722,7 +722,11 @@ class RPARuntime:
         self.script_store = script_store
         self.template_service = template_service
         self.recording_manager = RPARecordingManager(trace_store_instance=self.compiler.trace_store)
-        self.capture_broker = CaptureBroker(self.recording_manager)
+        self.capture_broker = CaptureBroker(
+            self.recording_manager,
+            enable_sidecars=True,
+            browser_attach_resolver=self._resolve_agent_browser_attach_context,
+        )
         ensure_system_rpa_seed_templates(self.script_store)
 
     def list_drafts(self, *, limit: int = 100, include_archived: bool = False) -> list[Dict[str, Any]]:
@@ -733,6 +737,25 @@ class RPARuntime:
 
     def availability(self) -> Dict[str, Any]:
         return self.adapter.availability()
+
+    def _resolve_agent_browser_attach_context(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            computer_use_runtime.browser_automation.configure(computer_use_runtime._computer_use_config())
+            return computer_use_runtime.browser_automation.agent_browser_attach_context(
+                browser_kind=payload.get("browserKind") or payload.get("browser_kind") or "chrome",
+                target_id=payload.get("targetId") or payload.get("target_id"),
+                target_url=payload.get("targetUrl") or payload.get("target_url"),
+                open_mode=str(payload.get("openMode") or "reuse_current_tab"),
+                browser_profile_policy=str(payload.get("browserProfilePolicy") or "agent_browser_only"),
+                allow_user_browser=bool(payload.get("allowUserBrowser")),
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "agent_browser_debug_unreachable",
+                "reason": str(exc),
+                "recommendedNextAction": "Open the Agent Browser from Admin and retry capture.",
+            }
 
     def compile_trace_to_draft(self, run_id: str, *, save: bool = True) -> Dict[str, Any]:
         draft = self.compiler.compile_run_to_draft(run_id, save=save)

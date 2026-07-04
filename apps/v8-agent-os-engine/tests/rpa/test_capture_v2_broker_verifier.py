@@ -137,7 +137,77 @@ def test_browser_inspector_requires_attach_context(tmp_path: Path) -> None:
     result = broker.start_session(recording["recordingSessionId"], {"platform": "browser"})
 
     assert result["ok"] is False
-    assert result["status"] == "browser_inspector_unavailable"
+    assert result["status"] == "agent_browser_not_open"
+
+
+def test_browser_inspector_uses_agent_browser_attach_resolver(tmp_path: Path) -> None:
+    manager, _store = _manager(tmp_path)
+    recording = manager.start({"name": "browser", "targetMode": "agent_browser", "appId": "browser"})
+    seen_payloads = []
+
+    def resolver(payload: dict) -> dict:
+        seen_payloads.append(payload)
+        return {
+            "ok": True,
+            "browserAttach": {
+                "cdpEndpoint": "http://127.0.0.1:9222",
+                "targetPort": 9222,
+                "proxyPort": 3456,
+                "targetId": "page-1",
+                "profileMode": "dedicated_debug_profile",
+                "browserKind": "chrome",
+                "url": "https://example.test/",
+            },
+        }
+
+    broker = CaptureBroker(manager, request_root=tmp_path / "inspector", browser_attach_resolver=resolver)
+
+    result = broker.start_session(
+        recording["recordingSessionId"],
+        {"platform": "browser", "browserProfilePolicy": "agent_browser_only", "openMode": "reuse_current_tab"},
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "waiting_sidecar"
+    assert seen_payloads[0]["browserProfilePolicy"] == "agent_browser_only"
+    assert result["session"]["browserAttach"]["targetId"] == "page-1"
+    assert result["session"]["browserAttach"]["profileMode"] == "dedicated_debug_profile"
+    request_payload = (tmp_path / "inspector" / f"{result['session']['sessionId']}.request.json").read_text(encoding="utf-8")
+    assert "cdpEndpoint" in request_payload
+    assert "oneTimeToken" in request_payload
+
+
+def test_browser_inspector_user_browser_policy_requires_explicit_resolver_success(tmp_path: Path) -> None:
+    manager, _store = _manager(tmp_path)
+    recording = manager.start({"name": "browser", "targetMode": "agent_browser", "appId": "browser"})
+
+    def resolver(payload: dict) -> dict:
+        assert payload["browserProfilePolicy"] == "user_browser_explicit"
+        assert payload.get("allowUserBrowser") is False
+        return {
+            "ok": False,
+            "status": "user_browser_attach_requires_explicit_request",
+            "reason": "explicit user browser attach is required",
+        }
+
+    broker = CaptureBroker(manager, request_root=tmp_path / "inspector", browser_attach_resolver=resolver)
+
+    result = broker.start_session(
+        recording["recordingSessionId"],
+        {"platform": "browser", "browserProfilePolicy": "user_browser_explicit", "allowUserBrowser": False},
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "user_browser_attach_requires_explicit_request"
+
+
+def test_browser_sidecar_script_does_not_launch_new_browser_profile() -> None:
+    script = Path(__file__).resolve().parents[2] / "scripts" / "rpa_playwright_inspector_sidecar.mjs"
+    source = script.read_text(encoding="utf-8")
+
+    assert "connectOverCDP" in source
+    assert "launchPersistentContext" not in source
+    assert ".launch(" not in source
 
 
 def test_inspector_event_token_mismatch_is_rejected(tmp_path: Path) -> None:

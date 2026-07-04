@@ -567,7 +567,12 @@ class RPAInspectorSessionPayload(BaseModel):
     workflow_snapshot: Dict[str, Any] = Field(default_factory=dict, alias="workflowSnapshot")
     target_lock: Dict[str, Any] = Field(default_factory=dict, alias="targetLock")
     browser_attach: Dict[str, Any] = Field(default_factory=dict, alias="browserAttach")
+    browser_profile_policy: Optional[str] = Field(default="agent_browser_only", alias="browserProfilePolicy")
+    open_mode: Optional[str] = Field(default="reuse_current_tab", alias="openMode")
+    allow_user_browser: bool = Field(default=False, alias="allowUserBrowser")
+    browser_kind: Optional[str] = Field(default=None, alias="browserKind")
     target_id: Optional[str] = Field(default=None, alias="targetId")
+    target_url: Optional[str] = Field(default=None, alias="targetUrl")
     cdp_endpoint: Optional[str] = Field(default=None, alias="cdpEndpoint")
     ws_endpoint: Optional[str] = Field(default=None, alias="wsEndpoint")
 

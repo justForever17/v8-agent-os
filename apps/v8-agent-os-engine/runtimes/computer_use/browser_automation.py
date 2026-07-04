@@ -325,6 +325,169 @@ class BrowserAutomationProvider:
         )
         return payload
 
+    def agent_browser_attach_context(
+        self,
+        *,
+        browser_kind: str | None = None,
+        target_id: str | None = None,
+        target_url: str | None = None,
+        open_mode: str = "reuse_current_tab",
+        browser_profile_policy: str = "agent_browser_only",
+        allow_user_browser: bool = False,
+    ) -> Dict[str, Any]:
+        """Return a safe attach handle for the V8 Agent dedicated browser."""
+
+        kind = normalize_agent_browser_kind(browser_kind)
+        policy = str(browser_profile_policy or "agent_browser_only").strip().lower() or "agent_browser_only"
+        normalized_open_mode = str(open_mode or "reuse_current_tab").strip().lower() or "reuse_current_tab"
+        if policy not in {"agent_browser_only", "user_browser_explicit"}:
+            policy = "agent_browser_only"
+        if policy != "agent_browser_only" and not allow_user_browser:
+            return {
+                "ok": False,
+                "status": "user_browser_attach_requires_explicit_request",
+                "reason": "RPA browser inspector defaults to the Agent Browser. User browser attach requires an explicit allowUserBrowser request.",
+            }
+        if policy != "agent_browser_only":
+            return {
+                "ok": False,
+                "status": "user_browser_attach_not_supported",
+                "reason": "User browser attach is intentionally not wired into the default RPA inspector path.",
+            }
+        if not self._enabled:
+            return {
+                "ok": False,
+                "status": "browser_lane_disabled",
+                "reason": "Computer Use browser lane is disabled; the Agent Browser cannot be attached.",
+            }
+        if not self._node_path:
+            return {"ok": False, "status": "node_unavailable", "reason": "Node.js is required for Agent Browser attach."}
+        if not self._helper_script_path().exists():
+            return {
+                "ok": False,
+                "status": "helper_script_missing",
+                "reason": "Computer Use browser automation helper is missing.",
+            }
+        if not self._probe_playwright_dependency().get("available"):
+            return {
+                "ok": False,
+                "status": "playwright_module_missing",
+                "reason": "Playwright is required for Agent Browser attach.",
+            }
+        target_port = self._target_port
+        cdp_endpoint = f"http://127.0.0.1:{target_port}"
+        if not self._is_debug_port_reachable(target_port):
+            return {
+                "ok": False,
+                "status": "agent_browser_not_open",
+                "reason": "Agent Browser is not open on the configured debug port.",
+                "recommendedNextAction": "Open the Agent Browser from Admin, finish login if needed, then retry capture.",
+                "targetPort": target_port,
+                "profileMode": self._profile_mode,
+                "browserKind": kind,
+            }
+        try:
+            self._ensure_proxy(target_port=target_port)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "agent_browser_debug_unreachable",
+                "reason": str(exc),
+                "recommendedNextAction": "Check that the Agent Browser is still running and reachable.",
+                "targetPort": target_port,
+                "profileMode": self._profile_mode,
+                "browserKind": kind,
+            }
+        try:
+            if normalized_open_mode == "new_tab":
+                selected = dict(self._request_json("GET", "/new", params={"url": str(target_url or "about:blank").strip() or "about:blank"}) or {})
+            else:
+                targets = self._list_targets()
+                selected = self._select_existing_agent_browser_target(
+                    targets,
+                    target_id=target_id,
+                    target_url=target_url,
+                )
+                if not selected:
+                    return {
+                        "ok": False,
+                        "status": "browser_attach_target_missing",
+                        "reason": "Agent Browser is open, but no attachable page was found.",
+                        "recommendedNextAction": "Select or open a page in the Agent Browser, then retry capture.",
+                        "targetPort": target_port,
+                        "profileMode": self._profile_mode,
+                        "browserKind": kind,
+                    }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "browser_attach_target_missing",
+                "reason": str(exc),
+                "recommendedNextAction": "Select or open a page in the Agent Browser, then retry capture.",
+                "targetPort": target_port,
+                "profileMode": self._profile_mode,
+                "browserKind": kind,
+            }
+        version: Dict[str, Any] = {}
+        try:
+            response = requests.get(f"{cdp_endpoint}/json/version", timeout=min(1.0, max(0.3, self._connect_timeout_ms / 1000.0)))
+            response.raise_for_status()
+            version = dict(response.json() or {})
+        except Exception:
+            version = {}
+        driver_package = self._resolve_playwright_driver_package()
+        proxy_target_id = str(selected.get("targetId") or selected.get("id") or "").strip()
+        browser_attach = {
+            "cdpEndpoint": cdp_endpoint,
+            "wsEndpoint": version.get("webSocketDebuggerUrl"),
+            "targetPort": target_port,
+            "proxyPort": self._proxy_port,
+            "targetId": proxy_target_id,
+            "proxyTargetId": proxy_target_id,
+            "profileMode": self._profile_mode,
+            "browserKind": kind,
+            "provider": self._provider_id,
+            "browserProfilePolicy": "agent_browser_only",
+            "openMode": normalized_open_mode,
+            "title": selected.get("title"),
+            "url": selected.get("url"),
+            "currentUrl": selected.get("url"),
+            "playwrightDriverPackage": str(driver_package) if driver_package else None,
+        }
+        return {
+            "ok": True,
+            "status": "attached",
+            "browserAttach": {key: value for key, value in browser_attach.items() if value not in (None, "", [], {})},
+        }
+
+    @staticmethod
+    def _select_existing_agent_browser_target(
+        targets: List[Dict[str, Any]],
+        *,
+        target_id: str | None = None,
+        target_url: str | None = None,
+    ) -> Dict[str, Any] | None:
+        explicit_id = str(target_id or "").strip()
+        url_hint = str(target_url or "").strip().lower()
+        if explicit_id:
+            for item in targets:
+                if explicit_id in {str(item.get("targetId") or "").strip(), str(item.get("id") or "").strip()}:
+                    return dict(item)
+        if url_hint:
+            for item in targets:
+                url = str(item.get("url") or "").strip().lower()
+                if url and (url == url_hint or url_hint in url):
+                    return dict(item)
+        preferred = [
+            item
+            for item in targets
+            if str(item.get("url") or "").strip().lower().startswith(("http://", "https://", "file://"))
+        ]
+        for item in preferred or targets:
+            if str(item.get("targetId") or item.get("id") or "").strip():
+                return dict(item)
+        return None
+
     def _is_profile_arg(self, value: str) -> bool:
         lowered = str(value or "").strip().lower()
         return lowered.startswith("--user-data-dir=") or lowered.startswith("--profile-directory=")

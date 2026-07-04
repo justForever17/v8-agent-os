@@ -269,6 +269,12 @@ def _memory_research_pack_quality_reasons(pack: dict[str, Any]) -> list[str]:
     research_result = _memory_broker_preview(answer_pack.get("answer") or pack.get("researchResult"), 1200)
     claim_digest = [item for item in list(pack.get("claimDigest") or []) if isinstance(item, dict) and str(item.get("claim") or "").strip()]
     sources = list(answer_pack.get("sources") or []) or list(pack.get("sourceUrls") or []) or list(pack.get("sourceMatrixDigest") or [])
+    if status == "draft":
+        reasons.append("draft_not_reusable")
+    if str(pack.get("sourceKind") or "").strip().lower() in {"task_request", "spec_task"}:
+        reasons.append("task_evidence_not_reusable")
+    if str(pack.get("questionKind") or "").strip().lower() in {"task_request", "spec_task"}:
+        reasons.append("task_evidence_not_reusable")
     if status == "archived":
         reasons.append("archived")
     if quality in {"low_quality_pack", "missing_evidence", "source_unreadable", "refresh_required"}:

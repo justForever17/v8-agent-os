@@ -137,6 +137,93 @@ _LOW_QUALITY_RESEARCH_MARKERS = (
 )
 
 
+_RESEARCH_KIND_VALUES = {"research_question", "task_request", "spec_task", "runtime_handoff"}
+_TASK_LIKE_KINDS = {"task_request", "spec_task"}
+_REUSABLE_ANSWER_QUALITIES = {"usable_answer", "usable_with_limitations"}
+_DEFAULT_EXCLUDED_PACK_QUALITIES = {
+    "draft",
+    "low_quality_pack",
+    "refresh_required",
+    "missing_evidence",
+    "source_read_failed",
+    "source_unreadable",
+}
+
+
+def _normalize_research_kind(value: Any) -> str:
+    text = _safe_text(value).lower().replace("-", "_")
+    return text if text in _RESEARCH_KIND_VALUES else ""
+
+
+def _infer_question_kind(question: Any, bundle: dict[str, Any] | None = None) -> str:
+    bundle = bundle or {}
+    explicit = _normalize_research_kind(bundle.get("questionKind"))
+    if explicit:
+        return explicit
+    text = " ".join(
+        _safe_text(value)
+        for value in (
+            question,
+            bundle.get("question"),
+            bundle.get("query"),
+            bundle.get("title"),
+            bundle.get("taskId"),
+            bundle.get("specId"),
+        )
+        if _safe_text(value)
+    ).lower()
+    if re.search(r"\bspec[_ -]?[0-9a-f]{6,}\b", text) or re.search(r"\btask[-_ ]?\d{1,4}\b", text) or "approved spec" in text:
+        return "spec_task"
+    if any(marker in text for marker in ("task request", "execute task", "执行任务", "创建 skill 目录结构", "目录初始化", "approved task")):
+        return "task_request"
+    if any(marker in text for marker in ("runtime handoff", "episode handoff", "typed handoff", "运行回流")):
+        return "runtime_handoff"
+    return "research_question"
+
+
+def _infer_source_kind(bundle: dict[str, Any]) -> str:
+    explicit = _normalize_research_kind(bundle.get("sourceKind"))
+    if explicit:
+        return explicit
+    question_kind = _infer_question_kind(bundle.get("question"), bundle)
+    if question_kind in _TASK_LIKE_KINDS:
+        return question_kind
+    if any(_safe_text(bundle.get(key)) for key in ("episodeId", "runtimeEpisodeId", "handoffId", "createdFromEpisodeId")):
+        return "runtime_handoff"
+    return "research_question"
+
+
+def _normalize_bundle_kinds(bundle: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(bundle)
+    normalized["questionKind"] = _infer_question_kind(normalized.get("question"), normalized)
+    normalized["sourceKind"] = _infer_source_kind(normalized)
+    return normalized
+
+
+def _answer_pack_quality(bundle: dict[str, Any]) -> str:
+    answer_pack = bundle.get("researchAnswerPack")
+    if not isinstance(answer_pack, dict):
+        return ""
+    score = answer_pack.get("score")
+    return _safe_text(score.get("qualityStatus")).lower() if isinstance(score, dict) else ""
+
+
+def _has_reusable_answer_pack(bundle: dict[str, Any]) -> bool:
+    bundle = _normalize_bundle_kinds(bundle)
+    if bundle.get("questionKind") in _TASK_LIKE_KINDS or bundle.get("sourceKind") in _TASK_LIKE_KINDS:
+        return False
+    answer_pack = bundle.get("researchAnswerPack")
+    if not isinstance(answer_pack, dict):
+        return False
+    if _answer_pack_quality(bundle) not in _REUSABLE_ANSWER_QUALITIES:
+        return False
+    if not _valid_research_text(answer_pack.get("answer"), min_chars=16):
+        return False
+    if not _as_list(answer_pack.get("sources")):
+        return False
+    return True
+
+
 def _valid_research_text(value: Any, *, min_chars: int = 24) -> str:
     text = re.sub(r"\s+", " ", _safe_text(value)).strip()
     if not text:
@@ -188,6 +275,7 @@ def _research_result_preview(bundle: dict[str, Any], *, limit: int = 900) -> str
 
 
 def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", title: str = "", tags: list[str] | None = None) -> dict[str, Any]:
+    bundle = _normalize_bundle_kinds(bundle)
     bundle_id = _safe_text(bundle.get("evidenceBundleId")) or f"research_{uuid.uuid4().hex[:12]}"
     source_digest = _source_digest(bundle)
     topic = _safe_text(title) or _safe_text(bundle.get("question"))[:120] or "Research experience"
@@ -255,6 +343,8 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
         "researchAnswerPack": answer_pack,
         "claimDigest": claim_digest,
         "qualityStatus": quality_status,
+        "questionKind": bundle.get("questionKind") or "research_question",
+        "sourceKind": bundle.get("sourceKind") or "research_question",
         "sourceQualityScore": source_quality_score,
         "rejectedEvidence": rejected_evidence[:8],
         "topicFingerprint": topic_fingerprint,
@@ -295,6 +385,7 @@ def _experience_from_bundle(bundle: dict[str, Any], *, status: str = "draft", ti
 def store_evidence_bundle(bundle: dict[str, Any], *, ttl_seconds: int, scope: str) -> dict[str, Any]:
     with _LOCK:
         payload = _prune_expired(_read_store())
+        bundle = _normalize_bundle_kinds(bundle)
         bundle_id = _safe_text(bundle.get("evidenceBundleId")) or f"research_{uuid.uuid4().hex[:12]}"
         created_at = _safe_text(bundle.get("createdAt")) or _utc_now_iso()
         stored = {
@@ -309,14 +400,31 @@ def store_evidence_bundle(bundle: dict[str, Any], *, ttl_seconds: int, scope: st
         items.insert(0, stored)
         payload["evidenceBundles"] = items[:500]
 
-        if stored.get("confidence") in {"medium", "high"} and _as_list(stored.get("sourceMatrix")):
-            candidate = _experience_from_bundle(stored, status="draft")
+        if _has_reusable_answer_pack(stored) and stored.get("confidence") in {"medium", "high"} and _as_list(stored.get("sourceMatrix")):
+            candidate = _experience_from_bundle(stored, status="active")
             packs = [item for item in payload["experiencePacks"] if _safe_text(item.get("experiencePackId")) != candidate["experiencePackId"]]
             packs.insert(0, candidate)
             payload["experiencePacks"] = packs[:500]
 
         _write_store(payload)
         return _visible(stored)
+
+
+def _pack_excluded_from_default_search(item: dict[str, Any]) -> bool:
+    status = _safe_text(item.get("status")).lower()
+    quality = _safe_text(item.get("qualityStatus")).lower()
+    answer_pack = item.get("researchAnswerPack")
+    score = answer_pack.get("score") if isinstance(answer_pack, dict) else {}
+    answer_quality = _safe_text(score.get("qualityStatus")).lower() if isinstance(score, dict) else ""
+    question_kind = _infer_question_kind(item.get("query") or item.get("title"), item)
+    source_kind = _infer_source_kind(item)
+    if status == "draft":
+        return True
+    if quality in _DEFAULT_EXCLUDED_PACK_QUALITIES or answer_quality in _DEFAULT_EXCLUDED_PACK_QUALITIES:
+        return True
+    if question_kind in _TASK_LIKE_KINDS or source_kind in _TASK_LIKE_KINDS:
+        return True
+    return False
 
 
 def list_evidence_bundles(*, scope: str = "global", limit: int = 50) -> list[dict[str, Any]]:
@@ -347,6 +455,8 @@ def search_experience_packs(*, query: str, scope: str = "global", tags: list[str
         payload = _read_store()
         for item in payload["experiencePacks"]:
             if not isinstance(item, dict) or not _scope_matches(item, scope):
+                continue
+            if _pack_excluded_from_default_search(item):
                 continue
             if _safe_text(item.get("status")).lower() == "archived":
                 continue
@@ -398,6 +508,8 @@ def search_experience_packs_with_options(
         payload = _read_store()
         for item in payload["experiencePacks"]:
             if not isinstance(item, dict) or not _scope_matches(item, scope):
+                continue
+            if _pack_excluded_from_default_search(item):
                 continue
             if min_rank and confidence_rank.get(_safe_text(item.get("confidence")).lower(), 0) < min_rank:
                 continue
@@ -455,6 +567,9 @@ def promote_experience_pack(evidence_bundle_id: str, *, title: str = "", tags: l
                 bundle = item
                 break
         if not bundle:
+            return None
+        bundle = _normalize_bundle_kinds(bundle)
+        if not _has_reusable_answer_pack(bundle):
             return None
         candidate = _experience_from_bundle(bundle, status="active", title=title, tags=tags)
         packs = [item for item in payload["experiencePacks"] if _safe_text(item.get("experiencePackId")) != candidate["experiencePackId"]]

@@ -688,6 +688,42 @@ def test_research_broker_does_not_reuse_unrelated_pack(monkeypatch):
     assert second["reuseDecision"]["reason"] in {"no_matching_experience_pack", "no_topic_matched_reusable_candidate_after_filtering"}
 
 
+def test_research_broker_search_experience_excludes_spec_task_evidence(monkeypatch):
+    stored = research_module.store_evidence_bundle(
+        {
+            "evidenceBundleId": "bundle-approved-spec-task",
+            "question": "TASK-001: Execute approved Spec spec_094d02189a1e4c20",
+            "questionKind": "spec_task",
+            "sourceKind": "spec_task",
+            "confidence": "high",
+            "authorityScore": 91,
+            "summary": "Execution task evidence only.",
+            "sourceMatrix": [{"title": "Approved Spec task", "url": "spec://spec_094d02189a1e4c20/tasks#TASK-001", "host": "local"}],
+            "researchAnswerPack": {
+                "answer": "Execution task evidence only.",
+                "sources": [{"title": "Approved Spec task", "url": "spec://spec_094d02189a1e4c20/tasks#TASK-001", "host": "local"}],
+                "score": {"qualityStatus": "usable_answer", "confidence": "high", "authorityScore": 91},
+            },
+        },
+        ttl_seconds=3600,
+        scope="global",
+    )
+    assert stored["questionKind"] == "spec_task"
+
+    payload = json.loads(
+        research_module.research_broker.func(
+            mode="search_experience",
+            query="Execute approved Spec spec_094d02189a1e4c20",
+            includeArchived=True,
+            state={"run_id": "run-spec-task-search"},
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["items"] == []
+    assert payload["reuseDecision"]["reuseDecision"] == "ignore"
+
+
 def test_reuse_decision_ignores_generic_stopword_overlap():
     decision = research_module._experience_reuse_decision(
         [

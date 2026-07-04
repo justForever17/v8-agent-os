@@ -117,14 +117,8 @@ def _resolved_memory_scope(
     external_thread_id: str | None,
 ) -> str | None:
     normalized_hint = str(scope_hint or "").strip()
-    if normalized_hint.startswith(("project:", "channel:", "workspace:", "external_api_thread:")):
+    if normalized_hint.startswith("external_api_thread:"):
         return normalized_hint
-    normalized_project = str(project_id or "").strip()
-    if normalized_project:
-        return f"project:{normalized_project}"
-    normalized_workspace = str(workspace_id or "").strip()
-    if normalized_workspace:
-        return f"workspace:{normalized_workspace}"
     normalized_thread = _scope_token(str(external_thread_id or "").strip())
     if normalized_thread:
         return f"external_api_thread:{normalized_thread}"

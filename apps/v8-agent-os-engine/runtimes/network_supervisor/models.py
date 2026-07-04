@@ -167,6 +167,11 @@ class NetworkOpenAICompatConfig(BaseModel):
         alias="maxExternalToolSchemaBytes",
     )
     max_external_tools_payload_tokens: int = Field(default=COMPAT_MAX_EXTERNAL_PAYLOAD_TOKENS, alias="maxExternalToolsPayloadTokens")
+    max_request_body_bytes: int = Field(default=2_097_152, alias="maxRequestBodyBytes")
+    max_output_tokens: int = Field(default=32_768, alias="maxOutputTokens")
+    request_timeout_seconds: int = Field(default=180, alias="requestTimeoutSeconds")
+    rate_limit_per_minute: int = Field(default=120, alias="rateLimitPerMinute")
+    max_concurrent_requests_per_key: int = Field(default=8, alias="maxConcurrentRequestsPerKey")
     max_memory_hint_tokens: int = Field(default=1200, alias="maxMemoryHintTokens")
     max_workflow_hint_tokens: int = Field(default=600, alias="maxWorkflowHintTokens")
 

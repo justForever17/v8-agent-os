@@ -125,6 +125,8 @@ def _should_force_memory_broker_first(
         return False
     if _tool_called_since_latest_human(state, "memory_broker"):
         return False
+    if _is_network_supervisor_compat_transport(state) and not _compat_v8_main_chain_mode(state):
+        return False
     if _spec_mode_active(state) and _spec_runtime_execution_allowed(state):
         return False
     if passive_rag_diagnostics.get("has_recall_cue") is True:

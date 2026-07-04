@@ -41,6 +41,7 @@ from runtimes.network_supervisor.compat_wire_emitter import (
     AnthropicStreamTimelineEmitter,
     OpenAIStreamTimelineEmitter,
     compat_wire_emitter,
+    openai_sse_frame,
 )
 from runtimes.network_supervisor.memory_adapter import network_supervisor_memory_adapter
 from runtimes.network_supervisor.service import network_supervisor_service
@@ -63,6 +64,7 @@ COMPAT_SSE_HEADERS = {
     "Connection": "keep-alive",
 }
 _COMPAT_MEMORY_PERSIST_VALUES = {"1", "true", "yes", "allow", "persist", "enabled", "on"}
+_COMPAT_REDACTION_MARKERS = ("authorization", "bearer ", "api key", "x-api-key", "sk-", "password", "token=")
 
 
 def _sse_comment(message: str) -> bytes:
@@ -114,6 +116,34 @@ def _compat_streaming_response(source: AsyncIterator[bytes]) -> StreamingRespons
     )
 
 
+async def _iterate_chat_events_with_timeout(
+    chat_request,
+    *,
+    transport: str,
+    run_id: str,
+    timeout_seconds: int | float | None,
+) -> AsyncIterator[dict[str, Any]]:
+    deadline = time.monotonic() + max(0.001, float(timeout_seconds or 180))
+    source = chat_runtime.stream_legacy_events(chat_request, transport=transport, run_id=run_id)
+    iterator = source.__aiter__()
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Compat request timed out")
+            try:
+                event = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError("Compat request timed out") from exc
+            yield event
+    finally:
+        close = getattr(iterator, "aclose", None) or getattr(source, "aclose", None)
+        if callable(close):
+            await close()
+
+
 def _verify_admin_relay_secret(secret: str | None) -> None:
     expected = str(get_internal_secret() or "").strip()
     if not expected:
@@ -124,6 +154,78 @@ def _verify_admin_relay_secret(secret: str | None) -> None:
 
 def _compat_memory_persist_allowed(value: str | None) -> bool:
     return str(value or "").strip().lower() in _COMPAT_MEMORY_PERSIST_VALUES
+
+
+async def _read_compat_json_payload(request: Request, *, compat_config) -> dict[str, Any]:
+    max_bytes = max(1, int(getattr(compat_config, "max_request_body_bytes", 2_097_152) or 2_097_152))
+    content_length = str(getattr(request, "headers", {}).get("content-length") or "").strip()
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="Compat request body is too large")
+        except ValueError:
+            pass
+    if hasattr(request, "body"):
+        raw_body = await request.body()
+        if len(raw_body) > max_bytes:
+            raise HTTPException(status_code=413, detail="Compat request body is too large")
+        try:
+            payload = json.loads(raw_body.decode("utf-8") if raw_body else "{}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
+    else:
+        payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    return _clamp_compat_output_tokens(payload, compat_config=compat_config)
+
+
+def _clamp_compat_output_tokens(payload: dict[str, Any], *, compat_config) -> dict[str, Any]:
+    max_output = max(1, int(getattr(compat_config, "max_output_tokens", 32_768) or 32_768))
+    cloned = dict(payload)
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = cloned.get(key)
+        if isinstance(value, int) and value > max_output:
+            cloned[key] = max_output
+    return cloned
+
+
+def _compat_safe_error_message(error: Any, *, fallback: str = "V8OS compat request failed") -> str:
+    text = str(error or "").strip() or fallback
+    lowered = text.lower()
+    if any(marker in lowered for marker in _COMPAT_REDACTION_MARKERS):
+        return fallback
+    if "{" in text and ("error" in lowered or "traceback" in lowered or "request id" in lowered):
+        return fallback
+    if len(text) > 240:
+        return text[:237].rstrip() + "..."
+    return text
+
+
+def _openai_compat_error_response(error: Any, *, status_code: int = 500, code: str = "compat_execution_failed") -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "message": _compat_safe_error_message(error, fallback="OpenAI-compatible request failed"),
+                "type": "v8os_compat_error",
+                "code": code,
+            }
+        },
+    )
+
+
+def _anthropic_compat_error_response(error: Any, *, status_code: int = 500, error_type: str = "api_error") -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": "error",
+            "error": {
+                "type": error_type,
+                "message": _compat_safe_error_message(error, fallback="Anthropic-compatible request failed"),
+            },
+        },
+    )
 
 
 def _resolve_openai_scope_headers(request: Request) -> tuple[str | None, str | None, str | None, str]:
@@ -424,6 +526,8 @@ async def _stream_openai_chat_completion(
     external_thread_id: str | None,
     external_user_id: str | None,
     allow_memory_persist: bool = False,
+    compat_request_lease: dict[str, Any] | None = None,
+    request_timeout_seconds: int | float | None = None,
 ) -> StreamingResponse:
     response_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -437,7 +541,12 @@ async def _stream_openai_chat_completion(
         tool_calls_seen = False
         external_tool_stop_requested = False
         try:
-            async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_openai", run_id=run_id):
+            async for event in _iterate_chat_events_with_timeout(
+                chat_request,
+                transport="network_supervisor_openai",
+                run_id=run_id,
+                timeout_seconds=request_timeout_seconds,
+            ):
                 if not isinstance(event, dict):
                     continue
                 event = _mark_engine_yield(event)
@@ -579,9 +688,10 @@ async def _stream_openai_chat_completion(
             for frame in emitter.finish(finish_reason):
                 yield frame
         except Exception as exc:
+            is_timeout = isinstance(exc, (TimeoutError, asyncio.TimeoutError))
             failed = {
                 "adapterStatus": "failed",
-                "reason": str(exc),
+                "reason": "compat_timeout" if is_timeout else _compat_safe_error_message(exc),
                 "sourceRuntime": "network_supervisor",
                 "provenanceClass": "external_api_dialogue",
                 "memoryPolicy": "compat_explicit_persist" if allow_memory_persist else "compat_audit_only",
@@ -592,7 +702,22 @@ async def _stream_openai_chat_completion(
                 "scopeHint": scope_hint,
             }
             _record_openai_memory_adapter_status(failed)
-            raise
+            yield openai_sse_frame(
+                {
+                    "error": {
+                        "message": _compat_safe_error_message(
+                            exc,
+                            fallback="OpenAI-compatible request timed out" if is_timeout else "OpenAI-compatible stream failed",
+                        ),
+                        "type": "v8os_compat_error",
+                        "code": "compat_timeout" if is_timeout else "compat_stream_failed",
+                    }
+                },
+                event_id=emitter._next_event_id(),
+            )
+            yield openai_sse_frame("[DONE]", event_id=emitter._next_event_id())
+        finally:
+            network_supervisor_service.finish_openai_compat_request(compat_request_lease)
 
     return _compat_streaming_response(_generator())
 
@@ -605,6 +730,8 @@ async def _stream_anthropic_message(
     include_thinking: bool,
     external_thread_id: str | None = None,
     external_user_id: str | None = None,
+    compat_request_lease: dict[str, Any] | None = None,
+    request_timeout_seconds: int | float | None = None,
 ) -> StreamingResponse:
     response_id = f"msg_{uuid.uuid4().hex}"
     _wire_to_internal, internal_to_wire = build_external_tool_alias_maps(chat_request.config.external_tools)
@@ -616,7 +743,12 @@ async def _stream_anthropic_message(
         external_tool_stop_requested = False
         yield emitter.message_start()
         try:
-            async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_anthropic", run_id=run_id):
+            async for event in _iterate_chat_events_with_timeout(
+                chat_request,
+                transport="network_supervisor_anthropic",
+                run_id=run_id,
+                timeout_seconds=request_timeout_seconds,
+            ):
                 if not isinstance(event, dict):
                     continue
                 event = _mark_engine_yield(event)
@@ -683,7 +815,14 @@ async def _stream_anthropic_message(
             for frame in emitter.finish(stop_reason):
                 yield frame
         except Exception as exc:
-            yield emitter.error(str(exc))
+            fallback = (
+                "Anthropic-compatible request timed out"
+                if isinstance(exc, (TimeoutError, asyncio.TimeoutError))
+                else "Anthropic-compatible stream failed"
+            )
+            yield emitter.error(_compat_safe_error_message(exc, fallback=fallback))
+        finally:
+            network_supervisor_service.finish_openai_compat_request(compat_request_lease)
 
     return _compat_streaming_response(_generator())
 
@@ -1100,11 +1239,13 @@ async def post_network_supervisor_openai_chat_completions(
 ):
     _verify_admin_relay_secret(x_v8_agent_os_secret)
     bearer_token = extract_bearer_token(authorization)
-    network_supervisor_service.verify_openai_compat_token(bearer_token)
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
-    allow_memory_persist = _compat_memory_persist_allowed(x_v8_compat_memory)
+    token_entry = network_supervisor_service.verify_openai_compat_token(bearer_token)
+    compat_config = network_supervisor_service.get_config_model().openai_compat
+    payload = await _read_compat_json_payload(request, compat_config=compat_config)
+    allow_memory_persist = _compat_memory_persist_allowed(x_v8_compat_memory) and network_supervisor_service.openai_compat_token_has_permission(
+        token_entry,
+        "memory:persist",
+    )
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
     external_tool_claim = network_supervisor_service.claim_external_tool_results(
@@ -1113,7 +1254,6 @@ async def post_network_supervisor_openai_chat_completions(
         tool_results=_openai_tool_results(payload),
         external_thread_id=external_thread_id,
     )
-    compat_config = network_supervisor_service.get_config_model().openai_compat
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
         budget = resolve_compat_model_budget(payload.get("model"), aliases=aliases, compat_config=compat_config)
@@ -1160,6 +1300,7 @@ async def post_network_supervisor_openai_chat_completions(
         return _openai_background_completion(response_model_name=response_model_name, text="OK")
 
     if bool(payload.get("stream")):
+        compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
         return await _stream_openai_chat_completion(
             payload,
             chat_request=chat_request,
@@ -1170,15 +1311,30 @@ async def post_network_supervisor_openai_chat_completions(
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
             allow_memory_persist=allow_memory_persist,
+            compat_request_lease=compat_request_lease,
+            request_timeout_seconds=compat_config.request_timeout_seconds,
         )
 
-    run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
-    events: list[dict[str, Any]] = []
-    async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_openai", run_id=run_id):
-        if isinstance(event, dict) and str(event.get("type") or "").strip() == "error":
-            raise HTTPException(status_code=500, detail=str(event.get("error") or "OpenAI compat execution failed"))
-        if isinstance(event, dict):
-            events.append(event)
+    compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
+    try:
+        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
+        events: list[dict[str, Any]] = []
+        async for event in _iterate_chat_events_with_timeout(
+            chat_request,
+            transport="network_supervisor_openai",
+            run_id=run_id,
+            timeout_seconds=compat_config.request_timeout_seconds,
+        ):
+            if isinstance(event, dict) and str(event.get("type") or "").strip() == "error":
+                return _openai_compat_error_response(event.get("error") or "OpenAI compat execution failed")
+            if isinstance(event, dict):
+                events.append(event)
+    except TimeoutError as exc:
+        return _openai_compat_error_response(exc, status_code=504, code="compat_timeout")
+    except Exception as exc:
+        return _openai_compat_error_response(exc)
+    finally:
+        network_supervisor_service.finish_openai_compat_request(compat_request_lease)
     visible_events = _trim_events_after_first_external_tool(
         events,
         external_tools=chat_request.config.external_tools,
@@ -1248,10 +1404,9 @@ async def post_network_supervisor_anthropic_messages(
     x_v8_agent_os_secret: str | None = Header(default=None, alias="X-V8-Agent-OS-Secret"),
 ):
     _verify_admin_relay_secret(x_v8_agent_os_secret)
-    network_supervisor_service.verify_openai_compat_token(extract_anthropic_api_key(authorization, x_api_key))
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+    token_entry = network_supervisor_service.verify_openai_compat_token(extract_anthropic_api_key(authorization, x_api_key))
+    compat_config = network_supervisor_service.get_config_model().openai_compat
+    payload = await _read_compat_json_payload(request, compat_config=compat_config)
     project_id, workspace_id, scope_hint, scope_mode = _resolve_openai_scope_headers(request)
     external_thread_id, external_user_id = _resolve_openai_external_headers(request)
     external_tool_claim = network_supervisor_service.claim_external_tool_results(
@@ -1260,7 +1415,6 @@ async def post_network_supervisor_anthropic_messages(
         tool_results=_anthropic_tool_results(payload),
         external_thread_id=external_thread_id,
     )
-    compat_config = network_supervisor_service.get_config_model().openai_compat
     aliases = normalize_openai_compat_model_aliases(compat_config.model_aliases)
     try:
         budget = resolve_compat_model_budget(payload.get("model"), aliases=aliases, compat_config=compat_config)
@@ -1308,6 +1462,7 @@ async def post_network_supervisor_anthropic_messages(
 
     include_thinking = wants_anthropic_thinking(payload)
     if bool(payload.get("stream")):
+        compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
         return await _stream_anthropic_message(
             payload,
             chat_request=chat_request,
@@ -1315,15 +1470,30 @@ async def post_network_supervisor_anthropic_messages(
             include_thinking=include_thinking,
             external_thread_id=external_thread_id,
             external_user_id=external_user_id,
+            compat_request_lease=compat_request_lease,
+            request_timeout_seconds=compat_config.request_timeout_seconds,
         )
 
-    run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
-    events: list[dict[str, Any]] = []
-    async for event in chat_runtime.stream_legacy_events(chat_request, transport="network_supervisor_anthropic", run_id=run_id):
-        if isinstance(event, dict) and str(event.get("type") or "").strip() == "error":
-            raise HTTPException(status_code=500, detail=str(event.get("error") or "Anthropic compat execution failed"))
-        if isinstance(event, dict):
-            events.append(event)
+    compat_request_lease = network_supervisor_service.begin_openai_compat_request(token_entry)
+    try:
+        run_id = chat_request.resume_run_id or f"run_{uuid.uuid4().hex}"
+        events: list[dict[str, Any]] = []
+        async for event in _iterate_chat_events_with_timeout(
+            chat_request,
+            transport="network_supervisor_anthropic",
+            run_id=run_id,
+            timeout_seconds=compat_config.request_timeout_seconds,
+        ):
+            if isinstance(event, dict) and str(event.get("type") or "").strip() == "error":
+                return _anthropic_compat_error_response(event.get("error") or "Anthropic compat execution failed")
+            if isinstance(event, dict):
+                events.append(event)
+    except TimeoutError as exc:
+        return _anthropic_compat_error_response(exc, status_code=504, error_type="timeout_error")
+    except Exception as exc:
+        return _anthropic_compat_error_response(exc)
+    finally:
+        network_supervisor_service.finish_openai_compat_request(compat_request_lease)
     visible_events = _trim_events_after_first_external_tool(
         events,
         external_tools=chat_request.config.external_tools,

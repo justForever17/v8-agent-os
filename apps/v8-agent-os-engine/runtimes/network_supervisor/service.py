@@ -8,6 +8,7 @@ import secrets
 import socket
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -139,6 +140,8 @@ class NetworkSupervisorService:
         self._active_inbound_tasks: dict[str, asyncio.Task] = {}
         self._seen_nonces: dict[str, float] = {}
         self._last_announce_at: str | None = None
+        self._compat_rate_state: dict[str, deque[float]] = {}
+        self._compat_active_counts: dict[str, int] = {}
 
     def _ensure_runtime_dir(self) -> None:
         V8_AGENT_OS_HOME.mkdir(parents=True, exist_ok=True)
@@ -764,20 +767,33 @@ class NetworkSupervisorService:
         if str(token or "").strip() != expected:
             raise HTTPException(status_code=401, detail="Invalid peer token")
 
-    def verify_openai_compat_token(self, token: str | None) -> None:
+    def verify_openai_compat_token(self, token: str | None) -> dict[str, Any]:
         config = self.get_config_model()
         if not config.enabled or not config.openai_compat.enabled:
             raise HTTPException(status_code=403, detail="OpenAI compat branch is disabled")
         provided = str(token or "").strip()
         if not provided:
             raise HTTPException(status_code=401, detail="Missing bearer token")
-        candidates = {
-            str(item.get("token") or "").strip()
-            for item in self._openai_compat_token_entries()
-            if str(item.get("token") or "").strip()
-        }
-        if provided not in candidates:
-            raise HTTPException(status_code=401, detail="Invalid compat token")
+        for item in self._openai_compat_token_entries():
+            if provided == str(item.get("token") or "").strip():
+                return item
+        raise HTTPException(status_code=401, detail="Invalid compat token")
+
+    def _default_openai_compat_permissions(self) -> list[str]:
+        return [
+            "compat:chat",
+            "compat:external_tool_roundtrip",
+            "compat:support_tools",
+            "memory:global_read",
+            "memory:persist",
+        ]
+
+    def openai_compat_token_has_permission(self, token_entry: dict[str, Any] | None, permission: str) -> bool:
+        if token_entry is not None and not isinstance(token_entry, dict):
+            return True
+        permissions = list((token_entry or {}).get("permissions") or [])
+        normalized = {str(item).strip() for item in permissions if str(item).strip()}
+        return "*" in normalized or str(permission or "").strip() in normalized
 
     def _normalize_openai_compat_token_entry(self, item: Any) -> dict[str, Any] | None:
         if isinstance(item, str):
@@ -792,6 +808,8 @@ class NetworkSupervisorService:
                 "fingerprint": fingerprint,
                 "createdAt": None,
                 "source": "legacy_string",
+                "mode": "third_party_managed",
+                "permissions": self._default_openai_compat_permissions(),
             }
         if not isinstance(item, dict):
             return None
@@ -807,6 +825,8 @@ class NetworkSupervisorService:
             "fingerprint": fingerprint,
             "createdAt": str(item.get("createdAt") or "").strip() or None,
             "source": str(item.get("source") or "").strip() or "managed",
+            "mode": str(item.get("mode") or "").strip() or "third_party_managed",
+            "permissions": list(item.get("permissions") or self._default_openai_compat_permissions()),
         }
 
     def _openai_compat_token_entries(self) -> list[dict[str, Any]]:
@@ -839,11 +859,41 @@ class NetworkSupervisorService:
             "fingerprint": _fingerprint(token),
             "createdAt": created_at,
             "source": "managed",
+            "mode": "third_party_managed",
+            "permissions": self._default_openai_compat_permissions(),
         }
         entries.append(entry)
         secrets_payload["openaiCompatTokens"] = entries
         self.write_secrets(secrets_payload)
         return entry
+
+    def begin_openai_compat_request(self, token_entry: dict[str, Any] | None) -> dict[str, Any]:
+        config = self.get_config_model().openai_compat
+        fingerprint = str((token_entry or {}).get("fingerprint") or "anonymous").strip() or "anonymous"
+        now = time.time()
+        rate_limit = max(1, int(getattr(config, "rate_limit_per_minute", 120) or 120))
+        concurrent_limit = max(1, int(getattr(config, "max_concurrent_requests_per_key", 8) or 8))
+        window = self._compat_rate_state.setdefault(fingerprint, deque())
+        while window and now - float(window[0]) > 60.0:
+            window.popleft()
+        if len(window) >= rate_limit:
+            raise HTTPException(status_code=429, detail="Compat rate limit exceeded")
+        active = int(self._compat_active_counts.get(fingerprint) or 0)
+        if active >= concurrent_limit:
+            raise HTTPException(status_code=429, detail="Compat concurrency limit exceeded")
+        window.append(now)
+        self._compat_active_counts[fingerprint] = active + 1
+        return {"fingerprint": fingerprint, "startedAt": now}
+
+    def finish_openai_compat_request(self, lease: dict[str, Any] | None) -> None:
+        fingerprint = str((lease or {}).get("fingerprint") or "").strip()
+        if not fingerprint:
+            return
+        active = max(0, int(self._compat_active_counts.get(fingerprint) or 0) - 1)
+        if active:
+            self._compat_active_counts[fingerprint] = active
+        else:
+            self._compat_active_counts.pop(fingerprint, None)
 
     def delete_openai_compat_token(self, token_id: str) -> dict[str, Any]:
         target = str(token_id or "").strip()

@@ -148,7 +148,7 @@ class NetworkSupervisorMemoryAdapterTests(unittest.TestCase):
         _, kwargs = patched["memory_runtime"].add_knowledge.call_args
         self.assertEqual(kwargs["scope"], "external_api_thread:thread-1")
 
-    def test_completed_tool_round_trip_persists_compact_scoped_delta(self):
+    def test_completed_tool_round_trip_persists_compact_external_api_delta(self):
         huge_result = "A" * 5000
         payload = {
             "messages": [
@@ -189,11 +189,11 @@ class NetworkSupervisorMemoryAdapterTests(unittest.TestCase):
 
         self.assertEqual(result["adapterStatus"], "extracted")
         self.assertEqual(result["toolRoundTripState"], "completed")
-        self.assertEqual(result["resolvedScope"], "project:project-1")
+        self.assertEqual(result["resolvedScope"], "external_api_thread:thread-1")
         patched["memory_runtime"].add_knowledge.assert_called_once()
         _, kwargs = patched["memory_runtime"].add_knowledge.call_args
         self.assertEqual(kwargs["category"], "external_api_dialogue")
-        self.assertEqual(kwargs["scope"], "project:project-1")
+        self.assertEqual(kwargs["scope"], "external_api_thread:thread-1")
         self.assertLess(len(kwargs["fact"]), 1800)
         self.assertNotIn(huge_result, kwargs["fact"])
 
@@ -238,7 +238,7 @@ class NetworkSupervisorMemoryAdapterTests(unittest.TestCase):
         self.assertEqual(result["reason"], "compat_memory_persistence_disabled")
         self.assertEqual(result["memoryPolicy"], "compat_audit_only")
         self.assertEqual(result["toolRoundTripState"], "completed")
-        self.assertEqual(result["resolvedScope"], "project:project-1")
+        self.assertEqual(result["resolvedScope"], "external_api_thread:thread-1")
         patched["memory_runtime"].add_knowledge.assert_not_called()
 
 

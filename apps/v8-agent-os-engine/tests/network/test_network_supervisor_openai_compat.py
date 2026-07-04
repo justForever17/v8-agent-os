@@ -48,6 +48,10 @@ from api.network_supervisor_routes import (  # noqa: E402
     _approval_notice_text,
     _compat_background_request_kind,
     _compat_memory_persist_allowed,
+    _clamp_compat_output_tokens,
+    _iterate_chat_events_with_timeout,
+    _openai_compat_error_response,
+    _read_compat_json_payload,
     get_network_supervisor_anthropic_models,
     get_network_supervisor_openai_models,
     post_network_supervisor_anthropic_messages,
@@ -59,7 +63,7 @@ from runtimes.chat.runtime import ChatRuntime  # noqa: E402
 from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop  # noqa: E402
 from runtimes.network_supervisor.models import NetworkSupervisorRuntimeConfig  # noqa: E402
 from runtimes.network_supervisor.service import network_supervisor_service  # noqa: E402
-from graph.supervisor_turn import _filter_network_supervisor_compat_tools  # noqa: E402
+from graph.supervisor_turn import _filter_network_supervisor_compat_tools, _should_force_memory_broker_first  # noqa: E402
 
 
 class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
@@ -108,8 +112,11 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
             "read_secrets",
             return_value=secrets_payload,
         ):
-            network_supervisor_service.verify_openai_compat_token("legacy-token")
-            network_supervisor_service.verify_openai_compat_token("managed-token")
+            legacy = network_supervisor_service.verify_openai_compat_token("legacy-token")
+            managed = network_supervisor_service.verify_openai_compat_token("managed-token")
+            self.assertEqual(legacy["mode"], "third_party_managed")
+            self.assertIn("compat:chat", legacy["permissions"])
+            self.assertEqual(managed["mode"], "third_party_managed")
             with self.assertRaises(HTTPException) as raised:
                 network_supervisor_service.verify_openai_compat_token("wrong-token")
             self.assertEqual(raised.exception.status_code, 401)
@@ -120,6 +127,71 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as raised:
                 network_supervisor_service.verify_openai_compat_token("legacy-token")
             self.assertEqual(raised.exception.status_code, 403)
+
+    def test_openai_compat_request_body_limit_and_output_clamp(self):
+        config = self._enabled_network_config()
+        config.openai_compat.max_request_body_bytes = 12
+        config.openai_compat.max_output_tokens = 1024
+
+        class FakeBodyRequest:
+            headers = {"content-length": "999"}
+
+            async def body(self):
+                return b'{"model":"v8os"}'
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(_read_compat_json_payload(FakeBodyRequest(), compat_config=config.openai_compat))
+        self.assertEqual(raised.exception.status_code, 413)
+
+        clamped = _clamp_compat_output_tokens(
+            {"model": "v8os", "max_tokens": 9999, "max_completion_tokens": 2048},
+            compat_config=config.openai_compat,
+        )
+        self.assertEqual(clamped["max_tokens"], 1024)
+        self.assertEqual(clamped["max_completion_tokens"], 1024)
+
+    def test_openai_compat_token_rate_and_concurrency_limits(self):
+        config = self._enabled_network_config()
+        config.openai_compat.rate_limit_per_minute = 1
+        config.openai_compat.max_concurrent_requests_per_key = 1
+        token_entry = {"fingerprint": "fixture-rate"}
+        with patch.object(network_supervisor_service, "get_config_model", return_value=config):
+            lease = network_supervisor_service.begin_openai_compat_request(token_entry)
+            with self.assertRaises(HTTPException) as raised:
+                network_supervisor_service.begin_openai_compat_request(token_entry)
+            self.assertEqual(raised.exception.status_code, 429)
+            network_supervisor_service.finish_openai_compat_request(lease)
+        network_supervisor_service._compat_rate_state.pop("fixture-rate", None)
+        network_supervisor_service._compat_active_counts.pop("fixture-rate", None)
+
+    def test_openai_compat_error_response_redacts_provider_raw_payload(self):
+        response = _openai_compat_error_response(
+            "Error code: 400 - {'error': {'message': 'Authorization Bearer sk-secret leaked'}}"
+        )
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(payload["error"]["type"], "v8os_compat_error")
+        self.assertNotIn("sk-secret", payload["error"]["message"])
+        self.assertNotIn("{'error'", payload["error"]["message"])
+
+    def test_compat_event_iterator_times_out(self):
+        async def slow_events(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            yield {"type": "done"}
+
+        async def collect_events():
+            events = []
+            async for event in _iterate_chat_events_with_timeout(
+                SimpleNamespace(),
+                transport="network_supervisor_openai",
+                run_id="run_timeout",
+                timeout_seconds=0.001,
+            ):
+                events.append(event)
+            return events
+
+        with patch("api.network_supervisor_routes.chat_runtime.stream_legacy_events", side_effect=slow_events):
+            with self.assertRaises(TimeoutError):
+                asyncio.run(collect_events())
 
     def test_external_bash_profile_mutation_hard_stops_before_interrupt(self):
         tools = build_external_langchain_tools(
@@ -674,6 +746,25 @@ class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
         self.assertEqual(
             [item.name for item in filtered],
             ["network_write", "network_read", "web_broker", "research_broker", "memory_broker", "tool_observation_detail"],
+        )
+
+    def test_network_supervisor_compat_does_not_force_memory_first(self):
+        tools = [SimpleNamespace(name="memory_broker")]
+        self.assertFalse(
+            _should_force_memory_broker_first(
+                user_query="继续之前的上下文",
+                passive_rag_diagnostics={},
+                selected_tools=tools,
+                state={"transport": "network_supervisor_openai", "current_route_context": {"compatIngressDiagnostics": {"compatContextMode": "third_party_managed"}}},
+            )
+        )
+        self.assertTrue(
+            _should_force_memory_broker_first(
+                user_query="继续之前的上下文",
+                passive_rag_diagnostics={},
+                selected_tools=tools,
+                state={"transport": "web"},
+            )
         )
 
     def test_external_messages_fail_closed_but_tools_enter_reservoir(self):

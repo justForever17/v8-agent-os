@@ -332,7 +332,7 @@ export function Topbar() {
                     <DeviceConnectDialog />
                     <LocaleToggle />
                     <AdminHoverInfo
-                        content={debugMode ? "当前处于调试模式，已显示底层的诊断卡片" : "开启调试模式，显示底层的诊断卡片与信息"}
+                        content={debugMode ? t("components.layout.Topbar.debugModeEnabledHint") : t("components.layout.Topbar.debugModeDisabledHint")}
                         align="right"
                     >
                         <Button

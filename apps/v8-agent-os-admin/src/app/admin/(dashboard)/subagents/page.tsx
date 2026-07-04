@@ -259,20 +259,23 @@ const DEFAULT_FORM_STATE: AgentFormState = {
 const RUNTIME_BINDING_OPTIONS = [
   {
     kind: "research",
-    label: "研究",
-    description: "允许该 Agent 使用研究运行时整理来源与证据。",
+    labelKey: "app.admin.dashboard.subagents.page.runtimeBinding.research.label",
+    descriptionKey: "app.admin.dashboard.subagents.page.runtimeBinding.research.description",
+    defaultLabel: "Deep Research",
     grantGroups: ["research.core"],
   },
   {
     kind: "engineering",
-    label: "工程",
-    description: "标记为工程执行角色；文件和命令仍受当前工作区边界限制。",
+    labelKey: "app.admin.dashboard.subagents.page.runtimeBinding.engineering.label",
+    descriptionKey: "app.admin.dashboard.subagents.page.runtimeBinding.engineering.description",
+    defaultLabel: "Engineering Mode",
     grantGroups: [],
   },
   {
     kind: "creative_media",
-    label: "创作媒体",
-    description: "允许该 Agent 使用创作媒体运行时管理素材、配方和媒体任务。",
+    labelKey: "app.admin.dashboard.subagents.page.runtimeBinding.creativeMedia.label",
+    descriptionKey: "app.admin.dashboard.subagents.page.runtimeBinding.creativeMedia.description",
+    defaultLabel: "Media Creation",
     grantGroups: ["creative_media.core"],
   },
 ];
@@ -466,15 +469,18 @@ function runtimeBindingsFromKinds(kinds: string[]) {
     .map(option => ({
       runtimeKind: option.kind,
       grantGroups: option.grantGroups,
-      label: option.label,
+      label: option.defaultLabel,
       source: "admin_config",
     }));
 }
-function runtimeBindingLabel(snapshot: Record<string, unknown>) {
+function runtimeBindingLabel(t: ReturnType<typeof useT>, snapshot: Record<string, unknown>) {
   const kinds = runtimeBindingKindsFromSnapshot(snapshot);
-  if (!kinds.length) return "基础工具";
+  if (!kinds.length) return t("app.admin.dashboard.subagents.page.runtimeBinding.basicTools");
   return kinds
-    .map(kind => RUNTIME_BINDING_OPTIONS.find(option => option.kind === kind)?.label || kind)
+    .map(kind => {
+      const option = RUNTIME_BINDING_OPTIONS.find(item => item.kind === kind);
+      return option ? t(option.labelKey) : kind;
+    })
     .join(" / ");
 }
 function normalizeExternalWorkerDescriptor(value: unknown): ExternalWorkerDescriptor {
@@ -1431,8 +1437,8 @@ export default function SubagentsPage() {
                         <p className="mt-1 text-muted-foreground flex items-center gap-1.5 flex-wrap">
                             {t("app.admin.dashboard.subagents.page.k790af087")}
                             {debugMode && (
-                                <AdminHoverInfo content="包含：Tool Modes、Capability Snapshots、并委派与兼容手动模式 Pinning 配置">
-                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">❓ 详细配置项</span>
+                                <AdminHoverInfo content={t("app.admin.dashboard.subagents.page.debugConfigHint")}>
+                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">{t("app.admin.dashboard.subagents.page.debugConfigTrigger")}</span>
                                 </AdminHoverInfo>
                             )}
                         </p>
@@ -1582,37 +1588,37 @@ export default function SubagentsPage() {
                                             <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs text-muted-foreground">
                                                 <div className="flex items-center gap-1.5">
                                                     {isBuiltin ? (
-                                                        <Badge variant="outline" className="text-[10px] text-amber-600 bg-amber-50/50 border-amber-200 shadow-none px-1.5 py-0 h-5">内置</Badge>
+                                                        <Badge variant="outline" className="text-[10px] text-amber-600 bg-amber-50/50 border-amber-200 shadow-none px-1.5 py-0 h-5">{t("app.admin.dashboard.subagents.page.builtinBadge")}</Badge>
                                                     ) : (
-                                                        <Badge variant="outline" className="text-[10px] text-slate-600 bg-slate-50/50 border-slate-200 shadow-none px-1.5 py-0 h-5">自定义</Badge>
+                                                        <Badge variant="outline" className="text-[10px] text-slate-600 bg-slate-50/50 border-slate-200 shadow-none px-1.5 py-0 h-5">{t("app.admin.dashboard.subagents.page.customBadge")}</Badge>
                                                     )}
-                                                    {agent.globalExposure && <Badge className="text-[10px] bg-emerald-600 hover:bg-emerald-600 px-1.5 py-0 h-5 shadow-none text-white">全局</Badge>}
+                                                    {agent.globalExposure && <Badge className="text-[10px] bg-emerald-600 hover:bg-emerald-600 px-1.5 py-0 h-5 shadow-none text-white">{t("app.admin.dashboard.subagents.page.globalBadge")}</Badge>}
                                                 </div>
                                                 <AdminHoverInfo
                                                     content={
                                                         <div className="space-y-2 text-xs leading-relaxed text-slate-200 p-1 max-w-[280px]">
-                                                            <div><strong>专家族 (Family):</strong> {specialistFamily || "无"}</div>
-                                                            <div><strong>绑定运行时:</strong> {runtimeBindingLabel(capabilitySnapshot)}</div>
-                                                            {isBuiltin && <div className="text-amber-400 font-medium">⚠️ 内置 Subagent 绑定核心运行，无法删除。</div>}
-                                                            <div><strong>分类 (Class):</strong> {agentClass || "无"}</div>
-                                                            <div><strong>工具策略:</strong> {resolveToolModeLabel(toolMode)}</div>
-                                                            {domainTags.length > 0 && <div><strong>业务领域:</strong> {domainTags.join("、")}</div>}
+                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailFamily")}:</strong> {specialistFamily || t("app.admin.dashboard.subagents.page.noneValue")}</div>
+                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailRuntimeBinding")}:</strong> {runtimeBindingLabel(t, capabilitySnapshot)}</div>
+                                                            {isBuiltin && <div className="text-amber-400 font-medium">{t("app.admin.dashboard.subagents.page.builtinLockedHint")}</div>}
+                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailClass")}:</strong> {agentClass || t("app.admin.dashboard.subagents.page.noneValue")}</div>
+                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailToolPolicy")}:</strong> {resolveToolModeLabel(toolMode)}</div>
+                                                            {domainTags.length > 0 && <div><strong>{t("app.admin.dashboard.subagents.page.detailDomains")}:</strong> {domainTags.join(" / ")}</div>}
                                                             {selectors.length > 0 && (
                                                                 <div>
-                                                                    <strong>显式授权工具 ({selectors.length}):</strong>
+                                                                    <strong>{t("app.admin.dashboard.subagents.page.detailExplicitTools", { count: selectors.length })}:</strong>
                                                                     <div className="mt-1 flex flex-wrap gap-1">
                                                                         {selectors.slice(0, 8).map(s => <span key={s} className="bg-slate-800 text-slate-300 px-1 rounded text-[10px]">{s}</span>)}
                                                                         {selectors.length > 8 && <span className="text-[10px]">...</span>}
                                                                     </div>
                                                                 </div>
                                                             )}
-                                                            <div><strong>自省控制:</strong> {agent.reflection_enabled ? `开启 (Max: ${agent.max_reflections})` : "关闭"}</div>
-                                                            <div><strong>创建者:</strong> {agent.createdBy || "human"}</div>
+                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailReflection")}:</strong> {agent.reflection_enabled ? t("app.admin.dashboard.subagents.page.reflectionOn", { max: agent.max_reflections || 0 }) : t("app.admin.dashboard.subagents.page.reflectionOff")}</div>
+                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailCreator")}:</strong> {agent.createdBy || "human"}</div>
                                                         </div>
                                                     }
                                                 >
                                                     <span className="cursor-help text-[11px] text-sky-600 hover:text-sky-700 hover:underline flex items-center gap-0.5">
-                                                        📄 策略与工具详情
+                                                        {t("app.admin.dashboard.subagents.page.policyDetails")}
                                                     </span>
                                                 </AdminHoverInfo>
                                             </div>
@@ -1634,7 +1640,7 @@ export default function SubagentsPage() {
                                         <span className="text-xs font-normal leading-relaxed text-slate-200">
                                             {t("app.admin.dashboard.subagents.page.externalWorkers.description")}
                                             <br />
-                                            配置文件事实源：<code>config.json#supervisor.delegation.externalWorkers</code>
+                                            {t("app.admin.dashboard.subagents.page.externalWorkers.configSource")}<code>config.json#supervisor.delegation.externalWorkers</code>
                                         </span>
                                     }
                                 >
@@ -1819,7 +1825,7 @@ export default function SubagentsPage() {
                                                     tooltip={
                                                         <div className="space-y-1">
                                                             <div>{tg(t, "761aca19")}</div>
-                                                            <div className="mt-2 font-semibold">Supported side effects / 支持的副作用:</div>
+                                                            <div className="mt-2 font-semibold">{t("app.admin.dashboard.subagents.page.externalWorkers.supportedSideEffects")}</div>
                                                             <ul className="list-disc pl-4 text-xs">
                                                                 <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.workspace_write")}</li>
                                                                 <li>{t("app.admin.dashboard.subagents.page.externalWorkers.sideEffects.tool_use")}</li>
@@ -2148,7 +2154,7 @@ export default function SubagentsPage() {
                                         <div className="space-y-1 text-xs">
                                             <div>{tg(t, "5c02fc01")}</div>
                                             {editingAgent && isBuiltinAgent(editingAgent) && (
-                                                <div className="text-amber-500 font-medium mt-1">⚠️ 内置 Subagent 绑定了系统的核心运行时，可编辑 System Prompt，但无法删除。</div>
+                                                <div className="text-amber-500 font-medium mt-1">{t("app.admin.dashboard.subagents.page.builtinLockedPromptHint")}</div>
                                             )}
                                         </div>
                                     }
@@ -2185,16 +2191,16 @@ export default function SubagentsPage() {
                     globalExposure: Boolean(next)
                   }))} />
 
-                                    <span className="font-medium text-slate-900">globalExposure</span>
+                                    <span className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.globalExposureLabel")}</span>
                                 </label>
                             </div>
                         </div>
 
                         <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                             <div className="space-y-1">
-                                <Label>运行能力</Label>
+                                <Label>{t("app.admin.dashboard.subagents.page.runtimeBinding.title")}</Label>
                                 <p className="text-xs leading-5 text-slate-500">
-                                    这是底层自动授权依据：研究和创作媒体会在派发给该 Agent 时自动接入对应运行时；未选择时只使用基础工具。
+                                    {t("app.admin.dashboard.subagents.page.runtimeBinding.description")}
                                 </p>
                             </div>
                             <div className="grid gap-3 md:grid-cols-3">
@@ -2214,8 +2220,8 @@ export default function SubagentsPage() {
                                                 })}
                                             />
                                             <span className="space-y-1">
-                                                <span className="block font-medium text-slate-900">{option.label}</span>
-                                                <span className="block text-xs leading-5 text-slate-500">{option.description}</span>
+                                                <span className="block font-medium text-slate-900">{t(option.labelKey)}</span>
+                                                <span className="block text-xs leading-5 text-slate-500">{t(option.descriptionKey)}</span>
                                             </span>
                                         </label>
                                     );

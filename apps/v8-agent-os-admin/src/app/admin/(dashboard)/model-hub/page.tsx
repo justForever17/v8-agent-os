@@ -774,12 +774,12 @@ export default function ModelHubPage() {
             }),
         });
         if (!response.ok) {
-            const errorMessage = await readJsonErrorMessage(response, "Think 模式保存失败");
-            toast({ variant: "destructive", title: "Think 模式保存失败", description: errorMessage });
+            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.thinkingSaveFailed"));
+            toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.page.thinkingSaveFailed"), description: errorMessage });
             return;
         }
         toast({
-            title: disabled ? "已关闭 think 模式" : "已恢复模型默认思考",
+            title: disabled ? t("app.admin.dashboard.model.hub.page.thinkingDisabled") : t("app.admin.dashboard.model.hub.page.thinkingDefaultRestored"),
             description: model.modelId,
         });
         await fetchData();

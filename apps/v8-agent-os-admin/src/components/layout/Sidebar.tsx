@@ -59,7 +59,7 @@ export function Sidebar() {
                         "flex items-center rounded-2xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900",
                         isCollapsed ? "h-11 w-11 justify-center" : "h-10 w-10 justify-center",
                     )}
-                    title="返回聊天页"
+                    title={t("components.layout.Sidebar.backToChat")}
                 >
                     <ArrowLeft className="h-4 w-4" />
                 </a>
@@ -159,7 +159,7 @@ export function Sidebar() {
                         type="button"
                         onClick={toggleCollapse}
                         className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl text-slate-400 transition-colors hover:bg-white hover:text-slate-600"
-                        title="展开侧边栏"
+                        title={t("components.layout.Sidebar.expandSidebar")}
                     >
                         <PanelLeftOpen className="h-4.5 w-4.5" />
                     </button>
@@ -177,7 +177,7 @@ export function Sidebar() {
                             type="button"
                             onClick={toggleCollapse}
                             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-slate-400 transition-colors hover:bg-white hover:text-slate-600"
-                            title="折叠侧边栏"
+                            title={t("components.layout.Sidebar.collapseSidebar")}
                         >
                             <PanelLeftClose className="h-4.5 w-4.5" />
                         </button>

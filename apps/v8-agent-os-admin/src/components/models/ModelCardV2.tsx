@@ -344,7 +344,7 @@ export function ModelCardV2({
                             </Button>}
                         {supportsNoThink && onToggleNoThink && <Button variant="ghost" size="icon" className={`h-7 w-7 ${noThinkDisabled ? "bg-sky-50 text-sky-700 hover:bg-sky-100 hover:text-sky-800" : "text-muted-foreground hover:text-primary"}`} onClick={async () => {
             await onToggleNoThink(!noThinkDisabled);
-          }} title={noThinkDisabled ? "恢复模型默认思考" : "请求时关闭 think 模式"}>
+          }} title={noThinkDisabled ? t("components.models.ModelCardV2.thinkingDefaultRestoreTitle") : t("components.models.ModelCardV2.thinkingDisableTitle")}>
                                 <Brain className="h-3.5 w-3.5" />
                             </Button>}
                         {defaultCategoryOptions.length > 0 && onSetDefault && <DropdownMenu>

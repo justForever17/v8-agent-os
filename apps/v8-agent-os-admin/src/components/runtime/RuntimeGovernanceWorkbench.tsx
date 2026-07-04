@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { ApprovalRecord, RunRecord, RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
-import { CORE_RUNTIME_KINDS, getRuntimeControlHref, isLockedRuntimeKind } from "@/lib/runtime-admin";
+import { CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayText, isLockedRuntimeKind } from "@/lib/runtime-admin";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 type RuntimePolicy = {
   enabled?: boolean;
@@ -52,6 +52,13 @@ type CapabilitySnapshot = {
   runtimes?: RuntimeDescriptor[];
 };
 type RuntimePresetId = "balanced" | "conservative" | "debug";
+function runtimeVisibilityLabel(t: ReturnType<typeof useT>, visibility?: string) {
+  const normalized = String(visibility || "").trim();
+  if (!normalized || normalized === "internal") return t("components.runtime.RuntimeGovernanceWorkbench.visibilityBackground");
+  if (normalized === "primary") return t("components.runtime.RuntimeGovernanceWorkbench.visibilityPrimary");
+  if (normalized === "public") return t("components.runtime.RuntimeGovernanceWorkbench.visibilityPublic");
+  return t("components.runtime.RuntimeGovernanceWorkbench.visibilityCustom");
+}
 type SessionWorkflowView = {
   status?: string;
   recoverable?: boolean;
@@ -779,15 +786,16 @@ export function RuntimeGovernanceWorkbench({
                   const isCoreRuntime = CORE_RUNTIME_KINDS.includes(runtime.kind as (typeof CORE_RUNTIME_KINDS)[number]);
                   const isLockedRuntime = isLockedRuntimeKind(runtime.kind);
                   const controlHref = getRuntimeControlHref(runtime.kind);
+                  const runtimeDisplayName = CORE_RUNTIME_KINDS.includes(runtime.kind as (typeof CORE_RUNTIME_KINDS)[number]) ? t(getRuntimeDisplayText(runtime.kind)) : runtime.displayName;
                   return <div key={runtime.kind} className={`rounded-2xl border p-4 ${highlighted ? "border-primary/60 bg-primary/5" : "border-border/60"}`}>
                                                     <div className="flex flex-wrap items-start justify-between gap-4">
                                                         <div>
                                                             <div className="flex flex-wrap items-center gap-2">
-                                                                <div className="text-base font-semibold">{runtime.displayName}</div>
-                                                                <Badge variant="outline">{runtime.kind}</Badge>
+                                                                <div className="text-base font-semibold">{runtimeDisplayName}</div>
+                                                                <Badge variant="outline">{t("components.runtime.RuntimeGovernanceWorkbench.runtimeCapabilityBadge")}</Badge>
                                                                 <Badge variant={isCoreRuntime ? "default" : "secondary"}>{tg(t, "abc9e6a5")}</Badge>
-                                                                <Badge variant="secondary">{runtime.visibility || "internal"}</Badge>
-                                                                {policy.expose_direct_tools ? <Badge>direct tools</Badge> : <Badge variant="secondary">runtime-only</Badge>}
+                                                                <Badge variant="secondary">{runtimeVisibilityLabel(t, runtime.visibility)}</Badge>
+                                                                {policy.expose_direct_tools ? <Badge>{t("components.runtime.RuntimeGovernanceWorkbench.directToolAccess")}</Badge> : <Badge variant="secondary">{t("components.runtime.RuntimeGovernanceWorkbench.systemScheduledOnly")}</Badge>}
                                                                 <Button variant="outline" size="sm" onClick={() => setActiveRuntimeKind(highlighted ? null : runtime.kind)}>
                                                                     {tg(t, "ee2e9ccf")}
                                                                 </Button>
@@ -809,7 +817,7 @@ export function RuntimeGovernanceWorkbench({
                                                         </div>
                                                         <div className="flex gap-2">
                                                             <Button variant="outline" onClick={() => void resetPolicy(runtime.kind)} disabled={busyKey === `reset:${runtime.kind}` || busyKey === `save:${runtime.kind}`}>
-                                                                {busyKey === `reset:${runtime.kind}` ? "重置中..." : t("components.runtime.RuntimeGovernanceWorkbench.resetPresetButton")}
+                                                                {busyKey === `reset:${runtime.kind}` ? t("components.runtime.RuntimeGovernanceWorkbench.resettingPresetButton") : t("components.runtime.RuntimeGovernanceWorkbench.resetPresetButton")}
                                                             </Button>
                                                             <Button onClick={() => void savePolicy(runtime.kind)} disabled={busyKey === `save:${runtime.kind}` || busyKey === `reset:${runtime.kind}`}>
                                                                 <Save className="mr-2 h-4 w-4" />

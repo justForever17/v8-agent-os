@@ -316,8 +316,8 @@ export default function SupervisorPage() {
                         <p className="text-muted-foreground mt-2 flex items-center gap-1.5 flex-wrap">
                             {t("app.admin.dashboard.supervisor.page.k48284369")}
                             {debugMode && (
-                                <AdminHoverInfo content="配置源：~/.v8-agent-os/V8_AGENT_OS.md (Prompt)、config.json#supervisor (资料)、config.json#models.roles.default (模型)">
-                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">❓ 详细路径</span>
+                                <AdminHoverInfo content={t("app.admin.dashboard.supervisor.page.configSourceHint")}>
+                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">{t("app.admin.dashboard.supervisor.page.configSourceTrigger")}</span>
                                 </AdminHoverInfo>
                             )}
                         </p>

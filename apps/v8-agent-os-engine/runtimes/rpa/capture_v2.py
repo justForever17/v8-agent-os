@@ -73,6 +73,7 @@ class CaptureBroker:
             "sidecarLaunchEnv": self._sidecar_launch_env(platform, _coerce_dict(payload.get("browserAttach"))),
             "browserProfilePolicy": _safe_string(payload.get("browserProfilePolicy"), "agent_browser_only"),
             "openMode": _safe_string(payload.get("openMode"), "reuse_current_tab"),
+            "captureMode": _safe_string(payload.get("captureMode"), "next_click" if platform == "browser" else "inspector_panel"),
             "requestPath": None,
         }
         request_path = self._write_request_file(session)
@@ -213,6 +214,7 @@ class CaptureBroker:
             "browserAttach": session.get("browserAttach"),
             "browserProfilePolicy": session.get("browserProfilePolicy"),
             "openMode": session.get("openMode"),
+            "captureMode": session.get("captureMode"),
             "sidecar": session.get("sidecar"),
             "engineUrl": self.engine_base_url,
             "oneTimeToken": session.get("oneTimeToken"),

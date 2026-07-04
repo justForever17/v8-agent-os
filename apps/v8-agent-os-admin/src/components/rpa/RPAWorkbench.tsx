@@ -581,16 +581,28 @@ function friendlyInspectorStatusLabel(status: string, t: ReturnType<typeof useT>
   };
   return t(keyByStatus[normalized] || "components.rpa.RPAWorkbench.studioInspectorSidecarIdle");
 }
-function friendlyInspectorHint(status: string, kind: string, t: ReturnType<typeof useT>) {
+function friendlyInspectorHint(status: string, kind: string, t: ReturnType<typeof useT>, captureMode = "") {
   const normalized = String(status || "").toLowerCase();
   if (normalized === "candidate_received") return t("components.rpa.RPAWorkbench.inspectorHintCandidateReceived");
   if (normalized === "ready" || normalized === "attached" || normalized === "heartbeat") {
     return kind === "rpa_playwright_node_sidecar"
-      ? t("components.rpa.RPAWorkbench.inspectorHintBrowserReady")
+      ? t(captureMode === "modifier_click" ? "components.rpa.RPAWorkbench.inspectorHintBrowserReady" : "components.rpa.RPAWorkbench.inspectorHintBrowserNextClickReady")
       : t("components.rpa.RPAWorkbench.inspectorHintWindowsReady");
   }
   if (normalized === "unavailable" || normalized === "failed") return t("components.rpa.RPAWorkbench.inspectorHintFailed");
   return t("components.rpa.RPAWorkbench.inspectorHintStarting");
+}
+function friendlyInspectorRecoveryHint(status: string, kind: string, t: ReturnType<typeof useT>) {
+  const normalized = String(status || "").toLowerCase();
+  if (kind === "rpa_playwright_node_sidecar" || normalized.startsWith("agent_browser") || normalized.includes("browser")) {
+    if (normalized === "agent_browser_not_open") return t("components.rpa.RPAWorkbench.inspectorRecoveryAgentBrowserNotOpen");
+    if (normalized === "browser_attach_target_missing") return t("components.rpa.RPAWorkbench.inspectorRecoveryBrowserTargetMissing");
+    return t("components.rpa.RPAWorkbench.inspectorRecoveryBrowserGeneric");
+  }
+  if (normalized.includes("sidecar") || normalized.includes("flaui") || normalized.includes("windows")) {
+    return t("components.rpa.RPAWorkbench.inspectorRecoveryWindowsGeneric");
+  }
+  return t("components.rpa.RPAWorkbench.inspectorRecoveryGeneric");
 }
 function captureTargetCandidateLabel(candidate?: Record<string, unknown> | null) {
   if (!candidate) return "window";
@@ -895,6 +907,7 @@ export function RPAWorkbench() {
   const [computerSampling, setComputerSampling] = useState(false);
   const [captureAssistantActive, setCaptureAssistantActive] = useState(false);
   const [captureAssistantStage, setCaptureAssistantStage] = useState<CaptureAssistantStage>("idle");
+  const [agentBrowserOpening, setAgentBrowserOpening] = useState(false);
   const [computerApps, setComputerApps] = useState<ComputerUseAppPayload[]>([]);
   const [computerAppsLoading, setComputerAppsLoading] = useState(false);
   const [computerAppsError, setComputerAppsError] = useState("");
@@ -1230,8 +1243,14 @@ export function RPAWorkbench() {
   }, [latestInspectorSession]);
   const latestInspectorKind = firstString(latestInspectorSidecar?.kind) || (canvasTargetMode === "agent_browser" ? "rpa_playwright_node_sidecar" : "flaui_inspector_panel");
   const latestInspectorStatus = firstString(latestInspectorSession?.status, latestInspectorSidecar?.status, latestInspectorSidecar?.state);
+  const latestInspectorCaptureMode = firstString(latestInspectorSession?.captureMode, latestInspectorSidecar?.captureMode);
+  const latestResultRecord = isPlainRecord(latestResult) ? latestResult as Record<string, unknown> : {};
+  const latestInspectorFailureStatus = firstString(latestResultRecord.status, latestInspectorSession?.status, latestInspectorSidecar?.status);
+  const latestInspectorReason = firstString(latestInspectorSession?.reason, latestResultRecord.reason, latestResultRecord.detail, latestResultRecord.error, latestInspectorSession?.recommendedNextAction, latestResultRecord.recommendedNextAction);
   const latestInspectorCandidateCount = typeof latestInspectorSession?.candidateCount === "number" ? latestInspectorSession.candidateCount : selectedCapturePoolItems.length;
   const inspectorSidecarLive = Boolean(latestInspectorSession && ["starting", "starting_sidecar", "waiting_sidecar", "attached", "ready", "heartbeat", "candidate_received"].includes(String(latestInspectorStatus || "").toLowerCase()));
+  const browserNextClickArmed = canvasTargetMode === "agent_browser" && latestInspectorCaptureMode !== "modifier_click" && inspectorSidecarLive && String(latestInspectorStatus || "").toLowerCase() !== "candidate_received";
+  const browserCaptureRecovery = canvasTargetMode === "agent_browser" || latestInspectorKind === "rpa_playwright_node_sidecar" || String(latestInspectorFailureStatus || "").toLowerCase().includes("browser");
   const objectLibraryItems = useMemo(() => Array.isArray(activeRecording?.objectLibrary) ? activeRecording.objectLibrary : Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [], [activeRecording, selectedDraft]);
   const selectableElements = useMemo(() => [
     ...objectLibraryItems.map(item => ({ ...item, sourceBucket: "library" as const, optionId: item.elementId || item.sourceTempElementId || item.tempElementId || captureItemLabel(item) })),
@@ -1670,6 +1689,7 @@ export function RPAWorkbench() {
           browserKind: captureContext.mode === "agent_browser" ? "chrome" : undefined,
           browserProfilePolicy: "agent_browser_only",
           openMode: "reuse_current_tab",
+          captureMode: captureContext.mode === "agent_browser" ? "next_click" : "inspector_panel",
           allowUserBrowser: false,
         })
       });
@@ -1683,7 +1703,7 @@ export function RPAWorkbench() {
         setCaptureAssistantStage("active");
         toast({
           title: t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"),
-          description: friendlyInspectorHint(firstString(inspectorData?.session?.status, inspectorData?.session?.sidecar?.status), firstString(inspectorData?.session?.sidecar?.kind), t)
+          description: friendlyInspectorHint(firstString(inspectorData?.session?.status, inspectorData?.session?.sidecar?.status), firstString(inspectorData?.session?.sidecar?.kind), t, firstString(inspectorData?.session?.captureMode, inspectorData?.session?.sidecar?.captureMode))
         });
         window.setTimeout(() => {
           void refreshRecording(recording.recordingSessionId);
@@ -1700,6 +1720,41 @@ export function RPAWorkbench() {
         title: t("components.rpa.RPAWorkbench.studioCaptureAssistantFailed"),
         description: error instanceof Error ? error.message : String(error)
       });
+    }
+  };
+  const handleOpenAgentBrowserAndRetryCapture = async () => {
+    setAgentBrowserOpening(true);
+    try {
+      const res = await fetch("/api/computer-use/agent-browser/open", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          browserKind: "chrome",
+          url: "about:blank"
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      setLatestResult(data);
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.reason || data?.summary || data?.detail || data?.error || t("components.rpa.RPAWorkbench.agentBrowserOpenFailed"));
+      }
+      toast({
+        title: t("components.rpa.RPAWorkbench.agentBrowserOpened"),
+        description: t("components.rpa.RPAWorkbench.agentBrowserOpenedRetrying")
+      });
+      window.setTimeout(() => {
+        void handleCaptureAssistantStart();
+      }, 800);
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.agentBrowserOpenFailed"),
+        description: error instanceof Error ? error.message : String(error)
+      });
+    } finally {
+      setAgentBrowserOpening(false);
     }
   };
   const handleCaptureAssistantStop = async () => {
@@ -2978,7 +3033,7 @@ export function RPAWorkbench() {
                                     <div className="flex flex-wrap gap-2">
                                         <Button size="sm" variant="outline" onClick={() => void handleCaptureAssistantStart()} disabled={!selectedBuilderStep || targetLockLooksLikeAdmin || !!busyAction || captureAssistantBusy}>
                                             <Crosshair className="mr-1.5 h-3.5 w-3.5" />
-                                            {captureAssistantBusy ? captureAssistantStageLabel : t("components.rpa.RPAWorkbench.studioCaptureStepTarget")}
+                                            {captureAssistantBusy ? captureAssistantStageLabel : canvasTargetMode === "agent_browser" ? t("components.rpa.RPAWorkbench.studioCaptureNextClick") : t("components.rpa.RPAWorkbench.studioOpenInspectorPanel")}
                                         </Button>
                                         <Button size="sm" variant="ghost" onClick={() => void handleCaptureAssistantStop()} disabled={!captureAssistantActive}>
                                             {t("components.rpa.RPAWorkbench.studioStopCaptureAssistant")}
@@ -2992,7 +3047,7 @@ export function RPAWorkbench() {
                                                     {friendlyInspectorStatusLabel(latestInspectorStatus, t)}
                                                 </div>
                                                 <div className="mt-0.5 line-clamp-2">
-                                                    {friendlyInspectorHint(latestInspectorStatus, latestInspectorKind, t)}
+                                                    {friendlyInspectorHint(latestInspectorStatus, latestInspectorKind, t, latestInspectorCaptureMode)}
                                                 </div>
                                             </div>
                                             <Badge variant="outline" className="shrink-0 text-[10px]">{latestInspectorKind}</Badge>
@@ -3003,10 +3058,23 @@ export function RPAWorkbench() {
                                         </div>
                                     </div>
                                     {inspectorSidecarLive ? <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-primary">
-                                            {t("components.rpa.RPAWorkbench.studioInspectorSidecarActive")}
+                                            {browserNextClickArmed ? t("components.rpa.RPAWorkbench.studioBrowserNextClickArmed") : t("components.rpa.RPAWorkbench.studioInspectorSidecarActive")}
                                         </div> : null}
                                     {captureAssistantStage === "failed" ? <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-2.5 text-[11px] text-destructive">
-                                            <div>{t("components.rpa.RPAWorkbench.studioCaptureFailedHelp")}</div>
+                                            <div className="font-medium">{t("components.rpa.RPAWorkbench.studioCaptureRecoveryTitle")}</div>
+                                            <div className="mt-1 text-destructive/90">{latestInspectorReason || t("components.rpa.RPAWorkbench.studioCaptureFailedHelp")}</div>
+                                            <div className="mt-1 text-destructive/80">{friendlyInspectorRecoveryHint(latestInspectorFailureStatus, latestInspectorKind, t)}</div>
+                                            <div className="mt-2 flex flex-wrap gap-1.5">
+                                                {browserCaptureRecovery ? <Button size="sm" variant="outline" className="h-7 border-destructive/35 px-2 text-[11px]" onClick={() => void handleOpenAgentBrowserAndRetryCapture()} disabled={agentBrowserOpening || !!busyAction || captureAssistantBusy}>
+                                                        {agentBrowserOpening ? t("components.rpa.RPAWorkbench.agentBrowserOpening") : t("components.rpa.RPAWorkbench.agentBrowserOpenAndRetry")}
+                                                    </Button> : null}
+                                                <Button size="sm" variant="outline" className="h-7 border-destructive/35 px-2 text-[11px]" onClick={() => void handleCaptureAssistantStart()} disabled={!selectedBuilderStep || !!busyAction || captureAssistantBusy}>
+                                                    {t("components.rpa.RPAWorkbench.studioRetryCapture")}
+                                                </Button>
+                                            </div>
+                                            <div className="mt-2 rounded-lg border border-destructive/20 bg-background/60 p-2 text-[10px] text-destructive/75">
+                                                {browserCaptureRecovery ? t("components.rpa.RPAWorkbench.studioBrowserFallbackHint") : t("components.rpa.RPAWorkbench.studioWindowsFallbackHint")}
+                                            </div>
                                             {captureAssistantDiagnostic ? <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-background/70 p-2 text-[10px] text-destructive/80">{captureAssistantDiagnostic}</pre> : null}
                                         </div> : null}
                                     {captureTargetCandidates.length ? <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-2.5 text-xs dark:border-amber-900/60 dark:bg-amber-950/20">

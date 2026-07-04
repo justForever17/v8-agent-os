@@ -569,6 +569,7 @@ class RPAInspectorSessionPayload(BaseModel):
     browser_attach: Dict[str, Any] = Field(default_factory=dict, alias="browserAttach")
     browser_profile_policy: Optional[str] = Field(default="agent_browser_only", alias="browserProfilePolicy")
     open_mode: Optional[str] = Field(default="reuse_current_tab", alias="openMode")
+    capture_mode: Optional[str] = Field(default=None, alias="captureMode")
     allow_user_browser: bool = Field(default=False, alias="allowUserBrowser")
     browser_kind: Optional[str] = Field(default=None, alias="browserKind")
     target_id: Optional[str] = Field(default=None, alias="targetId")

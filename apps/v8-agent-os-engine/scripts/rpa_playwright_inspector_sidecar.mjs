@@ -105,12 +105,23 @@ async function resolvePage(browser, attach) {
   return pages[0];
 }
 
-function inspectorInstallScript() {
+function inspectorInstallScript(options = {}) {
+  const configJson = JSON.stringify({
+    captureMode: options.captureMode || "modifier_click",
+    instruction: options.captureMode === "next_click" ? "V8 RPA: click the target element to capture it once." : "V8 RPA: hold Alt / Ctrl / Cmd and click to capture.",
+  });
   return `
 (() => {
+  const config = ${configJson};
   if (window.__v8RpaInspector && window.__v8RpaInspector.installed) {
-    window.__v8RpaInspector.enabled = true;
-    return { installed: true, reused: true };
+    if (typeof window.__v8RpaInspector.configure === "function") {
+      window.__v8RpaInspector.configure(config);
+      return { installed: true, reused: true, captureMode: window.__v8RpaInspector.captureMode };
+    }
+    try {
+      window.__v8RpaInspector.enabled = false;
+      document.querySelectorAll("[data-v8-rpa-inspector-overlay], [data-v8-rpa-inspector-banner]").forEach((node) => node.remove());
+    } catch {}
   }
   const cssEscape = (value) => {
     if (window.CSS && CSS.escape) return CSS.escape(value);
@@ -199,15 +210,56 @@ function inspectorInstallScript() {
     display: "none",
   });
   document.documentElement.appendChild(overlay);
+  const banner = document.createElement("div");
+  banner.setAttribute("data-v8-rpa-inspector-banner", "true");
+  Object.assign(banner.style, {
+    position: "fixed",
+    zIndex: "2147483647",
+    left: "50%",
+    top: "18px",
+    transform: "translateX(-50%)",
+    maxWidth: "min(560px, calc(100vw - 32px))",
+    padding: "9px 13px",
+    borderRadius: "999px",
+    background: "rgba(8,13,24,.92)",
+    color: "#e5e7eb",
+    border: "1px solid rgba(34,211,238,.45)",
+    boxShadow: "0 12px 34px rgba(0,0,0,.35), 0 0 18px rgba(34,211,238,.25)",
+    font: "13px/1.35 Arial, sans-serif",
+    pointerEvents: "none",
+    display: "none",
+  });
+  document.documentElement.appendChild(banner);
   const queue = [];
+  const updateBanner = (text, visible = true) => {
+    banner.textContent = text || "";
+    banner.style.display = visible && text ? "block" : "none";
+  };
   const inspector = window.__v8RpaInspector = {
     installed: true,
     enabled: true,
+    captureMode: "modifier_click",
+    armed: false,
+    capturedCount: 0,
+    configure(nextConfig = {}) {
+      this.captureMode = String(nextConfig.captureMode || "modifier_click");
+      this.enabled = true;
+      this.armed = this.captureMode === "next_click";
+      this.capturedCount = 0;
+      updateBanner(nextConfig.instruction || "", this.armed);
+    },
     drain() {
       const items = queue.splice(0, queue.length);
       return { installed: true, events: items };
     },
+    dispose() {
+      this.enabled = false;
+      this.armed = false;
+      overlay.remove();
+      banner.remove();
+    },
   };
+  inspector.configure(config);
   const highlight = (el) => {
     if (!el || !el.getBoundingClientRect) return;
     const rect = el.getBoundingClientRect();
@@ -249,13 +301,23 @@ function inspectorInstallScript() {
   }, true);
   document.addEventListener("click", (ev) => {
     if (!inspector.enabled) return;
-    if (!(ev.altKey || ev.ctrlKey || ev.metaKey)) return;
+    const modifierClick = ev.altKey || ev.ctrlKey || ev.metaKey;
+    const nextClick = inspector.captureMode === "next_click" && inspector.armed;
+    if (!(nextClick || modifierClick)) return;
     ev.preventDefault();
     ev.stopPropagation();
     const candidate = build(ev);
+    candidate.metadata = { ...(candidate.metadata || {}), captureMode: inspector.captureMode, nextClickCapture: nextClick };
     queue.push({ eventId: "browser_" + Date.now() + "_" + Math.random().toString(16).slice(2), recordedAt: new Date().toISOString(), candidate });
+    inspector.capturedCount += 1;
+    if (nextClick) {
+      inspector.armed = false;
+      inspector.enabled = false;
+      updateBanner("V8 RPA: target captured. Return to Studio to review proof.", true);
+      window.setTimeout(() => updateBanner("", false), 1400);
+    }
   }, true);
-  return { installed: true, reused: false };
+  return { installed: true, reused: false, captureMode: inspector.captureMode };
 })()
 `;
 }
@@ -340,13 +402,14 @@ async function main() {
   const browser = await playwright.chromium.connectOverCDP(attach.cdpEndpoint);
   const page = await resolvePage(browser, attach);
   await page.bringToFront().catch(() => {});
-  await page.evaluate(inspectorInstallScript());
+  const captureMode = String(request.captureMode || "modifier_click");
+  await page.evaluate(inspectorInstallScript({ captureMode }));
   await postEvent(request, "ready", {
-    sidecar: { kind: "rpa_playwright_node_sidecar", status: "attached", targetId: attach.targetId, url: page.url() },
+    sidecar: { kind: "rpa_playwright_node_sidecar", status: "attached", targetId: attach.targetId, url: page.url(), captureMode },
   });
   setInterval(() => {
     void postEvent(request, "heartbeat", {
-      sidecar: { kind: "rpa_playwright_node_sidecar", status: "attached", targetId: attach.targetId, url: page.url() },
+      sidecar: { kind: "rpa_playwright_node_sidecar", status: "attached", targetId: attach.targetId, url: page.url(), captureMode },
     });
   }, 3000);
   setInterval(async () => {
@@ -356,7 +419,7 @@ async function main() {
         const candidate = raw.candidate || raw;
         const countResult = await countForCandidate(page, candidate);
         const proofShot = await highlightAndScreenshot(page, request, countResult.selector || {});
-        await postEvent(request, "candidate", { candidate: candidateWithProof(candidate, countResult, proofShot) });
+        await postEvent(request, "candidate", { candidate: candidateWithProof(candidate, countResult, proofShot), sidecar: { kind: "rpa_playwright_node_sidecar", status: "candidate_received", captureMode } });
       }
     } catch (error) {
       await postEvent(request, "error", { error: error?.message || String(error), sidecar: { kind: "rpa_playwright_node_sidecar", status: "poll_failed" } });

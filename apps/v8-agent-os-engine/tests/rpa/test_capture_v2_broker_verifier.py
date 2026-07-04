@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -172,9 +173,10 @@ def test_browser_inspector_uses_agent_browser_attach_resolver(tmp_path: Path) ->
     assert seen_payloads[0]["browserProfilePolicy"] == "agent_browser_only"
     assert result["session"]["browserAttach"]["targetId"] == "page-1"
     assert result["session"]["browserAttach"]["profileMode"] == "dedicated_debug_profile"
-    request_payload = (tmp_path / "inspector" / f"{result['session']['sessionId']}.request.json").read_text(encoding="utf-8")
-    assert "cdpEndpoint" in request_payload
+    request_payload = json.loads((tmp_path / "inspector" / f"{result['session']['sessionId']}.request.json").read_text(encoding="utf-8"))
+    assert "cdpEndpoint" in request_payload["browserAttach"]
     assert "oneTimeToken" in request_payload
+    assert request_payload["captureMode"] == "next_click"
 
 
 def test_browser_inspector_user_browser_policy_requires_explicit_resolver_success(tmp_path: Path) -> None:
@@ -206,6 +208,8 @@ def test_browser_sidecar_script_does_not_launch_new_browser_profile() -> None:
     source = script.read_text(encoding="utf-8")
 
     assert "connectOverCDP" in source
+    assert "captureMode" in source
+    assert "next_click" in source
     assert "launchPersistentContext" not in source
     assert ".launch(" not in source
 

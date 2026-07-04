@@ -28,7 +28,6 @@ import {
 import { useConversationContext } from "@/context/ConversationContext";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/lib/conversation-groups";
 
 const LOCAL_ADMIN_CONFIG_URL = "http://127.0.0.1:9528/admin";
@@ -52,10 +51,10 @@ export function Sidebar() {
     };
 
     const groupedConvs = useMemo(() => groupConversationsByWorkspace(conversations, {
-        mainWorkspace: t(lt("主工作区", "Main workspace")),
-        externalWorkspace: t(lt("外部路径", "External path")),
-        unbound: t(lt("未绑定对话", "Unbound chats")),
-        workspace: t(lt("工作区", "Workspace")),
+        mainWorkspace: t("web.generated.291993dda9"),
+        externalWorkspace: t("web.generated.7273393e9c"),
+        unbound: t("web.generated.cee27fba31"),
+        workspace: t("web.generated.7f1bc76123"),
     }), [conversations, t]);
 
     const handleNewChat = () => {
@@ -122,7 +121,7 @@ export function Sidebar() {
                                             : "text-muted-foreground hover:text-foreground",
                                     )}
                                     onClick={() => handleNavigation(canonicalSessionId)}
-                                    title={conv.title || t(lt("新对话", "New chat"))}
+                                    title={conv.title || t("web.generated.fca06b0605")}
                                 >
                                     <div className="flex w-full items-center">
                                         {collapsed && (
@@ -139,7 +138,7 @@ export function Sidebar() {
                                             <>
                                                 <div className="min-w-0 flex-1">
                                                     <span className="flex min-w-0 items-center gap-2">
-                                                        <span className="block min-w-0 flex-1 truncate text-sm">{conv.title || t(lt("新对话", "New chat"))}</span>
+                                                        <span className="block min-w-0 flex-1 truncate text-sm">{conv.title || t("web.generated.fca06b0605")}</span>
                                                         {activityState === "active" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
                                                         {activityState === "failed" && <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
                                                     </span>
@@ -181,7 +180,7 @@ export function Sidebar() {
                         onClick={handleNewChat}
                     >
                         <Plus className={cn("h-5 w-5", collapsed ? "" : "mr-2")} />
-                        {!collapsed && <span className="font-medium">{t(lt("新对话", "New chat"))}</span>}
+                        {!collapsed && <span className="font-medium">{t("web.generated.fca06b0605")}</span>}
                     </Button>
 
                     {mobile && (
@@ -201,14 +200,14 @@ export function Sidebar() {
                 <div className="w-full max-w-full space-y-1 py-2">
                     {!collapsed && (
                         <div className="animate-in fade-in mb-3 flex items-center justify-between px-3 duration-500">
-                            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t(lt("历史记录", "History"))}</p>
+                            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t("web.generated.59a644a102")}</p>
                             {conversations.length > 0 && (
                                 <Button
                                     variant="ghost"
                                     size="icon"
                                     className="h-5 w-5 text-muted-foreground transition-colors hover:text-destructive"
                                     onClick={() => setIsClearing(true)}
-                                    title={t(lt("清空历史", "Clear history"))}
+                                    title={t("web.generated.2d356aee49")}
                                 >
                                     <Trash2 className="h-3.5 w-3.5" />
                                 </Button>
@@ -220,7 +219,7 @@ export function Sidebar() {
                         !collapsed && (
                             <div className="flex flex-col items-center justify-center py-10 text-center opacity-60">
                                 <MessageCircle className="mb-2 h-8 w-8 text-muted-foreground" />
-                                <p className="text-xs text-muted-foreground">{t(lt("暂无历史记录", "No history yet"))}</p>
+                                <p className="text-xs text-muted-foreground">{t("web.generated.8a30985d2c")}</p>
                             </div>
                         )
                     ) : (
@@ -238,10 +237,10 @@ export function Sidebar() {
                         "flex items-center rounded-2xl text-sm text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground",
                         collapsed ? "h-10 w-10 justify-center" : "h-10 gap-2 px-3",
                     )}
-                    title={t(lt("打开设置", "Open settings"))}
+                    title={t("web.generated.a5e7fe6d64")}
                 >
                     <Settings className="h-4 w-4 shrink-0" />
-                    {!collapsed && <span>{t(lt("设置", "Settings"))}</span>}
+                    {!collapsed && <span>{t("web.generated.36b502ac91")}</span>}
                 </a>
             </div>
         </div>
@@ -261,7 +260,7 @@ export function Sidebar() {
                         size="icon"
                         className="h-7 w-7 rounded-full border-border bg-background shadow-md transition-all duration-300 hover:bg-accent hover:text-accent-foreground"
                         onClick={() => setIsCollapsed(!isCollapsed)}
-                        title={isCollapsed ? t(lt("展开侧边栏", "Expand sidebar")) : t(lt("折叠侧边栏", "Collapse sidebar"))}
+                        title={isCollapsed ? t("web.generated.431d44b6ca") : t("web.generated.99260f0e75")}
                     >
                         {isCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
                     </Button>
@@ -276,7 +275,7 @@ export function Sidebar() {
                 size="icon"
                 className="fixed left-3 top-[4.25rem] z-30 h-10 w-10 rounded-2xl border-border/60 bg-background/85 shadow-lg backdrop-blur md:hidden"
                 onClick={() => setIsMobileOpen(true)}
-                title={t(lt("打开历史记录", "Open history"))}
+                title={t("web.generated.7520df3a1c")}
             >
                 <PanelLeftOpen className="h-4 w-4" />
             </Button>
@@ -287,7 +286,7 @@ export function Sidebar() {
                         type="button"
                         className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[2px] md:hidden"
                         onClick={() => setIsMobileOpen(false)}
-                        aria-label={t(lt("关闭历史记录", "Close history"))}
+                        aria-label={t("web.generated.8dcb42e508")}
                     />
 
                     <div className="fixed inset-y-14 left-0 z-50 w-[min(22rem,86vw)] border-r border-border/40 bg-zinc-50/95 shadow-2xl backdrop-blur-2xl dark:bg-zinc-950/95 md:hidden">
@@ -299,12 +298,12 @@ export function Sidebar() {
             <Dialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
                 <DialogContent className="glass-card border-none sm:max-w-[425px]">
                     <DialogHeader>
-                        <DialogTitle>{t(lt("删除对话", "Delete chat"))}</DialogTitle>
-                        <DialogDescription>{t(lt("确定要删除这个对话吗？此操作无法撤销。", "Delete this chat? This action cannot be undone."))}</DialogDescription>
+                        <DialogTitle>{t("web.generated.75914e5f9d")}</DialogTitle>
+                        <DialogDescription>{t("web.generated.613c74ac06")}</DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
-                        <Button variant="ghost" onClick={() => setDeleteId(null)}>{t(lt("取消", "Cancel"))}</Button>
-                        <Button variant="destructive" onClick={confirmDelete}>{t(lt("删除", "Delete"))}</Button>
+                        <Button variant="ghost" onClick={() => setDeleteId(null)}>{t("web.generated.d94a8eaf28")}</Button>
+                        <Button variant="destructive" onClick={confirmDelete}>{t("web.generated.6cba6a2c08")}</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
@@ -312,12 +311,12 @@ export function Sidebar() {
             <Dialog open={isClearing} onOpenChange={setIsClearing}>
                 <DialogContent className="glass-card border-none sm:max-w-[425px]">
                     <DialogHeader>
-                        <DialogTitle>{t(lt("清空历史记录", "Clear history"))}</DialogTitle>
-                        <DialogDescription>{t(lt("确定要清空所有历史记录吗？这将无法恢复。", "Clear all history? This cannot be undone."))}</DialogDescription>
+                        <DialogTitle>{t("web.generated.cb547f1f49")}</DialogTitle>
+                        <DialogDescription>{t("web.generated.5b99063251")}</DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
-                        <Button variant="ghost" onClick={() => setIsClearing(false)}>{t(lt("取消", "Cancel"))}</Button>
-                        <Button variant="destructive" onClick={confirmClear}>{t(lt("清空全部", "Clear all"))}</Button>
+                        <Button variant="ghost" onClick={() => setIsClearing(false)}>{t("web.generated.d94a8eaf28")}</Button>
+                        <Button variant="destructive" onClick={confirmClear}>{t("web.generated.22fdb44dd7")}</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

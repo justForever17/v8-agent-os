@@ -4,7 +4,6 @@ import { AlertTriangle, ShieldAlert } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
-import { lt } from "@/lib/locale";
 
 type ApprovalTone = "approval" | "safety" | "control";
 
@@ -59,10 +58,10 @@ export function ApprovalCard({ title, body, status, tone = "approval", eventSumm
     const rows = summaryRows(eventSummary);
     const hint =
         tone === "control"
-            ? t(lt("这是运行时发出的控制状态，不属于普通工具输出。", "This is a runtime control state rather than a regular tool result."))
+            ? t("web.generated.eab43c1dc5")
             : tone === "safety"
-                ? t(lt("这是 Safety Guardian 的治理节点，区别于 ask_user 普通问答。", "This is a Safety Guardian governance node, separate from ask_user."))
-            : t(lt("这是一个需要人工确认的运行节点。", "This is a run node waiting for human review."));
+                ? t("web.generated.2266216d48")
+            : t("web.generated.8d86b69cd1");
 
     return (
         <div className={`my-1.5 overflow-hidden rounded-2xl border p-3 shadow-sm ${styles.wrapper}`}>

@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import type { SessionApprovalView } from "@v8/session-realtime";
 
 function readFirstString(...values: unknown[]) {
@@ -163,15 +162,15 @@ export function GovernanceApprovalModal({
                         <div className="min-w-0 flex-1">
                             <div className={`flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.18em] ${specDetails.isSpecApproval ? "text-violet-600/85 dark:text-violet-300/85" : "text-amber-600/85 dark:text-amber-300/85"}`}>
                                 <AlertTriangle className="h-3.5 w-3.5" />
-                                {specDetails.isSpecApproval ? t(lt("Spec 审批", "Spec approval")) : t(lt("治理审批", "Governance approval"))}
+                                {specDetails.isSpecApproval ? t("web.generated.bf3278f529") : t("web.generated.53031cafe1")}
                             </div>
                             <DialogTitle className="mt-1 text-lg font-semibold tracking-tight text-foreground">
-                                {specDetails.isSpecApproval ? t(lt("Spec 阶段需要你的审阅", "Spec stage needs your review")) : t(lt("Safety Guardian 需要你的授权", "Safety Guardian needs your approval"))}
+                                {specDetails.isSpecApproval ? t("web.generated.21a629136d") : t("web.generated.bbd4ff80ad")}
                             </DialogTitle>
                             <DialogDescription className="mt-1 text-sm leading-6 text-muted-foreground">
                                 {specDetails.isSpecApproval
-                                    ? t(lt("当前运行已暂停。审阅并批准本阶段后，Supervisor 会继续下一阶段。", "The current run is paused. After you review and approve this stage, Supervisor will continue the next stage."))
-                                    : t(lt("当前运行已暂停，确认后会继续原命令执行。", "The current run is paused and will resume the original command after approval."))}
+                                    ? t("web.generated.624eb0f255")
+                                    : t("web.generated.29b7f7031b")}
                             </DialogDescription>
                         </div>
                     </div>
@@ -181,7 +180,7 @@ export function GovernanceApprovalModal({
                     {specDetails.isSpecApproval ? (
                         <div className="rounded-2xl border border-violet-500/25 bg-violet-50/80 p-3.5 dark:bg-violet-500/10 sm:p-4">
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-violet-700 dark:text-violet-300">
-                                {t(lt("Spec 阶段", "Spec stage"))}
+                                {t("web.generated.7e9f25f8c7")}
                             </div>
                             <div className="grid gap-2 text-xs">
                                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
@@ -209,11 +208,11 @@ export function GovernanceApprovalModal({
                     ) : null}
                     <div className="rounded-2xl border border-border/70 bg-muted/35 p-3.5 sm:p-4">
                         <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                            {specDetails.isSpecApproval ? t(lt("阶段摘要", "Stage summary")) : t(lt("审批原因", "Approval reason"))}
+                            {specDetails.isSpecApproval ? t("web.generated.af691ef7d3") : t("web.generated.530137dea5")}
                         </div>
                         <div className="prose prose-sm max-w-none break-words text-sm leading-6 dark:prose-invert">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {(specDetails.isSpecApproval ? specDetails.summary : details.prompt) || t(lt("当前操作需要人工确认。", "This operation requires human approval."))}
+                                {(specDetails.isSpecApproval ? specDetails.summary : details.prompt) || t("web.generated.38a50d64dd")}
                             </ReactMarkdown>
                         </div>
                     </div>
@@ -221,16 +220,16 @@ export function GovernanceApprovalModal({
                     {specDetails.isSpecApproval ? (
                         <div className="rounded-2xl border border-border/70 bg-muted/35 p-3.5 sm:p-4">
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                                {t(lt("说明", "Note"))}
+                                {t("web.generated.2448f8454e")}
                             </div>
                             <div className="text-sm leading-6 text-foreground">
-                                {t(lt("这是 Spec 管线门禁，不是 Safety Guardian 风险审批。批准后会恢复当前运行；拒绝会让 Supervisor 修订本阶段。", "This is a Spec pipeline gate, not a Safety Guardian risk approval. Approval resumes the current run; rejection asks Supervisor to revise this stage."))}
+                                {t("web.generated.40dea31371")}
                             </div>
                         </div>
                     ) : details.riskSummary ? (
                         <div className="rounded-2xl border border-border/70 bg-muted/35 p-3.5 sm:p-4">
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                                {t(lt("风险摘要", "Risk summary"))}
+                                {t("web.generated.71323a8286")}
                             </div>
                             <div className="text-sm leading-6 text-foreground">{details.riskSummary}</div>
                         </div>
@@ -239,7 +238,7 @@ export function GovernanceApprovalModal({
                     {summaryRows.length ? (
                         <div className="rounded-2xl border border-amber-500/25 bg-amber-50/80 p-3.5 dark:bg-amber-500/10 sm:p-4">
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-amber-700 dark:text-amber-300">
-                                {t(lt("事件摘要", "Event summary"))}
+                                {t("web.generated.182ad9c0f3")}
                             </div>
                             <div className="grid gap-2 text-xs">
                                 {summaryRows.map((row) => (
@@ -255,7 +254,7 @@ export function GovernanceApprovalModal({
                     {details.command ? (
                         <div className="rounded-2xl border border-border/70 bg-muted/35 p-3.5 sm:p-4">
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                                {t(lt("待执行命令", "Command"))}
+                                {t("web.generated.4483480bb4")}
                             </div>
                             <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-xl bg-background/80 p-3 text-xs leading-5 text-foreground">
                                 {details.command}
@@ -265,12 +264,12 @@ export function GovernanceApprovalModal({
 
                     <div className="space-y-2">
                         <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                            {t(lt("补充说明", "Optional note"))}
+                            {t("web.generated.85a793722f")}
                         </div>
                         <Textarea
                             value={answer}
                             onChange={(event) => setAnswer(event.target.value)}
-                            placeholder={t(lt("可以补充授权说明，也可以直接批准。", "You can add context for the approval, or approve directly."))}
+                            placeholder={t("web.generated.e859f34e08")}
                             className="min-h-[112px] resize-none rounded-2xl border-border/70 bg-background/90 text-sm leading-6 focus-visible:ring-amber-500/30"
                         />
                     </div>
@@ -279,21 +278,21 @@ export function GovernanceApprovalModal({
                 <DialogFooter className="border-t border-border/60 bg-background/96 px-4 py-3 sm:px-5">
                     <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="text-xs text-muted-foreground">
-                            {t(lt("治理审批不会进入 ask_user 主线，批准后会恢复原运行。", "This governance approval is separate from ask_user; approving it resumes the original run."))}
+                            {t("web.generated.194c543166")}
                         </div>
                         <div className="flex flex-col-reverse gap-2 sm:flex-row">
                             <Button variant="ghost" onClick={onCancel} disabled={busy} className="rounded-xl">
-                                {t(lt("稍后处理", "Dismiss"))}
+                                {t("web.generated.58c5a6eeb9")}
                             </Button>
                             <Button variant="outline" onClick={onViewDetails} disabled={busy} className="rounded-xl">
-                                {specDetails.isSpecApproval ? t(lt("打开 Spec 审批页", "Open Spec review")) : t(lt("查看详情", "View details"))}
+                                {specDetails.isSpecApproval ? t("web.generated.71055e26d6") : t("web.generated.b34027e86b")}
                             </Button>
                             <Button variant="outline" onClick={() => void onReject(answer.trim())} disabled={busy} className="rounded-xl">
-                                {busy ? t(lt("处理中...", "Processing...")) : t(lt("拒绝", "Reject"))}
+                                {busy ? t("web.generated.0a921f2e7e") : t("web.generated.39589b7736")}
                             </Button>
                             <Button onClick={() => void onApprove(answer.trim())} disabled={busy} className="rounded-xl">
                                 <ArrowRight className="mr-2 h-4 w-4" />
-                                {busy ? t(lt("处理中...", "Processing...")) : t(lt("同意并继续", "Approve and continue"))}
+                                {busy ? t("web.generated.0a921f2e7e") : t("web.generated.9580a43e18")}
                             </Button>
                         </div>
                     </div>

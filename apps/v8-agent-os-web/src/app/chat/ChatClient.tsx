@@ -46,7 +46,6 @@ import {
     type TerminalProfileView,
 } from "@/components/chat/ManualTerminalPanel";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import {
     createInitialSessionRealtimeMessageState,
@@ -823,21 +822,21 @@ export default function ChatClient() {
     );
     const workspaceKindLabel = useMemo(() => {
         if (boundProject) {
-            return boundProject.name || t(lt("项目工作区", "Project workspace"));
+            return boundProject.name || t("web.generated.599fe73fe8");
         }
         const resolvedScope = String(scopeBinding?.resolvedScope || "").trim();
         const boundPath = normalizeWorkspacePathForCompare(scopeBinding?.workspacePath);
         const mainPath = normalizeWorkspacePathForCompare(mainWorkspacePath);
         if (resolvedScope === "workspace:main" && (!boundPath || !mainPath || boundPath === mainPath)) {
-            return t(lt("主工作区", "Main workspace"));
+            return t("web.generated.291993dda9");
         }
         if (resolvedScope.startsWith("workspace:external:")) {
-            return t(lt("外部路径", "External path"));
+            return t("web.generated.7273393e9c");
         }
         if (resolvedScope.startsWith("workspace:")) {
-            return t(lt("工作区", "Workspace"));
+            return t("web.generated.7f1bc76123");
         }
-        return t(lt("未绑定", "Unbound"));
+        return t("web.generated.b4f93aa760");
     }, [boundProject, mainWorkspacePath, scopeBinding?.resolvedScope, scopeBinding?.workspacePath, t]);
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
     const askUserPendingProjection = useMemo(
@@ -1564,7 +1563,7 @@ export default function ChatClient() {
                 });
                 if (!connectionResponse.ok) {
                     const payload = await connectionResponse.json().catch(() => null);
-                    throw new Error(payload?.error || payload?.message || t(lt("本机管理台不可用", "Local Admin is unavailable")));
+                    throw new Error(payload?.error || payload?.message || t("web.generated.40132fa524"));
                 }
 
                 const result = await signIn("credentials", {
@@ -1580,7 +1579,7 @@ export default function ChatClient() {
                 }
             } catch (error) {
                 if (!cancelled) {
-                    setLocalConnectError(error instanceof Error ? error.message : t(lt("本机连接失败", "Local connection failed")));
+                    setLocalConnectError(error instanceof Error ? error.message : t("web.generated.ecfd08ab82"));
                 }
             }
         })();
@@ -2063,7 +2062,7 @@ export default function ChatClient() {
 
     // Auth Check UI
     if (status === "loading") {
-        return <div className="flex h-full items-center justify-center">{t(lt("加载中...", "Loading..."))}</div>;
+        return <div className="flex h-full items-center justify-center">{t("web.generated.3fe7e53e91")}</div>;
     }
 
     if (status === "unauthenticated") {
@@ -2074,15 +2073,15 @@ export default function ChatClient() {
                 </div>
                 <div className="mt-5 max-w-sm space-y-2">
                     <h1 className="text-xl font-semibold">
-                        {localConnectError ? t(lt("本机 V8 OS 未连接", "Local V8 OS is not connected")) : t(lt("正在连接本机 V8 OS", "Connecting to local V8 OS"))}
+                        {localConnectError ? t("web.generated.a2c5172061") : t("web.generated.5d3147c6f4")}
                     </h1>
                     <p className="text-sm leading-6 text-muted-foreground">
-                        {localConnectError || t(lt("Web 会自动连接本机 Admin 与 Engine。", "Web connects to local Admin and Engine automatically."))}
+                        {localConnectError || t("web.generated.36981fc5e7")}
                     </p>
                 </div>
                 {localConnectError && (
                     <Button className="mt-5 rounded-2xl" onClick={() => router.replace("/connect?next=/chat")}>
-                        {t(lt("打开连接设置", "Open connection settings"))}
+                        {t("web.generated.a5aa32a989")}
                     </Button>
                 )}
             </div>
@@ -2114,8 +2113,8 @@ export default function ChatClient() {
                                 }`}
                                 onClick={() => setIsContextExpanded((current) => !current)}
                                 aria-expanded={isContextExpanded}
-                                aria-label={t(lt("工作区信息", "Workspace info"))}
-                                title={isContextExpanded ? t(lt("收起工作区信息", "Collapse workspace info")) : t(lt("展开工作区信息", "Expand workspace info"))}
+                                aria-label={t("web.generated.701d52ad56")}
+                                title={isContextExpanded ? t("web.generated.f1560c41fc") : t("web.generated.2e31a72a4d")}
                             >
                                 <FolderTree className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
                             </button>
@@ -2130,8 +2129,8 @@ export default function ChatClient() {
                                         terminalOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
                                     )}
                                     onClick={() => setTerminalOpen((prev) => !prev)}
-                                    aria-label={t(lt("终端面板", "Terminal Panel"))}
-                                    title={t(lt("终端面板", "Terminal Panel"))}
+                                    aria-label={t("web.generated.e7d892a681")}
+                                    title={t("web.generated.e7d892a681")}
                                 >
                                     <TerminalSquare className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
                                 </button>
@@ -2144,8 +2143,8 @@ export default function ChatClient() {
                                         sidebarOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
                                     )}
                                     onClick={() => setSidebarOpen((prev) => !prev)}
-                                    aria-label={t(lt("侧边栏", "Sidebar"))}
-                                    title={t(lt("侧边栏", "Sidebar"))}
+                                    aria-label={t("web.generated.3e0dd2a94a")}
+                                    title={t("web.generated.3e0dd2a94a")}
                                 >
                                     <PanelRight className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
                                 </button>
@@ -2160,35 +2159,35 @@ export default function ChatClient() {
                                     <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-2 text-sm font-medium">
                                             <FolderTree className="h-4 w-4 shrink-0 text-primary" />
-                                            {t(lt("当前工作区", "Current workspace"))}
+                                            {t("web.generated.325f034a5b")}
                                         </div>
                                         <p className="mt-1 text-xs text-muted-foreground">
-                                            {t(lt("当前会话的工作区绑定在创建后已冻结；如需切换，请新建对话。", "This conversation binding is frozen after creation. Start a new conversation to switch workspaces."))}
+                                            {t("web.generated.ff252529d3")}
                                         </p>
                                     </div>
                                     <div className="text-xs text-muted-foreground">
-                                        {scopeLoading ? t(lt("正在同步绑定信息…", "Syncing binding...")) : t(lt("只读展示", "Read only"))}
+                                        {scopeLoading ? t("web.generated.49b930d439") : t("web.generated.5acd929048")}
                                     </div>
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
                                     <span className="rounded-full bg-primary/10 px-2.5 py-1 text-primary">
-                                        {t(lt("会话", "Conversation"))}: {
+                                        {t("web.generated.fbb027d89e")}: {
                                             (sessionProjection?.summary
                                                 && typeof (sessionProjection.summary as Record<string, unknown>).title === "string"
                                                 ? String((sessionProjection.summary as Record<string, unknown>).title)
                                                 : "")
-                                            || t(lt("当前对话", "Current conversation"))
+                                            || t("web.generated.bc38ec82e9")
                                         }
                                     </span>
                                     <span className="rounded-full bg-accent px-2.5 py-1 text-accent-foreground">
-                                        {t(lt("工作区类型", "Workspace kind"))}: {workspaceKindLabel}
+                                        {t("web.generated.a20a3d0baf")}: {workspaceKindLabel}
                                     </span>
                                     <span className="rounded-full bg-secondary px-2.5 py-1 text-secondary-foreground">
                                         Scope: {scopeBinding?.resolvedScope || "global"}
                                     </span>
                                     <span className="max-w-[340px] truncate rounded-full bg-muted px-2.5 py-1 text-muted-foreground sm:max-w-none">
-                                        {t(lt("路径", "Path"))}: {scopeBinding?.workspacePath || mainWorkspacePath || t(lt("未绑定", "Unbound"))}
+                                        {t("web.generated.f0bf5c7e81")}: {scopeBinding?.workspacePath || mainWorkspacePath || t("web.generated.b4f93aa760")}
                                     </span>
                                 </div>
                             </div>
@@ -2205,16 +2204,16 @@ export default function ChatClient() {
                                         {greetingText}
                                     </h1>
                                     <p className="text-sm text-muted-foreground">
-                                        {t(lt("新对话会先绑定工作区，再创建会话。", "A new conversation binds a workspace before the session is created."))}
+                                        {t("web.generated.c8b86ec5eb")}
                                     </p>
                                 </div>
                                 {workspaceChooserVisible ? (
                                     <div className="rounded-[28px] border border-border/60 bg-background/88 p-5 shadow-lg backdrop-blur">
                                         <div className="flex items-center justify-between gap-3">
                                             <div>
-                                                <h2 className="text-base font-semibold">{t(lt("选择工作区", "Choose a workspace"))}</h2>
+                                                <h2 className="text-base font-semibold">{t("web.generated.d206213de7")}</h2>
                                                 <p className="mt-1 text-xs text-muted-foreground">
-                                                    {t(lt("历史会话始终优先；这里只用于明确开始新对话。", "History stays higher priority; this chooser is only for explicitly starting a new conversation."))}
+                                                    {t("web.generated.81d22a4b01")}
                                                 </p>
                                             </div>
                                             <Button
@@ -2226,7 +2225,7 @@ export default function ChatClient() {
                                                     clearNewConversationIntent();
                                                 }}
                                             >
-                                                {t(lt("稍后", "Later"))}
+                                                {t("web.generated.4fe0ba039e")}
                                             </Button>
                                         </div>
                                         <div className="mt-5 grid gap-3">
@@ -2236,15 +2235,15 @@ export default function ChatClient() {
                                                 onClick={() => void createBoundConversation({ kind: "main" })}
                                                 disabled={workspaceChooserBusy || !mainWorkspacePath}
                                             >
-                                                <div className="text-sm font-semibold">{t(lt("默认工作区", "Default workspace"))}</div>
-                                                <div className="mt-1 text-xs text-muted-foreground">{mainWorkspacePath || t(lt("正在读取默认工作区路径…", "Loading default workspace path..."))}</div>
+                                                <div className="text-sm font-semibold">{t("web.generated.8691094de0")}</div>
+                                                <div className="mt-1 text-xs text-muted-foreground">{mainWorkspacePath || t("web.generated.7b7c3216d4")}</div>
                                             </button>
                                             <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
-                                                <div className="text-sm font-semibold">{t(lt("现有项目级工作区", "Existing project workspaces"))}</div>
+                                                <div className="text-sm font-semibold">{t("web.generated.ce2328b304")}</div>
                                                 <div className="mt-3 max-h-52 space-y-2 overflow-y-auto pr-1">
                                                     {projects.filter((project) => project.active !== false).length === 0 ? (
                                                         <div className="text-xs text-muted-foreground">
-                                                            {t(lt("当前没有可用的项目级工作区。", "No project workspaces are available yet."))}
+                                                            {t("web.generated.a3b9969c75")}
                                                         </div>
                                                     ) : (
                                                         projects
@@ -2265,15 +2264,15 @@ export default function ChatClient() {
                                                 </div>
                                             </div>
                                             <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
-                                                <div className="text-sm font-semibold">{t(lt("新建项目级工作区", "Create a project workspace"))}</div>
+                                                <div className="text-sm font-semibold">{t("web.generated.79a9fe3510")}</div>
                                                 <div className="mt-1 text-xs text-muted-foreground">
-                                                    {t(lt("填写一个绝对文件夹路径；项目名会自动使用文件夹名称。示例：C:\\\\Work\\\\demo、/Users/me/work/demo、/home/me/work/demo。", "Enter an absolute folder path; the project name is derived from the folder name. Examples: C:\\\\Work\\\\demo, /Users/me/work/demo, /home/me/work/demo."))}
+                                                    {t("web.generated.97f675327a")}
                                                 </div>
                                                 <div className="mt-3 flex flex-col gap-3 sm:flex-row">
                                                     <input
                                                         value={newProjectPath}
                                                         onChange={(event) => setNewProjectPath(event.target.value)}
-                                                        placeholder={t(lt("C:\\\\Work\\\\demo 或 /Users/me/work/demo", "C:\\\\Work\\\\demo or /Users/me/work/demo"))}
+                                                        placeholder={t("web.generated.b47eb08b3a")}
                                                         className="h-11 flex-1 rounded-xl border border-border/60 bg-background px-3 text-sm outline-none transition focus:border-primary"
                                                     />
                                                     <Button
@@ -2282,7 +2281,7 @@ export default function ChatClient() {
                                                         onClick={() => void handleCreateProjectConversation()}
                                                         disabled={workspaceChooserBusy || newProjectPath.trim().length === 0}
                                                     >
-                                                        {t(lt("创建并开始", "Create and start"))}
+                                                        {t("web.generated.36381d8034")}
                                                     </Button>
                                                 </div>
                                             </div>
@@ -2299,7 +2298,7 @@ export default function ChatClient() {
                                                 clearNewConversationIntent();
                                             }}
                                         >
-                                            {t(lt("开始新对话", "Start a new conversation"))}
+                                            {t("web.generated.30afc1958c")}
                                         </Button>
                                     </div>
                                 )}
@@ -2312,13 +2311,10 @@ export default function ChatClient() {
                                     <AlertCircle className="h-6 w-6" />
                                 </div>
                                 <h2 className="mt-4 text-base font-semibold text-foreground">
-                                    {t(lt("旧会话未接入 Canonical Transcript", "Legacy conversation is not on Canonical Transcript"))}
+                                    {t("web.generated.c87db8211d")}
                                 </h2>
                                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                                    {t(lt(
-                                        "这条历史记录没有稳定 transcript 节点。为避免继续混用 runtime_events / messages / snapshots 造成漂移，当前版本已停止回放旧混源聊天内容。",
-                                        "This history record has no stable transcript nodes. To avoid mixing runtime_events, messages and snapshots again, this version no longer replays legacy mixed-source chat content.",
-                                    ))}
+                                    {t("web.generated.b218378073")}
                                 </p>
                             </div>
                         </div>
@@ -2373,7 +2369,7 @@ export default function ChatClient() {
                                         className="rounded-full border border-border/55 bg-background/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition hover:border-primary/35 hover:text-foreground"
                                         onClick={() => setAskUserCollapsed(false)}
                                     >
-                                        {t(lt("继续选择", "Resume choice"))}
+                                        {t("web.generated.41b5da53c6")}
                                     </button>
                                 </div>
                             ) : null}
@@ -2392,13 +2388,13 @@ export default function ChatClient() {
                                     onVoiceAudioMessage={handleVoiceAudioMessage}
                                     isLoading={isLoading}
                                     onStop={stop}
-                                    selectedAgentName={t(lt("智能主管", "Supervisor"))}
+                                    selectedAgentName={t("web.generated.675df2e7c7")}
                                     shellClassName="w-full"
                                     reasoningEffortControl={supervisorReasoningEffortControl}
                                 />
                             ) : (
                                 <div className="rounded-2xl border border-dashed border-border/60 bg-background/70 px-4 py-3 text-center text-sm text-muted-foreground">
-                                    {t(lt("先选择默认工作区或项目级工作区，再开始新对话。", "Choose the default workspace or a project workspace before starting a new conversation."))}
+                                    {t("web.generated.40e41202b3")}
                                 </div>
                             )}
                         </div>

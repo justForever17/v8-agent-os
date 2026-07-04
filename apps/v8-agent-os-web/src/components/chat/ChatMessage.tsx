@@ -26,7 +26,6 @@ import { ArtifactCard } from "./ArtifactCard";
 import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
 import { useChatStore } from "@/store/chat-store";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { parseContentToBlocks } from "@/lib/chat/content-detector";
 import { CollaborationMicroStageScene, type CollaborationMicroStageDetailTarget } from "./collaboration/CollaborationMicroStageScene";
 import type { RuntimeStageActivity } from "@/lib/runtime-stage";
@@ -295,9 +294,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
     const shouldRenderUserMetadata = Boolean(commandPresetName || taskPlanningModeEnabled || skillReferences.length > 0);
     const normalizedContent = useMemo(() => normalizeWorkspaceLinks(message.content || ""), [message.content]);
-    const copyLabel = t(lt("复制消息", "Copy message"));
-    const deleteLabel = t(lt("删除消息", "Delete message"));
-    const userDisplayName = String(userName || "").trim() || t(lt("聊天用户", "Chat user"));
+    const copyLabel = t("web.generated.8095bb5671");
+    const deleteLabel = t("web.generated.2f98d36496");
+    const userDisplayName = String(userName || "").trim() || t("web.generated.d2ccadbbf7");
     const attachmentRecords = useMemo(() => extractMessageAttachments(message), [message]);
     const audioAttachments = useMemo(
         () => attachmentRecords.filter(isAudioAttachmentRecord),
@@ -474,7 +473,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
 
                 <div className="flex min-w-0 max-w-[88%] flex-col items-end gap-1.5 sm:max-w-[85%]">
                     {/* Tool specific label */}
-                    {isTool && <span className="text-[11px] uppercase tracking-wider text-muted-foreground/60 font-semibold mb-1 mr-1">{t(lt("系统输出", "System output"))}</span>}
+                    {isTool && <span className="text-[11px] uppercase tracking-wider text-muted-foreground/60 font-semibold mb-1 mr-1">{t("web.generated.d1eaff25e6")}</span>}
                     {!isTool && (
                         <span className="mr-1 max-w-full truncate text-[12px] font-semibold text-muted-foreground/80">
                             {userDisplayName}
@@ -518,7 +517,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                         className="rounded-2xl border border-white/20 bg-white/15 p-2 backdrop-blur-sm"
                                     >
                                         <div className="mb-1 truncate px-1 text-[11px] font-medium text-white/85">
-                                            {attachment.name || t(lt("语音消息", "Voice message"))}
+                                            {attachment.name || t("web.generated.136a263bcd")}
                                         </div>
                                         <audio
                                             controls
@@ -638,7 +637,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                     ? "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400"
                                     : "bg-blue-500/10 text-blue-600 border-blue-500/20 dark:text-blue-400"
                             )}>
-                                {message.agentRoleLabel || (message.agentType === 'supervisor' ? t(lt("主理人", "Lead")) : t(lt("专家", "Specialist")))}
+                                {message.agentRoleLabel || (message.agentType === 'supervisor' ? t("web.generated.510a63c701") : t("web.generated.e4139b1ce2"))}
                             </span>
                         )}
                     </div>

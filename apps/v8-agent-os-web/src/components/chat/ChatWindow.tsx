@@ -8,7 +8,6 @@ import { Message } from "@/store/chat-types";
 import { ChatMessage } from "./ChatMessage";
 import { ContextReferencesHUD } from "./ContextReferencesHUD";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import type { AdminProcessRef, ContextReferenceItem } from "@v8/session-realtime";
 import type { RuntimeStageActivity } from "@/lib/runtime-stage";
@@ -197,8 +196,8 @@ export function ChatWindow({ messages, processes, contextReferences, conversatio
                             {messages.length === 0 ? (
                                 <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground opacity-60">
                                     <Bot className="mb-4 h-12 w-12 animate-pulse opacity-50" />
-                                    <p className="text-sm">{t(lt("没有消息历史", "No messages yet"))}</p>
-                                    <p className="mt-2 text-xs">{t(lt("打个招呼吧", "Start the conversation"))}</p>
+                                    <p className="text-sm">{t("web.generated.d8eed84190")}</p>
+                                    <p className="mt-2 text-xs">{t("web.generated.6e73c6c2f4")}</p>
                                 </div>
                             ) : (
                                 messages.map((m, index) => (
@@ -238,14 +237,14 @@ export function ChatWindow({ messages, processes, contextReferences, conversatio
             <Dialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle>{t(lt("删除消息", "Delete message"))}</DialogTitle>
+                        <DialogTitle>{t("web.generated.2f98d36496")}</DialogTitle>
                         <DialogDescription>
-                            {t(lt("确定要删除这条消息吗？此操作无法撤销。", "Delete this message? This action cannot be undone."))}
+                            {t("web.generated.463cc0d6cb")}
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
-                        <Button variant="outline" onClick={() => setDeleteId(null)}>{t(lt("取消", "Cancel"))}</Button>
-                        <Button variant="destructive" onClick={confirmDelete}>{t(lt("删除", "Delete"))}</Button>
+                        <Button variant="outline" onClick={() => setDeleteId(null)}>{t("web.generated.d94a8eaf28")}</Button>
+                        <Button variant="destructive" onClick={confirmDelete}>{t("web.generated.6cba6a2c08")}</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>

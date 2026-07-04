@@ -16,7 +16,6 @@ import { useSession } from "next-auth/react";
 import { useState } from "react";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 
 export function UserProfile() {
@@ -37,7 +36,7 @@ export function UserProfile() {
             <Button
                 variant="ghost"
                 className="h-9 w-9 rounded-full overflow-hidden border border-transparent bg-white/50 p-0 dark:bg-slate-950/50"
-                title={t(lt("本机连接中", "Connecting locally"))}
+                title={t("web.generated.b7c2e5097e")}
             >
                 <Avatar className="h-8 w-8">
                     <AvatarImage src={resolveProfileAvatarSrc(displayImage)} alt={displayName} />
@@ -80,7 +79,7 @@ export function UserProfile() {
                 <DropdownMenuContent className="w-56" align="end" forceMount>
                     <DropdownMenuLabel className="font-normal">
                         <div className="flex flex-col space-y-1">
-                            <p className="text-sm font-medium leading-none">{displayName || t(lt("聊天用户", "Chat user"))}</p>
+                            <p className="text-sm font-medium leading-none">{displayName || t("web.generated.d2ccadbbf7")}</p>
                             <p className="text-xs leading-none text-muted-foreground">
                                 {displayLogin}
                             </p>
@@ -89,7 +88,7 @@ export function UserProfile() {
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => setShowSettings(true)}>
                         <Settings className="mr-2 h-4 w-4" />
-                        <span>{t(lt("个性化设置", "Personalization"))}</span>
+                        <span>{t("web.generated.ee712854da")}</span>
                     </DropdownMenuItem>
                 </DropdownMenuContent>
             </DropdownMenu>

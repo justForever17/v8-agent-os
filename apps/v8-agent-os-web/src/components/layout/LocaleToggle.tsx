@@ -2,7 +2,6 @@
 
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { Locale } from "@/lib/locale";
 import { useLocale } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
@@ -20,7 +19,7 @@ export function LocaleToggle() {
         <div
             className="inline-flex h-9 items-center rounded-full border border-border/60 bg-background/78 p-1 shadow-sm backdrop-blur-lg dark:border-white/10"
             role="group"
-            aria-label={t(lt("语言切换", "Language switcher"))}
+            aria-label={t("web.generated.b989b868f1")}
         >
             {OPTIONS.map((option) => {
                 const active = option.value === locale;
@@ -32,8 +31,8 @@ export function LocaleToggle() {
                         size="sm"
                         onClick={() => setLocale(option.value)}
                         aria-pressed={active}
-                        aria-label={option.value === "zh-CN" ? t(lt("切换到中文", "Switch to Chinese")) : t(lt("切换到英文", "Switch to English"))}
-                        title={option.value === "zh-CN" ? t(lt("切换到中文", "Switch to Chinese")) : t(lt("切换到英文", "Switch to English"))}
+                        aria-label={option.value === "zh-CN" ? t("web.generated.afd6903b7c") : t("web.generated.83334919ce")}
+                        title={option.value === "zh-CN" ? t("web.generated.afd6903b7c") : t("web.generated.83334919ce")}
                         className={cn(
                             "h-7 rounded-full px-2.5 text-[11px] font-semibold tracking-[0.08em] transition-all",
                             active

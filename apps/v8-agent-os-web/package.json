@@ -6,7 +6,9 @@
     "dev": "node ../../scripts/run-next-with-managed-auth.mjs --app web --mode dev --port 9527",
     "build": "node ../../scripts/run-next-with-managed-auth.mjs --app web --mode build --port 9527",
     "start": "node ../../scripts/run-next-with-managed-auth.mjs --app web --mode start --port 9527",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "validate:i18n": "node ./scripts/validate-i18n.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1053.0",

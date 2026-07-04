@@ -8,7 +8,6 @@ import Image from "next/image";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { Workflow } from "lucide-react";
 
 export function Topbar() {
@@ -20,7 +19,7 @@ export function Topbar() {
                 <div className="relative h-8 w-8 overflow-hidden rounded-lg ring-1 ring-border/60">
                     <Image
                         src="/brand-mark.png"
-                        alt={t(lt("V8 代理操作系统", "V8 Agent OS"))}
+                        alt={t("web.generated.e42cc67653")}
                         fill
                         sizes="32px"
                         className="object-cover notranslate"
@@ -28,7 +27,7 @@ export function Topbar() {
                         translate="no"
                     />
                 </div>
-                <h1 className="v8os-wordmark notranslate" aria-label={t(lt("V8 代理操作系统", "V8 Agent OS"))} translate="no">
+                <h1 className="v8os-wordmark notranslate" aria-label={t("web.generated.e42cc67653")} translate="no">
                     <span className="v8os-wordmark__glow" aria-hidden="true">V8 Agent OS</span>
                     <span className="v8os-wordmark__shine" aria-hidden="true">V8 Agent OS</span>
                     <span className="v8os-wordmark__text">V8 Agent OS</span>
@@ -39,7 +38,7 @@ export function Topbar() {
                 <Link href="/rpa">
                     <Button variant="ghost" size="sm" className="gap-2 px-2 sm:px-3">
                         <Workflow className="h-4 w-4" />
-                        <span className="hidden sm:inline">{t(lt("RPA 自动化", "RPA automation"))}</span>
+                        <span className="hidden sm:inline">{t("web.generated.6ee7a4c326")}</span>
                     </Button>
                 </Link>
                 <LocaleToggle />

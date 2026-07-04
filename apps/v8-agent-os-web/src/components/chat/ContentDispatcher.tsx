@@ -1,7 +1,6 @@
 'use client';
 
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import React from 'react';
 import { motion } from 'framer-motion';
 import { buildClientToolSurface, type AdminProcessRef } from '@v8/session-realtime';
@@ -326,20 +325,20 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             const approvalKind = String(node.approvalKind || "").trim().toLowerCase();
             const approvalLabel =
                 approvalKind === "human_input_required" || approvalKind === "ask_user" || approvalKind === "waiting_input"
-                    ? t(lt("等待你的输入", "Waiting for your answer"))
+                    ? t("web.generated.e75707ccab")
                     : approvalKind === "safety_review"
-                      ? t(lt("安全复核", "Safety review"))
+                      ? t("web.generated.92f73fc6ad")
                       : approvalKind === "safety_blocked"
-                        ? t(lt("安全阻断", "Safety blocked"))
-                        : t(lt("系统确认", "Approval"));
+                        ? t("web.generated.a5dd088a32")
+                        : t("web.generated.6257968f39");
             const controlLabel =
                 node.governanceType === "safety_blocked"
-                    ? t(lt("安全阻断", "Safety blocked"))
+                    ? t("web.generated.a5dd088a32")
                     : node.governanceType === "context_governance"
-                        ? t(lt("上下文治理", "Context governance"))
+                        ? t("web.generated.a85ae899a5")
                         : node.governanceType === "lane_updated"
-                            ? t(lt("运行调度", "Run scheduling"))
-                            : t(lt("系统控制信号", "System control"));
+                            ? t("web.generated.41dd0117b1")
+                            : t("web.generated.db074da77e");
             const question = node.question || node.reason || node.topic || node.status || "";
             const eventSummary = extractSafetyEventSummary(node.requestInfo);
             if (node.governanceType === "ask_user") {
@@ -360,7 +359,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                         <div className="flex max-w-[78%] items-center gap-2 rounded-full border border-border/80 bg-background/80 px-3 py-1.5 text-[11px] shadow-[0_0_20px_rgba(148,163,184,0.08)] backdrop-blur-sm">
                             <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400/90 shadow-[0_0_10px_rgba(34,211,238,0.35)]" />
                             <span className="truncate font-semibold text-foreground/90">
-                                {t(lt("上下文治理", "Context governance"))}
+                                {t("web.generated.a85ae899a5")}
                             </span>
                             {question ? (
                                 <span className="truncate text-muted-foreground">

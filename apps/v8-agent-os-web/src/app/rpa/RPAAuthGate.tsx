@@ -4,7 +4,6 @@ import { Bot } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 export function RPAAuthGate() {
     const t = useT();
@@ -16,14 +15,14 @@ export function RPAAuthGate() {
                     <Bot className="h-7 w-7 text-primary" />
                 </div>
                 <div className="mt-5 space-y-2">
-                    <h1 className="text-2xl font-semibold tracking-tight">{t(lt("本机连接未就绪", "Local connection is not ready"))}</h1>
+                    <h1 className="text-2xl font-semibold tracking-tight">{t("web.generated.bb5e360821")}</h1>
                     <p className="text-sm leading-6 text-muted-foreground">
-                        {t(lt("请先回到聊天页完成自动连接，再打开 RPA 自动化。", "Open Chat first to finish local auto-connect, then return to RPA automation."))}
+                        {t("web.generated.e1c5b126e3")}
                     </p>
                 </div>
                 <div className="mt-6 flex justify-center">
                     <Button asChild className="rounded-2xl">
-                        <a href="/chat">{t(lt("回到聊天页", "Back to Chat"))}</a>
+                        <a href="/chat">{t("web.generated.b15f0eec49")}</a>
                     </Button>
                 </div>
             </div>

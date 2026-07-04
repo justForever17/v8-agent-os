@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
-import { Locale, lt, pickLocalizedText } from "@/lib/locale";
+import { Locale, resolveText } from "@/lib/locale";
 import {
     AdminConnectionProfile,
     findAdminConnectionProfileByBaseUrl,
@@ -47,9 +47,9 @@ function isLoopbackAdminUrl(value: string) {
 }
 
 function formatLastUsed(value: string | undefined, locale: Locale) {
-    if (!value) return pickLocalizedText(locale, lt("未知", "Unknown"));
+    if (!value) return resolveText(locale, "web.generated.5e1302f90c");
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return pickLocalizedText(locale, lt("未知", "Unknown"));
+    if (Number.isNaN(date.getTime())) return resolveText(locale, "web.generated.5e1302f90c");
     return new Intl.DateTimeFormat(locale, {
         month: "2-digit",
         day: "2-digit",
@@ -191,7 +191,7 @@ export function AdminConnectionManager({
             });
             const payload = (await response.json().catch(() => ({}))) as ConnectionPayload;
             if (!response.ok || !payload.connection) {
-                throw new Error(payload.error || t(lt("连接管理台失败", "Failed to connect to the admin console")));
+                throw new Error(payload.error || t("web.generated.db20ef6c78"));
             }
 
             persistActivatedConnection(payload.connection, options?.preferredProfileId || null);
@@ -203,12 +203,12 @@ export function AdminConnectionManager({
                     redirect: false,
                 });
                 if (!result?.ok || result.error) {
-                    throw new Error(t(lt("本机自动登录失败", "Local sign-in failed")));
+                    throw new Error(t("web.generated.3780776128"));
                 }
             }
 
             if (!options?.silent) {
-                setMessage({ type: "success", text: t(lt("连接已保存。", "Connection saved.")) });
+                setMessage({ type: "success", text: t("web.generated.ad865710b7") });
             }
 
             if (options?.redirectOnSuccess) {
@@ -220,7 +220,7 @@ export function AdminConnectionManager({
 
             return payload.connection;
         } catch (error) {
-            const text = error instanceof Error ? error.message : t(lt("连接失败", "Connection failed"));
+            const text = error instanceof Error ? error.message : t("web.generated.7010fef2f5");
             setMessage({ type: "error", text });
             throw error;
         } finally {
@@ -241,14 +241,14 @@ export function AdminConnectionManager({
             preferredProfileId: profile?.id,
             localSession: isLoopbackAdminUrl(targetAdminBaseUrl),
         }).catch(() => {
-            setMessage({ type: "error", text: t(lt("本机自动连接失败，请确认 Admin 已启动。", "Local auto-connect failed. Make sure Admin is running.")) });
+            setMessage({ type: "error", text: t("web.generated.08057577f8") });
         });
     }, [activateConnection, activeProfileId, autoRestore, connection, loading, profiles, t, variant]);
 
     const handleTest = async () => {
         const normalized = adminBaseUrl.trim();
         if (!normalized) {
-            setMessage({ type: "error", text: t(lt("请先填写管理台地址。", "Please enter the admin console URL first.")) });
+            setMessage({ type: "error", text: t("web.generated.1927a83e79") });
             return;
         }
         setTesting(true);
@@ -261,11 +261,11 @@ export function AdminConnectionManager({
             });
             const payload = (await response.json().catch(() => ({}))) as ConnectionPayload;
             if (!response.ok || !payload.connection) {
-                throw new Error(payload.error || t(lt("连接管理台失败", "Failed to connect to the admin console")));
+                throw new Error(payload.error || t("web.generated.db20ef6c78"));
             }
-            setMessage({ type: "success", text: t(lt("连接测试成功，可以保存为当前连接。", "Connection test passed. You can save it as the current connection.")) });
+            setMessage({ type: "success", text: t("web.generated.d6006e54fb") });
         } catch (error) {
-            setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("连接失败", "Connection failed")) });
+            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.generated.7010fef2f5") });
         } finally {
             setTesting(false);
         }
@@ -274,7 +274,7 @@ export function AdminConnectionManager({
     const handleSave = async () => {
         const normalized = adminBaseUrl.trim();
         if (!normalized) {
-            setMessage({ type: "error", text: t(lt("请先填写管理台地址。", "Please enter the admin console URL first.")) });
+            setMessage({ type: "error", text: t("web.generated.1927a83e79") });
             return;
         }
         await activateConnection(normalized, {
@@ -302,17 +302,17 @@ export function AdminConnectionManager({
         try {
             const response = await fetch("/api/connection", { method: "DELETE" });
             if (!response.ok) {
-                throw new Error(t(lt("清除连接失败", "Failed to clear the connection")));
+                throw new Error(t("web.generated.a396c7cff3"));
             }
             writeActiveAdminConnectionProfileId(null);
             activeProfileIdRef.current = null;
             setActiveProfileId(null);
             setConnection(null);
             setAdminBaseUrl("");
-            setMessage({ type: "success", text: t(lt("当前连接已清除。", "Current connection cleared.")) });
+            setMessage({ type: "success", text: t("web.generated.e2fd190ce0") });
             router.refresh();
         } catch (error) {
-            setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("清除连接失败", "Failed to clear the connection")) });
+            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.generated.a396c7cff3") });
         } finally {
             setClearing(false);
         }
@@ -338,16 +338,16 @@ export function AdminConnectionManager({
             if (currentConnectionMatches || isActiveProfile) {
                 const response = await fetch("/api/connection", { method: "DELETE" });
                 if (!response.ok) {
-                    throw new Error(t(lt("删除当前激活档案时，清理连接失败", "Failed to clear the active connection while deleting the profile")));
+                    throw new Error(t("web.generated.53995188e6"));
                 }
                 setConnection(null);
                 setAdminBaseUrl("");
                 router.refresh();
             }
 
-            setMessage({ type: "success", text: t(lt(`已删除“${profile.label}”。`, `Deleted "${profile.label}".`)) });
+            setMessage({ type: "success", text: t("web.generated.e911649f15", { value0: profile.label }) });
         } catch (error) {
-            setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("删除档案失败", "Failed to delete the profile")) });
+            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.generated.c6d0b31763") });
             hydrateProfiles(connection);
         } finally {
             setDeletingProfileId(null);
@@ -355,16 +355,16 @@ export function AdminConnectionManager({
     };
 
     const currentStatusLabel = loading
-        ? t(lt("读取中...", "Loading..."))
+        ? t("web.generated.bd18a8845f")
         : connection?.adminBaseUrl
             ? connection.adminBaseUrl
-            : t(lt("未激活", "Inactive"));
+            : t("web.generated.402ad6c058");
     const currentBridgeMode = loading
-        ? t(lt("读取中...", "Loading..."))
+        ? t("web.generated.bd18a8845f")
         : connection?.bridgeMode === "admin_only"
-            ? t(lt("仅通过管理台桥接", "Admin-only bridge"))
-            : connection?.bridgeMode || t(lt("未激活", "Inactive"));
-    const currentVersion = loading ? t(lt("读取中...", "Loading...")) : connection?.version || t(lt("未知", "Unknown"));
+            ? t("web.generated.5e67456515")
+            : connection?.bridgeMode || t("web.generated.402ad6c058");
+    const currentVersion = loading ? t("web.generated.bd18a8845f") : connection?.version || t("web.generated.5e1302f90c");
 
     const activeProfile = useMemo(
         () => findAdminConnectionProfileById(profiles, activeProfileId),
@@ -376,27 +376,27 @@ export function AdminConnectionManager({
             <div className="rounded-[1.75rem] border border-slate-200/80 bg-slate-50/80 px-4 py-4 text-sm shadow-sm dark:border-slate-800/80 dark:bg-slate-950/40">
                 <div className="flex flex-wrap items-center gap-2 text-slate-900 dark:text-slate-100">
                     {loading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
-                    <span className="font-medium">{t(lt("当前连接", "Active"))}</span>
+                    <span className="font-medium">{t("web.generated.f58aacdbd9")}</span>
                 </div>
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    <SummaryStat label={t(lt("管理台", "Admin"))} value={currentStatusLabel} />
-                    <SummaryStat label={t(lt("桥接", "Bridge"))} value={currentBridgeMode} />
-                    <SummaryStat label={t(lt("版本", "Version"))} value={currentVersion} />
-                    <SummaryStat label={t(lt("档案", "Profile"))} value={activeProfile?.label || t(lt("未绑定", "Unbound"))} />
+                    <SummaryStat label={t("web.generated.b5a479b63a")} value={currentStatusLabel} />
+                    <SummaryStat label={t("web.generated.10e64b5869")} value={currentBridgeMode} />
+                    <SummaryStat label={t("web.generated.6145b7bb9a")} value={currentVersion} />
+                    <SummaryStat label={t("web.generated.af37af76f9")} value={activeProfile?.label || t("web.generated.b4f93aa760")} />
                 </div>
             </div>
 
             <div className="space-y-2">
-                <Label htmlFor={`admin-base-url-${variant}`}>{t(lt("你的管理台地址", "Your console URL"))}</Label>
+                <Label htmlFor={`admin-base-url-${variant}`}>{t("web.generated.f875b5a988")}</Label>
                 <Input
                     id={`admin-base-url-${variant}`}
                     value={adminBaseUrl}
                     onChange={(event) => setAdminBaseUrl(event.target.value)}
-                    placeholder={t(lt("例如：http://127.0.0.1:9528", "Example: http://127.0.0.1:9528"))}
+                    placeholder={t("web.generated.7cc920cdd4")}
                     autoComplete="url"
                 />
                 <div className="text-xs leading-5 text-slate-500">
-                    {t(lt("聊天与运行状态都走这条桥。", "Chat and runtime state use this bridge."))}
+                    {t("web.generated.5d72a08774")}
                 </div>
             </div>
 
@@ -415,30 +415,30 @@ export function AdminConnectionManager({
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-3">
                 <Button type="button" variant="outline" onClick={() => void handleTest()} disabled={testing || saving} className="w-full sm:w-auto">
                     {testing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ServerCrash className="mr-2 h-4 w-4" />}
-                    {t(lt("测试", "Test"))}
+                    {t("web.generated.d2d526c419")}
                 </Button>
                 <Button type="button" onClick={() => void handleSave()} disabled={saving} className="w-full sm:w-auto">
                     {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                    {variant === "page" ? t(lt("保存并继续", "Save & continue")) : t(lt("保存连接", "Save"))}
+                    {variant === "page" ? t("web.generated.cc75867d3b") : t("web.generated.a7089afeb1")}
                 </Button>
                 <Button type="button" variant="ghost" onClick={() => void handleClearConnection()} disabled={clearing || !connection} className="w-full sm:w-auto">
                     {clearing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
-                    {t(lt("清除", "Clear"))}
+                    {t("web.generated.7164bdadb3")}
                 </Button>
                 <Button type="button" variant="ghost" onClick={() => void loadConnection()} disabled={loading} className="w-full sm:w-auto">
                     {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-2 h-4 w-4" />}
-                    {t(lt("刷新", "Refresh"))}
+                    {t("web.generated.140abb8251")}
                 </Button>
             </div>
 
             <div className="space-y-3 rounded-[1.75rem] border border-slate-200/80 bg-white/75 px-4 py-4 dark:border-slate-800/80 dark:bg-slate-950/30">
                 <div className="flex items-center gap-2 text-sm font-medium text-slate-900 dark:text-slate-100">
                     <PlugZap className="h-4 w-4 text-primary" />
-                    {t(lt("已保存连接", "Saved"))}
+                    {t("web.generated.b9d97e2b1a")}
                 </div>
                 {profiles.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-5 text-sm text-slate-500 dark:border-slate-800">
-                        {t(lt("保存一次后可快速切换。", "Save once to switch later."))}
+                        {t("web.generated.99c9b7121d")}
                     </div>
                 ) : (
                     <div className="space-y-3">
@@ -460,18 +460,18 @@ export function AdminConnectionManager({
                                             <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{profile.label}</div>
                                             <div className="text-xs break-all text-slate-500">{profile.adminBaseUrl}</div>
                                             <div className="text-[11px] text-slate-500">
-                                                {t(lt("上次使用", "Last used"))}: {formatLastUsed(profile.lastUsedAt, locale)} · {t(lt("版本", "Version"))}: {profile.version || t(lt("未知", "Unknown"))}
+                                                {t("web.generated.b65427d514")}: {formatLastUsed(profile.lastUsedAt, locale)} · {t("web.generated.6145b7bb9a")}: {profile.version || t("web.generated.5e1302f90c")}
                                             </div>
                                         </div>
                                         <div className="flex flex-wrap gap-2">
                                             {isCurrent ? (
                                                 <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-                                                    {t(lt("当前", "Current"))}
+                                                    {t("web.generated.0bcb8dacb7")}
                                                 </span>
                                             ) : null}
                                             {isActive && !isCurrent ? (
                                                 <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                                                    {t(lt("默认", "Default"))}
+                                                    {t("web.generated.58cd596ffa")}
                                                 </span>
                                             ) : null}
                                         </div>
@@ -488,7 +488,7 @@ export function AdminConnectionManager({
                                             {switchingProfileId === profile.id ? (
                                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                             ) : null}
-                                            {isCurrent ? t(lt("重连", "Reconnect")) : t(lt("使用", "Use"))}
+                                            {isCurrent ? t("web.generated.d1ee39bd85") : t("web.generated.15ec7a3f90")}
                                         </Button>
                                         <Button
                                             type="button"
@@ -501,7 +501,7 @@ export function AdminConnectionManager({
                                             {deletingProfileId === profile.id ? (
                                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                             ) : null}
-                                            {t(lt("删除", "Delete"))}
+                                            {t("web.generated.6cba6a2c08")}
                                         </Button>
                                     </div>
                                 </div>

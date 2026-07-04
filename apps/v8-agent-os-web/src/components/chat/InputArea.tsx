@@ -9,7 +9,6 @@ import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, Chec
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 // --- Helper Component: VideoThumbnail ---
 function VideoThumbnail({ url, uploading, onRemove, onClick }: { url: string, uploading: boolean, onRemove: () => void, onClick: () => void }) {
@@ -286,10 +285,10 @@ export function InputArea({
     const reasoningEffortVisible = Boolean(reasoningEffortControl?.visible && reasoningEffortLevels.length > 1);
     const reasoningEffortLabel = React.useMemo(() => {
         const labels: Record<ReasoningEffortLevel, string> = {
-            auto: t(lt("自", "Auto")),
-            low: t(lt("低", "Low")),
-            medium: t(lt("中", "Med")),
-            high: t(lt("高", "High")),
+            auto: t("web.generated.ad302baaf1"),
+            low: t("web.generated.1638d14b43"),
+            medium: t("web.generated.5ea71d390a"),
+            high: t("web.generated.29b755916c"),
         };
         return labels[reasoningEffort] || labels.auto;
     }, [reasoningEffort, t]);
@@ -391,13 +390,13 @@ export function InputArea({
                 throw new Error(
                     typeof payload?.error === "string"
                         ? payload.error
-                        : t(lt("命令预设列表加载失败", "Failed to load command presets"))
+                        : t("web.generated.32ebe23460")
                 );
             }
             setCommandPresets(Array.isArray(payload?.items) ? payload.items : []);
             setCommandsLoaded(true);
         } catch (error) {
-            const message = error instanceof Error ? error.message : t(lt("命令预设列表加载失败", "Failed to load command presets"));
+            const message = error instanceof Error ? error.message : t("web.generated.32ebe23460");
             showInlineNotice("error", message);
         } finally {
             setCommandsLoading(false);
@@ -414,7 +413,7 @@ export function InputArea({
                 throw new Error(
                     typeof payload?.error === "string"
                         ? payload.error
-                        : t(lt("技能列表加载失败", "Failed to load skill list"))
+                        : t("web.generated.f1c2a360b6")
                 );
             }
             const nextSkills: unknown[] = Array.isArray(payload?.skills) ? payload.skills : [];
@@ -443,7 +442,7 @@ export function InputArea({
             );
             setSkillsLoaded(true);
         } catch (error) {
-            const message = error instanceof Error ? error.message : t(lt("技能列表加载失败", "Failed to load skill list"));
+            const message = error instanceof Error ? error.message : t("web.generated.f1c2a360b6");
             showInlineNotice("error", message);
         } finally {
             setSkillsLoading(false);
@@ -531,7 +530,7 @@ export function InputArea({
         if (e.target.files) {
             const newFiles = Array.from(e.target.files);
             if (files.length + newFiles.length > 14) {
-                showInlineNotice("error", t(lt("最多只能上传 14 个文件。", "You can upload up to 14 files.")));
+                showInlineNotice("error", t("web.generated.ee75d524b0"));
                 return;
             }
             setFiles((prev) => [...prev, ...newFiles]);
@@ -550,7 +549,7 @@ export function InputArea({
                 setUploadedUrls((prev) => [...prev, ...urls]);
             } catch (error) {
                 console.error('Upload failed:', error);
-                showInlineNotice("error", t(lt("文件上传失败，请稍后重试。", "Upload failed. Please try again.")));
+                showInlineNotice("error", t("web.generated.a0608c519e"));
             } finally {
                 setUploading(false);
             }
@@ -601,7 +600,7 @@ export function InputArea({
             throw new Error(
                 typeof payload?.error === "string"
                     ? payload.error
-                    : t(lt("语音输入状态检查失败", "Failed to check voice input status"))
+                    : t("web.generated.c54263a7ac")
             );
         }
         return payload;
@@ -609,7 +608,7 @@ export function InputArea({
 
     const uploadAndSendVoiceAudio = React.useCallback(async (blob: Blob) => {
         if (!onVoiceAudioMessage) {
-            throw new Error(t(lt("当前页面不支持直接发送语音文件。", "This page cannot send voice files directly.")));
+            throw new Error(t("web.generated.31e1cf987b"));
         }
         const file = new File([blob], "voice-input.wav", { type: "audio/wav" });
         const formData = new FormData();
@@ -620,12 +619,12 @@ export function InputArea({
             throw new Error(
                 typeof payload?.error === "string"
                     ? payload.error
-                    : t(lt("语音文件上传失败", "Voice file upload failed"))
+                    : t("web.generated.54e079b2b9")
             );
         }
         const url = String(payload?.url || payload?.publicUrl || "").trim();
         if (!url) {
-            throw new Error(t(lt("语音文件上传后没有返回可用链接。", "Voice upload did not return a usable URL.")));
+            throw new Error(t("web.generated.84c0a1448b"));
         }
         const messageData = {
             fileUrls: [url],
@@ -642,12 +641,12 @@ export function InputArea({
         try {
             const result = onVoiceAudioMessage(messageData);
             void Promise.resolve(result).catch((error) => {
-                const message = error instanceof Error ? error.message : t(lt("语音发送失败", "Voice send failed"));
-                showInlineNotice("error", t(lt(`语音暂不可用：${message}`, `Voice is unavailable: ${message}`)));
+                const message = error instanceof Error ? error.message : t("web.generated.accc20bbec");
+                showInlineNotice("error", t("web.generated.8b30d36521", { value0: message }));
             });
         } catch (error) {
-            const message = error instanceof Error ? error.message : t(lt("语音发送失败", "Voice send failed"));
-            showInlineNotice("error", t(lt(`语音暂不可用：${message}`, `Voice is unavailable: ${message}`)));
+            const message = error instanceof Error ? error.message : t("web.generated.accc20bbec");
+            showInlineNotice("error", t("web.generated.8b30d36521", { value0: message }));
         }
     }, [onVoiceAudioMessage, showInlineNotice, t]);
 
@@ -662,7 +661,7 @@ export function InputArea({
             if (status.route !== "stt") {
                 throw new Error(
                     String(status.stt?.reason || status.visionAudio?.reason || status.error || "").trim()
-                    || t(lt("未配置可用 STT，也没有可读取音频的视觉模型。", "No usable STT or audio-capable vision model is configured."))
+                    || t("web.generated.b114fb0b72")
                 );
             }
 
@@ -681,19 +680,19 @@ export function InputArea({
                             ? payload.detail
                         : typeof payload?.error === "string"
                             ? payload.error
-                            : t(lt("语音转写失败", "Voice transcription failed"))
+                            : t("web.generated.d2461f19b1")
                 );
             }
 
             const text = typeof payload?.text === "string" ? payload.text.trim() : "";
             if (!text) {
-                throw new Error(t(lt("未识别到语音内容", "No speech was detected")));
+                throw new Error(t("web.generated.130c17ee76"));
             }
 
             onVoiceTranscript?.(text);
         } catch (error) {
-            const message = error instanceof Error ? error.message : t(lt("语音转写失败", "Voice transcription failed"));
-            showInlineNotice("error", t(lt(`语音暂不可用：${message}`, `Voice is unavailable: ${message}`)));
+            const message = error instanceof Error ? error.message : t("web.generated.d2461f19b1");
+            showInlineNotice("error", t("web.generated.8b30d36521", { value0: message }));
         } finally {
             setIsTranscribing(false);
         }
@@ -701,7 +700,7 @@ export function InputArea({
 
     const startRecording = React.useCallback(async () => {
         if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-            showInlineNotice("error", t(lt("当前浏览器不支持录音，请更换支持麦克风采集的浏览器。", "This browser cannot record audio. Please switch to one that supports microphone capture.")));
+            showInlineNotice("error", t("web.generated.88d4317072"));
             return;
         }
 
@@ -712,7 +711,7 @@ export function InputArea({
                 (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
             if (!AudioContextCtor) {
                 stream.getTracks().forEach((track) => track.stop());
-                showInlineNotice("error", t(lt("当前浏览器不支持 Web Audio，无法进行语音采集。", "This browser does not support Web Audio, so voice capture is unavailable.")));
+                showInlineNotice("error", t("web.generated.8467e7e315"));
                 return;
             }
 
@@ -740,11 +739,11 @@ export function InputArea({
             muteGain.connect(audioContext.destination);
             await audioContext.resume();
             setIsRecording(true);
-            showInlineNotice("info", t(lt("录音中，再点一次麦克风结束并转写。", "Recording. Tap the mic again to stop and transcribe.")), 0);
+            showInlineNotice("info", t("web.generated.04e71973d4"), 0);
         } catch (error) {
             stopRecordingTracks();
-            const message = error instanceof Error ? error.message : t(lt("无法访问麦克风", "Microphone access is unavailable"));
-            showInlineNotice("error", t(lt(`无法开始录音：${message}`, `Could not start recording: ${message}`)));
+            const message = error instanceof Error ? error.message : t("web.generated.74f6b01f49");
+            showInlineNotice("error", t("web.generated.2f87592da8", { value0: message }));
         }
     }, [showInlineNotice, stopRecordingTracks, t]);
 
@@ -760,7 +759,7 @@ export function InputArea({
         stopRecordingTracks();
 
         if (mergedSamples.length === 0) {
-            showInlineNotice("error", t(lt("未采集到有效音频。", "No valid audio was captured.")));
+            showInlineNotice("error", t("web.generated.0695bf8b42"));
             return;
         }
 
@@ -942,12 +941,12 @@ export function InputArea({
                         {selectedCommandPreset && (
                             <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200 sm:text-[11px]">
                                 <Command className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
-                                <span className="truncate">{t(lt("命令", "Preset"))}：{selectedCommandPreset.name}</span>
+                                <span className="truncate">{t("web.generated.91c1d26378")}：{selectedCommandPreset.name}</span>
                                 <button
                                     type="button"
                                     onClick={() => setSelectedCommandPreset(null)}
                                     className="rounded-full text-current/70 transition hover:text-current"
-                                    aria-label={t(lt("移除命令预设", "Remove preset"))}
+                                    aria-label={t("web.generated.6b8a8efb3b")}
                                 >
                                     <X className="h-3 w-3" />
                                 </button>
@@ -965,7 +964,7 @@ export function InputArea({
                                     type="button"
                                     onClick={() => setSelectedSkills((current) => current.filter((item) => !(item.name === skill.name && (item.path || "") === (skill.path || ""))))}
                                     className="rounded-full text-current/70 transition hover:text-current"
-                                    aria-label={t(lt("移除技能引用", "Remove skill reference"))}
+                                    aria-label={t("web.generated.67c18a5ab0")}
                                 >
                                     <X className="h-3 w-3" />
                                 </button>
@@ -983,7 +982,7 @@ export function InputArea({
                                     type="button"
                                     onClick={() => setSelectedSubagentFamilies((current) => current.filter((item) => item.familyId !== family.familyId))}
                                     className="rounded-full text-current/70 transition hover:text-current"
-                                    aria-label={t(lt("移除专家族引用", "Remove subagent family reference"))}
+                                    aria-label={t("web.generated.0f220b7fb7")}
                                 >
                                     <X className="h-3 w-3" />
                                 </button>
@@ -999,18 +998,18 @@ export function InputArea({
                     onKeyDown={handleKeyDown}
                     onFocus={() => setIsFocused(true)}
                     onBlur={() => setIsFocused(false)}
-                    placeholder={selectedAgentName ? t(lt(`给 ${selectedAgentName} 发消息...`, `Message ${selectedAgentName}...`)) : t(lt("发送一条消息...", "Send a message..."))}
+                    placeholder={selectedAgentName ? t("web.generated.04cdce87c7", { value0: selectedAgentName }) : t("web.generated.a706426e02")}
                     className="custom-scrollbar min-h-[44px] max-h-[172px] w-full resize-none overflow-y-auto border-none bg-transparent px-3 py-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/50 shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-[15px]"
                 />
 
                 {isCommandPickerOpen && (
                     <div className="mx-3 mb-2 rounded-2xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-xl">
                         <div className="border-b border-border/50 px-3 py-2 text-[11px] text-muted-foreground">
-                            {t(lt("输入 ", "Type "))}<span className="font-medium text-foreground">/</span>{t(lt(" 后选择一个命令预设，发送时会作为结构化数据交给 Engine。", " to pick a command preset. It will be sent to Engine as structured input."))}
+                            {t("web.generated.b27144499f")}<span className="font-medium text-foreground">/</span>{t("web.generated.2e1be7fa21")}
                         </div>
                         <div className="max-h-32 sm:max-h-40 overflow-y-auto px-1 py-1">
                             {commandsLoading ? (
-                                <div className="px-3 py-3 text-sm text-muted-foreground">{t(lt("正在读取命令预设...", "Loading command presets..."))}</div>
+                                <div className="px-3 py-3 text-sm text-muted-foreground">{t("web.generated.8a3ecc1a85")}</div>
                             ) : filteredCommandPresets.length > 0 ? (
                                 filteredCommandPresets.map((preset) => (
                                     <button
@@ -1035,8 +1034,8 @@ export function InputArea({
                             ) : (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">
                                     {commandsLoaded
-                                        ? t(lt("当前没有可用命令预设，请把 .md 文件放进 ~/.v8-agent-os/commands。", "No command presets are available yet. Put .md files into ~/.v8-agent-os/commands."))
-                                        : t(lt("没有匹配的命令预设。", "No matching command presets."))}
+                                        ? t("web.generated.088733e9c0")
+                                        : t("web.generated.3b0ae80c9c")}
                                 </div>
                             )}
                         </div>
@@ -1046,11 +1045,11 @@ export function InputArea({
                 {isSkillPickerOpen && (
                     <div className="mx-3 mb-2 rounded-2xl border border-fuchsia-200/60 bg-background/95 shadow-lg backdrop-blur-xl dark:border-fuchsia-500/20">
                         <div className="border-b border-fuchsia-200/40 px-3 py-2 text-[11px] text-muted-foreground dark:border-fuchsia-500/10">
-                            {t(lt("输入 ", "Type "))}<span className="font-medium text-fuchsia-600">@</span>{t(lt(" 后选择 Skill 或 Subagent 家族；家族只会显式展开本轮 Supervisor 可见成员。", " to pick Skills or Subagent Families. Families reveal members only for this supervisor turn."))}
+                            {t("web.generated.b27144499f")}<span className="font-medium text-fuchsia-600">@</span>{t("web.generated.7c6c5d2a05")}
                         </div>
                         <div className="max-h-32 overflow-y-auto px-1 py-1 sm:max-h-40">
                             {skillsLoading ? (
-                                <div className="px-3 py-3 text-sm text-muted-foreground">{t(lt("正在读取技能列表...", "Loading skills..."))}</div>
+                                <div className="px-3 py-3 text-sm text-muted-foreground">{t("web.generated.2aeb46969c")}</div>
                             ) : filteredMentionItems.length > 0 ? (
                                 filteredMentionItems.map((item, index) => (
                                     <button
@@ -1090,7 +1089,7 @@ export function InputArea({
                                             )}
                                             {item.kind === "subagent_family" && item.family.memberCount ? (
                                                 <div className="truncate text-[10px] text-sky-700/80 dark:text-sky-300/80">
-                                                    {t(lt(`${item.family.memberCount} 个成员`, `${item.family.memberCount} members`))}
+                                                    {t("web.generated.87a9341147", { value0: item.family.memberCount })}
                                                 </div>
                                             ) : null}
                                         </div>
@@ -1099,8 +1098,8 @@ export function InputArea({
                             ) : (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">
                                     {skillsLoaded
-                                        ? t(lt("当前没有匹配的 Skill 或 Subagent 家族。", "No matching Skills or Subagent Families were found."))
-                                        : t(lt("Skill 与 Subagent 家族列表暂时不可用。", "The Skill and Subagent Family list is currently unavailable."))}
+                                        ? t("web.generated.2a87cc8956")
+                                        : t("web.generated.51c1734f23")}
                                 </div>
                             )}
                         </div>
@@ -1128,7 +1127,7 @@ export function InputArea({
                             type="button"
                             onClick={dismissInlineNotice}
                             className="mt-0.5 rounded text-current/70 transition hover:text-current"
-                            aria-label={t(lt("关闭提示", "Dismiss notice"))}
+                            aria-label={t("web.generated.17b50303e2")}
                         >
                             <X className="h-3.5 w-3.5" />
                         </button>
@@ -1148,7 +1147,7 @@ export function InputArea({
                                     ? "bg-red-500/12 text-red-700 hover:bg-red-500/18 dark:bg-red-500/15 dark:text-red-200"
                                     : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
                             )}
-                            title={t(lt("开启 Spec Mode 后，Supervisor 会先生成可审批的需求、设计和任务合约。", "Spec Mode asks Supervisor to draft approvable requirements, design, and task contracts first."))}
+                            title={t("web.generated.d802f23b2a")}
                         >
                             <FileText className="mr-1 h-3.5 w-3.5" />
                             Spec
@@ -1164,20 +1163,20 @@ export function InputArea({
                                             ? "border-zinc-200/70 bg-white/55 text-zinc-500 hover:border-amber-300/60 hover:text-zinc-700 dark:border-zinc-700/60 dark:bg-zinc-900/40 dark:text-zinc-400 dark:hover:border-amber-400/35"
                                             : "border-amber-300/60 bg-amber-100/70 text-amber-800 shadow-[0_4px_18px_rgba(245,158,11,0.16)] hover:bg-amber-100 dark:border-amber-400/35 dark:bg-amber-500/12 dark:text-amber-100"
                                     )}
-                                    title={t(lt("临时调节本轮 Supervisor 推理强度", "Temporarily adjust Supervisor reasoning effort for this turn"))}
+                                    title={t("web.generated.9d1e18be56")}
                                 >
                                     <Gauge className="h-3.5 w-3.5" />
-                                    <span>{t(lt("推", "Think"))}·{reasoningEffortLabel}</span>
+                                    <span>{t("web.generated.97372606ee")}·{reasoningEffortLabel}</span>
                                 </button>
                                 {reasoningEffortOpen ? (
                                     <div className="absolute bottom-full left-0 z-30 mb-2 flex overflow-hidden rounded-2xl border border-zinc-200/70 bg-white/95 p-1 shadow-[0_14px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-zinc-700/70 dark:bg-zinc-950/95">
                                         {reasoningEffortLevels.map((level) => {
                                             const active = level === reasoningEffort;
                                             const labels: Record<ReasoningEffortLevel, string> = {
-                                                auto: t(lt("自动", "Auto")),
-                                                low: t(lt("低", "Low")),
-                                                medium: t(lt("中", "Medium")),
-                                                high: t(lt("高", "High")),
+                                                auto: t("web.generated.0f2b6402a6"),
+                                                low: t("web.generated.1638d14b43"),
+                                                medium: t("web.generated.c3c3788ddb"),
+                                                high: t("web.generated.29b755916c"),
                                             };
                                             return (
                                                 <button
@@ -1209,7 +1208,7 @@ export function InputArea({
                             size="icon"
                             className={cn("h-[28px] w-[28px] rounded-lg text-muted-foreground transition-colors hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50", files.length > 0 ? "text-primary" : "")}
                             onClick={() => fileInputRef.current?.click()}
-                            title={t(lt("上传文件", "Upload files"))}
+                            title={t("web.generated.ebd1e88cea")}
                         >
                             <Paperclip className="h-4 w-4" />
                         </Button>
@@ -1226,7 +1225,7 @@ export function InputArea({
                                     : "text-muted-foreground hover:text-foreground hover:bg-zinc-100/50 dark:hover:bg-zinc-800/50",
                                 isTranscribing ? "opacity-60 cursor-wait" : ""
                             )}
-                            title={isRecording ? t(lt("停止录音并转写", "Stop and transcribe")) : isTranscribing ? t(lt("正在转写语音", "Transcribing voice")) : t(lt("录音转文字", "Voice to text"))}
+                            title={isRecording ? t("web.generated.bb6d8587d6") : isTranscribing ? t("web.generated.8fa10622ed") : t("web.generated.5ca09a650a")}
                         >
                             {isTranscribing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
                         </Button>

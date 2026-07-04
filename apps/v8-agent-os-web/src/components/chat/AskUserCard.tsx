@@ -4,7 +4,6 @@ import { ArrowRight, Bot, MessageCircleMore } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
-import { lt } from "@/lib/locale";
 
 type AskUserCardProps = {
     question: string;
@@ -24,7 +23,7 @@ export function AskUserCard({ question, status }: AskUserCardProps) {
                     <div className="flex flex-wrap items-center gap-2">
                         <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700/80 dark:text-sky-200/80">
                             <Bot className="h-3.5 w-3.5" />
-                            {t(lt("等待你的输入", "Waiting for your answer"))}
+                            {t("web.generated.e75707ccab")}
                         </div>
                         {status ? <Badge variant="outline">{status}</Badge> : null}
                     </div>
@@ -33,7 +32,7 @@ export function AskUserCard({ question, status }: AskUserCardProps) {
                     </div>
                     <div className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-sky-700/80 dark:text-sky-200/80">
                         <ArrowRight className="h-3.5 w-3.5" />
-                        {t(lt("请回答这个问题，当前运行会在收到回答后继续。", "Answer this question and the current run will continue once it receives your response."))}
+                        {t("web.generated.fbc52e5427")}
                     </div>
                 </div>
             </div>

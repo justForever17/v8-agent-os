@@ -3,7 +3,6 @@ import { CheckCircle2, ChevronLeft, ChevronRight, Pause, Play, X } from "lucide-
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { lt } from "@/lib/locale";
 
 type AskUserOption = {
     id?: string;
@@ -252,7 +251,7 @@ function AskUserMediaCard({
                             type="button"
                             onClick={togglePlayback}
                             className="absolute left-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white shadow-sm backdrop-blur transition hover:bg-black/70"
-                            aria-label={playing ? t(lt("暂停", "Pause")) : t(lt("播放", "Play"))}
+                            aria-label={playing ? t("web.generated.f55ca3af76") : t("web.generated.3442121742")}
                         >
                             {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5 translate-x-px" />}
                         </button>
@@ -387,7 +386,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
         return null;
     }
 
-    const title = asText(request?.question) || question || t(lt("需要你的输入", "Input needed"));
+    const title = asText(request?.question) || question || t("web.generated.96e02115f4");
     const details = asText(request?.details);
     const currentAnswered = currentQuestion ? isQuestionAnswered(currentQuestion, pageIndex) : true;
     const isLastPage = pageIndex >= questions.length - 1;
@@ -422,7 +421,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 onClick={() => goToPage(pageIndex - 1)}
                                 disabled={pageIndex <= 0}
                                 className="rounded-lg p-1 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
-                                aria-label={t(lt("返回", "Back"))}
+                                aria-label={t("web.generated.dae8bf43e5")}
                             >
                                 <ChevronLeft className="h-4 w-4" />
                             </button>
@@ -440,7 +439,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 type="button"
                                 onClick={handleCancel}
                                 className="ml-1 rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                                aria-label={t(lt("关闭", "Close"))}
+                                aria-label={t("web.generated.fbd8cee012")}
                             >
                                 <X className="h-4 w-4" />
                             </button>
@@ -482,7 +481,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                     </Tooltip>
                                     {currentQuestionMulti ? (
                                             <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] text-muted-foreground">
-                                            {t(lt("多选", "Multi"))}
+                                            {t("web.generated.30f77d0eac")}
                                         </span>
                                     ) : null}
                                 </div>
@@ -520,7 +519,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 <input
                                     value={customAnswers[currentQuestionKey] || ""}
                                     onChange={(event) => setCustomAnswers((current) => ({ ...current, [currentQuestionKey]: event.target.value }))}
-                                    placeholder={currentQuestionOptions.length ? t(lt("其他 / 补充说明", "Other / note")) : t(lt("输入你的回答", "Type your answer"))}
+                                    placeholder={currentQuestionOptions.length ? t("web.generated.acf8f727a8") : t("web.generated.6e1d108cf1")}
                                     className="mt-2 h-8 w-full rounded-lg border border-border/50 bg-background px-2 text-xs outline-none transition placeholder:text-muted-foreground focus:border-primary/60 focus:ring-2 focus:ring-primary/10"
                                     autoFocus={!currentQuestionOptions.length}
                                 />
@@ -535,7 +534,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                             disabled={isSubmitting}
                             className="rounded-lg px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-50"
                         >
-                            {t(lt("稍后", "Later"))}
+                            {t("web.generated.4fe0ba039e")}
                         </button>
                         <div className="flex items-center gap-1.5">
                             <button
@@ -544,7 +543,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 disabled={pageIndex <= 0 || isSubmitting}
                                 className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
                             >
-                                ← {t(lt("返回", "Back"))}
+                                ← {t("web.generated.dae8bf43e5")}
                             </button>
                             <button
                                 type="button"
@@ -552,7 +551,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 disabled={isSubmitting || (!isLastPage && !currentAnswered) || (isLastPage && !canSubmit)}
                                 className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/8 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                                {isLastPage ? (isSubmitting ? t(lt("发送中", "Sending")) : t(lt("继续", "Continue"))) : t(lt("→ 下一个", "→ NEXT"))}
+                                {isLastPage ? (isSubmitting ? t("web.generated.ddd4e5b480") : t("web.generated.a4bd825580")) : t("web.generated.d2eb4e8f64")}
                             </button>
                         </div>
                     </div>

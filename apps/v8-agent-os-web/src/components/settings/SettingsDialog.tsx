@@ -19,7 +19,6 @@ import { useEffect, useState } from "react";
 import { ThemeToggle } from "../layout/ThemeToggle";
 import { AdminConnectionManager } from "@/components/connection/AdminConnectionManager";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 interface SettingsDialogProps {
     open: boolean;
@@ -52,12 +51,12 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             const result = await updateUserNickname(nickname);
             if (result.success) {
                 await applyProfile(result.user || { ...(profile || {}), name: nickname });
-                setMessage({ type: 'success', text: t(lt("昵称更新成功", "Display name updated")) });
+                setMessage({ type: 'success', text: t("web.generated.fc6c343534") });
             } else {
-                setMessage({ type: 'error', text: result.error || t(lt("更新失败", "Update failed")) });
+                setMessage({ type: 'error', text: result.error || t("web.generated.8e798b462a") });
             }
         } catch {
-            setMessage({ type: 'error', text: t(lt("发生错误", "Something went wrong")) });
+            setMessage({ type: 'error', text: t("web.generated.642978e9f3") });
         } finally {
             setIsLoading(false);
         }
@@ -75,18 +74,18 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok || !data.url) {
-                throw new Error(data.error || t(lt("头像上传失败", "Avatar upload failed")));
+                throw new Error(data.error || t("web.generated.6ba695e4a7"));
             }
             const nextImage = String(data.path || data.url);
             const result = await updateUserAvatar(nextImage);
             if (!result.success) {
-                throw new Error(result.error || t(lt("头像保存失败", "Failed to save avatar")));
+                throw new Error(result.error || t("web.generated.18142c77e9"));
             }
             setAvatarUrl(nextImage);
             await applyProfile(result.user || { ...(profile || {}), image: nextImage });
-            setMessage({ type: "success", text: t(lt("头像更新成功", "Avatar updated")) });
+            setMessage({ type: "success", text: t("web.generated.3b77e58de9") });
         } catch (error) {
-            setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("头像更新失败", "Avatar update failed")) });
+            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.generated.348cb3f84a") });
         } finally {
             setIsLoading(false);
         }
@@ -94,7 +93,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
     const handleAvatarUrlSave = async () => {
         if (!customAvatarUrl.trim()) {
-            setMessage({ type: "error", text: t(lt("请输入头像地址", "Please enter an avatar URL")) });
+            setMessage({ type: "error", text: t("web.generated.0381b828e4") });
             return;
         }
         setIsLoading(true);
@@ -103,14 +102,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             const nextUrl = customAvatarUrl.trim();
             const result = await updateUserAvatar(nextUrl);
             if (!result.success) {
-                throw new Error(result.error || t(lt("头像保存失败", "Failed to save avatar")));
+                throw new Error(result.error || t("web.generated.18142c77e9"));
             }
             setAvatarUrl(nextUrl);
             await applyProfile(result.user || { ...(profile || {}), image: nextUrl });
             setCustomAvatarUrl("");
-            setMessage({ type: "success", text: t(lt("头像更新成功", "Avatar updated")) });
+            setMessage({ type: "success", text: t("web.generated.3b77e58de9") });
         } catch (error) {
-            setMessage({ type: "error", text: error instanceof Error ? error.message : t(lt("头像更新失败", "Avatar update failed")) });
+            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.generated.348cb3f84a") });
         } finally {
             setIsLoading(false);
         }
@@ -120,16 +119,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-[560px]">
                 <DialogHeader>
-                    <DialogTitle>{t(lt("设置", "Settings"))}</DialogTitle>
+                    <DialogTitle>{t("web.generated.36b502ac91")}</DialogTitle>
                     <DialogDescription>
-                        {t(lt("管理您的个人资料和应用偏好。", "Manage your profile and app preferences."))}
+                        {t("web.generated.17ceff9267")}
                     </DialogDescription>
                 </DialogHeader>
 
                 <Tabs defaultValue="profile" className="w-full">
                     <TabsList className="grid w-full grid-cols-2">
-                        <TabsTrigger value="profile">{t(lt("聊天资料", "Chat profile"))}</TabsTrigger>
-                        <TabsTrigger value="connection">{t(lt("连接管理", "Connection"))}</TabsTrigger>
+                        <TabsTrigger value="profile">{t("web.generated.0f5a6e0b58")}</TabsTrigger>
+                        <TabsTrigger value="connection">{t("web.generated.380e702ac5")}</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="profile" className="space-y-4 py-4">
@@ -138,7 +137,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                 {avatarUrl ? (
                                     <Image
                                         src={resolveProfileAvatarSrc(avatarUrl)}
-                                        alt={profile?.name || t(lt("用户头像", "User avatar"))}
+                                        alt={profile?.name || t("web.generated.154566d5fa")}
                                         width={64}
                                         height={64}
                                         className="h-full w-full object-cover"
@@ -147,20 +146,20 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                 ) : (profile?.name?.charAt(0).toUpperCase() || "U")}
                             </div>
                             <div className="flex-1 space-y-3">
-                                <Label htmlFor="nickname">{t(lt("昵称", "Display name"))}</Label>
+                                <Label htmlFor="nickname">{t("web.generated.a04cc6036e")}</Label>
                                 <div className="flex gap-2">
                                     <Input
                                         id="nickname"
                                         value={nickname}
                                         onChange={(e) => setNickname(e.target.value)}
-                                        placeholder={t(lt("输入新昵称", "Enter a new display name"))}
+                                        placeholder={t("web.generated.14f7afc6d0")}
                                     />
                                     <Button onClick={handleUpdateNickname} disabled={isLoading}>
-                                        {t(lt("保存", "Save"))}
+                                        {t("web.generated.5fe30f30dd")}
                                     </Button>
                                 </div>
                                 <div className="space-y-2">
-                                    <Label htmlFor="user-avatar-upload">{t(lt("头像", "Avatar"))}</Label>
+                                    <Label htmlFor="user-avatar-upload">{t("web.generated.8f6f49e2f3")}</Label>
                                     <div className="flex flex-wrap gap-2">
                                         <Input
                                             id="user-avatar-upload"
@@ -178,10 +177,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                             <Input
                                                 value={customAvatarUrl}
                                                 onChange={(event) => setCustomAvatarUrl(event.target.value)}
-                                                placeholder={t(lt("或输入头像图片地址", "Or enter an avatar image URL"))}
+                                                placeholder={t("web.generated.df178badba")}
                                             />
                                             <Button onClick={handleAvatarUrlSave} disabled={isLoading}>
-                                                {t(lt("保存头像", "Save avatar"))}
+                                                {t("web.generated.4a0177af0a")}
                                             </Button>
                                         </div>
                                         {avatarUrl ? (
@@ -193,13 +192,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                                     if (result.success) {
                                                         setAvatarUrl("");
                                                         await applyProfile(result.user || { ...(profile || {}), image: "" });
-                                                        setMessage({ type: "success", text: t(lt("已恢复默认头像", "Default avatar restored")) });
+                                                        setMessage({ type: "success", text: t("web.generated.aeba374eff") });
                                                     } else {
-                                                        setMessage({ type: "error", text: result.error || t(lt("恢复失败", "Restore failed")) });
+                                                        setMessage({ type: "error", text: result.error || t("web.generated.3dea3ec94c") });
                                                     }
                                                 }}
                                             >
-                                                {t(lt("清空头像", "Clear avatar"))}
+                                                {t("web.generated.4e3b7ce293")}
                                             </Button>
                                         ) : null}
                                     </div>
@@ -208,9 +207,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                         </div>
 
                         <div className="space-y-2 pt-4 border-t">
-                            <Label>{t(lt("外观主题", "Theme"))}</Label>
+                            <Label>{t("web.generated.2d9d54c63a")}</Label>
                             <div className="flex items-center justify-between p-2 border rounded-lg">
-                                <span className="text-sm text-muted-foreground">{t(lt("切换深色/浅色模式", "Switch light and dark mode"))}</span>
+                                <span className="text-sm text-muted-foreground">{t("web.generated.98ed00c0e4")}</span>
                                 <ThemeToggle />
                             </div>
                         </div>
@@ -218,9 +217,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
                     <TabsContent value="connection" className="space-y-4 py-4">
                         <div className="space-y-2">
-                            <Label>{t(lt("管理台连接档案", "Admin connection profiles"))}</Label>
+                            <Label>{t("web.generated.15aa8984c5")}</Label>
                             <p className="text-sm leading-6 text-muted-foreground">
-                                {t(lt("这里会在当前设备上保存本机或远程管理台档案。", "Admin console profiles are saved on this device."))}
+                                {t("web.generated.7994105913")}
                             </p>
                         </div>
                         <AdminConnectionManager variant="panel" />
@@ -234,7 +233,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 )}
 
                 <DialogFooter>
-                    <Button variant="outline" onClick={() => onOpenChange(false)}>{t(lt("关闭", "Close"))}</Button>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>{t("web.generated.fbd8cee012")}</Button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>

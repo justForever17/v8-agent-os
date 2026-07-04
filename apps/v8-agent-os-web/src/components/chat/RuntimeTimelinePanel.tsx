@@ -20,7 +20,6 @@ import {
     getRuntimeDescriptor,
 } from "@/lib/runtime-stage";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 import { ContentDispatcher } from "./ContentDispatcher";
 import { Activity, AlertTriangle, Blocks, Bot, Box, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, Sparkles, TerminalSquare, Workflow, X } from "lucide-react";
 
@@ -163,14 +162,14 @@ function getEngineeringLabel(activity: RuntimeStageActivity): { title: string; m
 
 function buildEpisodeKindLabels(t: ReturnType<typeof useT>): Record<string, string> {
     return {
-        runtime: t(lt("运行时", "Runtime")),
-        engineering: t(lt("工程运行时", "Engineering runtime")),
-        research: t(lt("调研运行时", "Research runtime")),
-        creative_media: t(lt("创意媒体", "Creative media")),
-        computer_use: t(lt("computer use", "computer use")),
-        rpa: t(lt("RPA 自动化", "RPA automation")),
-        delegation: t(lt("子代理", "Subagent")),
-        handoff: t(lt("交接", "Handoff")),
+        runtime: t("web.generated.53ef0e5627"),
+        engineering: t("web.generated.80961bbc88"),
+        research: t("web.generated.1e1e342d4a"),
+        creative_media: t("web.generated.05dc567273"),
+        computer_use: t("web.generated.07d3a36915"),
+        rpa: t("web.generated.6ee7a4c326"),
+        delegation: t("web.generated.0e62d69473"),
+        handoff: t("web.generated.608efdd419"),
     };
 }
 
@@ -404,18 +403,18 @@ export function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageAc
         attempted: "bg-amber-500 text-amber-700 dark:text-amber-300",
     };
     const statusLabel: Record<SwarmNodeStatus, string> = {
-        active: t(lt("运行", "Active")),
-        completed: t(lt("完成", "Done")),
-        failed: t(lt("失败", "Failed")),
-        pending: t(lt("等待", "Pending")),
-        attempted: t(lt("未确认", "Unconfirmed")),
+        active: t("web.generated.0832eae7ec"),
+        completed: t("web.generated.23c91b78cd"),
+        failed: t("web.generated.1dad4921f1"),
+        pending: t("web.generated.bc00ed4da7"),
+        attempted: t("web.generated.59c6a041d7"),
     };
 
     if (visibleNodes.length <= 1) return null;
 
     return (
         <div className="space-y-3 rounded-[22px] border border-stone-200/80 bg-white/86 p-3.5 shadow-[0_12px_32px_rgba(15,23,42,0.05)] dark:border-white/10 dark:bg-white/[0.03]">
-            <div className="text-[13px] font-semibold tracking-tight text-foreground">{t(lt("执行地图", "Execution map"))}</div>
+            <div className="text-[13px] font-semibold tracking-tight text-foreground">{t("web.generated.c6e4556097")}</div>
             <div className="space-y-2.5">
                 {visibleNodes.map((node) => {
                     const activeLine = Boolean(node.parentId && activeIds.has(node.id));

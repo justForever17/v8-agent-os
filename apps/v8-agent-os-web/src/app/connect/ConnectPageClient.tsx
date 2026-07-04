@@ -6,7 +6,6 @@ import { PlugZap } from "lucide-react";
 
 import { AdminConnectionManager } from "@/components/connection/AdminConnectionManager";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 export function ConnectPageClient() {
     const t = useT();
@@ -25,13 +24,10 @@ export function ConnectPageClient() {
                             V8 OS
                         </div>
                         <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-                            {t(lt("连接", "Connect"))}
+                            {t("web.generated.32941c6421")}
                         </h1>
                         <p className="text-sm leading-6 text-slate-600 dark:text-slate-400">
-                            {t(lt(
-                                "选择你的管理台。Web 连接、聊天和运行状态都会走这里。",
-                                "Choose your console. Connection, chat, and runtime state all flow through it."
-                            ))}
+                            {t("web.generated.68c1aba53e")}
                         </p>
                     </div>
                 </div>

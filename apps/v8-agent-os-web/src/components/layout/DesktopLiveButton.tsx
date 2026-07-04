@@ -8,7 +8,6 @@ import { Loader2, Monitor, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 type DesktopLiveStatus = {
     available?: boolean;
@@ -90,7 +89,7 @@ export function DesktopLiveButton() {
             if (!response.ok) {
                 const fallback = {
                     available: false,
-                    reason: payload.error || t(lt("桌面直播当前不可用", "Desktop Live is unavailable")),
+                    reason: payload.error || t("web.generated.79f8a6dbb0"),
                 } satisfies DesktopLiveStatus;
                 setLiveStatus(fallback);
                 return fallback;
@@ -100,7 +99,7 @@ export function DesktopLiveButton() {
         } catch (err) {
             const fallback = {
                 available: false,
-                reason: err instanceof Error ? err.message : t(lt("桌面直播当前不可用", "Desktop Live is unavailable")),
+                reason: err instanceof Error ? err.message : t("web.generated.79f8a6dbb0"),
             } satisfies DesktopLiveStatus;
             setLiveStatus(fallback);
             return fallback;
@@ -114,7 +113,7 @@ export function DesktopLiveButton() {
         });
         const payload = (await response.json().catch(() => ({}))) as DesktopLiveStatus & { error?: string };
         if (!response.ok) {
-            throw new Error(payload.error || t(lt("桌面直播桥预热失败", "Failed to prepare Desktop Live bridge")));
+            throw new Error(payload.error || t("web.generated.a802748695"));
         }
         setLiveStatus(payload);
         return payload;
@@ -259,7 +258,7 @@ export function DesktopLiveButton() {
             if (latestStatus?.available !== true && !canUseStreamFallback(latestStatus)) {
                 throw new Error(
                     latestStatus?.reason
-                    || t(lt("桌面直播桥仍在启动，请稍后重试。", "Desktop Live bridge is still starting. Please retry shortly.")),
+                    || t("web.generated.44490f2276"),
                 );
             }
 
@@ -277,7 +276,7 @@ export function DesktopLiveButton() {
             }
 
             if (!sessionPayload?.sessionId) {
-                throw new Error(sessionPayload?.error || t(lt("创建桌面直播会话失败", "Failed to create Desktop Live session")));
+                throw new Error(sessionPayload?.error || t("web.generated.c8b4879439"));
             }
 
             activeSessionId = sessionPayload.sessionId;
@@ -312,11 +311,11 @@ export function DesktopLiveButton() {
 
             pc.onconnectionstatechange = () => {
                 if (pc.connectionState === "failed") {
-                    setError(t(lt("桌面直播连接失败，请重试。", "Desktop Live failed to connect. Please retry.")));
+                    setError(t("web.generated.e21f487330"));
                     setLoading(false);
                 }
                 if ((pc.connectionState === "disconnected" || pc.connectionState === "closed") && !closingRef.current) {
-                    setError(t(lt("桌面直播已断开。", "Desktop Live disconnected.")));
+                    setError(t("web.generated.1c95c691a7"));
                 }
             };
 
@@ -338,7 +337,7 @@ export function DesktopLiveButton() {
             await pc.setLocalDescription(offer);
             const localDescription = pc.localDescription ?? offer;
             if (!localDescription.sdp) {
-                throw new Error(t(lt("桌面直播本地描述生成失败。", "Failed to create a Desktop Live local description.")));
+                throw new Error(t("web.generated.6dddf6fe1f"));
             }
 
             const answerPayload = await retryWithDelay(async () => {
@@ -356,13 +355,13 @@ export function DesktopLiveButton() {
                 });
                 const payload = (await offerResponse.json().catch(() => ({}))) as DesktopLiveAnswer;
                 if (!offerResponse.ok || !payload.sdp || !payload.type) {
-                    throw new Error(payload.error || t(lt("桌面直播桥仍在启动，请稍后重试。", "Desktop Live bridge is still starting. Please retry shortly.")));
+                    throw new Error(payload.error || t("web.generated.44490f2276"));
                 }
                 return payload;
             }, 6, 900);
 
             if (!answerPayload.type || !answerPayload.sdp) {
-                throw new Error(t(lt("桌面直播桥返回了无效的应答。", "Desktop Live bridge returned an invalid answer.")));
+                throw new Error(t("web.generated.3f2d14b18f"));
             }
 
             await pc.setRemoteDescription({
@@ -393,7 +392,7 @@ export function DesktopLiveButton() {
             sessionIdRef.current = null;
             setSessionId(null);
             setLoading(false);
-            setError(err instanceof Error ? err.message : t(lt("创建桌面直播会话失败", "Failed to create Desktop Live session")));
+            setError(err instanceof Error ? err.message : t("web.generated.c8b4879439"));
         }
     }, [loading, prepareBridge, refreshStatus, releaseSession, t]);
 
@@ -403,8 +402,8 @@ export function DesktopLiveButton() {
 
     const buttonDisabled = loading || liveStatus?.bridgeStartable === false;
     const buttonTitle = liveStatus?.available
-        ? t(lt("观看服务端真实桌面", "Watch the live desktop"))
-        : liveStatus?.reason || t(lt("桌面直播当前不可用", "Desktop Live is unavailable"));
+        ? t("web.generated.bf89f35b98")
+        : liveStatus?.reason || t("web.generated.79f8a6dbb0");
 
     return (
         <>
@@ -432,7 +431,7 @@ export function DesktopLiveButton() {
                     >
                         <button
                             type="button"
-                            aria-label={t(lt("关闭直播", "Close stream"))}
+                            aria-label={t("web.generated.d80a34b0b5")}
                             className="absolute right-[max(12px,calc(env(safe-area-inset-right)+12px))] top-[max(12px,calc(env(safe-area-inset-top)+12px))] z-[130] flex h-11 w-11 items-center justify-center rounded-full bg-black/72 text-white shadow-lg transition hover:bg-black/85"
                             onClick={(event) => {
                                 event.stopPropagation();
@@ -457,14 +456,14 @@ export function DesktopLiveButton() {
                                 {streamFallbackUrl ? (
                                     <img
                                         src={streamFallbackUrl}
-                                        alt={t(lt("桌面直播备用流", "Desktop Live fallback stream"))}
+                                        alt={t("web.generated.1514c7850c")}
                                         className="block h-auto max-h-[calc(100svh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-24px)] w-full max-w-[min(calc(100vw-24px),1180px)] select-none rounded-[24px] bg-black object-contain shadow-[0_30px_120px_rgba(0,0,0,0.45)]"
                                     />
                                 ) : null}
                                 {(loading || (!videoReady && !error)) ? (
                                     <div className="absolute inset-0 flex items-center justify-center rounded-[24px] bg-black/55">
                                         <div className="rounded-full bg-black/70 px-5 py-3 text-sm text-zinc-100">
-                                            {t(lt("正在建立桌面流连接…", "Connecting to Desktop Live..."))}
+                                            {t("web.generated.7d16f40623")}
                                         </div>
                                     </div>
                                 ) : null}

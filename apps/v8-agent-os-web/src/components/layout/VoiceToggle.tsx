@@ -5,7 +5,6 @@ import { Volume2, VolumeX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/components/providers/LocaleProvider";
-import { lt } from "@/lib/locale";
 
 export function VoiceToggle() {
     const { isVoiceEnabled, isSpeaking, toggleVoice } = useVoiceStore();
@@ -26,7 +25,7 @@ export function VoiceToggle() {
                                     : "text-foreground"
                                 : "text-muted-foreground"
                         }`}
-                        aria-label={t(lt("切换语音播报", "Toggle voice playback"))}
+                        aria-label={t("web.generated.3acce04edd")}
                     >
                         {isVoiceEnabled ? (
                            <Volume2 className="h-5 w-5" />
@@ -44,7 +43,7 @@ export function VoiceToggle() {
                     </Button>
                 </TooltipTrigger>
                 <TooltipContent>
-                    <p>{isVoiceEnabled ? t(lt("TTS 语音播报：已开启", "TTS playback: on")) : t(lt("TTS 语音播报：已关闭", "TTS playback: off"))}</p>
+                    <p>{isVoiceEnabled ? t("web.generated.0dab312994") : t("web.generated.5478aac706")}</p>
                 </TooltipContent>
             </Tooltip>
         </TooltipProvider>

@@ -14,8 +14,8 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 
 const LOCALE_OPTIONS = [
-    { value: "zh-CN", flag: "🇨🇳", label: "简体中文" },
-    { value: "en", flag: "🇺🇸", label: "English" },
+    { value: "zh-CN", flag: "🇨🇳", labelKey: "shared.locale.zh_cn_native" },
+    { value: "en", flag: "🇺🇸", labelKey: "shared.locale.en_native" },
 ] as const;
 
 export function LocaleMenu({
@@ -44,7 +44,7 @@ export function LocaleMenu({
                 <Text style={compact ? styles.flagCompact : styles.flagDefault}>{current.flag}</Text>
                 {!compact ? (
                     <Text style={[styles.label, { color: colors.textMuted }]} numberOfLines={1}>
-                        {current.label}
+                        {t(current.labelKey)}
                     </Text>
                 ) : null}
                 <ChevronDown color={colors.textSoft} size={compact ? 12 : 14} strokeWidth={2.2} />
@@ -61,7 +61,7 @@ export function LocaleMenu({
                                 <Text style={styles.optionFlag}>{option.flag}</Text>
                                 <View style={styles.optionTextWrap}>
                                     <Text style={[styles.optionLabel, { color: colors.text }]}>
-                                        {option.label}
+                                        {t(option.labelKey)}
                                     </Text>
                                     <Text style={[styles.optionMeta, { color: colors.textSoft }]}>
                                         {option.value}

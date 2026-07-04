@@ -12,6 +12,7 @@ import type { ClientToolSurface } from "@v8/session-realtime";
 
 import { CodeBlock } from "@/src/components/chat/CodeBlock";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
+import type { TranslationParams } from "@/src/providers/ui-prefs";
 
 export type ToolInvocation = {
     toolCallId: string;
@@ -38,15 +39,17 @@ function looksLikeRawStructuredOutput(value: unknown) {
     return typeof value === "object";
 }
 
-function buildReadableResult(toolInvocation: ToolInvocation) {
+type Translate = (key: string, params?: TranslationParams) => string;
+
+function buildReadableResult(toolInvocation: ToolInvocation, t: Translate) {
     const result = toolInvocation.result ?? "";
     const surface = toolInvocation.clientSurface;
     if (looksLikeRawStructuredOutput(result) && surface) {
         const lines = [
             surface.summary,
-            surface.progress ? `进度：${surface.progress}` : "",
-            surface.actionable ? `下一步：${surface.actionable}` : "",
-            surface.refIds.length ? `续读引用：${surface.refIds.join(", ")}` : "",
+            surface.progress ? t("src.components.chat.toolcard.progress_line", { value: surface.progress }) : "",
+            surface.actionable ? t("src.components.chat.toolcard.next_line", { value: surface.actionable }) : "",
+            surface.refIds.length ? t("src.components.chat.toolcard.refs_line", { value: surface.refIds.join(", ") }) : "",
         ].filter(Boolean);
         if (lines.length) {
             return lines.join("\n");
@@ -122,7 +125,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
 
     const accent = isComplete ? "#14B8A6" : "#3B82F6";
     const iconName = resolveToolIconName(toolInvocation.toolName);
-    const readableResult = buildReadableResult(toolInvocation);
+    const readableResult = buildReadableResult(toolInvocation, t);
 
     return (
         <View style={styles.wrap}>

@@ -148,7 +148,7 @@ export function ProfileMenuOverlay({
             onClose();
             router.replace("/login");
         } catch (error) {
-            Alert.alert("退出失败", error instanceof Error ? error.message : "无法退出登录");
+            Alert.alert(t("src.components.chat.profilemenuoverlay.sign_out_failed"), error instanceof Error ? error.message : t("src.components.chat.profilemenuoverlay.unable_to_sign_out"));
         }
     };
 
@@ -156,13 +156,13 @@ export function ProfileMenuOverlay({
 
     return (
         <View style={StyleSheet.absoluteFillObject} pointerEvents="auto">
-            {/* 半透明背景点击遮罩 */}
+            {/* Dimmed backdrop press target */}
             <Pressable style={styles.backdrop} onPress={onClose} />
             <View style={styles.modalContainer} pointerEvents="box-none">
                 <GlassCard style={styles.card}>
                     <View style={styles.header}>
                         <MaterialCommunityIcons name="account" size={20} color={colors.primaryDeep} />
-                        <Text style={styles.title}>个人中心</Text>
+                        <Text style={styles.title}>{t("src.components.chat.profilemenuoverlay.profile_center")}</Text>
                         <Pressable style={styles.closeButton} onPress={onClose}>
                             <MaterialCommunityIcons name="close" size={20} color={colors.textMuted} />
                         </Pressable>
@@ -173,7 +173,7 @@ export function ProfileMenuOverlay({
                         contentContainerStyle={styles.scrollContent}
                         showsVerticalScrollIndicator={false}
                     >
-                        {/* 用户头像与基本信息 */}
+                        {/* User avatar and basic information */}
                         <View style={styles.userRow}>
                             {avatarUri ? (
                                 <Image source={{ uri: avatarUri }} style={styles.userAvatarImage} />
@@ -188,7 +188,7 @@ export function ProfileMenuOverlay({
                             </View>
                         </View>
 
-                        {/* 修改 Profile */}
+                        {/* Edit profile */}
                         <View style={styles.section}>
                             <View style={styles.sectionTitleRow}>
                                 <Text style={styles.sectionTitle}>{t("src.screens.settingsscreen.profile")}</Text>
@@ -225,7 +225,7 @@ export function ProfileMenuOverlay({
                                         />
                                     </View>
                                     <View style={styles.field}>
-                                        <Text style={styles.fieldLabel}>初始身份</Text>
+                                        <Text style={styles.fieldLabel}>{t("src.components.chat.profilemenuoverlay.identity_label")}</Text>
                                         <TextInput
                                             value={email}
                                             editable={false}
@@ -242,7 +242,7 @@ export function ProfileMenuOverlay({
                             </Pressable>
                         </View>
 
-                        {/* 退出登录按钮 */}
+                        {/* Sign-out button */}
                         <Pressable style={styles.logoutButton} onPress={() => void handleSignOut()}>
                             <MaterialCommunityIcons name="power" size={16} color={colors.danger} />
                             <Text style={styles.logoutButtonText}>{t("src.screens.settingsscreen.sign_out")}</Text>

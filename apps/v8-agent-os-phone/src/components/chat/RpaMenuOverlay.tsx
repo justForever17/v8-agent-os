@@ -55,7 +55,7 @@ export function RpaMenuOverlay({
         try {
             const [nextAvailability, nextDrafts, nextTemplates, nextScripts] = await Promise.all([
                 getRpaAvailability(authorizedFetch),
-                listRpaDrafts(authorizedFetch, 4), // 限制数量以适应菜单展示
+                listRpaDrafts(authorizedFetch, 4), // Limit count for the compact menu layout.
                 listRpaTemplates(authorizedFetch, 50, "approved"),
                 listRpaScripts(authorizedFetch, 50),
             ]);
@@ -201,13 +201,13 @@ export function RpaMenuOverlay({
 
     return (
         <View style={StyleSheet.absoluteFillObject} pointerEvents="auto">
-            {/* 半透明背景点击遮罩 */}
+            {/* Dimmed backdrop press target */}
             <Pressable style={styles.backdrop} onPress={onClose} />
             <View style={styles.modalContainer} pointerEvents="box-none">
                 <GlassCard style={styles.card}>
                     <View style={styles.header}>
                         <MaterialCommunityIcons name="robot-outline" size={20} color={colors.primaryDeep} />
-                        <Text style={styles.title}>RPA 控制台</Text>
+                        <Text style={styles.title}>{t("src.components.chat.rpamenuoverlay.title")}</Text>
                         <Pressable style={styles.closeButton} onPress={onClose}>
                             <MaterialCommunityIcons name="close" size={20} color={colors.textMuted} />
                         </Pressable>
@@ -220,7 +220,7 @@ export function RpaMenuOverlay({
                         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load()} />}
                     >
                         <View style={styles.infoRow}>
-                            <Text style={styles.statusLabel}>RPA 运行时状态:</Text>
+                            <Text style={styles.statusLabel}>{t("src.components.chat.rpamenuoverlay.status_label")}</Text>
                             <View style={[styles.readyPill, (availability?.robotFramework || availability?.rpaFramework) ? styles.readyPillOk : styles.readyPillMuted]}>
                                 <Text style={[styles.readyPillText, (availability?.robotFramework || availability?.rpaFramework) ? styles.readyPillTextOk : styles.readyPillTextMuted]}>
                                     {(availability?.robotFramework || availability?.rpaFramework) ? t("src.screens.rpascreen.ready") : t("src.screens.rpascreen.not_ready")}
@@ -228,7 +228,7 @@ export function RpaMenuOverlay({
                             </View>
                         </View>
 
-                        {/* 从 Run 生成 Draft */}
+                        {/* Create a draft from a run record */}
                         <View style={styles.section}>
                             <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.generate_draft_from_run")}</Text>
                             <TextInput
@@ -245,7 +245,7 @@ export function RpaMenuOverlay({
                             </Pressable>
                         </View>
 
-                        {/* 执行已有流程 */}
+                        {/* Run an existing flow */}
                         <View style={styles.section}>
                             <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.run_existing_flow")}</Text>
                             <Pressable
@@ -305,7 +305,7 @@ export function RpaMenuOverlay({
                             </Pressable>
                         </View>
 
-                        {/* 最近的 Drafts */}
+                        {/* Recent drafts */}
                         <View style={styles.section}>
                             <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.recent_drafts")}</Text>
                             {drafts.length === 0 ? (
@@ -327,7 +327,7 @@ export function RpaMenuOverlay({
                             )}
                         </View>
 
-                        {/* 执行结果 */}
+                        {/* Execution result */}
                         <View style={styles.section}>
                             <Text style={styles.sectionTitle}>{t("src.screens.rpascreen.latest_result")}</Text>
                             {latestResult ? (

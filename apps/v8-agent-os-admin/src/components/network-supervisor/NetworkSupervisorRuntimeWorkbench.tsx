@@ -692,7 +692,7 @@ env:
         },
     ];
     const portNotices = bridgeDiagnostics?.notices || [];
-    const neighborCopy = locale === "zh-CN"
+    const neighborCopy = React.useMemo(() => locale === "zh-CN"
         ? {
             title: "邻居设备",
             description: "打开开关，发现附近 V8 设备，用连接码建立信任，然后在专用对话里交流。",
@@ -735,6 +735,21 @@ env:
             noTasks: "暂无邻居任务。",
             advanced: "高级诊断与三方应用接入",
             advancedHint: "这里只保留兼容模型客户端的接入参数；邻居设备、任务和 Relay 请使用上方卡片。",
+            errorStatusRead: "邻居设备状态读取失败",
+            errorCandidatesRead: "附近设备读取失败",
+            errorLinksRead: "已连接设备读取失败",
+            errorTaskSettingsRead: "邻居任务设置读取失败",
+            errorTasksRead: "邻居任务读取失败",
+            errorTimelineRead: "邻居对话读取失败",
+            errorSwitch: "邻居设备开关失败",
+            errorInvite: "连接码生成失败",
+            errorMissingPairing: "请输入设备和连接码",
+            errorPair: "连接失败",
+            errorSaveLink: "邻居设备保存失败",
+            errorRevoke: "移除邻居设备失败",
+            errorSendMessage: "邻居消息发送失败",
+            errorTaskSettingsSave: "邻居任务设置保存失败",
+            errorDispatchTask: "邻居任务派发失败",
         }
         : {
             title: "Neighbor devices",
@@ -778,7 +793,22 @@ env:
             noTasks: "No neighbor tasks yet.",
             advanced: "Advanced diagnostics and third-party app API",
             advancedHint: "Only compatible model-client access settings stay here; use the cards above for neighbor devices, tasks, and Relay.",
-        };
+            errorStatusRead: "Failed to read neighbor device status",
+            errorCandidatesRead: "Failed to read nearby devices",
+            errorLinksRead: "Failed to read connected neighbor devices",
+            errorTaskSettingsRead: "Failed to read neighbor task settings",
+            errorTasksRead: "Failed to read neighbor tasks",
+            errorTimelineRead: "Failed to read neighbor conversation",
+            errorSwitch: "Failed to update neighbor device switch",
+            errorInvite: "Failed to create pairing code",
+            errorMissingPairing: "Enter a device and pairing code",
+            errorPair: "Failed to connect device",
+            errorSaveLink: "Failed to save neighbor device",
+            errorRevoke: "Failed to remove neighbor device",
+            errorSendMessage: "Failed to send neighbor message",
+            errorTaskSettingsSave: "Failed to save neighbor task settings",
+            errorDispatchTask: "Failed to dispatch neighbor task",
+        }, [locale]);
     const relayCopy = locale === "zh-CN"
         ? {
             title: "公网连接（V8 Relay）",
@@ -924,15 +954,15 @@ env:
             if (!tokenRes.ok)
                 throw new Error(detail(tokenData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokensReadFailed")));
             if (!neighborStatusRes.ok)
-                throw new Error(detail(neighborStatusData, "邻居设备状态读取失败"));
+                throw new Error(detail(neighborStatusData, neighborCopy.errorStatusRead));
             if (!neighborCandidatesRes.ok)
-                throw new Error(detail(neighborCandidatesData, "附近设备读取失败"));
+                throw new Error(detail(neighborCandidatesData, neighborCopy.errorCandidatesRead));
             if (!neighborLinksRes.ok)
-                throw new Error(detail(neighborLinksData, "已连接设备读取失败"));
+                throw new Error(detail(neighborLinksData, neighborCopy.errorLinksRead));
             if (!neighborTaskSettingsRes.ok)
-                throw new Error(detail(neighborTaskSettingsData, "邻居任务设置读取失败"));
+                throw new Error(detail(neighborTaskSettingsData, neighborCopy.errorTaskSettingsRead));
             if (!neighborTasksRes.ok)
-                throw new Error(detail(neighborTasksData, "邻居任务读取失败"));
+                throw new Error(detail(neighborTasksData, neighborCopy.errorTasksRead));
             setConfig(mergeConfig((configData as {
                 data?: Partial<RuntimeConfig>;
             }).data));
@@ -955,7 +985,7 @@ env:
         finally {
             setLoading(false);
         }
-    }, [t, toast]);
+    }, [neighborCopy, t, toast]);
     React.useEffect(() => {
         void loadAll();
     }, [loadAll]);
@@ -968,12 +998,12 @@ env:
             const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(linkId)}/timeline`, { cache: "no-store" });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "邻居对话读取失败"));
+                throw new Error(detail(payload, neighborCopy.errorTimelineRead));
             setNeighborTimeline(Array.isArray((payload as { items?: NeighborMessage[] }).items) ? (payload as { items: NeighborMessage[] }).items : []);
         } catch (error) {
-            toast({ variant: "destructive", title: "邻居对话读取失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorTimelineRead, description: error instanceof Error ? error.message : String(error) });
         }
-    }, [toast]);
+    }, [neighborCopy, toast]);
     React.useEffect(() => {
         if (!selectedNeighborLink) {
             setLinkDraft({ localNickname: "", remoteNickname: "", localRole: "primary", capabilityTags: "", description: "" });
@@ -999,14 +1029,14 @@ env:
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "邻居设备开关失败"));
+                throw new Error(detail(payload, neighborCopy.errorSwitch));
             await loadAll();
         } catch (error) {
-            toast({ variant: "destructive", title: "邻居设备开关失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorSwitch, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [loadAll, neighborStatus.enabled, toast]);
+    }, [loadAll, neighborCopy, neighborStatus.enabled, toast]);
     const createPairingInvite = React.useCallback(async () => {
         setNeighborBusy("invite");
         try {
@@ -1017,18 +1047,18 @@ env:
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "连接码生成失败"));
+                throw new Error(detail(payload, neighborCopy.errorInvite));
             setPairingInvite(payload as { code: string; expiresAt: string; inviteId: string });
         } catch (error) {
-            toast({ variant: "destructive", title: "连接码生成失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorInvite, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [neighborStatus.node?.displayName, toast]);
+    }, [neighborCopy, neighborStatus.node?.displayName, toast]);
     const consumePairingInvite = React.useCallback(async () => {
         const peerId = pairingPeerId.trim();
         if (!peerId || !pairingCode.trim()) {
-            toast({ variant: "destructive", title: "请输入设备和连接码" });
+            toast({ variant: "destructive", title: neighborCopy.errorMissingPairing });
             return;
         }
         setNeighborBusy("pair");
@@ -1040,16 +1070,16 @@ env:
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "连接失败"));
+                throw new Error(detail(payload, neighborCopy.errorPair));
             setPairingCode("");
             setPairingPeerId("");
             await loadAll();
         } catch (error) {
-            toast({ variant: "destructive", title: "连接失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorPair, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [loadAll, neighborStatus.node?.displayName, pairingCode, pairingPeerId, toast]);
+    }, [loadAll, neighborCopy, neighborStatus.node?.displayName, pairingCode, pairingPeerId, toast]);
     const saveNeighborLink = React.useCallback(async () => {
         if (!selectedNeighborLink)
             return;
@@ -1062,28 +1092,28 @@ env:
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "邻居设备保存失败"));
+                throw new Error(detail(payload, neighborCopy.errorSaveLink));
             await loadAll();
         } catch (error) {
-            toast({ variant: "destructive", title: "邻居设备保存失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorSaveLink, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [linkDraft, loadAll, selectedNeighborLink, toast]);
+    }, [linkDraft, loadAll, neighborCopy, selectedNeighborLink, toast]);
     const revokeNeighborLink = React.useCallback(async (linkId: string) => {
         setNeighborBusy("revoke");
         try {
             const response = await fetch(`/api/network-supervisor/neighbors/${encodeURIComponent(linkId)}`, { method: "DELETE" });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "移除邻居设备失败"));
+                throw new Error(detail(payload, neighborCopy.errorRevoke));
             await loadAll();
         } catch (error) {
-            toast({ variant: "destructive", title: "移除邻居设备失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorRevoke, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [loadAll, toast]);
+    }, [loadAll, neighborCopy, toast]);
     const sendNeighborMessage = React.useCallback(async (wakeSupervisor: boolean) => {
         if (!selectedNeighborLink || !neighborMessage.trim())
             return;
@@ -1096,15 +1126,15 @@ env:
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "邻居消息发送失败"));
+                throw new Error(detail(payload, neighborCopy.errorSendMessage));
             setNeighborMessage("");
             await loadNeighborTimeline(selectedNeighborLink.linkId);
         } catch (error) {
-            toast({ variant: "destructive", title: "邻居消息发送失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorSendMessage, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [loadNeighborTimeline, neighborMessage, selectedNeighborLink, toast]);
+    }, [loadNeighborTimeline, neighborCopy, neighborMessage, selectedNeighborLink, toast]);
     const saveNeighborTaskSettings = React.useCallback(async (resultWakePolicy: NeighborTaskSettings["resultWakePolicy"]) => {
         setNeighborTaskSettings({ resultWakePolicy });
         try {
@@ -1115,13 +1145,13 @@ env:
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "邻居任务设置保存失败"));
+                throw new Error(detail(payload, neighborCopy.errorTaskSettingsSave));
             setNeighborTaskSettings({ resultWakePolicy: payload.resultWakePolicy === "per_result" ? "per_result" : "inbox" });
         } catch (error) {
-            toast({ variant: "destructive", title: "邻居任务设置保存失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorTaskSettingsSave, description: error instanceof Error ? error.message : String(error) });
             await loadAll();
         }
-    }, [loadAll, toast]);
+    }, [loadAll, neighborCopy, toast]);
     const dispatchNeighborTask = React.useCallback(async (targetMode: "selected" | "all") => {
         if (!neighborTaskBody.trim())
             return;
@@ -1142,7 +1172,7 @@ env:
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok)
-                throw new Error(detail(payload, "邻居任务派发失败"));
+                throw new Error(detail(payload, neighborCopy.errorDispatchTask));
             setNeighborTaskBody("");
             const tasksResponse = await fetch("/api/network-supervisor/neighbors/tasks?limit=20", { cache: "no-store" });
             const tasksPayload = await tasksResponse.json().catch(() => ({}));
@@ -1150,11 +1180,11 @@ env:
             if (selectedNeighborLink)
                 await loadNeighborTimeline(selectedNeighborLink.linkId);
         } catch (error) {
-            toast({ variant: "destructive", title: "邻居任务派发失败", description: error instanceof Error ? error.message : String(error) });
+            toast({ variant: "destructive", title: neighborCopy.errorDispatchTask, description: error instanceof Error ? error.message : String(error) });
         } finally {
             setNeighborBusy("");
         }
-    }, [loadNeighborTimeline, neighborTaskBody, neighborTaskCapabilities, neighborTaskSettings.resultWakePolicy, selectedNeighborLink, toast]);
+    }, [loadNeighborTimeline, neighborCopy, neighborTaskBody, neighborTaskCapabilities, neighborTaskSettings.resultWakePolicy, selectedNeighborLink, toast]);
     const setNode = React.useCallback((patch: Partial<RuntimeConfig["node"]>) => {
         setConfig((prev) => ({ ...prev, node: { ...prev.node, ...patch } }));
     }, []);

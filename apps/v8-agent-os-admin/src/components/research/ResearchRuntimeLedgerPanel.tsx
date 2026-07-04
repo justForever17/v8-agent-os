@@ -69,6 +69,14 @@ function confidenceTone(confidence?: string) {
     return "bg-slate-50 text-slate-600 border-slate-200";
 }
 
+function packStateTone(state: "searchable" | "review" | "refresh" | "archived" | "unknown") {
+    if (state === "searchable") return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    if (state === "review") return "bg-amber-50 text-amber-700 border-amber-200";
+    if (state === "refresh") return "bg-rose-50 text-rose-700 border-rose-200";
+    if (state === "archived") return "bg-slate-100 text-slate-600 border-slate-200";
+    return "bg-slate-50 text-slate-600 border-slate-200";
+}
+
 function normalizeStatus(value?: string) {
     const normalized = String(value || "").trim().toLowerCase();
     if (normalized === "active" || normalized === "draft" || normalized === "archived") return normalized;
@@ -94,6 +102,29 @@ function normalizeErrorCode(value?: string) {
         return lowered;
     }
     return "unknown";
+}
+
+function resolvePackState(item: ExperiencePack, t: ReturnType<typeof useT>) {
+    const status = normalizeStatus(item.status);
+    const qualityStatus = String(item.qualityStatus || "").trim();
+    const invalidationReason = String(item.invalidationReason || "").trim();
+    const answerPack = item.researchAnswerPack || {};
+    const hasAnswer = Boolean(String(answerPack.answer || item.researchResult || item.answer || "").trim());
+    const hasClaims = Array.isArray(item.claimDigest) && item.claimDigest.length > 0;
+    const isRefreshNeeded = qualityStatus === "low_quality_pack" || qualityStatus === "refresh_required" || Boolean(invalidationReason);
+    if (status === "archived") {
+        return { key: "archived" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.archived") };
+    }
+    if (isRefreshNeeded) {
+        return { key: "refresh" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.refresh") };
+    }
+    if (status === "draft" || (!hasAnswer && !hasClaims)) {
+        return { key: "review" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.review") };
+    }
+    if (status === "active") {
+        return { key: "searchable" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.searchable") };
+    }
+    return { key: "unknown" as const, label: t("app.admin.dashboard.research.runtime.ledger.packState.unknown") };
 }
 
 function buildExperiencePackHoverLines(item: ExperiencePack, t: ReturnType<typeof useT>) {
@@ -341,54 +372,57 @@ export function ResearchRuntimeLedgerPanel() {
                         </div>
                     </div>
                     <div className="grid gap-3 lg:grid-cols-2">
-                        {visiblePacks.slice(0, 8).map((item) => (
-                            <div key={item.experiencePackId} className="rounded-2xl border border-slate-200 bg-white p-4">
-                                <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                        <AdminHoverInfo
-                                            content={(
-                                                <div className="space-y-1">
-                                                    {buildExperiencePackHoverLines(item, t).map((line, index) => (
-                                                        <div key={index} className="whitespace-normal break-words">{line}</div>
-                                                    ))}
+                        {visiblePacks.slice(0, 8).map((item) => {
+                            const packState = resolvePackState(item, t);
+                            return (
+                                <div key={item.experiencePackId} className="rounded-2xl border border-slate-200 bg-white p-4">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <AdminHoverInfo
+                                                content={(
+                                                    <div className="space-y-1">
+                                                        {buildExperiencePackHoverLines(item, t).map((line, index) => (
+                                                            <div key={index} className="whitespace-normal break-words">{line}</div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                panelClassName="w-[32rem] max-w-[calc(100vw-2rem)] whitespace-normal text-xs leading-5"
+                                            >
+                                                <div className="font-medium text-slate-900 underline decoration-slate-300 decoration-dotted underline-offset-4">
+                                                    {item.title || item.experiencePackId}
                                                 </div>
-                                            )}
-                                            panelClassName="w-[32rem] max-w-[calc(100vw-2rem)] whitespace-normal text-xs leading-5"
-                                        >
-                                            <div className="font-medium text-slate-900 underline decoration-slate-300 decoration-dotted underline-offset-4">
-                                                {item.title || item.experiencePackId}
-                                            </div>
-                                        </AdminHoverInfo>
-                                        <div className="mt-1 text-xs text-slate-500">{item.experiencePackId}</div>
+                                            </AdminHoverInfo>
+                                            <div className="mt-1 text-xs text-slate-500">{item.experiencePackId}</div>
+                                        </div>
+                                        <Badge variant="outline" className={packStateTone(packState.key)}>
+                                            {packState.label}
+                                        </Badge>
                                     </div>
-                                    <Badge variant="outline" className={confidenceTone(item.confidence)}>
-                                        {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}
-                                    </Badge>
-                                </div>
-                                <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-                                    <span>{t("app.admin.dashboard.research.runtime.ledger.authority")}: {item.authorityScore ?? 0}</span>
-                                    <span>{t("app.admin.dashboard.research.runtime.ledger.usage")}: {item.usageCount ?? 0}</span>
-                                    <span>{t(`app.admin.dashboard.research.runtime.ledger.status.${normalizeStatus(item.status)}`)}</span>
-                                </div>
-                                <div className="mt-3 flex flex-wrap gap-2">
-                                    {normalizeStatus(item.status) === "archived" ? (
-                                        <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("restore", item.experiencePackId)} disabled={loading}>
-                                            <RotateCcw className="mr-2 h-4 w-4" />
-                                            {t("app.admin.dashboard.research.runtime.ledger.restore")}
+                                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+                                        <span>{t("app.admin.dashboard.research.runtime.ledger.authority")}: {item.authorityScore ?? 0}</span>
+                                        <span>{t("app.admin.dashboard.research.runtime.ledger.usage")}: {item.usageCount ?? 0}</span>
+                                        <span>{t("app.admin.dashboard.research.runtime.ledger.confidence")}: {item.confidence || t("app.admin.dashboard.research.runtime.ledger.status.unknown")}</span>
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                        {normalizeStatus(item.status) === "archived" ? (
+                                            <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("restore", item.experiencePackId)} disabled={loading}>
+                                                <RotateCcw className="mr-2 h-4 w-4" />
+                                                {t("app.admin.dashboard.research.runtime.ledger.restore")}
+                                            </Button>
+                                        ) : (
+                                            <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("archive", item.experiencePackId)} disabled={loading}>
+                                                <Archive className="mr-2 h-4 w-4" />
+                                                {t("app.admin.dashboard.research.runtime.ledger.archive")}
+                                            </Button>
+                                        )}
+                                        <Button type="button" variant="outline" size="sm" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => hardDeletePack(item)} disabled={loading}>
+                                            <Trash2 className="mr-2 h-4 w-4" />
+                                            {t("app.admin.dashboard.research.runtime.ledger.hardDelete")}
                                         </Button>
-                                    ) : (
-                                        <Button type="button" variant="outline" size="sm" onClick={() => mutatePack("archive", item.experiencePackId)} disabled={loading}>
-                                            <Archive className="mr-2 h-4 w-4" />
-                                            {t("app.admin.dashboard.research.runtime.ledger.archive")}
-                                        </Button>
-                                    )}
-                                    <Button type="button" variant="outline" size="sm" className="border-rose-200 text-rose-700 hover:bg-rose-50" onClick={() => hardDeletePack(item)} disabled={loading}>
-                                        <Trash2 className="mr-2 h-4 w-4" />
-                                        {t("app.admin.dashboard.research.runtime.ledger.hardDelete")}
-                                    </Button>
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </section>
 

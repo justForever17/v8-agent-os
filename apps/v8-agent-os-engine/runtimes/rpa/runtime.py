@@ -29,6 +29,7 @@ from erc.side_effect_idempotency import side_effect_idempotency_service
 from erc.workflow_ledger import workflow_ledger_service
 from runtimes.computer_use.runtime import computer_use_runtime
 from runtimes.rpa.compiler import RPATraceCompiler, rpa_trace_compiler
+from runtimes.rpa.capture_v2 import CaptureBroker
 from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
 from runtimes.rpa.execution_semantics import normalize_script_assessment_status, outcome_family_for_execution_state
 from runtimes.rpa.recording import RPARecordingManager
@@ -721,6 +722,7 @@ class RPARuntime:
         self.script_store = script_store
         self.template_service = template_service
         self.recording_manager = RPARecordingManager(trace_store_instance=self.compiler.trace_store)
+        self.capture_broker = CaptureBroker(self.recording_manager)
         ensure_system_rpa_seed_templates(self.script_store)
 
     def list_drafts(self, *, limit: int = 100, include_archived: bool = False) -> list[Dict[str, Any]]:
@@ -1588,6 +1590,18 @@ class RPARuntime:
 
     def append_recording_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         return self.recording_manager.append_event(recording_id, event)
+
+    def start_inspector_session(self, recording_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.capture_broker.start_session(recording_id, payload)
+
+    def get_inspector_session(self, recording_id: str, inspector_session_id: str) -> Dict[str, Any]:
+        return self.capture_broker.get_session(recording_id, inspector_session_id)
+
+    def ingest_inspector_event(self, recording_id: str, inspector_session_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.capture_broker.ingest_event(recording_id, inspector_session_id, payload)
+
+    def verify_capture_pool_item(self, recording_id: str, temp_element_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.capture_broker.verifier.verify(recording_id, temp_element_id, payload)
 
     def capture_assistant_event(self, recording_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
         recording = self.recording_manager.get(recording_id)

@@ -7,12 +7,15 @@ from core.time_truth import utc_now_iso
 
 from .models import (
     RPACompileTracePayload,
+    RPACapturePoolVerifyPayload,
     RPADraftCreatePayload,
     RPADraftPatchPayload,
     RPADraftPreparePayload,
     RPADraftRunPayload,
     RPADraftStepValidationPayload,
     RPAExistingFlowPayload,
+    RPAInspectorEventPayload,
+    RPAInspectorSessionPayload,
     RPARecordingBrowserCapturePayload,
     RPARecordingCaptureAssistantPayload,
     RPARecordingDesktopSamplePayload,
@@ -32,6 +35,12 @@ def _rpa_runtime():
     from runtimes.rpa.runtime import rpa_runtime
 
     return rpa_runtime
+
+
+def _capture_verification_required_error():
+    from runtimes.rpa.recording import CaptureVerificationRequired
+
+    return CaptureVerificationRequired
 
 
 @router.get("/rpa/availability")
@@ -259,6 +268,45 @@ async def stop_rpa_browser_capture(recording_id: str, payload: RPARecordingBrows
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/rpa/recordings/{recording_id}/inspector/sessions")
+async def start_rpa_inspector_session(recording_id: str, payload: RPAInspectorSessionPayload):
+    try:
+        return _rpa_runtime().start_inspector_session(
+            recording_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/rpa/recordings/{recording_id}/inspector/sessions/{inspector_session_id}")
+async def get_rpa_inspector_session(recording_id: str, inspector_session_id: str):
+    try:
+        return _rpa_runtime().get_inspector_session(recording_id, inspector_session_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/inspector/sessions/{inspector_session_id}/events")
+async def post_rpa_inspector_event(recording_id: str, inspector_session_id: str, payload: RPAInspectorEventPayload):
+    try:
+        return _rpa_runtime().ingest_inspector_event(
+            recording_id,
+            inspector_session_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/rpa/capture-assistant/status")
 async def get_rpa_capture_assistant_status():
     try:
@@ -382,6 +430,22 @@ async def save_rpa_capture_pool_item(recording_id: str, temp_element_id: str, pa
             recording_id,
             temp_element_id,
             name=data.get("name"),
+        )
+    except _capture_verification_required_error() as e:
+        raise HTTPException(status_code=409, detail={"code": "verification_required", "message": str(e)})
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rpa/recordings/{recording_id}/capture-pool/{temp_element_id}/verify")
+async def verify_rpa_capture_pool_item(recording_id: str, temp_element_id: str, payload: RPACapturePoolVerifyPayload):
+    try:
+        return _rpa_runtime().verify_capture_pool_item(
+            recording_id,
+            temp_element_id,
+            payload.model_dump(by_alias=True, exclude_none=True),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

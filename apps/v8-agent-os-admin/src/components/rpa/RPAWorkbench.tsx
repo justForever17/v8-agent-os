@@ -288,6 +288,9 @@ type CapturePoolItem = {
   fragileCoordinateFallback?: boolean;
   captureMode?: string;
   capturedAt?: string;
+  locatorBundle?: Record<string, unknown>;
+  anchorBundle?: Record<string, unknown>;
+  proof?: Record<string, unknown>;
 };
 type CaptureAssistantStage = "idle" | "creating" | "preparing" | "selecting" | "starting" | "armed" | "active" | "captured" | "coordinate" | "failed";
 type StepCaptureContext = {
@@ -490,9 +493,11 @@ function captureItemLabel(item?: CapturePoolItem | ObjectLibraryElement | null) 
 function captureItemSelectorValue(item?: CapturePoolItem | ObjectLibraryElement | null) {
   if (!item) return "";
   const selector = isPlainRecord(item.selector) ? item.selector : {};
+  const locatorBundle = isPlainRecord(item.locatorBundle) ? item.locatorBundle : {};
+  const primaryLocator = isPlainRecord(locatorBundle.primaryLocator) ? locatorBundle.primaryLocator : {};
   const candidates = Array.isArray(item.selectorCandidates) ? item.selectorCandidates : [];
   const best = candidates.find(candidate => isPlainRecord(candidate)) as Record<string, unknown> | undefined;
-  return firstString(selector.css, selector.xpath, selector.role, selector.selector, selector.automationId, selector.name, best?.css, best?.xpath, best?.role, best?.automationId, best?.name);
+  return firstString(selector.css, selector.xpath, selector.role, selector.selector, selector.automationId, selector.name, primaryLocator.css, primaryLocator.xpath, primaryLocator.selector, primaryLocator.automationId, primaryLocator.name, best?.css, best?.xpath, best?.role, best?.automationId, best?.name);
 }
 function captureItemCoordinateValue(item?: CapturePoolItem | ObjectLibraryElement | null) {
   if (!item || !isPlainRecord(item.coordinate)) return "";
@@ -500,6 +505,14 @@ function captureItemCoordinateValue(item?: CapturePoolItem | ObjectLibraryElemen
   const y = item.coordinate.y;
   if (x == null || y == null || x === "" || y === "") return "";
   return `${x}, ${y}`;
+}
+function captureItemProofStatus(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  const proof = isPlainRecord(item?.proof) ? item?.proof : {};
+  return firstString(proof.status) || (item?.elementId && (item as ObjectLibraryElement).savedAt ? "legacy_saved" : "unverified");
+}
+function captureItemVerified(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  const status = captureItemProofStatus(item);
+  return status === "verified" || status === "legacy_saved";
 }
 function captureTargetCandidateLabel(candidate?: Record<string, unknown> | null) {
   if (!candidate) return "window";
@@ -1691,6 +1704,38 @@ export function RPAWorkbench() {
         setCaptureAssistantStage("failed");
         return;
       }
+      const inspectorRes = await fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/inspector/sessions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          platform: captureContext.mode === "agent_browser" ? "browser" : "windows",
+          stepId: captureContext.stepId,
+          selectedStepKey: captureContext.stepKey,
+          workflowSnapshot: captureContext.workflowSnapshot,
+          targetLock: captureContext.targetLock,
+          appId: captureContext.appId || "desktop",
+          label: captureContext.label,
+        })
+      });
+      const inspectorData = await inspectorRes.json().catch(() => ({}));
+      setLatestResult(inspectorData);
+      if (inspectorData?.recording) {
+        setActiveRecording(inspectorData.recording as RecordingSessionPayload);
+      }
+      if (inspectorRes.ok && inspectorData?.ok) {
+        setCaptureAssistantActive(false);
+        setCaptureAssistantStage("active");
+        toast({
+          title: t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"),
+          description: firstString(inspectorData?.status) || "inspector_v2"
+        });
+        window.setTimeout(() => {
+          void refreshRecording(recording.recordingSessionId);
+        }, 800);
+        return;
+      }
       setCaptureAssistantStage("preparing");
       const prepared = await runAction(`recording:capture-assistant:prepare:${recording.recordingSessionId}`, () => fetch(`/api/rpa/recordings/${encodeURIComponent(recording.recordingSessionId)}/capture-assistant/prepare-target`, {
         method: "POST",
@@ -1892,6 +1937,14 @@ export function RPAWorkbench() {
   };
   const applyElementToSelectedStep = (item: CapturePoolItem | ObjectLibraryElement) => {
     if (!selectedBuilderStep) return;
+    if (!captureItemVerified(item)) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioValidateSelector"),
+        description: captureItemProofStatus(item)
+      });
+      return;
+    }
     const selectorValue = captureItemSelectorValue(item);
     const selector = isPlainRecord(item.selector) ? item.selector : {};
     const coordinate = isPlainRecord(item.coordinate) ? item.coordinate : {};
@@ -1928,8 +1981,47 @@ export function RPAWorkbench() {
     });
     setStudioRightPanel("properties");
   };
+  const handleVerifyCapturePoolItem = async (item: CapturePoolItem) => {
+    if (!activeRecording?.recordingSessionId || !item.tempElementId) return;
+    const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-pool/${encodeURIComponent(item.tempElementId)}/verify`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        allowLiveResolve: true,
+        highlightOk: true
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    setLatestResult(data);
+    if (!res.ok) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioValidateSelector"),
+        description: data?.detail || data?.error || t("app.admin.dashboard.subagents.page.externalWorkers.unknownError")
+      });
+      return;
+    }
+    if (data?.recording) {
+      setActiveRecording(data.recording as RecordingSessionPayload);
+    }
+    toast({
+      variant: data?.ok ? "default" : "destructive",
+      title: t("components.rpa.RPAWorkbench.studioValidateSelector"),
+      description: firstString(data?.status) || "verification"
+    });
+  };
   const handleSaveCapturePoolItem = async (item: CapturePoolItem) => {
     if (!activeRecording?.recordingSessionId || !item.tempElementId) return;
+    if (!captureItemVerified(item)) {
+      toast({
+        variant: "destructive",
+        title: t("components.rpa.RPAWorkbench.studioElementSaveFailed"),
+        description: captureItemProofStatus(item)
+      });
+      return;
+    }
     const res = await fetch(`/api/rpa/recordings/${encodeURIComponent(activeRecording.recordingSessionId)}/capture-pool/${encodeURIComponent(item.tempElementId)}/save`, {
       method: "POST",
       headers: {
@@ -3084,11 +3176,15 @@ export function RPAWorkbench() {
                                                                 </AdminHoverInfo>
                                                                 <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{captureItemSelectorValue(item) || captureItemCoordinateValue(item) || item.source}</div>
                                                             </div>
-                                                            {item.fragileCoordinateFallback ? <Badge variant="outline" className="shrink-0 text-[10px]">{t("components.rpa.RPAWorkbench.fragileCoordinate")}</Badge> : null}
+                                                            <div className="flex shrink-0 flex-col items-end gap-1">
+                                                                <Badge variant={captureItemVerified(item) ? "default" : "outline"} className="text-[10px]">{captureItemProofStatus(item)}</Badge>
+                                                                {item.fragileCoordinateFallback ? <Badge variant="outline" className="text-[10px]">{t("components.rpa.RPAWorkbench.fragileCoordinate")}</Badge> : null}
+                                                            </div>
                                                         </div>
                                                         <div className="mt-2 flex flex-wrap gap-1.5">
-                                                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => applyElementToSelectedStep(item)} disabled={!selectedBuilderStep}>{t("components.rpa.RPAWorkbench.studioUseElement")}</Button>
-                                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => void handleSaveCapturePoolItem(item)}>{t("components.rpa.RPAWorkbench.studioSaveElement")}</Button>
+                                                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void handleVerifyCapturePoolItem(item)}>{t("components.rpa.RPAWorkbench.studioValidateSelector")}</Button>
+                                                            <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => applyElementToSelectedStep(item)} disabled={!selectedBuilderStep || !captureItemVerified(item)}>{t("components.rpa.RPAWorkbench.studioUseElement")}</Button>
+                                                            <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => void handleSaveCapturePoolItem(item)} disabled={!captureItemVerified(item)}>{t("components.rpa.RPAWorkbench.studioSaveElement")}</Button>
                                                         </div>
                                                     </div>)}
                                                 {!selectedCapturePoolItems.length ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCapturePoolEmpty")}</div> : null}

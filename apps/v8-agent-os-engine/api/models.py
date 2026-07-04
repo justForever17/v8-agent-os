@@ -557,6 +557,41 @@ class RPARecordingBrowserCapturePayload(BaseModel):
     max_events: int = Field(default=50, alias="maxEvents")
 
 
+class RPAInspectorSessionPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    platform: Optional[str] = None
+    adapter: Optional[str] = None
+    step_id: Optional[str] = Field(default=None, alias="stepId")
+    selected_step_key: Optional[str] = Field(default=None, alias="selectedStepKey")
+    workflow_snapshot: Dict[str, Any] = Field(default_factory=dict, alias="workflowSnapshot")
+    target_lock: Dict[str, Any] = Field(default_factory=dict, alias="targetLock")
+    browser_attach: Dict[str, Any] = Field(default_factory=dict, alias="browserAttach")
+    target_id: Optional[str] = Field(default=None, alias="targetId")
+    cdp_endpoint: Optional[str] = Field(default=None, alias="cdpEndpoint")
+    ws_endpoint: Optional[str] = Field(default=None, alias="wsEndpoint")
+
+
+class RPAInspectorEventPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    type: Optional[str] = None
+    event: Optional[str] = None
+    one_time_token: Optional[str] = Field(default=None, alias="oneTimeToken")
+    candidate: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RPACapturePoolVerifyPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    find_count: Optional[int] = Field(default=None, alias="findCount")
+    highlight_ok: Optional[bool] = Field(default=None, alias="highlightOk")
+    highlight_ref: Optional[str] = Field(default=None, alias="highlightRef")
+    screenshot_ref: Optional[str] = Field(default=None, alias="screenshotRef")
+    dry_run_result: Dict[str, Any] = Field(default_factory=dict, alias="dryRunResult")
+    allow_live_resolve: bool = Field(default=False, alias="allowLiveResolve")
+
+
 class RPARecordingCaptureAssistantPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 

@@ -23,6 +23,10 @@ from runtimes.computer_use.types import (
 RECORDING_SCHEMA_VERSION = 1
 
 
+class CaptureVerificationRequired(ValueError):
+    """Raised when an object-library save is attempted before V2 proof exists."""
+
+
 def _safe_string(value: Any, fallback: str = "") -> str:
     text = str(value or "").strip()
     return text or fallback
@@ -243,6 +247,46 @@ class RPARecordingManager:
         session["capturePool"] = pool[-50:]
         return self._public_session(self._write_session(session))
 
+    def get_capture_pool_item(self, recording_id: str, temp_element_id: str) -> Optional[Dict[str, Any]]:
+        session = self._require_session(recording_id)
+        pool = [item for item in _coerce_list(session.get("capturePool")) if isinstance(item, dict)]
+        return next((item for item in pool if item.get("tempElementId") == temp_element_id), None)
+
+    def update_capture_pool_item(self, recording_id: str, temp_element_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+        session = self._require_session(recording_id)
+        pool = [item for item in _coerce_list(session.get("capturePool")) if isinstance(item, dict)]
+        updated_pool: List[Dict[str, Any]] = []
+        found = False
+        for item in pool:
+            if item.get("tempElementId") == temp_element_id:
+                merged = {**item, **dict(patch or {}), "updatedAt": utc_now_iso()}
+                updated_pool.append(merged)
+                found = True
+            else:
+                updated_pool.append(item)
+        if not found:
+            raise ValueError(f"Capture pool item '{temp_element_id}' not found.")
+        session["capturePool"] = updated_pool[-50:]
+        return self._public_session(self._write_session(session))
+
+    def upsert_inspector_session(self, recording_id: str, inspector_session: Dict[str, Any]) -> Dict[str, Any]:
+        session = self._require_session(recording_id)
+        inspector_sessions = [item for item in _coerce_list(session.get("inspectorSessions")) if isinstance(item, dict)]
+        session_id = _safe_string(inspector_session.get("sessionId"))
+        if not session_id:
+            raise ValueError("Inspector session is missing sessionId.")
+        normalized = {**dict(inspector_session), "sessionId": session_id, "updatedAt": utc_now_iso()}
+        inspector_sessions = [item for item in inspector_sessions if item.get("sessionId") != session_id]
+        inspector_sessions.append(normalized)
+        session["inspectorSessions"] = inspector_sessions[-20:]
+        session["activeInspectorSessionId"] = session_id
+        return self._public_session(self._write_session(session))
+
+    def get_inspector_session(self, recording_id: str, session_id: str) -> Optional[Dict[str, Any]]:
+        session = self._require_session(recording_id)
+        inspector_sessions = [item for item in _coerce_list(session.get("inspectorSessions")) if isinstance(item, dict)]
+        return next((item for item in inspector_sessions if item.get("sessionId") == session_id), None)
+
     def save_capture_pool_item(
         self,
         recording_id: str,
@@ -255,6 +299,9 @@ class RPARecordingManager:
         match = next((item for item in pool if item.get("tempElementId") == temp_element_id), None)
         if not match:
             raise ValueError(f"Capture pool item '{temp_element_id}' not found.")
+        proof = _coerce_dict(match.get("proof"))
+        if proof.get("status") != "verified":
+            raise CaptureVerificationRequired(f"Capture pool item '{temp_element_id}' must be verified before saving.")
         library = [item for item in _coerce_list(session.get("objectLibrary")) if isinstance(item, dict)]
         element_id = _safe_string(match.get("elementId"), f"el_{uuid.uuid4().hex[:10]}")
         label = _safe_string(name, _safe_string(match.get("label"), element_id))
@@ -348,6 +395,9 @@ class RPARecordingManager:
         if not session:
             raise ValueError(f"Recording session '{recording_id}' not found.")
         return session
+
+    def require_session(self, recording_id: str) -> Dict[str, Any]:
+        return self._require_session(recording_id)
 
     def _public_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(session)

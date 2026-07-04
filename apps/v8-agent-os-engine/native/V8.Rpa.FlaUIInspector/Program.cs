@@ -106,11 +106,11 @@ internal sealed class InspectorWindow : Window
             Orientation = Orientation.Horizontal,
             Margin = new Thickness(12),
         };
-        toolbar.Children.Add(MakeButton("Refresh windows", (_, _) => RefreshWindows()));
-        toolbar.Children.Add(MakeButton("Refresh elements", (_, _) => LoadSelectedWindowElements()));
-        toolbar.Children.Add(MakeButton("Highlight", (_, _) => HighlightSelected()));
-        toolbar.Children.Add(MakeButton("Test locator", (_, _) => TestSelectedLocator()));
-        toolbar.Children.Add(MakeButton("Send to V8", (_, _) => SendSelected()));
+        toolbar.Children.Add(MakeButton("1 Refresh target", (_, _) => RefreshWindows()));
+        toolbar.Children.Add(MakeButton("2 Refresh elements", (_, _) => LoadSelectedWindowElements()));
+        toolbar.Children.Add(MakeButton("3 Highlight", (_, _) => HighlightSelected()));
+        toolbar.Children.Add(MakeButton("4 Test locator", (_, _) => TestSelectedLocator()));
+        toolbar.Children.Add(MakeButton("5 Send verified target", (_, _) => SendSelected()));
         _status.Margin = new Thickness(12, 0, 12, 10);
         _status.Foreground = Brushes.DimGray;
         DockPanel.SetDock(toolbar, Dock.Top);
@@ -146,6 +146,7 @@ internal sealed class InspectorWindow : Window
                 _selectedElement = snapshot;
                 _properties.Text = JsonSerializer.Serialize(snapshot.ToCandidate(_selectedWindow, 0, null), Json.Options);
                 HighlightSelected();
+                _status.Text = $"Selected {snapshot.Label}. Test locator before sending it to V8.";
             }
         };
         WpfGrid.SetColumn(_elementTree, 1);
@@ -209,8 +210,17 @@ internal sealed class InspectorWindow : Window
     {
         try
         {
-            _windowList.ItemsSource = WindowSnapshot.Find(_automation, _request).ToList();
-            _status.Text = $"Loaded {_windowList.Items.Count} windows. Select a window to inspect.";
+            var windows = WindowSnapshot.Find(_automation, _request).ToList();
+            _windowList.ItemsSource = windows;
+            if (windows.Count == 1)
+            {
+                _windowList.SelectedIndex = 0;
+                _status.Text = $"Target locked: {windows[0].Title}. Select an element, test locator, then send it to V8.";
+                return;
+            }
+            _status.Text = windows.Count == 0
+                ? "No matching target window. Return to Studio and lock or open the target first."
+                : $"Loaded {windows.Count} windows. Select the exact target window first.";
         }
         catch (Exception ex)
         {

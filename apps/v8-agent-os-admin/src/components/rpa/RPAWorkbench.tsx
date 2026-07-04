@@ -267,6 +267,18 @@ type RecordingSessionPayload = {
   stepCount?: number;
   createdAt?: string;
   updatedAt?: string;
+  activeInspectorSessionId?: string;
+  inspectorSessions?: RPAInspectorSessionSummary[];
+};
+type RPAInspectorSessionSummary = {
+  sessionId?: string;
+  status?: string;
+  state?: string;
+  platform?: string;
+  candidateCount?: number;
+  reason?: string;
+  sidecar?: Record<string, unknown>;
+  browserAttach?: Record<string, unknown>;
 };
 type CapturePoolItem = {
   tempElementId?: string;
@@ -510,9 +522,75 @@ function captureItemProofStatus(item?: CapturePoolItem | ObjectLibraryElement | 
   const proof = isPlainRecord(item?.proof) ? item?.proof : {};
   return firstString(proof.status) || (item?.elementId && (item as ObjectLibraryElement).savedAt ? "legacy_saved" : "unverified");
 }
+function captureItemProofFindCount(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  const proof = isPlainRecord(item?.proof) ? item?.proof : {};
+  const value = proof.findCount;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function captureItemProofEvidenceRef(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  const proof = isPlainRecord(item?.proof) ? item?.proof : {};
+  const anchorBundle = isPlainRecord(item?.anchorBundle) ? item.anchorBundle : {};
+  const screenshotAnchor = isPlainRecord(anchorBundle.screenshotAnchor) ? anchorBundle.screenshotAnchor : {};
+  return firstString(proof.screenshotRef, proof.highlightRef, screenshotAnchor.screenshotRef, screenshotAnchor.screenshotPatchRef);
+}
+function captureItemLocatorKind(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  const locatorBundle = isPlainRecord(item?.locatorBundle) ? item.locatorBundle : {};
+  const primaryLocator = isPlainRecord(locatorBundle.primaryLocator) ? locatorBundle.primaryLocator : {};
+  const selector = isPlainRecord(item?.selector) ? item.selector : {};
+  return firstString(primaryLocator.playwright, primaryLocator.strategy, primaryLocator.kind, selector.kind, selector.strategy, item?.source);
+}
+function captureItemTargetWindowLabel(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  const targetWindow = isPlainRecord(item?.targetWindow) ? item.targetWindow : {};
+  return firstString(targetWindow.title, targetWindow.url, targetWindow.processName, targetWindow.handle);
+}
 function captureItemVerified(item?: CapturePoolItem | ObjectLibraryElement | null) {
   const status = captureItemProofStatus(item);
   return status === "verified" || status === "legacy_saved";
+}
+function captureItemProofTone(item?: CapturePoolItem | ObjectLibraryElement | null) {
+  const status = captureItemProofStatus(item);
+  if (status === "verified" || status === "legacy_saved") return "border-emerald-500/35 bg-emerald-500/5";
+  if (status === "locator_ambiguous") return "border-amber-500/35 bg-amber-500/5";
+  if (status === "locator_unresolved" || status === "highlight_failed") return "border-destructive/35 bg-destructive/5";
+  return "border-border/60";
+}
+function friendlyCaptureProofLabel(status: string, t: ReturnType<typeof useT>) {
+  const keyByStatus: Record<string, string> = {
+    verified: "components.rpa.RPAWorkbench.proofStatusVerified",
+    legacy_saved: "components.rpa.RPAWorkbench.proofStatusLegacySaved",
+    locator_ambiguous: "components.rpa.RPAWorkbench.proofStatusAmbiguous",
+    locator_unresolved: "components.rpa.RPAWorkbench.proofStatusUnresolved",
+    highlight_failed: "components.rpa.RPAWorkbench.proofStatusHighlightFailed",
+    unverified: "components.rpa.RPAWorkbench.proofStatusUnverified",
+  };
+  return t(keyByStatus[status] || "components.rpa.RPAWorkbench.proofStatusUnverified");
+}
+function friendlyInspectorStatusLabel(status: string, t: ReturnType<typeof useT>) {
+  const normalized = String(status || "").toLowerCase();
+  const keyByStatus: Record<string, string> = {
+    starting: "components.rpa.RPAWorkbench.inspectorStatusStarting",
+    starting_sidecar: "components.rpa.RPAWorkbench.inspectorStatusStarting",
+    waiting_sidecar: "components.rpa.RPAWorkbench.inspectorStatusWaiting",
+    attached: "components.rpa.RPAWorkbench.inspectorStatusReady",
+    ready: "components.rpa.RPAWorkbench.inspectorStatusReady",
+    heartbeat: "components.rpa.RPAWorkbench.inspectorStatusReady",
+    candidate_received: "components.rpa.RPAWorkbench.inspectorStatusCandidateReceived",
+    unavailable: "components.rpa.RPAWorkbench.inspectorStatusUnavailable",
+    failed: "components.rpa.RPAWorkbench.inspectorStatusFailed",
+    closed: "components.rpa.RPAWorkbench.inspectorStatusClosed",
+  };
+  return t(keyByStatus[normalized] || "components.rpa.RPAWorkbench.studioInspectorSidecarIdle");
+}
+function friendlyInspectorHint(status: string, kind: string, t: ReturnType<typeof useT>) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "candidate_received") return t("components.rpa.RPAWorkbench.inspectorHintCandidateReceived");
+  if (normalized === "ready" || normalized === "attached" || normalized === "heartbeat") {
+    return kind === "rpa_playwright_node_sidecar"
+      ? t("components.rpa.RPAWorkbench.inspectorHintBrowserReady")
+      : t("components.rpa.RPAWorkbench.inspectorHintWindowsReady");
+  }
+  if (normalized === "unavailable" || normalized === "failed") return t("components.rpa.RPAWorkbench.inspectorHintFailed");
+  return t("components.rpa.RPAWorkbench.inspectorHintStarting");
 }
 function captureTargetCandidateLabel(candidate?: Record<string, unknown> | null) {
   if (!candidate) return "window";
@@ -1137,13 +1215,23 @@ export function RPAWorkbench() {
     return firstString(result.diagnosticTail, result.reason, result.error, result.recommendedNextAction, resultAssistant.diagnosticTail, resultAssistant.lastError, assistant.diagnosticTail, assistant.lastError);
   }, [activeRecording, latestResult]);
   const latestInspectorSession = useMemo(() => {
+    const sessions = Array.isArray(activeRecording?.inspectorSessions) ? activeRecording.inspectorSessions : [];
+    if (sessions.length) {
+      const activeId = firstString(activeRecording?.activeInspectorSessionId);
+      const activeSession = activeId ? sessions.find(session => session.sessionId === activeId) : null;
+      return (activeSession || sessions[sessions.length - 1]) as Record<string, unknown>;
+    }
     const result = isPlainRecord(latestResult) ? latestResult as Record<string, unknown> : {};
     return isPlainRecord(result.session) ? result.session as Record<string, unknown> : null;
-  }, [latestResult]);
+  }, [activeRecording?.activeInspectorSessionId, activeRecording?.inspectorSessions, latestResult]);
   const latestInspectorSidecar = useMemo(() => {
     const sidecar = latestInspectorSession && isPlainRecord(latestInspectorSession.sidecar) ? latestInspectorSession.sidecar : null;
     return isPlainRecord(sidecar) ? sidecar as Record<string, unknown> : null;
   }, [latestInspectorSession]);
+  const latestInspectorKind = firstString(latestInspectorSidecar?.kind) || (canvasTargetMode === "agent_browser" ? "rpa_playwright_node_sidecar" : "flaui_inspector_panel");
+  const latestInspectorStatus = firstString(latestInspectorSession?.status, latestInspectorSidecar?.status, latestInspectorSidecar?.state);
+  const latestInspectorCandidateCount = typeof latestInspectorSession?.candidateCount === "number" ? latestInspectorSession.candidateCount : selectedCapturePoolItems.length;
+  const inspectorSidecarLive = Boolean(latestInspectorSession && ["starting", "starting_sidecar", "waiting_sidecar", "attached", "ready", "heartbeat", "candidate_received"].includes(String(latestInspectorStatus || "").toLowerCase()));
   const objectLibraryItems = useMemo(() => Array.isArray(activeRecording?.objectLibrary) ? activeRecording.objectLibrary : Array.isArray(selectedDraft?.objectLibrary) ? selectedDraft.objectLibrary : [], [activeRecording, selectedDraft]);
   const selectableElements = useMemo(() => [
     ...objectLibraryItems.map(item => ({ ...item, sourceBucket: "library" as const, optionId: item.elementId || item.sourceTempElementId || item.tempElementId || captureItemLabel(item) })),
@@ -1595,7 +1683,7 @@ export function RPAWorkbench() {
         setCaptureAssistantStage("active");
         toast({
           title: t("components.rpa.RPAWorkbench.studioCaptureAssistantStarted"),
-          description: firstString(inspectorData?.status) || "inspector_v2"
+          description: friendlyInspectorHint(firstString(inspectorData?.session?.status, inspectorData?.session?.sidecar?.status), firstString(inspectorData?.session?.sidecar?.kind), t)
         });
         window.setTimeout(() => {
           void refreshRecording(recording.recordingSessionId);
@@ -1687,6 +1775,19 @@ export function RPAWorkbench() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [activeRecording?.recordingSessionId, activeRecording?.state, captureAssistantActive, handleCaptureAssistantPoll]);
+  useEffect(() => {
+    if (!activeRecording?.recordingSessionId || activeRecording.state !== "recording" || !latestInspectorSession) {
+      return;
+    }
+    const liveStatuses = new Set(["starting", "starting_sidecar", "waiting_sidecar", "attached", "ready", "heartbeat", "candidate_received"]);
+    if (!liveStatuses.has(String(latestInspectorStatus || "").toLowerCase())) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshRecording(activeRecording.recordingSessionId);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeRecording?.recordingSessionId, activeRecording?.state, latestInspectorSession, latestInspectorStatus, refreshRecording]);
   const handleBindTargetCandidate = (candidate: Record<string, unknown>) => {
     if (!selectedBuilderStep) return;
     const label = captureTargetCandidateLabel(candidate);
@@ -2885,12 +2986,23 @@ export function RPAWorkbench() {
                                         <Button size="sm" variant="outline" onClick={() => void handleSampleComputerUse()} disabled={!selectedBuilderStep || computerSampling}>{t("components.rpa.RPAWorkbench.studioSampleElements")}</Button>
                                     </div>
                                     <div className="rounded-xl border border-border/60 bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
-                                        {t("components.rpa.RPAWorkbench.studioInspectorSidecar")}：
-                                        {firstString(latestInspectorSidecar?.kind) || (canvasTargetMode === "agent_browser" ? "rpa_playwright_node_sidecar" : "flaui_inspector_panel")}
-                                        {" · "}
-                                        {firstString(latestInspectorSession?.status, latestInspectorSidecar?.status, latestInspectorSidecar?.state) || t("components.rpa.RPAWorkbench.studioInspectorSidecarIdle")}
+                                        <div className="flex items-center justify-between gap-2">
+                                            <div className="min-w-0">
+                                                <div className="truncate font-medium text-foreground">
+                                                    {friendlyInspectorStatusLabel(latestInspectorStatus, t)}
+                                                </div>
+                                                <div className="mt-0.5 line-clamp-2">
+                                                    {friendlyInspectorHint(latestInspectorStatus, latestInspectorKind, t)}
+                                                </div>
+                                            </div>
+                                            <Badge variant="outline" className="shrink-0 text-[10px]">{latestInspectorKind}</Badge>
+                                        </div>
+                                        <div className="mt-1 flex flex-wrap gap-1.5">
+                                            <Badge variant="secondary" className="text-[10px]">{t("components.rpa.RPAWorkbench.inspectorCandidateCount", { count: latestInspectorCandidateCount })}</Badge>
+                                            {latestInspectorSession?.platform ? <Badge variant="outline" className="text-[10px]">{String(latestInspectorSession.platform)}</Badge> : null}
+                                        </div>
                                     </div>
-                                    {(captureAssistantActive && (captureAssistantStage === "armed" || captureAssistantStage === "active")) ? <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-primary">
+                                    {inspectorSidecarLive ? <div className="rounded-xl border border-primary/20 bg-primary/5 p-2.5 text-[11px] text-primary">
                                             {t("components.rpa.RPAWorkbench.studioInspectorSidecarActive")}
                                         </div> : null}
                                     {captureAssistantStage === "failed" ? <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-2.5 text-[11px] text-destructive">
@@ -2936,7 +3048,13 @@ export function RPAWorkbench() {
                                         </div>
                                         <ScrollArea className="h-44 pr-2">
                                             <div className="space-y-2">
-                                                {selectedCapturePoolItems.map(item => <div key={item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
+                                                {selectedCapturePoolItems.map(item => {
+                                                    const proofStatus = captureItemProofStatus(item);
+                                                    const findCount = captureItemProofFindCount(item);
+                                                    const evidenceRef = captureItemProofEvidenceRef(item);
+                                                    const locatorKind = captureItemLocatorKind(item);
+                                                    const windowLabel = captureItemTargetWindowLabel(item);
+                                                    return <div key={item.tempElementId || captureItemLabel(item)} className={`rounded-xl border p-2.5 text-xs ${captureItemProofTone(item)}`}>
                                                         <div className="flex items-start justify-between gap-2">
                                                             <div className="min-w-0">
                                                                 <AdminHoverInfo content={captureItemLabel(item)} panelClassName="w-auto max-w-[26rem] whitespace-normal">
@@ -2945,16 +3063,37 @@ export function RPAWorkbench() {
                                                                 <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{captureItemSelectorValue(item) || captureItemCoordinateValue(item) || item.source}</div>
                                                             </div>
                                                             <div className="flex shrink-0 flex-col items-end gap-1">
-                                                                <Badge variant={captureItemVerified(item) ? "default" : "outline"} className="text-[10px]">{captureItemProofStatus(item)}</Badge>
+                                                                <Badge variant={captureItemVerified(item) ? "default" : "outline"} className="text-[10px]">{friendlyCaptureProofLabel(proofStatus, t)}</Badge>
                                                                 {item.fragileCoordinateFallback ? <Badge variant="outline" className="text-[10px]">{t("components.rpa.RPAWorkbench.fragileCoordinate")}</Badge> : null}
                                                             </div>
                                                         </div>
+                                                        <div className="mt-2 grid gap-1 rounded-lg bg-background/70 p-2 text-[11px] text-muted-foreground">
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <span>{t("components.rpa.RPAWorkbench.captureProofFindCount")}</span>
+                                                                <span className="font-medium text-foreground">{findCount == null ? "n/a" : findCount}</span>
+                                                            </div>
+                                                            {locatorKind ? <div className="flex items-center justify-between gap-2">
+                                                                <span>{t("components.rpa.RPAWorkbench.captureLocatorKind")}</span>
+                                                                <span className="max-w-[12rem] truncate font-medium text-foreground">{locatorKind}</span>
+                                                            </div> : null}
+                                                            {windowLabel ? <div className="flex items-center justify-between gap-2">
+                                                                <span>{t("components.rpa.RPAWorkbench.captureTargetWindow")}</span>
+                                                                <span className="max-w-[12rem] truncate font-medium text-foreground">{windowLabel}</span>
+                                                            </div> : null}
+                                                            {evidenceRef ? <AdminHoverInfo content={evidenceRef} panelClassName="w-auto max-w-[32rem] whitespace-normal">
+                                                                <div className="truncate">{t("components.rpa.RPAWorkbench.captureProofEvidence")}：{evidenceRef}</div>
+                                                            </AdminHoverInfo> : <div>{t("components.rpa.RPAWorkbench.captureProofEvidenceMissing")}</div>}
+                                                        </div>
+                                                        {!captureItemVerified(item) ? <div className="mt-2 rounded-lg border border-dashed border-border/70 bg-background/60 px-2 py-1.5 text-[11px] text-muted-foreground">
+                                                            {t("components.rpa.RPAWorkbench.captureNeedsVerification")}
+                                                        </div> : null}
                                                         <div className="mt-2 flex flex-wrap gap-1.5">
                                                             <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void handleVerifyCapturePoolItem(item)}>{t("components.rpa.RPAWorkbench.studioValidateSelector")}</Button>
                                                             <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => applyElementToSelectedStep(item)} disabled={!selectedBuilderStep || !captureItemVerified(item)}>{t("components.rpa.RPAWorkbench.studioUseElement")}</Button>
                                                             <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => void handleSaveCapturePoolItem(item)} disabled={!captureItemVerified(item)}>{t("components.rpa.RPAWorkbench.studioSaveElement")}</Button>
                                                         </div>
-                                                    </div>)}
+                                                    </div>;
+                                                })}
                                                 {!selectedCapturePoolItems.length ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioCapturePoolEmpty")}</div> : null}
                                             </div>
                                         </ScrollArea>
@@ -2969,11 +3108,16 @@ export function RPAWorkbench() {
                                         </div>
                                         <ScrollArea className="h-40 pr-2">
                                             <div className="space-y-2">
-                                                {objectLibraryItems.map(item => <div key={item.elementId || item.tempElementId || captureItemLabel(item)} className="rounded-xl border border-border/60 p-2.5 text-xs">
+                                                {objectLibraryItems.map(item => <div key={item.elementId || item.tempElementId || captureItemLabel(item)} className={`rounded-xl border p-2.5 text-xs ${captureItemProofTone(item)}`}>
                                                         <AdminHoverInfo content={captureItemLabel(item)} panelClassName="w-auto max-w-[26rem] whitespace-normal">
                                                             <div className="truncate font-medium">{captureItemLabel(item)}</div>
                                                         </AdminHoverInfo>
                                                         <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{captureItemSelectorValue(item) || captureItemCoordinateValue(item) || item.source}</div>
+                                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                                            <Badge variant={captureItemVerified(item) ? "default" : "outline"} className="text-[10px]">{friendlyCaptureProofLabel(captureItemProofStatus(item), t)}</Badge>
+                                                            {captureItemProofFindCount(item) != null ? <Badge variant="secondary" className="text-[10px]">{t("components.rpa.RPAWorkbench.captureProofFindCountShort", { count: captureItemProofFindCount(item) || 0 })}</Badge> : null}
+                                                            {captureItemLocatorKind(item) ? <Badge variant="outline" className="max-w-[10rem] truncate text-[10px]">{captureItemLocatorKind(item)}</Badge> : null}
+                                                        </div>
                                                         <Button size="sm" variant="outline" className="mt-2 h-7 px-2 text-[11px]" onClick={() => applyElementToSelectedStep(item)} disabled={!selectedBuilderStep}>{t("components.rpa.RPAWorkbench.studioUseElement")}</Button>
                                                     </div>)}
                                                 {!objectLibraryItems.length ? <div className="rounded-xl border border-dashed p-4 text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioObjectLibraryEmpty")}</div> : null}

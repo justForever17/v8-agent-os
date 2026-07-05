@@ -86,6 +86,7 @@ docs/software-copyright
 # Exclude internal dev/admin scripts from source control, except committed smoke harnesses.
 apps/v8-agent-os-admin/scripts/*
 !apps/v8-agent-os-admin/scripts/
+!apps/v8-agent-os-admin/scripts/validate-i18n.mjs
 !apps/v8-agent-os-admin/scripts/verify-instance-pairing.mjs
 !apps/v8-agent-os-admin/scripts/verify-device-connect-ui.mjs
 apps/v8-agent-os-engine/scripts/computer_use_primitive_live_matrix.*

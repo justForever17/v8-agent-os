@@ -550,9 +550,6 @@ export default function DesktopAutomationPage() {
                             {t("app.admin.dashboard.desktop.automation.page.k59f13024")}{envelope.data.modelBindings.fallbackRerankerModel || t("app.admin.dashboard.desktop.automation.page.k54745147")}{t("app.admin.dashboard.desktop.automation.page.k75b279f7")}
                         </p>
                     </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm leading-6 text-slate-600">
-                        {t("app.admin.dashboard.desktop.automation.page.k2aa01992")}
-                    </div>
                 </ConfigCard>
             </div>
 

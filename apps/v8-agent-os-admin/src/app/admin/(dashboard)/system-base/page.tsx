@@ -574,11 +574,11 @@ export default function SystemBasePage() {
                                 }
                                 placeholder="http://127.0.0.1:9528/api"
                             />
-                            <div className="text-xs leading-5 text-slate-500">
-                                {looksLikeLoopbackOrigin(bridge.adminBaseUrl)
-                                    ? t("app.admin.dashboard.system.base.page.ka5970697")
-                                    : t("app.admin.dashboard.system.base.page.k83edadde")}
-                            </div>
+                            {!looksLikeLoopbackOrigin(bridge.adminBaseUrl) ? (
+                                <div className="text-xs leading-5 text-slate-500">
+                                    {t("app.admin.dashboard.system.base.page.k83edadde")}
+                                </div>
+                            ) : null}
                         </div>
                         <div className="space-y-2 md:col-span-2">
                             <Label>{t("app.admin.dashboard.system.base.page.k9a85870c")}</Label>

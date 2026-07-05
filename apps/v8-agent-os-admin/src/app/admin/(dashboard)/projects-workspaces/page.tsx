@@ -730,24 +730,16 @@ export default function ProjectsWorkspacesPage() {
                         <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.writableLabel")} ok={Boolean(defaultWorkspaceStatus.writable)} okText={t("app.admin.dashboard.projects.workspaces.page.status.writable")} badText={t("app.admin.dashboard.projects.workspaces.page.status.pending")} />
                     </div>
 
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm text-slate-600">
-                        <div className="font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.status.summaryTitle")}</div>
-                        <div className="mt-2 leading-6">
-                            {workspaceValidationError
-                                || defaultWorkspaceStatus.reason
-                                || t("app.admin.dashboard.projects.workspaces.page.status.singleChoiceHint")}
+                    {workspaceValidationError || defaultWorkspaceStatus.reason ? (
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm leading-6 text-slate-600">
+                            {workspaceValidationError || defaultWorkspaceStatus.reason}
                         </div>
-                    </div>
+                    ) : null}
 
                     <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white">
                         <div className="border-b border-slate-200 px-4 py-3">
                             <div className="flex items-center justify-between gap-3">
-                                <div>
-                                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.inlineTitle")}</div>
-                                    <div className="mt-1 text-xs leading-5 text-slate-500">
-                                        {t("app.admin.dashboard.projects.workspaces.page.agentsRules.singleChoiceHint")}
-                                    </div>
-                                </div>
+                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.inlineTitle")}</div>
                                 <Button type="button" onClick={() => void saveDefaultRules()} disabled={defaultRulesSaving || defaultRulesLoading || defaultRulesOverBudget}>
                                     {defaultRulesSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                                     {t("app.admin.dashboard.projects.workspaces.page.agentsRules.save")}

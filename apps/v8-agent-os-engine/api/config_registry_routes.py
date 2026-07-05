@@ -1000,6 +1000,26 @@ def _save_projects_domain(payload: dict[str, Any]) -> dict[str, Any]:
     return _build_projects_domain()
 
 
+def _build_desktop_pet_domain() -> dict[str, Any]:
+    return {
+        "domain": "desktop-pet",
+        "title": "桌宠设置",
+        "summary": "配置桌宠的事件播报、动作映射和光效，不承载聊天或连接设置。",
+        "data": storage.get_desktop_pet_config(),
+        "source": _config_source("desktopPet"),
+        "savePath": _config_save_path("desktopPet"),
+        "reloadRequired": False,
+        "warnings": [],
+        "advancedFields": ["actionTable", "effectSpectrum"],
+    }
+
+
+def _save_desktop_pet_domain(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload.get("data") or payload or {})
+    storage.save_desktop_pet_config(data)
+    return _build_desktop_pet_domain()
+
+
 def _build_music_domain() -> dict[str, Any]:
     return {
         "domain": "music",
@@ -1145,6 +1165,7 @@ DOMAIN_REGISTRY: dict[str, tuple[ConfigBuilder, ConfigSaver]] = {
     "rpa": (_build_rpa_domain, _save_rpa_domain),
     "mcp": (_build_mcp_domain, _save_mcp_domain),
     "projects": (_build_projects_domain, _save_projects_domain),
+    "desktop-pet": (_build_desktop_pet_domain, _save_desktop_pet_domain),
     "music": (_build_music_domain, _save_music_domain),
     "network-supervisor-runtime": (_build_network_supervisor_runtime_domain, _save_network_supervisor_runtime_domain),
     "system-base": (_build_system_base_domain, _save_system_base_domain),

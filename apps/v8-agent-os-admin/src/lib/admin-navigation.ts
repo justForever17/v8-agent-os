@@ -209,6 +209,14 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
                 icon: SlidersHorizontal,
                 description: "lib.admin.navigation.k75b9814d",
             },
+            {
+                title: "lib.admin.navigation.desktopPetTitle",
+                href: "/admin/desktop-pet",
+                icon: Bot,
+                description: "lib.admin.navigation.desktopPetDescription",
+                productVocabularyId: "desktopPet",
+                canonicalId: PRODUCT_VOCABULARY.desktopPet.canonicalId,
+            },
         ],
     },
 ];

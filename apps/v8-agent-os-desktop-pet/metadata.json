@@ -1,0 +1,6 @@
+{
+  "name": "CyberCore Companion",
+  "description": "An interactive, agent-powered cyber desktop pet that can see, hear, speak, and emote, styled like a futuristic high-tech AI core.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

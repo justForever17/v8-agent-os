@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { issueMobileSessionForUser } from "@/lib/mobile-auth";
+import { issueLocalClientSessionForUser } from "@/lib/mobile-auth";
 import { buildClientLinkManifest, resolveRequestOrigin } from "@/lib/server/runtime-config";
 import { listUsers } from "@/lib/users";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-const TRUSTED_LOCAL_SURFACES = new Set(["web", "cyber"]);
+const TRUSTED_LOCAL_SURFACES = new Set(["web", "cyber", "desktop_pet"]);
 
 function normalizeHost(value: string | null) {
     const text = String(value || "")
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
     }
 
     const deviceName = String(body?.deviceName || `v8-local-${surface}`).trim();
-    const tokenPair = issueMobileSessionForUser(owner, deviceName);
+    const tokenPair = issueLocalClientSessionForUser(owner, deviceName, surface);
     const adminBaseUrl = resolveRequestOrigin(req);
 
     return NextResponse.json({

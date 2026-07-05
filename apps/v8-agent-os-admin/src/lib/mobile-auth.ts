@@ -24,6 +24,8 @@ type MobileRefreshTokenRecord = {
     lastUsedAt?: string;
     revokedAt?: string;
     deviceName?: string;
+    surface?: string;
+    hiddenFromDeviceList?: boolean;
 };
 
 type MobileRefreshTokenStore = {
@@ -62,6 +64,12 @@ type MobileTokenPair = {
     refreshToken: string;
     refreshTokenExpiresAt: string;
     user: MobileAuthUser;
+};
+
+type MobileTokenIssueOptions = {
+    deviceName?: string;
+    surface?: string;
+    hiddenFromDeviceList?: boolean;
 };
 
 export type MobileDeviceSession = {
@@ -159,7 +167,8 @@ function createAccessToken(user: AdminUserRecord, deviceSessionId?: string) {
     };
 }
 
-function createRefreshTokenRecord(user: AdminUserRecord, deviceName?: string) {
+function createRefreshTokenRecord(user: AdminUserRecord, options?: MobileTokenIssueOptions | string) {
+    const issueOptions: MobileTokenIssueOptions = typeof options === "string" ? { deviceName: options } : { ...(options || {}) };
     const token = crypto.randomBytes(48).toString("base64url");
     const createdAt = new Date().toISOString();
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_SECONDS * 1000).toISOString();
@@ -170,13 +179,15 @@ function createRefreshTokenRecord(user: AdminUserRecord, deviceName?: string) {
         tokenHash: hashRefreshToken(token),
         createdAt,
         expiresAt,
-        deviceName: String(deviceName || "").trim() || undefined,
+        deviceName: String(issueOptions.deviceName || "").trim() || undefined,
+        surface: String(issueOptions.surface || "").trim() || undefined,
+        hiddenFromDeviceList: Boolean(issueOptions.hiddenFromDeviceList) || undefined,
     };
     return { token, record };
 }
 
-function issueMobileTokenPair(user: AdminUserRecord, deviceName?: string): MobileTokenPair {
-    const refresh = createRefreshTokenRecord(user, deviceName);
+function issueMobileTokenPair(user: AdminUserRecord, options?: MobileTokenIssueOptions | string): MobileTokenPair {
+    const refresh = createRefreshTokenRecord(user, options);
     const access = createAccessToken(user, refresh.record.id);
     const store = readRefreshTokenStore();
     store.refreshTokens = store.refreshTokens.filter((record) => {
@@ -197,6 +208,14 @@ function issueMobileTokenPair(user: AdminUserRecord, deviceName?: string): Mobil
 
 export function issueMobileSessionForUser(user: AdminUserRecord, deviceName?: string) {
     return issueMobileTokenPair(user, deviceName);
+}
+
+export function issueLocalClientSessionForUser(user: AdminUserRecord, deviceName: string, surface: string) {
+    return issueMobileTokenPair(user, {
+        deviceName,
+        surface,
+        hiddenFromDeviceList: true,
+    });
 }
 
 function verifyAccessToken(token: string): MobileAccessClaims | null {
@@ -316,7 +335,11 @@ export async function rotateMobileSession(refreshToken: string, deviceName?: str
     record.lastUsedAt = record.revokedAt;
     writeRefreshTokenStore(store);
 
-    return issueMobileTokenPair(user, deviceName);
+    return issueMobileTokenPair(user, {
+        deviceName: deviceName || record.deviceName,
+        surface: record.surface,
+        hiddenFromDeviceList: record.hiddenFromDeviceList,
+    });
 }
 
 export function revokeMobileRefreshToken(refreshToken: string) {
@@ -338,7 +361,12 @@ export function revokeMobileRefreshToken(refreshToken: string) {
 export function listMobileDeviceSessions(userId: string): MobileDeviceSession[] {
     const now = Date.now();
     return readRefreshTokenStore().refreshTokens
-        .filter((record) => record.userId === userId && !record.revokedAt && new Date(record.expiresAt).getTime() > now)
+        .filter((record) => (
+            record.userId === userId
+            && !record.hiddenFromDeviceList
+            && !record.revokedAt
+            && new Date(record.expiresAt).getTime() > now
+        ))
         .map((record) => ({
             id: record.id,
             deviceName: record.deviceName || "V8 client",

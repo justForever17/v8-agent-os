@@ -91,6 +91,13 @@ export const PRODUCT_VOCABULARY = {
         descriptionZh: "能力开关、权限与运行状态治理。",
         descriptionEn: "Capability switches, permissions, and execution governance.",
     },
+    desktopPet: {
+        canonicalId: "desktop_pet",
+        zh: "桌宠设置",
+        en: "Desktop Companion",
+        descriptionZh: "桌宠事件播报、动作映射与光效设置。",
+        descriptionEn: "Desktop companion voice, action mapping, and effects.",
+    },
 } as const;
 
 export type ProductVocabularyKey = keyof typeof PRODUCT_VOCABULARY;

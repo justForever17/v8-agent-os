@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+select option {
+  background-color: #020617; /* bg-slate-950 */
+  color: #cbd5e1;            /* text-slate-300 */
+}
+
+@keyframes crt-turn-on {
+  0% {
+    transform: scale(0.01, 0.01);
+    opacity: 0;
+    filter: brightness(3) saturate(0.2);
+  }
+  40% {
+    transform: scale(1.4, 0.025);
+    opacity: 1;
+    filter: brightness(2) saturate(0.5);
+  }
+  70% {
+    transform: scale(0.85, 1.25);
+    filter: brightness(1.4);
+  }
+  90% {
+    transform: scale(1.05, 0.95);
+    filter: brightness(1.1);
+  }
+  100% {
+    transform: scale(1, 1);
+    opacity: 1;
+    filter: brightness(1);
+  }
+}
+
+@keyframes crt-turn-off {
+  0% {
+    transform: scale(1, 1);
+    filter: brightness(1);
+    opacity: 1;
+  }
+  35% {
+    transform: scale(1.4, 0.015);
+    filter: brightness(2.5);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(0.02, 0.02);
+    filter: brightness(5);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0, 0);
+    filter: brightness(10);
+    opacity: 0;
+  }
+}
+
+.crt-enter {
+  animation: crt-turn-on 0.6s cubic-bezier(0.25, 1, 0.3, 1) forwards;
+  transform-origin: center;
+}
+
+.crt-exit {
+  animation: crt-turn-off 0.5s cubic-bezier(0.25, 1, 0.3, 1) forwards;
+  transform-origin: center;
+}
+
+@keyframes cyber-jitter {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  10%, 30%, 50%, 70%, 90% { transform: translate3d(-2px, -1px, 0); }
+  20%, 40%, 60%, 80% { transform: translate3d(2px, 1.5px, 0); }
+}
+
+.animate-jitter {
+  animation: cyber-jitter 0.15s infinite;
+}

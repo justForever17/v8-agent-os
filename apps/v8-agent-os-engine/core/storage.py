@@ -867,6 +867,27 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         },
     },
     "projects": {"version": 1, "defaultProjectId": None, "projects": []},
+    "desktopPet": {
+        "eventVoice": {
+            "enabled": True,
+            "mode": "system_tts",
+            "voiceRef": "",
+            "speakVoiceTags": True,
+            "speakSupervisorReplies": True,
+        },
+        "actionTable": [
+            {"id": "idle", "match": "idle|settled|静默|空闲", "emotion": "idle", "spectrum": "cyan"},
+            {"id": "thinking", "match": "reasoning|thinking|思考", "emotion": "thinking", "spectrum": "violet"},
+            {"id": "tool", "match": "tool_start|tool_result|工具", "emotion": "working", "spectrum": "blue"},
+            {"id": "success", "match": "completed|succeeded|完成", "emotion": "happy", "spectrum": "green"},
+            {"id": "blocked", "match": "blocked|failed|interrupted|失败|阻塞", "emotion": "concerned", "spectrum": "amber"},
+        ],
+        "effectSpectrum": {
+            "preset": "soft",
+            "intensity": 0.75,
+            "customGlowColor": "",
+        },
+    },
     "music": {"tracks": []},
     "webFetchProfiles": {"version": 1, "sites": {}},
     "mediaDownloadProfiles": {"version": 1, "platforms": {}},
@@ -3012,6 +3033,21 @@ class StorageManager:
         payload["safety"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["safety"], normalized)
         self._write_config_payload(payload)
         self.write_json("safety_guardian.json", normalized)
+
+    def get_desktop_pet_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("desktopPet") or {}
+        return self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["desktopPet"],
+            data if isinstance(data, dict) else {},
+        )
+
+    def save_desktop_pet_config(self, data: Dict[str, Any]):
+        payload = self._read_config_payload()
+        payload["desktopPet"] = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["desktopPet"],
+            dict(data or {}),
+        )
+        self._write_config_payload(payload)
 
     def get_music_config(self) -> Dict[str, Any]:
         data = self._read_config_payload().get("music") or {}

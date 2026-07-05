@@ -1,5 +1,5 @@
-import { ConnectErrorClient } from "@/app/connect/error/ConnectErrorClient";
+import { redirect } from "next/navigation";
 
 export default function ConnectErrorPage() {
-    return <ConnectErrorClient />;
+    redirect("/chat");
 }

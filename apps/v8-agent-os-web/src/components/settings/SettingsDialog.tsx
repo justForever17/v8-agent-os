@@ -17,7 +17,6 @@ import { updateUserAvatar, updateUserNickname } from "@/lib/actions/user.actions
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { useEffect, useState } from "react";
 import { ThemeToggle } from "../layout/ThemeToggle";
-import { AdminConnectionManager } from "@/components/connection/AdminConnectionManager";
 import { useT } from "@/components/providers/LocaleProvider";
 
 interface SettingsDialogProps {
@@ -126,9 +125,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </DialogHeader>
 
                 <Tabs defaultValue="profile" className="w-full">
-                    <TabsList className="grid w-full grid-cols-2">
+                    <TabsList className="grid w-full grid-cols-1">
                         <TabsTrigger value="profile">{t("web.generated.0f5a6e0b58")}</TabsTrigger>
-                        <TabsTrigger value="connection">{t("web.generated.380e702ac5")}</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="profile" className="space-y-4 py-4">
@@ -215,15 +213,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                         </div>
                     </TabsContent>
 
-                    <TabsContent value="connection" className="space-y-4 py-4">
-                        <div className="space-y-2">
-                            <Label>{t("web.generated.15aa8984c5")}</Label>
-                            <p className="text-sm leading-6 text-muted-foreground">
-                                {t("web.generated.7994105913")}
-                            </p>
-                        </div>
-                        <AdminConnectionManager variant="panel" />
-                    </TabsContent>
                 </Tabs>
 
                 {message && (

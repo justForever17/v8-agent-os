@@ -2080,7 +2080,7 @@ export default function ChatClient() {
                     </p>
                 </div>
                 {localConnectError && (
-                    <Button className="mt-5 rounded-2xl" onClick={() => router.replace("/connect?next=/chat")}>
+                    <Button className="mt-5 rounded-2xl" onClick={() => window.open(`${DEFAULT_LOCAL_ADMIN_BASE_URL}/admin`, "_blank", "noopener,noreferrer")}>
                         {t("web.generated.a5aa32a989")}
                     </Button>
                 )}

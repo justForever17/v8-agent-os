@@ -2,7 +2,6 @@ import { Suspense } from "react";
 
 import { ChatPageFallback } from "./ChatPageFallback";
 import ChatClient from "./ChatClient";
-import { requireAdminConnection } from "@/lib/server/page-guards";
 
 export const dynamic = 'force-dynamic';
 
@@ -18,8 +17,6 @@ export default async function ChatPage({
             query.set(key, value);
         }
     }
-    const nextPath = `/chat${query.toString() ? `?${query.toString()}` : ""}`;
-    await requireAdminConnection(nextPath);
     return (
         <Suspense fallback={<ChatPageFallback />}>
             <ChatClient />

@@ -269,6 +269,54 @@ function EmptyRow({ colSpan, label }: { colSpan: number; label: string }) {
     );
 }
 
+function recordValue(value: Record<string, unknown>, key: string): Record<string, unknown> {
+    const child = value[key];
+    return child && typeof child === "object" && !Array.isArray(child) ? child as Record<string, unknown> : {};
+}
+
+function arrayValue(value: Record<string, unknown>, key: string): Array<Record<string, unknown>> {
+    const child = value[key];
+    return Array.isArray(child) ? child as Array<Record<string, unknown>> : [];
+}
+
+function normalizeModelPreferences(value: Record<string, unknown>): CreativeModelPreferences {
+    return {
+        candidates: arrayValue(value, "candidates") as CreativeModelCandidate[],
+        connectedOptions: arrayValue(value, "connectedOptions") as CreativeModelCandidate[],
+        diagnosticCandidates: arrayValue(value, "diagnosticCandidates") as CreativeModelCandidate[],
+        operationRows: arrayValue(value, "operationRows") as CreativeOperationRow[],
+        policies: value.policies && typeof value.policies === "object" ? value.policies as CreativeModelPreferences["policies"] : {},
+        updatedAt: String(value.updatedAt || ""),
+        version: typeof value.version === "number" ? value.version : undefined,
+    };
+}
+
+function normalizeCreativeBootstrap(value: Record<string, unknown>): CreativeMediaData {
+    const modelPreferences = recordValue(value, "modelPreferences");
+    return {
+        ...EMPTY_DATA,
+        catalog: recordValue(value, "catalog"),
+        resolutions: recordValue(value, "resolutions"),
+        workOrders: arrayValue(recordValue(value, "workOrders"), "workOrders"),
+        recipes: arrayValue(recordValue(value, "recipes"), "recipes"),
+        assets: arrayValue(recordValue(value, "assets"), "assets"),
+        jobs: arrayValue(recordValue(value, "jobs"), "jobs"),
+        modelPreferences: normalizeModelPreferences(modelPreferences),
+    };
+}
+
+function normalizeCreativeDiagnostics(value: Record<string, unknown>): Partial<CreativeMediaData> {
+    return {
+        characterBibles: arrayValue(recordValue(value, "characterBibles"), "characterBibles"),
+        keyframes: arrayValue(recordValue(value, "keyframes"), "keyframes"),
+        editPlans: arrayValue(recordValue(value, "editPlans"), "editPlans"),
+        renders: arrayValue(recordValue(value, "renders"), "renders"),
+        qualityJobs: arrayValue(recordValue(value, "qualityJobs"), "qualityJobs"),
+        costEntries: arrayValue(recordValue(value, "costLedger"), "entries"),
+        safetyEvents: arrayValue(recordValue(value, "safetyEvents"), "events"),
+    };
+}
+
 export default function CreativeMediaPage() {
     const t = useT();
     const [debugMode] = useDebugMode();
@@ -279,56 +327,38 @@ export default function CreativeMediaPage() {
     const [modelPreferencesOpen, setModelPreferencesOpen] = useState(false);
     const [workingWorkOrderId, setWorkingWorkOrderId] = useState("");
 
-    const fetchData = useCallback(async () => {
-        setLoading(true);
-        setError("");
+    const fetchDiagnostics = useCallback(async () => {
         try {
-            const [catalog, resolutions, workOrders, recipes, assets, characterBibles, keyframes, jobs, editPlans, renders, qualityJobs, costLedger, safetyEvents, modelPreferences] = await Promise.all([
-                fetch("/api/creative-media/catalog", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/resolutions", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/work-orders", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/recipes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/assets", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+            const [characterBibles, keyframes, editPlans, renders, qualityJobs, costLedger, safetyEvents] = await Promise.all([
                 fetch("/api/creative-media/character-bibles", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/keyframes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/jobs", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/edit-plans", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/renders", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/quality-jobs", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/cost-ledger", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
                 fetch("/api/creative-media/safety-events", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/model-preferences", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
             ]);
-            setData({
-                catalog,
-                resolutions,
-                workOrders: Array.isArray(workOrders.workOrders) ? workOrders.workOrders : [],
-                recipes: Array.isArray(recipes.recipes) ? recipes.recipes : [],
-                assets: Array.isArray(assets.assets) ? assets.assets : [],
-                characterBibles: Array.isArray(characterBibles.characterBibles) ? characterBibles.characterBibles : [],
-                keyframes: Array.isArray(keyframes.keyframes) ? keyframes.keyframes : [],
-                jobs: Array.isArray(jobs.jobs) ? jobs.jobs : [],
-                editPlans: Array.isArray(editPlans.editPlans) ? editPlans.editPlans : [],
-                renders: Array.isArray(renders.renders) ? renders.renders : [],
-                qualityJobs: Array.isArray(qualityJobs.qualityJobs) ? qualityJobs.qualityJobs : [],
-                costEntries: Array.isArray(costLedger.entries) ? costLedger.entries : [],
-                safetyEvents: Array.isArray(safetyEvents.events) ? safetyEvents.events : [],
-                modelPreferences: {
-                    candidates: Array.isArray(modelPreferences.candidates) ? modelPreferences.candidates : [],
-                    connectedOptions: Array.isArray(modelPreferences.connectedOptions) ? modelPreferences.connectedOptions : [],
-                    diagnosticCandidates: Array.isArray(modelPreferences.diagnosticCandidates) ? modelPreferences.diagnosticCandidates : [],
-                    operationRows: Array.isArray(modelPreferences.operationRows) ? modelPreferences.operationRows : [],
-                    policies: modelPreferences.policies || {},
-                    updatedAt: modelPreferences.updatedAt || "",
-                    version: modelPreferences.version,
-                },
-            });
+            const diagnostics = normalizeCreativeDiagnostics({ characterBibles, keyframes, editPlans, renders, qualityJobs, costLedger, safetyEvents });
+            setData((current) => ({ ...current, ...diagnostics }));
+        } catch {
+            // Delayed diagnostics should not block the production-control first screen.
+        }
+    }, []);
+
+    const fetchData = useCallback(async () => {
+        setLoading(true);
+        setError("");
+        try {
+            const response = await fetch("/api/creative-media/bootstrap", { cache: "no-store" });
+            const payload = response.ok ? await response.json().catch(() => ({})) : {};
+            setData(normalizeCreativeBootstrap(payload));
+            void fetchDiagnostics();
         } catch (err) {
             setError(String(err));
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [fetchDiagnostics]);
 
     useEffect(() => {
         void fetchData();

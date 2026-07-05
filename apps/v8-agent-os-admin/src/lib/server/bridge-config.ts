@@ -96,15 +96,41 @@ export type CanonicalConfigDiagnostics = {
 
 const CANONICAL_CONFIG_PATH = path.join(os.homedir(), ".v8-agent-os", "config.json");
 
+type JsonConfigCacheEntry = {
+    mtimeMs: number;
+    size: number;
+    data: CanonicalConfig;
+};
+
+const jsonConfigCache = new Map<string, JsonConfigCacheEntry>();
+
+export function invalidateCanonicalConfigCache(configPath = CANONICAL_CONFIG_PATH) {
+    jsonConfigCache.delete(path.resolve(configPath));
+}
+
+function cloneConfig(data: CanonicalConfig): CanonicalConfig {
+    return JSON.parse(JSON.stringify(data)) as CanonicalConfig;
+}
+
 function readJsonConfig(configPath: string): CanonicalConfig {
+    const normalizedPath = path.resolve(configPath);
     try {
-        if (!fs.existsSync(configPath)) {
-            return {};
+        const stat = fs.statSync(normalizedPath);
+        const cached = jsonConfigCache.get(normalizedPath);
+        if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+            return cloneConfig(cached.data);
         }
-        const raw = fs.readFileSync(configPath, "utf-8");
+        const raw = fs.readFileSync(normalizedPath, "utf-8");
         const parsed = JSON.parse(raw) as CanonicalConfig;
-        return parsed && typeof parsed === "object" ? parsed : {};
+        const data = parsed && typeof parsed === "object" ? parsed : {};
+        jsonConfigCache.set(normalizedPath, {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            data: cloneConfig(data),
+        });
+        return cloneConfig(data);
     } catch {
+        jsonConfigCache.delete(normalizedPath);
         return {};
     }
 }

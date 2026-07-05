@@ -22,7 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { fetchConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import audioVoicePresets from "@/lib/models/audio-voice-presets.json";
 import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
@@ -579,26 +579,16 @@ export default function ModelHubPage() {
     const fetchData = async () => {
         setIsLoading(true);
         try {
-            const [providersRes, modelsRes, hubRes, defaultRes, catalogRes, audioRes] = await Promise.all([
-                fetch("/api/providers", { cache: "no-store" }),
-                fetch("/api/models", { cache: "no-store" }),
-                fetchConfigDomain<ModelHubPayload>("models"),
-                fetch("/api/settings/default-agent-model", { cache: "no-store" }),
-                fetch("/api/models/catalog", { cache: "no-store" }),
-                fetch("/api/audio/config", { cache: "no-store" }),
-            ]);
-            setProviders(providersRes.ok ? await providersRes.json() : []);
-            setModels(modelsRes.ok ? await modelsRes.json() : []);
-            setHubEnvelope(hubRes);
-            setAudioConfig(audioRes.ok ? mergeAudioConfig(await audioRes.json().catch(() => null)) : DEFAULT_AUDIO_CONFIG);
-            if (defaultRes.ok) {
-                const defaultData = await defaultRes.json().catch(() => ({}));
-                setDefaultModelRef(defaultData.modelRef || defaultData.modelId || null);
-            }
-            if (catalogRes.ok) {
-                const catalogData = await catalogRes.json().catch(() => ({}));
-                setCatalogProviders(Array.isArray(catalogData.providers) ? catalogData.providers : []);
-            }
+            const response = await fetch("/api/model-hub/bootstrap", { cache: "no-store" });
+            const payload = response.ok ? await response.json().catch(() => ({})) : {};
+            setProviders(Array.isArray(payload.providers) ? payload.providers : []);
+            setModels(Array.isArray(payload.models) ? payload.models : []);
+            setHubEnvelope(payload.hubEnvelope || null);
+            setAudioConfig(mergeAudioConfig(payload.audioConfig || null));
+            const defaultData = payload.defaultModel || {};
+            setDefaultModelRef(defaultData.modelRef || defaultData.modelId || defaultData.value || null);
+            const catalogData = payload.catalog || {};
+            setCatalogProviders(Array.isArray(catalogData.providers) ? catalogData.providers : []);
         }
         finally {
             setIsLoading(false);

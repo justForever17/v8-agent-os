@@ -9,7 +9,7 @@ export async function GET() {
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const response = await fetch(ENGINE_URL, { cache: "no-store" });
+    const response = await fetch(ENGINE_URL, { next: { revalidate: 60 } });
     const data = await response.json().catch(() => ({}));
     return NextResponse.json(data, { status: response.status });
 }

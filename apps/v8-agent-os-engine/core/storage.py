@@ -930,6 +930,8 @@ class StorageManager:
         # Resolve the absolute path to `~/.v8-agent-os`
         self.base_dir = CONFIG_JSON_PATH.parent
         self._legacy_model_bindings_migrated = False
+        self._config_payload_cache_signature: tuple[int, int] | None = None
+        self._config_payload_cache_data: dict[str, Any] | None = None
         self._initialize_structure()
         
     def _initialize_structure(self):
@@ -1328,6 +1330,17 @@ class StorageManager:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def _config_payload_signature(self) -> tuple[int, int] | None:
+        try:
+            stat = CONFIG_JSON_PATH.stat()
+            return (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return None
+
+    def _invalidate_config_payload_cache(self) -> None:
+        self._config_payload_cache_signature = None
+        self._config_payload_cache_data = None
+
     def _ensure_config_json_exists(self):
         if CONFIG_JSON_PATH.exists():
             return
@@ -1339,6 +1352,13 @@ class StorageManager:
     def _read_config_payload(self) -> dict[str, Any]:
         if not CONFIG_JSON_PATH.exists():
             self._ensure_config_json_exists()
+        signature = self._config_payload_signature()
+        if (
+            signature is not None
+            and self._config_payload_cache_signature == signature
+            and self._config_payload_cache_data is not None
+        ):
+            return deepcopy(self._config_payload_cache_data)
         try:
             payload = self._read_json_file(CONFIG_JSON_PATH) if CONFIG_JSON_PATH.exists() else {}
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -1348,8 +1368,12 @@ class StorageManager:
             if migrated_payload != payload:
                 payload = migrated_payload
                 self._write_config_payload(payload)
+                signature = self._config_payload_signature()
         merged = self._deep_merge(self._default_config_payload(), payload if isinstance(payload, dict) else {})
-        return merged
+        if signature is not None:
+            self._config_payload_cache_signature = signature
+            self._config_payload_cache_data = deepcopy(merged)
+        return deepcopy(merged)
 
     def _write_config_payload(self, payload: dict[str, Any]):
         self.write_json("config.json", payload)
@@ -1939,6 +1963,7 @@ class StorageManager:
                         backup_temp_path.unlink()
                     except OSError:
                         pass
+            self._invalidate_config_payload_cache()
             return
 
         if normalized_name in {"computer_use.json", "computer_use_memory.json"}:

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { invalidateCanonicalConfigCache } from "@/lib/server/bridge-config";
 import { proxyEngineJson, requireAdminIdentity } from "@/lib/server/engine-proxy";
 
 type RouteContext = {
@@ -38,6 +39,9 @@ export async function POST(req: NextRequest, context: RouteContext) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
         });
+        if (response.ok) {
+            invalidateCanonicalConfigCache();
+        }
         return NextResponse.json(data, { status: response.status });
     } catch (error) {
         console.error("[Admin Config Registry] Failed to save domain:", error);

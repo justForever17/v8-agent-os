@@ -803,7 +803,7 @@ export default function SystemBasePage() {
                                                         <div className="break-all text-slate-500">{providerStatus.recommendedUrls.engineBaseUrl}</div>
                                                     </div>
                                                     <div className="rounded-xl bg-slate-50 px-3 py-2">
-                                                        <div className="font-medium text-slate-700">Peer</div>
+                                                        <div className="font-medium text-slate-700">{t("app.admin.dashboard.system.base.remoteLink.peerUrl")}</div>
                                                         <div className="break-all text-slate-500">{providerStatus.recommendedUrls.peerBaseUrl}</div>
                                                     </div>
                                                 </div>

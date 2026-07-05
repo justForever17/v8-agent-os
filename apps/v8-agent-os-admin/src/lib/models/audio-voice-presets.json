@@ -64,6 +64,25 @@
         { "value": "Sulafat", "label": "Sulafat" }
       ]
     },
+    "aliyun-cosyvoice": {
+      "match": ["cosyvoice", "dashscope", "bailian", "aliyun_bailian_cosyvoice"],
+      "voices": [
+        { "value": "longxiaochun", "label": "龙小淳 · longxiaochun" },
+        { "value": "longwan", "label": "龙婉 · longwan" },
+        { "value": "longcheng", "label": "龙橙 · longcheng" },
+        { "value": "longhua", "label": "龙华 · longhua" },
+        { "value": "longxiaoxia", "label": "龙小夏 · longxiaoxia" }
+      ]
+    },
+    "volcengine-doubao-voice": {
+      "match": ["volcengine_doubao_voice", "doubao-voice", "volcengine", "bigtts"],
+      "voices": [
+        { "value": "zh_female_shuangkuaisisi_moon_bigtts", "label": "爽快思思 · zh_female_shuangkuaisisi_moon_bigtts" },
+        { "value": "zh_female_wanwanxiaohe_moon_bigtts", "label": "湾湾小何 · zh_female_wanwanxiaohe_moon_bigtts" },
+        { "value": "zh_male_wennuanahu_moon_bigtts", "label": "温暖阿虎 · zh_male_wennuanahu_moon_bigtts" },
+        { "value": "zh_male_shaonianzixin_moon_bigtts", "label": "少年梓辛 · zh_male_shaonianzixin_moon_bigtts" }
+      ]
+    },
     "minimax": {
       "match": ["minimax", "speech-02", "speech-2", "t2a"],
       "protocol": "minimax_t2a_v2",

@@ -38,6 +38,8 @@ type AIProvider = {
     apiKey?: string | null;
     type: "API" | "LOCAL" | "PLATFORM";
     apiStandard?: string;
+    voiceAppId?: string | null;
+    voiceResourceId?: string | null;
     isEnabled: boolean;
     credentialMode?: "apiKey" | "oauthFile";
     hasCredential?: boolean;
@@ -189,6 +191,17 @@ type AudioVoiceOption = {
     label: string;
     group?: string;
     deletable?: boolean;
+    source?: "remote" | "preset" | "local_ledger" | string;
+};
+type TtsVoiceCapabilities = {
+    supportsVoiceManager?: boolean;
+    supportsList?: boolean;
+    supportsDelete?: boolean;
+    supportsCloneUpload?: boolean;
+};
+type TtsVoiceProviderInfo = {
+    provider?: string;
+    capabilities?: TtsVoiceCapabilities;
 };
 type AudioVoicePresetProvider = {
     match?: string[];
@@ -338,11 +351,19 @@ function hasAudioOutputCapability(model: AIModel, controlMeta?: ControlPlaneMode
     return TTS_MODEL_TYPES.has(type) || Boolean(capabilities?.audio || capabilities?.voice) || ref.includes("tts") || ref.includes("live-audio");
 }
 
-function isMiniMaxTtsModel(model: AIModel | null | undefined, modelRef: string): boolean {
+function isManagedModelRefTtsVoiceModel(model: AIModel | null | undefined, modelRef: string): boolean {
     if (!model && !modelRef) return false;
     const type = normalizeModelType(model?.type);
     const probe = `${modelRef} ${model?.providerId || ""} ${model?.provider?.name || ""} ${model?.modelId || ""}`.toLowerCase();
-    return probe.includes("minimax") && (type === "VOICE" || probe.includes("t2a") || probe.includes("speech"));
+    const looksLikeTts = type === "VOICE" || type === "AUDIO" || probe.includes("tts") || probe.includes("speech") || probe.includes("voice");
+    return looksLikeTts && (
+        probe.includes("minimax")
+        || probe.includes("cosyvoice")
+        || probe.includes("dashscope")
+        || probe.includes("bailian")
+        || probe.includes("volcengine")
+        || probe.includes("doubao-voice")
+    );
 }
 
 function previewModelsUrl(provider?: CatalogProvider | null): string {
@@ -549,6 +570,8 @@ export default function ModelHubPage() {
     const [catalogRuntimeProtocol, setCatalogRuntimeProtocol] = useState<CatalogRuntimeProtocol>("default");
     const [selectedCatalogProviderId, setSelectedCatalogProviderId] = useState("openai");
     const [catalogApiKey, setCatalogApiKey] = useState("");
+    const [catalogVoiceAppId, setCatalogVoiceAppId] = useState("");
+    const [catalogVoiceResourceId, setCatalogVoiceResourceId] = useState("");
     const [catalogProbeModels, setCatalogProbeModels] = useState<CatalogModel[]>([]);
     const [selectedCatalogModelId, setSelectedCatalogModelId] = useState("");
     const [catalogModelFilter, setCatalogModelFilter] = useState("");
@@ -569,13 +592,14 @@ export default function ModelHubPage() {
     const [isAudioSaving, setIsAudioSaving] = useState(false);
     const [customTtsRemoteVoices, setCustomTtsRemoteVoices] = useState<AudioVoiceOption[]>([]);
     const [isCustomTtsVoiceLoading, setIsCustomTtsVoiceLoading] = useState(false);
-    const [modelRefMiniMaxVoices, setModelRefMiniMaxVoices] = useState<AudioVoiceOption[]>([]);
-    const [isModelRefMiniMaxVoiceLoading, setIsModelRefMiniMaxVoiceLoading] = useState(false);
-    const [deletingMiniMaxVoiceId, setDeletingMiniMaxVoiceId] = useState<string | null>(null);
-    const [miniMaxCloneFile, setMiniMaxCloneFile] = useState<File | null>(null);
-    const [miniMaxCloneVoiceId, setMiniMaxCloneVoiceId] = useState("");
-    const [miniMaxClonePreviewText, setMiniMaxClonePreviewText] = useState("");
-    const [isMiniMaxCloning, setIsMiniMaxCloning] = useState(false);
+    const [modelRefTtsVoices, setModelRefTtsVoices] = useState<AudioVoiceOption[]>([]);
+    const [modelRefTtsVoiceInfo, setModelRefTtsVoiceInfo] = useState<TtsVoiceProviderInfo | null>(null);
+    const [isModelRefTtsVoiceLoading, setIsModelRefTtsVoiceLoading] = useState(false);
+    const [deletingModelRefTtsVoiceId, setDeletingModelRefTtsVoiceId] = useState<string | null>(null);
+    const [ttsCloneFile, setTtsCloneFile] = useState<File | null>(null);
+    const [ttsCloneVoiceId, setTtsCloneVoiceId] = useState("");
+    const [ttsClonePreviewText, setTtsClonePreviewText] = useState("");
+    const [isTtsCloning, setIsTtsCloning] = useState(false);
     const fetchData = async () => {
         setIsLoading(true);
         try {
@@ -627,6 +651,11 @@ export default function ModelHubPage() {
         if (help.urlFrom === "baseUrl") return selectedCatalogProvider?.baseUrl || "";
         return help.url || "";
     }, [selectedCatalogProvider]);
+    const requiresVolcengineVoiceConfig = useMemo(() => {
+        if (catalogPurpose !== "voice") return false;
+        const probe = `${selectedCatalogProviderId} ${selectedCatalogProvider?.id || ""} ${selectedCatalogProvider?.name || ""} ${selectedCatalogModelId}`.toLowerCase();
+        return probe.includes("volcengine") || probe.includes("doubao-voice");
+    }, [catalogPurpose, selectedCatalogModelId, selectedCatalogProvider, selectedCatalogProviderId]);
     const visibleProviders = useMemo(() => {
         const configuredProviderIds = new Set(providers.map((provider) => provider.code || provider.id));
         const capabilityRootsBySource = new Map<string, Set<string>>();
@@ -665,7 +694,8 @@ export default function ModelHubPage() {
         () => models.find((model) => modelRefFor(model) === selectedTtsModelRef) || null,
         [models, selectedTtsModelRef],
     );
-    const isMiniMaxModelRefTts = audioConfig.tts.active_provider === "model_ref" && isMiniMaxTtsModel(selectedTtsModel, selectedTtsModelRef);
+    const isManagedModelRefTtsVoice = audioConfig.tts.active_provider === "model_ref" && isManagedModelRefTtsVoiceModel(selectedTtsModel, selectedTtsModelRef);
+    const modelRefTtsVoiceCapabilities = modelRefTtsVoiceInfo?.capabilities || {};
     const customSttProtocol = audioConfig.stt.providers.custom.protocol || "multipart";
     const customTtsProtocol = audioConfig.tts.custom.protocol || "json_audio_stream";
     const ttsVoicePresets = useMemo(() => {
@@ -687,10 +717,11 @@ export default function ModelHubPage() {
         setCatalogRuntimeProtocol("default");
     }, [apiCatalogProviders, selectedCatalogProviderId]);
     useEffect(() => {
-        setModelRefMiniMaxVoices([]);
-        setMiniMaxCloneFile(null);
-        setMiniMaxCloneVoiceId("");
-        setMiniMaxClonePreviewText("");
+        setModelRefTtsVoices([]);
+        setModelRefTtsVoiceInfo(null);
+        setTtsCloneFile(null);
+        setTtsCloneVoiceId("");
+        setTtsClonePreviewText("");
     }, [selectedTtsModelRef]);
     const filteredModels = models.filter((model) => modelMatchesTab(model, activeTab));
     const handleSaveProvider = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -1043,6 +1074,8 @@ export default function ModelHubPage() {
                         ? (customAnthropicRuntime ? "anthropic" : catalogPurpose === "workflow" ? "comfyui" : "openai")
                         : selectedCatalogRuntime.apiStandard,
                     modelType: getModelTypeForPurpose(catalogPurpose),
+                    voiceAppId: requiresVolcengineVoiceConfig ? catalogVoiceAppId.trim() : "",
+                    voiceResourceId: requiresVolcengineVoiceConfig ? catalogVoiceResourceId.trim() : "",
                 }),
             });
             const data = await response.json().catch(() => ({}));
@@ -1131,11 +1164,11 @@ export default function ModelHubPage() {
             setIsCustomTtsVoiceLoading(false);
         }
     };
-    const handleFetchModelRefMiniMaxVoices = async () => {
+    const handleFetchModelRefTtsVoices = async () => {
         if (!selectedTtsModelRef) return;
-        setIsModelRefMiniMaxVoiceLoading(true);
+        setIsModelRefTtsVoiceLoading(true);
         try {
-            const response = await fetch("/api/audio/minimax-voices", {
+            const response = await fetch("/api/audio/model-ref-voices", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ action: "list", modelRef: selectedTtsModelRef }),
@@ -1150,19 +1183,23 @@ export default function ModelHubPage() {
                 return;
             }
             const voices = Array.isArray(payload.voices) ? payload.voices : [];
-            setModelRefMiniMaxVoices(voices);
+            setModelRefTtsVoices(voices);
+            setModelRefTtsVoiceInfo({
+                provider: typeof payload.provider === "string" ? payload.provider : undefined,
+                capabilities: payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : undefined,
+            });
             toast({
                 title: voices.length > 0 ? t("app.admin.dashboard.model.hub.audio.voiceFetchSuccess") : t("app.admin.dashboard.model.hub.audio.voiceFetchEmpty"),
             });
         } finally {
-            setIsModelRefMiniMaxVoiceLoading(false);
+            setIsModelRefTtsVoiceLoading(false);
         }
     };
-    const handleDeleteModelRefMiniMaxVoice = async (voice: AudioVoiceOption) => {
+    const handleDeleteModelRefTtsVoice = async (voice: AudioVoiceOption) => {
         if (!selectedTtsModelRef || !voice.value) return;
-        setDeletingMiniMaxVoiceId(voice.value);
+        setDeletingModelRefTtsVoiceId(voice.value);
         try {
-            const response = await fetch("/api/audio/minimax-voices", {
+            const response = await fetch("/api/audio/model-ref-voices", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -1181,34 +1218,38 @@ export default function ModelHubPage() {
                 });
                 return;
             }
-            setModelRefMiniMaxVoices((current) => current.filter((item) => item.value !== voice.value));
+            setModelRefTtsVoices((current) => current.filter((item) => item.value !== voice.value));
             if (audioConfig.tts.model_ref?.voice === voice.value) setTtsModelRefValue("voice", "");
             toast({ title: t("app.admin.dashboard.model.hub.audio.voiceDeleted") });
         } finally {
-            setDeletingMiniMaxVoiceId(null);
+            setDeletingModelRefTtsVoiceId(null);
         }
     };
-    const handleCloneMiniMaxVoice = async () => {
-        if (!selectedTtsModelRef || !miniMaxCloneFile || !miniMaxCloneVoiceId.trim()) {
+    const handleCloneModelRefTtsVoice = async () => {
+        if (!selectedTtsModelRef || !ttsCloneFile || !ttsCloneVoiceId.trim()) {
             toast({
                 variant: "destructive",
                 title: t("app.admin.dashboard.model.hub.audio.voiceCloneMissing"),
             });
             return;
         }
-        setIsMiniMaxCloning(true);
+        setIsTtsCloning(true);
         try {
             const formData = new FormData();
             formData.append("action", "clone_from_upload");
             formData.append("modelRef", selectedTtsModelRef);
-            formData.append("voiceId", miniMaxCloneVoiceId.trim());
-            if (miniMaxClonePreviewText.trim()) formData.append("previewText", miniMaxClonePreviewText.trim());
-            formData.append("file", miniMaxCloneFile);
-            const response = await fetch("/api/audio/minimax-voices", {
+            formData.append("voiceId", ttsCloneVoiceId.trim());
+            if (ttsClonePreviewText.trim()) formData.append("previewText", ttsClonePreviewText.trim());
+            formData.append("file", ttsCloneFile);
+            const response = await fetch("/api/audio/model-ref-voices", {
                 method: "POST",
                 body: formData,
             });
             const payload = await response.json().catch(() => ({}));
+            setModelRefTtsVoiceInfo({
+                provider: typeof payload.provider === "string" ? payload.provider : modelRefTtsVoiceInfo?.provider,
+                capabilities: payload.capabilities && typeof payload.capabilities === "object" ? payload.capabilities : modelRefTtsVoiceInfo?.capabilities,
+            });
             if (!response.ok || payload.ok === false) {
                 toast({
                     variant: "destructive",
@@ -1217,15 +1258,15 @@ export default function ModelHubPage() {
                 });
                 return;
             }
-            const clonedVoiceId = String(payload.voiceId || miniMaxCloneVoiceId.trim());
+            const clonedVoiceId = String(payload.voiceId || ttsCloneVoiceId.trim());
             setTtsModelRefValue("voice", clonedVoiceId);
-            setMiniMaxCloneFile(null);
-            setMiniMaxCloneVoiceId("");
-            setMiniMaxClonePreviewText("");
+            setTtsCloneFile(null);
+            setTtsCloneVoiceId("");
+            setTtsClonePreviewText("");
             toast({ title: t("app.admin.dashboard.model.hub.audio.voiceCloneSuccess"), description: clonedVoiceId });
-            await handleFetchModelRefMiniMaxVoices();
+            await handleFetchModelRefTtsVoices();
         } finally {
-            setIsMiniMaxCloning(false);
+            setIsTtsCloning(false);
         }
     };
     const setSttProviderValue = (provider: "custom" | "baidu", key: string, value: string) => {
@@ -1542,18 +1583,18 @@ export default function ModelHubPage() {
                                         })}
                                     </SelectContent>
                                 </Select>
-                                {isMiniMaxModelRefTts ? (
+                                {isManagedModelRefTtsVoice ? (
                                     <div className="grid gap-3 rounded-xl border bg-muted/20 p-3">
                                         <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <Label>{t("app.admin.dashboard.model.hub.audio.minimaxVoiceManager")}</Label>
-                                            <Button type="button" variant="outline" size="sm" onClick={() => void handleFetchModelRefMiniMaxVoices()} disabled={isModelRefMiniMaxVoiceLoading || !selectedTtsModelRef}>
-                                                <RefreshCw className={`mr-2 h-4 w-4 ${isModelRefMiniMaxVoiceLoading ? "animate-spin" : ""}`} />
+                                            <Label>{t("app.admin.dashboard.model.hub.audio.modelRefVoiceManager")}</Label>
+                                            <Button type="button" variant="outline" size="sm" onClick={() => void handleFetchModelRefTtsVoices()} disabled={isModelRefTtsVoiceLoading || !selectedTtsModelRef}>
+                                                <RefreshCw className={`mr-2 h-4 w-4 ${isModelRefTtsVoiceLoading ? "animate-spin" : ""}`} />
                                                 {t("app.admin.dashboard.model.hub.audio.fetchVoices")}
                                             </Button>
                                         </div>
-                                        {modelRefMiniMaxVoices.length > 0 ? (
+                                        {modelRefTtsVoices.length > 0 ? (
                                             <div className="grid max-h-48 gap-2 overflow-y-auto rounded-lg border bg-background p-2">
-                                                {modelRefMiniMaxVoices.map((voice) => (
+                                                {modelRefTtsVoices.map((voice) => (
                                                     <div key={voice.value} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 hover:bg-muted">
                                                         <button
                                                             type="button"
@@ -1563,8 +1604,8 @@ export default function ModelHubPage() {
                                                         >
                                                             {voice.label}
                                                         </button>
-                                                        {voice.deletable ? (
-                                                            <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleDeleteModelRefMiniMaxVoice(voice)} disabled={deletingMiniMaxVoiceId === voice.value}>
+                                                        {voice.deletable && modelRefTtsVoiceCapabilities.supportsDelete !== false ? (
+                                                            <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleDeleteModelRefTtsVoice(voice)} disabled={deletingModelRefTtsVoiceId === voice.value}>
                                                                 <Trash2 className="h-3.5 w-3.5 text-rose-500" />
                                                             </Button>
                                                         ) : null}
@@ -1576,16 +1617,18 @@ export default function ModelHubPage() {
                                             <Input value={audioConfig.tts.model_ref?.voice || ""} onChange={(event) => setTtsModelRefValue("voice", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.customVoicePlaceholder")} />
                                             <Input value={audioConfig.tts.model_ref?.format || ""} onChange={(event) => setTtsModelRefValue("format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
                                         </div>
+                                        {modelRefTtsVoiceCapabilities.supportsCloneUpload !== false ? (
                                         <div className="grid gap-2 rounded-lg border border-dashed bg-background p-3">
                                             <Label>{t("app.admin.dashboard.model.hub.audio.voiceCloneTitle")}</Label>
-                                            <Input value={miniMaxCloneVoiceId} onChange={(event) => setMiniMaxCloneVoiceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceCloneIdPlaceholder")} />
-                                            <Input value={miniMaxClonePreviewText} onChange={(event) => setMiniMaxClonePreviewText(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceClonePreviewPlaceholder")} />
-                                            <Input type="file" accept="audio/*" onChange={(event) => setMiniMaxCloneFile(event.target.files?.[0] || null)} />
-                                            <Button type="button" variant="outline" size="sm" onClick={() => void handleCloneMiniMaxVoice()} disabled={isMiniMaxCloning || !miniMaxCloneFile || !miniMaxCloneVoiceId.trim()}>
+                                            <Input value={ttsCloneVoiceId} onChange={(event) => setTtsCloneVoiceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceCloneIdPlaceholder")} />
+                                            <Input value={ttsClonePreviewText} onChange={(event) => setTtsClonePreviewText(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceClonePreviewPlaceholder")} />
+                                            <Input type="file" accept="audio/*" onChange={(event) => setTtsCloneFile(event.target.files?.[0] || null)} />
+                                            <Button type="button" variant="outline" size="sm" onClick={() => void handleCloneModelRefTtsVoice()} disabled={isTtsCloning || !ttsCloneFile || !ttsCloneVoiceId.trim()}>
                                                 <Upload className="mr-2 h-4 w-4" />
-                                                {isMiniMaxCloning ? t("app.admin.dashboard.model.hub.audio.voiceCloning") : t("app.admin.dashboard.model.hub.audio.voiceCloneUpload")}
+                                                {isTtsCloning ? t("app.admin.dashboard.model.hub.audio.voiceCloning") : t("app.admin.dashboard.model.hub.audio.voiceCloneUpload")}
                                             </Button>
                                         </div>
+                                        ) : null}
                                     </div>
                                 ) : ttsVoicePresets.length > 0 ? (
                                     <Select value={ttsVoicePresets.some((item) => item.value === audioConfig.tts.model_ref?.voice) ? audioConfig.tts.model_ref?.voice : undefined} onValueChange={(value) => setTtsModelRefValue("voice", value)}>
@@ -1595,7 +1638,7 @@ export default function ModelHubPage() {
                                         </SelectContent>
                                     </Select>
                                 ) : null}
-                                {!isMiniMaxModelRefTts ? (
+                                {!isManagedModelRefTtsVoice ? (
                                     <div className="grid gap-3 md:grid-cols-2">
                                         <Input value={audioConfig.tts.model_ref?.voice || ""} onChange={(event) => setTtsModelRefValue("voice", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.customVoicePlaceholder")} />
                                         <Input value={audioConfig.tts.model_ref?.format || ""} onChange={(event) => setTtsModelRefValue("format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
@@ -1729,6 +1772,12 @@ export default function ModelHubPage() {
                             )}
                             <Button disabled={isCatalogBusy} onClick={() => void handleProbeCatalogProvider()}>{t("app.admin.dashboard.model.hub.catalog.probe")}</Button>
                         </div>
+                        {requiresVolcengineVoiceConfig ? (
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                <Input value={catalogVoiceAppId} onChange={(event) => setCatalogVoiceAppId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.voiceAppIdPlaceholder")} />
+                                <Input value={catalogVoiceResourceId} onChange={(event) => setCatalogVoiceResourceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.voiceResourceIdPlaceholder")} />
+                            </div>
+                        ) : null}
                         <div className="mt-2 text-xs text-muted-foreground">
                             {t("app.admin.dashboard.model.hub.catalog.currentPurpose", { purpose: catalogPurposeLabel, hint: catalogPurposeHint })}
                         </div>

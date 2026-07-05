@@ -6,7 +6,10 @@ from core.audio.tts_provider import (
     CustomTTSProvider,
     ModelRefTTSProvider,
     TTSManager,
+    _audio_response_paths_for_protocol,
     _decode_audio_value,
+    _decode_volcengine_audio_chunks,
+    _extract_first_json_path,
     _extract_json_path,
     _model_ref_tts_provider_from_config,
 )
@@ -217,6 +220,84 @@ def test_model_ref_minimax_tts_resolves_to_system_tts_provider():
     assert provider.audio_format == "mp3"
 
 
+def test_model_ref_aliyun_cosyvoice_resolves_to_system_tts_provider():
+    provider = _model_ref_tts_provider_from_config(
+        model_ref="dashscope::services%2Faudio%2Ftts%2FSpeechSynthesizer%2Fcosyvoice-v3-flash",
+        voice="longxiaochun",
+        audio_format="wav",
+        config={
+            "providers": {
+                "dashscope": {
+                    "provider": {
+                        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "api_key": "sk-test",
+                    },
+                    "models": {
+                        "services/audio/tts/SpeechSynthesizer/cosyvoice-v3-flash": {
+                            "modelType": "VOICE",
+                            "parameterProfile": "dashscope_cosyvoice_tts",
+                            "mediaLimits": {
+                                "adapterProviderId": "aliyun_bailian_cosyvoice",
+                                "apiStandard": "dashscope_cosyvoice_tts",
+                                "providerModelId": "cosyvoice-v3-flash",
+                                "submitPath": "/services/audio/tts/SpeechSynthesizer",
+                                "operationKinds": ["voice.tts", "voice.clone"],
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    assert isinstance(provider, CustomTTSProvider)
+    assert provider.endpoint == "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer"
+    assert provider.protocol == "aliyun_cosyvoice_tts"
+    assert provider.model == "cosyvoice-v3-flash"
+    assert provider.voice == "longxiaochun"
+    assert provider.audio_format == "wav"
+
+
+def test_model_ref_volcengine_doubao_tts_resolves_to_system_tts_provider():
+    provider = _model_ref_tts_provider_from_config(
+        model_ref="volcengine-ark::audio%2Fspeech%2Fdoubao-voice-synthesis-2-0",
+        voice="zh_female_shuangkuaisisi_moon_bigtts",
+        audio_format="mp3",
+        config={
+            "providers": {
+                "volcengine-ark": {
+                    "provider": {
+                        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                        "api_key": "ak-test",
+                        "voice_app_id": "app-test",
+                        "voice_resource_id": "resource-test",
+                    },
+                    "models": {
+                        "audio/speech/doubao-voice-synthesis-2-0": {
+                            "modelType": "VOICE",
+                            "parameterProfile": "volcengine_ark_voice",
+                            "mediaLimits": {
+                                "adapterProviderId": "volcengine_doubao_voice",
+                                "apiStandard": "volcengine_ark_voice",
+                                "providerModelId": "doubao-voice-synthesis-2-0",
+                                "operationKinds": ["voice.tts", "voice.clone"],
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    assert isinstance(provider, CustomTTSProvider)
+    assert provider.endpoint == "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    assert provider.protocol == "volcengine_doubao_tts"
+    assert provider.model == "doubao-voice-synthesis-2-0"
+    assert provider.voice == "zh_female_shuangkuaisisi_moon_bigtts"
+    assert provider.app_id == "app-test"
+    assert provider.resource_id == "resource-test"
+
+
 def test_model_ref_tts_stream_is_async_generator():
     provider = ModelRefTTSProvider(
         "minimax-cn::t2a_v2%2Fspeech-2.8-hd",
@@ -253,3 +334,57 @@ def test_minimax_tts_protocol_builds_official_payload_and_decodes_audio():
     response_payload = {"data": {"audio": "000102ff"}}
     assert _extract_json_path(response_payload, "data.audio") == "000102ff"
     assert _decode_audio_value("000102ff") == b"\x00\x01\x02\xff"
+
+
+def test_aliyun_cosyvoice_protocol_builds_payload_and_decodes_audio_location():
+    provider = CustomTTSProvider(
+        endpoint="https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer",
+        protocol="aliyun_cosyvoice_tts",
+        model="cosyvoice-v3-flash",
+        voice="longxiaochun",
+        audio_format="wav",
+    )
+
+    payload = provider._build_payload("你好，V8OS。")
+
+    assert payload == {
+        "model": "cosyvoice-v3-flash",
+        "input": {
+            "text": "你好，V8OS。",
+            "voice": "longxiaochun",
+            "format": "wav",
+            "sample_rate": 24000,
+        },
+    }
+    response_payload = {"output": {"audio": {"url": "https://example.com/audio.wav"}}}
+    assert _extract_first_json_path(
+        response_payload,
+        _audio_response_paths_for_protocol("aliyun_cosyvoice_tts"),
+    ) == "https://example.com/audio.wav"
+
+
+def test_volcengine_tts_protocol_builds_headers_payload_and_decodes_sse_audio():
+    provider = CustomTTSProvider(
+        endpoint="https://openspeech.bytedance.com/api/v3/tts/unidirectional",
+        protocol="volcengine_doubao_tts",
+        api_key="ak-test",
+        app_id="app-test",
+        resource_id="resource-test",
+        voice="zh_female_shuangkuaisisi_moon_bigtts",
+        audio_format="mp3",
+    )
+
+    headers = provider._build_headers()
+    payload = provider._build_payload("你好，V8OS。")
+
+    assert headers["X-Api-App-Key"] == "app-test"
+    assert headers["X-Api-Access-Key"] == "ak-test"
+    assert headers["X-Api-Resource-Id"] == "resource-test"
+    assert headers["Content-Type"] == "application/json"
+    assert payload["user"]["uid"] == "v8-agent-os"
+    assert payload["req_params"]["text"] == "你好，V8OS。"
+    assert payload["req_params"]["speaker"] == "zh_female_shuangkuaisisi_moon_bigtts"
+    assert payload["req_params"]["audio_params"]["format"] == "mp3"
+
+    sse_payload = 'data: {"data":{"audio":"AAEC"}}\n\ndata: [DONE]\n'
+    assert _decode_volcengine_audio_chunks(sse_payload) == [b"\x00\x01\x02"]

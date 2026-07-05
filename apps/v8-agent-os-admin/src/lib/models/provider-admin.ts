@@ -32,6 +32,8 @@ type EngineProviderMeta = {
   base_url?: string;
   api_key?: string;
   api_standard?: string;
+  voice_app_id?: string;
+  voice_resource_id?: string;
   type?: string;
   is_enabled?: boolean;
   credential_mode?: string;
@@ -236,6 +238,8 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
     apiKey: credentialMode === "apiKey" && rawCredential ? "****" : "",
     type: meta.type || "API",
     apiStandard: meta.api_standard || "openai",
+    voiceAppId: meta.voice_app_id || "",
+    voiceResourceId: meta.voice_resource_id || "",
     isEnabled: meta.is_enabled !== false,
     credentialMode,
     hasCredential: Boolean(rawCredential),

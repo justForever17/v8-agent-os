@@ -221,8 +221,12 @@ def test_catalog_bridges_creative_media_provider_matrix():
 def test_root_provider_accepts_prefixed_media_model_ids():
     agnes = model_provider_catalog.get_provider("agnes")
     minimax_cn = model_provider_catalog.get_provider("minimax-cn")
+    dashscope = model_provider_catalog.get_provider("dashscope")
+    volcengine_ark = model_provider_catalog.get_provider("volcengine-ark")
     assert agnes
     assert minimax_cn
+    assert dashscope
+    assert volcengine_ark
 
     agnes_image = model_provider_catalog.normalize_model(agnes, "images/generations/agnes-image-2.1-flash")
     assert agnes_image["type"] == "IMAGE"
@@ -267,6 +271,24 @@ def test_root_provider_accepts_prefixed_media_model_ids():
     assert minimax_music_25["type"] == "MUSIC"
     assert minimax_music_25["mediaLimits"]["adapterProviderId"] == "minimax_music"
     assert minimax_music_25["mediaLimits"]["providerModelId"] == "minimax-music-2.5"
+
+    cosyvoice_tts = model_provider_catalog.normalize_model(
+        dashscope,
+        "services/audio/tts/SpeechSynthesizer/cosyvoice-v3-flash",
+    )
+    assert cosyvoice_tts["type"] == "VOICE"
+    assert cosyvoice_tts["mediaLimits"]["adapterProviderId"] == "aliyun_bailian_cosyvoice"
+    assert cosyvoice_tts["mediaLimits"]["providerModelId"] == "cosyvoice-v3-flash"
+    assert "voice.tts" in cosyvoice_tts["mediaLimits"]["operationKinds"]
+
+    doubao_voice_tts = model_provider_catalog.normalize_model(
+        volcengine_ark,
+        "audio/speech/doubao-voice-synthesis-2-0",
+    )
+    assert doubao_voice_tts["type"] == "VOICE"
+    assert doubao_voice_tts["mediaLimits"]["adapterProviderId"] == "volcengine_doubao_voice"
+    assert doubao_voice_tts["mediaLimits"]["providerModelId"] == "doubao-voice-synthesis-2-0"
+    assert "voice.tts" in doubao_voice_tts["mediaLimits"]["operationKinds"]
 
 
 def test_media_matrix_matches_by_model_id_across_custom_gateway_paths():

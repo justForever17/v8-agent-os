@@ -1,6 +1,7 @@
 import edge_tts
 import aiohttp
 import json
+import uuid
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator
 
@@ -51,6 +52,8 @@ class CustomTTSProvider(TTSProvider):
         speed: str = "",
         response_audio_path: str = "",
         headers: dict | str | None = None,
+        app_id: str = "",
+        resource_id: str = "",
     ):
         self.endpoint = endpoint
         self.api_key = api_key
@@ -61,20 +64,30 @@ class CustomTTSProvider(TTSProvider):
         self.speed = speed or ""
         self.response_audio_path = response_audio_path or ""
         self.extra_headers = _coerce_headers(headers)
+        self.app_id = app_id or ""
+        self.resource_id = resource_id or ""
 
     async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
-        headers = dict(self.extra_headers)
-        if self.api_key:
-            headers.setdefault("Authorization", f"Bearer {self.api_key}")
+        headers = self._build_headers()
         payload = self._build_payload(text)
 
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.endpoint, json=payload, headers=headers) as response:
                     if response.status == 200:
-                        if self.response_audio_path or self.protocol == "minimax_t2a_v2":
+                        content_type = (response.headers.get("Content-Type") or "").lower()
+                        if content_type.startswith("audio/"):
+                            async for chunk in response.content.iter_any():
+                                if chunk:
+                                    yield chunk
+                        elif self.protocol == "volcengine_doubao_tts":
+                            text_payload = await response.text()
+                            for audio_bytes in _decode_volcengine_audio_chunks(text_payload):
+                                if audio_bytes:
+                                    yield audio_bytes
+                        elif self.response_audio_path or self.protocol in {"minimax_t2a_v2", "aliyun_cosyvoice_tts"}:
                             response_json = await response.json(content_type=None)
-                            audio_value = _extract_json_path(response_json, self.response_audio_path or "data.audio")
+                            audio_value = _extract_first_json_path(response_json, _audio_response_paths_for_protocol(self.protocol, self.response_audio_path))
                             if isinstance(audio_value, str) and audio_value.startswith(("http://", "https://")):
                                 async with session.get(audio_value) as audio_response:
                                     if audio_response.status == 200:
@@ -93,6 +106,22 @@ class CustomTTSProvider(TTSProvider):
                         print(f"[CustomTTS] Failed with status {response.status}")
         except Exception as e:
             print(f"[CustomTTS] Stream Exception: {e}")
+
+    def _build_headers(self) -> dict[str, str]:
+        headers = dict(self.extra_headers)
+        if self.protocol == "volcengine_doubao_tts":
+            if self.app_id:
+                headers.setdefault("X-Api-App-Key", self.app_id)
+            if self.api_key:
+                headers.setdefault("X-Api-Access-Key", self.api_key)
+            if self.resource_id:
+                headers.setdefault("X-Api-Resource-Id", self.resource_id)
+            headers.setdefault("X-Api-Connect-Id", uuid.uuid4().hex)
+            headers.setdefault("Content-Type", "application/json")
+            return headers
+        if self.api_key:
+            headers.setdefault("Authorization", f"Bearer {self.api_key}")
+        return headers
 
     def _build_payload(self, text: str) -> dict:
         if self.protocol == "openai_speech":
@@ -133,6 +162,30 @@ class CustomTTSProvider(TTSProvider):
                 },
                 "output_format": "hex",
                 "subtitle_enable": False,
+            }
+        if self.protocol == "aliyun_cosyvoice_tts":
+            return {
+                "model": self.model or "cosyvoice-v3-flash",
+                "input": {
+                    "text": text,
+                    "voice": self.voice or "longxiaochun",
+                    "format": self.audio_format or "mp3",
+                    "sample_rate": 24000,
+                },
+            }
+        if self.protocol == "volcengine_doubao_tts":
+            return {
+                "user": {
+                    "uid": "v8-agent-os",
+                },
+                "req_params": {
+                    "text": text,
+                    "speaker": self.voice or "zh_female_shuangkuaisisi_moon_bigtts",
+                    "audio_params": {
+                        "format": self.audio_format or "mp3",
+                        "sample_rate": 24000,
+                    },
+                },
             }
         payload = {"text": text}
         if self.voice:
@@ -176,12 +229,39 @@ def _extract_json_path(payload: object, path: str | None) -> object:
     return current
 
 
+def _extract_first_json_path(payload: object, paths: list[str]) -> object:
+    for path in paths:
+        value = _extract_json_path(payload, path)
+        if value is not None:
+            return value
+    return None
+
+
+def _audio_response_paths_for_protocol(protocol: str, explicit_path: str = "") -> list[str]:
+    if explicit_path:
+        return [explicit_path]
+    if protocol == "minimax_t2a_v2":
+        return ["data.audio"]
+    if protocol == "aliyun_cosyvoice_tts":
+        return [
+            "output.audio.url",
+            "output.audio.data",
+            "output.audio",
+            "output.url",
+            "audio",
+            "data.audio",
+        ]
+    return ["audio", "data.audio", "output.audio"]
+
+
 def _decode_audio_value(value: object) -> bytes:
     if isinstance(value, bytes):
         return value
     if not isinstance(value, str) or not value:
         return b""
     stripped = value.strip()
+    if stripped.startswith("data:") and "," in stripped:
+        stripped = stripped.split(",", 1)[1].strip()
     try:
         return bytes.fromhex(stripped)
     except ValueError:
@@ -191,6 +271,81 @@ def _decode_audio_value(value: object) -> bytes:
         return base64.b64decode(stripped)
     except Exception:
         return b""
+
+
+def _decode_base64_audio_value(value: object) -> bytes:
+    if not isinstance(value, str) or not value:
+        return b""
+    stripped = value.strip()
+    if stripped.startswith("data:") and "," in stripped:
+        stripped = stripped.split(",", 1)[1].strip()
+    try:
+        import base64
+        return base64.b64decode(stripped, validate=True)
+    except Exception:
+        return b""
+
+
+def _decode_volcengine_audio_chunks(payload: str) -> list[bytes]:
+    chunks: list[bytes] = []
+    for raw_line in str(payload or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line or line == "[DONE]":
+            continue
+        try:
+            event = json.loads(line)
+        except Exception:
+            decoded = _decode_base64_audio_value(line) or _decode_audio_value(line)
+            if decoded:
+                chunks.append(decoded)
+            continue
+        for path in [
+            "data.audio",
+            "audio",
+            "result.audio",
+            "payload.audio",
+            "data",
+        ]:
+            value = _extract_json_path(event, path)
+            decoded = _decode_base64_audio_value(value) or _decode_audio_value(value)
+            if decoded:
+                chunks.append(decoded)
+                break
+    if not chunks:
+        decoded = _decode_base64_audio_value(payload) or _decode_audio_value(payload)
+        if decoded:
+            chunks.append(decoded)
+    return chunks
+
+
+def _aliyun_cosyvoice_endpoint(base_url: str, submit_path: str = "") -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        return ""
+    if normalized.endswith("/compatible-mode/v1"):
+        normalized = f"{normalized[:-len('/compatible-mode/v1')]}/api/v1"
+    elif normalized.endswith("/compatible-mode"):
+        normalized = f"{normalized[:-len('/compatible-mode')]}/api/v1"
+    elif "/api/v1" not in normalized:
+        normalized = f"{normalized}/api/v1"
+    path = (submit_path or "/services/audio/tts/SpeechSynthesizer").strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if normalized.endswith(path):
+        return normalized
+    return f"{normalized}{path}"
+
+
+def _volcengine_doubao_tts_endpoint(base_url: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized or "volces.com/api/v3" in normalized or "ark.cn-" in normalized:
+        return "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    return normalized
+
 
 class MockTTSProvider(TTSProvider):
     async def synthesize_stream(self, text: str) -> AsyncGenerator[bytes, None]:
@@ -245,6 +400,52 @@ def _model_ref_tts_provider_from_config(
     api_standard = str(media_limits.get("apiStandard") or "").strip()
     parameter_profile = str(model_entry.get("parameterProfile") or "").strip()
     provider_model_id = str(media_limits.get("providerModelId") or "").strip() or model_id.rsplit("/", 1)[-1]
+
+    if (
+        adapter_provider_id == "aliyun_bailian_cosyvoice"
+        or api_standard == "dashscope_cosyvoice_tts"
+        or parameter_profile == "dashscope_cosyvoice_tts"
+    ):
+        if not base_url:
+            raise RuntimeError("阿里云 CosyVoice TTS 模型缺少 baseURL，无法合成语音。")
+        endpoint = _aliyun_cosyvoice_endpoint(
+            base_url,
+            str(media_limits.get("submitPath") or "/services/audio/tts/SpeechSynthesizer"),
+        )
+        return CustomTTSProvider(
+            endpoint=endpoint,
+            api_key=api_key,
+            voice=voice,
+            protocol="aliyun_cosyvoice_tts",
+            model=provider_model_id,
+            audio_format=audio_format or "mp3",
+            speed=speed,
+        )
+
+    if (
+        adapter_provider_id == "volcengine_doubao_voice"
+        or api_standard == "volcengine_ark_voice"
+        or parameter_profile == "volcengine_ark_voice"
+    ):
+        voice_app_id = str(provider_meta.get("voice_app_id") or provider_meta.get("voiceAppId") or "").strip()
+        voice_resource_id = str(provider_meta.get("voice_resource_id") or provider_meta.get("voiceResourceId") or "").strip()
+        if not api_key:
+            raise RuntimeError("火山豆包语音 TTS 模型缺少 Access Key/API Key，无法合成语音。")
+        if not voice_app_id:
+            raise RuntimeError("火山豆包语音 TTS 模型缺少 provider.voice_app_id，无法合成语音。")
+        if not voice_resource_id:
+            raise RuntimeError("火山豆包语音 TTS 模型缺少 provider.voice_resource_id，无法合成语音。")
+        return CustomTTSProvider(
+            endpoint=_volcengine_doubao_tts_endpoint(base_url),
+            api_key=api_key,
+            voice=voice,
+            protocol="volcengine_doubao_tts",
+            model=provider_model_id,
+            audio_format=audio_format or "mp3",
+            speed=speed,
+            app_id=voice_app_id,
+            resource_id=voice_resource_id,
+        )
 
     if adapter_provider_id == "minimax_tts" or api_standard == "minimax_tts" or parameter_profile == "minimax_tts":
         if not base_url:

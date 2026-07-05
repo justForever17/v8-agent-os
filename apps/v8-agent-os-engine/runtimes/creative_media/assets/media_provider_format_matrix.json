@@ -2076,7 +2076,8 @@
         "displayName": "Alibaba Cloud Bailian CosyVoice",
         "logoAsset": "/model-assets/lobe/alibabacloud-color.svg",
         "modelIds": [
-          "cosyvoice-v3-flash"
+          "cosyvoice-v3-flash",
+          "cosyvoice-v3.5-plus"
         ],
         "apiStandard": "dashscope_cosyvoice_tts",
         "adapter": "catalog_only",
@@ -2096,9 +2097,9 @@
           "bodyFields": [
             "model",
             "input.text",
-            "parameters.voice",
-            "parameters.format",
-            "parameters.sample_rate"
+            "input.voice",
+            "input.format",
+            "input.sample_rate"
           ],
           "sizeFormat": "AUDIO_FORMAT_ENUM"
         },
@@ -2112,7 +2113,7 @@
             "binary_body"
           ]
         },
-        "sourceUrl": "https://help.aliyun.com/zh/model-studio/non-realtime-cosyvoice-api",
+        "sourceUrl": "https://help.aliyun.com/zh/model-studio/cosyvoice-tts-http-api",
         "confidence": "provider_docs"
       },
       {

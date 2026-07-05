@@ -1127,6 +1127,8 @@ async def connect_model_provider(data: dict = Body(...)):
         custom_provider_name = str(data.get("customProviderName") or data.get("custom_provider_name") or "").strip()
         base_url = str(data.get("baseUrl") or data.get("base_url") or "").strip()
         incoming_credential = str(data.get("apiKey") or data.get("api_key") or "").strip()
+        voice_app_id = str(data.get("voiceAppId") or data.get("voice_app_id") or "").strip()
+        voice_resource_id = str(data.get("voiceResourceId") or data.get("voice_resource_id") or "").strip()
         provider_kind = str(data.get("providerKind") or data.get("provider_kind") or "").strip()
         media_modality = str(data.get("mediaModality") or data.get("media_modality") or "").strip()
         api_standard = str(data.get("apiStandard") or data.get("api_standard") or "").strip()
@@ -1167,6 +1169,8 @@ async def connect_model_provider(data: dict = Body(...)):
             "mediaModality": provider.get("mediaModality") or media_modality or existing_provider.get("mediaModality") or "",
             "type": "PLATFORM" if auth.get("type") == "oauth_file" else "API",
             "api_key": credential if auth.get("type") != "oauth_file" else f"oauth:{oauth_path}",
+            "voice_app_id": voice_app_id or existing_provider.get("voice_app_id") or "",
+            "voice_resource_id": voice_resource_id or existing_provider.get("voice_resource_id") or "",
             "credential_mode": credential_mode,
             "oauth_preset": auth.get("preset") or existing_provider.get("oauth_preset") or "",
             "logoAsset": provider.get("logoAsset") or existing_provider.get("logoAsset") or "",

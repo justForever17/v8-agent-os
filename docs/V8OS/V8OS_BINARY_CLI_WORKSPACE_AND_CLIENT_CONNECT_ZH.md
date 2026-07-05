@@ -1,7 +1,7 @@
 # V8OS 二进制安装、桌面/TUI/CLI 工作区语义与客户端连接实施细节
 
 日期：2026-06-07
-校准：2026-06-27
+校准：2026-07-05
 范围：`v8-agent-os`、`openclaw-v8-bridge`、本机 `out/Claude` 可观察源码/入口、`out/CyberCore` 当前 V8OS adapter。
 边界：本文是实施细节文档，不包含代码修改；结论基于本地静态阅读、用户确认的产品取向和既有运行事实。
 
@@ -221,12 +221,29 @@ CyberCore companion 当前定位：
 
 ## 4. CLI 命令设计
 
+### 4.0 Phase 1 已落地基线
+
+当前源码形态已新增 `apps/v8-agent-os-cli`，提供一个无外部依赖的 Node 版 `v8os` 本地入口。它是产品壳和治理入口，不替代 Engine/Admin 的运行真相。
+
+已落地能力：
+
+- `v8os` 等价于 `v8os start`。
+- `v8os start/stop/status/restart` 默认看护 Engine + Admin + Web；CyberCore 需 `--with cybercore` 或 `--all`。
+- Admin/Web 启动复用 `scripts/run-next-with-managed-auth.mjs`，继续由现有脚本托管 Auth secret。
+- CLI 启动的进程状态写入 `~/.v8-agent-os/runtime/cli/processes.json`；外部占用端口会被标记为 `external_port_in_use`，不会被 CLI 强行接管。
+- `v8os doctor` 在线优先调用 Engine system doctor，离线自动降级为本地检查。
+- `v8os config` 第一版覆盖配置域查看、MCP 列表、模型角色诊断、配对地址摘要。
+- `v8os repair` 默认安全 dry-run；真正写入或副作用需要显式 `--yes`。
+- `v8os logs/open` 作为薄入口，方便定位日志和打开 Admin/Web。
+
+未落地能力仍按后续阶段推进：TUI 聊天、sessions/schedule/inbox、完整 provider/MCP 安装向导、Windows/macOS/Linux 安装包入口。
+
 ### 4.1 顶层命令
 
 | 命令 | 行为 | 是否读取 cwd |
 | --- | --- | --- |
-| `v8os` | 等价 `v8os start`，启动/连接 Engine + Admin | 否 |
-| `v8os start` | 启动服务，输出 Admin URL、Engine health、连接入口 | 否 |
+| `v8os` | 等价 `v8os start`，启动/连接 Engine + Admin + Web | 否 |
+| `v8os start` | 启动 Engine/Admin/Web，输出端口状态和连接入口；CyberCore 需显式 `--with cybercore` 或 `--all` | 否 |
 | `v8os stop` | 优雅停止由 launcher 管理的服务 | 否 |
 | `v8os restart` | 重启服务 | 否 |
 | `v8os status` | 查看端口、进程、health、连接地址 | 否 |

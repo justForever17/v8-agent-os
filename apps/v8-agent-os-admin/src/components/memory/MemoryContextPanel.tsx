@@ -462,15 +462,12 @@ export function MemoryContextPanel() {
                   ...prev,
                   recursion_limit: Number(event.target.value)
                 }))} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "40cc9a8e")}</p>
                                 </div>
 
                                 <div className="space-y-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 md:col-span-2">
                                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                                         <div className="space-y-1">
                                             <Label>{t("components.memory.MemoryContextPanel.maxGraphContinuationsLabel")}</Label>
-                                            <p className="text-xs text-slate-500">{t("components.memory.MemoryContextPanel.maxGraphContinuationsDescription")}</p>
                                         </div>
                                         <Input className="w-24" type="number" min={0} max={20} value={policyForm.maxGraphContinuations ?? 5} onChange={event => setPolicyForm(prev => normalizePolicy({
                   ...prev,
@@ -488,8 +485,6 @@ export function MemoryContextPanel() {
                                     <Input type="number" min={2048} max={2000000} value={policyForm.compression?.default_context_window_tokens ?? 32000} onChange={event => updateCompression({
                   default_context_window_tokens: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "eb062e12")}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
@@ -498,8 +493,6 @@ export function MemoryContextPanel() {
                   trigger_ratio: Number(event.target.value),
                   hard_trigger_ratio: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "3fa3b1ca")}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
@@ -507,8 +500,6 @@ export function MemoryContextPanel() {
                                     <Input type="number" min={1} max={40} value={policyForm.compression?.keep_recent_turns ?? 4} onChange={event => updateCompression({
                   keep_recent_turns: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "781d67e9")}</p>
                                 </div>
                             </div>
                         </div>
@@ -522,8 +513,6 @@ export function MemoryContextPanel() {
                                     <Input type="number" min={1} max={100} value={policyForm.compression?.keep_recent_messages ?? 6} onChange={event => updateCompression({
                   keep_recent_messages: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "73d842ac")}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
@@ -531,8 +520,6 @@ export function MemoryContextPanel() {
                                     <Input type="number" min={512} max={200000} value={policyForm.compression?.max_summary_input_tokens ?? 5000} onChange={event => updateCompression({
                   max_summary_input_tokens: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "81120cd0")}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
@@ -540,8 +527,6 @@ export function MemoryContextPanel() {
                                     <Input type="number" min={5} max={200} value={policyForm.compression?.max_summary_input_messages ?? 60} onChange={event => updateCompression({
                   max_summary_input_messages: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "9a5e5aa2")}</p>
                                 </div>
 
                                 <div className="space-y-1.5">
@@ -549,8 +534,6 @@ export function MemoryContextPanel() {
                                     <Input type="number" min={128} max={8000} value={policyForm.compression?.max_summary_output_tokens ?? 800} onChange={event => updateCompression({
                   max_summary_output_tokens: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "932563f8")}</p>
                                 </div>
                             </div>
 
@@ -570,16 +553,12 @@ export function MemoryContextPanel() {
                                     <Input type="number" min={0.5} max={0.95} step={0.01} value={policyForm.compression?.compression_model_safety_ratio ?? 0.9} onChange={event => updateCompression({
                   compression_model_safety_ratio: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "85f682b2")}</p>
                                 </div>
                                 <div className="space-y-1.5">
                                     <Label>{tg(t, "beaa2f75")}</Label>
                                     <Input type="number" min={50} max={60000} step={50} value={policyForm.compression?.noticeable_latency_ms ?? 800} onChange={event => updateCompression({
                   noticeable_latency_ms: Number(event.target.value)
                 })} />
-
-                                    <p className="text-xs text-slate-500">{tg(t, "7b897eba")}</p>
                                 </div>
                             </div>
 
@@ -591,8 +570,6 @@ export function MemoryContextPanel() {
                   summaryModel: value
                 }));
               }} />
-
-                                <p className="text-xs text-slate-500">{tg(t, "319af8c2")}</p>
                             </div>
                         </div>
                     </ConfigCard>

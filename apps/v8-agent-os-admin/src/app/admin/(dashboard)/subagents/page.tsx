@@ -1473,7 +1473,6 @@ export default function SubagentsPage() {
                                                 {baselineToolNames.slice(0, 12).join(", ") || "none"}
                                             </div>
                                         </div>} />
-                                <CardDescription className="truncate text-xs">{baselineToolNames.length} loaded</CardDescription>
                             </CardHeader>
                             <CardContent className="px-3 pb-3">
                                 <div className="truncate font-mono text-[11px] text-slate-700">
@@ -1490,7 +1489,6 @@ export default function SubagentsPage() {
                                             <div>MCP tools: {availableMcpToolCount}</div>
                                             <div>PluginHost tools: {pluginHostTools.length}</div>
                                         </div>} />
-                                <CardDescription className="truncate text-xs">{t("app.admin.dashboard.subagents.page.k90999eb9")}</CardDescription>
                             </CardHeader>
                             <CardContent className="grid grid-cols-2 gap-x-3 gap-y-1 px-3 pb-3 text-xs text-slate-500">
                                 <div>Skills <span className="font-medium text-slate-900">{skills.length}</span></div>
@@ -1508,9 +1506,6 @@ export default function SubagentsPage() {
                                                 {tg(t, "0159e367")}
                                             </div>
                                         </div>} />
-                                <CardDescription className="truncate text-xs">
-                                    {tg(t, "1940e65b")}
-                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-1 px-3 pb-3 text-xs text-slate-500">
                                 <div><span className="font-medium text-slate-900">fan-out / join</span></div>
@@ -1526,7 +1521,6 @@ export default function SubagentsPage() {
                                                 {tg(t, "00f4e417")}
                                             </div>
                                         </div>} />
-                                <CardDescription className="truncate text-xs">{temperatureStatusText(t, subagentTemperature)}</CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-2 px-3 pb-3">
                                 <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
@@ -2315,9 +2309,6 @@ export default function SubagentsPage() {
                                                     {t("app.admin.dashboard.subagents.page.k8cf0c430")}
                                                     <Badge variant="outline">{baselineToolNames.length}</Badge>
                                                 </CardTitle>
-                                                <CardDescription>
-                                                    {t("app.admin.dashboard.subagents.page.k82df509a")}
-                                                </CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.baseline ? "rotate-180" : ""}`} />
                                         </button>
@@ -2331,9 +2322,6 @@ export default function SubagentsPage() {
                                                             </div>
                                                         </div>)}
                                                 </div> : <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.kca19dcd0")}</div>}
-                                            <p className="text-xs leading-5 text-slate-500">
-                                                {t("app.admin.dashboard.subagents.page.k76e62da1")}
-                                            </p>
                                         </CardContent> : null}
                                 </Card>
                                 <Card className="rounded-3xl border-slate-200">
@@ -2342,7 +2330,6 @@ export default function SubagentsPage() {
 
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-violet-600" />{t("app.admin.dashboard.subagents.page.ke431abc9")}<Badge variant="outline">{skills.length}</Badge></CardTitle>
-                                                <CardDescription>{t("app.admin.dashboard.subagents.page.k62807e10")}</CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.skills ? "rotate-180" : ""}`} />
                                         </button>
@@ -2367,7 +2354,6 @@ export default function SubagentsPage() {
 
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><Wrench className="h-4 w-4 text-sky-600" />MCP<Badge variant="outline">{availableMcpToolCount}</Badge></CardTitle>
-                                                <CardDescription>{t("app.admin.dashboard.subagents.page.k6490c720")}</CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.mcp ? "rotate-180" : ""}`} />
                                         </button>
@@ -2395,7 +2381,6 @@ export default function SubagentsPage() {
 
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><BrainCircuit className="h-4 w-4 text-emerald-600" />PluginHost<Badge variant="outline">{pluginHostTools.length}</Badge></CardTitle>
-                                                <CardDescription>{t("app.admin.dashboard.subagents.page.k5f711f45")}</CardDescription>
                                             </div>
                                             <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.plugin_host ? "rotate-180" : ""}`} />
                                         </button>

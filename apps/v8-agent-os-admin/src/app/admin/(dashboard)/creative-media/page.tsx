@@ -8,7 +8,7 @@ import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ModelSelect, type AdminModelSelectOption } from "@/components/models/ModelSelect";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -514,7 +514,6 @@ export default function CreativeMediaPage() {
                             <span>{t("app.admin.dashboard.creativeMedia.workflowsTitle")}</span>
                         </AdminHoverInfo>
                     </CardTitle>
-                    <CardDescription>{t("app.admin.dashboard.creativeMedia.workflowsDescription")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-3">
@@ -612,7 +611,6 @@ export default function CreativeMediaPage() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                             <CardTitle>{t("app.admin.dashboard.creativeMedia.modelPreferencesTitle")}</CardTitle>
-                            <CardDescription>{t("app.admin.dashboard.creativeMedia.modelPreferencesReminder")}</CardDescription>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                             <Button variant="outline" onClick={() => setModelPreferencesOpen((value) => !value)}>
@@ -755,7 +753,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.recipesTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.recipesDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -790,7 +787,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.assetsTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.assetsDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -821,7 +817,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.charactersTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.charactersDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -848,7 +843,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.keyframesTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.keyframesDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -877,7 +871,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.qualityJobsTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.qualityJobsDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -903,7 +896,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.costLedgerTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.costLedgerDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -929,7 +921,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.safetyEventsTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.safetyEventsDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -958,7 +949,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.editPlansTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.editPlansDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -987,7 +977,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.renderJobsTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.renderJobsDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <Table>
@@ -1018,7 +1007,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.governanceTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.governanceDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-3">
                         <div className="rounded-lg border p-3">
@@ -1038,7 +1026,6 @@ export default function CreativeMediaPage() {
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.creativeMedia.diagnosticsTitle")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.creativeMedia.diagnosticsDescription")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                         <details className="rounded-lg border p-3">

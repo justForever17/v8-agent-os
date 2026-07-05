@@ -120,7 +120,6 @@ export default function StabilityStrategyPage() {
                         onClick={() => setMode(item.key)}
                     >
                         <div className="text-base font-semibold">{item.title}</div>
-                        <div className="mt-2 text-sm leading-6 text-slate-500">{item.description}</div>
                     </button>
                 ))}
             </div>
@@ -129,7 +128,6 @@ export default function StabilityStrategyPage() {
                 <div className="flex items-center justify-between gap-3">
                     <div>
                         <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.stability.strategy.page.kb33db226")}</div>
-                        <div className="mt-1 text-sm leading-6 text-slate-500">{t("app.admin.dashboard.stability.strategy.page.kd531f6ba")}</div>
                     </div>
                     <Button
                         variant={durability ? "default" : "outline"}

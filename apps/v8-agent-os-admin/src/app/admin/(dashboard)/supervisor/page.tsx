@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { useMemo, useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Crown, Save, Loader2, ChevronDown, ChevronRight, Check, Play, Upload, X, Lock, Wrench } from "lucide-react";
@@ -336,7 +336,6 @@ export default function SupervisorPage() {
                     <Card>
                         <CardHeader>
                             <CardTitle>{t("app.admin.dashboard.supervisor.page.k74e8cae6")}</CardTitle>
-                            <CardDescription>{t("app.admin.dashboard.supervisor.page.k2a6c03f1")}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-6">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6 border-b">
@@ -419,11 +418,6 @@ export default function SupervisorPage() {
                                 <Label>{t("app.admin.dashboard.supervisor.page.kba259bc3")}</Label>
                                 <ModelSelect models={models} value={selectedModelId} emptyValue="default" emptyLabel={t("app.admin.dashboard.supervisor.page.k534ef300")} emptyOutputValue="default" placeholder={t("app.admin.dashboard.supervisor.page.k534ef300")} onValueChange={setSelectedModelId} />
 
-                                {defaultModelId ? <p className="text-xs text-muted-foreground">
-                                        {tg(t, "4c85d452", {
-                                            value1: defaultModelId
-                                        })}
-                                    </p> : null}
                             </div>
 
                             <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
@@ -479,7 +473,6 @@ export default function SupervisorPage() {
                     <Card>
                         <CardHeader>
                             <CardTitle>{t("app.admin.dashboard.supervisor.page.kc2dd0474")}</CardTitle>
-                            <CardDescription>{t("app.admin.dashboard.supervisor.page.kd096e672")}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className={`rounded-md border px-3 py-2 text-xs ${promptBudgetOverLimit ? "border-rose-300 bg-rose-50 text-rose-700" : promptBudgetNearLimit || runtimePromptTruncated ? "border-amber-300 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
@@ -496,16 +489,9 @@ export default function SupervisorPage() {
                     <Card>
                         <CardHeader>
                             <CardTitle>{t("app.admin.dashboard.supervisor.page.kf558439c")}</CardTitle>
-                            <CardDescription>{t("app.admin.dashboard.supervisor.page.k948f683d")}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-3">
                             <ModelSelect models={visionCapableModels} value={visionModelId || "__empty__"} emptyLabel={t("app.admin.dashboard.supervisor.page.k3930f0e4")} placeholder={t("app.admin.dashboard.supervisor.page.k3930f0e4")} onValueChange={setVisionModelId} />
-
-                            {visionModelSource ? <p className="text-xs text-muted-foreground">
-                                    {tg(t, "83b1a316", {
-                                        value1: visionModelSource
-                                    })}
-                                </p> : null}
                         </CardContent>
                     </Card>
 
@@ -513,7 +499,6 @@ export default function SupervisorPage() {
                     <Card>
                         <CardHeader>
                             <CardTitle>{t("app.admin.dashboard.supervisor.page.k4da74fc8")}</CardTitle>
-                            <CardDescription>{t("app.admin.dashboard.supervisor.page.k0201cb86")}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-6">
                             {/* 核心工具统计 */}

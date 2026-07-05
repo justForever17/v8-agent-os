@@ -9,7 +9,7 @@ import { StatusNotice } from "@/components/admin-shell/StatusNotice";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
@@ -835,7 +835,6 @@ export function PluginHostWorkbench() {
                     <Card className="self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
                             <CardTitle>{t("components.plugin.host.PluginHostWorkbench.k80585d4a")}</CardTitle>
-                            <CardDescription>{t("components.plugin.host.PluginHostWorkbench.k12860ccf")}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                         <div className="grid gap-4 md:grid-cols-2">
@@ -904,7 +903,6 @@ export function PluginHostWorkbench() {
                     <Card className="self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
                             <CardTitle>{t("components.plugin.host.PluginHostWorkbench.k54692380")}</CardTitle>
-                            <CardDescription>{t("components.plugin.host.PluginHostWorkbench.kd95a7cb5")}</CardDescription>
                         </CardHeader>
                         <CardContent className="max-h-[460px] space-y-4 overflow-y-auto pr-1">
                             {(snapshot?.plugins || []).length ? ((snapshot?.plugins || []).map((plugin) => (<div key={plugin.pluginId} className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -948,7 +946,6 @@ export function PluginHostWorkbench() {
                     <Card className="self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
                             <CardTitle>{t("components.plugin.host.PluginHostWorkbench.k5e31705f")}</CardTitle>
-                            <CardDescription>{t("components.plugin.host.PluginHostWorkbench.k6b06242d")}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className="flex flex-wrap gap-3">
@@ -985,7 +982,6 @@ export function PluginHostWorkbench() {
                     <Card className="order-2 self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
                             <CardTitle>{t("components.plugin.host.PluginHostWorkbench.k53610667")}</CardTitle>
-                            <CardDescription>{t("components.plugin.host.PluginHostWorkbench.k4c522d1d")}</CardDescription>
                         </CardHeader>
                         <CardContent className="max-h-[860px] space-y-5 overflow-y-auto pr-1">
                             {extensionsMeta ? <SourceMetaRow source={extensionsMeta.source} savePath={extensionsMeta.savePath} reloadRequired={extensionsMeta.reloadRequired}/> : null}
@@ -1160,7 +1156,6 @@ export function PluginHostWorkbench() {
                     <Card className="order-1 self-start rounded-2xl border-slate-200 shadow-sm">
                         <CardHeader>
                             <CardTitle>{t("components.plugin.host.PluginHostWorkbench.kbb771e48")}</CardTitle>
-                            <CardDescription>{t("components.plugin.host.PluginHostWorkbench.k2d338e02")}</CardDescription>
                         </CardHeader>
                         <CardContent className="max-h-[760px] space-y-3 overflow-y-auto pr-1 text-sm text-slate-700">
                             {doctorSummary ? (<div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">

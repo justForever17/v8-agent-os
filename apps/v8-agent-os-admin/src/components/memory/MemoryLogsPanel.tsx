@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, Loader2, Refre
 
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
@@ -218,7 +218,6 @@ export default function MemoryLogsPanel() {
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                     <div className="space-y-1">
                         <CardTitle className="text-xl">{t("components.memory.MemoryLogsPanel.title")}</CardTitle>
-                        <CardDescription>{t("components.memory.MemoryLogsPanel.description")}</CardDescription>
                     </div>
                     <div className="flex items-center gap-2">
                         <Button variant="outline" size="sm" onClick={() => void loadTree(selectedPath)} disabled={loadingTree || loadingFile}>

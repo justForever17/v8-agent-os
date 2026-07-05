@@ -1,10 +1,10 @@
 "use client";
 
 import { type DragEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, FileCode2, GitBranch, MousePointerClick, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2, Wand2 } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, CheckCircle2, Copy, Crosshair, GitBranch, MousePointerClick, Play, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -825,9 +825,6 @@ function summarizeObservation(payload: unknown, candidates: ObservationCandidate
     bestRole: best?.role || best?.controlType,
   };
 }
-function parseRunIdsInput(value: string) {
-  return Array.from(new Set(value.split(/[\s,，]+/).map(item => item.trim()).filter(Boolean)));
-}
 function readRunScriptName(metadata?: Record<string, unknown>) {
   const script = metadata?.script;
   if (script && typeof script === "object" && !Array.isArray(script)) {
@@ -893,7 +890,6 @@ export function RPAWorkbench() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [studioDirty, setStudioDirty] = useState(false);
   const [templateNote, setTemplateNote] = useState("");
-  const [compileRunId, setCompileRunId] = useState("");
   const [variablesText, setVariablesText] = useState("{}");
   const [existingRobotFile, setExistingRobotFile] = useState("");
   const [existingVariablesText, setExistingVariablesText] = useState("{}");
@@ -2078,39 +2074,6 @@ export function RPAWorkbench() {
     }
   };
 
-  const handleCompile = async () => {
-    const runIds = parseRunIdsInput(compileRunId);
-    if (runIds.length === 0) {
-      toast({
-        variant: "destructive",
-        title: t("components.rpa.RPAWorkbench.kbf8ee2bb"),
-        description: t("components.rpa.RPAWorkbench.k67c52b94")
-      });
-      return;
-    }
-    const compileRequest = runIds.length === 1 ? () => fetch(`/api/rpa/compile/${encodeURIComponent(runIds[0])}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        save: true
-      })
-    }) : () => fetch("/api/rpa/compile", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        runIds,
-        save: true
-      })
-    });
-    const data = await runAction("compile", compileRequest, tg(t, "d71174f4"));
-    if (data?.id) {
-      setSelectedDraftId(data.id);
-    }
-  };
   const parseDraftStepsFromBuilder = () => {
     const steps: EditableDraftStep[] = [];
     for (const key of draftStepOrder) {
@@ -2677,7 +2640,6 @@ export function RPAWorkbench() {
             <div className="flex items-center justify-between gap-4">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight">{tg(t, "545938bb")}</h1>
-                    <p className="mt-1 text-muted-foreground">{tg(t, "a6e48ba6")}</p>
                 </div>
                 <Button variant="outline" onClick={() => void loadAll()} disabled={loading || !!busyAction}>
                     <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -2690,7 +2652,6 @@ export function RPAWorkbench() {
                     <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                             <CardTitle className="text-lg">RPA Studio</CardTitle>
-                            <CardDescription>{t("components.rpa.RPAWorkbench.studioDescription")}</CardDescription>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                             <Button variant="outline" size="sm" onClick={resetStudioWorkspace}>
@@ -2724,7 +2685,6 @@ export function RPAWorkbench() {
                         <aside className="border-r border-border/50 bg-muted/10 p-3">
                             <div className="mb-3">
                                 <div className="text-xs font-semibold">{t("components.rpa.RPAWorkbench.studioActionLibraryTitle")}</div>
-                                <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.studioActionLibraryDescription")}</div>
                             </div>
                             <ScrollArea className="h-[560px] pr-2">
                                 <div className="space-y-3">
@@ -3229,7 +3189,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base">Robot Framework</CardTitle>
-                        <CardDescription>{tg(t, "06e27187")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2">
                         <Badge variant={probeState(availability.robotFrameworkDetail).variant} className="max-w-full overflow-hidden">
@@ -3244,7 +3203,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base">RPA Framework</CardTitle>
-                        <CardDescription>{tg(t, "4787a117")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-2">
                         <Badge variant={probeState(availability.rpaFrameworkDetail).variant} className="max-w-full overflow-hidden">
@@ -3259,7 +3217,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60 md:col-span-2">
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base">{tg(t, "e9e8406f")}</CardTitle>
-                        <CardDescription>{tg(t, "5f35173c")}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2">
                         {Object.entries(availability.libraryDetails || {}).map(([name, detail]) => <div key={name} className="rounded-xl border border-border/60 p-3">
@@ -3278,31 +3235,10 @@ export function RPAWorkbench() {
                 </Card>
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
-                <Card className="border-border/60">
-                    <CardHeader>
-                        <CardTitle className="flex items-center gap-2 text-lg">
-                            <Wand2 className="h-5 w-5 text-primary" />
-                            {tg(t, "83eb2c86")}
-                        </CardTitle>
-                        <CardDescription>{tg(t, "80b3232f")}</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                        <div className="grid gap-2">
-                            <Label htmlFor="compile-run-id">ComputerUse run_id</Label>
-                            <Input id="compile-run-id" value={compileRunId} onChange={event => setCompileRunId(event.target.value)} placeholder={t("components.rpa.RPAWorkbench.k5b954856")} />
-                        </div>
-                        <Button onClick={() => void handleCompile()} disabled={busyAction === "compile"}>
-                            <FileCode2 className="mr-2 h-4 w-4" />
-                            {tg(t, "49a24181")}
-                        </Button>
-                    </CardContent>
-                </Card>
-
+            <div className="grid gap-6 xl:grid-cols-[1fr]">
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "b215c993")}</CardTitle>
-                        <CardDescription>{tg(t, "e2efa0cc")}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4">
                         <div className="grid gap-2">
@@ -3327,7 +3263,6 @@ export function RPAWorkbench() {
                         <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
                                 <CardTitle className="text-lg">{tg(t, "17269e32")}</CardTitle>
-                                <CardDescription>{tg(t, "f068e67b")}</CardDescription>
                             </div>
                             <Button variant={showArchivedDrafts ? "secondary" : "outline"} size="sm" onClick={() => setShowArchivedDrafts(value => !value)}>
                                 {t("components.rpa.RPAWorkbench.includeArchived")}
@@ -3394,20 +3329,17 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "1ef00e19")}</CardTitle>
-                        <CardDescription>{selectedDraft ? `${selectedDraft.name || selectedDraft.id}` : tg(t, "9b331209")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
                             <div className="grid gap-2">
                                 <Label htmlFor="draft-vars">{t("components.rpa.RPAWorkbench.runtimeVariablesJson")}</Label>
                                 <Textarea id="draft-vars" className="min-h-[150px] font-mono text-xs" value={variablesText} onChange={event => setVariablesText(event.target.value)} />
-                                <p className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.runtimeVariablesJsonHint")}</p>
                             </div>
                             <div className="rounded-xl border border-border/60 bg-background p-3">
                                 <div className="mb-3 flex items-center justify-between gap-2">
                                     <div>
                                         <div className="text-sm font-medium">{t("components.rpa.RPAWorkbench.variableSchema")}</div>
-                                        <div className="text-xs text-muted-foreground">{t("components.rpa.RPAWorkbench.variableSchemaHint")}</div>
                                     </div>
                                     <Button size="sm" variant="outline" onClick={handleAddVariableRow}>
                                         <Plus className="mr-2 h-4 w-4" />
@@ -3759,7 +3691,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "a498e2b7")}</CardTitle>
-                        <CardDescription>{tg(t, "7b5192bb")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="grid gap-2">
@@ -3785,7 +3716,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "9c772e23")}</CardTitle>
-                        <CardDescription>{tg(t, "f4fdb48f")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <ScrollArea className="h-[340px] pr-4">
@@ -3810,7 +3740,6 @@ export function RPAWorkbench() {
                         <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
                                 <CardTitle className="text-lg">{tg(t, "34369e72")}</CardTitle>
-                                <CardDescription>{tg(t, "d420bf42")}</CardDescription>
                             </div>
                             <Button variant={showArchivedTemplates ? "secondary" : "outline"} size="sm" onClick={() => setShowArchivedTemplates(value => !value)}>
                                 {t("components.rpa.RPAWorkbench.includeArchived")}
@@ -3869,7 +3798,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "00681781")}</CardTitle>
-                        <CardDescription>{selectedTemplate ? `${selectedTemplate.name || selectedTemplate.id}` : tg(t, "db138e40")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         {selectedTemplate ? <>
@@ -3970,7 +3898,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "ae650bf3")}</CardTitle>
-                        <CardDescription>{tg(t, "fa0e6e54")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         {rpaApprovals.length === 0 ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "c3194cc7")}</div> : rpaApprovals.map(approval => {
@@ -4014,7 +3941,6 @@ export function RPAWorkbench() {
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "3df5bcab")}</CardTitle>
-                        <CardDescription>{tg(t, "4300eeee")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <ScrollArea className="h-[520px] pr-3">

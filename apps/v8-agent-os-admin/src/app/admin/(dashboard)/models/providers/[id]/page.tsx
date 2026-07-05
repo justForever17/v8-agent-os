@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowLeft, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ModelCardV2 } from "@/components/models/ModelCardV2";
@@ -422,7 +422,6 @@ export default function ProviderConfigPage({ params
                 <Card className="lg:col-span-1 h-fit">
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.models.providers.id.page.k53d4d6ef")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.models.providers.id.page.kce915e60")}</CardDescription>
                     </CardHeader>
                     <CardContent>
                         <form key={`${provider.id}-${providerType}-${credentialMode}-${provider.oauthPath || provider.apiKey || ""}`} onSubmit={handleSaveProvider} className="space-y-4">

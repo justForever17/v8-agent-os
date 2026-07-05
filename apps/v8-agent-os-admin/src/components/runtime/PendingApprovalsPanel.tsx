@@ -6,7 +6,7 @@ import { AlertCircle, RefreshCw, SendHorizonal, ShieldAlert } from "lucide-react
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useRuntimeOpsData, formatWhen } from "@/components/runtime/use-runtime-ops";
 
@@ -53,9 +53,6 @@ export function PendingApprovalsPanel({ hook, focusRunId, focusSessionId }: Pend
                         <ShieldAlert className="h-5 w-5 text-amber-500" />
                         {t("components.runtime.PendingApprovalsPanel.k61329e7f")}
                     </CardTitle>
-                    <CardDescription>
-                        {t("components.runtime.PendingApprovalsPanel.k24e1bc55")}
-                    </CardDescription>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => void refreshData()} disabled={loading}>
                     <RefreshCw className="mr-2 h-4 w-4" />

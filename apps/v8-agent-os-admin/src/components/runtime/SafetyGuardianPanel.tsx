@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
@@ -258,7 +258,6 @@ export function SafetyGuardianPanel() {
                                 <ShieldCheck className="h-4 w-4 text-sky-600" />
                                 {ti(t, "kc93d1a8986")}
                             </CardTitle>
-                            <CardDescription>{ti(t, "k1d79ff5b87")}</CardDescription>
                         </div>
                         <div className="flex items-center gap-2">
                             <Button variant="outline" size="sm" onClick={() => void loadConfig()} disabled={saving}>
@@ -282,7 +281,6 @@ export function SafetyGuardianPanel() {
             <Card className="rounded-2xl border-slate-200 shadow-sm">
                 <CardHeader>
                     <CardTitle className="text-base">{ti(t, "k7014655986")}</CardTitle>
-                    <CardDescription>{ti(t, "ka5024c64d9")}</CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-2">
@@ -405,7 +403,6 @@ export function SafetyGuardianPanel() {
             <Card className="rounded-2xl border-slate-200 shadow-sm">
                 <CardHeader>
                     <CardTitle className="text-base">{ti(t, "k255b15c831")}</CardTitle>
-                    <CardDescription>{ti(t, "ke883c314b7")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                     <Textarea value={rawJson} onChange={event => setRawJson(event.target.value)} className="min-h-[420px] font-mono text-xs" />

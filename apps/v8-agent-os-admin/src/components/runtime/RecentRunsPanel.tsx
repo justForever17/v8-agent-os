@@ -6,7 +6,7 @@ import { PauseCircle, RotateCcw } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useRuntimeOpsData, formatWhen, RUN_LABELS } from "@/components/runtime/use-runtime-ops";
 
 type RecentRunsPanelProps = {
@@ -53,9 +53,6 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
                     <PauseCircle className="h-5 w-5 text-primary" />
                     {t("components.runtime.RecentRunsPanel.k1a586b06")}
                 </CardTitle>
-                <CardDescription>
-                    {t("components.runtime.RecentRunsPanel.k70753915")}
-                </CardDescription>
             </CardHeader>
             <CardContent className="flex-1 space-y-3 overflow-y-auto pr-1">
                 {visibleRuns.length === 0 ? (

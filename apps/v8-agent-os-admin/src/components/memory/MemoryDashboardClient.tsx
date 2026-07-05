@@ -14,7 +14,7 @@ import MemorySectionNav, { type MemorySectionKey } from "@/components/memory/Mem
 import MemoryWorkflowsPanel from "@/components/memory/MemoryWorkflowsPanel";
 import { PreferencesManager } from "@/components/memory/PreferencesManager";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
@@ -438,9 +438,6 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
         <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
                             <CardHeader>
                                 <CardTitle className="text-lg">{tg(t, "f803638e")}{quarantinedGlobalKnowledge.length})</CardTitle>
-                                <CardDescription>
-                                    {tg(t, "9ac2a5e0")}
-                                </CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="max-h-[280px] space-y-2 overflow-y-auto">
@@ -583,7 +580,6 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                     {data?.graph?.top_entities?.length > 0 ? <Card className="border-border/60">
                             <CardHeader>
                                 <CardTitle className="text-lg">{t("app.admin.dashboard.memory.page.k61c52134")}</CardTitle>
-                                <CardDescription>{t("app.admin.dashboard.memory.page.k8e1002f5")}</CardDescription>
                             </CardHeader>
                             <CardContent>
                                 <div className="space-y-2">

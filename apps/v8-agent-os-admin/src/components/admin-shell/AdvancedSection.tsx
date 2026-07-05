@@ -5,6 +5,7 @@ import { ChevronDown } from "lucide-react";
 
 import { useResolveText } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
+import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { cn } from "@/lib/utils";
 
 export function AdvancedSection({
@@ -29,10 +30,9 @@ export function AdvancedSection({
                 className="h-auto w-full justify-between rounded-2xl border-slate-200 bg-white px-4 py-4 text-left shadow-sm"
                 onClick={() => setOpen((current) => !current)}
             >
-                <div className="space-y-1">
-                    <div className="text-sm font-medium text-slate-900">{resolveText(title)}</div>
-                    {description ? <div className="text-xs leading-5 text-slate-500">{resolveText(description)}</div> : null}
-                </div>
+                <AdminHoverInfo content={description ? resolveText(description) : undefined}>
+                    <span className="text-sm font-medium text-slate-900">{resolveText(title)}</span>
+                </AdminHoverInfo>
                 <ChevronDown className={cn("h-4 w-4 text-slate-500 transition-transform", open ? "rotate-180" : "")} />
             </Button>
             {open ? children : null}

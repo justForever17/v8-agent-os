@@ -1,7 +1,7 @@
 "use client";
 import { AlertCircle, FolderTree } from "lucide-react";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 interface ExtractionRun {
     runId?: string;
     sessionId?: string;
@@ -144,9 +144,6 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                         <AlertCircle className="h-5 w-5 text-primary"/>
                         {t("components.memory.MemoryRuntimeDiagnosticsPanel.kf0f767f4")}
                     </CardTitle>
-                    <CardDescription>
-                        {t("components.memory.MemoryRuntimeDiagnosticsPanel.k99a983b5")}
-                    </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
@@ -234,9 +231,6 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                         <FolderTree className="h-5 w-5 text-primary"/>
                         {t("components.memory.MemoryRuntimeDiagnosticsPanel.kfecf45db")}
                     </CardTitle>
-                    <CardDescription>
-                        {t("components.memory.MemoryRuntimeDiagnosticsPanel.kafb8acc0")}
-                    </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Save, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -314,9 +314,6 @@ export function PreferencesManager() {
     <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "b9aeaf18")}</CardTitle>
-                        <CardDescription>
-                            {tg(t, "5efc831b")}
-                        </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                         {quarantinedGlobalPreferences.map((record) =>
@@ -365,11 +362,10 @@ export function PreferencesManager() {
                             <div className="flex items-center justify-between gap-3">
                                 <div>
                                     <CardTitle className="text-lg">
-                                        <span className="rounded-full bg-primary/10 px-3 py-1 font-mono text-sm text-primary">
-                                            [{scope}]
+                                        <span className="rounded-full bg-primary/10 px-3 py-1 text-sm text-primary">
+                                            {scopeLabel(scope, t)}
                                         </span>
                                     </CardTitle>
-                                    <CardDescription className="mt-3">{scopeLabel(scope, t)}</CardDescription>
                                 </div>
                                 <Button variant="outline" size="sm" onClick={() => addPreferenceRow(scope)}>
                                     <Plus className="mr-2 h-4 w-4" />

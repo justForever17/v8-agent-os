@@ -13,7 +13,7 @@ import { ModelSelect } from "@/components/models/ModelSelect";
 import { SafetyGuardianPanel } from "@/components/runtime/SafetyGuardianPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
@@ -706,7 +706,6 @@ export default function SafetyControlPage() {
                 <Card className="rounded-2xl border-slate-200 shadow-sm">
                     <CardHeader>
                         <CardTitle className="text-base">{ti(t, "k8f7932ff92")}</CardTitle>
-                        <CardDescription>{t(activePreset.description)}</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <div className="rounded-2xl border border-slate-200 p-4">

@@ -2,7 +2,7 @@
 import { useState, useRef, DragEvent, ChangeEvent, useEffect, useCallback } from "react";
 import { UploadCloud, FileText, Loader2, CheckCircle2, AlertCircle, X, Trash2, File as FileIcon, FileArchive, FileCode, FileSpreadsheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";

@@ -660,11 +660,8 @@ export function RuntimeGovernanceWorkbench({
   };
   return <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
-                {embedded ? <div className="text-sm text-muted-foreground">
-                        {tg(t, "89a6bc19")}
-                    </div> : <div>
+                {embedded ? null : <div>
                         <h1 className="text-3xl font-bold tracking-tight">{tg(t, "d1dd5c23")}</h1>
-                        <p className="mt-1 text-muted-foreground">{tg(t, "b9baa9b6")}</p>
                     </div>}
                 <div className="flex flex-wrap gap-2">
                     {activeRuntimeKind ? <Button variant="outline" onClick={() => setActiveRuntimeKind(null)}>
@@ -678,16 +675,15 @@ export function RuntimeGovernanceWorkbench({
             </div>
 
             <div className="grid gap-4 md:grid-cols-4">
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "32f538d7")}</CardDescription><CardTitle className="text-3xl">{snapshot.count || 0}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "6d95b1d5")}</CardContent></Card>
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{t("app.admin.dashboard.engineeringLane.enabledState")}</CardDescription><CardTitle className="text-3xl">{summary.enabled}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "0c353b83")}</CardContent></Card>
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "57fce0c4")}</CardDescription><CardTitle className="text-3xl">{approvals.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "1bae8500")}</CardContent></Card>
-                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "0801745d")}</CardDescription><CardTitle className="text-3xl">{recoverableSessions.length}</CardTitle></CardHeader><CardContent className="text-xs text-muted-foreground">{tg(t, "b6eae25e")}</CardContent></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "32f538d7")}</CardDescription><CardTitle className="text-3xl">{snapshot.count || 0}</CardTitle></CardHeader></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{t("app.admin.dashboard.engineeringLane.enabledState")}</CardDescription><CardTitle className="text-3xl">{summary.enabled}</CardTitle></CardHeader></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "57fce0c4")}</CardDescription><CardTitle className="text-3xl">{approvals.length}</CardTitle></CardHeader></Card>
+                <Card className="border-border/60"><CardHeader className="pb-2"><CardDescription>{tg(t, "0801745d")}</CardDescription><CardTitle className="text-3xl">{recoverableSessions.length}</CardTitle></CardHeader></Card>
             </div>
 
             <Card className="border-border/60">
                 <CardHeader>
                     <CardTitle className="text-lg">{t("components.runtime.RuntimeGovernanceWorkbench.memoryObservabilityTitle")}</CardTitle>
-                    <CardDescription>{t("components.runtime.RuntimeGovernanceWorkbench.memoryObservabilityDescription")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-4">
@@ -724,7 +720,6 @@ export function RuntimeGovernanceWorkbench({
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="flex items-center gap-2 text-lg"><Route className="h-5 w-5 text-primary" />{tg(t, "b80577b9")}</CardTitle>
-                        <CardDescription>{tg(t, "fde33445")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div className="flex flex-col gap-3 md:flex-row">
@@ -750,12 +745,10 @@ export function RuntimeGovernanceWorkbench({
                 <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="flex items-center gap-2 text-lg"><SlidersHorizontal className="h-5 w-5 text-primary" />{tg(t, "68b8eea2")}</CardTitle>
-                        <CardDescription>{tg(t, "b55e7b2c")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
                         {(Object.keys(PRESET_LABELS) as RuntimePresetId[]).map(preset => <div key={preset} className="rounded-2xl border border-border/60 p-4">
                                 <div className="text-sm font-medium">{t(PRESET_LABELS[preset].title)}</div>
-                                <div className="mt-1 text-xs text-muted-foreground">{t(PRESET_LABELS[preset].description)}</div>
                                 <Button className="mt-3" variant="outline" onClick={() => void applyPreset(preset)} disabled={busyKey === `preset:${preset}`}>
                                     {busyKey === `preset:${preset}` ? t("app.admin.dashboard.creativeMedia.saving") : t("components.runtime.RuntimeGovernanceWorkbench.applyPresetButton")}
                                 </Button>
@@ -767,7 +760,6 @@ export function RuntimeGovernanceWorkbench({
             <Card className="border-border/60">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "a90cbb36")}</CardTitle>
-                        <CardDescription>{tg(t, "8b3b5a7e")}</CardDescription>
                 </CardHeader>
                 <CardContent>
                     <ScrollArea className="h-[640px] pr-4">
@@ -775,7 +767,6 @@ export function RuntimeGovernanceWorkbench({
                             {groupedRuntimes.map(section => <div key={section.key} className="space-y-4">
                                     <div className="rounded-2xl border border-border/60 bg-muted/30 px-4 py-3">
                                         <div className="text-sm font-semibold text-slate-900">{t(section.title)}</div>
-                                        <div className="mt-1 text-xs leading-5 text-muted-foreground">{t(section.description)}</div>
                                     </div>
                                     <div className="space-y-4">
                                         {section.runtimes.map(runtime => {
@@ -888,11 +879,6 @@ export function RuntimeGovernanceWorkbench({
                 <Card className="border-border/60 xl:col-span-2">
                     <CardHeader>
                         <CardTitle className="text-lg">{tg(t, "7de49f33")}</CardTitle>
-                        <CardDescription>
-                            {activeRuntimeKind ? tg(t, "c7d51e88", {
-              value1: runtimeNameMap.get(activeRuntimeKind) || activeRuntimeKind
-            }) : tg(t, "8c44493c")}
-                        </CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-6 xl:grid-cols-3">
                         <div className="space-y-3">

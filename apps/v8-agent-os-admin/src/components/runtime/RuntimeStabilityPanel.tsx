@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Database, Loader2, Save, ShieldCheck, TrafficCone } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { cn } from "@/lib/utils";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -146,9 +146,6 @@ export function RuntimeStabilityPanel() {
                             <ShieldCheck className="h-5 w-5 text-emerald-600" />
                             <CardTitle>{ti(t, "k939ee6c6e2")}</CardTitle>
                         </div>
-                        <CardDescription>
-                            {config.summaries?.strictSupervisorDurability || ti(t, "k2e9a23fd54")}
-                        </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <SettingToggleCard
@@ -175,7 +172,6 @@ export function RuntimeStabilityPanel() {
                             <Database className="h-5 w-5 text-sky-600" />
                             <CardTitle>{ti(t, "k2f74f4c7f8")}</CardTitle>
                         </div>
-                        <CardDescription>{ti(t, "kc1f24be8ba")}</CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3 text-sm">
                         <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3">
@@ -196,9 +192,6 @@ export function RuntimeStabilityPanel() {
                         <TrafficCone className="h-5 w-5 text-amber-600" />
                         <CardTitle>{ti(t, "kb05897cb29")}</CardTitle>
                     </div>
-                    <CardDescription>
-                        {config.summaries?.sessionLanePolicy?.[config.sessionLanePolicy || "queue"] || ti(t, "kfe367770b4")}
-                    </CardDescription>
                 </CardHeader>
                 <CardContent className="grid gap-3 lg:grid-cols-3">
                     {POLICY_OPTIONS.map(option => {

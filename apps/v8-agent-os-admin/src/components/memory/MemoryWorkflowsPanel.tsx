@@ -6,7 +6,7 @@ import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, Save, ShieldAlert, Tra
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -306,7 +306,6 @@ export default function MemoryWorkflowsPanel() {
             <Card className="border-border/60">
                 <CardHeader>
                     <CardTitle>{t("components.memory.MemoryWorkflowsPanel.title")}</CardTitle>
-                    <CardDescription>{t("components.memory.MemoryWorkflowsPanel.description")}</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
                     <div className="flex gap-2">
@@ -391,7 +390,6 @@ export default function MemoryWorkflowsPanel() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                             <CardTitle>{selected ? (selected.task_family || selected.taskFamily || selected.id) : t("components.memory.MemoryWorkflowsPanel.noSelection")}</CardTitle>
-                            <CardDescription>{selected?.id}</CardDescription>
                         </div>
                         {selected ? (
                             <div className="flex flex-wrap gap-2">

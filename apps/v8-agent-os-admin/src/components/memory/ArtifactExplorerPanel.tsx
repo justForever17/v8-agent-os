@@ -5,7 +5,7 @@ import { FileAudio, FileImage, FileText, FileVideo, Link2, Loader2, RefreshCw, S
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -303,9 +303,6 @@ export function ArtifactExplorerPanel() {
                             {t("components.memory.ArtifactExplorerPanel.k876e8c06")}
                         </Button>
                     </CardTitle>
-                    <CardDescription>
-                        {t("components.memory.ArtifactExplorerPanel.k6626b67e")}
-                    </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -455,9 +452,6 @@ export function ArtifactExplorerPanel() {
                                     <SelectedIcon className="h-4 w-4 text-primary" />
                                     {t("components.memory.ArtifactExplorerPanel.detailTitle")}
                                 </CardTitle>
-                                <CardDescription>
-                                    {selectedArtifact ? t("components.memory.ArtifactExplorerPanel.kd499c13e") : t("components.memory.ArtifactExplorerPanel.kb404a309")}
-                                </CardDescription>
                             </CardHeader>
                             <CardContent className="space-y-4">
                                 {!selectedArtifact ?

@@ -1,6 +1,6 @@
 "use client";
 
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useEffect, useState } from "react";
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
 import { Activity, Loader2 } from "lucide-react";
@@ -300,7 +300,6 @@ export default function DashboardPage() {
                 <Card className="col-span-1 flex h-[420px] min-h-0 flex-col">
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.page.kad5f5f05")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.page.k1bfef4bf")}</CardDescription>
                     </CardHeader>
                     <CardContent className="flex-1 min-h-0">
                         <ResponsiveContainer width="100%" height="100%">
@@ -322,7 +321,6 @@ export default function DashboardPage() {
                 <Card className="col-span-1 flex h-[420px] min-h-0 flex-col">
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.page.kd35fe722")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.page.k9eacfd89")}</CardDescription>
                     </CardHeader>
                     <CardContent className="flex min-h-0 flex-1 flex-col">
                         <div className="min-h-0 flex-1">
@@ -359,7 +357,6 @@ export default function DashboardPage() {
                 <Card className="flex h-[520px] min-h-0 flex-col">
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.page.k5ba34231")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.page.k227a8742")}</CardDescription>
                     </CardHeader>
                     <CardContent className="flex-1 space-y-3 overflow-y-auto pr-1">
                         {data.charts.providerHealth.length === 0 ? (
@@ -389,7 +386,6 @@ export default function DashboardPage() {
                 <Card className="flex h-[520px] min-h-0 flex-col">
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.page.kc83084c3")}</CardTitle>
-                        <CardDescription>{t("app.admin.dashboard.page.keafd86a3")}</CardDescription>
                     </CardHeader>
                     <CardContent className="flex flex-1 min-h-0 flex-col space-y-3">
                         <div className="grid grid-cols-2 gap-3">

@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -200,9 +200,6 @@ export default function AuditLogsPanel() {
                         <Activity className="w-5 h-5 text-primary"/>
                         {t("components.memory.AuditLogsPanel.kb6caa3ba")}
                     </CardTitle>
-                    <CardDescription>
-                        {t("components.memory.AuditLogsPanel.k3be97b57")}
-                    </CardDescription>
                 </div>
                 <div className="flex items-center gap-4">
                     <Button variant="destructive" size="sm" onClick={() => void handleClearLogs()} disabled={loading || clearing}>

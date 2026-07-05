@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Music2, Sparkles } from "lucide-react";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ti } from "@/i18n/admin-legacy";
 export default function LegacyMusicPage() {
   const t = useT();
@@ -22,9 +22,6 @@ export default function LegacyMusicPage() {
                         <Music2 className="h-5 w-5" />
                         {ti(t, "kccc6bb88d9")}
                     </CardTitle>
-                    <CardDescription>
-                        {ti(t, "kc9d11e2a35")}
-                    </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4 text-sm text-slate-700">
                     <div className="rounded-md border bg-white p-3">{ti(t, "k0963515701")}</div>

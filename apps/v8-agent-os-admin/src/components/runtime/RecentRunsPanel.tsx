@@ -7,7 +7,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useRuntimeOpsData, formatWhen, RUN_LABELS } from "@/components/runtime/use-runtime-ops";
+import { useRuntimeOpsData, formatWhen, formatRunStatusLabel } from "@/components/runtime/use-runtime-ops";
 
 type RecentRunsPanelProps = {
     hook?: ReturnType<typeof useRuntimeOpsData>;
@@ -29,22 +29,6 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
         }
         return true;
     });
-
-    const runStatusLabel = (status?: string) => {
-        const normalized = String(status || "queued").trim();
-        const fallback = RUN_LABELS[normalized] || normalized;
-        const bilingual: Record<string, string> = {
-            queued: t("components.runtime.RecentRunsPanel.ke747f100"),
-            running: t("components.runtime.RecentRunsPanel.kdcbd23f1"),
-            waiting_approval: t("components.runtime.RecentRunsPanel.kda3e1195"),
-            waiting_input: t("components.runtime.RecentRunsPanel.k870efabb"),
-            paused: t("components.runtime.RecentRunsPanel.kfe6e9598"),
-            completed: t("components.runtime.RecentRunsPanel.kc69483d7"),
-            failed: t("components.runtime.RecentRunsPanel.kb83c391f"),
-            cancelled: t("components.runtime.RecentRunsPanel.kd2634488"),
-        };
-        return bilingual[normalized] || t(fallback);
-    };
 
     return (
         <Card className="flex h-[520px] min-h-0 flex-col border-border/70">
@@ -84,7 +68,7 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
                             }`}
                         >
                             <div className="flex flex-wrap items-center gap-2">
-                                <Badge>{runStatusLabel(status)}</Badge>
+                                <Badge>{formatRunStatusLabel(status, t)}</Badge>
                                 <Badge variant="outline">{run.run_type || "chat"}</Badge>
                                 {run.trigger_source && <Badge variant="secondary">{run.trigger_source}</Badge>}
                             </div>

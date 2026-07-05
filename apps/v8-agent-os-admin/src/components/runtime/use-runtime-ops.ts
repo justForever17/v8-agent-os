@@ -34,11 +34,36 @@ export const RUN_LABELS: Record<string, string> = {
     running: "shared.runtimeStatus.running",
     waiting_approval: "shared.runtimeStatus.waitingApproval",
     waiting_input: "shared.runtimeStatus.waitingInput",
+    waiting_external_tool: "shared.runtimeStatus.waitingExternalTool",
+    waiting_external: "shared.runtimeStatus.waitingExternalTool",
     paused: "shared.runtimeStatus.paused",
     completed: "shared.runtimeStatus.completed",
+    finished: "shared.runtimeStatus.completed",
     failed: "shared.runtimeStatus.failed",
+    error: "shared.runtimeStatus.failed",
+    degraded: "shared.runtimeStatus.degraded",
+    blocked: "shared.runtimeStatus.blocked",
     cancelled: "shared.runtimeStatus.cancelled",
+    canceled: "shared.runtimeStatus.cancelled",
 };
+
+type RuntimeStatusTranslator = (key: string) => string;
+
+export function humanizeRuntimeStatus(status?: string) {
+    const normalized = String(status || "queued").trim();
+    if (!normalized) return "Queued";
+    return normalized
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/\b\w/g, (value) => value.toUpperCase());
+}
+
+export function formatRunStatusLabel(status: string | undefined, t: RuntimeStatusTranslator) {
+    const normalized = String(status || "queued").trim().toLowerCase();
+    const labelKey = RUN_LABELS[normalized];
+    return labelKey ? t(labelKey) : humanizeRuntimeStatus(normalized);
+}
 
 export function formatWhen(value?: string) {
     return formatLocalDateTime(value, { includeYear: false, includeSeconds: true });

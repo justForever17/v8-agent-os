@@ -13,7 +13,7 @@ import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
-import { ApprovalRecord, RunRecord, RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
+import { ApprovalRecord, RunRecord, formatRunStatusLabel, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayText, isLockedRuntimeKind } from "@/lib/runtime-admin";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 type RuntimePolicy = {
@@ -885,7 +885,7 @@ export function RuntimeGovernanceWorkbench({
                             <div className="text-sm font-medium">{tg(t, "728a21b9")}</div>
                             {filteredFailedRuns.length === 0 ? <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">{tg(t, "3504228b")}</div> : filteredFailedRuns.slice(0, 6).map(run => <div key={run.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap items-center gap-2">
-                                            <Badge>{t(RUN_LABELS[run.status || "failed"] || run.status || "failed")}</Badge>
+                                            <Badge>{formatRunStatusLabel(run.status || "failed", t)}</Badge>
                                             <Badge variant="outline">{runtimeNameMap.get(inferRunRuntime(run)) || inferRunRuntime(run)}</Badge>
                                             {run.trigger_source ? <Badge variant="secondary">{run.trigger_source}</Badge> : null}
                                         </div>

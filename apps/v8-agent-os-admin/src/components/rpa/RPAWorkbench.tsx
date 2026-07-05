@@ -11,7 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
-import { RUN_LABELS, formatWhen } from "@/components/runtime/use-runtime-ops";
+import { formatRunStatusLabel, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { ag, tg, ti } from "@/i18n/admin-legacy";
 import { translateCurrentClient } from "@/lib/locale";
@@ -3959,7 +3959,7 @@ export function RPAWorkbench() {
             const templatePolicy = readRunTemplatePolicy(run.metadata);
             return <div key={run.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap gap-2">
-                                            <Badge>{t(RUN_LABELS[status] || status)}</Badge>
+                                            <Badge>{formatRunStatusLabel(status, t)}</Badge>
                                             {run.metadata?.mode ? <Badge variant="outline">{String(run.metadata.mode)}</Badge> : null}
                                             {run.trigger_source ? <Badge variant="secondary">{run.trigger_source}</Badge> : null}
                                             {approvalCount > 0 ? <Badge variant="destructive">{approvalCount} {tg(t, "ad766906")}</Badge> : null}

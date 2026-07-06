@@ -28,19 +28,19 @@ export function UserProfile() {
     const displayLogin = profile?.login || session?.user?.login || session?.user?.email || "";
 
     if (status === "loading") {
-        return <div className="h-9 w-9 animate-pulse bg-muted rounded-full" />;
+        return <div className="h-[25px] w-[25px] animate-pulse rounded-full bg-muted" />;
     }
 
     if (!session?.user) {
         return (
             <Button
                 variant="ghost"
-                className="h-9 w-9 rounded-full overflow-hidden border border-transparent bg-white/50 p-0 dark:bg-slate-950/50"
+                className="h-[25px] w-[25px] overflow-hidden rounded-full border border-transparent bg-white/50 p-0 dark:bg-slate-950/50"
                 title={t("web.generated.b7c2e5097e")}
             >
-                <Avatar className="h-8 w-8">
+                <Avatar className="h-5 w-5">
                     <AvatarImage src={resolveProfileAvatarSrc(displayImage)} alt={displayName} />
-                    <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-sm font-medium text-white">
+                    <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-[10px] font-medium text-white">
                         {displayName.charAt(0).toUpperCase() || "U"}
                     </AvatarFallback>
                 </Avatar>
@@ -63,13 +63,13 @@ export function UserProfile() {
                         <Button
                             variant="ghost"
                             className={cn(
-                                "relative h-9 w-9 rounded-full overflow-hidden transition-all duration-500 border border-transparent hover:border-border/50",
+                                "relative h-[25px] w-[25px] overflow-hidden rounded-full border border-transparent transition-all duration-500 hover:border-border/50",
                                 "bg-white/50 dark:bg-slate-950/50 hover:bg-white/80 dark:hover:bg-slate-900/80"
                             )}
                         >
-                            <Avatar className="h-8 w-8">
+                            <Avatar className="h-5 w-5">
                                 <AvatarImage src={resolveProfileAvatarSrc(displayImage)} alt={displayName} />
-                                <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-white text-sm font-medium">
+                                <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-[10px] font-medium text-white">
                                     {displayName.charAt(0).toUpperCase() || "U"}
                                 </AvatarFallback>
                             </Avatar>

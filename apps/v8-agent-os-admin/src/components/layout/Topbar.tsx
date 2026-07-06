@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Loader2, Monitor, Search, Server, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import Image from "next/image";
@@ -38,6 +38,8 @@ type RuntimeInstallState = {
     canAutoRestart: boolean;
 };
 
+const TOPBAR_ICON_BUTTON_CLASS = "h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500";
+
 function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
     return (
         <span
@@ -50,7 +52,7 @@ function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
     );
 }
 
-export function Topbar() {
+export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
     const pathname = usePathname();
     const router = useRouter();
     const current = getAdminNavItem(pathname);
@@ -301,34 +303,34 @@ export function Topbar() {
     const InstallIcon = installState?.installProfile === "desktop" ? Monitor : Server;
 
     return (
-        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
-            <div className="flex min-h-20 items-center justify-between gap-4 px-6 py-4">
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-3">
-                        <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+        <header className="sticky top-0 z-30 h-[35px] border-b border-slate-200 bg-white/90 backdrop-blur">
+            <div className="flex h-[35px] items-center justify-between gap-3 px-4">
+                <div className="flex h-[25px] min-w-0 items-center gap-3">
+                    <div className="flex h-[25px] items-center gap-2">
+                        <div className="relative h-[25px] w-[25px] shrink-0 overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
                             <Image
                                 src="/brand-mark.png"
                                 alt="V8 Agent OS"
                                 fill
-                                sizes="40px"
+                                sizes="25px"
                                 className="object-cover notranslate"
                                 priority
                                 translate="no"
                             />
                         </div>
-                        <h1 className="v8os-wordmark notranslate" aria-label="V8 Agent OS" translate="no">
+                        <h1 className="v8os-wordmark notranslate [&>span]:!min-w-[7.4rem] [&>span]:!pb-0 [&>span]:!text-[15px] [&>span]:!leading-5" aria-label="V8 Agent OS" translate="no">
                             <span className="v8os-wordmark__glow" aria-hidden="true">V8 Agent OS</span>
                             <span className="v8os-wordmark__shine" aria-hidden="true">V8 Agent OS</span>
                             <span className="v8os-wordmark__text">V8 Agent OS</span>
                         </h1>
                     </div>
-                    <span className="text-slate-300 text-lg font-light select-none">/</span>
-                    <div className="space-y-0.5">
-                        <div className="text-sm font-semibold text-slate-900 leading-tight">{t(current.title)}</div>
-                        <div className="text-xs text-slate-500 leading-tight">{t(current.description)}</div>
+                    <span className="select-none text-sm font-light leading-none text-slate-300">/</span>
+                    <div className="hidden min-w-0 md:block">
+                        <div className="truncate text-[11px] font-semibold leading-[12px] text-slate-900">{t(current.title)}</div>
+                        <div className="truncate text-[10px] leading-[11px] text-slate-500">{t(current.description)}</div>
                     </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex h-[25px] shrink-0 items-center gap-1.5">
                     <DeviceConnectDialog />
                     <LocaleToggle />
                     <AdminHoverInfo
@@ -339,9 +341,9 @@ export function Topbar() {
                             variant={debugMode ? "default" : "outline"}
                             size="icon"
                             onClick={() => toggleDebugMode(!debugMode)}
-                            className="rounded-2xl border-slate-200"
+                            className={cn(TOPBAR_ICON_BUTTON_CLASS, debugMode && "bg-slate-900 text-white hover:bg-slate-800")}
                         >
-                            <Wrench className="h-4 w-4" />
+                            <Wrench className="h-3.5 w-3.5" />
                         </Button>
                     </AdminHoverInfo>
                     <div ref={installContainerRef} className="relative">
@@ -349,12 +351,12 @@ export function Topbar() {
                             variant="outline"
                             size="icon"
                             onClick={toggleInstallPanel}
-                            className="rounded-2xl border-slate-200 bg-white text-slate-500"
+                            className={TOPBAR_ICON_BUTTON_CLASS}
                             aria-label={installProfileLabel}
                             title={installProfileLabel}
                             aria-expanded={activePanel === "install"}
                         >
-                            <InstallIcon className="h-4 w-4" />
+                            <InstallIcon className="h-3.5 w-3.5" />
                         </Button>
                         {activePanel === "install" ? (
                             <Card className="absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl">
@@ -414,12 +416,12 @@ export function Topbar() {
                             variant="outline"
                             size="icon"
                             onClick={toggleSearch}
-                            className="rounded-2xl border-slate-200 bg-white text-slate-500"
+                            className={TOPBAR_ICON_BUTTON_CLASS}
                             aria-label={t("components.layout.Topbar.ke9ace2b3")}
                             title={t("components.layout.Topbar.ke9ace2b3")}
                             aria-expanded={activePanel === "search"}
                         >
-                            <Search className="h-4 w-4" />
+                            <Search className="h-3.5 w-3.5" />
                         </Button>
                         {activePanel === "search" ? (
                             <Card className="absolute right-0 top-full z-50 mt-2 w-[26rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl">
@@ -482,14 +484,14 @@ export function Topbar() {
                             variant="outline"
                             size="icon"
                             onClick={toggleInbox}
-                            className="rounded-2xl border-slate-200 bg-white text-slate-500"
+                            className={TOPBAR_ICON_BUTTON_CLASS}
                             aria-label={t("components.layout.Topbar.kaa548c2e")}
                             title={t("components.layout.Topbar.kaa548c2e")}
                             aria-expanded={activePanel === "inbox"}
                         >
-                            <Bell className="h-4 w-4" />
+                            <Bell className="h-3.5 w-3.5" />
                             {unreadInboxCount > 0 ? (
-                                <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white">
+                                <span className="absolute -right-1 -top-1 inline-flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold leading-none text-white">
                                     {unreadInboxCount > 9 ? "9+" : unreadInboxCount}
                                 </span>
                             ) : null}
@@ -532,6 +534,11 @@ export function Topbar() {
                             </Card>
                         ) : null}
                     </div>
+                    {windowControls ? (
+                        <div className="ml-1 flex h-[25px] items-center">
+                            {windowControls}
+                        </div>
+                    ) : null}
                 </div>
             </div>
         </header>

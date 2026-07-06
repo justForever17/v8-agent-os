@@ -67,13 +67,13 @@ export function LocaleToggle() {
             size="sm"
             aria-label={t("layout.locale.switcher")}
             title={t("layout.locale.switcher")}
-            className="h-9 rounded-full border-slate-200 bg-white/90 px-3 shadow-sm hover:bg-slate-50"
+            className="h-[25px] rounded-lg border-slate-200 bg-white/90 px-2 shadow-sm hover:bg-slate-50"
         >
-            <span className="mr-2 flex items-center">{currentOption.flag}</span>
-            <span className="text-xs font-semibold tracking-[0.04em] text-slate-700">
+            <span className="mr-1.5 flex items-center">{currentOption.flag}</span>
+            <span className="text-[11px] font-semibold leading-none tracking-[0.02em] text-slate-700">
                 {t(currentOption.label)}
             </span>
-            <ChevronDown className="ml-2 h-4 w-4 text-slate-500" />
+            <ChevronDown className="ml-1.5 h-3 w-3 text-slate-500" />
         </Button>
     );
 

@@ -330,5 +330,10 @@
   "web.generated.fbfbeacd32": "更多",
   "web.generated.fc6c343534": "昵称更新成功",
   "web.generated.fca06b0605": "新对话",
-  "web.generated.ff252529d3": "当前会话的工作区绑定在创建后已冻结；如需切换，请新建对话。"
+  "web.generated.ff252529d3": "当前会话的工作区绑定在创建后已冻结；如需切换，请新建对话。",
+  "layout.locale.label.en": "English",
+  "layout.locale.label.zhCN": "简体中文",
+  "layout.locale.switcher": "语言切换",
+  "layout.locale.switchToChinese": "切换到中文",
+  "layout.locale.switchToEnglish": "切换到英文"
 }

@@ -16,7 +16,7 @@ export function ThemeToggle() {
 
     if (!mounted) {
         return (
-            <Button variant="ghost" size="icon" className="w-9 h-9 rounded-full">
+            <Button variant="ghost" size="icon" className="h-[25px] w-[25px] rounded-full">
                 <span className="sr-only">Toggle theme</span>
             </Button>
         );
@@ -25,7 +25,7 @@ export function ThemeToggle() {
     const isDark = theme === "dark";
 
     return (
-        <div className="relative group translate-y-0.5">
+        <div className="group relative">
             {/* Flowing Gradient Background */}
             <div
                 className={cn(
@@ -40,20 +40,20 @@ export function ThemeToggle() {
                 variant="ghost"
                 size="icon"
                 className={cn(
-                    "relative w-9 h-9 rounded-full overflow-hidden transition-all duration-500 border border-transparent hover:border-border/50",
+                    "relative h-[25px] w-[25px] overflow-hidden rounded-full border border-transparent transition-all duration-500 hover:border-border/50",
                     isDark
                         ? "bg-slate-950/50 hover:bg-slate-900/80 text-blue-400"
                         : "bg-white/50 hover:bg-white/80 text-orange-500"
                 )}
                 onClick={() => setTheme(isDark ? "light" : "dark")}
             >
-                <div className="relative w-full h-full flex items-center justify-center">
+                <div className="relative flex h-full w-full items-center justify-center">
                     <Sun className={cn(
-                        "h-[1.2rem] w-[1.2rem] absolute transition-all duration-500 rotate-0 scale-100",
+                        "absolute h-3.5 w-3.5 rotate-0 scale-100 transition-all duration-500",
                         isDark ? "-rotate-90 scale-0 opacity-0" : "rotate-0 scale-100 opacity-100"
                     )} />
                     <Moon className={cn(
-                        "h-[1.2rem] w-[1.2rem] absolute transition-all duration-500 rotate-90 scale-0",
+                        "absolute h-3.5 w-3.5 rotate-90 scale-0 transition-all duration-500",
                         isDark ? "rotate-0 scale-100 opacity-100" : "rotate-90 scale-0 opacity-0"
                     )} />
                 </div>

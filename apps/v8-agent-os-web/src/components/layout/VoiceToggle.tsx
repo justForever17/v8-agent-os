@@ -18,7 +18,7 @@ export function VoiceToggle() {
                         variant="ghost"
                         size="icon"
                         onClick={toggleVoice}
-                        className={`relative rounded-full transition-all duration-300 ${
+                        className={`relative h-[25px] w-[25px] rounded-full p-0 transition-all duration-300 ${
                             isVoiceEnabled 
                                 ? isSpeaking 
                                     ? "bg-gradient-to-tr from-cyan-400/20 to-blue-500/20 text-cyan-500 hover:text-cyan-600 dark:text-cyan-400"
@@ -28,9 +28,9 @@ export function VoiceToggle() {
                         aria-label={t("web.generated.3acce04edd")}
                     >
                         {isVoiceEnabled ? (
-                           <Volume2 className="h-5 w-5" />
+                           <Volume2 className="h-3.5 w-3.5" />
                         ) : (
-                           <VolumeX className="h-5 w-5" />
+                           <VolumeX className="h-3.5 w-3.5" />
                         )}
                         
                         {/* Soundwave Animation */}

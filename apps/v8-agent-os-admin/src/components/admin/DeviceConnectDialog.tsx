@@ -60,11 +60,11 @@ export function DeviceConnectDialog() {
                 <Button
                     variant="outline"
                     size="icon"
-                    className="rounded-lg border-slate-200 bg-white text-slate-500"
+                    className="h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500"
                     aria-label={t("components.admin.DeviceConnectDialog.open")}
                     title={t("components.admin.DeviceConnectDialog.open")}
                 >
-                    <QrCode className="h-4 w-4" />
+                    <QrCode className="h-3.5 w-3.5" />
                 </Button>
             </DialogTrigger>
             <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto rounded-lg border-slate-200 bg-white p-5">

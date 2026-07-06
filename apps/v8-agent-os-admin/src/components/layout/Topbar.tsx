@@ -305,8 +305,8 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
     return (
         <header className="sticky top-0 z-30 h-[35px] border-b border-slate-200 bg-white/90 backdrop-blur dark:border-white/10 dark:bg-zinc-950/90">
             <div className="flex h-[35px] items-center justify-between gap-3 px-4">
-                <div className="flex h-[25px] min-w-0 items-center gap-3">
-                    <div className="flex h-[25px] items-center gap-2">
+                <div className="flex h-[27px] min-w-0 items-center gap-3">
+                    <div className="flex h-[27px] items-center gap-2">
                         <div className="relative h-[25px] w-[25px] shrink-0 overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200 dark:bg-zinc-900 dark:ring-white/10">
                             <Image
                                 src="/brand-mark.png"
@@ -480,13 +480,14 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                         <TopbarGlowActionButton
                             tone="rose"
                             onClick={toggleInbox}
+                            className="overflow-visible"
                             aria-label={t("components.layout.Topbar.kaa548c2e")}
                             title={t("components.layout.Topbar.kaa548c2e")}
                             aria-expanded={activePanel === "inbox"}
                         >
                             <Bell />
                             {unreadInboxCount > 0 ? (
-                                <span className="absolute -right-1 -top-1 inline-flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold leading-none text-white">
+                                <span className="absolute -right-1 -top-1 z-10 inline-flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold leading-none text-white">
                                     {unreadInboxCount > 9 ? "9+" : unreadInboxCount}
                                 </span>
                             ) : null}

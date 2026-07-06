@@ -16,7 +16,7 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
 
     return (
         <header className="sticky top-0 z-50 flex h-[35px] items-center justify-between border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/60 sm:px-4">
-            <div className="flex h-[25px] min-w-0 items-center gap-2">
+            <div className="flex h-[27px] min-w-0 items-center gap-2">
                 <div className="relative h-[25px] w-[25px] overflow-hidden rounded-lg ring-1 ring-border/60">
                     <Image
                         src="/brand-mark.png"

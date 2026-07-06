@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-search";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
+import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { DeviceConnectDialog } from "@/components/admin/DeviceConnectDialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
@@ -38,7 +39,7 @@ type RuntimeInstallState = {
     canAutoRestart: boolean;
 };
 
-const TOPBAR_ICON_BUTTON_CLASS = "h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500";
+const TOPBAR_ICON_BUTTON_CLASS = "h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.1]";
 
 function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
     return (
@@ -303,11 +304,11 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
     const InstallIcon = installState?.installProfile === "desktop" ? Monitor : Server;
 
     return (
-        <header className="sticky top-0 z-30 h-[35px] border-b border-slate-200 bg-white/90 backdrop-blur">
+        <header className="sticky top-0 z-30 h-[35px] border-b border-slate-200 bg-white/90 backdrop-blur dark:border-white/10 dark:bg-zinc-950/90">
             <div className="flex h-[35px] items-center justify-between gap-3 px-4">
                 <div className="flex h-[25px] min-w-0 items-center gap-3">
                     <div className="flex h-[25px] items-center gap-2">
-                        <div className="relative h-[25px] w-[25px] shrink-0 overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200">
+                        <div className="relative h-[25px] w-[25px] shrink-0 overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200 dark:bg-zinc-900 dark:ring-white/10">
                             <Image
                                 src="/brand-mark.png"
                                 alt="V8 Agent OS"
@@ -324,15 +325,16 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                             <span className="v8os-wordmark__text">V8 Agent OS</span>
                         </h1>
                     </div>
-                    <span className="select-none text-sm font-light leading-none text-slate-300">/</span>
+                    <span className="select-none text-sm font-light leading-none text-slate-300 dark:text-slate-700">/</span>
                     <div className="hidden min-w-0 md:block">
-                        <div className="truncate text-[11px] font-semibold leading-[12px] text-slate-900">{t(current.title)}</div>
-                        <div className="truncate text-[10px] leading-[11px] text-slate-500">{t(current.description)}</div>
+                        <div className="truncate text-[11px] font-semibold leading-[12px] text-slate-900 dark:text-slate-100">{t(current.title)}</div>
+                        <div className="truncate text-[10px] leading-[11px] text-slate-500 dark:text-slate-400">{t(current.description)}</div>
                     </div>
                 </div>
                 <div className="flex h-[25px] shrink-0 items-center gap-1.5">
                     <DeviceConnectDialog />
                     <LocaleToggle />
+                    <ThemeToggle />
                     <AdminHoverInfo
                         content={debugMode ? t("components.layout.Topbar.debugModeEnabledHint") : t("components.layout.Topbar.debugModeDisabledHint")}
                         align="right"
@@ -341,7 +343,7 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                             variant={debugMode ? "default" : "outline"}
                             size="icon"
                             onClick={() => toggleDebugMode(!debugMode)}
-                            className={cn(TOPBAR_ICON_BUTTON_CLASS, debugMode && "bg-slate-900 text-white hover:bg-slate-800")}
+                            className={cn(TOPBAR_ICON_BUTTON_CLASS, debugMode && "bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white")}
                         >
                             <Wrench className="h-3.5 w-3.5" />
                         </Button>
@@ -359,25 +361,25 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                             <InstallIcon className="h-3.5 w-3.5" />
                         </Button>
                         {activePanel === "install" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl">
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 {installLoading ? (
                                     <div className="flex h-28 items-center justify-center">
                                         <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
                                     </div>
                                 ) : (
-                                    <div className="space-y-4 text-sm text-slate-600">
+                                    <div className="space-y-4 text-sm text-slate-600 dark:text-slate-300">
                                         <div className="space-y-1">
-                                            <div className="text-sm font-semibold text-slate-900">{installProfileLabel}</div>
+                                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{installProfileLabel}</div>
                                             <div>{t("components.layout.Topbar.k0769c431")}: {installState?.installPlatform || "-"}</div>
                                             <div>{t("components.layout.Topbar.kff0c33d3")}: {installState?.bootstrapManaged ? t("components.layout.Topbar.k2ae24b34") : t("components.layout.Topbar.k8d9f05ae")}</div>
                                         </div>
                                         <div className="space-y-1">
-                                            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                                            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400 dark:text-slate-500">
                                                 {t("components.layout.Topbar.k7a89604c")}
                                             </div>
                                             <div className="flex flex-wrap gap-1.5">
                                                 {(installState?.installedRuntimeFamilies || []).map((family) => (
-                                                    <span key={family} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                                                    <span key={family} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-200">
                                                         {family}
                                                     </span>
                                                 ))}
@@ -385,7 +387,7 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                                         </div>
                                         {installState?.canInstallDesktop ? (
                                             <div className="space-y-2">
-                                                <div className="text-xs text-slate-500">
+                                                <div className="text-xs text-slate-500 dark:text-slate-400">
                                                     {installState?.canAutoRestart
                                                         ? t("components.layout.Topbar.k3f17614c")
                                                         : t("components.layout.Topbar.k7e24dc73")}
@@ -402,7 +404,7 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                                                 </Button>
                                             </div>
                                         ) : (
-                                            <div className="rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                                            <div className="rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">
                                                 {t("components.layout.Topbar.ka167fbd8")}
                                             </div>
                                         )}
@@ -424,7 +426,7 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                             <Search className="h-3.5 w-3.5" />
                         </Button>
                         {activePanel === "search" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[26rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl">
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[26rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 <div className="space-y-3">
                                     <Input
                                         ref={searchInputRef}
@@ -433,7 +435,7 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                                         onKeyDown={handleSearchKeyDown}
                                         placeholder={t("components.layout.Topbar.k6c2190ce")}
                                         aria-label={t("components.layout.Topbar.k8cef7920")}
-                                        className="rounded-2xl border-slate-200"
+                                        className="rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/[0.04]"
                                     />
                                     <div className="max-h-80 overflow-y-auto">
                                         {searchResults.length ? (
@@ -445,24 +447,24 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                                                         onClick={() => navigateTo(item.href)}
                                                         className={cn(
                                                             "flex w-full items-start justify-between gap-3 rounded-2xl border border-transparent px-3 py-2 text-left transition",
-                                                            index === activeSearchIndex ? "border-sky-200 bg-sky-50" : "hover:border-slate-200 hover:bg-slate-50",
+                                                            index === activeSearchIndex ? "border-sky-200 bg-sky-50 dark:border-sky-500/25 dark:bg-sky-500/10" : "hover:border-slate-200 hover:bg-slate-50 dark:hover:border-white/10 dark:hover:bg-white/[0.05]",
                                                         )}
                                                         role="option"
                                                         aria-selected={index === activeSearchIndex}
                                                     >
                                                         <div className="min-w-0">
-                                                            <div className="truncate text-sm font-semibold text-slate-900">{t(item.title)}</div>
-                                                            <div className="truncate text-xs text-slate-500">
+                                                            <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{t(item.title)}</div>
+                                                            <div className="truncate text-xs text-slate-500 dark:text-slate-400">
                                                                 {item.subtitle ? `${t(item.subtitle)} · ` : ""}{item.href}
                                                             </div>
                                                         </div>
                                                         <span className={cn(
                                                             "rounded-full px-2 py-0.5 text-[11px] font-medium",
                                                             item.matchMode === "exact"
-                                                                ? "bg-emerald-100 text-emerald-700"
+                                                                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"
                                                                 : item.matchMode === "fuzzy"
-                                                                    ? "bg-slate-100 text-slate-600"
-                                                                    : "bg-sky-100 text-sky-700",
+                                                                    ? "bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-200"
+                                                                    : "bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-200",
                                                         )}>
                                                             {item.matchMode === "exact" ? t("components.layout.Topbar.k9d9dbbea") : item.matchMode === "fuzzy" ? t("components.layout.Topbar.k97b260d0") : t("components.layout.Topbar.kff332614")}
                                                         </span>
@@ -470,7 +472,7 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                                                 ))}
                                             </div>
                                         ) : (
-                                            <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500">
+                                            <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
                                                 {t("components.layout.Topbar.k4808f001")}
                                             </div>
                                         )}
@@ -497,14 +499,14 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                             ) : null}
                         </Button>
                         {activePanel === "inbox" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl">
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
-                                        <div className="text-sm font-semibold text-slate-900">{t("components.layout.Topbar.k3957f4b0")}</div>
+                                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{t("components.layout.Topbar.k3957f4b0")}</div>
                                         {inboxLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
                                     </div>
                                     {inboxError ? (
-                                        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">
+                                        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
                                             {inboxError}
                                         </div>
                                     ) : null}
@@ -515,18 +517,18 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                                                     key={item.id}
                                                     type="button"
                                                     onClick={() => navigateTo(item.href)}
-                                                    className="flex w-full items-start gap-3 rounded-2xl border border-transparent px-3 py-2 text-left transition hover:border-slate-200 hover:bg-slate-50"
+                                                    className="flex w-full items-start gap-3 rounded-2xl border border-transparent px-3 py-2 text-left transition hover:border-slate-200 hover:bg-slate-50 dark:hover:border-white/10 dark:hover:bg-white/[0.05]"
                                                 >
                                                     <SeverityDot severity={item.severity} />
                                                     <div className="min-w-0">
-                                                        <div className="truncate text-sm font-semibold text-slate-900">{item.title}</div>
-                                                        <div className="mt-0.5 text-xs leading-5 text-slate-500">{item.summary}</div>
+                                                        <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{item.title}</div>
+                                                        <div className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{item.summary}</div>
                                                     </div>
                                                 </button>
                                             ))}
                                         </div>
                                     ) : (
-                                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500">
+                                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
                                             {t("components.layout.Topbar.k105fef86")}
                                         </div>
                                     )}

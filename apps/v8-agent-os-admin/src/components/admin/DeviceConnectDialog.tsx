@@ -60,7 +60,7 @@ export function DeviceConnectDialog() {
                 <Button
                     variant="outline"
                     size="icon"
-                    className="h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500"
+                    className="h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.1]"
                     aria-label={t("components.admin.DeviceConnectDialog.open")}
                     title={t("components.admin.DeviceConnectDialog.open")}
                 >

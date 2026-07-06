@@ -3940,6 +3940,7 @@
   "layout.locale.switcher": "Language switcher",
   "layout.locale.switchToChinese": "Switch to Chinese",
   "layout.locale.switchToEnglish": "Switch to English",
+  "layout.theme.switcher": "Toggle theme",
   "lib.admin.navigation.desktopPetDescription": "Voice, action mapping, and effect settings.",
   "lib.admin.navigation.desktopPetTitle": "Desktop Companion",
   "lib.admin.navigation.creativeMediaDescription": "Configure image, video, audio, music, and 3D generation.",

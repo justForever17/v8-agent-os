@@ -67,13 +67,13 @@ export function LocaleToggle() {
             size="sm"
             aria-label={t("layout.locale.switcher")}
             title={t("layout.locale.switcher")}
-            className="h-[25px] rounded-lg border-slate-200 bg-white/90 px-2 shadow-sm hover:bg-slate-50"
+            className="h-[25px] rounded-lg border-slate-200 bg-white/90 px-2 shadow-sm hover:bg-slate-50 dark:border-white/10 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
         >
             <span className="mr-1.5 flex items-center">{currentOption.flag}</span>
-            <span className="text-[11px] font-semibold leading-none tracking-[0.02em] text-slate-700">
+            <span className="text-[11px] font-semibold leading-none tracking-[0.02em] text-slate-700 dark:text-slate-200">
                 {t(currentOption.label)}
             </span>
-            <ChevronDown className="ml-1.5 h-3 w-3 text-slate-500" />
+            <ChevronDown className="ml-1.5 h-3 w-3 text-slate-500 dark:text-slate-300" />
         </Button>
     );
 
@@ -91,12 +91,12 @@ export function LocaleToggle() {
                                 aria-label={t(option.switchKey)}
                                 className={cn(
                                     "gap-3 rounded-lg px-3 py-2.5",
-                                    active ? "bg-slate-100 text-slate-900" : "text-slate-700",
+                                    active ? "bg-slate-100 text-slate-900 dark:bg-white/10 dark:text-slate-100" : "text-slate-700 dark:text-slate-200",
                                 )}
                             >
                                 <span className="flex items-center">{option.flag}</span>
                                 <span className="flex-1 text-sm font-medium">{t(option.label)}</span>
-                                {active ? <Check className="h-4 w-4 text-slate-900" /> : null}
+                                {active ? <Check className="h-4 w-4 text-slate-900 dark:text-slate-100" /> : null}
                             </DropdownMenuItem>
                         );
                     })}

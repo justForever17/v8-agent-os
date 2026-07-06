@@ -3940,6 +3940,7 @@
   "layout.locale.switcher": "语言切换",
   "layout.locale.switchToChinese": "切换到中文",
   "layout.locale.switchToEnglish": "切换到英文",
+  "layout.theme.switcher": "切换明暗主题",
   "lib.admin.navigation.desktopPetDescription": "事件播报、动作映射与光效设置。",
   "lib.admin.navigation.desktopPetTitle": "桌宠设置",
   "lib.admin.navigation.creativeMediaDescription": "配置图片、视频、音频、音乐与 3D 生成能力。",

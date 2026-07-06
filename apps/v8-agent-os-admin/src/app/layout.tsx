@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import "./globals.css";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
+import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
 import { warmDesktopLiveBridge } from "@/lib/server/desktop-live-bridge";
 
@@ -32,9 +33,16 @@ export default async function RootLayout({
     <html lang={initialLocale} suppressHydrationWarning>
       <body className="font-sans antialiased" suppressHydrationWarning>
         <LocaleProvider initialLocale={initialLocale}>
-          <div className="min-h-screen flex flex-col">
-            <main className="flex-1">{children}</main>
-          </div>
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="system"
+            enableSystem
+            disableTransitionOnChange
+          >
+            <div className="min-h-screen flex flex-col">
+              <main className="flex-1">{children}</main>
+            </div>
+          </ThemeProvider>
         </LocaleProvider>
       </body>
     </html>

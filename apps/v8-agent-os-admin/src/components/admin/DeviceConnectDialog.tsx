@@ -5,6 +5,7 @@ import { Check, Clipboard, Loader2, QrCode } from "lucide-react";
 
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { DevicePairingPanel } from "@/components/admin/DevicePairingPanel";
+import { TopbarGlowActionButton } from "@/components/layout/TopbarGlowActionButton";
 import { Button } from "@/components/ui/button";
 import {
     Dialog,
@@ -57,15 +58,13 @@ export function DeviceConnectDialog() {
             }
         }}>
             <DialogTrigger asChild>
-                <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.1]"
+                <TopbarGlowActionButton
+                    tone="sky"
                     aria-label={t("components.admin.DeviceConnectDialog.open")}
                     title={t("components.admin.DeviceConnectDialog.open")}
                 >
-                    <QrCode className="h-3.5 w-3.5" />
-                </Button>
+                    <QrCode />
+                </TopbarGlowActionButton>
             </DialogTrigger>
             <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto rounded-lg border-slate-200 bg-white p-5">
                 <DialogHeader>

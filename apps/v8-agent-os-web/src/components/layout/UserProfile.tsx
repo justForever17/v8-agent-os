@@ -1,7 +1,6 @@
 "use client";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
     DropdownMenu,
@@ -15,6 +14,7 @@ import { Settings } from "lucide-react";
 import { useSession } from "next-auth/react";
 import { useState } from "react";
 import { SettingsDialog } from "@/components/settings/SettingsDialog";
+import { TopbarGlowActionButton } from "@/components/layout/TopbarGlowActionButton";
 import { useT } from "@/components/providers/LocaleProvider";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 
@@ -33,18 +33,18 @@ export function UserProfile() {
 
     if (!session?.user) {
         return (
-            <Button
-                variant="ghost"
-                className="h-[25px] w-[25px] overflow-hidden rounded-full border border-transparent bg-white/50 p-0 dark:bg-slate-950/50"
+            <TopbarGlowActionButton
+                tone="fuchsia"
+                className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
                 title={t("web.generated.b7c2e5097e")}
             >
-                <Avatar className="h-5 w-5">
+                <Avatar className="h-full w-full">
                     <AvatarImage src={resolveProfileAvatarSrc(displayImage)} alt={displayName} />
                     <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-[10px] font-medium text-white">
                         {displayName.charAt(0).toUpperCase() || "U"}
                     </AvatarFallback>
                 </Avatar>
-            </Button>
+            </TopbarGlowActionButton>
         );
     }
 
@@ -52,29 +52,19 @@ export function UserProfile() {
         <>
             <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                    <div className="group relative flex h-[25px] w-[25px] items-center justify-center">
-                        {/* Flowing Gradient Background */}
-                        <div
-                            className={cn(
-                                "absolute inset-0 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500 blur-md",
-                                "bg-gradient-to-r from-pink-500 via-purple-500 to-indigo-500 animate-gradient-xy"
-                            )}
-                        />
-                        <Button
-                            variant="ghost"
-                            className={cn(
-                                "relative h-[25px] w-[25px] overflow-hidden rounded-full border border-transparent transition-all duration-500 hover:border-border/50",
-                                "bg-white/50 dark:bg-slate-950/50 hover:bg-white/80 dark:hover:bg-slate-900/80"
-                            )}
+                    <TopbarGlowActionButton
+                        tone="fuchsia"
+                        className={cn(
+                            "bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent",
+                        )}
                         >
-                            <Avatar className="h-5 w-5">
+                            <Avatar className="h-full w-full">
                                 <AvatarImage src={resolveProfileAvatarSrc(displayImage)} alt={displayName} />
                                 <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-[10px] font-medium text-white">
                                     {displayName.charAt(0).toUpperCase() || "U"}
                                 </AvatarFallback>
                             </Avatar>
-                        </Button>
-                    </div>
+                    </TopbarGlowActionButton>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent className="w-56" align="end" forceMount>
                     <DropdownMenuLabel className="font-normal">

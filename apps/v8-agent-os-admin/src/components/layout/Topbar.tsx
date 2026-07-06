@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-search";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
+import { TopbarGlowActionButton } from "@/components/layout/TopbarGlowActionButton";
 import { DeviceConnectDialog } from "@/components/admin/DeviceConnectDialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
@@ -38,8 +39,6 @@ type RuntimeInstallState = {
     canInstallDesktop: boolean;
     canAutoRestart: boolean;
 };
-
-const TOPBAR_ICON_BUTTON_CLASS = "h-[25px] w-[25px] rounded-lg border-slate-200 bg-white p-0 text-slate-500 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.1]";
 
 function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
     return (
@@ -339,27 +338,25 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                         content={debugMode ? t("components.layout.Topbar.debugModeEnabledHint") : t("components.layout.Topbar.debugModeDisabledHint")}
                         align="right"
                     >
-                        <Button
-                            variant={debugMode ? "default" : "outline"}
-                            size="icon"
+                        <TopbarGlowActionButton
+                            tone={debugMode ? "violet" : "slate"}
                             onClick={() => toggleDebugMode(!debugMode)}
-                            className={cn(TOPBAR_ICON_BUTTON_CLASS, debugMode && "bg-slate-900 text-white hover:bg-slate-800 dark:bg-slate-100 dark:text-slate-950 dark:hover:bg-white")}
+                            aria-label={debugMode ? t("components.layout.Topbar.debugModeEnabledHint") : t("components.layout.Topbar.debugModeDisabledHint")}
+                            title={debugMode ? t("components.layout.Topbar.debugModeEnabledHint") : t("components.layout.Topbar.debugModeDisabledHint")}
                         >
-                            <Wrench className="h-3.5 w-3.5" />
-                        </Button>
+                            <Wrench />
+                        </TopbarGlowActionButton>
                     </AdminHoverInfo>
                     <div ref={installContainerRef} className="relative">
-                        <Button
-                            variant="outline"
-                            size="icon"
+                        <TopbarGlowActionButton
+                            tone="emerald"
                             onClick={toggleInstallPanel}
-                            className={TOPBAR_ICON_BUTTON_CLASS}
                             aria-label={installProfileLabel}
                             title={installProfileLabel}
                             aria-expanded={activePanel === "install"}
                         >
-                            <InstallIcon className="h-3.5 w-3.5" />
-                        </Button>
+                            <InstallIcon />
+                        </TopbarGlowActionButton>
                         {activePanel === "install" ? (
                             <Card className="absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 {installLoading ? (
@@ -414,17 +411,15 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                         ) : null}
                     </div>
                     <div ref={searchContainerRef} className="relative">
-                        <Button
-                            variant="outline"
-                            size="icon"
+                        <TopbarGlowActionButton
+                            tone="sky"
                             onClick={toggleSearch}
-                            className={TOPBAR_ICON_BUTTON_CLASS}
                             aria-label={t("components.layout.Topbar.ke9ace2b3")}
                             title={t("components.layout.Topbar.ke9ace2b3")}
                             aria-expanded={activePanel === "search"}
                         >
-                            <Search className="h-3.5 w-3.5" />
-                        </Button>
+                            <Search />
+                        </TopbarGlowActionButton>
                         {activePanel === "search" ? (
                             <Card className="absolute right-0 top-full z-50 mt-2 w-[26rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 <div className="space-y-3">
@@ -482,22 +477,20 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                         ) : null}
                     </div>
                     <div ref={inboxContainerRef} className="relative">
-                        <Button
-                            variant="outline"
-                            size="icon"
+                        <TopbarGlowActionButton
+                            tone="rose"
                             onClick={toggleInbox}
-                            className={TOPBAR_ICON_BUTTON_CLASS}
                             aria-label={t("components.layout.Topbar.kaa548c2e")}
                             title={t("components.layout.Topbar.kaa548c2e")}
                             aria-expanded={activePanel === "inbox"}
                         >
-                            <Bell className="h-3.5 w-3.5" />
+                            <Bell />
                             {unreadInboxCount > 0 ? (
                                 <span className="absolute -right-1 -top-1 inline-flex min-h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-semibold leading-none text-white">
                                     {unreadInboxCount > 9 ? "9+" : unreadInboxCount}
                                 </span>
                             ) : null}
-                        </Button>
+                        </TopbarGlowActionButton>
                         {activePanel === "inbox" ? (
                             <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 <div className="space-y-3">

@@ -3,13 +3,13 @@
 import type { ReactNode } from "react";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
+import { TopbarGlowActionButton } from "@/components/layout/TopbarGlowActionButton";
 import { UserProfile } from "@/components/layout/UserProfile";
 import { VoiceToggle } from "@/components/layout/VoiceToggle";
 import Image from "next/image";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { Workflow } from "lucide-react";
+import { Bot } from "lucide-react";
 
 export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
     const t = useT();
@@ -36,12 +36,12 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
             </div>
 
             <div className="flex h-[25px] shrink-0 items-center gap-1.5">
-                <Link href="/rpa">
-                    <Button variant="ghost" size="sm" className="h-[25px] gap-1.5 rounded-lg px-2 text-[11px]">
-                        <Workflow className="h-3.5 w-3.5" />
-                        <span className="hidden leading-none sm:inline">{t("web.generated.6ee7a4c326")}</span>
-                    </Button>
-                </Link>
+                <TopbarGlowActionButton asChild tone="emerald" aria-label={t("web.generated.6ee7a4c326")} title={t("web.generated.6ee7a4c326")}>
+                    <Link href="/rpa">
+                        <Bot />
+                        <span className="sr-only">{t("web.generated.6ee7a4c326")}</span>
+                    </Link>
+                </TopbarGlowActionButton>
                 <LocaleToggle />
                 <VoiceToggle />
                 <ThemeToggle />

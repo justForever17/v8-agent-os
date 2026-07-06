@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from typing import Any, Iterable, Mapping, Tuple
 
 from core.reasoning_payload_contract import (
     REASONING_KEYS,
+    THINK_TAG_PATTERN,
     TEXT_BLOCK_TYPES,
     REASONING_BLOCK_TYPES,
 )
@@ -156,15 +158,18 @@ def _unwrap_message_candidate(message: Any) -> Any:
 
 def _extract_from_content(content: Any) -> Tuple[str, str]:
     if isinstance(content, str):
-        return content, ""
+        return _split_inline_think_tags(content)
 
     if isinstance(content, list):
         return _extract_from_content_blocks(content)
 
     if isinstance(content, dict):
         text_value = _first_string(content, ("text", "content", "value"))
-        reasoning_value = _extract_reasoning_payload(content)
-        return text_value, reasoning_value
+        text_value, inline_reasoning = _split_inline_think_tags(text_value)
+        reasoning_parts: list[str] = []
+        _append_unique(reasoning_parts, _extract_reasoning_payload(content))
+        _append_unique(reasoning_parts, inline_reasoning)
+        return text_value, "\n".join(reasoning_parts)
 
     return "", ""
 
@@ -176,7 +181,9 @@ def _extract_from_content_blocks(blocks: Iterable[Any]) -> Tuple[str, str]:
     for block in blocks:
         block_type = str(_read_field(block, "type") or "").lower()
         if block_type in TEXT_BLOCK_TYPES:
-            _append_unique(text_parts, _first_string(block, ("text", "content", "value")))
+            text_value, inline_reasoning = _split_inline_think_tags(_first_string(block, ("text", "content", "value")))
+            _append_unique(text_parts, text_value)
+            _append_unique(reasoning_parts, inline_reasoning)
             continue
 
         if block_type in REASONING_BLOCK_TYPES:
@@ -186,9 +193,23 @@ def _extract_from_content_blocks(blocks: Iterable[Any]) -> Tuple[str, str]:
         if isinstance(block, Mapping):
             _append_unique(reasoning_parts, _extract_reasoning_payload(block))
             if not block_type:
-                _append_unique(text_parts, _first_string(block, ("text", "content")))
+                text_value, inline_reasoning = _split_inline_think_tags(_first_string(block, ("text", "content")))
+                _append_unique(text_parts, text_value)
+                _append_unique(reasoning_parts, inline_reasoning)
 
     return "".join(text_parts), "".join(reasoning_parts)
+
+
+def _split_inline_think_tags(value: str) -> Tuple[str, str]:
+    raw = str(value or "")
+    if "<think" not in raw.lower():
+        return raw, ""
+    reasoning_parts: list[str] = []
+    for match in THINK_TAG_PATTERN.finditer(raw):
+        inner = re.sub(r"^<think\b[^>]*>|</think>$", "", match.group(0), flags=re.IGNORECASE).strip()
+        _append_unique(reasoning_parts, inner)
+    visible = THINK_TAG_PATTERN.sub("", raw).strip()
+    return visible, "\n".join(reasoning_parts)
 
 
 def _extract_reasoning_payload(payload: Mapping[str, Any]) -> str:

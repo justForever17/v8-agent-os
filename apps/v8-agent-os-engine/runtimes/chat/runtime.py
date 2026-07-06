@@ -798,6 +798,8 @@ class ChatRuntime:
 
         local_files: list[str] = []
         for attachment in attachments:
+            if self._attachment_uses_opening_tool(attachment):
+                continue
             url = self._attachment_url(attachment)
             if "/api/workspace/files/" in url or "/api/client/workspace/files/" in url:
                 marker = "/api/client/workspace/files/" if "/api/client/workspace/files/" in url else "/api/workspace/files/"
@@ -826,6 +828,9 @@ class ChatRuntime:
                     local_files.append(url)
             else:
                 local_files.append(url)
+
+        if not local_files:
+            return
 
         file_notices = "\n\n" + "\n".join([f"[User uploaded file: {path}]" for path in local_files if path])
         for message in reversed(lc_messages):
@@ -888,6 +893,11 @@ class ChatRuntime:
             ".cpp", ".h", ".hpp", ".cs", ".php", ".rb", ".sh", ".ps1", ".toml",
             ".ini", ".env", ".sql",
         }
+
+    @classmethod
+    def _attachment_uses_opening_tool(cls, attachment: dict[str, Any]) -> bool:
+        kind = cls._attachment_media_kind(attachment)
+        return kind in {"audio", "image", "video"} or cls._attachment_is_readable_file(attachment)
 
     def _resolve_attachment_local_path(self, chat_run: ChatRunContext, attachment: dict[str, Any]) -> str:
         direct = str(
@@ -962,7 +972,11 @@ class ChatRuntime:
     ) -> None:
         if not summaries:
             return
-        lines = ["", "[Attachment preflight results]"]
+        lines = ["", "[Supervisor attachment opening tool results]"]
+        lines.append(
+            "These attachments were already opened by Supervisor's normal tool calls. "
+            "Use these results first; do not call the same reading tool again unless the result is missing or the user asks."
+        )
         raw_user_text = str(chat_run.prepared.latest_user_content or "").strip()
         if raw_user_text:
             lines.append(f"Original user text: {raw_user_text}")

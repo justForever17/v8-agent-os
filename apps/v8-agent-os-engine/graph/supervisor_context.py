@@ -1183,6 +1183,7 @@ def build_supervisor_system_content(
     if cached_stable is None:
         env_static_context = (
             f"OS: {os_name}\n"
+            "Default Language: zh-CN (简体中文). If the user's current message clearly uses another language, reply in that language.\n"
             f"{identity_line}\n"
             "Sysadmin Privileges: You operate with the full permissions of the engine process. "
             "You are AUTHORIZED to manage the system, modify global configuration files (e.g., /etc, /var), "

@@ -211,6 +211,38 @@ class RuntimeProjectionContractTests(unittest.TestCase):
             {"params": {"prompt": "雷电将军", "size": "1:1"}},
         )
 
+    def test_user_recorded_projection_keeps_attachments_for_client_preview(self):
+        events = [
+            {
+                "event_id": "evt_user_recorded",
+                "run_id": "run_audio",
+                "seq": 1,
+                "topic": "message.user.recorded",
+                "payload": {
+                    "message_id": "msg_user_audio",
+                    "content": "",
+                    "attachments": [
+                        {
+                            "name": "voice.mp3",
+                            "url": "/api/workspace/files/.v8/uploads/voice.mp3",
+                            "publicUrl": "/api/workspace/files/.v8/uploads/voice.mp3",
+                            "mimeType": "audio/mpeg",
+                            "mediaKind": "audio",
+                        }
+                    ],
+                    "metadata": {},
+                },
+                "event_ts": "2026-04-15T09:10:17.916Z",
+                "source": {},
+            }
+        ]
+
+        messages = project_chat_messages_from_events(events)
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["content"], "")
+        self.assertEqual(messages[0]["metadata"]["attachments"][0]["name"], "voice.mp3")
+
 
 if __name__ == "__main__":
     unittest.main()

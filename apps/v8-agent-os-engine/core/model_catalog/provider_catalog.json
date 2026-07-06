@@ -1861,6 +1861,7 @@
             "requestStyle": "minimax_interleaved_thinking",
             "responseFields": [
               "content[type=thinking]",
+              "content[inline_think]",
               "thinking",
               "thinking_delta",
               "reasoning_details",
@@ -1993,6 +1994,7 @@
         "requestStyle": "minimax_interleaved_thinking",
         "responseFields": [
           "content[type=thinking]",
+          "content[inline_think]",
           "thinking",
           "thinking_delta",
           "reasoning_details",
@@ -2047,6 +2049,7 @@
             "requestStyle": "minimax_interleaved_thinking",
             "responseFields": [
               "content[type=thinking]",
+              "content[inline_think]",
               "thinking",
               "thinking_delta",
               "reasoning_details",
@@ -2179,6 +2182,7 @@
         "requestStyle": "minimax_interleaved_thinking",
         "responseFields": [
           "content[type=thinking]",
+          "content[inline_think]",
           "thinking",
           "thinking_delta",
           "reasoning_details",

@@ -830,7 +830,7 @@ class AttachmentPreflightContractTest(unittest.TestCase):
         self.assertEqual(invoke_payload["file_path"], str(voice_path))
         self.assertEqual(invoke_payload["prompt"], runtime._voice_extract_prompt())
         final_user_content = chat_run.lc_messages[-1].content
-        self.assertIn("[Attachment preflight results]", final_user_content)
+        self.assertIn("[Supervisor attachment opening tool results]", final_user_content)
         self.assertIn("用户说：测试语音", final_user_content)
         self.assertNotIn("这是一段", final_user_content)
 
@@ -872,8 +872,38 @@ class AttachmentPreflightContractTest(unittest.TestCase):
         self.assertEqual([event["topic"] for event in events], ["tool.started", "tool.finished"])
         invoke.assert_called_once_with({"path": str(note_path)})
         final_user_content = chat_run.lc_messages[-1].content
+        self.assertIn("[Supervisor attachment opening tool results]", final_user_content)
         self.assertIn("Original user text: 请总结这个文件", final_user_content)
         self.assertIn("文件内容：Demo", final_user_content)
+
+    def test_supported_attachments_do_not_inject_raw_file_notice_before_preflight(self):
+        import tempfile
+
+        runtime = chat_runtime_module.ChatRuntime()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            voice_path = Path(tmp) / "voice.mp3"
+            voice_path.write_bytes(b"fake-mp3")
+            request = ChatRequest(
+                messages=[{"role": "user", "content": ""}],
+                session_id="session-attachment",
+                conversationId="session-attachment",
+                user_id="user-attachment",
+                attachments=[
+                    {
+                        "name": "voice.mp3",
+                        "workspacePath": str(voice_path),
+                        "mimeType": "audio/mpeg",
+                        "mediaKind": "audio",
+                    }
+                ],
+            )
+            request.attachments = list(request.attachments or [])  # type: ignore[assignment]
+            messages = [chat_runtime_module.HumanMessage(content="")]
+
+            runtime._inject_uploaded_file_notices(request, messages)
+
+        self.assertEqual(messages[-1].content, "")
 
 
 if __name__ == "__main__":

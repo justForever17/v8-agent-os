@@ -30,6 +30,7 @@ _MODEL_CAPABILITY_REGISTRY_PATH = Path(__file__).resolve().parent / "model_catal
 _COMMON_REASONING_FIELDS = (
     "content[type=thinking]",
     "content[type=reasoning]",
+    "content[inline_think]",
     *tuple(f"additional_kwargs.{key}" for key in REASONING_KEYS),
     *tuple(f"response_metadata.{key}" for key in REASONING_KEYS),
     *tuple(f"generation_info.{key}" for key in REASONING_KEYS),
@@ -304,6 +305,11 @@ def _path_exists(payload: Any, field_path: str) -> bool:
             return any(_safe_text((block.get("type") if isinstance(block, Mapping) else getattr(block, "type", ""))).lower() == "thinking" for block in _iter_content_blocks(payload))
         if "type=reasoning" in path:
             return any(_safe_text((block.get("type") if isinstance(block, Mapping) else getattr(block, "type", ""))).lower() == "reasoning" for block in _iter_content_blocks(payload))
+        if "inline_think" in path:
+            content = getattr(payload, "content", None)
+            if content is None and isinstance(payload, Mapping):
+                content = payload.get("content")
+            return isinstance(content, str) and "<think" in content.lower()
     current: Any = payload
     for part in path.split("."):
         if not part:

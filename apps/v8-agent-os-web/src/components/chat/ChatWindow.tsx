@@ -216,7 +216,6 @@ export function ChatWindow({ messages, processes, contextReferences, conversatio
                             )}
                             <div ref={messagesEndRef} />
                         </div>
-                        <div className="pointer-events-none absolute inset-x-0 bottom-0 hidden h-12 bg-gradient-to-t from-background via-background/88 to-transparent md:block md:from-slate-50/90 md:via-slate-50/70 dark:md:from-zinc-900/90 dark:md:via-zinc-900/72" />
                     </div>
                 </div>
 

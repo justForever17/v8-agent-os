@@ -680,6 +680,10 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
         if topic == "message.user.recorded":
             current_assistant = None
             current_assistant_run_id = None
+            metadata = dict(payload.get("metadata") or {})
+            attachments = [dict(item) for item in list(payload.get("attachments") or []) if isinstance(item, dict)]
+            if attachments and not metadata.get("attachments"):
+                metadata["attachments"] = attachments
             messages.append(
                 {
                     "id": payload.get("message_id") or event.get("event_id"),
@@ -690,7 +694,7 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                     "timestamp": _event_timestamp_ms(event),
                     "images": payload.get("images") or [],
                     "artifacts": [],
-                    "metadata": payload.get("metadata") or {},
+                    "metadata": metadata,
                 }
             )
             continue

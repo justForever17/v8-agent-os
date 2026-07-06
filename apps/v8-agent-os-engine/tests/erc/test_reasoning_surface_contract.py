@@ -174,6 +174,28 @@ def test_minimax_m3_reasoning_details_are_trusted_provider_reasoning():
     assert events[0].diagnostics["reasoningKind"] == "provider_reasoning"
 
 
+def test_minimax_m3_inline_think_tags_are_trusted_provider_reasoning_not_text():
+    surface = resolve_reasoning_surface_for_metadata(
+        {
+            "provider_id": "minimax",
+            "model_id": "MiniMax-M3",
+        }
+    )
+
+    assert "content[inline_think]" in surface["responseFields"]
+
+    events = _adapter_events(
+        {"content": "<think>I should inspect the task.</think>\nVisible answer."},
+        surface=surface,
+    )
+
+    assert [event.event_type for event in events] == ["text_delta", "reasoning_delta"]
+    assert events[0].delta == "Visible answer."
+    assert events[1].delta == "I should inspect the task."
+    assert events[1].diagnostics["reasoningKind"] == "provider_reasoning"
+    assert events[1].diagnostics["matchedField"] == "content[inline_think]"
+
+
 def test_explicit_user_disabled_hidden_is_not_overridden_by_builtin_contract():
     surface = resolve_reasoning_surface_for_metadata(
         {

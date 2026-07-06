@@ -98,6 +98,7 @@ class HostLoadPromptContextTests(unittest.TestCase):
             )
 
         self.assertIn("Host Load: CPU 12%, Mem 61%, GPU n/a, Procs 286", result["env_context"])
+        self.assertIn("Default Language: zh-CN", result["env_context"])
         host_segments = [
             item
             for item in result["v8_prompt_segments"]

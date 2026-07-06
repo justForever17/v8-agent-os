@@ -794,6 +794,7 @@ def build_agent_node(
             env_context = (
                 f"<environment>\n"
                 f"OS: {os_name}\n"
+                "Default Language: zh-CN (简体中文). If the user's current message clearly uses another language, reply in that language.\n"
                 f"Current Time: {current_time}\n"
                 f"{render_host_load_line()}\n"
                 f"{host_alerts_context}"

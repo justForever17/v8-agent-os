@@ -43,6 +43,32 @@ export type V8AudioInputStatus = {
   [key: string]: unknown;
 };
 
+export type V8DesktopPetConfig = {
+  appearance?: {
+    petScale?: number;
+    floatAmplitude?: number;
+    floatSpeed?: number;
+    [key: string]: unknown;
+  };
+  eventVoice?: {
+    enabled?: boolean;
+    mode?: string;
+    voiceRef?: string;
+    speakVoiceTags?: boolean;
+    speakSupervisorReplies?: boolean;
+    customRules?: unknown[];
+    [key: string]: unknown;
+  };
+  actionTable?: unknown[];
+  effectSpectrum?: {
+    preset?: string;
+    intensity?: number;
+    customGlowColor?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
 const SESSION_STORAGE_KEY = "v8.desktopPet.auth";
 const ACTIVE_CONVERSATION_KEY = "v8.desktopPet.activeConversationId";
 const ADMIN_BASE_KEY = "v8.desktopPet.adminBaseUrl";
@@ -295,6 +321,13 @@ export class V8DesktopClientAdapter {
 
   async getAudioInputStatus() {
     return this.request<V8AudioInputStatus>("/api/client/audio/input-status", {
+      method: "GET",
+      cache: "no-store",
+    });
+  }
+
+  async getDesktopPetConfig() {
+    return this.request<{ data?: V8DesktopPetConfig } | V8DesktopPetConfig>("/api/client/desktop-pet/config", {
       method: "GET",
       cache: "no-store",
     });

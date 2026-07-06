@@ -21,6 +21,7 @@ import {
 import CyberPet from './components/CyberPet';
 import { ChatMessage, PetEmotion, SystemMetric, PetSettings } from './types';
 import { V8DesktopClientAdapter, V8AuthSession, V8Conversation, V8Project } from './lib/v8DesktopClient';
+import type { V8DesktopPetConfig } from './lib/v8DesktopClient';
 import { DesktopActivity, extractDesktopMessages, extractRuntimeActivities, latestAssistantText } from './lib/desktopActivity';
 
 declare global {
@@ -100,6 +101,63 @@ function parseV8EventRules(value: string | undefined): V8EventRule[] {
   } catch {
     return DEFAULT_V8_EVENT_RULES;
   }
+}
+
+function clampFiniteNumber(value: unknown, fallback: number, min: number, max: number) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return Math.min(max, Math.max(min, next));
+}
+
+function normalizePetEmotion(value: unknown): PetEmotion {
+  const normalized = String(value || '').trim();
+  const allowed: PetEmotion[] = ['idle', 'talking', 'listening', 'curious', 'scanning', 'happy', 'worried', 'resting', 'thinking', 'tool_calling'];
+  return allowed.includes(normalized as PetEmotion) ? (normalized as PetEmotion) : 'idle';
+}
+
+function normalizeDesktopPetVoiceRules(config: V8DesktopPetConfig, voiceEnabled: boolean) {
+  const rules = Array.isArray(config.eventVoice?.customRules) ? config.eventVoice.customRules : [];
+  const normalized = rules
+    .map((item) => {
+      const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+      const match = String(record.match || '').trim();
+      if (!match) return null;
+      return {
+        match,
+        phrase: String(record.phrase || '').trim(),
+        emotion: normalizePetEmotion(record.emotion),
+        speak: voiceEnabled && record.speak !== false,
+      } satisfies V8EventRule;
+    })
+    .filter(Boolean) as V8EventRule[];
+  return normalized.length ? normalized : null;
+}
+
+function normalizeGlowColor(value: unknown, fallback: PetSettings['customGlowColor']) {
+  const normalized = String(value || '').trim();
+  const allowed: PetSettings['customGlowColor'][] = ['default', 'neon_blue', 'emerald_green', 'crimson_red', 'cyber_purple', 'golden_amber'];
+  if (allowed.includes(normalized as PetSettings['customGlowColor'])) {
+    return normalized as PetSettings['customGlowColor'];
+  }
+  return fallback;
+}
+
+function mapEffectSpectrumToGlowColor(config: V8DesktopPetConfig, fallback: PetSettings['customGlowColor']) {
+  const explicit = config.effectSpectrum?.customGlowColor
+    ? normalizeGlowColor(config.effectSpectrum.customGlowColor, fallback)
+    : fallback;
+  if (config.effectSpectrum?.customGlowColor) return explicit;
+  const preset = String(config.effectSpectrum?.preset || '').trim();
+  if (preset === 'focus') return 'cyber_purple';
+  if (preset === 'vivid') return 'neon_blue';
+  return fallback;
+}
+
+function unpackDesktopPetConfig(payload: { data?: V8DesktopPetConfig } | V8DesktopPetConfig): V8DesktopPetConfig {
+  if (payload && typeof payload === 'object' && 'data' in payload && payload.data && typeof payload.data === 'object') {
+    return payload.data as V8DesktopPetConfig;
+  }
+  return (payload || {}) as V8DesktopPetConfig;
 }
 
 function isAudioUrl(value: string) {
@@ -334,6 +392,7 @@ If the user uploaded an image representation (which represents what you 'see' th
 
   useEffect(() => {
     if (v8Session) {
+      void refreshDesktopPetConfig();
       refreshV8Lists();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -521,6 +580,28 @@ If the user uploaded an image representation (which represents what you 'see' th
     }
   };
 
+  const refreshDesktopPetConfig = async () => {
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) return;
+    try {
+      const payload = await client.getDesktopPetConfig();
+      const config = unpackDesktopPetConfig(payload);
+      const appearance = config.appearance || {};
+      const voiceEnabled = config.eventVoice?.enabled !== false && config.eventVoice?.mode !== 'muted';
+      const voiceRules = normalizeDesktopPetVoiceRules(config, voiceEnabled);
+      setSettings((current) => ({
+        ...current,
+        petScale: clampFiniteNumber(appearance.petScale, current.petScale || 0.7, 0.4, 3),
+        floatAmplitude: clampFiniteNumber(appearance.floatAmplitude, current.floatAmplitude ?? 8, 0, 24),
+        floatSpeed: clampFiniteNumber(appearance.floatSpeed, current.floatSpeed || 1, 0.1, 3),
+        customGlowColor: mapEffectSpectrumToGlowColor(config, current.customGlowColor || 'default'),
+        v8EventRulesJson: voiceRules ? JSON.stringify(voiceRules, null, 2) : current.v8EventRulesJson,
+      }));
+    } catch (error) {
+      console.warn('Desktop pet config sync failed:', error);
+    }
+  };
+
   const connectV8 = async () => {
     const client = v8ClientRef.current;
     if (!client) return;
@@ -537,6 +618,7 @@ If the user uploaded an image representation (which represents what you 'see' th
       }
       setV8Session(session);
       setV8Status('V8OS 已连接');
+      await refreshDesktopPetConfig();
       await refreshV8Lists();
     } catch (error: any) {
       setV8Session(null);

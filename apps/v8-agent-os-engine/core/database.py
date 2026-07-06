@@ -2264,6 +2264,70 @@ class DatabaseManager:
             )
             return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
 
+    def get_chat_canonical_messages_before_ordinal(
+        self,
+        session_id: str,
+        before_ordinal: int | None = None,
+        *,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 500), 2000))
+        ordinal_clause = ""
+        params: list[Any] = [session_id]
+        if before_ordinal is not None:
+            ordinal_clause = "AND ordinal < ?"
+            params.append(int(before_ordinal))
+        params.extend([session_id, session_id, safe_limit])
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT *
+                FROM chat_canonical_messages
+                WHERE session_id = ?
+                  {ordinal_clause}
+                  AND id NOT IN (
+                    SELECT message_id
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                  AND id NOT IN (
+                    SELECT COALESCE(canonical_message_id, '')
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                ORDER BY ordinal DESC, created_at DESC
+                LIMIT ?
+                ''',
+                tuple(params),
+            )
+            return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
+
+    def has_chat_canonical_message_before_ordinal(self, session_id: str, before_ordinal: int) -> bool:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT 1
+                FROM chat_canonical_messages
+                WHERE session_id = ?
+                  AND ordinal < ?
+                  AND id NOT IN (
+                    SELECT message_id
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                  AND id NOT IN (
+                    SELECT COALESCE(canonical_message_id, '')
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                LIMIT 1
+                ''',
+                (session_id, int(before_ordinal), session_id, session_id),
+            )
+            return cursor.fetchone() is not None
+
     def get_chat_canonical_messages_since(self, session_id: str, since_ts: str) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             cursor = conn.cursor()

@@ -32,14 +32,33 @@ interface ChatWindowProps {
     userName?: string | null;
     shellClassName?: string;
     runtimeActivities?: RuntimeStageActivity[];
+    hasOlderTurns?: boolean;
+    isLoadingOlderTurns?: boolean;
+    onReachTop?: () => void;
 }
 
-export function ChatWindow({ messages, processes, contextReferences, conversationId, onDeleteMessage, isLoading, userAvatar, userName, shellClassName, runtimeActivities = [] }: ChatWindowProps) {
+export function ChatWindow({
+    messages,
+    processes,
+    contextReferences,
+    conversationId,
+    onDeleteMessage,
+    isLoading,
+    userAvatar,
+    userName,
+    shellClassName,
+    runtimeActivities = [],
+    hasOlderTurns = false,
+    isLoadingOlderTurns = false,
+    onReachTop,
+}: ChatWindowProps) {
     const t = useT();
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const scrollCommitRef = useRef<number | null>(null);
+    const olderLoadAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+    const lastLoadTriggerAtRef = useRef(0);
     const scrollStateRef = useRef<{
         messageCount: number;
         lastMessageId: string;
@@ -114,6 +133,22 @@ export function ChatWindow({ messages, processes, contextReferences, conversatio
     }, [isAtBottom, isLoading, lastMessageId, messages.length, scrollToBottom]);
 
     useEffect(() => {
+        if (isLoadingOlderTurns) {
+            return;
+        }
+        const anchor = olderLoadAnchorRef.current;
+        const container = scrollContainerRef.current;
+        if (!anchor || !container) {
+            return;
+        }
+        olderLoadAnchorRef.current = null;
+        const delta = container.scrollHeight - anchor.scrollHeight;
+        if (delta > 0) {
+            container.scrollTop = anchor.scrollTop + delta;
+        }
+    }, [isLoadingOlderTurns, messages.length]);
+
+    useEffect(() => {
         if (!isLoading || !isAtBottom || typeof window === "undefined" || typeof ResizeObserver === "undefined") {
             return;
         }
@@ -154,7 +189,17 @@ export function ChatWindow({ messages, processes, contextReferences, conversatio
 
         setIsAtBottom(isBottom);
         setShowScrollButton(!isBottom);
-    }, []);
+
+        if (scrollTop < 96 && hasOlderTurns && !isLoadingOlderTurns && onReachTop) {
+            const now = Date.now();
+            if (now - lastLoadTriggerAtRef.current < 500) {
+                return;
+            }
+            lastLoadTriggerAtRef.current = now;
+            olderLoadAnchorRef.current = { scrollHeight, scrollTop };
+            onReachTop();
+        }
+    }, [hasOlderTurns, isLoadingOlderTurns, onReachTop]);
 
     const confirmDelete = async () => {
         if (!deleteId) return;
@@ -193,6 +238,11 @@ export function ChatWindow({ messages, processes, contextReferences, conversatio
                         onScroll={handleScroll}
                     >
                         <div ref={contentRef} className="flex min-h-full flex-col">
+                            {isLoadingOlderTurns && messages.length > 0 ? (
+                                <div className="flex justify-center py-2 text-[11px] text-muted-foreground">
+                                    {t("web.generated.49b930d439")}
+                                </div>
+                            ) : null}
                             {messages.length === 0 ? (
                                 <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground opacity-60">
                                     <Bot className="mb-4 h-12 w-12 animate-pulse opacity-50" />

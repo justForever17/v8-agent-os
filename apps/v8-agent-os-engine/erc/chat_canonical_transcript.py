@@ -161,6 +161,10 @@ def build_canonical_chat_messages(session_id: str) -> list[dict[str, Any]]:
     rows = db.get_chat_canonical_messages(session_id)
     if not rows:
         return []
+    return _format_canonical_rows(session_id, rows)
+
+
+def _format_canonical_rows(session_id: str, rows: list[CanonicalMessage]) -> list[dict[str, Any]]:
     artifacts = db.list_runtime_artifacts(session_id=session_id, limit=1000)
     artifacts_by_message: dict[str, list[dict[str, Any]]] = {}
     artifacts_by_run: dict[str, list[dict[str, Any]]] = {}
@@ -181,6 +185,94 @@ def build_canonical_chat_messages(session_id: str) -> list[dict[str, Any]]:
             runtime_artifacts = artifacts_by_run.get(run_id, [])
         formatted.append(format_canonical_message(row, runtime_artifacts))
     return formatted
+
+
+def _row_ordinal(row: CanonicalMessage) -> int:
+    try:
+        return int(row.get("ordinal") or 0)
+    except Exception:
+        return 0
+
+
+def group_canonical_turn_rows(rows_asc: list[CanonicalMessage]) -> list[list[CanonicalMessage]]:
+    groups: list[list[CanonicalMessage]] = []
+    current: list[CanonicalMessage] = []
+    current_key = ""
+
+    for row in rows_asc:
+        run_id = str(row.get("run_id") or "").strip()
+        role = str(row.get("role") or "").strip()
+        if run_id:
+            key = f"run:{run_id}"
+            if current and current_key != key:
+                groups.append(current)
+                current = []
+            current_key = key
+            current.append(row)
+            continue
+
+        if role == "user" and current:
+            groups.append(current)
+            current = []
+        current_key = ""
+        current.append(row)
+
+    if current:
+        groups.append(current)
+    return groups
+
+
+def select_canonical_turn_window_rows(
+    rows_desc: list[CanonicalMessage],
+    *,
+    limit_turns: int = 1,
+) -> tuple[list[CanonicalMessage], int]:
+    rows_asc = sorted(rows_desc, key=lambda row: (_row_ordinal(row), str(row.get("created_at") or "")))
+    groups = group_canonical_turn_rows(rows_asc)
+    if not groups:
+        return [], 0
+    safe_limit = max(1, min(int(limit_turns or 1), 20))
+    selected_groups = groups[-safe_limit:]
+    selected_rows = [row for group in selected_groups for row in group]
+    return selected_rows, len(selected_groups)
+
+
+def build_canonical_chat_turn_window(
+    session_id: str,
+    *,
+    before_ordinal: int | None = None,
+    limit_turns: int = 1,
+    scan_limit: int = 500,
+) -> dict[str, Any]:
+    safe_scan_limit = max(50, min(int(scan_limit or 500), 2000))
+    rows_desc = db.get_chat_canonical_messages_before_ordinal(
+        session_id,
+        before_ordinal=before_ordinal,
+        limit=safe_scan_limit,
+    )
+    selected_rows, loaded_turn_count = select_canonical_turn_window_rows(
+        rows_desc,
+        limit_turns=limit_turns,
+    )
+    if not selected_rows:
+        return {
+            "messages": [],
+            "pageInfo": {
+                "hasMore": False,
+                "beforeCursor": None,
+                "loadedTurnCount": 0,
+            },
+        }
+
+    min_ordinal = min(_row_ordinal(row) for row in selected_rows)
+    return {
+        "messages": _format_canonical_rows(session_id, selected_rows),
+        "pageInfo": {
+            "hasMore": db.has_chat_canonical_message_before_ordinal(session_id, min_ordinal),
+            "beforeCursor": str(min_ordinal),
+            "loadedTurnCount": loaded_turn_count,
+        },
+    }
 
 
 def export_legacy_message_payload(row: CanonicalMessage) -> dict[str, Any]:

@@ -18,11 +18,20 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const res = await fetch(`${ENGINE_URL}/sessions`, {
+        let res = await fetch(`${ENGINE_URL}/sessions/quick-index`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
         });
+
+        if (!res.ok) {
+            console.warn("Quick session index unavailable, falling back to live sessions:", res.status);
+            res = await fetch(`${ENGINE_URL}/sessions`, {
+                method: "GET",
+                headers: { "Content-Type": "application/json" },
+                cache: "no-store",
+            });
+        }
 
         if (!res.ok) {
             console.error("Failed to fetch sessions from Python engine:", await res.text());

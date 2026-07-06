@@ -27,7 +27,7 @@ from core.runtime_projection import (
     project_pending_approvals,
 )
 from erc.capability_registry import capability_registry
-from erc.chat_canonical_transcript import build_canonical_chat_messages
+from erc.chat_canonical_transcript import build_canonical_chat_messages, build_canonical_chat_turn_window
 from erc.command_router import runtime_command_router
 from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
@@ -54,6 +54,8 @@ from runtimes.memory.scope_resolution import (
 router = APIRouter()
 _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 _NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
+_WEB_SESSION_INDEX_PATH = Path.home() / ".v8-agent-os" / "cache" / "web_session_index.json"
+_WEB_SESSION_INDEX_VERSION = 1
 
 
 def _now_perf_ms() -> float:
@@ -273,46 +275,118 @@ def _is_hidden_compat_session(session_row: dict, metadata: dict) -> bool:
     )
 
 
+def _build_web_session_index_records() -> list[dict]:
+    sessions: list[dict] = []
+    for row in db.get_sessions():
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        if _is_hidden_compat_session(row, metadata):
+            continue
+        workflow_view = {
+            "workflowId": row.get("workflowId"),
+            "rootRunId": row.get("rootRunId"),
+            "status": row.get("workflowStatus"),
+            "recoverable": bool(row.get("recoverable")),
+            "ownerRuntime": row.get("ownerRuntime"),
+            "ownerAgentId": row.get("ownerAgentId"),
+            "currentStepId": row.get("currentStepId"),
+            "currentStepKey": row.get("currentStepKey"),
+            "currentStepTitle": row.get("currentStepTitle"),
+            "currentStepStatus": row.get("stepStatus"),
+            "updatedAt": row.get("workflowUpdatedAt") or row.get("updated_at"),
+        }
+        run_record = db.get_run_record(workflow_view.get("rootRunId")) if workflow_view.get("rootRunId") else None
+        session_source = _derive_session_source(row, run_record)
+        approvals = project_pending_approvals(
+            db.list_pending_approvals(session_id=row["id"], status="pending")
+        )
+        controls = build_projection_controls(workflow_view, approvals)
+        sessions.append(
+            build_session_history_materialized_record(
+                session_row={**row, "controls": controls},
+                workflow_view=workflow_view,
+                approvals=approvals,
+                snapshot=None,
+                latest_seq=0,
+                source=session_source,
+                run_record=run_record,
+            )
+        )
+    return sessions
+
+
+def _web_session_index_payload(records: list[dict]) -> dict:
+    sanitized: list[dict] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        sanitized.append(
+            {
+                key: value
+                for key, value in record.items()
+                if key not in {"messages", "timeline", "runtimeTimeline", "rawEvents", "snapshot"}
+            }
+        )
+    return {
+        "version": _WEB_SESSION_INDEX_VERSION,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "sessions": sanitized,
+    }
+
+
+def _read_web_session_index_payload() -> dict | None:
+    try:
+        if not _WEB_SESSION_INDEX_PATH.exists():
+            return None
+        payload = json.loads(_WEB_SESSION_INDEX_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if int(payload.get("version") or 0) != _WEB_SESSION_INDEX_VERSION:
+            return None
+        if not isinstance(payload.get("sessions"), list):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _write_web_session_index(records: list[dict]) -> dict:
+    payload = _web_session_index_payload(records)
+    _WEB_SESSION_INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = _WEB_SESSION_INDEX_PATH.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(_WEB_SESSION_INDEX_PATH)
+    return payload
+
+
+def _rebuild_web_session_index() -> dict:
+    return _write_web_session_index(_build_web_session_index_records())
+
+
+def _refresh_web_session_index_safely() -> None:
+    try:
+        _rebuild_web_session_index()
+    except Exception:
+        pass
+
+
 @router.get("/sessions")
 async def get_sessions():
     """Retrieve all sessions handled by the Python DB Engine."""
     try:
-        sessions = []
-        for row in db.get_sessions():
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            if _is_hidden_compat_session(row, metadata):
-                continue
-            workflow_view = {
-                "workflowId": row.get("workflowId"),
-                "rootRunId": row.get("rootRunId"),
-                "status": row.get("workflowStatus"),
-                "recoverable": bool(row.get("recoverable")),
-                "ownerRuntime": row.get("ownerRuntime"),
-                "ownerAgentId": row.get("ownerAgentId"),
-                "currentStepId": row.get("currentStepId"),
-                "currentStepKey": row.get("currentStepKey"),
-                "currentStepTitle": row.get("currentStepTitle"),
-                "currentStepStatus": row.get("stepStatus"),
-                "updatedAt": row.get("workflowUpdatedAt") or row.get("updated_at"),
-            }
-            run_record = db.get_run_record(workflow_view.get("rootRunId")) if workflow_view.get("rootRunId") else None
-            session_source = _derive_session_source(row, run_record)
-            approvals = project_pending_approvals(
-                db.list_pending_approvals(session_id=row["id"], status="pending")
-            )
-            controls = build_projection_controls(workflow_view, approvals)
-            sessions.append(
-                build_session_history_materialized_record(
-                    session_row={**row, "controls": controls},
-                    workflow_view=workflow_view,
-                    approvals=approvals,
-                    snapshot=None,
-                    latest_seq=0,
-                    source=session_source,
-                    run_record=run_record,
-                )
-            )
+        sessions = _build_web_session_index_records()
+        _write_web_session_index(sessions)
         return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/quick-index")
+async def get_sessions_quick_index(force: int = Query(default=0)):
+    try:
+        payload = None if force else _read_web_session_index_payload()
+        if payload is None:
+            payload = _rebuild_web_session_index()
+        return payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -356,6 +430,7 @@ async def create_session(data: dict = Body(...)):
         approvals: list[dict] = []
         controls = build_projection_controls(workflow_view, approvals)
         session_source = _derive_session_source(session or {"id": session_id, "metadata": {}}, None)
+        _refresh_web_session_index_safely()
         return build_session_history_materialized_record(
             session_row={**(session or {}), "controls": controls},
             workflow_view=workflow_view,
@@ -373,6 +448,7 @@ async def create_session(data: dict = Body(...)):
 async def delete_session(session_id: str):
     try:
         db.delete_session(session_id)
+        _refresh_web_session_index_safely()
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -836,6 +912,40 @@ async def get_session_history(session_id: str):
                 "runtimeTimelineCount": len(runtime_timeline),
                 "messageCount": len(timeline_messages),
                 "latestSeq": latest_seq,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/{session_id}/turns")
+async def get_session_turns(
+    session_id: str,
+    before: Optional[int] = Query(default=None),
+    limit: int = Query(default=1),
+):
+    started_at_ms = _now_perf_ms()
+    try:
+        session_row = db.get_session(session_id)
+        if session_row is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        payload = build_canonical_chat_turn_window(
+            session_id,
+            before_ordinal=before,
+            limit_turns=max(1, min(int(limit or 1), 10)),
+        )
+        return _attach_profile(
+            {
+                "sessionId": session_id,
+                **payload,
+            },
+            route="engine.sessions.turns",
+            started_at_ms=started_at_ms,
+            extra={
+                "messageCount": len(payload.get("messages") or []),
+                "loadedTurnCount": int((payload.get("pageInfo") or {}).get("loadedTurnCount") or 0),
             },
         )
     except HTTPException:

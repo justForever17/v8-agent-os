@@ -11,11 +11,7 @@ import {
     WEB_STREAM_LIFECYCLE_OPTIONS,
 } from "@/lib/chat-stream-state";
 import { normalizeRealtimeEvent } from "@/lib/realtime";
-import {
-    mergeWebConversationSync,
-    readWebConversationCache,
-    writeWebConversationCache,
-} from "@/lib/web-conversation-cache";
+import { clearLegacyWebConversationCache } from "@/lib/web-conversation-cache";
 import {
     RuntimeId,
     buildRuntimeStageModel,
@@ -261,18 +257,6 @@ function buildWebMessageComparisonKeys(message: Message) {
     if (runId && role) keys.add(`run:${runId}:${role}`);
     if (role && timestamp > 0) keys.add(`role:${role}:ts:${timestamp}`);
     return Array.from(keys);
-}
-
-function buildWebMessageRichness(message: Message | null | undefined) {
-    if (!message) {
-        return 0;
-    }
-    return (
-        String(message.content || "").trim().length
-        + ((message.nodes || []).length * 120)
-        + ((message.artifacts || []).length * 200)
-        + ((message.images || []).length * 80)
-    );
 }
 
 function hasStructuredAssistantPayload(message: Message | null | undefined) {
@@ -530,6 +514,10 @@ export default function ChatClient() {
         audioRef.current.volume = 0.5;
     }, []);
 
+    useEffect(() => {
+        void clearLegacyWebConversationCache();
+    }, []);
+
     const [input, setInput] = useState("");
     const { refreshConversations, createConversation, patchConversationSummary } = useConversationContext();
     const [askUserModalOpen, setAskUserModalOpen] = useState(false);
@@ -553,6 +541,8 @@ export default function ChatClient() {
     const [supervisorReasoningEffortControl, setSupervisorReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
     const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
+    const [hasOlderTurns, setHasOlderTurns] = useState(false);
+    const [isLoadingOlderTurns, setIsLoadingOlderTurns] = useState(false);
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
     const lastSessionProcessSurfaceAtRef = useRef(0);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
@@ -906,7 +896,9 @@ export default function ChatClient() {
     const latestRealtimeSeqRef = useRef<number>(0);
     const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const cacheWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const turnBeforeCursorRef = useRef<string | null>(null);
+    const isLoadingOlderTurnsRef = useRef(false);
+    const historyPagingModeRef = useRef(false);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
     const boundProject = useMemo(
@@ -1354,28 +1346,49 @@ export default function ChatClient() {
             messages,
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
-        if (!activeConversationId || messages.length === 0) {
-            return;
-        }
-        if (cacheWriteTimerRef.current) {
-            clearTimeout(cacheWriteTimerRef.current);
-        }
-        cacheWriteTimerRef.current = setTimeout(() => {
-            void writeWebConversationCache(activeConversationId, normalizeMessagesForState(messages));
-            cacheWriteTimerRef.current = null;
-        }, 500);
-        return () => {
-            if (cacheWriteTimerRef.current) {
-                clearTimeout(cacheWriteTimerRef.current);
-                cacheWriteTimerRef.current = null;
-            }
-        };
-    }, [activeConversationId, messages]);
+    }, [messages]);
 
     const isLocalStreamActive = useCallback((sessionId: string | null | undefined) => {
         if (!sessionId) return false;
         return isLoadingRef.current && streamingConversationIdRef.current === sessionId;
     }, []);
+
+    const normalizeTurnPageMessages = useCallback((items: unknown[]) => {
+        const hasTimelineNodes = items.some((message: unknown) =>
+            Boolean(message && typeof message === "object" && Array.isArray((message as { nodes?: unknown[] }).nodes)),
+        );
+        return hasTimelineNodes
+            ? normalizeMessagesForState(items as Message[])
+            : normalizeProjectedMessages(items);
+    }, []);
+
+    const loadConversationTurnPage = useCallback(async (
+        conversationId: string,
+        options?: { before?: string | null },
+    ) => {
+        const params = new URLSearchParams({ limit: "1" });
+        const before = String(options?.before || "").trim();
+        if (before) {
+            params.set("before", before);
+        }
+        const turnsRes = await fetch(`/api/client/conversations/${conversationId}/turns?${params.toString()}`, {
+            cache: "no-store",
+        });
+        if (!turnsRes.ok) {
+            throw new Error(`Failed to load conversation turns: ${turnsRes.status}`);
+        }
+        const turnsPayload = await turnsRes.json().catch(() => ({}));
+        const items = Array.isArray(turnsPayload?.messages) ? turnsPayload.messages : [];
+        const pageInfo = (turnsPayload?.pageInfo && typeof turnsPayload.pageInfo === "object") ? turnsPayload.pageInfo : {};
+        return {
+            messages: normalizeTurnPageMessages(items),
+            pageInfo: {
+                hasMore: Boolean(pageInfo.hasMore),
+                beforeCursor: pageInfo.beforeCursor == null ? null : String(pageInfo.beforeCursor),
+                loadedTurnCount: Number(pageInfo.loadedTurnCount || 0),
+            },
+        };
+    }, [normalizeTurnPageMessages]);
 
     const applyProjectedSnapshot = useCallback((projectedMessages: unknown[], latestSeq = 0) => {
         if (runtimeFlushFrameRef.current !== null && typeof window !== "undefined") {
@@ -1416,13 +1429,6 @@ export default function ChatClient() {
     }, []);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
-        const cached = await readWebConversationCache(conversationId);
-        if (cached?.messages?.length) {
-            const cachedMessages = normalizeMessagesForState(cached.messages);
-            messagesRef.current = cachedMessages;
-            setMessages(cachedMessages);
-        }
-
         const detailRes = await fetch(`/api/client/conversations/${conversationId}?omitMessages=1`, { cache: "no-store" });
         if (!detailRes.ok) {
             if (detailRes.status === 404) {
@@ -1449,52 +1455,57 @@ export default function ChatClient() {
         }
 
         const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
-        let normalized = cached?.messages?.length
-            ? normalizeMessagesForState(cached.messages)
-            : [];
-
-        try {
-            const syncRes = await fetch(
-                `/api/client/conversations/${conversationId}/sync?since=${encodeURIComponent(cached?.syncCursor || "")}`,
-                { cache: "no-store" },
-            );
-            if (syncRes.ok) {
-                const syncPayload = await syncRes.json().catch(() => ({}));
-                const syncItems = Array.isArray(syncPayload?.messages) ? syncPayload.messages : [];
-                const syncHasTimelineNodes = syncItems.some((message: unknown) =>
-                    Boolean(message && typeof message === "object" && Array.isArray((message as { nodes?: unknown[] }).nodes)),
-                );
-                const syncMessages = syncHasTimelineNodes
-                    ? normalizeMessagesForState(syncItems as Message[])
-                    : normalizeProjectedMessages(syncItems);
-                normalized = mergeWebConversationSync(
-                    normalized as Message[],
-                    syncMessages as Message[],
-                    Array.isArray(syncPayload?.deletions) ? syncPayload.deletions : [],
-                );
-                await writeWebConversationCache(
-                    conversationId,
-                    normalizeMessagesForState(normalized as Message[]),
-                    String(syncPayload?.syncCursor || cached?.syncCursor || ""),
-                );
-            } else if (!cached?.messages?.length) {
-                console.warn("[ChatClient] Conversation sync failed during initial load:", syncRes.status);
-            }
-        } catch (error) {
-            console.warn("[ChatClient] Failed to sync cached conversation delta:", error);
-        }
+        const turnPage = await loadConversationTurnPage(conversationId);
+        const normalized = normalizeMessagesForState(turnPage.messages);
+        historyPagingModeRef.current = true;
+        turnBeforeCursorRef.current = turnPage.pageInfo.beforeCursor;
+        isLoadingOlderTurnsRef.current = false;
+        setIsLoadingOlderTurns(false);
+        setHasOlderTurns(Boolean(turnPage.pageInfo.hasMore));
         latestRealtimeSeqRef.current = latestSeq;
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
-            normalized as Message[],
+            normalized,
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
-        messagesRef.current = normalizeMessagesForState(normalized as Message[]);
-        setMessages(normalizeMessagesForState(normalized as Message[]));
+        messagesRef.current = normalized;
+        setMessages(normalized);
         const detailProcesses = Array.isArray(detailPayload?.processes) ? detailPayload.processes : [];
         if (detailProcesses.length > 0) {
             applySessionProcessSurface(detailProcesses);
         }
-    }, [applyAskUserPendingApproval, applySessionProcessSurface, askUserApprovalId, router, setMessages]);
+    }, [applyAskUserPendingApproval, applySessionProcessSurface, askUserApprovalId, loadConversationTurnPage, router, setMessages]);
+
+    const loadOlderConversationTurn = useCallback(async () => {
+        const conversationId = activeConversationIdRef.current;
+        const before = turnBeforeCursorRef.current;
+        if (!conversationId || !before || !hasOlderTurns || isLoadingOlderTurnsRef.current) {
+            return;
+        }
+        isLoadingOlderTurnsRef.current = true;
+        setIsLoadingOlderTurns(true);
+        try {
+            const turnPage = await loadConversationTurnPage(conversationId, { before });
+            const incoming = normalizeMessagesForState(turnPage.messages);
+            const seen = new Set(incoming.map((message) => String(message.id || "")));
+            const nextMessages = normalizeMessagesForState([
+                ...incoming,
+                ...messagesRef.current.filter((message) => !seen.has(String(message.id || ""))),
+            ]);
+            turnBeforeCursorRef.current = turnPage.pageInfo.beforeCursor;
+            setHasOlderTurns(Boolean(turnPage.pageInfo.hasMore));
+            messagesRef.current = nextMessages;
+            realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                nextMessages,
+                WEB_STREAM_LIFECYCLE_OPTIONS,
+            );
+            setMessages(nextMessages);
+        } catch (error) {
+            console.warn("[ChatClient] Failed to load older conversation turn:", error);
+        } finally {
+            isLoadingOlderTurnsRef.current = false;
+            setIsLoadingOlderTurns(false);
+        }
+    }, [hasOlderTurns, loadConversationTurnPage, setMessages]);
 
     const loadProjects = useCallback(async () => {
         setProjectsLoading(true);
@@ -2041,6 +2052,11 @@ export default function ChatClient() {
 
         const currentInput = input;
         setInput(""); // Clear immediately (Optimistic)
+        historyPagingModeRef.current = false;
+        turnBeforeCursorRef.current = null;
+        isLoadingOlderTurnsRef.current = false;
+        setHasOlderTurns(false);
+        setIsLoadingOlderTurns(false);
 
         // [REMOVED] Optimistic UI: The useLangGraphStream hook now handles both User and AI placeholders internally.
         // This prevents the "Flicker" caused by state conflicts (Client vs Hook)
@@ -2068,6 +2084,12 @@ export default function ChatClient() {
             }
             return;
         }
+
+        historyPagingModeRef.current = false;
+        turnBeforeCursorRef.current = null;
+        isLoadingOlderTurnsRef.current = false;
+        setHasOlderTurns(false);
+        setIsLoadingOlderTurns(false);
 
         void sendMessage("", {
             agentId: undefined,
@@ -2105,6 +2127,11 @@ export default function ChatClient() {
             setLegacyChatUnsupported(false);
             clearApprovalState();
             setRunEntries([]);
+            historyPagingModeRef.current = false;
+            turnBeforeCursorRef.current = null;
+            isLoadingOlderTurnsRef.current = false;
+            setHasOlderTurns(false);
+            setIsLoadingOlderTurns(false);
             messagesRef.current = [];
             setMessages([]);
         }
@@ -2151,7 +2178,7 @@ export default function ChatClient() {
                 if (Array.isArray(nextView?.processes) && nextView.processes.length > 0) {
                     applySessionProcessSurface(nextView.processes);
                 }
-                if (!localStreamActive && Array.isArray(nestedSnapshot.messages)) {
+                if (!localStreamActive && !historyPagingModeRef.current && Array.isArray(nestedSnapshot.messages)) {
                     applyProjectedSnapshot(
                         nestedSnapshot.messages,
                         Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0),
@@ -2480,6 +2507,9 @@ export default function ChatClient() {
                             userName={chatUserName}
                             shellClassName="w-full"
                             runtimeActivities={runtimeStageModel.activities}
+                            hasOlderTurns={hasOlderTurns}
+                            isLoadingOlderTurns={isLoadingOlderTurns}
+                            onReachTop={loadOlderConversationTurn}
                             onDeleteMessage={(messageId) => {
                                 setMessages((prev) => prev.filter((message) => message.id !== messageId));
                                 const conversationId = activeConversationIdRef.current;

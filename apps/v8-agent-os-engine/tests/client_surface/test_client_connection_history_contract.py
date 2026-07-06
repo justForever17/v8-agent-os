@@ -50,27 +50,39 @@ def test_local_trusted_client_boundary_is_documented() -> None:
     assert "Web shell / CyberCore companion 都不应该直连 Engine" not in doc
 
 
-def test_web_history_load_uses_omit_messages_and_local_delta_cache() -> None:
+def test_web_history_load_uses_server_turn_paging_not_local_message_cache() -> None:
     chat_client = _read_repo_file("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx")
     cache = _read_repo_file("apps/v8-agent-os-web/src/lib/web-conversation-cache.ts")
     detail_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/route.ts")
+    turns_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/client/conversations/[id]/turns/route.ts")
+    conversations_route = _read_repo_file("apps/v8-agent-os-admin/src/app/api/conversations/route.ts")
+    engine_routes = _read_repo_file("apps/v8-agent-os-engine/api/session_workflow_routes.py")
 
     assert "?omitMessages=1" in chat_client
-    assert "await readWebConversationCache(conversationId)" in chat_client
-    assert "/sync?since=" in chat_client
-    assert "writeWebConversationCache(activeConversationId" in chat_client
+    assert "/turns?" in chat_client
+    assert "loadConversationTurnPage" in chat_client
+    assert "loadOlderConversationTurn" in chat_client
+    assert "hasOlderTurns" in chat_client
+    assert "readWebConversationCache" not in chat_client
+    assert "writeWebConversationCache" not in chat_client
+    assert "mergeWebConversationSync" not in chat_client
+    assert "/sync?since=" not in chat_client
     assert "const authoritativeMessages" not in chat_client
 
-    assert "MAX_CACHED_MESSAGES" in cache
-    assert "indexedDB.open" in cache
-    assert "STORE_NAME = \"conversationCache\"" in cache
-    assert "deletedIds.has(message.id)" in cache
-    assert "mergeWebConversationSync" in cache
-    assert "syncCursor: String(syncCursor ?? existing?.syncCursor ?? \"\")" in cache
+    assert "clearLegacyWebConversationCache" in cache
+    assert "indexedDB.deleteDatabase" in cache
+    assert "v8-agent-os.webConversation." in cache
+    assert "indexedDB.open" not in cache
+    assert "conversationCache" not in cache
 
     assert "stripMessagesForProjection" in detail_route
     assert "projection: projectionData" in detail_route
     assert re.search(r"const detailMessages = omitMessages\s*\?\s*\[\]", detail_route)
+    assert "/turns?" in turns_route
+    assert "normalizeMessageForRealtimeSurface" in turns_route
+    assert "/sessions/quick-index" in conversations_route
+    assert "web_session_index.json" in engine_routes
+    assert '@router.get("/sessions/{session_id}/turns")' in engine_routes
 
 
 def test_shared_message_bound_execution_contract_exists_for_phone_web_renderers() -> None:

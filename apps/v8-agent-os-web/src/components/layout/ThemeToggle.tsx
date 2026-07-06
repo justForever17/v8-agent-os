@@ -25,7 +25,7 @@ export function ThemeToggle() {
     const isDark = theme === "dark";
 
     return (
-        <div className="group relative">
+        <div className="group relative flex h-[25px] w-[25px] items-center justify-center">
             {/* Flowing Gradient Background */}
             <div
                 className={cn(

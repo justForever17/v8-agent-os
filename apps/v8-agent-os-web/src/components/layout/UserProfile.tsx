@@ -52,7 +52,7 @@ export function UserProfile() {
         <>
             <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                    <div className="relative group">
+                    <div className="group relative flex h-[25px] w-[25px] items-center justify-center">
                         {/* Flowing Gradient Background */}
                         <div
                             className={cn(

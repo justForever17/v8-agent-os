@@ -30,7 +30,7 @@ export function ThemeToggle() {
     const isDark = theme === "dark";
 
     return (
-        <div className="group relative">
+        <div className="group relative flex h-[25px] w-[25px] items-center justify-center">
             <div
                 className={cn(
                     "absolute inset-0 rounded-full opacity-0 blur-md transition-opacity duration-500 group-hover:opacity-100",

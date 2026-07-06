@@ -1,5 +1,6 @@
 "use client";
 
+import { AdminSurfaceCard } from "@/components/admin-shell/AdminSurfaceCard";
 import { useResolveText } from "@/components/providers/LocaleProvider";
 
 export function EmptyState({
@@ -12,9 +13,9 @@ export function EmptyState({
     const resolveText = useResolveText();
 
     return (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-white/80 px-6 py-10 text-center shadow-sm">
-            <div className="text-sm font-medium text-slate-900">{resolveText(title)}</div>
-            <div className="mt-2 text-sm leading-6 text-slate-500">{resolveText(description)}</div>
-        </div>
+        <AdminSurfaceCard className="border-dashed bg-white/80 px-6 py-10 text-center dark:bg-white/[0.03]">
+            <div className="text-sm font-medium text-slate-900 dark:text-slate-100">{resolveText(title)}</div>
+            <div className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">{resolveText(description)}</div>
+        </AdminSurfaceCard>
     );
 }

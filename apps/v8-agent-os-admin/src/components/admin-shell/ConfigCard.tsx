@@ -1,8 +1,9 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AdminHoverTitle } from "@/components/admin-shell/AdminHoverInfo";
+import { AdminSurfaceCard } from "@/components/admin-shell/AdminSurfaceCard";
 import { useResolveText } from "@/components/providers/LocaleProvider";
 
 export function ConfigCard({
@@ -49,9 +50,9 @@ export function ConfigCard({
             : "";
 
     return (
-        <Card className={cn("min-h-0 rounded-2xl border-slate-200 bg-white shadow-sm", allowOverflow ? "overflow-visible" : "", className)}>
+        <AdminSurfaceCard className={cn("min-h-0", allowOverflow ? "overflow-visible" : "", className)}>
             <CardHeader className="space-y-2">
-                <CardTitle className="text-lg text-slate-900">
+                <CardTitle className="text-lg text-slate-900 dark:text-slate-100">
                     <AdminHoverTitle title={resolveText(title)} description={description ? resolveText(description) : undefined} />
                 </CardTitle>
             </CardHeader>
@@ -61,6 +62,6 @@ export function ConfigCard({
                 </div>
                 {footer}
             </CardContent>
-        </Card>
+        </AdminSurfaceCard>
     );
 }

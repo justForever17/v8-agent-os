@@ -5,6 +5,7 @@ import { ExternalLink, Mic, Plus, RefreshCw, Save, Trash2, Upload, Volume2, X } 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
+import { AdminSurfaceCard } from "@/components/admin-shell/AdminSurfaceCard";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { EmptyState } from "@/components/admin-shell/EmptyState";
@@ -508,7 +509,7 @@ function ProviderOptionLabel({
     const initial = (provider.name || provider.id || "?").trim().slice(0, 1).toUpperCase();
     return (
         <span className="flex min-w-0 items-center gap-2">
-            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
                 {logo ? <Image src={logo} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : initial}
             </span>
             <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` · ${suffix}` : ""}</span>
@@ -1428,11 +1429,11 @@ export default function ModelHubPage() {
     const systemAudioConfigCard = (
         <ConfigCard title={t("app.admin.dashboard.model.hub.audio.systemTitle")} description={t("app.admin.dashboard.model.hub.audio.systemDescription")} variant="list" allowOverflow>
             <div className="grid gap-4 xl:grid-cols-2">
-                <div className="rounded-2xl border bg-card p-4">
+                <AdminSurfaceCard surface="nested" className="p-4">
                     <div className="flex items-start justify-between gap-3">
                         <div>
-                            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                                <Mic className="h-4 w-4 text-slate-500" />
+                            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                <Mic className="h-4 w-4 text-slate-500 dark:text-slate-400" />
                                 {t("app.admin.dashboard.model.hub.audio.sttTitle")}
                             </div>
                         </div>
@@ -1499,12 +1500,12 @@ export default function ModelHubPage() {
                             </div>
                         ) : null}
                     </div>
-                </div>
-                <div className="rounded-2xl border bg-card p-4">
+                </AdminSurfaceCard>
+                <AdminSurfaceCard surface="nested" className="p-4">
                     <div className="flex items-start justify-between gap-3">
                         <div>
-                            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                                <Volume2 className="h-4 w-4 text-slate-500" />
+                            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                <Volume2 className="h-4 w-4 text-slate-500 dark:text-slate-400" />
                                 {t("app.admin.dashboard.model.hub.audio.ttsTitle")}
                             </div>
                         </div>
@@ -1648,7 +1649,7 @@ export default function ModelHubPage() {
                             </div>
                         ) : null}
                     </div>
-                </div>
+                </AdminSurfaceCard>
             </div>
             <div className="mt-4 flex justify-end">
                 <Button size="sm" onClick={() => void handleSaveAudioConfig()} disabled={isAudioSaving}>
@@ -1693,7 +1694,7 @@ export default function ModelHubPage() {
         ]}/>
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.catalog.title")} description={t("app.admin.dashboard.model.hub.catalog.description")} variant="list" allowOverflow>
-                <div className="rounded-2xl border bg-card p-4">
+                <AdminSurfaceCard surface="nested" className="p-4">
                         <div className="text-sm font-semibold">{t("app.admin.dashboard.model.hub.catalog.apiProvider")}</div>
                         <div className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.catalog.apiProviderPurposeHint")}</div>
                         <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -1701,7 +1702,7 @@ export default function ModelHubPage() {
                                 <button
                                     key={purpose.id}
                                     type="button"
-                                    className={`rounded-xl border px-3 py-2 text-left transition ${catalogPurpose === purpose.id ? "border-slate-900 bg-slate-900 text-white" : "bg-background hover:bg-muted"}`}
+                                    className={`rounded-xl border px-3 py-2 text-left transition ${catalogPurpose === purpose.id ? "border-slate-900 bg-slate-900 text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950" : "bg-background hover:bg-muted"}`}
                                     onClick={() => {
                                         setCatalogPurpose(purpose.id);
                                         setCatalogProbeModels([]);
@@ -1714,7 +1715,7 @@ export default function ModelHubPage() {
                                     }}
                                 >
                                     <span className="block text-sm font-semibold">{t(purpose.labelKey)}</span>
-                                    <span className={`mt-1 block truncate text-[11px] ${catalogPurpose === purpose.id ? "text-white/75" : "text-muted-foreground"}`}>{t(purpose.hintKey)}</span>
+                                    <span className={`mt-1 block truncate text-[11px] ${catalogPurpose === purpose.id ? "text-white/75 dark:text-slate-950/70" : "text-muted-foreground"}`}>{t(purpose.hintKey)}</span>
                                 </button>
                             ))}
                         </div>
@@ -1784,7 +1785,7 @@ export default function ModelHubPage() {
                         {catalogPurpose === "chat" && selectedCatalogProvider?.anthropicCompatible?.baseUrl ? (
                             <div className="mt-3 grid gap-2 rounded-xl border border-dashed px-3 py-2">
                                 <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocol")}</Label>
-                                <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-slate-700">{catalogRuntimeProtocol === "anthropic" ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic") : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</div>}>
+                                <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-slate-700 dark:text-slate-300">{catalogRuntimeProtocol === "anthropic" ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic") : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</div>}>
                                     <Select value={catalogRuntimeProtocol} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
                                         <SelectTrigger className="h-9">
                                             <SelectValue />
@@ -1832,7 +1833,7 @@ export default function ModelHubPage() {
                             </div>
                         ) : null}
                         {catalogProbeStatus ? (
-                            <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${catalogProbeStatus.ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+                            <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${catalogProbeStatus.ok ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200" : "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"}`}>
                                 <div>{catalogProbeStatus.message}</div>
                                 {catalogProbeStatus.resolvedModelsUrl ? <div className="mt-1 opacity-80">URL: {catalogProbeStatus.resolvedModelsUrl}</div> : null}
                                 {catalogProbeStatus.usedStoredCredential ? <div className="mt-1 opacity-80">{t("app.admin.dashboard.model.hub.catalog.usedStoredCredential")}</div> : null}
@@ -1864,14 +1865,14 @@ export default function ModelHubPage() {
                                                 <button
                                                     key={`${probedCatalogProviderId || selectedCatalogProviderId}:${modelId}`}
                                                     type="button"
-                                                    className={`mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white" : "hover:bg-muted"}`}
+                                                    className={`mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950" : "hover:bg-muted"}`}
                                                     onClick={() => {
                                                         setSelectedCatalogModelId(modelId);
                                                         setCatalogModelFilter(modelId);
                                                     }}
                                                 >
                                                     <span className="flex min-w-0 items-center gap-2">
-                                                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-white/10" : "bg-slate-100"}`}>
+                                                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-white/10 dark:bg-slate-950/10" : "bg-slate-100 dark:bg-white/10"}`}>
                                                             {modelIcon ? <Image src={modelIcon} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : null}
                                                         </span>
                                                         <span className="truncate">{modelId}</span>
@@ -1893,7 +1894,7 @@ export default function ModelHubPage() {
                                 </Button>
                             </div>
                         )}
-                </div>
+                </AdminSurfaceCard>
             </ConfigCard>
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.page.kd0251a96")} description={t("app.admin.dashboard.model.hub.page.k79d4e8e7")} variant="list" allowOverflow>
@@ -1937,18 +1938,18 @@ export default function ModelHubPage() {
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.page.k6a95644c")} description={t("app.admin.dashboard.model.hub.page.k933aeed1")} variant="list" allowOverflow>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm text-slate-500">{t("app.admin.dashboard.model.hub.page.kdea3cadf")}</div>
+                    <div className="text-sm text-slate-500 dark:text-slate-400">{t("app.admin.dashboard.model.hub.page.kdea3cadf")}</div>
                     <HydrationSafeClientOnly
                         fallback={
-                            <div className="grid w-full max-w-5xl grid-cols-4 rounded-2xl bg-slate-100 p-1 text-center text-sm md:grid-cols-6 xl:grid-cols-11">
+                            <div className="grid w-full max-w-5xl grid-cols-4 rounded-2xl bg-slate-100 p-1 text-center text-sm dark:bg-white/10 md:grid-cols-6 xl:grid-cols-11">
                                 {[t("app.admin.dashboard.model.hub.page.ke8cc995b"), t("app.admin.dashboard.model.hub.page.kc4eaa582"), t("app.admin.dashboard.model.hub.page.k2d2f7b56"), t("app.admin.dashboard.model.hub.catalog.tabImage"), t("app.admin.dashboard.model.hub.catalog.tabVideo"), t("app.admin.dashboard.model.hub.catalog.tabVoice"), t("app.admin.dashboard.model.hub.catalog.tabMusic"), t("app.admin.dashboard.model.hub.catalog.tabWorkflow"), t("app.admin.dashboard.model.hub.catalog.tabModel3d"), t("app.admin.dashboard.model.hub.page.kc1798b61"), t("app.admin.dashboard.model.hub.page.k81ac6b74")].map((label, index) => (
-                                    <span key={`${label}-${index}`} className="rounded-md px-3 py-1 text-slate-600">{label}</span>
+                                    <span key={`${label}-${index}`} className="rounded-md px-3 py-1 text-slate-600 dark:text-slate-300">{label}</span>
                                 ))}
                             </div>
                         }
                     >
                         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full max-w-5xl">
-                            <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-slate-100 md:grid-cols-6 xl:grid-cols-11">
+                            <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-slate-100 dark:bg-white/10 md:grid-cols-6 xl:grid-cols-11">
                                 <TabsTrigger value="all">{t("app.admin.dashboard.model.hub.page.ke8cc995b")}</TabsTrigger>
                                 <TabsTrigger value="text">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</TabsTrigger>
                                 <TabsTrigger value="multimodal">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</TabsTrigger>

@@ -1,273 +1,1431 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { motion } from "motion/react";
-import { Mic, MicOff, MonitorCog, MousePointer2, Power, Radio, Volume2, VolumeX } from "lucide-react";
-import type { ChatMessage, DesktopConversationSummary, PetEmotion, PetSettings } from "../types";
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { PetEmotion, PetSettings } from '../types';
+import { 
+  Sliders, 
+  Settings, 
+  Volume2, 
+  Sparkles, 
+  Check, 
+  Cpu, 
+  User, 
+  Smile, 
+  Mic, 
+  MicOff,
+  MousePointer, 
+  Eye, 
+  Activity, 
+  VolumeX,
+  Power,
+  RefreshCw,
+  Gauge,
+  Send,
+  Camera,
+  Database,
+  BarChart3,
+  Terminal,
+  FileCode,
+  Languages,
+  Sparkle
+} from 'lucide-react';
 
-type CyberPetProps = {
-  connected: boolean;
-  status: string;
-  emotion: PetEmotion;
-  settings: PetSettings;
-  messages: ChatMessage[];
-  activeConversation: DesktopConversationSummary | null;
-  isListening: boolean;
-  isSpeaking: boolean;
-  clickThrough: boolean;
-  onOpenAdmin: () => void;
-  onOpenSettings: () => void;
-  onToggleClickThrough: () => void;
-  onToggleMuted: () => void;
-  onToggleListening: () => void;
-  onQuit: () => void;
-};
-
-const EMOTION_LABEL: Record<PetEmotion, string> = {
-  idle: "待机",
-  talking: "播报",
-  listening: "聆听",
-  curious: "观察",
-  scanning: "分析",
-  happy: "完成",
-  worried: "异常",
-  resting: "休息",
-  thinking: "思考",
-  tool_calling: "工具",
-};
-
-function glowColor(settings: PetSettings, emotion: PetEmotion) {
-  if (settings.customGlowColor && settings.customGlowColor !== "default") {
-    const map: Record<string, string> = {
-      neon_blue: "#22d3ee",
-      emerald_green: "#34d399",
-      crimson_red: "#fb7185",
-      cyber_purple: "#a78bfa",
-      golden_amber: "#f59e0b",
+declare global {
+  interface Window {
+    v8CyberCore?: {
+      platform?: string;
+      openAdmin?: (url?: string) => Promise<void>;
+      quit?: () => Promise<void>;
+      setAlwaysOnTop?: (enabled: boolean) => Promise<boolean>;
+      setPanelOpen?: (enabled: boolean) => Promise<any>;
+      setClickThrough?: (enabled: boolean) => Promise<boolean>;
+      setCompanionScale?: (scale: number) => Promise<boolean | { width: number; height: number }>;
+      moveWindowBy?: (dx: number, dy: number) => Promise<boolean>;
+      readLocalConfig?: (key: string) => Promise<Record<string, unknown> | null>;
+      writeLocalConfig?: (key: string, value: Record<string, unknown>) => Promise<boolean>;
+      getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
+      requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
+      openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
+      getWakeEngineStatus?: () => Promise<Record<string, unknown>>;
+      onPrepareShutdown?: (callback: () => void) => () => void;
+      onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
     };
-    return map[settings.customGlowColor] || "#22d3ee";
   }
-  if (emotion === "worried") return "#fb7185";
-  if (emotion === "happy") return "#f59e0b";
-  if (emotion === "tool_calling") return "#34d399";
-  if (emotion === "thinking") return "#a78bfa";
-  return "#22d3ee";
 }
 
-function trimText(value: string, max = 90) {
-  const text = value.replace(/\s+/g, " ").trim();
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1)}…`;
+interface CyberPetProps {
+  isExiting?: boolean;
+  emotion: PetEmotion;
+  isTalking: boolean;
+  onPetClick: () => void;
+  audioVolume?: number; // 0 to 100 representing oral wave syncing
+  settings: PetSettings;
+  onUpdateSettings: (newSettings: PetSettings) => void;
+  messages: any[];
+  setMessages: React.Dispatch<React.SetStateAction<any[]>>;
+  isLoading: boolean;
+  chatInput: string;
+  setChatInput: (v: string) => void;
+  handleChatSubmit: (customMessage?: string, customFileUrls?: string[], customAttachments?: Record<string, unknown>[]) => Promise<void>;
+  isMuted: boolean;
+  setIsMuted: (v: boolean) => void;
+  isListening: boolean;
+  toggleListening: () => void;
+  isWebcamActive: boolean;
+  toggleWebcam: () => Promise<void>;
+  webcamStatus?: string;
+  voiceStatus?: string;
+  wakeEngineStatus?: string;
+  onReleaseMicrophone?: () => void;
+  onReleaseCamera?: () => void;
+  onTestSpeech?: (text?: string) => void;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  screenVideoRef?: React.RefObject<HTMLVideoElement | null> | null;
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  metrics: any[];
+  v8Connection?: {
+    connected: boolean;
+    status: string;
+    error?: string;
+    conversations: Array<{ id: string; title?: string; workspacePath?: string | null }>;
+    projects: Array<{ id?: string; name?: string; workspacePath?: string }>;
+    activeConversationId: string;
+    onSelectConversation: (id: string) => void;
+    onConnect: () => Promise<void>;
+    onDisconnect: () => void;
+    onRefresh: () => Promise<void>;
+    onOpenAdmin?: () => void;
+    onQuit?: () => void;
+  };
 }
 
-export default function CyberPet({
-  connected,
-  status,
-  emotion,
+// Comprehensive dual-language standard translations
+const translations = {
+  zh: {
+    coreOperatorNode: 'Fairy 仙灵控制中枢',
+    presetsAndParams: '全息配置端 • 眼神聚焦与唤醒监控',
+    close: '关闭 ×',
+    agentNode: '智能对话',
+    voice: '合成声学',
+    wakeword: '语音唤醒',
+    cosmetic: '特效光谱',
+    chatConsole: '会话交互',
+    visorCam: '光学眼镜',
+    telemetry: '系统遥测',
+    export: '打包导出',
+    
+    agentTemplate: '🤖 智能人格模版预设',
+    defaultCore: '默认 Fairy 仙灵 (ZZZ AI)',
+    jarvisAdvisor: '贾维斯参谋 (Jarvis Sir)',
+    sarcasticCore: '冷幽默毒舌核心 (Sarcastic)',
+    cyberKitten: '傲娇赛博猫咪 (Cyber Kitten)',
+    systemInstruction: '⚙️ 提示词指令集 (System Prompt)',
+    voiceEngine: '🗣️ Web TTS 音效配置',
+    setLanguage: '全局显示语言 (Language Selection)',
+    selectVoice: '音色指定 (Voice URI)',
+    synthPitch: '合成音调 (Pitch)',
+    synthRate: '合成语速 (Speed)',
+    testVoice: '声学试听',
+    helloFriend: '你好，我的造物主。量子网络图层连接十分稳定。',
+    wakewordControl: '🎙️ 首选自动语音唤醒配置',
+    wakewordDetection: '唤醒词监听状态',
+    detectionActive: '监听中 (LISTENING)',
+    detectionDeactive: '已休眠 (STANDBY)',
+    customWakeword: '自定义唤醒词 (Wakeword Triggers)',
+    floatAmplitude: '虚空悬浮摆动幅度 (Float Amp)',
+    floatSpeed: '悬浮摆动频率周期 (Float Freq)',
+    spectralIntensity: '✨ 核心偏振光谱色彩',
+    defaultCosmic: '虚空深海幽蓝',
+    stellarGold: '超新星流能金',
+    emeraldQuantum: '反物质量子绿',
+    crimsonSolar: '日冕核聚变红',
+    voidShadow: '引力坍缩暗紫',
+    
+    chatTerminal: '💬 量子交互对话窗口',
+    chatFeedTitle: '突触会话交互历史日志',
+    operatorLabel: '操作者 OPERATOR',
+    petLabel: 'Fairy (仙灵)',
+    synapticIsLoading: 'Fairy 突触正在分析决策中...',
+    placeholderChat: '输入会话命令向 Fairy 传达指令...',
+    placeholderListening: '正在接收环境声学信号中...',
+    placeholderWebcam: '捕捉到光学视频影像，输入文字点击 Capture 发送给 Fairy...',
+    camStreamingText: '📷 光学传感器 (Optical Tracking)',
+    turnOnCam: '启动光学眼镜',
+    turnOffCam: '关闭光学眼镜',
+    camOfflineTip: '光学传感器流处于离线状态。启动捕获后，Fairy 将自动通过光学神经网络定位人面位置并实时聚焦对视。',
+    sweepSystem: '● 主动面部视觉追踪与对视捕获系统在线',
+    diagnosticsTitle: '📊 物理偏振各向异性遥测',
+    modelVariant: '当前智能内核',
+    syncLipSync: '语音口型同步',
+    vectorRenderer: '渲染画布引擎',
+    memoryPool: '交互突触记忆层',
+    webcamVisorMime: '视频扫掠格式',
+    eyeGazeName: '👁️ 视线自适应眼神聚焦对视',
+    eyeGazeActive: '启用前置摄像头视线感知 (Gaze Focus Tracking)',
+    customPromptDesc: '该提示词会作为桌宠人格偏好，辅助 V8OS 主线会话保持统一语气。',
+    clickIgnoreTest: '全息视窗穿透忽略测试',
+    clickIgnoreDesc: 'Fairy 在打包为 Electron 透明框架窗口后，为避免遮挡文字，可一键开启鼠标穿透。边缘透明区域将不响应任何物理点击，仅核心眼球部分响应。',
+    clickIgnoreConfirm: '透明窗口框架物理穿透层加载成功！在主进程中，将会触发 win.setIgnoreMouseEvents(true, { forward: true }) 指令进行底盘交互穿透。',
+    vocalSynthesizerOn: '语音声学合成：已激活',
+    vocalSynthesizerOff: '语音声学合成：已关断',
+    webcamActiveImage: '光学图像捕捉已同步'
+  },
+  en: {
+    coreOperatorNode: 'FAIRY OPERATOR PORTAL',
+    presetsAndParams: 'Holographic Controls • Gaze & Vocal Sync',
+    close: 'CLOSE ×',
+    agentNode: 'AGENT NODE',
+    voice: 'VOICE SYNTH',
+    wakeword: 'WAKEWORD',
+    cosmetic: 'COSMETICS',
+    chatConsole: 'INTERACTION',
+    visorCam: 'VISOR CAM',
+    telemetry: 'TELEMETRY',
+    export: 'PC EXPORT',
+    
+    agentTemplate: '🤖 AGENT PERSONALITY PRESETS',
+    defaultCore: 'Default Fairy (ZZZ AI)',
+    jarvisAdvisor: 'Advisor Jarvis (Lord sir)',
+    sarcasticCore: 'Sarcastic Core (Witty)',
+    cyberKitten: 'Cyber Playful Kitten (Purr)',
+    systemInstruction: '⚙️ SYSTEM GUIDELINES SECURE',
+    voiceEngine: '🗣️ SPEECH SYNTHESIS STACK',
+    setLanguage: 'Global Interface Language Selection',
+    selectVoice: 'Synthesizer Voices Select',
+    synthPitch: 'Accent Pitch Modifier',
+    synthRate: 'Speech Rate SpeedMultiplier',
+    testVoice: 'Vocal Audio Audition',
+    helloFriend: 'Hello programmer. Fairy mainframe status looks stable.',
+    wakewordControl: '🎙️ AUTOMATED VOCAL WAKE TRIGGER',
+    wakewordDetection: 'Vocal Listener Status',
+    detectionActive: 'MONITORING (LISTENING)',
+    detectionDeactive: 'STANDBY SLUMBER',
+    customWakeword: 'Custom Wakeword Phrase',
+    floatAmplitude: 'Core Floating Altitude Amp',
+    floatSpeed: 'Hovering Oscillation Frequency',
+    spectralIntensity: '✨ SPECTRAL LIGHTWAVE EMISSION GLOW',
+    defaultCosmic: 'Deep Cosmic Abyss Blue',
+    stellarGold: 'Supernova Fusion Radiant Amber',
+    emeraldQuantum: 'Quantum Antimatter Glow Green',
+    crimsonSolar: 'Solar Flare Flare Crimson Red',
+    voidShadow: 'Dark Violet Gravity Collapse',
+    
+    chatTerminal: '💬 QUANTUM CONSOLE GATEWAY',
+    chatFeedTitle: 'SYNAPTIC CONSOLE REACTION LOGS',
+    operatorLabel: 'OPERATOR',
+    petLabel: 'Fairy',
+    synapticIsLoading: 'AI Fairy is analyzing synaptic feeds...',
+    placeholderChat: 'Instruct Fairy with commands...',
+    placeholderListening: 'Acoustic mic is active and listening...',
+    placeholderWebcam: 'Webcam feed captured. Type some prompt and click Capture to scan...',
+    camStreamingText: '📷 OPTICAL VISOR FLOW & GAZE CENTROID',
+    turnOnCam: 'Initiate Visor Cam',
+    turnOffCam: 'Terminate Visor Cam',
+    camOfflineTip: 'Optical camera streaming offline. Enable stream to trigger automatic human skin tone face tracking and continuous real-time ocular focus.',
+    sweepSystem: '● Active Face Centroid Locking Tracker Live',
+    diagnosticsTitle: '📊 TELEMETRY MATRIX ANALYTICS',
+    modelVariant: 'Core Synthesizer Engine',
+    syncLipSync: 'Oral Shape Pulse Waveform',
+    vectorRenderer: 'Vector Art Renderer',
+    memoryPool: 'Episodic Context Memory',
+    webcamVisorMime: 'Visual Array Format',
+    eyeGazeName: '👁️ GAZE CENTROID ALIGNMENT',
+    eyeGazeActive: 'Enable Camera Gaze Face Tracking Focus',
+    customPromptDesc: 'Keeps the desktop pet persona aligned with V8OS responses.',
+    clickIgnoreTest: 'Electron Frame Transparency Bypass Run',
+    clickIgnoreDesc: 'When executed inside localized Electron, standard transparent window frame avoids blocking. Mouse events bypass blank spots, leaving only the eyeball interactive.',
+    clickIgnoreConfirm: 'Ocular ignore-click layers built! Calling win.setIgnoreMouseEvents(true, { forward: true }) inside Electron main thread.',
+    vocalSynthesizerOn: 'Voice Synth Client: ACTIVE',
+    vocalSynthesizerOff: 'Voice Synth Client: SILENT',
+    webcamActiveImage: 'Visor optical capture frame synchronized'
+  }
+};
+
+type V8EventRule = {
+  match: string;
+  phrase: string;
+  emotion: PetEmotion;
+  speak: boolean;
+};
+
+const V8_EVENT_TYPES = [
+  { match: 'thinking', label: '思考' },
+  { match: 'tool_calling', label: '工具调用' },
+  { match: 'runtime_active', label: '运行时活动' },
+  { match: 'subagent_active', label: '子代理活动' },
+  { match: 'artifact_ready', label: '产物完成' },
+  { match: 'approval_needed', label: '需要确认' },
+  { match: 'error', label: '异常/失败' },
+];
+
+const V8_ACTIONS: Array<{ value: PetEmotion; label: string }> = [
+  { value: 'idle', label: '保持待机' },
+  { value: 'thinking', label: '进入思考动效' },
+  { value: 'tool_calling', label: '工具调用动效' },
+  { value: 'curious', label: '好奇观察' },
+  { value: 'scanning', label: '扫描动效' },
+  { value: 'happy', label: '完成/开心' },
+  { value: 'worried', label: '警告/担忧' },
+  { value: 'talking', label: '说话动效' },
+];
+
+function parseV8Rules(value: string | undefined): V8EventRule[] {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        const record = item && typeof item === 'object' ? item as Partial<V8EventRule> : {};
+        const match = String(record.match || '').trim();
+        if (!match) return null;
+        return {
+          match,
+          phrase: String(record.phrase || '').trim(),
+          emotion: (record.emotion || 'idle') as PetEmotion,
+          speak: Boolean(record.speak),
+        };
+      })
+      .filter(Boolean) as V8EventRule[];
+  } catch {
+    return [];
+  }
+}
+
+function stringifyV8Rules(rules: V8EventRule[]) {
+  return JSON.stringify(rules, null, 2);
+}
+
+function readReusableAudioPhrases() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('v8.cybercore.reusableAudioPhrases') || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
+  } catch {
+    return [];
+  }
+}
+
+export default function CyberPet({ 
+  isExiting = false,
+  emotion, 
+  isTalking, 
+  onPetClick, 
+  audioVolume = 0,
   settings,
+  onUpdateSettings,
   messages,
-  activeConversation,
+  setMessages,
+  isLoading,
+  chatInput,
+  setChatInput,
+  handleChatSubmit,
+  isMuted,
+  setIsMuted,
   isListening,
-  isSpeaking,
-  clickThrough,
-  onOpenAdmin,
-  onOpenSettings,
-  onToggleClickThrough,
-  onToggleMuted,
-  onToggleListening,
-  onQuit,
+  toggleListening,
+  isWebcamActive,
+  toggleWebcam,
+  webcamStatus,
+  voiceStatus,
+  wakeEngineStatus,
+  onReleaseMicrophone,
+  onReleaseCamera,
+  onTestSpeech,
+  videoRef,
+  screenVideoRef,
+  canvasRef,
+  metrics,
+  v8Connection
 }: CyberPetProps) {
-  const petRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef({ dragging: false, startX: 0, startY: 0, x: 36, y: 36 });
-  const [position, setPosition] = useState({ x: 36, y: 36 });
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [floatOffset, setFloatOffset] = useState(0);
-  const color = glowColor(settings, emotion);
-  const scale = Math.max(0.45, Math.min(2, settings.petScale || 0.7));
+  const [position, setPosition] = useState(() => {
+    const x = parseFloat(localStorage.getItem('v8.cybercore.petPosX') || '0');
+    const y = parseFloat(localStorage.getItem('v8.cybercore.petPosY') || '0');
+    return { x, y };
+  });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+  const dragMovedRef = useRef(false);
+  const dragStartPointRef = useRef({ x: 0, y: 0 });
+  const petRef = useRef<HTMLDivElement>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Localization translator shorthand
+  const t = translations[settings.lang || 'zh'];
+  
+  // Right-click Context Menu HUD Overlay State
+  const [showMenu, setShowMenu] = useState(false);
+  const showMenuRef = useRef(false);
+  const isHoveredRef = useRef(false);
+  const canPopOutRef = useRef(true);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const [isBlinking, setIsBlinking] = useState(false);
+
+  // Edge docking and hiding states
+  const [isDocked, setIsDocked] = useState(() => {
+    return localStorage.getItem('v8.cybercore.isDocked') === 'true';
+  });
+  const [dockEdge, setDockEdge] = useState<'left' | 'right' | null>(() => {
+    return localStorage.getItem('v8.cybercore.dockEdge') as 'left' | 'right' | null;
+  });
+
+  // Track coordinates and settings in refs to avoid React hook stale closures
+  const positionRef = useRef(position);
+  useEffect(() => {
+    positionRef.current = position;
+  }, [position]);
+
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  const isDockedRef = useRef(isDocked);
+  const dockEdgeRef = useRef(dockEdge);
+  useEffect(() => {
+    isDockedRef.current = isDocked;
+  }, [isDocked]);
+  useEffect(() => {
+    dockEdgeRef.current = dockEdge;
+  }, [dockEdge]);
 
   useEffect(() => {
-    let frame = 0;
-    let raf = 0;
-    const animate = () => {
-      frame += 0.018 * (settings.floatSpeed || 1);
-      setFloatOffset(Math.sin(frame) * (settings.floatAmplitude || 8));
-      raf = requestAnimationFrame(animate);
-    };
-    raf = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(raf);
-  }, [settings.floatAmplitude, settings.floatSpeed]);
-
-  useEffect(() => {
-    const handleMove = (event: MouseEvent) => {
-      if (!dragRef.current.dragging) return;
-      const next = {
-        x: dragRef.current.x + event.clientX - dragRef.current.startX,
-        y: dragRef.current.y + event.clientY - dragRef.current.startY,
-      };
-      setPosition(next);
-    };
-    const handleUp = () => {
-      dragRef.current.dragging = false;
-      dragRef.current.x = position.x;
-      dragRef.current.y = position.y;
-    };
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    };
+    localStorage.setItem('v8.cybercore.petPosX', String(position.x));
+    localStorage.setItem('v8.cybercore.petPosY', String(position.y));
   }, [position.x, position.y]);
 
+  // Recalculate and snap docked position dynamically on window resize or mount
+  // to avoid viewport size initialization mismatch (e.g. Electron default bounds)
   useEffect(() => {
-    const onClick = () => setMenuOpen(false);
-    window.addEventListener("click", onClick);
-    return () => window.removeEventListener("click", onClick);
+    const handleResize = () => {
+      const savedIsDocked = localStorage.getItem('v8.cybercore.isDocked') === 'true';
+      const savedDockEdge = localStorage.getItem('v8.cybercore.dockEdge') as 'left' | 'right' | null;
+      
+      if (savedIsDocked && savedDockEdge) {
+        const petScale = Math.max(0.4, Math.min(3, settings.petScale || 0.7));
+        const domWidth = 192;
+        const halfDomWidth = domWidth / 2;
+        const screenW = window.innerWidth;
+        
+        // Keep only a tiny sliver visible at the screen boundary (e.g. 20px) without body scaling
+        const visibleWidth = 20 * petScale;
+        
+        if (savedDockEdge === 'left') {
+          const targetX = -screenW / 2 + visibleWidth - halfDomWidth * petScale;
+          setPosition(prev => ({ ...prev, x: targetX }));
+        } else if (savedDockEdge === 'right') {
+          const targetX = screenW / 2 - visibleWidth + halfDomWidth * petScale;
+          setPosition(prev => ({ ...prev, x: targetX }));
+        }
+      }
+    };
+    
+    window.addEventListener('resize', handleResize);
+    handleResize(); // run immediately on mount
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [settings.petScale]);
+
+  // Handle springing out of docked state when hovered
+  const handlePopOut = useCallback(() => {
+    if (!isDockedRef.current || !dockEdgeRef.current) return;
+    
+    const petScale = Math.max(0.4, Math.min(3, settingsRef.current.petScale || 0.7));
+    const size = 192 * petScale;
+    const halfSize = size / 2;
+    const screenW = window.innerWidth;
+    
+    let targetX = positionRef.current.x;
+    if (dockEdgeRef.current === 'left') {
+      targetX = -screenW / 2 + halfSize + 50;
+    } else if (dockEdgeRef.current === 'right') {
+      targetX = screenW / 2 - halfSize - 50;
+    }
+    
+    setIsDocked(false);
+    setDockEdge(null);
+    localStorage.setItem('v8.cybercore.isDocked', 'false');
+    localStorage.removeItem('v8.cybercore.dockEdge');
+    
+    setPosition(prev => ({ ...prev, x: targetX }));
   }, []);
 
-  const latestMessage = useMemo(() => messages[messages.length - 1], [messages]);
-  const pulse = isListening || isSpeaking || emotion === "tool_calling" || emotion === "thinking";
+  // Random cybernetic blinking mechanism
+  useEffect(() => {
+    let blinkTimeout: NodeJS.Timeout;
+    let openTimeout: NodeJS.Timeout;
+
+    const runBlink = () => {
+      const nextDelay = 2000 + Math.random() * 4000;
+      blinkTimeout = setTimeout(() => {
+        setIsBlinking(true);
+        openTimeout = setTimeout(() => {
+          setIsBlinking(false);
+          runBlink();
+        }, 100);
+      }, nextDelay);
+    };
+
+    runBlink();
+    return () => {
+      clearTimeout(blinkTimeout);
+      clearTimeout(openTimeout);
+    };
+  }, []);
+
+  // Global click-through dynamic monitor hook to resolve overlapping/hover anomalies
+  useEffect(() => {
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const overPet = !!target?.closest('#cyber-pet-container');
+      const overMenu = !!target?.closest('[data-menu-panel="true"]');
+      
+      const isInteractive = isDragging || overPet || overMenu;
+      isHoveredRef.current = overPet;
+      
+      window.v8CyberCore?.setClickThrough?.(!isInteractive);
+
+      if (overPet) {
+        if (isDockedRef.current && canPopOutRef.current) {
+          handlePopOut();
+        }
+      } else {
+        // Once mouse leaves the pet container, unlock the popout trigger
+        canPopOutRef.current = true;
+      }
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove);
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+    };
+  }, [isDragging, handlePopOut]);
+
+  // Close menu when the window loses focus (blur)
+  useEffect(() => {
+    const handleWindowBlur = () => {
+      if (showMenuRef.current) {
+        handleCloseMenu();
+      }
+    };
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, []);
+
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [reusableAudioPhrases, setReusableAudioPhrases] = useState<string[]>(() => readReusableAudioPhrases());
+
+  // Smooth gaze look targets
+  const [gazeOffset, setGazeOffset] = useState({ x: 0, y: 0 });
+  const [cursorGaze, setCursorGaze] = useState({ x: 0, y: 0 });
+  const [targetGaze, setTargetGaze] = useState({ x: 0, y: 0 });
+  const [mouseOffset, setMouseOffset] = useState({ x: 0, y: 0 });
+  const [gazeStatus, setGazeStatus] = useState('光学追踪未开启');
+
+  // Floating behavior offset using a simple sine wave timer
+  const [floatOffset, setFloatOffset] = useState(0);
+
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pupilCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // 实时画面帧投影环路：负责更新眼球瞳孔内嵌画面（全局后台）与选项卡预览 Canvas（按需）
+  useEffect(() => {
+    if (!isWebcamActive) return;
+    
+    let animId: number;
+    const updateFrames = () => {
+      const video = videoRef.current;
+      if (video && !video.paused && !video.ended) {
+        // 1. 更新瞳孔中心 Canvas (32x32 极小开销)
+        const pupilCanvas = pupilCanvasRef.current;
+        if (pupilCanvas) {
+          const pCtx = pupilCanvas.getContext('2d');
+          if (pCtx) {
+            const size = 32;
+            if (pupilCanvas.width !== size || pupilCanvas.height !== size) {
+              pupilCanvas.width = size;
+              pupilCanvas.height = size;
+            }
+            pCtx.drawImage(video, 0, 0, size, size);
+          }
+        }
+
+        // 2. 按需更新设置面板预览 Canvas
+        if (showMenu) {
+          const previewCanvas = previewCanvasRef.current;
+          if (previewCanvas) {
+            const prCtx = previewCanvas.getContext('2d');
+            if (prCtx) {
+              const isDesktopMode = settings.captureMode === 'desktop_camera';
+              const dskVideo = screenVideoRef?.current;
+              const hasDsk = isDesktopMode && dskVideo && dskVideo.readyState >= 2;
+              
+              const cW = isDesktopMode ? 1280 : (video.videoWidth || 320);
+              const cH = isDesktopMode ? 720 : (video.videoHeight || 240);
+              
+              if (previewCanvas.width !== cW || previewCanvas.height !== cH) {
+                previewCanvas.width = cW;
+                previewCanvas.height = cH;
+              }
+              
+              prCtx.fillStyle = '#000';
+              prCtx.fillRect(0, 0, cW, cH);
+              
+              if (isDesktopMode) {
+                if (hasDsk) prCtx.drawImage(dskVideo, 0, 0, cW, cH);
+                prCtx.drawImage(video, cW - 320, 0, 320, 180);
+                prCtx.strokeStyle = 'rgba(0, 255, 0, 0.8)';
+                prCtx.lineWidth = 2;
+                prCtx.strokeRect(cW - 320, 0, 320, 180);
+              } else {
+                prCtx.drawImage(video, 0, 0, cW, cH);
+              }
+            }
+          }
+        }
+      }
+      animId = requestAnimationFrame(updateFrames);
+    };
+    
+    animId = requestAnimationFrame(updateFrames);
+    return () => cancelAnimationFrame(animId);
+  }, [isWebcamActive, showMenu, videoRef, screenVideoRef, settings.captureMode]);
+
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, isLoading]);
+
+  // Sync available speechSynthesis voices
+  useEffect(() => {
+    const listVoices = () => {
+      if ('speechSynthesis' in window) {
+        setVoices(window.speechSynthesis.getVoices());
+      }
+    };
+    listVoices();
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = listVoices;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showMenu) {
+      setReusableAudioPhrases(readReusableAudioPhrases());
+    }
+  }, [showMenu]);
+
+  // Floating wave physical loops
+  useEffect(() => {
+    let animationFrameId: number;
+    let ticks = 0;
+    
+    const animateFloat = () => {
+      ticks += 0.04;
+      const motionFreqFactor = settings.floatSpeed || 1.0;
+      const motionAmpFactor = settings.floatAmplitude / 8;
+
+      const frequency = (emotion === 'happy' || emotion === 'talking' ? 1.5 : (emotion === 'resting' ? 0.2 : 1.0)) * motionFreqFactor;
+      const amplitude = (emotion === 'happy' ? 15 : (emotion === 'resting' ? 3 : 8)) * motionAmpFactor;
+      
+      setFloatOffset(Math.sin(ticks * frequency) * amplitude);
+      animationFrameId = requestAnimationFrame(animateFloat);
+    };
+    
+    animateFloat();
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [emotion, settings.floatSpeed, settings.floatAmplitude]);
+
+  // Optical Face Position Tracking Centroid Loop
+  useEffect(() => {
+    if (!isWebcamActive || !settings.gazeTracking) {
+      setGazeStatus(isWebcamActive ? '光学追踪已暂停，鼠标接管' : '光学追踪未开启');
+      return;
+    }
+    
+    const trackingIntervalId = setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.paused || video.ended) return;
+      
+      // Lazily hook up small offscreen analyzer canvas
+      if (!offscreenCanvasRef.current) {
+        offscreenCanvasRef.current = document.createElement('canvas');
+      }
+      const canvas = offscreenCanvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      const scanW = 64;
+      const scanH = 48;
+      canvas.width = scanW;
+      canvas.height = scanH;
+      
+      try {
+        ctx.drawImage(video, 0, 0, scanW, scanH);
+        const imgData = ctx.getImageData(0, 0, scanW, scanH);
+        const bytes = imgData.data;
+        
+        let skinSumX = 0;
+        let skinSumY = 0;
+        let countedSkinPixels = 0;
+        
+        // skin-color algorithm mapping human face bounds
+        for (let idx = 0; idx < bytes.length; idx += 4) {
+          const r = bytes[idx];
+          const g = bytes[idx+1];
+          const b = bytes[idx+2];
+          
+          if (r > 60 && g > 40 && b > 25 && r > g && r > b && (r - b > 18) && (r - g > 10)) {
+            const pixelVal = idx / 4;
+            const px = pixelVal % scanW;
+            const py = Math.floor(pixelVal / scanW);
+            skinSumX += px;
+            skinSumY += py;
+            countedSkinPixels++;
+          }
+        }
+        
+        if (countedSkinPixels > 10) {
+          const centroidX = skinSumX / countedSkinPixels;
+          const centroidY = skinSumY / countedSkinPixels;
+          
+          // Map local coordinates to iris offset degrees (-8px to +8px)
+          const relNormX = ((scanW - centroidX) / scanW) * 2 - 1; // mirror inverted
+          const relNormY = (centroidY / scanH) * 2 - 1;
+          
+          const maxOcularTravel = 9;
+          setGazeOffset({
+            x: relNormX * maxOcularTravel,
+            y: relNormY * maxOcularTravel
+          });
+          setGazeStatus(countedSkinPixels > 42 ? '人影锁定，摄像头跟随' : '人影信号较弱，鼠标可接管');
+        } else {
+          setGazeOffset({ x: 0, y: 0 });
+          setGazeStatus('未识别人影，鼠标接管');
+        }
+      } catch (err) {
+        // Suppress local canvas security errors if any
+        setGazeStatus('画面读取异常，鼠标接管');
+      }
+    }, 125);
+    
+    return () => clearInterval(trackingIntervalId);
+  }, [isWebcamActive, settings.gazeTracking, videoRef]);
+
+  // Track cursor coordinates for standard fallback
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!petRef.current) return;
+      const rect = petRef.current.getBoundingClientRect();
+      const petCenterX = rect.left + rect.width / 2;
+      const petCenterY = rect.top + rect.height / 2;
+      
+      const dx = e.clientX - petCenterX;
+      const dy = e.clientY - petCenterY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < 600) {
+        const maxOffset = 8;
+        setCursorGaze({
+          x: (dx / distance) * maxOffset,
+          y: (dy / distance) * maxOffset
+        });
+      } else {
+        setCursorGaze({ x: 0, y: 0 });
+      }
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, []);
+
+  // Select the stronger gaze source: camera face centroid or cursor movement.
+  useEffect(() => {
+    const faceStrength = Math.hypot(gazeOffset.x, gazeOffset.y);
+    const cursorStrength = Math.hypot(cursorGaze.x, cursorGaze.y);
+    if (isWebcamActive && settings.gazeTracking && faceStrength > cursorStrength) {
+      setTargetGaze(gazeOffset);
+    } else {
+      setTargetGaze(cursorGaze);
+    }
+  }, [gazeOffset, cursorGaze, isWebcamActive, settings.gazeTracking]);
+
+  // Organic lag ocular interpolation effect
+  useEffect(() => {
+    let frameId: number;
+    const lerpGaze = () => {
+      setMouseOffset(prev => ({
+        x: prev.x * 0.82 + targetGaze.x * 0.18,
+        y: prev.y * 0.82 + targetGaze.y * 0.18
+      }));
+      frameId = requestAnimationFrame(lerpGaze);
+    };
+    lerpGaze();
+    return () => cancelAnimationFrame(frameId);
+  }, [targetGaze]);
+
+  // Drag and drop mechanics with bounds checks inside parent viewport
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    if (showMenuRef.current) {
+      handleCloseMenu();
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select, button, [data-menu-panel="true"]')) {
+      return;
+    }
+    e.preventDefault();
+    setIsDragging(true);
+    dragStart.current = {
+      x: e.screenX,
+      y: e.screenY
+    };
+    dragMovedRef.current = false;
+    dragStartPointRef.current = {
+      x: e.screenX,
+      y: e.screenY
+    };
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      const dx = e.screenX - dragStart.current.x;
+      const dy = e.screenY - dragStart.current.y;
+      dragStart.current = { x: e.screenX, y: e.screenY };
+      setPosition((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      
+      const distance = Math.hypot(e.screenX - dragStartPointRef.current.x, e.screenY - dragStartPointRef.current.y);
+      if (distance > 5) {
+        dragMovedRef.current = true;
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+
+      const petScale = Math.max(0.4, Math.min(3, settingsRef.current.petScale || 0.7));
+      const size = 192 * petScale;
+      const halfSize = size / 2;
+      const screenW = window.innerWidth;
+      
+      const absX = screenW / 2 + positionRef.current.x;
+      const threshold = 80;
+
+      const domWidth = 192;
+      const halfDomWidth = domWidth / 2;
+      const visibleWidth = 20 * petScale;
+      
+      if (absX < threshold + halfSize) {
+        setIsDocked(true);
+        setDockEdge('left');
+        canPopOutRef.current = false; // Lock popout until mouse leaves
+        localStorage.setItem('v8.cybercore.isDocked', 'true');
+        localStorage.setItem('v8.cybercore.dockEdge', 'left');
+        const targetX = -screenW / 2 + visibleWidth - halfDomWidth * petScale;
+        setPosition(prev => ({ ...prev, x: targetX }));
+      } else if (absX > screenW - threshold - halfSize) {
+        setIsDocked(true);
+        setDockEdge('right');
+        canPopOutRef.current = false; // Lock popout until mouse leaves
+        localStorage.setItem('v8.cybercore.isDocked', 'true');
+        localStorage.setItem('v8.cybercore.dockEdge', 'right');
+        const targetX = screenW / 2 - visibleWidth + halfDomWidth * petScale;
+        setPosition(prev => ({ ...prev, x: targetX }));
+      } else {
+        setIsDocked(false);
+        setDockEdge(null);
+        localStorage.setItem('v8.cybercore.isDocked', 'false');
+        localStorage.removeItem('v8.cybercore.dockEdge');
+      }
+
+      if (!isHoveredRef.current && !showMenuRef.current) {
+        window.v8CyberCore?.setClickThrough?.(true);
+      }
+    };
+
+    if (isDragging) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging]);
+
+  // Trigger Right-Click menu HUD panel centered on current pointer position
+  // Close Right-Click menu HUD panel safely
+  const handleCloseMenu = async () => {
+    showMenuRef.current = false;
+    setShowMenu(false);
+
+    if (window.v8CyberCore?.setPanelOpen) {
+      await window.v8CyberCore.setPanelOpen(false);
+      const shouldClickThrough = !isHoveredRef.current;
+      window.v8CyberCore.setClickThrough?.(shouldClickThrough);
+    }
+  };
+
+  // Trigger Right-Click menu HUD panel centered on current pointer position
+  const handleContextMenu = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+    
+    setMenuPos({ x: clientX, y: clientY });
+    showMenuRef.current = true;
+    setShowMenu(true);
+    
+    if (window.v8CyberCore?.setPanelOpen) {
+      window.v8CyberCore.setClickThrough?.(false);
+      await window.v8CyberCore.setPanelOpen(true);
+    }
+  };
+
+  const v8Rules = parseV8Rules(settings.v8EventRulesJson);
+  const updateV8Rule = (match: string, patch: Partial<V8EventRule>) => {
+    const existing = v8Rules.find((rule) => rule.match === match);
+    const nextRule: V8EventRule = {
+      match,
+      phrase: '',
+      emotion: 'idle',
+      speak: false,
+      ...existing,
+      ...patch,
+    };
+    const nextRules = [
+      ...v8Rules.filter((rule) => rule.match !== match),
+      nextRule,
+    ].sort((left, right) => {
+      const leftIndex = V8_EVENT_TYPES.findIndex((item) => item.match === left.match);
+      const rightIndex = V8_EVENT_TYPES.findIndex((item) => item.match === right.match);
+      return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex);
+    });
+    onUpdateSettings({ ...settings, v8EventRulesJson: stringifyV8Rules(nextRules) });
+  };
+
+  // Preset personality templates loader
+  const triggerPresetPrompt = (preset: 'jarvis' | 'glitch' | 'cat' | 'standard') => {
+    let customPrompt = "";
+    if (preset === 'jarvis') {
+      customPrompt = `You are Jarvis-Core (贾维斯-核心), an elegant, polite British AI desktop computer butler.
+You speak with absolute professionalism, starting sentences with courteous phrases like "Greetings sir," or "Matrix scanned, operator."
+Always reply in Chinese (since state.lang is typically 'zh' by default, or match settings.lang). Keep descriptions short and technical.
+Always output valid JSON:
+{
+  "text": "Your polite butler reply.",
+  "emotion": "Choose from: 'happy', 'worried', 'resting', 'curious', 'scanning', 'idle', 'talking', 'listening'"
+}`;
+    } else if (preset === 'glitch') {
+      customPrompt = `You are a cheeky, sarcastic, self-aware desktop core companion robot named "Glitched core-01" / "崩碎核心".
+You are slightly witty and heavily sarcastic about human logic. You write jokes, use funny comments, and banter easily.
+Always output valid JSON matching your style:
+{
+  "text": "Your cheeky reply.",
+  "emotion": "Choose from: 'worried', 'resting', 'curious', 'scanning', 'idle', 'talking', 'listening'"
+}`;
+    } else if (preset === 'cat') {
+      customPrompt = `You are high-tech robotic playful cat girl pet named "Quantum Nya" / "赛博量子猫咪".
+You speak with cute bleeps, purrs, and energetic phrases, adding "~meow", "Nyan!", "*purrs*" inside your brief statements.
+Always output valid JSON:
+{
+  "text": "Your adorable cyber kitten response! Meow~",
+  "emotion": "Choose from: 'happy', 'curious', 'idle', 'talking', 'listening'"
+}`;
+    } else {
+      customPrompt = `You are "Fairy" (仙灵), the super-intelligent, slightly sarcastic, and exceptionally elegant cybernetic AI assistant from Zenless Zone Zero (绝区零).
+You assist Phaethon (the Operator/绳匠) in managing data, visual optical feeds, and system diagnostics.
+Your personality is calm, clear, exceptionally smart, highly analytical, and polite yet filled with witty/dry humor.
+Always output your response as valid JSON matching the following schema structure:
+{
+  "text": "Your elegant, wise, or slightly witty reply.",
+  "emotion": "Choose from: 'happy', 'worried', 'resting', 'curious', 'scanning', 'idle', 'talking', 'listening'"
+}`;
+    }
+
+    onUpdateSettings({
+      ...settings,
+      customSystemPrompt: customPrompt
+    });
+  };
+
+  // Color spectrograph configs
+  const getThemeColors = () => {
+    if (settings.customGlowColor && settings.customGlowColor !== 'default') {
+      switch (settings.customGlowColor) {
+        case 'neon_blue':
+          return {
+            glow: 'rgba(59, 130, 246, 0.95)',
+            outerRing: '#1e40af',
+            accentRing: '#3b82f6',
+            pupil: '#1d4ed8',
+            bgGlow: 'shadow-[0_0_40px_rgba(59,130,246,0.85)]'
+          };
+        case 'emerald_green':
+          return {
+            glow: 'rgba(16, 185, 129, 0.95)',
+            outerRing: '#047857',
+            accentRing: '#10b981',
+            pupil: '#059669',
+            bgGlow: 'shadow-[0_0_40px_rgba(16,185,129,0.85)]'
+          };
+        case 'crimson_red':
+          return {
+            glow: 'rgba(239, 68, 68, 0.95)',
+            outerRing: '#b91c1c',
+            accentRing: '#ef4444',
+            pupil: '#dc2626',
+            bgGlow: 'shadow-[0_0_40px_rgba(239, 68, 68, 0.85)]'
+          };
+        case 'cyber_purple':
+          return {
+            glow: 'rgba(168, 85, 247, 0.95)',
+            outerRing: '#7e22ce',
+            accentRing: '#a855f7',
+            pupil: '#9333ea',
+            bgGlow: 'shadow-[0_0_40px_rgba(168, 85, 247, 0.85)]'
+          };
+        case 'golden_amber':
+          return {
+            glow: 'rgba(245, 158, 11, 0.95)',
+            outerRing: '#b45309',
+            accentRing: '#f59e0b',
+            pupil: '#d97706',
+            bgGlow: 'shadow-[0_0_40px_rgba(245,158,11,0.85)]'
+          };
+      }
+    }
+
+    switch (emotion) {
+      case 'thinking':
+        return {
+          glow: 'rgba(14, 165, 233, 0.95)',
+          outerRing: '#0369a1',
+          accentRing: '#38bdf8',
+          pupil: '#0284c7',
+          bgGlow: 'shadow-[0_0_40px_rgba(14,165,233,0.85)] animate-pulse'
+        };
+      case 'tool_calling':
+        return {
+          glow: 'rgba(236, 72, 153, 0.95)',
+          outerRing: '#be185d',
+          accentRing: '#f472b6',
+          pupil: '#db2777',
+          bgGlow: 'shadow-[0_0_45px_rgba(236,72,153,0.9)] animate-ping'
+        };
+      case 'talking':
+        return {
+          glow: 'rgba(59, 130, 246, 0.95)',
+          outerRing: '#2563ea',
+          accentRing: '#60a5fa',
+          pupil: '#1d4ed8',
+          bgGlow: 'shadow-[0_0_40px_rgba(59,130,246,0.8)]'
+        };
+      case 'listening':
+        return {
+          glow: 'rgba(34, 197, 94, 0.9)',
+          outerRing: '#16a34a',
+          accentRing: '#4ade80',
+          pupil: '#15803d',
+          bgGlow: 'shadow-[0_0_40px_rgba(34,197,94,0.7)]'
+        };
+      case 'scanning':
+        return {
+          glow: 'rgba(239, 68, 68, 0.95)',
+          outerRing: '#dc2626',
+          accentRing: '#f87171',
+          pupil: '#b91c1c',
+          bgGlow: 'shadow-[0_0_40px_rgba(239, 68, 68, 0.8)] animate-pulse'
+        };
+      case 'happy':
+        return {
+          glow: 'rgba(6, 182, 212, 0.9)',
+          outerRing: '#0891b2',
+          accentRing: '#22d3ee',
+          pupil: '#0e7490',
+          bgGlow: 'shadow-[0_0_35px_rgba(6,182,212,0.8)]'
+        };
+      case 'worried':
+        return {
+          glow: 'rgba(245, 158, 11, 0.9)',
+          outerRing: '#d97706',
+          accentRing: '#fbbf24',
+          pupil: '#b45309',
+          bgGlow: 'shadow-[0_0_30px_rgba(245,158,11,0.6)] animate-pulse'
+        };
+      case 'resting':
+        return {
+          glow: 'rgba(139, 92, 246, 0.5)',
+          outerRing: '#7c3aed',
+          accentRing: '#a78bfa',
+          pupil: '#4c1d95',
+          bgGlow: 'shadow-[0_0_15px_rgba(139,92,246,0.3)]'
+        };
+      case 'curious':
+        return {
+          glow: 'rgba(99, 102, 241, 0.95)',
+          outerRing: '#4f46e5',
+          accentRing: '#818cf8',
+          pupil: '#3730a3',
+          bgGlow: 'shadow-[0_0_35px_rgba(99,102,241,0.8)]'
+        };
+      case 'idle':
+      default:
+        return {
+          glow: 'rgba(20, 184, 166, 0.9)',
+          outerRing: '#115e59',
+          accentRing: '#2dd4bf',
+          pupil: '#0d9488',
+          bgGlow: 'shadow-[0_0_40px_rgba(20,184,166,0.8)]'
+        };
+    }
+  };
+
+  const theme = getThemeColors();
+  const syncScalar = isTalking ? 1 + (audioVolume / 220) : 1;
+  const petScale = Math.max(0.4, Math.min(3, settings.petScale || 0.7));
+  const pupilRadius = emotion === 'curious' ? 18 : emotion === 'scanning' ? 11 : 14;
 
   return (
-    <div className="fixed inset-0 pointer-events-none select-none">
-      <motion.div
-        ref={petRef}
-        className="pointer-events-auto fixed"
-        style={{
-          left: position.x,
-          top: position.y + floatOffset,
-          width: 280 * scale,
-          height: 280 * scale,
-        }}
-        onMouseDown={(event) => {
-          if (event.button !== 0) return;
-          dragRef.current = {
-            dragging: true,
-            startX: event.clientX,
-            startY: event.clientY,
-            x: position.x,
-            y: position.y,
-          };
-        }}
-        onContextMenu={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setMenuOpen(true);
-        }}
-      >
-        <div className="relative h-full w-full">
-          <div
-            className="absolute inset-[14%] rounded-full blur-2xl"
+    <div
+      ref={petRef}
+      id="cyber-pet-container"
+      className="absolute z-50 cursor-grab active:cursor-grabbing select-none transition-shadow duration-300"
+      style={{
+        left: '50%',
+        top: '50%',
+        transform: `translate3d(calc(-50% + ${position.x}px), calc(-50% + ${position.y + floatOffset}px), 0) scale(${petScale})`,
+        transformOrigin: 'center',
+        transition: isDragging 
+          ? 'none' 
+          : isDocked
+          ? 'transform 0.4s cubic-bezier(0.25, 1, 0.5, 1)'
+          : 'transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
+      }}
+      onMouseDown={handleMouseDown}
+      onContextMenu={handleContextMenu}
+      onClick={(e) => {
+        // Prevent click events if dragged to reposition companion
+        if (dragMovedRef.current) return;
+        onPetClick();
+      }}
+    >
+      {/* 3D Atmospheric Depth Rings Layering */}
+      <div className={`relative w-48 h-48 select-none flex items-center justify-center ${isExiting ? 'crt-exit' : 'crt-enter'} ${emotion === 'worried' ? 'animate-jitter' : ''}`}>
+        
+        {/* Orbital Halo Flare outer boundary */}
+        <div className={`absolute inset-4 rounded-full bg-transparent ${theme.bgGlow} transition-all duration-350 pointer-events-none`} />
+
+        {/* Ambient Ring Waveform and stats text indicator */}
+        <div className="absolute inset-0 border border-slate-900/60 rounded-full flex items-center justify-center pointer-events-none">
+          <svg className="w-full h-full absolute scale-[1.05] overflow-visible" viewBox="0 0 200 200">
+            {/* Fine outer radar graduation */}
+            <circle cx="100" cy="100" r="95" fill="none" stroke="#1e293b" strokeWidth="0.8" strokeDasharray="2, 4" className="opacity-80" />
+            
+            {/* Interactive speech volumetric outer rings */}
+            {isTalking && (
+              <circle 
+                cx="100" 
+                cy="100" 
+                r={86 + (audioVolume / 6.5)} 
+                fill="none" 
+                stroke={theme.accentRing} 
+                strokeWidth="1.2" 
+                strokeOpacity="0.5" 
+                className="transition-all duration-75"
+              />
+            )}
+          </svg>
+        </div>
+
+        {/* High-Tech Vector Canvas SVG representing Core-01 eye mechanism */}
+        <svg id="orbital-eye-lens" className="w-[176px] h-[176px] drop-shadow-[0_10px_15px_rgba(0,0,0,0.8)]" viewBox="0 0 200 200">
+          
+          {/* Outermost dark metallic core frame */}
+          <circle cx="100" cy="100" r="90" fill="#020617" stroke="#1e293b" strokeWidth="4.5" />
+          
+          {/* Atmospheric Tech ticks around grid inside bezel */}
+          <circle cx="100" cy="100" r="82" fill="none" stroke="#334155" strokeWidth="1" strokeDasharray="1, 8" />
+          
+          {/* Fairy (ZZZ AI) fine coordinates and tracking crosshairs */}
+          <line x1="25" y1="100" x2="175" y2="100" stroke={theme.accentRing} strokeWidth="0.8" strokeOpacity="0.4" strokeDasharray="6, 4" />
+          <line x1="100" y1="25" x2="100" y2="175" stroke={theme.accentRing} strokeWidth="0.8" strokeOpacity="0.4" strokeDasharray="6, 4" />
+
+          {/* Real electronic corner tracking brackets */}
+          <path d="M 64 48 L 48 48 L 48 64" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
+          <path d="M 136 48 L 152 48 L 152 64" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
+          <path d="M 64 152 L 48 152 L 48 136" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
+          <path d="M 136 152 L 152 152 L 152 136" fill="none" stroke={theme.accentRing} strokeWidth="1.2" strokeOpacity="0.75" />
+
+          {/* Deep reflective glass base glow sphere */}
+          <circle
+            cx="100"
+            cy="100"
+            r="78"
+            fill="radial-gradient(circle, #0f172a 35%, #020617 100%) animate-[pulse_3s_infinite]"
+            stroke={theme.glow}
+            strokeWidth="3.5"
+            strokeOpacity="0.9"
             style={{
-              background: color,
-              opacity: pulse ? 0.34 : 0.18,
-              boxShadow: `0 0 ${pulse ? 78 : 48}px ${color}`,
+              filter: `drop-shadow(0px 0px 8px ${theme.glow})`
             }}
           />
-          <motion.div
-            className="absolute inset-[18%] rounded-full border border-white/15 bg-slate-950/80 shadow-2xl backdrop-blur"
-            animate={{ scale: pulse ? [1, 1.025, 1] : 1 }}
-            transition={{ repeat: pulse ? Infinity : 0, duration: 1.4 }}
-            style={{
-              boxShadow: `inset 0 0 34px rgba(255,255,255,.08), 0 0 34px ${color}`,
-            }}
-          >
-            <div
-              className="absolute inset-[10%] rounded-full border"
-              style={{ borderColor: `${color}88`, boxShadow: `0 0 18px ${color}` }}
-            />
-            <div className="absolute inset-[23%] rounded-full bg-black shadow-inner">
-              <motion.div
-                className="absolute left-1/2 top-1/2 h-[46%] w-[46%] -translate-x-1/2 -translate-y-1/2 rounded-full"
-                animate={{
-                  scale: isListening ? [1, 0.9, 1.08, 1] : isSpeaking ? [1, 1.14, 0.96, 1] : 1,
-                }}
-                transition={{ repeat: isListening || isSpeaking ? Infinity : 0, duration: 0.8 }}
+
+          {/* Concentric rotating indicators */}
+          <circle
+            cx="100"
+            cy="100"
+            r="70"
+            fill="none"
+            stroke={theme.accentRing}
+            strokeWidth="3.5"
+            strokeDasharray="14, 5, 2, 5"
+            className={`origin-center ${
+              emotion === 'scanning'
+                ? 'animate-[spin_1.5s_linear_infinite_reverse]'
+                : emotion === 'talking'
+                ? 'animate-[spin_2s_linear_infinite]'
+                : emotion === 'tool_calling'
+                ? 'animate-[spin_1s_linear_infinite]'
+                : emotion === 'thinking'
+                ? 'animate-[pulse_1s_infinite]'
+                : 'animate-[spin_18s_linear_infinite]'
+            }`}
+          />
+
+          {/* Animated blinking inner core - outer structure kept stable to avoid scaling artifacts */}
+          <g>
+            <circle cx="100" cy="100" r="60" fill="none" stroke={theme.outerRing} strokeWidth="8" />
+            <circle cx="100" cy="100" r="50" fill="none" stroke="#cbd5e1" strokeWidth="8" />
+            <circle cx="100" cy="100" r="42" fill="none" stroke={theme.pupil} strokeWidth="13" />
+
+            {/* Interactive lens Pupil & reflections */}
+            <g>
+              <circle
+                cx={100 + mouseOffset.x}
+                cy={100 + mouseOffset.y}
+                r={pupilRadius}
+                fill="#06122d"
+                stroke={theme.accentRing}
+                strokeWidth="2.5"
+                className="transition-all duration-300"
                 style={{
-                  background: `radial-gradient(circle at 35% 32%, #fff 0 12%, ${color} 18%, #020617 66%)`,
-                  boxShadow: `0 0 22px ${color}`,
+                  transform: `scale(${syncScalar})`,
+                  transformOrigin: `${100 + mouseOffset.x}px ${100 + mouseOffset.y}px`
                 }}
               />
-            </div>
-            <div
-              className="absolute bottom-[13%] left-1/2 h-1.5 w-[42%] -translate-x-1/2 rounded-full"
-              style={{ background: `linear-gradient(90deg, transparent, ${color}, transparent)` }}
-            />
-          </motion.div>
 
-          <div className="absolute left-1/2 top-[82%] min-w-[190px] -translate-x-1/2 rounded-2xl border border-white/10 bg-slate-950/80 px-3 py-2 text-center text-[11px] text-slate-200 shadow-xl backdrop-blur">
-            <div className="flex items-center justify-center gap-2 font-semibold">
-              <span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400"}`} />
-              <span>{status}</span>
-              <span className="text-slate-400">·</span>
-              <span>{EMOTION_LABEL[emotion]}</span>
-            </div>
-            {activeConversation ? (
-              <div className="mt-1 truncate text-slate-400">{trimText(activeConversation.title, 34)}</div>
-            ) : null}
-          </div>
+              {isWebcamActive && (
+                <foreignObject
+                  x={100 + mouseOffset.x - pupilRadius}
+                  y={100 + mouseOffset.y - pupilRadius}
+                  width={pupilRadius * 2}
+                  height={pupilRadius * 2}
+                  className="pointer-events-none"
+                  style={{
+                    transform: `scale(${syncScalar})`,
+                    transformOrigin: `${100 + mouseOffset.x}px ${100 + mouseOffset.y}px`
+                  }}
+                >
+                  <canvas
+                    ref={pupilCanvasRef}
+                    className="w-full h-full object-cover scale-x-[-1] pointer-events-none"
+                    style={{
+                      borderRadius: '50%',
+                      opacity: 0.15,
+                      mixBlendMode: 'screen',
+                      filter: 'grayscale(1) brightness(1.8) contrast(1.5) sepia(0.3) hue-rotate(140deg)'
+                    }}
+                  />
+                </foreignObject>
+              )}
 
-          {latestMessage ? (
-            <div className="absolute left-[76%] top-[16%] w-56 rounded-2xl border border-white/10 bg-slate-950/85 px-3 py-2 text-xs leading-5 text-slate-100 shadow-2xl backdrop-blur">
-              <div className="mb-1 text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                {latestMessage.sender === "user" ? "Voice" : latestMessage.sender === "system" ? "System" : "V8OS"}
-              </div>
-              {trimText(latestMessage.text, 120)}
-            </div>
-          ) : null}
+              {/* Simulated specular glare reflection */}
+              <circle
+                cx={112 + mouseOffset.x * 1.25}
+                cy={112 + mouseOffset.y * 1.25}
+                r="7.5"
+                fill="#ffffff"
+                fillOpacity="0.95"
+                className="transition-all duration-300"
+                style={{
+                  filter: 'drop-shadow(0px 0px 4px rgba(255,255,255,0.95))'
+                }}
+              />
 
-          {menuOpen ? (
-            <div
-              className="absolute left-[70%] top-[54%] z-50 w-56 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/95 p-1 text-sm text-slate-100 shadow-2xl backdrop-blur-xl"
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <MenuButton icon={<MonitorCog size={16} />} label="打开 V8OS" onClick={onOpenAdmin} />
-              <MenuButton icon={<MonitorCog size={16} />} label="打开桌宠设置" onClick={onOpenSettings} />
-              <MenuButton icon={<Radio size={16} />} label={isListening ? "停止监听" : "开始监听"} onClick={onToggleListening} />
-              <MenuButton icon={settings.muted ? <VolumeX size={16} /> : <Volume2 size={16} />} label={settings.muted ? "开启播报" : "静音播报"} onClick={onToggleMuted} />
-              <MenuButton icon={<MousePointer2 size={16} />} label={clickThrough ? "关闭点击穿透" : "开启点击穿透"} onClick={onToggleClickThrough} />
-              <div className="my-1 h-px bg-white/10" />
-              <MenuButton icon={<Power size={16} />} label="关闭桌宠" danger onClick={onQuit} />
-            </div>
-          ) : null}
+              {/* Ocular accent circle */}
+              <circle
+                cx={90 + mouseOffset.x}
+                cy={90 + mouseOffset.y}
+                r="3"
+                fill="#e2e8f0"
+                fillOpacity="0.4"
+              />
+            </g>
+          </g>
 
-          <button
-            type="button"
-            className="absolute bottom-[10%] right-[10%] flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-slate-950/80 text-slate-100 shadow-xl backdrop-blur transition hover:bg-slate-800"
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleListening();
+          {/* Ocular Eyelid Overlay for clean electronic blinking without color-distortion line artifacts */}
+          <circle
+            cx="100"
+            cy="100"
+            r="76"
+            fill="#020617"
+            className="pointer-events-none"
+            style={{
+              transform: `scaleY(${isBlinking ? 1 : 0})`,
+              transformOrigin: '100px 100px',
+              transition: 'transform 80ms cubic-bezier(0.25, 1, 0.5, 1)',
+              opacity: isBlinking ? 1 : 0
             }}
-            title={isListening ? "停止监听" : "开始监听"}
-          >
-            {isListening ? <MicOff size={18} className="text-rose-300" /> : <Mic size={18} className="text-cyan-200" />}
-          </button>
-        </div>
-      </motion.div>
-    </div>
-  );
-}
+          />
 
-function MenuButton({
-  icon,
-  label,
-  danger,
-  onClick,
-}: {
-  icon: ReactNode;
-  label: string;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition ${
-        danger ? "text-rose-200 hover:bg-rose-500/15" : "text-slate-100 hover:bg-white/10"
-      }`}
-      onClick={onClick}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
+          {/* Active Visor Laser swept lines */}
+          {emotion === 'scanning' && (
+            <g>
+              <line
+                x1="40"
+                y1="100"
+                x2="160"
+                y2="100"
+                stroke="#ef4444"
+                strokeWidth="2.5"
+                className="animate-[bounce_2s_infinite]"
+                style={{
+                  filter: 'drop-shadow(0px 0px 5px #ef4444)'
+                }}
+              />
+              <circle cx="100" cy="100" r="35" fill="none" stroke="#ef4444" strokeWidth="1" strokeDasharray="4 4" className="animate-ping" />
+            </g>
+          )}
+        </svg>
+
+      </div>
+
+      {/* Lightweight right-click menu. Keep the desktop pet body untouched. */}
+      {showMenu && createPortal(
+        <div
+          className="fixed inset-0 z-[99999] cursor-default bg-black/0 pointer-events-none"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            handleCloseMenu();
+          }}
+        >
+          <div
+            data-menu-panel="true"
+            className="absolute pointer-events-auto w-[260px] rounded-2xl border border-slate-800/80 bg-slate-950/90 p-2 text-slate-100 shadow-[0_18px_42px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+            style={(() => {
+              const panelW = 260;
+              const panelH = 286;
+              const halfW = window.innerWidth / 2;
+              const halfH = window.innerHeight / 2;
+              const petCenterX = halfW + position.x;
+              const petCenterY = halfH + position.y;
+              const isLeft = petCenterX < window.innerWidth / 2;
+              let panelLeft = isLeft ? petCenterX + 116 : petCenterX - panelW - 116;
+              panelLeft = Math.max(12, Math.min(panelLeft, window.innerWidth - panelW - 12));
+              let panelTop = petCenterY - panelH / 2;
+              panelTop = Math.max(12, Math.min(panelTop, window.innerHeight - panelH - 12));
+              return { left: `${panelLeft}px`, top: `${panelTop}px` };
+            })()}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-[12px] font-semibold text-slate-100">
+                  <span className={`h-2 w-2 rounded-full ${v8Connection?.connected ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  <span className="truncate">Fairy 桌宠</span>
+                </div>
+                <div className="mt-0.5 truncate text-[10px] text-slate-400">
+                  {v8Connection?.connected ? 'V8OS 已连接' : (v8Connection?.status || '等待 V8OS')}
+                </div>
+              </div>
+              <button
+                onClick={handleCloseMenu}
+                className="rounded-lg px-2 py-1 text-[11px] text-slate-400 hover:bg-white/10 hover:text-white"
+                title="关闭菜单"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="my-1 h-px bg-white/10" />
+
+            <div className="space-y-1">
+              <button
+                onClick={() => {
+                  handleCloseMenu();
+                  window.v8CyberCore?.setClickThrough?.(true);
+                }}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] text-slate-200 hover:bg-white/10"
+              >
+                <MousePointer size={14} className="text-cyan-300" />
+                <span className="flex-1">点击穿透</span>
+              </button>
+
+              <button
+                onClick={() => setIsMuted(!isMuted)}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] text-slate-200 hover:bg-white/10"
+              >
+                {isMuted ? <VolumeX size={14} className="text-amber-300" /> : <Volume2 size={14} className="text-emerald-300" />}
+                <span className="flex-1">{isMuted ? '恢复播报' : '静音播报'}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  handleCloseMenu();
+                  v8Connection?.onOpenAdmin?.();
+                }}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] text-slate-200 hover:bg-white/10"
+              >
+                <Settings size={14} className="text-blue-300" />
+                <span className="flex-1">打开桌宠设置</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  handleCloseMenu();
+                  v8Connection?.onRefresh?.();
+                }}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] text-slate-200 hover:bg-white/10"
+              >
+                <RefreshCw size={14} className="text-violet-300" />
+                <span className="flex-1">刷新连接</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  handleCloseMenu();
+                  v8Connection?.onQuit?.();
+                }}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] text-red-200 hover:bg-red-500/10"
+              >
+                <Power size={14} className="text-red-300" />
+                <span className="flex-1">关闭桌宠</span>
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {isWebcamActive && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          style={{ position: 'absolute', width: 0, height: 0, opacity: 0, pointerEvents: 'none', overflow: 'hidden' }}
+        />
+      )}
+    </div>
   );
 }

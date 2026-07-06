@@ -1,79 +1,67 @@
 export type PetEmotion =
-  | "idle"
-  | "talking"
-  | "listening"
-  | "curious"
-  | "scanning"
-  | "happy"
-  | "worried"
-  | "resting"
-  | "thinking"
-  | "tool_calling";
+  | 'idle'
+  | 'talking'
+  | 'listening'
+  | 'curious'
+  | 'scanning'
+  | 'happy'
+  | 'worried'
+  | 'resting'
+  | 'thinking'
+  | 'tool_calling';
 
-export type ChatMessage = {
+export interface ChatMessage {
   id: string;
-  sender: "user" | "pet" | "system";
+  sender: 'user' | 'pet';
   text: string;
-  timestamp: number;
+  timestamp: string;
   emotion?: PetEmotion;
-  audioUrl?: string;
-};
-
-export type V8EventActionRule = {
-  id: string;
-  match: string;
-  emotion: PetEmotion;
-  voice?: string;
-  spectrum?: "default" | "cyan" | "violet" | "amber" | "emerald" | "rose";
-};
-
-export type PetSettings = {
-  lang: "zh" | "en";
-  petScale: number;
-  floatAmplitude: number;
-  floatSpeed: number;
-  customGlowColor: "default" | "neon_blue" | "emerald_green" | "crimson_red" | "cyber_purple" | "golden_amber";
-  ttsEnabled: boolean;
-  muted: boolean;
-  isWakewordActive: boolean;
-  wakeword: string;
-  wakeWindowMs: number;
-  sttLanguage: "zh-CN" | "en-US" | "auto";
-  v8EventRulesJson: string;
-};
-
-export type DesktopConversationSummary = {
-  id: string;
-  title: string;
-  projectName?: string;
-  workspacePath?: string | null;
-  running?: boolean;
-};
-
-export type TrayContextPayload = {
-  activeConversationId?: string;
-  conversations: DesktopConversationSummary[];
-};
-
-declare global {
-  interface Window {
-    v8CyberCore?: {
-      platform?: string;
-      openAdmin?: (url?: string) => Promise<boolean>;
-      setClickThrough?: (enabled: boolean) => Promise<boolean>;
-      setPanelOpen?: (enabled: boolean) => Promise<unknown>;
-      setCompanionScale?: (scale: number) => Promise<unknown>;
-      readLocalConfig?: (key?: string) => Promise<unknown>;
-      writeLocalConfig?: (key: string, value: unknown) => Promise<boolean>;
-      getMediaPermissionStatus?: (kind: "microphone" | "camera") => Promise<unknown>;
-      requestMediaAccess?: (kind: "microphone" | "camera") => Promise<unknown>;
-      openMediaPrivacySettings?: (kind: "microphone" | "camera") => Promise<boolean>;
-      updateTrayContext?: (payload: TrayContextPayload) => Promise<boolean>;
-      onTraySelectConversation?: (callback: (conversationId: string) => void) => () => void;
-      onTrayStartListening?: (callback: () => void) => () => void;
-      onPrepareShutdown?: (callback: () => void) => () => void;
-      quit?: () => Promise<boolean>;
-    };
-  }
+  image?: string; // Base64 or URL if webcam frame was sent with it
+  thinking?: string; // Optional reasoning content
+  toolCall?: string; // Optional tool execution logs
 }
 
+export interface ElectronConfigSnippet {
+  title: string;
+  description: string;
+  filename: string;
+  code: string;
+}
+
+export interface SystemMetric {
+  label: string;
+  value: string;
+  level: number; // 0 to 100
+}
+
+export interface PetSettings {
+  lang: 'zh' | 'en';
+  gender: 'robotic_male' | 'robotic_female' | 'autonomous_ai' | 'charming';
+  pitch: number; // 0.5 to 2.0
+  rate: number; // 0.5 to 2.0
+  voiceURI: string;
+  customSystemPrompt: string;
+  wakeword: string;
+  isWakewordActive: boolean;
+  wakeEngine: 'local_kws' | 'v8os_stt' | 'webspeech';
+  wakeWindowMs: number;
+  floatAmplitude: number; // 0 to 20
+  floatSpeed: number; // 0.1 to 3
+  petScale: number; // 0.4 to 3.0, 0.7 keeps the current default size
+  customGlowColor: 'default' | 'neon_blue' | 'emerald_green' | 'crimson_red' | 'cyber_purple' | 'golden_amber';
+  gazeTracking: boolean;
+  
+  captureMode?: 'camera' | 'desktop_camera';
+  v8AdminBaseUrl: string;
+  v8WorkspacePath: string;
+  v8EventRulesJson: string;
+  
+  // Custom TTS engine options
+  ttsEngine: 'v8os' | 'custom' | 'webspeech' | 'edge';
+  edgeTtsVoice: 'zh-CN-XiaoxiaoNeural' | 'zh-CN-YunxiNeural' | 'en-US-AriaNeural' | 'en-US-GuyNeural' | 'ja-JP-NanamiNeural';
+  customTtsUrl: string;
+  customTtsKey: string;
+  customTtsVoice: string;
+  customTtsModel: string;
+  sttLanguage: 'zh-CN' | 'en-US' | 'auto';
+}

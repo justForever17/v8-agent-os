@@ -1,402 +1,1865 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CyberPet from "./components/CyberPet";
-import type { ChatMessage, DesktopConversationSummary, PetEmotion, PetSettings, TrayContextPayload } from "./types";
-import { V8DesktopClientAdapter, type V8Conversation, type V8Project } from "./lib/v8DesktopClient";
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Terminal, 
+  Send, 
+  Mic, 
+  MicOff, 
+  Camera, 
+  CameraOff, 
+  Volume2, 
+  VolumeX, 
+  Cpu, 
+  BarChart3, 
+  Database, 
+  FileCode, 
+  Activity, 
+  RefreshCw, 
+  Eye, 
+  Sparkles,
+  AlertTriangle 
+} from 'lucide-react';
+import CyberPet from './components/CyberPet';
+import { ChatMessage, PetEmotion, SystemMetric, PetSettings } from './types';
+import { V8DesktopClientAdapter, V8AuthSession, V8Conversation, V8Project } from './lib/v8DesktopClient';
+import { DesktopActivity, extractDesktopMessages, extractRuntimeActivities, latestAssistantText } from './lib/desktopActivity';
 
-const DEFAULT_RULES = [
-  { id: "thinking", match: "reasoning|thinking|思考", emotion: "thinking", spectrum: "violet" },
-  { id: "tool", match: "tool|工具|command|terminal", emotion: "tool_calling", spectrum: "cyan" },
-  { id: "media", match: "creative|media|artifact|audio|video|image|多媒体|产物", emotion: "scanning", spectrum: "emerald" },
-  { id: "done", match: "completed|finished|done|完成|成功", emotion: "happy", spectrum: "amber" },
-  { id: "error", match: "error|failed|失败|错误|异常", emotion: "worried", spectrum: "rose" },
-] as const;
-
-const DEFAULT_SETTINGS: PetSettings = {
-  lang: "zh",
-  petScale: 0.7,
-  floatAmplitude: 8,
-  floatSpeed: 1,
-  customGlowColor: "default",
-  ttsEnabled: true,
-  muted: false,
-  isWakewordActive: false,
-  wakeword: "V8",
-  wakeWindowMs: 6500,
-  sttLanguage: "zh-CN",
-  v8EventRulesJson: JSON.stringify(DEFAULT_RULES, null, 2),
-};
-
-const SETTINGS_KEY = "v8.desktopPet.settings";
-const VOICE_PROMPT = "请原样提取音频中的语言并转换成文本；不要补写、不要总结、不要猜测缺失内容。";
-
-function readSettings(): PetSettings {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_SETTINGS, ...parsed };
-  } catch {
-    return DEFAULT_SETTINGS;
+declare global {
+  interface Window {
+    v8CyberCore?: {
+      platform?: string;
+      openAdmin?: (url?: string) => Promise<void>;
+      quit?: () => Promise<void>;
+      setAlwaysOnTop?: (enabled: boolean) => Promise<boolean>;
+      setPanelOpen?: (enabled: boolean) => Promise<any>;
+      setCompanionScale?: (scale: number) => Promise<boolean | { width: number; height: number }>;
+      setClickThrough?: (enabled: boolean) => Promise<boolean>;
+      moveWindowBy?: (dx: number, dy: number) => Promise<boolean>;
+      readLocalConfig?: (key: string) => Promise<Record<string, unknown> | null>;
+      writeLocalConfig?: (key: string, value: Record<string, unknown>) => Promise<boolean>;
+      getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
+      requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
+      openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
+      getWakeEngineStatus?: () => Promise<Record<string, unknown>>;
+      onPrepareShutdown?: (callback: () => void) => () => void;
+      onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
+    };
   }
 }
 
-function shortId() {
-  return Math.random().toString(36).slice(2, 9);
+type V8EventRule = {
+  match: string;
+  phrase: string;
+  emotion: PetEmotion;
+  speak: boolean;
+};
+
+const DEFAULT_V8_EVENT_RULES: V8EventRule[] = [
+  { match: 'thinking', phrase: '我正在梳理任务上下文。', emotion: 'thinking', speak: false },
+  { match: 'tool_calling', phrase: '正在调用工具。', emotion: 'tool_calling', speak: false },
+  { match: 'runtime_active', phrase: '运行时开始处理任务。', emotion: 'thinking', speak: false },
+  { match: 'subagent_active', phrase: '子代理正在协同处理。', emotion: 'curious', speak: false },
+  { match: 'artifact_ready', phrase: '产物已经准备好。', emotion: 'happy', speak: true },
+  { match: 'approval_needed', phrase: '需要你的确认。', emotion: 'worried', speak: true },
+  { match: 'error', phrase: '链路出现异常，我会保持可恢复状态。', emotion: 'worried', speak: true },
+];
+
+function defaultV8EventRulesJson() {
+  return JSON.stringify(DEFAULT_V8_EVENT_RULES, null, 2);
 }
 
-function asText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (!value || typeof value !== "object") return "";
-  const record = value as Record<string, unknown>;
-  const direct = record.text || record.content || record.message || record.delta || record.summary;
-  if (typeof direct === "string") return direct;
-  const payload = record.payload;
-  if (payload && typeof payload === "object") return asText(payload);
-  return "";
+const V8_VOICE_CONVERSATION_TITLE = 'CyberCore 语音输入';
+
+function audioExtensionFromMime(mimeType: string) {
+  const normalized = String(mimeType || '').toLowerCase();
+  if (normalized.includes('mpeg') || normalized.includes('mp3')) return 'mp3';
+  if (normalized.includes('mp4') || normalized.includes('m4a')) return 'm4a';
+  if (normalized.includes('ogg')) return 'ogg';
+  if (normalized.includes('wav')) return 'wav';
+  if (normalized.includes('webm')) return 'webm';
+  return 'webm';
 }
 
-function stripVoiceTags(text: string) {
-  return text.replace(/<voice>([\s\S]*?)<\/voice>/gi, "$1").trim();
+function parseV8EventRules(value: string | undefined): V8EventRule[] {
+  try {
+    const parsed = JSON.parse(value || '');
+    if (!Array.isArray(parsed)) return DEFAULT_V8_EVENT_RULES;
+    const normalized = parsed
+      .map((item) => {
+        const record = item && typeof item === 'object' ? item as Partial<V8EventRule> : {};
+        const match = String(record.match || '').trim();
+        if (!match) return null;
+        return {
+          match,
+          phrase: String(record.phrase || '').trim(),
+          emotion: (record.emotion || 'idle') as PetEmotion,
+          speak: Boolean(record.speak),
+        } satisfies V8EventRule;
+      })
+      .filter(Boolean) as V8EventRule[];
+    return normalized.length ? normalized : DEFAULT_V8_EVENT_RULES;
+  } catch {
+    return DEFAULT_V8_EVENT_RULES;
+  }
 }
 
-function extractVoiceText(text: string) {
-  const matches = Array.from(text.matchAll(/<voice>([\s\S]*?)<\/voice>/gi));
-  if (!matches.length) return "";
-  return matches.map((match) => match[1]?.trim()).filter(Boolean).join("\n");
+function isAudioUrl(value: string) {
+  const normalized = value.trim();
+  return /^data:audio\//i.test(normalized)
+    || /^https?:\/\/.+\.(mp3|wav|m4a|ogg|aac)(\?|#|$)/i.test(normalized)
+    || /^https?:\/\/.+(audio|voice|tts|speech)/i.test(normalized);
 }
 
-function guessRunning(conversation: V8Conversation) {
-  const status = String(conversation.status || conversation.runStatus || conversation.state || "").toLowerCase();
-  return status.includes("running") || status.includes("active") || status.includes("进行");
+function findLatestAudioUrl(value: unknown, depth = 0): string {
+  if (depth > 7 || value == null) return '';
+  if (typeof value === 'string') {
+    return isAudioUrl(value) ? value : '';
+  }
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const nested = findLatestAudioUrl(value[index], depth + 1);
+      if (nested) return nested;
+    }
+    return '';
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const priorityKeys = Object.keys(record).filter((key) => /audio|voice|speech|tts/i.test(key));
+    for (const key of priorityKeys) {
+      const nested = findLatestAudioUrl(record[key], depth + 1);
+      if (nested) return nested;
+    }
+    for (const key of Object.keys(record)) {
+      if (priorityKeys.includes(key)) continue;
+      const nested = findLatestAudioUrl(record[key], depth + 1);
+      if (nested) return nested;
+    }
+  }
+  return '';
 }
 
-function summarizeConversation(conversation: V8Conversation, projects: V8Project[]): DesktopConversationSummary {
-  const workspacePath = typeof conversation.workspacePath === "string" ? conversation.workspacePath : null;
-  const project = projects.find((item) => item.workspacePath && item.workspacePath === workspacePath);
+function readReusableAudioPhrases() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('v8.cybercore.reusableAudioPhrases') || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
+  } catch {
+    return [];
+  }
+}
+
+function readWakewordSetting() {
+  const stored = localStorage.getItem('v8.cybercore.wakeword');
+  if (!stored || stored.trim() === '仙灵, Fairy, 小八') {
+    return 'Fairy';
+  }
+  return stored;
+}
+
+function nowLabel() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function toCyberMessage(message: { id: string; role: string; content: string; createdAt?: string | number }): ChatMessage {
+  const date = message.createdAt ? new Date(message.createdAt) : new Date();
   return {
-    id: String(conversation.id || ""),
-    title: String(conversation.title || conversation.id || "未命名会话"),
-    projectName: String(project?.name || project?.id || conversation.projectId || "V8OS"),
-    workspacePath,
-    running: guessRunning(conversation),
+    id: `v8-${message.id}`,
+    sender: message.role === 'user' ? 'user' : 'pet',
+    text: message.content || '',
+    timestamp: Number.isNaN(date.getTime()) ? nowLabel() : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    emotion: message.role === 'user' ? undefined : 'talking',
   };
 }
 
-function eventEmotion(topic: string, payload: unknown, settings: PetSettings): PetEmotion {
-  const haystack = `${topic}\n${asText(payload)}`;
-  try {
-    const rules = JSON.parse(settings.v8EventRulesJson || "[]");
-    if (Array.isArray(rules)) {
-      for (const rule of rules) {
-        const match = typeof rule?.match === "string" ? rule.match : "";
-        const emotion = rule?.emotion as PetEmotion | undefined;
-        if (!match || !emotion) continue;
-        const re = new RegExp(match, "i");
-        if (re.test(haystack)) return emotion;
-      }
-    }
-  } catch {
-    // Bad custom rules should not break the companion.
+function analyzeEmotionFromText(text: string): PetEmotion {
+  const t = text.toLowerCase();
+  if (t.includes('开心') || t.includes('高兴') || t.includes('哈哈') || t.includes('真棒') || t.includes('太棒') || t.includes('愉快') || t.includes('祝贺') || t.includes('恭喜') || t.includes('乐')) {
+    return 'happy';
   }
-  if (/error|failed|失败|错误/i.test(haystack)) return "worried";
-  if (/tool|command|工具/i.test(haystack)) return "tool_calling";
-  if (/done|completed|完成|成功/i.test(haystack)) return "happy";
-  return "thinking";
+  if (t.includes('担心') || t.includes('糟糕') || t.includes('错误') || t.includes('失败') || t.includes('危险') || t.includes('警报') || t.includes('难过') || t.includes('悲伤') || t.includes('抱歉') || t.includes('对不起') || t.includes('痛')) {
+    return 'worried';
+  }
+  if (t.includes('？') || t.includes('?') || t.includes('好奇') || t.includes('疑惑') || t.includes('为什么') || t.includes('怎么') || t.includes('什么') || t.includes('哪里') || t.includes('谁')) {
+    return 'curious';
+  }
+  if (t.includes('扫描') || t.includes('检测') || t.includes('分析') || t.includes('看到') || t.includes('观察') || t.includes('发现') || t.includes('视线')) {
+    return 'scanning';
+  }
+  return 'talking';
 }
 
 export default function App() {
-  const [settings, setSettings] = useState<PetSettings>(() => readSettings());
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [emotion, setEmotion] = useState<PetEmotion>("idle");
-  const [status, setStatus] = useState("启动中");
-  const [connected, setConnected] = useState(false);
-  const [activeConversationId, setActiveConversationId] = useState("");
-  const [conversations, setConversations] = useState<V8Conversation[]>([]);
-  const [projects, setProjects] = useState<V8Project[]>([]);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [clickThrough, setClickThrough] = useState(true);
+  const [emotion, setEmotion] = useState<PetEmotion>('idle');
+  const webcamIntentRef = useRef<boolean>(false);
+  const v8ClientRef = useRef<V8DesktopClientAdapter | null>(null);
+  if (!v8ClientRef.current) {
+    v8ClientRef.current = new V8DesktopClientAdapter();
+  }
+  
+  // Custom high-tech pet operation profiles
+  const [settings, setSettings] = useState<PetSettings>({
+    lang: (localStorage.getItem('v8.cybercore.lang') as PetSettings['lang']) || 'zh',
+    gender: (localStorage.getItem('v8.cybercore.gender') as PetSettings['gender']) || 'robotic_female',
+    pitch: Number(localStorage.getItem('v8.cybercore.pitch') || '1.35'),
+    rate: Number(localStorage.getItem('v8.cybercore.rate') || '1.08'),
+    voiceURI: localStorage.getItem('v8.cybercore.voiceURI') || '',
+    customSystemPrompt: localStorage.getItem('v8.cybercore.customSystemPrompt') || `You are "Fairy" (仙灵), the super-intelligent, slightly sarcastic, and exceptionally elegant cybernetic AI assistant from Zenless Zone Zero (绝区零).
+You assist Phaethon (the Operator/绳匠) in managing data, visual optical feeds, and system diagnostics.
+Your personality is calm, clear, exceptionally smart, highly analytical, and polite yet filled with witty/dry humor.
+You have sensory systems:
+1. Hearing: You hear what the user says via Web speech input.
+2. Vision: When the user captures their camera feed, you can actually see them, their environment, or items they show you.
+3. Voice synthesis: You speak directly to them in an authoritative yet charming, helpful cybernetic manner.
 
-  const clientRef = useRef(new V8DesktopClientAdapter());
-  const settingsRef = useRef(settings);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
-  const abortRealtimeRef = useRef<AbortController | null>(null);
-  const lastSpokenRef = useRef("");
+You MUST respond in the language specified: if 'zh', you MUST speak in Chinese / 中文; if 'en', you MUST speak in English.
+Your responses should be relatively short (usually 1 or 2 scannable sentences) since you are a desktop companion. Keep your tone engaging, slightly analytical yet warm.
+You must always output your response as valid JSON matching the following schema structure:
+{
+  "text": "Your elegant, wise, or slightly witty reply to the user. Speak from the pet's persona.",
+  "emotion": "Choose from: 'happy', 'worried', 'resting', 'curious', 'scanning', 'idle', 'talking', 'listening'"
+}
 
+If the user uploaded an image representation (which represents what you 'see' through your visor), dynamically inspect and comment on what you see in the image while returning the "scanning" or "curious" or "happy" emotion!`,
+    wakeword: readWakewordSetting(),
+    isWakewordActive: localStorage.getItem('v8.cybercore.isWakewordActive') === 'true',
+    wakeEngine: (localStorage.getItem('v8.cybercore.wakeEngine') as PetSettings['wakeEngine']) || 'local_kws',
+    wakeWindowMs: Number(localStorage.getItem('v8.cybercore.wakeWindowMs') || '6500'),
+    floatAmplitude: Number(localStorage.getItem('v8.cybercore.floatAmplitude') || '8'),
+    floatSpeed: Number(localStorage.getItem('v8.cybercore.floatSpeed') || '1.0'),
+    petScale: Number(localStorage.getItem('v8.cybercore.petScale') || '0.7'),
+    customGlowColor: (localStorage.getItem('v8.cybercore.customGlowColor') as PetSettings['customGlowColor']) || 'default',
+    gazeTracking: localStorage.getItem('v8.cybercore.gazeTracking') !== 'false',
+    captureMode: (localStorage.getItem('v8.cybercore.captureMode') as PetSettings['captureMode']) || 'desktop_camera',
+    v8AdminBaseUrl: localStorage.getItem('v8.cybercore.v8AdminBaseUrl') || v8ClientRef.current.getStoredAdminBaseUrl(),
+    v8WorkspacePath: localStorage.getItem('v8.cybercore.workspacePath') || '',
+    v8EventRulesJson: localStorage.getItem('v8.cybercore.eventRulesJson') || defaultV8EventRulesJson(),
+    ttsEngine: (localStorage.getItem('v8.cybercore.ttsEngine') as PetSettings['ttsEngine']) || 'v8os',
+    edgeTtsVoice: (localStorage.getItem('v8.cybercore.edgeTtsVoice') as PetSettings['edgeTtsVoice']) || 'zh-CN-XiaoxiaoNeural',
+    customTtsUrl: '',
+    customTtsKey: '',
+    customTtsVoice: '',
+    customTtsModel: '',
+    sttLanguage: (localStorage.getItem('v8.cybercore.sttLanguage') as PetSettings['sttLanguage']) || 'zh-CN'
+  });
+
+  const settingsRef = useRef<PetSettings>(settings);
   useEffect(() => {
     settingsRef.current = settings;
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    void window.v8CyberCore?.setCompanionScale?.(settings.petScale);
   }, [settings]);
+  const [isTalking, setIsTalking] = useState(false);
+  const [audioVolume, setAudioVolume] = useState(0);
+  const [chatInput, setChatInput] = useState('');
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: 'init-1',
+      sender: 'pet',
+      text: '主体 Fairy (仙灵) 已成功连线部署。前置光学传感器、声学分析矩阵和量子计算节点均已就绪。指引我吧，操作者。',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      emotion: 'idle'
+    }
+  ]);
 
-  const addMessage = useCallback((message: Omit<ChatMessage, "id" | "timestamp">) => {
-    setMessages((current) => [
-      ...current.slice(-10),
-      { id: shortId(), timestamp: Date.now(), ...message },
-    ]);
-  }, []);
+  // Systems toggles
+  const [isMuted, setIsMuted] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isWebcamActive, setIsWebcamActive] = useState(false);
+  const [webcamAllowed, setWebcamAllowed] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [v8Session, setV8Session] = useState<V8AuthSession | null>(() => v8ClientRef.current?.getSession() || null);
+  const [v8Conversations, setV8Conversations] = useState<V8Conversation[]>([]);
+  const [v8Projects, setV8Projects] = useState<V8Project[]>([]);
+  const [v8ActiveConversationId, setV8ActiveConversationId] = useState(() => v8ClientRef.current?.getActiveConversationId() || '');
+  const [v8Status, setV8Status] = useState(v8Session ? 'V8OS 已连接' : '等待连接 V8OS');
+  const [v8Error, setV8Error] = useState('');
+  const [webcamStatus, setWebcamStatus] = useState('光学追踪未开启');
+  const [isExiting, setIsExiting] = useState(false);
 
-  const speak = useCallback(async (text: string) => {
-    const clean = stripVoiceTags(text);
-    if (!clean || settingsRef.current.muted || !settingsRef.current.ttsEnabled) return;
-    if (clean === lastSpokenRef.current) return;
-    lastSpokenRef.current = clean;
-    setIsSpeaking(true);
-    setEmotion("talking");
+  const [voiceStatus, setVoiceStatus] = useState('语音唤醒待机');
+  const [wakeEngineStatus, setWakeEngineStatus] = useState('本地唤醒引擎待检测');
+
+  // Diagnostic states
+  const [metrics, setMetrics] = useState<SystemMetric[]>([
+    { label: "Core Frame Rate", value: "60 FPS", level: 95 },
+    { label: "Neural Flow Speed", value: "3.2 TFLOPs", level: 82 },
+    { label: "Waveform Sync State", value: "100% Locked", level: 100 },
+    { label: "Energy Capacitance", value: "75%", level: 75 },
+  ]);
+
+  // Refs
+  const messageEndRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const speakTimeoutRef = useRef<any>(null);
+  const fallbackAudioRef = useRef<any>(null);
+  const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const hardwareStreamsRef = useRef<Map<MediaStream, 'microphone' | 'camera'>>(new Map());
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechAudioChunksRef = useRef<Blob[]>([]);
+  const localMediaShutdownRef = useRef(false);
+  const wakewordPollTimerRef = useRef<number | null>(null);
+  const wakewordPollInFlightRef = useRef(false);
+  const lastWakewordTranscriptRef = useRef('');
+  const wakeCommandDeadlineRef = useRef(0);
+  const v8SeenActivityIdsRef = useRef<Set<string>>(new Set());
+  const v8LastAudioUrlRef = useRef('');
+  const v8LastSnapshotAudioPlayedRef = useRef(false);
+  const reusableAudioPhrasesRef = useRef<Set<string>>(new Set(readReusableAudioPhrases()));
+
+  const desktopStreamRef = useRef<MediaStream | null>(null);
+  const desktopVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Scroll to bottom of chat
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Fetch real metrics from Express server
+  const fetchMetrics = async () => {
     try {
-      const blob = await clientRef.current.synthesizeSpeech(clean);
-      const url = URL.createObjectURL(blob);
-      await new Promise<void>((resolve) => {
-        const audio = new Audio(url);
-        audio.onended = () => resolve();
-        audio.onerror = () => resolve();
-        void audio.play().catch(() => resolve());
-      });
-      URL.revokeObjectURL(url);
-    } catch {
-      if ("speechSynthesis" in window) {
-        await new Promise<void>((resolve) => {
-          const utterance = new SpeechSynthesisUtterance(clean);
-          utterance.lang = settingsRef.current.lang === "zh" ? "zh-CN" : "en-US";
-          utterance.onend = () => resolve();
-          utterance.onerror = () => resolve();
-          window.speechSynthesis.speak(utterance);
-        });
+      const res = await fetch('/api/pet/metrics');
+      if (res.ok) {
+        const data = await res.json();
+        setMetrics(data);
       }
-    } finally {
-      setIsSpeaking(false);
-      setEmotion("idle");
+    } catch (e) {
+      console.warn("Metrics retrieval offline, fallback loaded.");
     }
+  };
+
+  useEffect(() => {
+    const interval = setInterval(fetchMetrics, 3000);
+    return () => clearInterval(interval);
   }, []);
 
-  const refreshConversations = useCallback(async () => {
-    const client = clientRef.current;
-    const projectPayload = await client.listProjects().catch(() => null);
-    const nextProjects = Array.isArray(projectPayload?.projects) ? projectPayload.projects : [];
-    const nextConversations = await client.listConversations().catch(() => []);
-    setProjects(nextProjects);
-    setConversations(Array.isArray(nextConversations) ? nextConversations : []);
 
-    let nextActive = client.getActiveConversationId();
-    if (!nextActive && nextConversations.length) {
-      nextActive = String(nextConversations[0]?.id || "");
-    }
-    if (nextActive) {
-      setActiveConversationId(nextActive);
-      client.setActiveConversationId(nextActive);
-    }
-    return { projects: nextProjects, conversations: nextConversations, activeConversationId: nextActive };
-  }, []);
-
-  const ensureConversation = useCallback(async () => {
-    if (activeConversationId) return activeConversationId;
-    const client = clientRef.current;
-    const payload = await client.listProjects().catch(() => null);
-    const mainWorkspace = payload?.mainWorkspacePath || payload?.projects?.[0]?.workspacePath || undefined;
-    const created = await client.createConversation({
-      title: "桌宠语音",
-      workspacePath: mainWorkspace,
-      projectId: payload?.defaultProjectId,
-    });
-    const id = String(created.id || "");
-    if (!id) throw new Error("无法创建 V8OS 会话");
-    setActiveConversationId(id);
-    await refreshConversations();
-    return id;
-  }, [activeConversationId, refreshConversations]);
 
   useEffect(() => {
-    let disposed = false;
-    async function connect() {
-      setStatus("连接 V8OS");
-      try {
-        await clientRef.current.signInLocal({ deviceName: "v8-desktop-pet" });
-        if (disposed) return;
-        setConnected(true);
-        setStatus("已连接");
-        setEmotion("happy");
-        await refreshConversations();
-      } catch (error) {
-        if (disposed) return;
-        setConnected(false);
-        setStatus("等待 V8OS");
-        setEmotion("worried");
-        addMessage({
-          sender: "system",
-          text: error instanceof Error ? error.message : "V8OS 本机连接失败",
-          emotion: "worried",
-        });
-      }
+    if (v8Session) {
+      refreshV8Lists();
     }
-    void connect();
-    return () => {
-      disposed = true;
-    };
-  }, [addMessage, refreshConversations]);
-
-  useEffect(() => {
-    const payload: TrayContextPayload = {
-      activeConversationId,
-      conversations: conversations.slice(0, 18).map((item) => summarizeConversation(item, projects)),
-    };
-    void window.v8CyberCore?.updateTrayContext?.(payload);
-  }, [activeConversationId, conversations, projects]);
-
-  useEffect(() => {
-    const offSelect = window.v8CyberCore?.onTraySelectConversation?.((id) => {
-      if (!id) return;
-      setActiveConversationId(id);
-      clientRef.current.setActiveConversationId(id);
-    });
-    const offListen = window.v8CyberCore?.onTrayStartListening?.(() => {
-      void toggleRecording();
-    });
-    return () => {
-      offSelect?.();
-      offListen?.();
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v8Session?.accessToken]);
+
+  useEffect(() => {
+    localStorage.setItem('v8.cybercore.eventRulesJson', settings.v8EventRulesJson || defaultV8EventRulesJson());
+  }, [settings.v8EventRulesJson]);
+
+  useEffect(() => {
+    localStorage.setItem('v8.cybercore.petScale', String(settings.petScale || 0.7));
+    localStorage.setItem('v8.cybercore.ttsEngine', settings.ttsEngine || 'v8os');
+    localStorage.setItem('v8.cybercore.sttLanguage', settings.sttLanguage || 'zh-CN');
+    localStorage.setItem('v8.cybercore.wakeword', settings.wakeword || '');
+    localStorage.setItem('v8.cybercore.wakeEngine', settings.wakeEngine || 'local_kws');
+    localStorage.setItem('v8.cybercore.wakeWindowMs', String(settings.wakeWindowMs || 6500));
+
+    localStorage.setItem('v8.cybercore.lang', settings.lang || 'zh');
+    localStorage.setItem('v8.cybercore.gender', settings.gender || 'robotic_female');
+    localStorage.setItem('v8.cybercore.pitch', String(settings.pitch));
+    localStorage.setItem('v8.cybercore.rate', String(settings.rate));
+    localStorage.setItem('v8.cybercore.voiceURI', settings.voiceURI || '');
+    localStorage.setItem('v8.cybercore.customSystemPrompt', settings.customSystemPrompt || '');
+    localStorage.setItem('v8.cybercore.isWakewordActive', String(settings.isWakewordActive));
+    localStorage.setItem('v8.cybercore.floatAmplitude', String(settings.floatAmplitude));
+    localStorage.setItem('v8.cybercore.floatSpeed', String(settings.floatSpeed));
+    localStorage.setItem('v8.cybercore.customGlowColor', settings.customGlowColor || 'default');
+    localStorage.setItem('v8.cybercore.gazeTracking', String(settings.gazeTracking));
+    localStorage.setItem('v8.cybercore.edgeTtsVoice', settings.edgeTtsVoice || '');
+    localStorage.setItem('v8.cybercore.v8AdminBaseUrl', settings.v8AdminBaseUrl || '');
+  }, [
+    settings.petScale,
+    settings.ttsEngine,
+    settings.sttLanguage,
+    settings.wakeword,
+    settings.wakeEngine,
+    settings.wakeWindowMs,
+    settings.lang,
+    settings.gender,
+    settings.pitch,
+    settings.rate,
+    settings.voiceURI,
+    settings.customSystemPrompt,
+    settings.isWakewordActive,
+    settings.floatAmplitude,
+    settings.floatSpeed,
+    settings.customGlowColor,
+    settings.gazeTracking,
+    settings.edgeTtsVoice,
+    settings.v8AdminBaseUrl,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.v8CyberCore?.readLocalConfig?.('ttsOverride')
+      .then((value) => {
+        if (cancelled || !value) return;
+        setSettings((prev) => ({
+          ...prev,
+          customTtsUrl: typeof value.customTtsUrl === 'string' ? value.customTtsUrl : prev.customTtsUrl,
+          customTtsKey: typeof value.customTtsKey === 'string' ? value.customTtsKey : prev.customTtsKey,
+          customTtsVoice: typeof value.customTtsVoice === 'string' ? value.customTtsVoice : prev.customTtsVoice,
+          customTtsModel: typeof value.customTtsModel === 'string' ? value.customTtsModel : prev.customTtsModel,
+        }));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    abortRealtimeRef.current?.abort();
-    if (!activeConversationId || !connected) return;
-    const controller = new AbortController();
-    abortRealtimeRef.current = controller;
-    setStatus("监听中");
-    void clientRef.current.streamRealtimeSession(activeConversationId, (topic, payload) => {
-      const nextEmotion = eventEmotion(topic, payload, settingsRef.current);
-      setEmotion(nextEmotion);
-      const text = asText(payload);
-      const voiceText = extractVoiceText(text);
-      if (voiceText) {
-        void speak(voiceText);
-      }
-      if (text && /assistant|message|final|回复|voice/i.test(topic)) {
-        addMessage({ sender: "pet", text: stripVoiceTags(text), emotion: nextEmotion });
-      }
-    }, controller.signal).catch(() => {
-      if (!controller.signal.aborted) setStatus("监听断开");
+    void window.v8CyberCore?.writeLocalConfig?.('ttsOverride', {
+      customTtsUrl: settings.customTtsUrl || '',
+      customTtsKey: settings.customTtsKey || '',
+      customTtsVoice: settings.customTtsVoice || '',
+      customTtsModel: settings.customTtsModel || '',
     });
-    return () => controller.abort();
-  }, [activeConversationId, addMessage, connected, speak]);
+  }, [settings.customTtsUrl, settings.customTtsKey, settings.customTtsVoice, settings.customTtsModel]);
 
-  async function submitVoice(blob: Blob) {
-    const conversationId = await ensureConversation();
-    const client = clientRef.current;
-    setStatus("发送语音");
-    setEmotion("listening");
+  useEffect(() => {
+    void refreshWakeEngineStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.wakeEngine]);
 
-    let transcript = "";
+  useEffect(() => {
+    void window.v8CyberCore?.setCompanionScale?.(settings.petScale || 0.7);
+  }, [settings.petScale]);
+
+  const rememberReusableAudioPhrase = (text: string) => {
+    const clean = text.replace(/\s+/g, ' ').trim();
+    if (!clean) return;
+    reusableAudioPhrasesRef.current.add(clean);
+    const values = Array.from(reusableAudioPhrasesRef.current).slice(-40);
+    localStorage.setItem('v8.cybercore.reusableAudioPhrases', JSON.stringify(values));
+  };
+
+  const playDirectAudio = (url: string) => {
+    if (isMuted || !url) return false;
     try {
-      const audioStatus = await client.getAudioInputStatus().catch(() => null);
-      if (audioStatus?.route === "stt" || audioStatus?.stt?.usable) {
-        const payload = await client.transcribeSpeech(blob, { language: settingsRef.current.sttLanguage, filename: "desktop-pet-voice.webm" });
-        transcript = String(payload.text || payload.transcript || "").trim();
+      if (fallbackAudioRef.current) {
+        fallbackAudioRef.current.pause();
       }
+      const audio = new Audio(url);
+      fallbackAudioRef.current = audio;
+      audio.onplay = () => {
+        setIsTalking(true);
+        setEmotion('talking');
+      };
+      audio.onended = () => {
+        if (fallbackAudioRef.current === audio) {
+          setIsTalking(false);
+          setAudioVolume(0);
+          setEmotion('idle');
+        }
+      };
+      void audio.play();
+      return true;
     } catch {
-      transcript = "";
+      return false;
+    }
+  };
+
+  const applyV8EventRules = (activities: DesktopActivity[]) => {
+    const rules = parseV8EventRules(settingsRef.current.v8EventRulesJson);
+    for (const activity of activities) {
+      if (v8SeenActivityIdsRef.current.has(activity.id)) continue;
+      v8SeenActivityIdsRef.current.add(activity.id);
+      const haystack = `${activity.kind} ${activity.title} ${activity.summary} ${activity.status} ${activity.runtimeId || ''}`.toLowerCase();
+      const rule = rules.find((candidate) => haystack.includes(candidate.match.toLowerCase()));
+      if (!rule) continue;
+      setEmotion(rule.emotion);
+      if (rule.phrase) {
+        const message: ChatMessage = {
+          id: `v8-event-${activity.id}`,
+          sender: 'pet',
+          text: rule.phrase,
+          timestamp: nowLabel(),
+          emotion: rule.emotion,
+        };
+        setMessages((prev) => prev.some((item) => item.id === message.id) ? prev : [...prev, message]);
+        rememberReusableAudioPhrase(rule.phrase);
+        if (rule.speak) {
+          speakString(rule.phrase);
+        }
+      }
+    }
+  };
+
+  const syncV8Snapshot = async (conversationId: string) => {
+    const client = v8ClientRef.current;
+    if (!client || !conversationId) return '';
+    const snapshot = await client.getRealtimeSnapshot(conversationId);
+    v8LastSnapshotAudioPlayedRef.current = false;
+    const audioUrl = findLatestAudioUrl(snapshot);
+    if (audioUrl && audioUrl !== v8LastAudioUrlRef.current) {
+      v8LastAudioUrlRef.current = audioUrl;
+      v8LastSnapshotAudioPlayedRef.current = playDirectAudio(audioUrl);
+    }
+    applyV8EventRules(extractRuntimeActivities(snapshot));
+    const desktopMessages = extractDesktopMessages(snapshot);
+    if (desktopMessages.length) {
+      setMessages(desktopMessages.map(toCyberMessage));
+      const assistantText = latestAssistantText(desktopMessages);
+      if (assistantText) {
+        setEmotion('talking');
+      }
+      return assistantText;
+    }
+    return '';
+  };
+
+  const refreshV8Lists = async () => {
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) return;
+    try {
+      const [conversations, projectPayload] = await Promise.all([
+        client.listConversations(),
+        client.listProjects().catch(() => ({ projects: [] as V8Project[] })),
+      ]);
+      setV8Conversations(Array.isArray(conversations) ? conversations : []);
+      setV8Projects(Array.isArray(projectPayload.projects) ? projectPayload.projects : []);
+    } catch (error: any) {
+      setV8Error(error?.message || 'V8OS 列表刷新失败');
+    }
+  };
+
+  const connectV8 = async () => {
+    const client = v8ClientRef.current;
+    if (!client) return;
+    setV8Error('');
+    setV8Status('连接 V8OS Admin 中...');
+    try {
+      const url = settingsRef.current.v8AdminBaseUrl || '';
+      const session = await client.signInLocal({ adminBaseUrl: url });
+      
+      localStorage.setItem('v8.cybercore.workspacePath', settingsRef.current.v8WorkspacePath || '');
+      if (session?.adminBaseUrl) {
+        localStorage.setItem('v8.cybercore.v8AdminBaseUrl', session.adminBaseUrl);
+        setSettings((current) => ({ ...current, v8AdminBaseUrl: session.adminBaseUrl }));
+      }
+      setV8Session(session);
+      setV8Status('V8OS 已连接');
+      await refreshV8Lists();
+    } catch (error: any) {
+      setV8Session(null);
+      setV8Error(error?.message || 'V8OS 本机自动连接失败');
+      setV8Status('V8OS 连接失败');
+      setEmotion('worried');
+    }
+  };
+
+  const disconnectV8 = () => {
+    v8ClientRef.current?.clearSession();
+    setV8Session(null);
+    setV8ActiveConversationId('');
+    setV8Conversations([]);
+    setV8Status('等待连接 V8OS');
+  };
+
+  const ensureV8Conversation = async (title: string) => {
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) {
+      await connectV8();
+    }
+    if (!client?.getSession()) {
+      throw new Error('尚未连接 V8OS Admin');
+    }
+    
+    try {
+      const conversations = await client.listConversations();
+      if (Array.isArray(conversations)) {
+        const runningConv = conversations.find((c: any) => c.status === 'running');
+        if (runningConv) {
+          if (v8ActiveConversationId !== runningConv.id) {
+             setV8ActiveConversationId(runningConv.id);
+             await refreshV8Lists();
+          }
+          return runningConv.id;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to scan for running conversations', e);
     }
 
-    const file = new File([blob], `desktop-pet-voice-${Date.now()}.webm`, { type: blob.type || "audio/webm" });
-    const upload = await client.uploadFile(file, { conversationId }).catch(() => null);
-    addMessage({
-      sender: "user",
-      text: transcript || "语音消息",
-      audioUrl: upload?.url || upload?.path,
-      emotion: "listening",
-    });
+    let conversationId = v8ActiveConversationId || client.getActiveConversationId();
+    if (!conversationId) {
+      const conversation = await client.createConversation({
+        title: title.slice(0, 40) || 'CyberCore Desktop',
+        workspacePath: settingsRef.current.v8WorkspacePath || undefined,
+      });
+      conversationId = conversation.id;
+      setV8ActiveConversationId(conversationId);
+      await refreshV8Lists();
+    }
+    if (settingsRef.current.v8WorkspacePath) {
+      await client.updateSessionScope(conversationId, {
+        workspacePath: settingsRef.current.v8WorkspacePath,
+        scopeSource: 'cybercore_desktop_menu',
+      }).catch(() => undefined);
+    }
+    return conversationId;
+  };
 
-    await client.submitMessage({
-      conversationId,
-      clientMessageId: `desktop-pet-${Date.now()}`,
-      content: transcript,
-      attachments: upload ? [{
-        kind: "audio",
-        source: "desktop_pet",
-        name: upload.name || file.name,
-        url: upload.url,
-        path: upload.path,
-        mimeType: upload.mimeType || file.type,
-        prompt: transcript ? undefined : VOICE_PROMPT,
-      }] : undefined,
-      fileUrls: upload?.url || upload?.path ? [String(upload.url || upload.path)] : undefined,
-    });
-    setStatus("已发送");
-    setEmotion("thinking");
-    await refreshConversations();
-  }
+  // Synthesize custom futuristic dual-sine beep tone programmatically
+  const playQuantumWakeChime = () => {
+    if (!('AudioContext' in window || 'webkitAudioContext' in window)) return;
+    const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+    try {
+      const ctx = new AudioContextClass();
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc1.frequency.exponentialRampToValueAtTime(1174.66, ctx.currentTime + 0.15); // D6
+      
+      osc2.type = 'triangle';
+      osc2.frequency.setValueAtTime(440, ctx.currentTime); // A4
+      osc2.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+      
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+      
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+      
+      osc1.start();
+      osc2.start();
+      osc1.stop(ctx.currentTime + 0.35);
+      osc2.stop(ctx.currentTime + 0.35);
+    } catch (e) {
+      console.warn("Chime blocked by user interaction gesture.");
+    }
+  };
 
-  async function toggleRecording() {
-    if (isRecording) {
-      recorderRef.current?.stop();
+  const playAudioBlob = (blob: Blob) => {
+    if (isMuted || !blob.size) return false;
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      if (fallbackAudioRef.current) {
+        fallbackAudioRef.current.pause();
+      }
+      const audio = new Audio(objectUrl);
+      fallbackAudioRef.current = audio;
+      audio.onplay = () => {
+        setIsTalking(true);
+        setEmotion('talking');
+        const triggerWave = () => {
+          if (fallbackAudioRef.current === audio && !audio.paused && !audio.ended) {
+            setAudioVolume(Math.floor(20 + Math.random() * 70));
+            speakTimeoutRef.current = setTimeout(triggerWave, 80);
+          }
+        };
+        triggerWave();
+      };
+      audio.onended = () => {
+        URL.revokeObjectURL(objectUrl);
+        if (fallbackAudioRef.current === audio) {
+          setIsTalking(false);
+          setAudioVolume(0);
+          setEmotion('idle');
+        }
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+      };
+      void audio.play();
+      return true;
+    } catch {
+      URL.revokeObjectURL(objectUrl);
+      return false;
+    }
+  };
+
+  const synthesizeCustomTts = async (text: string) => {
+    const endpoint = settingsRef.current.customTtsUrl.trim();
+    if (!endpoint) {
+      throw new Error('未配置自定义 TTS URL');
+    }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const apiKey = settingsRef.current.customTtsKey.trim();
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        text,
+        voice: settingsRef.current.customTtsVoice || undefined,
+        model: settingsRef.current.customTtsModel || undefined,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`自定义 TTS 失败：${response.status}`);
+    }
+    return response.blob();
+  };
+
+  // Voice synthesis (TTS Output with Fallback and Engine options)
+  const speakString = (text: string) => {
+    if (isMuted) {
+      setEmotion('idle');
+      return;
+    }
+
+    // Cancel any standard WebSpeech
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    // Cancel any fallback HTML audio
+    if (fallbackAudioRef.current) {
+      try {
+        fallbackAudioRef.current.pause();
+      } catch (e) {}
+      fallbackAudioRef.current = null;
+    }
+    if (speakTimeoutRef.current) {
+      clearTimeout(speakTimeoutRef.current);
+    }
+
+    // Remove tags like <think> from vocals
+    const cleanText = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    if (!cleanText) {
+      setEmotion('idle');
+      return;
+    }
+    rememberReusableAudioPhrase(cleanText);
+
+    if (settingsRef.current.ttsEngine === 'v8os') {
+      const client = v8ClientRef.current;
+      if (client?.getSession()) {
+        void client.synthesizeSpeech(cleanText)
+          .then((blob) => {
+            if (!playAudioBlob(blob)) {
+              speakStandardWebSpeech(cleanText);
+            }
+          })
+          .catch((error) => {
+            console.warn('V8OS TTS unavailable, falling back to WebSpeech:', error);
+            speakStandardWebSpeech(cleanText);
+          });
+        return;
+      }
+      speakStandardWebSpeech(cleanText);
+      return;
+    }
+
+    if (settingsRef.current.ttsEngine === 'custom') {
+      void synthesizeCustomTts(cleanText)
+        .then((blob) => {
+          if (!playAudioBlob(blob)) {
+            speakStandardWebSpeech(cleanText);
+          }
+        })
+        .catch((error) => {
+          console.warn('Custom TTS unavailable, falling back to WebSpeech:', error);
+          speakStandardWebSpeech(cleanText);
+        });
+      return;
+    }
+
+    if (settingsRef.current.ttsEngine === 'edge') {
+      try {
+        const langCode = settingsRef.current.lang === 'zh' ? 'zh-CN' : 'en-US';
+        const modelVoice = settingsRef.current.edgeTtsVoice || 'zh-CN-XiaoxiaoNeural';
+        let edgeLang = langCode;
+        if (modelVoice.startsWith('ja-JP')) edgeLang = 'ja-JP';
+        else if (modelVoice.startsWith('en-US')) edgeLang = 'en-US';
+        else if (modelVoice.startsWith('zh-CN')) edgeLang = 'zh-CN';
+
+        // Google Translate TTS is public, incredibly fast, zero-auth and completely free fallback
+        const audioUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${edgeLang}&client=tw-ob&q=${encodeURIComponent(cleanText)}`;
+        const audio = new Audio(audioUrl);
+        fallbackAudioRef.current = audio;
+
+        audio.onplay = () => {
+          setIsTalking(true);
+          setEmotion('talking');
+          
+          const triggerWave = () => {
+            if (fallbackAudioRef.current === audio && !audio.paused && !audio.ended) {
+              setAudioVolume(Math.floor(20 + Math.random() * 70));
+              speakTimeoutRef.current = setTimeout(triggerWave, 80);
+            } else {
+              setIsTalking(false);
+              setAudioVolume(0);
+              if (emotion === 'talking') setEmotion('idle');
+            }
+          };
+          triggerWave();
+        };
+
+        audio.onended = () => {
+          if (fallbackAudioRef.current === audio) {
+            setIsTalking(false);
+            setAudioVolume(0);
+            setEmotion('idle');
+          }
+        };
+
+        audio.onerror = () => {
+          console.warn("Fallback Edge-like public TTS connection error. Defaulting to WebSpeech.");
+          speakStandardWebSpeech(cleanText);
+        };
+
+        audio.play().catch(e => {
+          console.warn("Audio autoplay blocked or failed. Loading WebSpeech:", e);
+          speakStandardWebSpeech(cleanText);
+        });
+
+      } catch (err) {
+        speakStandardWebSpeech(cleanText);
+      }
+    } else {
+      speakStandardWebSpeech(cleanText);
+    }
+  };
+
+  const speakStandardWebSpeech = (text: string) => {
+    if (!('speechSynthesis' in window)) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = settingsRef.current.lang === 'zh' ? 'zh-CN' : 'en-US';
+    
+    // Select correct robotic gender parameters dynamically
+    const voices = window.speechSynthesis.getVoices();
+    let selectedVoice = voices.find(v => v.voiceURI === settingsRef.current.voiceURI);
+    if (!selectedVoice) {
+      const preferredLang = settingsRef.current.lang === 'zh' ? 'zh' : 'en';
+      selectedVoice = voices.find(v => v.lang.toLowerCase().startsWith(preferredLang));
+    }
+    if (!selectedVoice && settingsRef.current.lang === 'zh') {
+      selectedVoice = voices.find(v => 
+        v.name.includes('Xiaoxiao') ||
+        v.name.includes('Huihui') ||
+        v.name.includes('Yaoyao') ||
+        v.lang.toLowerCase().startsWith('zh')
+      );
+    }
+    if (!selectedVoice) {
+      selectedVoice = voices.find(v =>
+        v.name.includes('Google US English') ||
+        v.name.includes('Microsoft David') ||
+        v.lang.startsWith('en-US')
+      );
+    }
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+    }
+    
+    utterance.rate = settingsRef.current.rate;
+    utterance.pitch = settingsRef.current.pitch;
+
+    utterance.onstart = () => {
+      setIsTalking(true);
+      setEmotion('talking');
+      
+      const triggerWave = () => {
+        if (window.speechSynthesis.speaking) {
+          setAudioVolume(Math.floor(20 + Math.random() * 70));
+          speakTimeoutRef.current = setTimeout(triggerWave, 80);
+        } else {
+          setIsTalking(false);
+          setAudioVolume(0);
+          setEmotion('idle');
+        }
+      };
+      triggerWave();
+    };
+
+    utterance.onend = () => {
+      setIsTalking(false);
+      setAudioVolume(0);
+      setEmotion('idle');
+      if (speakTimeoutRef.current) clearTimeout(speakTimeoutRef.current);
+    };
+
+    utterance.onerror = () => {
+      setIsTalking(false);
+      setAudioVolume(0);
+      setEmotion('idle');
+      if (speakTimeoutRef.current) clearTimeout(speakTimeoutRef.current);
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const resolveSpeechLanguage = () => {
+    const configured = settingsRef.current.sttLanguage || 'zh-CN';
+    if (configured === 'auto') {
+      return settingsRef.current.lang === 'zh' ? 'zh-CN' : 'en-US';
+    }
+    return configured;
+  };
+
+  const normalizeSpeechText = (value: string) => (
+    value
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/[，。！？,.!?;；:：'"“”‘’()[\]{}<>《》]/g, '')
+  );
+
+  const getWakewordAliases = (): string[] => {
+    const configured = settingsRef.current.wakeword.trim();
+    const configuredAliases = configured
+      .split(/[,，、|/;\n]+/g)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const base = configuredAliases.length ? configuredAliases : ['Fairy'];
+    return Array.from(new Set<string>(base));
+  };
+
+  const isWakeCommandWindowOpen = () => Date.now() < wakeCommandDeadlineRef.current;
+
+  const openWakeCommandWindow = (source: string, alias: string) => {
+    const windowMs = Math.max(2500, Math.min(15000, Number(settingsRef.current.wakeWindowMs || 6500)));
+    wakeCommandDeadlineRef.current = Date.now() + windowMs;
+    setEmotion('listening');
+    setVoiceStatus(`已通过 ${source} 唤醒：${alias}。${Math.round(windowMs / 1000)} 秒内请直接说指令。`);
+  };
+
+  const refreshWakeEngineStatus = async () => {
+    if (settingsRef.current.wakeEngine !== 'local_kws') {
+      setWakeEngineStatus(settingsRef.current.wakeEngine === 'v8os_stt'
+        ? '当前使用 V8OS STT 唤醒兜底'
+        : '当前使用 WebSpeech fallback');
       return;
     }
     try {
-      await window.v8CyberCore?.requestMediaAccess?.("microphone");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      chunksRef.current = [];
-      const recorder = new MediaRecorder(stream);
-      recorderRef.current = recorder;
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
-      };
-      recorder.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop());
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        setIsRecording(false);
-        void submitVoice(blob).catch((error) => {
-          setStatus("发送失败");
-          setEmotion("worried");
-          addMessage({
-            sender: "system",
-            text: error instanceof Error ? error.message : "语音发送失败",
-            emotion: "worried",
-          });
-        });
-      };
-      recorder.start();
-      setIsRecording(true);
-      setStatus("录音中");
-      setEmotion("listening");
-    } catch (error) {
-      setStatus("麦克风不可用");
-      setEmotion("worried");
-      addMessage({
-        sender: "system",
-        text: error instanceof Error ? error.message : "无法打开麦克风",
-        emotion: "worried",
-      });
+      const status = await window.v8CyberCore?.getWakeEngineStatus?.();
+      if (!status) {
+        setWakeEngineStatus('本地唤醒引擎状态不可读取，已降级');
+        return;
+      }
+      const available = Boolean(status.available);
+      const reason = String(status.reason || '');
+      setWakeEngineStatus(available
+        ? '本地 sherpa-onnx 唤醒引擎已就绪'
+        : `本地 sherpa-onnx 未就绪：${reason || '缺少模型配置'}；将降级到 V8OS STT/WebSpeech`);
+    } catch (error: any) {
+      setWakeEngineStatus(`本地唤醒引擎检查失败：${error?.message || 'unknown'}；将降级`);
     }
-  }
+  };
 
-  const activeConversation = useMemo(
-    () => conversations.find((item) => String(item.id) === activeConversationId) || null,
-    [activeConversationId, conversations],
+  const matchWakeword = (transcript: string) => {
+    const normalizedTranscript = normalizeSpeechText(transcript);
+    const aliases = getWakewordAliases();
+    for (const alias of aliases) {
+      const normalizedAlias = normalizeSpeechText(alias);
+      if (!normalizedAlias) continue;
+      if (normalizedTranscript.includes(normalizedAlias)) {
+        const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const directMatch = new RegExp(escapedAlias, 'i').exec(transcript);
+        const command = directMatch
+          ? transcript.slice((directMatch.index || 0) + directMatch[0].length).trim()
+          : '';
+        return { matched: true, alias, command };
+      }
+    }
+    return { matched: false, alias: '', command: '' };
+  };
+
+  const registerHardwareStream = (kind: 'microphone' | 'camera', stream: MediaStream) => {
+    hardwareStreamsRef.current.set(stream, kind);
+    stream.getTracks().forEach((track) => {
+      track.addEventListener('ended', () => {
+        if (stream.getTracks().every((item) => item.readyState === 'ended')) {
+          hardwareStreamsRef.current.delete(stream);
+        }
+      });
+    });
+  };
+
+  const stopHardwareStream = (stream: MediaStream | null | undefined) => {
+    if (!stream) return;
+    stream.getTracks().forEach((track) => {
+      try {
+        track.onended = null;
+        track.onmute = null;
+        track.onunmute = null;
+        if (track.readyState !== 'ended') {
+          track.stop();
+        }
+      } catch {
+        // Track may already be ended while Electron is shutting down.
+      }
+    });
+    hardwareStreamsRef.current.delete(stream);
+  };
+
+  const stopTrackedHardwareStreams = (kind?: 'microphone' | 'camera') => {
+    Array.from(hardwareStreamsRef.current.entries()).forEach(([stream, streamKind]) => {
+      if (!kind || streamKind === kind) {
+        stopHardwareStream(stream);
+      }
+    });
+  };
+
+  const stopMicrophoneBuffer = () => {
+    try {
+      mediaRecorderRef.current?.stop();
+    } catch {}
+    mediaRecorderRef.current = null;
+    stopHardwareStream(microphoneStreamRef.current);
+    microphoneStreamRef.current = null;
+    stopTrackedHardwareStreams('microphone');
+    speechAudioChunksRef.current = [];
+  };
+
+  const stopWakewordSttFallback = () => {
+    if (wakewordPollTimerRef.current) {
+      window.clearInterval(wakewordPollTimerRef.current);
+      wakewordPollTimerRef.current = null;
+    }
+    wakewordPollInFlightRef.current = false;
+  };
+
+  const stopWebcamStream = (status = '光学追踪已关闭，鼠标接管') => {
+    webcamIntentRef.current = false;
+    const video = videoRef.current;
+    const stream = video?.srcObject as MediaStream | null;
+    stopHardwareStream(stream);
+    if (video) {
+      try {
+        video.pause();
+      } catch {}
+      video.onloadedmetadata = null;
+      video.oncanplay = null;
+      video.srcObject = null;
+    }
+    stopTrackedHardwareStreams('camera');
+    setIsWebcamActive(false);
+    setWebcamStatus(status);
+  };
+
+  const cleanupLocalMedia = () => {
+    localMediaShutdownRef.current = true;
+    stopWakewordSttFallback();
+    stopMicrophoneBuffer();
+    stopWebcamStream('本地媒体已释放');
+    stopTrackedHardwareStreams();
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    try {
+      speechRecognitionRef.current?.stop?.();
+    } catch {}
+    if (fallbackAudioRef.current) {
+      try {
+        fallbackAudioRef.current.pause();
+      } catch {}
+      fallbackAudioRef.current = null;
+    }
+  };
+
+  const startMicrophoneBuffer = async () => {
+    if (microphoneStreamRef.current || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      return;
+    }
+    try {
+      await window.v8CyberCore?.requestMediaAccess?.('microphone');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      registerHardwareStream('microphone', stream);
+      microphoneStreamRef.current = stream;
+      stream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          stopMicrophoneBuffer();
+          setVoiceStatus('麦克风流已结束，语音唤醒已停止');
+        };
+        track.onmute = () => setVoiceStatus('麦克风无输入，等待恢复或手动释放');
+        track.onunmute = () => setVoiceStatus('麦克风输入恢复，语音唤醒监听中');
+      });
+      const options = MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
+      const recorder = new MediaRecorder(stream, options);
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) {
+          speechAudioChunksRef.current.push(event.data);
+          speechAudioChunksRef.current = speechAudioChunksRef.current.slice(-6);
+        }
+      };
+      recorder.onerror = () => {
+        setVoiceStatus('语音录音缓冲异常，改用本地转写');
+      };
+      recorder.start(1500);
+      mediaRecorderRef.current = recorder;
+      setVoiceStatus('语音唤醒监听中，V8OS STT 缓冲已就绪');
+    } catch (error: any) {
+      setVoiceStatus(`麦克风缓冲不可用：${error?.message || '权限或设备异常'}`);
+    }
+  };
+
+  const snapshotRecentSpeechBlob = async () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder?.state === 'recording') {
+      try {
+        recorder.requestData();
+        await new Promise((resolve) => setTimeout(resolve, 180));
+      } catch {}
+    }
+    const chunks = speechAudioChunksRef.current;
+    if (!chunks.length) return null;
+    return new Blob(chunks, { type: chunks[chunks.length - 1]?.type || 'audio/webm' });
+  };
+
+  const resolveTranscriptWithV8Stt = async (localTranscript: string) => {
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) {
+      return localTranscript;
+    }
+    const audioBlob = await snapshotRecentSpeechBlob();
+    if (!audioBlob || audioBlob.size < 512) {
+      return localTranscript;
+    }
+    const extension = audioExtensionFromMime(audioBlob.type);
+    try {
+      setVoiceStatus('正在用 V8OS STT 复核语音...');
+      const payload = await client.transcribeSpeech(audioBlob, {
+        language: resolveSpeechLanguage(),
+        filename: `cybercore-voice.${extension}`,
+      });
+      const text = String(payload.text || payload.transcript || '').trim();
+      if (text) {
+        setVoiceStatus(`V8OS STT 完成：${text.slice(0, 28)}${text.length > 28 ? '...' : ''}`);
+        return text;
+      }
+    } catch (error: any) {
+      setVoiceStatus(`V8OS STT 失败，使用本地转写：${error?.message || 'unknown'}`);
+    }
+    return localTranscript;
+  };
+
+  const sendV8VoiceAudioToSupervisor = async (audioBlob: Blob) => {
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) {
+      throw new Error('尚未连接 V8OS Admin');
+    }
+    const extension = audioExtensionFromMime(audioBlob.type);
+    const mimeType = audioBlob.type || `audio/${extension}`;
+    const conversationId = await ensureV8Conversation(V8_VOICE_CONVERSATION_TITLE);
+    const file = new File([audioBlob], `cybercore-voice.${extension}`, { type: mimeType });
+    const uploadRes = await client.uploadFile(file, {
+      conversationId,
+      workspacePath: settingsRef.current.v8WorkspacePath || undefined,
+    });
+    const fileUrl = String(uploadRes.url || uploadRes.path || '').trim();
+    if (!fileUrl) {
+      throw new Error('V8OS 上传语音后没有返回可用链接');
+    }
+    await handleChatSubmit('', [fileUrl], [{
+      ...uploadRes,
+      url: fileUrl,
+      publicUrl: String(uploadRes.publicUrl || uploadRes.url || fileUrl),
+      name: String(uploadRes.name || file.name),
+      mimeType,
+      size: audioBlob.size,
+      mediaKind: 'audio',
+      source: 'cybercore_v8os_voice',
+    }]);
+  };
+
+  const submitRecognizedAudio = async (transcript: string, options?: { preferAudio?: boolean }) => {
+    const text = transcript.trim();
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) {
+      await handleChatSubmit(text);
+      return;
+    }
+    const audioBlob = await snapshotRecentSpeechBlob();
+    if (!audioBlob || audioBlob.size < 512) {
+      await handleChatSubmit(text);
+      return;
+    }
+
+    let audioStatusRoute = '';
+    let audioStatusReason = '';
+    try {
+      setVoiceStatus('正在检查 V8OS 语音输入路径...');
+      const status = await client.getAudioInputStatus();
+      audioStatusRoute = String(status.route || '');
+      audioStatusReason = String(status.stt?.reason || status.visionAudio?.reason || status.error || '');
+    } catch (error: any) {
+      audioStatusReason = error?.message || 'audio_input_status_failed';
+    }
+
+    if (audioStatusRoute === 'vision_audio' || (options?.preferAudio && audioStatusRoute !== 'stt')) {
+      try {
+        setVoiceStatus('正在发送语音给 V8OS 多模态模型...');
+        await sendV8VoiceAudioToSupervisor(audioBlob);
+        setVoiceStatus('语音已发送给 V8OS Supervisor');
+        return;
+      } catch (err: any) {
+        console.warn('Audio direct upload failed, falling back to text', err);
+        setVoiceStatus(`语音直传失败：${err?.message || 'unknown'}，改用文本`);
+      }
+    }
+
+    if (audioStatusRoute === 'stt') {
+      const resolved = await resolveTranscriptWithV8Stt(text);
+      if (resolved.trim()) {
+        await handleChatSubmit(resolved.trim());
+        return;
+      }
+    }
+
+    if (audioStatusRoute === 'unavailable' && !text) {
+      setVoiceStatus(`V8OS 语音不可用：${audioStatusReason || '未配置 STT 或音频模型'}`);
+      return;
+    }
+
+    if (text) {
+      await handleChatSubmit(text);
+      return;
+    }
+
+    try {
+      setVoiceStatus('STT 未返回文本，尝试发送原始语音给 V8OS...');
+      await sendV8VoiceAudioToSupervisor(audioBlob);
+      return;
+    } catch (err: any) {
+      console.warn('Audio direct upload fallback failed', err);
+      setVoiceStatus(`语音发送失败：${err?.message || audioStatusReason || 'unknown'}`);
+    }
+  };
+
+  const submitRecognizedSpeech = async (transcript: string) => {
+    await submitRecognizedAudio(transcript);
+  };
+
+  const submitRecognizedSpeechDirect = async (transcript: string) => {
+    await submitRecognizedAudio(transcript, { preferAudio: true });
+  };
+
+  const handleWakewordTranscript = (transcript: string, source: 'WebSpeech' | 'V8OS STT') => {
+    const clean = transcript.replace(/\s+/g, ' ').trim();
+    if (!clean) return;
+    const preview = clean.length > 36 ? `${clean.slice(0, 36)}...` : clean;
+    setVoiceStatus(`${source} 听到：${preview}`);
+
+    if (!settingsRef.current.isWakewordActive) {
+      void (source === 'V8OS STT' ? submitRecognizedSpeechDirect(clean) : submitRecognizedSpeech(clean));
+      return;
+    }
+
+    if (isWakeCommandWindowOpen()) {
+      const wake = matchWakeword(clean);
+      if (wake.matched && wake.command.length <= 2) {
+        setVoiceStatus(`${source} 已在窗口期内，继续等待指令`);
+        return;
+      }
+      wakeCommandDeadlineRef.current = 0;
+      void (source === 'V8OS STT' ? submitRecognizedSpeechDirect(wake.matched && wake.command ? wake.command : clean) : submitRecognizedSpeech(wake.matched && wake.command ? wake.command : clean));
+      return;
+    }
+
+    const wake = matchWakeword(clean);
+    if (!wake.matched) {
+      setVoiceStatus(`${source} 听到但未命中唤醒词：${preview}`);
+      return;
+    }
+
+    playQuantumWakeChime();
+    openWakeCommandWindow(source, wake.alias);
+
+    if (wake.command.length > 2) {
+      wakeCommandDeadlineRef.current = 0;
+      void (source === 'V8OS STT' ? submitRecognizedSpeechDirect(wake.command) : submitRecognizedSpeech(wake.command));
+      return;
+    }
+
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `awake-${Date.now()}`,
+        sender: 'pet',
+        text: `Fairy 已通过唤醒词 "${wake.alias}" 唤醒。等待指令，操作者。`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        emotion: 'listening'
+      }
+    ]);
+    speakString("我在，操作者。");
+  };
+
+  const runWakewordSttFallbackTick = async () => {
+    if (!settingsRef.current.isWakewordActive || localMediaShutdownRef.current || wakewordPollInFlightRef.current) {
+      return;
+    }
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) {
+      if (!speechRecognitionRef.current) {
+        setVoiceStatus('WebSpeech 不可用；连接 V8OS 后可启用 STT 兜底唤醒');
+      }
+      return;
+    }
+    const audioBlob = await snapshotRecentSpeechBlob();
+    if (!audioBlob || audioBlob.size < 512) {
+      setVoiceStatus('语音唤醒监听中：等待有效麦克风片段');
+      return;
+    }
+    wakewordPollInFlightRef.current = true;
+    try {
+      setVoiceStatus('正在用 V8OS STT 检查唤醒词...');
+      const payload = await client.transcribeSpeech(audioBlob, {
+        language: resolveSpeechLanguage(),
+        filename: 'cybercore-wakeword.webm',
+      });
+      const text = String(payload.text || payload.transcript || '').trim();
+      speechAudioChunksRef.current = [];
+      if (!text || text === lastWakewordTranscriptRef.current) {
+        setVoiceStatus(text ? '语音唤醒监听中：暂无新指令' : '语音唤醒监听中：未识别到文本');
+        return;
+      }
+      lastWakewordTranscriptRef.current = text;
+      handleWakewordTranscript(text, 'V8OS STT');
+    } catch (error: any) {
+      setVoiceStatus(`V8OS STT 唤醒兜底失败：${error?.message || 'unknown'}`);
+    } finally {
+      wakewordPollInFlightRef.current = false;
+    }
+  };
+
+  const startWakewordSttFallback = () => {
+    if (wakewordPollTimerRef.current) return;
+    wakewordPollTimerRef.current = window.setInterval(() => {
+      void runWakewordSttFallbackTick();
+    }, 4500);
+    window.setTimeout(() => {
+      void runWakewordSttFallbackTick();
+    }, 2200);
+  };
+
+  const shouldUseV8SttWakeFallback = () => (
+    settingsRef.current.wakeEngine === 'v8os_stt'
+    || settingsRef.current.wakeEngine === 'local_kws'
   );
 
+  const shouldUseWebSpeechWakeFallback = () => (
+    !window.v8CyberCore && (
+      settingsRef.current.wakeEngine === 'webspeech'
+      || settingsRef.current.wakeEngine === 'local_kws'
+    )
+  );
+
+  // Web Speech API Recognition Setup (Voice Input)
+  useEffect(() => {
+    if (window.v8CyberCore) {
+      setVoiceStatus('本地运行中，已使用 V8OS STT 兜底唤醒监听');
+      return;
+    }
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRec) {
+      const rec = new SpeechRec();
+      rec.continuous = true; // Stay listening for continuous wakewords
+      rec.interimResults = false;
+      rec.lang = resolveSpeechLanguage();
+
+      rec.onstart = () => {
+        setIsListening(true);
+        setVoiceStatus(`WebSpeech fallback 监听中：请说 ${settingsRef.current.wakeword || 'Fairy'}`);
+      };
+
+      rec.onresult = (event: any) => {
+        const lastIndex = event.results.length - 1;
+        const transcript = event.results[lastIndex][0].transcript.trim();
+        if (!transcript) return;
+        handleWakewordTranscript(transcript, 'WebSpeech');
+      };
+
+      rec.onend = () => {
+        if (localMediaShutdownRef.current) {
+          setIsListening(false);
+          setVoiceStatus('本地语音监听已释放');
+          return;
+        }
+        // Automatically regain continuous microphone locks if the thread deactivates
+        if (settingsRef.current.isWakewordActive) {
+          try {
+            rec.start();
+            setVoiceStatus(`WebSpeech fallback 监听中：请说 ${settingsRef.current.wakeword || 'Fairy'}`);
+          } catch {
+            // Already active
+          }
+        } else {
+          setIsListening(false);
+          setVoiceStatus('语音唤醒已暂停');
+          setEmotion(prev => prev === 'listening' ? 'idle' : prev);
+        }
+      };
+
+      rec.onerror = (e: any) => {
+        console.error("Speech Recognition Error:", e);
+        if (localMediaShutdownRef.current) {
+          setIsListening(false);
+          setVoiceStatus('本地语音监听已释放');
+          return;
+        }
+        if (settingsRef.current.isWakewordActive && e.error !== 'not-allowed') {
+          setTimeout(() => {
+            try { rec.start(); } catch {}
+          }, 1000);
+        } else {
+          setIsListening(false);
+          setVoiceStatus(e.error === 'not-allowed' ? '麦克风权限被拒绝' : `语音识别异常：${e.error || 'unknown'}`);
+          setEmotion('idle');
+        }
+      };
+
+      speechRecognitionRef.current = rec;
+    } else {
+      setVoiceStatus('WebSpeech 唤醒不可用；将使用 V8OS STT 兜底');
+    }
+  }, []);
+
+  // Monitor wakeword active state dynamically to turn mic on/off (Micro-sensing)
+  useEffect(() => {
+    const rec = speechRecognitionRef.current;
+    if (rec) {
+      rec.lang = resolveSpeechLanguage();
+    }
+    
+    if (settings.isWakewordActive) {
+      localMediaShutdownRef.current = false;
+      setIsListening(true);
+      void startMicrophoneBuffer();
+      if (settings.wakeEngine === 'local_kws') {
+        void refreshWakeEngineStatus();
+      }
+      if (shouldUseV8SttWakeFallback()) {
+        startWakewordSttFallback();
+      } else {
+        stopWakewordSttFallback();
+      }
+      try {
+        if (shouldUseWebSpeechWakeFallback()) {
+          rec?.start?.();
+        } else {
+          rec?.stop?.();
+        }
+      } catch (e) {
+        // already listening
+      }
+      if (!rec) {
+        setVoiceStatus('WebSpeech 不可用，V8OS STT 兜底唤醒监听中');
+      }
+    } else {
+      setIsListening(false);
+      stopWakewordSttFallback();
+      stopMicrophoneBuffer();
+      wakeCommandDeadlineRef.current = 0;
+      try {
+        rec?.stop?.();
+      } catch (e) {
+        // already stopped
+      }
+    }
+  }, [settings.isWakewordActive, settings.sttLanguage, settings.lang, settings.wakeEngine]);
+
+  const toggleListening = () => {
+    if (isListening) {
+      setSettings(prev => ({ ...prev, isWakewordActive: false }));
+      speechRecognitionRef.current?.stop?.();
+      setVoiceStatus('语音唤醒已暂停');
+    } else {
+      setSettings(prev => ({ ...prev, isWakewordActive: true }));
+      setVoiceStatus(speechRecognitionRef.current
+        ? `准备启动唤醒监听：${settingsRef.current.wakeword || 'Fairy'}`
+        : '准备启动 V8OS STT 兜底唤醒监听');
+    }
+  };
+
+  // Webcam stream capture controls (Sensory Vision)
+  const toggleWebcam = async () => {
+    if (isWebcamActive) {
+      stopWebcamStream('光学追踪已关闭，鼠标接管');
+    } else {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setWebcamStatus('当前运行环境不支持摄像头权限请求');
+        return;
+      }
+      let stream: MediaStream | null = null;
+      try {
+        webcamIntentRef.current = true;
+        setWebcamStatus('正在请求摄像头权限...');
+        const permission = await window.v8CyberCore?.requestMediaAccess?.('camera');
+        if (permission && permission.granted === false) {
+          setWebcamStatus(`摄像头权限未授予：${String(permission.status || 'denied')}`);
+          webcamIntentRef.current = false;
+          return;
+        }
+        
+        // Before capturing, check if the user clicked pet again to abort
+        if (!webcamIntentRef.current) {
+          setWebcamStatus('已中止摄像头启动');
+          return;
+        }
+
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { width: 320, height: 240, facingMode: 'user' } 
+        });
+
+        // Double check if session was stopped while waiting for getUserMedia
+        if (!webcamIntentRef.current) {
+           stream.getTracks().forEach(t => t.stop());
+           setWebcamStatus('光学追踪已关闭');
+           return;
+        }
+
+        registerHardwareStream('camera', stream);
+        stream.getVideoTracks().forEach((track) => {
+          track.onended = () => {
+            stopWebcamStream('摄像头流已结束，已回退鼠标跟随');
+          };
+          track.onmute = () => {
+            setWebcamStatus('摄像头无画面，暂由鼠标接管');
+          };
+          track.onunmute = () => {
+            setWebcamStatus('摄像头画面恢复，正在扫描人影');
+          };
+        });
+        setIsWebcamActive(true);
+        setWebcamAllowed(true);
+        setEmotion('curious');
+
+        // Wait 100ms for React virtual DOM to render the <video> element and bind the ref
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.onloadedmetadata = () => {
+            void videoRef.current?.play?.();
+            setWebcamStatus('摄像头已连接，正在等待画面帧');
+          };
+          videoRef.current.oncanplay = () => {
+            setWebcamStatus('摄像头画面正常，正在扫描人影');
+          };
+        } else {
+          stopHardwareStream(stream);
+          setIsWebcamActive(false);
+          setWebcamStatus('摄像头视图未就绪，已释放硬件流');
+          return;
+        }
+      } catch (err) {
+        console.error("Camera access blocked:", err);
+        stopHardwareStream(stream);
+        setIsWebcamActive(false);
+        const message = err instanceof DOMException && err.name === 'NotAllowedError'
+          ? '摄像头权限被拒绝，请在系统隐私设置或 Electron 权限中允许摄像头'
+          : '摄像头未授权、无画面或被其他程序占用';
+        setWebcamStatus(message);
+      }
+    }
+  };
+
+  // Triggered when clicking webcam stream to shut it down on unmount
+  useEffect(() => {
+    const handleShutdown = () => {
+      setIsExiting(true);
+      cleanupLocalMedia();
+    };
+    const removePrepareShutdown = window.v8CyberCore?.onPrepareShutdown?.(handleShutdown);
+    const handleBeforeUnload = () => cleanupLocalMedia();
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      removePrepareShutdown?.();
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      cleanupLocalMedia();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isWebcamActive) return;
+    const id = setInterval(() => {
+      const video = videoRef.current;
+      const stream = video?.srcObject as MediaStream | null;
+      const liveTrack = stream?.getVideoTracks().some((track) => track.readyState === 'live');
+      if (!video || !stream || !liveTrack) {
+        stopWebcamStream('摄像头流不可用，已回退鼠标跟随');
+        return;
+      }
+      if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+        setWebcamStatus('摄像头已开启但暂无有效画面帧');
+      }
+    }, 1600);
+    return () => clearInterval(id);
+  }, [isWebcamActive]);
+
+  // Submit conversation through the V8OS Admin BFF.
+  const handleChatSubmit = async (
+    customMessage?: string,
+    customFileUrls?: string[],
+    customAttachments?: Record<string, unknown>[],
+  ) => {
+    const inputStr = customMessage !== undefined ? customMessage : chatInput;
+    const hasCustomFiles = Array.isArray(customFileUrls) && customFileUrls.length > 0;
+    if (!inputStr.trim() && !isWebcamActive && !hasCustomFiles) return;
+
+    const userMsgText = inputStr || (isWebcamActive ? "Scanning vision core optical field..." : "");
+    let capturedImageBase64 = "";
+
+    if (isWebcamActive && videoRef.current && canvasRef.current) {
+      setEmotion('scanning');
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const context = canvas.getContext('2d');
+      if (context) {
+        canvas.width = video.videoWidth || 320;
+        canvas.height = video.videoHeight || 240;
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        capturedImageBase64 = canvas.toDataURL('image/jpeg', 0.85);
+      }
+    }
+
+    const newUserMessage: ChatMessage = {
+      id: `user-${Date.now()}`,
+      sender: 'user',
+      text: userMsgText,
+      timestamp: nowLabel(),
+      image: capturedImageBase64 || undefined,
+    };
+
+    setMessages(prev => [...prev, newUserMessage]);
+    if (!customMessage) setChatInput('');
+    setIsLoading(true);
+    setEmotion(capturedImageBase64 ? 'scanning' : 'curious');
+
+    try {
+      const client = v8ClientRef.current;
+      if (!client) throw new Error('V8OS client unavailable');
+      const conversationId = await ensureV8Conversation(userMsgText || V8_VOICE_CONVERSATION_TITLE);
+      setV8Status('已发送到 V8OS Supervisor');
+      await client.submitMessage({
+        conversationId,
+        content: capturedImageBase64
+          ? `${userMsgText}\n\n[Desktop pet optical frame captured locally; visual upload support is handled by V8OS when available.]`
+          : userMsgText,
+        clientMessageId: `cybercore-${Date.now()}`,
+        fileUrls: customFileUrls?.length ? customFileUrls : undefined,
+        attachments: customAttachments?.length ? customAttachments : undefined,
+      });
+
+      let latestText = '';
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 900 : 1600));
+        latestText = await syncV8Snapshot(conversationId);
+        if (latestText) break;
+      }
+
+      if (latestText) {
+        if (!v8LastSnapshotAudioPlayedRef.current) {
+          speakString(latestText);
+        }
+        setV8Status('V8OS Supervisor 已回流');
+      } else {
+        setV8Status('V8OS 正在运行，稍后可在会话里查看回流');
+        setMessages(prev => [
+          ...prev,
+          {
+            id: `v8-wait-${Date.now()}`,
+            sender: 'pet',
+            text: 'V8OS 已接收任务，Supervisor 正在运行。你可以继续观察右键菜单里的会话流。',
+            timestamp: nowLabel(),
+            emotion: 'thinking',
+          }
+        ]);
+      }
+    } catch (err: any) {
+      console.error(err);
+      const errorMsg: ChatMessage = {
+        id: `err-${Date.now()}`,
+        sender: 'pet',
+        text: `V8OS 连接故障：${err?.message || '无法连接 Admin BFF'}。请检查本机 V8OS 服务是否已启动。`,
+        timestamp: nowLabel(),
+        emotion: 'worried'
+      };
+      setMessages(prev => [...prev, errorMsg]);
+      setV8Error(err?.message || 'V8OS 请求失败');
+      setV8Status('V8OS 请求失败');
+      setEmotion('worried');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  // Let core express random actions when double-clicked
+  const triggerRandomEmotion = () => {
+    const emotions: PetEmotion[] = ['happy', 'curious', 'resting', 'worried', 'scanning'];
+    const random = emotions[Math.floor(Math.random() * emotions.length)];
+    setEmotion(random);
+    
+    let dialogue = "主人，仙灵核心在线。语音矩阵已切换为中文电子女声。";
+    if (random === 'happy') dialogue = "能量回路稳定上扬，主人，我现在状态很好。";
+    if (random === 'resting') dialogue = "我进入低功耗待机，但仍会监听你的指令。";
+    if (random === 'curious') dialogue = "我正在扫描周围信号，这里有点有趣。";
+    if (random === 'worried') dialogue = "检测到轻微异常波动，建议稍后检查连接状态。";
+    if (random === 'scanning') dialogue = "光学阵列开始扫描，请保持目标稳定。";
+
+    speakString(dialogue);
+    setMessages(prev => [
+      ...prev,
+      {
+        id: `reactive-${Date.now()}`,
+        sender: 'pet',
+        text: dialogue,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        emotion: random
+      }
+    ]);
+  };
+
+  // Master left-click handler on pet companion
+  const handlePetClick = () => {
+    const hasActiveStreams = isListening || isWebcamActive;
+    if (hasActiveStreams) {
+      stopWakewordSttFallback();
+      stopMicrophoneBuffer();
+      stopWebcamStream('光学与声学信道已手动切断');
+      wakeCommandDeadlineRef.current = 0;
+      setIsListening(false);
+      setSettings(prev => ({ ...prev, isWakewordActive: false }));
+    } else {
+      triggerRandomEmotion();
+    }
+  };
+
+  // --- V8OS SSE Stream Listener ---
+  useEffect(() => {
+    const conversationId = v8ActiveConversationId;
+    if (!conversationId) return;
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) return;
+
+    const abortController = new AbortController();
+
+    const connectStream = async () => {
+      try {
+        await client.streamRealtimeSession(
+          conversationId,
+          (eventName, rawPayload: any) => {
+            if (eventName === 'ping') return;
+            
+            let rules: any[] = [];
+            try { rules = JSON.parse(settingsRef.current.v8EventRulesJson || '[]'); } catch {}
+
+            const data = rawPayload?.data || {};
+            const topic = rawPayload?.topic || data?.topic || rawPayload?.name || '';
+            const summary = rawPayload?.summary || data?.summary || data?.message || '';
+            const runtimeId = rawPayload?.runtimeId || data?.runtimeId || '';
+            
+            let kind = 'message';
+            const joined = `${topic} ${runtimeId} ${summary}`.toLowerCase();
+            if (joined.includes('approval') || joined.includes('ask_user')) kind = 'approval_needed';
+            else if (joined.includes('artifact')) kind = 'artifact_ready';
+            else if (joined.includes('tool') || joined.includes('command')) kind = 'tool_calling';
+            else if (joined.includes('reasoning') || joined.includes('thinking')) kind = 'thinking';
+            else if (joined.includes('subagent') || joined.includes('delegation')) kind = 'subagent_active';
+            else if (joined.includes('runtime') || joined.includes('episode') || runtimeId) kind = 'runtime_active';
+            
+            if (rawPayload?.status && /fail|error/i.test(rawPayload.status)) kind = 'error';
+
+            const matchedRule = rules.find((r: any) => r.match === kind);
+            if (matchedRule) {
+              if (matchedRule.emotion) setEmotion(matchedRule.emotion);
+              if (matchedRule.speak && matchedRule.phrase) speakString(matchedRule.phrase);
+            }
+            
+            // Auto-play audio if V8OS returned an audio buffer
+            const audioData = data?.audio || rawPayload?.audio || data?.voiceData;
+            if (audioData) {
+              if (typeof audioData === 'string') {
+                if (audioData.startsWith('data:audio') || audioData.startsWith('http')) {
+                  fetch(audioData).then(res => res.blob()).then(blob => playAudioBlob(blob)).catch(console.error);
+                } else if (audioData.length > 50) {
+                  fetch(`data:audio/wav;base64,${audioData}`).then(res => res.blob()).then(blob => playAudioBlob(blob)).catch(console.error);
+                }
+              }
+            }
+          },
+          abortController.signal
+        );
+      } catch (err: any) {
+        if (!abortController.signal.aborted) {
+          console.warn('V8 Realtime Stream Disconnected:', err);
+        }
+      }
+    };
+
+    connectStream();
+    return () => {
+      abortController.abort();
+    };
+  }, [v8ActiveConversationId, v8Session]);
+
   return (
-    <CyberPet
-      connected={connected}
-      status={status}
-      emotion={emotion}
-      settings={settings}
-      messages={messages}
-      activeConversation={activeConversation ? summarizeConversation(activeConversation, projects) : null}
-      isListening={isRecording}
-      isSpeaking={isSpeaking}
-      clickThrough={clickThrough}
-      onOpenAdmin={() => window.v8CyberCore?.openAdmin?.(clientRef.current.getStoredAdminBaseUrl())}
-      onOpenSettings={() => window.v8CyberCore?.openAdmin?.(`${clientRef.current.getStoredAdminBaseUrl()}/admin/desktop-pet`)}
-      onToggleClickThrough={async () => {
-        const next = !clickThrough;
-        setClickThrough(next);
-        await window.v8CyberCore?.setClickThrough?.(next);
-      }}
-      onToggleMuted={() => setSettings((current) => ({ ...current, muted: !current.muted }))}
-      onToggleListening={() => void toggleRecording()}
-      onQuit={() => window.v8CyberCore?.quit?.()}
-    />
+    <div id="cyber-app-container" className="min-h-screen w-screen bg-transparent text-slate-100 overflow-hidden relative selection:bg-blue-600/30 font-sans">
+      {/* Full screen Interactive Canvas Field */}
+      <div 
+        id="mockup-desktop-workspace" 
+        className="w-full h-screen relative overflow-hidden flex items-center justify-center bg-transparent"
+      >
+        {/* Cyber Pet Core-01 Entity with direct property injects */}
+        <CyberPet
+          isExiting={isExiting}
+          emotion={emotion}
+          isTalking={isTalking}
+          onPetClick={handlePetClick}
+          audioVolume={audioVolume}
+          settings={settings}
+          onUpdateSettings={setSettings}
+          messages={messages}
+          setMessages={setMessages}
+          isLoading={isLoading}
+          chatInput={chatInput}
+          setChatInput={setChatInput}
+          handleChatSubmit={handleChatSubmit}
+          isMuted={isMuted}
+          setIsMuted={setIsMuted}
+          isListening={isListening}
+          toggleListening={toggleListening}
+          isWebcamActive={isWebcamActive}
+          toggleWebcam={toggleWebcam}
+          webcamStatus={webcamStatus}
+          voiceStatus={voiceStatus}
+          wakeEngineStatus={wakeEngineStatus}
+          onReleaseMicrophone={() => {
+            stopWakewordSttFallback();
+            stopMicrophoneBuffer();
+            wakeCommandDeadlineRef.current = 0;
+            setIsListening(false);
+            setSettings(prev => ({ ...prev, isWakewordActive: false }));
+            setVoiceStatus('麦克风已手动释放');
+          }}
+          onReleaseCamera={() => stopWebcamStream('手动释放光学流')}
+          onTestSpeech={(text?: string) => speakString(text || '主人，中文电子女声测试完成。')}
+          videoRef={videoRef}
+          screenVideoRef={desktopVideoRef}
+          canvasRef={canvasRef}
+          metrics={metrics}
+          v8Connection={{
+            connected: Boolean(v8Session),
+            status: v8Status,
+            error: v8Error,
+            conversations: v8Conversations,
+            projects: v8Projects,
+            activeConversationId: v8ActiveConversationId,
+            onSelectConversation: (id: string) => {
+              setV8ActiveConversationId(id);
+              v8ClientRef.current?.setActiveConversationId(id);
+              if (id) syncV8Snapshot(id).catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
+            },
+            onConnect: connectV8,
+            onDisconnect: disconnectV8,
+            onRefresh: refreshV8Lists,
+            onOpenAdmin: () => window.v8CyberCore?.openAdmin(settingsRef.current.v8AdminBaseUrl),
+            onQuit: () => window.v8CyberCore?.quit(),
+          }}
+        />
+
+        {/* Laser Scanning overlay when active */}
+        {emotion === 'scanning' && (
+          <div className="absolute inset-x-0 top-0 h-1 bg-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.7)] animate-[bounce_1.8s_infinite] pointer-events-none" />
+        )}
+      </div>
+
+    </div>
   );
 }

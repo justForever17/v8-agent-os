@@ -1,8 +1,18 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Query
 
 from core.extensions_runtime import extensions_runtime_service
+from core.extensions_store_service import (
+    ExtensionStoreError,
+    install_store_mcp,
+    install_store_skill,
+    list_store_mcp,
+    list_store_skills,
+    get_store_mcp_detail,
+)
+from core.mcp_config_service import McpConfigValidationError
+from core.skills_install_service import SkillInstallValidationError
 
 
 router = APIRouter()
@@ -68,6 +78,71 @@ async def reload_extensions():
     try:
         payload = await extensions_runtime_service.reload()
         return {"status": "success", **payload}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/extensions/store/skills")
+async def get_extensions_store_skills(
+    query: str = "",
+    limit: int = Query(default=24, ge=1, le=60),
+    refresh: bool = False,
+):
+    try:
+        return list_store_skills(query=query, limit=limit, refresh=refresh)
+    except ExtensionStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/extensions/store/skills/install")
+async def install_extensions_store_skill(payload: dict = Body(...)):
+    try:
+        return install_store_skill(payload)
+    except SkillInstallValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_payload())
+    except ExtensionStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/extensions/store/mcp")
+async def get_extensions_store_mcp(
+    query: str = "",
+    limit: int = Query(default=24, ge=1, le=60),
+    refresh: bool = False,
+):
+    try:
+        return list_store_mcp(query=query, limit=limit, refresh=refresh)
+    except ExtensionStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/extensions/store/mcp/detail")
+async def get_extensions_store_mcp_detail(
+    id: str,
+    refresh: bool = False,
+):
+    try:
+        return get_store_mcp_detail(mcp_id=id, refresh=refresh)
+    except ExtensionStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/extensions/store/mcp/install")
+async def install_extensions_store_mcp(payload: dict = Body(...)):
+    try:
+        return install_store_mcp(payload)
+    except McpConfigValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_payload())
+    except ExtensionStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

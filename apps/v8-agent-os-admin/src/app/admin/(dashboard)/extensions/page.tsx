@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Terminal, Trash2, Upload, Wrench } from "lucide-react";
+import Link from "next/link";
+import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Store, Terminal, Trash2, Upload, Wrench } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
@@ -1169,6 +1170,12 @@ export default function ExtensionsPage() {
   return <AdminPageShell>
             <AdminPageHeader title={"app.admin.dashboard.extensions.page.k5b035c36"} description={"app.admin.dashboard.extensions.page.k042a5a79"} actions={<div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} label={t("app.admin.dashboard.extensions.page.kcc06e009")} />
+                        <Button variant="outline" asChild>
+                            <Link href="/admin/extensions/store">
+                                <Store className="mr-2 h-4 w-4" />
+                                {t("app.admin.dashboard.extensions.page.storeEntry")}
+                            </Link>
+                        </Button>
                         <Button onClick={() => void handleSaveConfig()} disabled={saving}>
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.extensions.page.k6010e1ed")}

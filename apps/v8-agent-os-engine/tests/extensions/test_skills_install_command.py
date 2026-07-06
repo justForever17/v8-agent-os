@@ -25,6 +25,16 @@ def test_parse_skill_install_command_accepts_explicit_global_and_skill_alias() -
     assert parsed.normalized_command == "npx --yes skills add signerlabs/ShipSwift -g --skill add-component"
 
 
+def test_parse_skill_install_command_accepts_owner_repo_at_skill() -> None:
+    parsed = parse_skill_install_command("npx --yes skills add signerlabs/ShipSwift@add-component -g")
+
+    assert parsed.source == "signerlabs/ShipSwift"
+    assert parsed.skill_name == "add-component"
+    assert parsed.global_flag_added is False
+    assert parsed.yes is True
+    assert parsed.normalized_command == "npx --yes skills add signerlabs/ShipSwift -g --skill add-component"
+
+
 def test_parse_skill_install_command_rejects_project_scope() -> None:
     with pytest.raises(ValueError, match="不支持项目级"):
         parse_skill_install_command("npx skills add signerlabs/ShipSwift --project")

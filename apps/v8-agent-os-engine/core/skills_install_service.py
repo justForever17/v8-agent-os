@@ -143,6 +143,16 @@ def parse_skill_install_command(command: str) -> ParsedSkillInstallCommand:
     if source.startswith("-"):
         raise ValueError("请提供合法的 Skills 来源，不能以 `-` 开头。")
 
+    source_skill_match = re.fullmatch(
+        r"(?P<source>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@(?P<skill>[A-Za-z0-9_.-]+)",
+        source,
+    )
+    if source_skill_match:
+        if skill_name and skill_name != source_skill_match.group("skill"):
+            raise ValueError("`owner/repo@skill` 与 `--skill` 指定了不同的 Skill。")
+        source = source_skill_match.group("source")
+        skill_name = source_skill_match.group("skill")
+
     global_flag_added = not global_install
     normalized_tokens = ["npx"]
     if yes:

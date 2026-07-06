@@ -183,13 +183,13 @@ export function RuntimeDashboardCards() {
     }, [t, toast]);
 
     return (
-        <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+        <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
             <CardHeader className="space-y-1 pb-4">
-                <CardTitle className="text-lg text-slate-900">{t("components.runtime.RuntimeDashboardCards.k67336fc2")}</CardTitle>
+                <CardTitle className="text-lg text-slate-900 dark:text-slate-100">{t("components.runtime.RuntimeDashboardCards.k67336fc2")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
                 {loading ? (
-                    <div className="flex h-28 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/80">
+                    <div className="flex h-28 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 dark:border-border dark:bg-muted/40">
                         <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
                     </div>
                 ) : (
@@ -227,11 +227,11 @@ export function RuntimeDashboardCards() {
                                             statusDotEnabled={enabled}
                                             statusLabel={stateLabel}
                                             extraBadge={onDemand ? (
-                                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
+                                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-muted dark:text-muted-foreground">
                                                     {t("components.runtime.RuntimeDashboardCards.k37f55da8")}
                                                 </span>
                                             ) : null}
-                                            className="rounded-2xl border-slate-200 bg-slate-50/70 shadow-none p-4"
+                                            className="rounded-2xl border-slate-200 bg-slate-50/70 shadow-none p-4 dark:border-border dark:bg-muted/40"
                                         />
                                     );
                                 })}

@@ -10,8 +10,8 @@ type AdminSurfaceCardProps = React.ComponentPropsWithoutRef<typeof Card> & {
 };
 
 const surfaceClassNameByVariant: Record<NonNullable<AdminSurfaceCardProps["surface"]>, string> = {
-    panel: "rounded-2xl border-slate-200 bg-white text-slate-900 shadow-sm dark:border-white/10 dark:bg-zinc-950/80 dark:text-slate-100",
-    nested: "rounded-2xl border-border bg-card text-card-foreground dark:border-white/10 dark:bg-white/[0.03]",
+    panel: "rounded-2xl border-slate-200 bg-white text-slate-900 shadow-sm dark:border-border dark:bg-card dark:text-card-foreground",
+    nested: "rounded-2xl border-border bg-card text-card-foreground dark:border-border dark:bg-muted/40",
 };
 
 export const AdminSurfaceCard = React.forwardRef<HTMLDivElement, AdminSurfaceCardProps>(

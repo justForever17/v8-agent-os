@@ -75,7 +75,7 @@ function ModelSelectOptionRow({
 }) {
   const icon = modelOptionIcon(model);
   return <span className="flex min-w-0 items-center gap-2">
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600 dark:bg-muted dark:text-muted-foreground">
             {icon ? <Image src={icon} alt="" width={16} height={16} className="h-4 w-4 rounded object-contain" unoptimized /> : modelOptionProviderMark(model)}
         </span>
         <span className="min-w-0 truncate">{label}</span>

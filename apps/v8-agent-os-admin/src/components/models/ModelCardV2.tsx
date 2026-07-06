@@ -285,7 +285,7 @@ export function ModelCardV2({
   return <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${defaultBadges.length ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex min-w-0 items-start gap-2">
-                    <AdminHoverInfo lines={details} triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600">
+                    <AdminHoverInfo lines={details} triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-muted dark:text-muted-foreground">
 
                         {modelIcon ? <Image src={modelIcon} alt="" width={20} height={20} className="h-5 w-5 rounded object-contain" unoptimized /> : model.provider?.icon || providerMark}
                     </AdminHoverInfo>
@@ -310,12 +310,12 @@ export function ModelCardV2({
               key,
               labelKey,
               Icon
-            }) => <span key={`${modelRef}:${key}`} title={t(labelKey)} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+            }) => <span key={`${modelRef}:${key}`} title={t(labelKey)} className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600 dark:bg-muted dark:text-muted-foreground">
                                     <Icon className="h-2.5 w-2.5" />
                                 </span>)}
                         </div>
                         <div className="mt-2 h-5">
-                            {displayStatus !== "idle" ? <div className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[10px] ${displayStatus === "success" ? "bg-emerald-50 text-emerald-700" : displayStatus === "warning" ? "bg-amber-50 text-amber-700" : displayStatus === "error" ? "bg-red-50 text-red-700" : "bg-slate-100 text-slate-600"}`} title={statusMessage}>
+                            {displayStatus !== "idle" ? <div className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[10px] ${displayStatus === "success" ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200" : displayStatus === "warning" ? "bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200" : displayStatus === "error" ? "bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-200" : "bg-slate-100 text-slate-600 dark:bg-muted dark:text-muted-foreground"}`} title={statusMessage}>
 
                                     {displayStatus === "success" ? <CheckCircle2 className="h-3 w-3 shrink-0" /> : displayStatus === "error" || displayStatus === "warning" ? <AlertCircle className="h-3 w-3 shrink-0" /> : <LoaderCircle className="h-3 w-3 shrink-0 animate-spin" />}
                                     <span className="truncate">

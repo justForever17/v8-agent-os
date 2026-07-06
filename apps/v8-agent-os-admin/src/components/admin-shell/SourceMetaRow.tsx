@@ -23,7 +23,7 @@ export function SourceMetaRow({
     const t = useT();
 
     return (
-        <AdminSurfaceCard className="bg-slate-50/80 p-4 dark:bg-white/[0.03]">
+        <AdminSurfaceCard className="bg-slate-50/80 p-4 dark:bg-card">
             <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="outline" className="border-slate-200 bg-white text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
                     {t("components.admin.shell.SourceMetaRow.k155ede7a")}

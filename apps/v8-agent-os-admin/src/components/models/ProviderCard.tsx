@@ -75,7 +75,7 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
                     <div className="flex min-w-0 items-center gap-2">
                         <AdminHoverInfo
                             lines={details}
-                            triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600"
+                            triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-muted dark:text-muted-foreground"
                         >
                             {providerLogo ? (
                                 <Image src={providerLogo} alt="" width={20} height={20} className="h-5 w-5 rounded object-contain" unoptimized />

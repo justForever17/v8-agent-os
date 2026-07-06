@@ -285,12 +285,12 @@ function StatusPill({ value }: {value?: string;}) {
   const normalized = String(value || "planned");
   const palette =
   normalized === "verified" || normalized === "pass" ?
-  "bg-emerald-100 text-emerald-700" :
+  "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200" :
   normalized === "failed_verification" || normalized.includes("fail") ?
-  "bg-rose-100 text-rose-700" :
+  "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200" :
   normalized === "unverified" || normalized === "warning" ?
-  "bg-amber-100 text-amber-700" :
-  "bg-slate-100 text-slate-600";
+  "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200" :
+  "bg-slate-100 text-slate-600 dark:bg-muted dark:text-muted-foreground";
   return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{getStatusLabel(normalized, t)}</span>;
 }
 
@@ -299,21 +299,21 @@ function MatrixStatusPill({ value }: {value?: string;}) {
   const normalized = String(value || "warning");
   const palette =
   normalized === "pass" ?
-  "bg-emerald-100 text-emerald-700" :
+  "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200" :
   normalized === "fail" ?
-  "bg-rose-100 text-rose-700" :
-  "bg-amber-100 text-amber-700";
+  "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200" :
+  "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200";
   return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{getStatusLabel(normalized, t)}</span>;
 }
 
 function FieldList({ items, empty }: {items?: string[];empty: string;}) {
   if (!items?.length) {
-    return <p className="text-sm text-slate-500">{empty}</p>;
+    return <p className="text-sm text-slate-500 dark:text-muted-foreground">{empty}</p>;
   }
   return (
     <div className="flex flex-wrap gap-2">
             {items.slice(0, 24).map((item) =>
-      <span key={item} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700">
+      <span key={item} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 dark:bg-muted dark:text-muted-foreground">
                     {item}
                 </span>
       )}
@@ -324,32 +324,32 @@ function FieldList({ items, empty }: {items?: string[];empty: string;}) {
 function SummaryCard({ label, value, hint, tone = "slate" }: {label: string;value: string;hint?: string;tone?: "slate" | "emerald" | "amber" | "rose";}) {
   const toneClass =
   tone === "emerald" ?
-  "border-emerald-200 bg-emerald-50/70 text-emerald-900" :
+  "border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-500/30 dark:bg-card dark:text-emerald-200" :
   tone === "amber" ?
-  "border-amber-200 bg-amber-50/70 text-amber-900" :
+  "border-amber-200 bg-amber-50/70 text-amber-900 dark:border-amber-500/30 dark:bg-card dark:text-amber-200" :
   tone === "rose" ?
-  "border-rose-200 bg-rose-50/70 text-rose-900" :
-  "border-slate-200 bg-white text-slate-900";
+  "border-rose-200 bg-rose-50/70 text-rose-900 dark:border-rose-500/30 dark:bg-card dark:text-rose-200" :
+  "border-slate-200 bg-white text-slate-900 dark:border-border dark:bg-card dark:text-slate-100";
   return (
     <div className={`rounded-2xl border p-4 ${toneClass}`}>
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-muted-foreground">{label}</div>
             <div className="mt-2 text-2xl font-semibold">{value}</div>
-            {hint ? <p className="mt-2 text-sm text-slate-600">{hint}</p> : null}
+            {hint ? <p className="mt-2 text-sm text-slate-600 dark:text-muted-foreground">{hint}</p> : null}
         </div>);
 
 }
 
 function AdvancedPanel({ title, children, defaultOpen = false }: {title: string;children: ReactNode;defaultOpen?: boolean;}) {
   return (
-    <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-border dark:bg-card">
             <summary className="cursor-pointer list-none">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                        <h3 className="text-base font-semibold text-slate-950">{title}</h3>
+                        <h3 className="text-base font-semibold text-slate-950 dark:text-slate-100">{title}</h3>
                     </div>
                 </div>
             </summary>
-            <div className="mt-4 border-t border-slate-100 pt-4">{children}</div>
+            <div className="mt-4 border-t border-slate-100 pt-4 dark:border-border">{children}</div>
         </details>);
 
 }
@@ -646,25 +646,25 @@ export default function EngineeringLanePage() {
             footer={envelope ? <SourceMetaRow source={envelope.source} savePath={envelope.savePath} reloadRequired={Boolean(envelope.reloadRequired)} /> : null}>
 
                         {loading ?
-            <div className="flex items-center gap-2 text-sm text-slate-500">
+            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-muted-foreground">
                                 <Loader2 className="h-4 w-4 animate-spin" />
                                 {t("app.admin.dashboard.engineeringLane.loading")}
                             </div> :
 
             <div className="space-y-4">
-                                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-border dark:bg-card">
                                     <div className="flex flex-wrap items-start justify-between gap-3">
                                         <div>
                                             <AdminHoverInfo
                                                 content={t("app.admin.dashboard.engineeringLane.plannerModelHover")}
                                                 panelClassName="max-w-[28rem] text-sm leading-6"
                                             >
-                                                <Label className="cursor-help text-sm font-semibold text-slate-900">
+                                                <Label className="cursor-help text-sm font-semibold text-slate-900 dark:text-slate-100">
                                                     {t("app.admin.dashboard.engineeringLane.plannerModel")}
                                                 </Label>
                                             </AdminHoverInfo>
                                         </div>
-                                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-muted dark:text-muted-foreground">
                                             {config.modelBindings?.plannerModel ? t("app.admin.dashboard.engineeringLane.plannerModelBound") : t("app.admin.dashboard.engineeringLane.plannerModelFallback")}
                                         </span>
                                         <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
@@ -688,14 +688,14 @@ export default function EngineeringLanePage() {
                                             })}
                                         />
                                     </div>
-                                    <div className="mt-3 grid gap-2 text-xs text-slate-500 sm:grid-cols-3">
-                                        <span className="rounded-xl bg-slate-50 px-3 py-2">
+                                    <div className="mt-3 grid gap-2 text-xs text-slate-500 dark:text-muted-foreground sm:grid-cols-3">
+                                        <span className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-muted/60">
                                             {t("app.admin.dashboard.engineeringLane.plannerCacheEvents", { count: plannerCacheSummary.events })}
                                         </span>
-                                        <span className="rounded-xl bg-slate-50 px-3 py-2">
+                                        <span className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-muted/60">
                                             {t("app.admin.dashboard.engineeringLane.plannerCachePrefixes", { count: plannerCacheSummary.reusedPrefixes })}
                                         </span>
-                                        <span className="rounded-xl bg-slate-50 px-3 py-2">
+                                        <span className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-muted/60">
                                             {plannerCacheSummary.lastProfile || t("app.admin.dashboard.engineeringLane.plannerCacheNoProfile")}
                                         </span>
                                     </div>
@@ -705,7 +705,7 @@ export default function EngineeringLanePage() {
                                         </p>
                                     ) : null}
                                     {config.plannerReadiness?.reason ? (
-                                        <p className="mt-2 text-xs text-slate-500">
+                                        <p className="mt-2 text-xs text-slate-500 dark:text-muted-foreground">
                                             {t("app.admin.dashboard.engineeringLane.plannerReadinessReason", { reason: config.plannerReadiness.reason })}
                                         </p>
                                     ) : null}
@@ -737,8 +737,8 @@ export default function EngineeringLanePage() {
                                         className="border-slate-200 p-4 rounded-2xl"
                                     />
                                 </div>
-                                <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                                    <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+                                <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-border dark:bg-card">
+                                    <summary className="cursor-pointer text-sm font-semibold text-slate-800 dark:text-slate-100">
                                         {t("app.admin.dashboard.engineeringLane.advancedConfigTitle")}
                                     </summary>
                                     <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -780,7 +780,7 @@ export default function EngineeringLanePage() {
                       description={t(`app.admin.dashboard.engineeringLane.${label}Hint`)}
                       checked={Boolean(config[key])}
                       onCheckedChange={(value) => patchConfig({ [key]: value } as Partial<EngineeringLaneConfig>)}
-                      className="border-slate-200 bg-white p-3 rounded-xl"
+                      className="border-slate-200 bg-white p-3 rounded-xl dark:border-border dark:bg-muted/40"
                   />
                   )}
                                     </div>
@@ -828,30 +828,30 @@ export default function EngineeringLanePage() {
                                         <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryLearning")} value={learningEligibility.eligible === true ? t("app.admin.dashboard.engineeringLane.valueYes") : learningEligibility.eligible === false ? t("app.admin.dashboard.engineeringLane.valueNo") : t("app.admin.dashboard.engineeringLane.valueRouteTestOnly")} hint={String(learningEligibility.reason || t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote"))} />
                                     </div> :
 
-                <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500 dark:border-border dark:text-muted-foreground">
                                         <Code2 className="mb-3 h-5 w-5" />
                                         {t("app.admin.dashboard.engineeringLane.noDryRun")}
                                     </div>
                 }
                                 {dryRunResult && (matrixTotal > 0 || topMatrixIssues.length > 0) ?
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-border dark:bg-card">
                                         <div className="flex flex-wrap items-start justify-between gap-3">
                                             <div>
-                                                <h3 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixTitle")}</h3>
-                                                <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote")}</p>
+                                                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixTitle")}</h3>
+                                                <p className="mt-1 text-xs text-slate-500 dark:text-muted-foreground">{t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote")}</p>
                                             </div>
                                             <MatrixStatusPill value={matrixFail > 0 ? "fail" : matrixWarning > 0 ? "warning" : "pass"} />
                                         </div>
                                         <div className="mt-3 grid gap-2 sm:grid-cols-4">
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-slate-700">{t("app.admin.dashboard.engineeringLane.matrixTotal", { count: String(matrixTotal) })}</span>
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-emerald-700">{t("app.admin.dashboard.engineeringLane.matrixPass", { count: String(matrixPass) })}</span>
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-amber-700">{t("app.admin.dashboard.engineeringLane.matrixWarning", { count: String(matrixWarning) })}</span>
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-rose-700">{t("app.admin.dashboard.engineeringLane.matrixFail", { count: String(matrixFail) })}</span>
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-slate-700 dark:bg-muted dark:text-slate-100">{t("app.admin.dashboard.engineeringLane.matrixTotal", { count: String(matrixTotal) })}</span>
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-emerald-700 dark:bg-muted dark:text-emerald-200">{t("app.admin.dashboard.engineeringLane.matrixPass", { count: String(matrixPass) })}</span>
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-amber-700 dark:bg-muted dark:text-amber-200">{t("app.admin.dashboard.engineeringLane.matrixWarning", { count: String(matrixWarning) })}</span>
+                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-rose-700 dark:bg-muted dark:text-rose-200">{t("app.admin.dashboard.engineeringLane.matrixFail", { count: String(matrixFail) })}</span>
                                         </div>
                                         {topMatrixIssues.length ?
                   <div className="mt-3 space-y-2">
                                                 {topMatrixIssues.map((issue) =>
-                    <div key={issue} className="rounded-xl border border-amber-100 bg-white px-3 py-2 text-xs text-amber-800">
+                    <div key={issue} className="rounded-xl border border-amber-100 bg-white px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
                                                         {issue}
                                                     </div>
                     )}

@@ -396,9 +396,9 @@ function StatPill({ label, value
 
 
 }: {label: string;value: string | number;}) {
-  return <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-            <div className="text-xs text-slate-500">{label}</div>
-            <div className="mt-2 text-2xl font-semibold text-slate-900">{value}</div>
+  return <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 dark:border-border dark:bg-card">
+            <div className="text-xs text-slate-500 dark:text-muted-foreground">{label}</div>
+            <div className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">{value}</div>
         </div>;
 }
 function PolicyToggleCard({ title, description, checked, onCheckedChange, children
@@ -408,7 +408,7 @@ function PolicyToggleCard({ title, description, checked, onCheckedChange, childr
 
 
 }: {title: string;description: string;checked: boolean;onCheckedChange: (checked: boolean) => void;children?: ReactNode;}) {
-  return <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+  return <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-border dark:bg-muted/40">
             <SettingToggleCard
                 title={title}
                 description={description}
@@ -433,7 +433,7 @@ function SliderField({ label, value, min, max, step = 1, disabled, onValueChange
   return <div className={`space-y-3 ${disabled ? "opacity-50" : ""}`}>
             <div className="flex items-center justify-between gap-3">
                 <Label>{label}</Label>
-                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
+                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 dark:border-border dark:bg-card dark:text-slate-100">
                     {formatter ? formatter(value) : value}
                 </span>
             </div>
@@ -442,11 +442,11 @@ function SliderField({ label, value, min, max, step = 1, disabled, onValueChange
         onValueChange(next);
       }
     }} />
-            <div className="flex items-center justify-between text-[11px] text-slate-400">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-muted-foreground">
                 <span>{min}</span>
                 <span>{max}</span>
             </div>
-            {hint ? <div className="text-xs leading-5 text-slate-500">{hint}</div> : null}
+            {hint ? <div className="text-xs leading-5 text-slate-500 dark:text-muted-foreground">{hint}</div> : null}
         </div>;
 }
 function previewMcpServerTools(server: ExtensionPreviewMcpServer): Array<{
@@ -1216,15 +1216,15 @@ export default function ExtensionsPage() {
               placeholder={t("app.admin.dashboard.extensions.page.kccd8e176")}
               onValueChange={(value) => updateConfig({ modelBindings: { prefilterModel: value } })} />
 
-                            <p className="text-xs leading-5 text-slate-500">
+                            <p className="text-xs leading-5 text-slate-500 dark:text-muted-foreground">
                                 {t("app.admin.dashboard.extensions.page.k2cebabf6")}
                             </p>
                         </div>
 
                         <div className="grid gap-4 xl:grid-cols-2">
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-border dark:bg-card">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "79736210")}</div>
+                                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{tg(t, "79736210")}</div>
                                     <Badge variant="outline">{skillsPolicyBadge}</Badge>
                                 </div>
                                 <PolicyToggleCard title={tg(t, "49bc8921")} description={tg(t, "20cdf19c")} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
@@ -1254,9 +1254,9 @@ export default function ExtensionsPage() {
                                 </PolicyToggleCard>
                             </div>
 
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-border dark:bg-card">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "48ba093e")}</div>
+                                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{tg(t, "48ba093e")}</div>
                                     <Badge variant="outline">{mcpPolicyBadge}</Badge>
                                 </div>
                                 <PolicyToggleCard title={tg(t, "49bc8921")} description={tg(t, "0abf4d17")} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({

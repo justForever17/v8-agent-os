@@ -615,7 +615,7 @@ function StatusCardTitle({
   tooltip: ReactNode;
 }) {
   return <AdminHoverInfo content={tooltip} panelClassName="text-sm leading-7">
-            <CardTitle className="flex max-w-full items-center gap-2 truncate text-sm font-bold text-slate-950">
+            <CardTitle className="flex max-w-full items-center gap-2 truncate text-sm font-bold text-slate-950 dark:text-slate-100">
                 {icon}
                 <span className="truncate">{title}</span>
             </CardTitle>
@@ -629,7 +629,7 @@ function HoverHelpLabel({
   tooltip: ReactNode;
 }) {
   return <AdminHoverInfo content={tooltip} panelClassName="text-sm leading-7">
-            <Label className="font-medium text-slate-950">{label}</Label>
+            <Label className="font-medium text-slate-950 dark:text-slate-100">{label}</Label>
         </AdminHoverInfo>;
 }
 function WorkerConfigLabel({
@@ -1438,7 +1438,7 @@ export default function SubagentsPage() {
                             {t("app.admin.dashboard.subagents.page.k790af087")}
                             {debugMode && (
                                 <AdminHoverInfo content={t("app.admin.dashboard.subagents.page.debugConfigHint")}>
-                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">{t("app.admin.dashboard.subagents.page.debugConfigTrigger")}</span>
+                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200 dark:bg-muted dark:text-muted-foreground dark:hover:bg-muted/80">{t("app.admin.dashboard.subagents.page.debugConfigTrigger")}</span>
                                 </AdminHoverInfo>
                             )}
                         </p>
@@ -1475,7 +1475,7 @@ export default function SubagentsPage() {
                                         </div>} />
                             </CardHeader>
                             <CardContent className="px-3 pb-3">
-                                <div className="truncate font-mono text-[11px] text-slate-700">
+                                <div className="truncate font-mono text-[11px] text-slate-700 dark:text-muted-foreground">
                                     {baselineToolNames.slice(0, 2).join(" · ") || "none"}
                                     {baselineToolNames.length > 2 ? ` · +${baselineToolNames.length - 2}` : ""}
                                 </div>
@@ -1490,9 +1490,9 @@ export default function SubagentsPage() {
                                             <div>PluginHost tools: {pluginHostTools.length}</div>
                                         </div>} />
                             </CardHeader>
-                            <CardContent className="grid grid-cols-2 gap-x-3 gap-y-1 px-3 pb-3 text-xs text-slate-500">
-                                <div>Skills <span className="font-medium text-slate-900">{skills.length}</span></div>
-                                <div>MCP <span className="font-medium text-slate-900">{connectedMcpServiceCount}/{mcpServiceCount}</span></div>
+                            <CardContent className="grid grid-cols-2 gap-x-3 gap-y-1 px-3 pb-3 text-xs text-slate-500 dark:text-muted-foreground">
+                                <div>Skills <span className="font-medium text-slate-900 dark:text-slate-100">{skills.length}</span></div>
+                                <div>MCP <span className="font-medium text-slate-900 dark:text-slate-100">{connectedMcpServiceCount}/{mcpServiceCount}</span></div>
                             </CardContent>
                         </Card>
                         <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
@@ -1507,9 +1507,9 @@ export default function SubagentsPage() {
                                             </div>
                                         </div>} />
                             </CardHeader>
-                            <CardContent className="space-y-1 px-3 pb-3 text-xs text-slate-500">
-                                <div><span className="font-medium text-slate-900">fan-out / join</span></div>
-                                <div>{t("components.runtime.RecentRunsPanel.kbad18df9")} <span className="font-medium text-slate-900">{enabledSubagentCount} local / {enabledExternalWorkerCount} remote</span></div>
+                            <CardContent className="space-y-1 px-3 pb-3 text-xs text-slate-500 dark:text-muted-foreground">
+                                <div><span className="font-medium text-slate-900 dark:text-slate-100">fan-out / join</span></div>
+                                <div>{t("components.runtime.RecentRunsPanel.kbad18df9")} <span className="font-medium text-slate-900 dark:text-slate-100">{enabledSubagentCount} local / {enabledExternalWorkerCount} remote</span></div>
                             </CardContent>
                         </Card>
                         <Card className="h-28 overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm">
@@ -1576,15 +1576,15 @@ export default function SubagentsPage() {
                                             </div>
                                         </CardHeader>
                                         <CardContent className="px-4 pb-4 pt-1 space-y-2">
-                                            <p className="text-xs leading-5 text-slate-500 line-clamp-2 min-h-[2.5rem]" title={agent.description || ""}>
+                                            <p className="text-xs leading-5 text-slate-500 line-clamp-2 min-h-[2.5rem] dark:text-muted-foreground" title={agent.description || ""}>
                                                 {agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}
                                             </p>
-                                            <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs text-muted-foreground">
+                                            <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs text-muted-foreground dark:border-border">
                                                 <div className="flex items-center gap-1.5">
                                                     {isBuiltin ? (
                                                         <Badge variant="outline" className="text-[10px] text-amber-600 bg-amber-50/50 border-amber-200 shadow-none px-1.5 py-0 h-5">{t("app.admin.dashboard.subagents.page.builtinBadge")}</Badge>
                                                     ) : (
-                                                        <Badge variant="outline" className="text-[10px] text-slate-600 bg-slate-50/50 border-slate-200 shadow-none px-1.5 py-0 h-5">{t("app.admin.dashboard.subagents.page.customBadge")}</Badge>
+                                                        <Badge variant="outline" className="text-[10px] text-slate-600 bg-slate-50/50 border-slate-200 shadow-none px-1.5 py-0 h-5 dark:border-border dark:bg-muted dark:text-muted-foreground">{t("app.admin.dashboard.subagents.page.customBadge")}</Badge>
                                                     )}
                                                     {agent.globalExposure && <Badge className="text-[10px] bg-emerald-600 hover:bg-emerald-600 px-1.5 py-0 h-5 shadow-none text-white">{t("app.admin.dashboard.subagents.page.globalBadge")}</Badge>}
                                                 </div>
@@ -1916,7 +1916,7 @@ export default function SubagentsPage() {
                     {/* 1. Specialist Registry 家族配置 Card */}
                     <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
                         <CardHeader className="space-y-1 p-4 pb-2 border-b">
-                            <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                            <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
                                 <BrainCircuit className="h-4 w-4 text-indigo-600" />
                                 <AdminHoverInfo
                                     content={
@@ -1951,7 +1951,7 @@ export default function SubagentsPage() {
                     {/* 2. Search/Research 搜寻配置 Card */}
                     <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
                         <CardHeader className="space-y-1 p-4 pb-2 border-b">
-                            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
                                 <SearchCheck className="h-4 w-4 text-cyan-600" />
                                 <AdminHoverInfo
                                     content={
@@ -1982,7 +1982,7 @@ export default function SubagentsPage() {
                                 <div className="space-y-1">
                                     <div className="flex items-center justify-between gap-3">
                                         <Label className="text-xs">{tg(t, "d6c520d8")}：{researchDefaultShards}</Label>
-                                        <span className="text-xs text-slate-500">1-30</span>
+                                        <span className="text-xs text-slate-500 dark:text-muted-foreground">1-30</span>
                                     </div>
                                     <Slider value={[researchDefaultShards]} min={1} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => {
                                         const nextDefault = Math.max(1, Math.min(30, Math.round(value)));
@@ -1993,14 +1993,14 @@ export default function SubagentsPage() {
                                 <div className="space-y-1">
                                     <div className="flex items-center justify-between gap-3">
                                         <Label className="text-xs">{tg(t, "03514d16")}：{researchMaxShards}</Label>
-                                        <span className="text-xs text-slate-500">max 30</span>
+                                        <span className="text-xs text-slate-500 dark:text-muted-foreground">max 30</span>
                                     </div>
                                     <Slider value={[researchMaxShards]} min={researchDefaultShards} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxShards(Math.max(researchDefaultShards, Math.min(30, Math.round(value))))} />
                                 </div>
                                 <div className="space-y-1">
                                     <div className="flex items-center justify-between gap-3">
                                         <Label className="text-xs">{tg(t, "d28b7ea4")}：{researchMaxRounds}</Label>
-                                        <span className="text-xs text-slate-500">1-5</span>
+                                        <span className="text-xs text-slate-500 dark:text-muted-foreground">1-5</span>
                                     </div>
                                     <Slider value={[researchMaxRounds]} min={1} max={5} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxRounds(Math.max(1, Math.min(5, Math.round(value))))} />
                                 </div>
@@ -2015,7 +2015,7 @@ export default function SubagentsPage() {
                     {/* 3. Recursive 递归委派配置 Card */}
                     <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm">
                         <CardHeader className="space-y-1 p-4 pb-2 border-b">
-                            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                            <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
                                 <Cable className="h-4 w-4 text-emerald-600" />
                                 <AdminHoverInfo
                                     content={
@@ -2047,28 +2047,28 @@ export default function SubagentsPage() {
                                 <div className="space-y-1">
                                     <div className="flex items-center justify-between gap-3">
                                         <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxDepthLabel", { value: recursiveMaxDepth })} tooltip={t("admin.pages.subagents.recursive.maxDepthTooltip")} />
-                                        <span className="text-xs text-slate-500">1-100</span>
+                                        <span className="text-xs text-slate-500 dark:text-muted-foreground">1-100</span>
                                     </div>
                                     <Slider value={[recursiveMaxDepth]} min={1} max={100} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxDepth(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100))} />
                                 </div>
                                 <div className="space-y-1">
                                     <div className="flex items-center justify-between gap-3">
                                         <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })} tooltip={t("admin.pages.subagents.recursive.maxChildrenTooltip", { value: recursiveMaxChildren })} />
-                                        <span className="text-xs text-slate-500">1-50</span>
+                                        <span className="text-xs text-slate-500 dark:text-muted-foreground">1-50</span>
                                     </div>
                                     <Slider value={[recursiveMaxChildren]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxChildren(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50))} />
                                 </div>
                                 <div className="space-y-1">
                                     <div className="flex items-center justify-between gap-3">
                                         <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxTotalLabel", { value: recursiveMaxTotalNodes })} tooltip={t("admin.pages.subagents.recursive.maxTotalTooltip")} />
-                                        <span className="text-xs text-slate-500">1-1000</span>
+                                        <span className="text-xs text-slate-500 dark:text-muted-foreground">1-1000</span>
                                     </div>
                                     <Slider value={[recursiveMaxTotalNodes]} min={1} max={1000} step={10} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxTotalNodes(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000))} />
                                 </div>
                                 <div className="space-y-1">
                                     <div className="flex items-center justify-between gap-3">
                                         <HoverHelpLabel label={t("admin.pages.subagents.recursive.maxConcurrentLabel", { value: recursiveMaxConcurrent })} tooltip={t("admin.pages.subagents.recursive.maxConcurrentTooltip")} />
-                                        <span className="text-xs text-slate-500">1-50</span>
+                                        <span className="text-xs text-slate-500 dark:text-muted-foreground">1-50</span>
                                     </div>
                                     <Slider value={[recursiveMaxConcurrent]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxConcurrent(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50))} />
                                 </div>

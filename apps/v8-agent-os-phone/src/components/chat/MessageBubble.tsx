@@ -8,6 +8,7 @@ import {
     buildCollaborationMicroStagesFromMessageBoundNodes,
     buildMessageBoundExecutionNodes,
     buildMessageTimelineSegments,
+    isRuntimeEpisodeGraphActivity,
     type AdminProcessRef,
     type CollaborationMicroStageActivityInput,
     type MessageBoundExecutionMessage,
@@ -47,6 +48,7 @@ import {
 
 const BRAND_MARK = require("../../../assets/images/brand-mark.png");
 const MICRO_STAGE_TOOL_NAMES = new Set(["delegation_broker", "runtime_broker"]);
+const MICRO_STAGE_ACTIVITY_LIMIT = 80;
 
 function isExecutionNode(node: PhoneUiTimelineNode): node is PhoneUiExecutionNode {
     return node.kind === "execution";
@@ -79,6 +81,12 @@ function toMicroStageActivityInput(activity: PhoneRuntimeStageActivity): Collabo
             ? activity.node.data as Record<string, unknown>
             : {},
     };
+}
+
+function isPhoneMicroStageActivity(activity: PhoneRuntimeStageActivity): boolean {
+    return isRuntimeEpisodeGraphActivity({
+        topic: activity.topic || ("topic" in activity.node ? String(activity.node.topic || "") : ""),
+    });
 }
 
 function getExecutionTopic(node: PhoneUiExecutionNode) {
@@ -923,7 +931,10 @@ export const MessageBubble = memo(function MessageBubble({
     const liveFallbackMicroStages = useMemo(
         () => buildCollaborationMicroStages(
             hasSupervisorVisibleActivity && !isUser && isLast
-                ? runtimeActivities.map(toMicroStageActivityInput)
+                ? runtimeActivities
+                    .filter(isPhoneMicroStageActivity)
+                    .slice(0, MICRO_STAGE_ACTIVITY_LIMIT)
+                    .map(toMicroStageActivityInput)
                 : [],
             {
                 runId: message.runId,

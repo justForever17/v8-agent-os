@@ -2134,7 +2134,7 @@ export default function ChatScreen() {
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
-    const [selectedRuntimeId, setSelectedRuntimeId] = useState<PhoneRuntimeId>("chat");
+    const [selectedRuntimeId, setSelectedRuntimeId] = useState<PhoneRuntimeId | null>(null);
     const [workspaceInfoOpen, setWorkspaceInfoOpen] = useState(false);
     const [desktopPreviewOpen, setDesktopPreviewOpen] = useState(false);
     const [desktopPreviewFullscreen, setDesktopPreviewFullscreen] = useState(false);
@@ -5390,7 +5390,8 @@ export default function ChatScreen() {
     const activeRunStatus = String(projection.runControlState.status || "").trim().toLowerCase();
     const isSessionRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeRunStatus);
     const isSessionFailed = ["failed", "cancelled"].includes(activeRunStatus);
-    const showPulseLine = isSessionRunning || isSessionFailed;
+    const hasRuntimeItems = projection.runtimeStageModel.items.length > 0;
+    const showPulseLine = hasRuntimeItems && (isSessionRunning || isSessionFailed);
 
     useEffect(() => {
         if (isSessionRunning) {
@@ -5542,6 +5543,12 @@ export default function ChatScreen() {
             setSelectedRuntimeId(projection.selectedRuntimeId);
         }
     }, [projection.selectedRuntimeId, selectedRuntimeId]);
+
+    useEffect(() => {
+        if (!hasRuntimeItems && runtimePanelOpen) {
+            setRuntimePanelOpen(false);
+        }
+    }, [hasRuntimeItems, runtimePanelOpen]);
 
     useEffect(() => {
         if (!governanceApprovalShouldSurface) {

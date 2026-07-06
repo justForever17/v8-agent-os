@@ -62,6 +62,7 @@ function isExecutionNode(node: UiTimelineNode): node is UiExecutionNode {
 }
 
 const MICRO_STAGE_TOOL_NAMES = new Set(["delegation_broker", "runtime_broker"]);
+const MICRO_STAGE_ACTIVITY_LIMIT = 80;
 
 function hasToolCallId(node: UiTimelineNode): node is UiExecutionNode & { toolCallId: string } {
     return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
@@ -362,7 +363,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     }, [message.nodes]);
     const bubbleExecutionActivities = useMemo(
         () => (message.role !== "user" && message.role !== "tool" && isLast
-            ? runtimeActivities.filter((activity) => isRuntimeEpisodeGraphActivity({ topic: activity.topic }))
+            ? runtimeActivities
+                .filter((activity) => isRuntimeEpisodeGraphActivity({ topic: activity.topic }))
+                .slice(0, MICRO_STAGE_ACTIVITY_LIMIT)
             : []),
         [isLast, message.role, runtimeActivities],
     );

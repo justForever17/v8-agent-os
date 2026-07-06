@@ -54,6 +54,23 @@ function isActiveProcess(process: AdminProcessRef) {
     return status !== "stopped" && status !== "terminated" && status !== "completed" && status !== "failed";
 }
 
+function buildRuntimeWorkbenchSummary(runtimeModel: RuntimeStageModel) {
+    if (runtimeModel.items.length === 0) {
+        return null;
+    }
+    const focusItem = runtimeModel.items.find((item) => item.status === "attention")
+        || runtimeModel.items.find((item) => item.status === "active")
+        || [...runtimeModel.items].sort((left, right) => (right.lastTimestamp || 0) - (left.lastTimestamp || 0))[0]
+        || runtimeModel.items[0];
+    const totalEvents = runtimeModel.items.reduce((total, item) => total + item.eventCount, 0);
+    return {
+        focusItem,
+        totalEvents,
+        runtimeCount: runtimeModel.items.length,
+        summary: focusItem.lastActivity || focusItem.stepTitle || focusItem.description,
+    };
+}
+
 function collectArtifacts(messages: Message[]): WorkbenchArtifact[] {
     const byId = new Map<string, WorkbenchArtifact>();
     for (const message of messages) {
@@ -198,9 +215,11 @@ export function WorkspaceWorkbenchPanel({
     const normalizedTodos = useMemo(() => normalizeTodos(todos), [todos]);
     const activeProcesses = useMemo(() => processes.filter(isActiveProcess), [processes]);
 
-    const hasRuntimeActivity = useMemo(() => {
-        return runtimeModel.items.some((item) => item.status !== "idle" || item.eventCount > 0);
-    }, [runtimeModel.items]);
+    const runtimeSummary = useMemo(
+        () => buildRuntimeWorkbenchSummary(runtimeModel),
+        [runtimeModel],
+    );
+    const hasRuntimeActivity = Boolean(runtimeSummary);
 
     const hasAnyContent = activeProcesses.length > 0 || artifacts.length > 0 || normalizedTodos.length > 0 || diffHints.length > 0 || hasRuntimeActivity;
 
@@ -292,40 +311,38 @@ export function WorkspaceWorkbenchPanel({
                     )}
 
                     {/* Runtime 状态 (Runtime) */}
-                    {hasRuntimeActivity && (
+                    {runtimeSummary && (
                         <PanelSection title="Runtime 状态" icon={Route}>
                             <div className="space-y-1.5">
-                                {runtimeModel.items.map((item) => (
-                                    <button
-                                        key={item.id}
-                                        type="button"
-                                        onClick={() => onSelectRuntime(item.id)}
-                                        className={cn(
-                                            "w-full rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-left transition hover:border-primary/35 hover:bg-primary/5",
-                                            selectedRuntimeId === item.id && "border-primary/35 bg-primary/5",
-                                        )}
-                                    >
-                                        <div className="flex items-center gap-2">
-                                            <span className={cn(
-                                                "h-1.5 w-1.5 rounded-full shrink-0",
-                                                item.status === "active" ? "bg-emerald-500" : item.status === "attention" ? "bg-rose-500" : item.status === "recent" ? "bg-amber-500" : "bg-muted-foreground/30",
-                                            )} />
-                                            <span className="min-w-0 truncate text-xs font-medium">{item.label}</span>
-                                            {item.eventCount > 0 ? <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{item.eventCount}</span> : null}
-                                        </div>
-                                        <div className="mt-0.5 truncate text-[10px] text-muted-foreground/80">
-                                            {item.lastActivity || item.stepTitle || item.description}
-                                            {item.lastTimestamp ? ` · ${formatRelativeRuntimeTime(item.lastTimestamp)}` : ""}
-                                        </div>
-                                    </button>
-                                ))}
                                 <button
                                     type="button"
-                                    onClick={onOpenRuntimeDetail}
-                                    className="mt-1 inline-flex h-8 w-full items-center justify-center gap-2 rounded-xl border border-border/70 bg-muted/40 text-[11px] font-medium text-foreground transition hover:bg-muted"
+                                    onClick={() => {
+                                        onSelectRuntime(runtimeSummary.focusItem.id);
+                                        onOpenRuntimeDetail();
+                                    }}
+                                    className={cn(
+                                        "w-full rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-left transition hover:border-primary/35 hover:bg-primary/5",
+                                        selectedRuntimeId === runtimeSummary.focusItem.id && "border-primary/35 bg-primary/5",
+                                    )}
                                 >
-                                    <Maximize2 className="h-3.5 w-3.5" />
-                                    展开执行地图
+                                    <div className="flex items-center gap-2">
+                                        <span className={cn(
+                                            "h-1.5 w-1.5 rounded-full shrink-0",
+                                            runtimeSummary.focusItem.status === "active" ? "bg-emerald-500" : runtimeSummary.focusItem.status === "attention" ? "bg-rose-500" : "bg-amber-500",
+                                        )} />
+                                        <span className="min-w-0 truncate text-xs font-medium">{runtimeSummary.focusItem.label}</span>
+                                        <span className="ml-auto rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                            {runtimeSummary.runtimeCount} 面 · {runtimeSummary.totalEvents} 条
+                                        </span>
+                                    </div>
+                                    <div className="mt-0.5 truncate text-[10px] text-muted-foreground/80">
+                                        {runtimeSummary.summary}
+                                        {runtimeSummary.focusItem.lastTimestamp ? ` · ${formatRelativeRuntimeTime(runtimeSummary.focusItem.lastTimestamp)}` : ""}
+                                    </div>
+                                    <div className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-medium text-foreground/75">
+                                        <Maximize2 className="h-3.5 w-3.5" />
+                                        查看执行地图
+                                    </div>
                                 </button>
                             </div>
                         </PanelSection>

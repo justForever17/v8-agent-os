@@ -15,7 +15,6 @@ import {
     type MemoryRuntimeInsight,
     getRuntimeRegistryEntry,
     isEffectiveContextGovernancePayload,
-    isRuntimeEpisodeGraphActivity,
     normalizeAuthoritativeRuntimeTimeline,
     normalizeSessionRuntimeEvent,
     normalizeRuntimeId as normalizeSharedRuntimeId,
@@ -60,6 +59,7 @@ export type PhoneRuntimeStageActivity = {
     node: PhoneUiTimelineNode;
     kind: "progress" | "tool" | "governance" | "artifact" | "handoff";
     synthetic?: boolean;
+    compactedCount?: number;
 };
 
 export type PhoneRuntimeStageModel = {
@@ -442,10 +442,15 @@ export function buildPhoneRuntimeTimelineEntryFromEvent(
     return buildAuthoritativeRuntimeTimelineEntryFromEvent(raw, { locale });
 }
 
-function isPhoneRuntimeEpisodeGraphActivity(activity: PhoneRuntimeStageActivity): boolean {
-    return isRuntimeEpisodeGraphActivity({
-        topic: activity.topic || ("topic" in activity.node ? String(activity.node.topic || "") : ""),
-    });
+function runtimeCardIdForActivity(activity: PhoneRuntimeStageActivity): PhoneRuntimeId {
+    return activity.runtimeId === "subagent_swarm" ? "chat" : activity.runtimeId;
+}
+
+function runtimeActivitiesForCard(runtimeId: PhoneRuntimeId, activities: PhoneRuntimeStageActivity[]): PhoneRuntimeStageActivity[] {
+    if (runtimeId === "chat") {
+        return activities.filter((activity) => activity.runtimeId === "chat" || activity.runtimeId === "subagent_swarm");
+    }
+    return activities.filter((activity) => activity.runtimeId === runtimeId);
 }
 
 export function buildPhoneRuntimeStageModel(
@@ -614,23 +619,27 @@ export function buildPhoneRuntimeStageModel(
     const rawActiveRuntimeId = normalizedOwnerRuntime === "subagent_swarm"
         ? "chat"
         : normalizedOwnerRuntime ?? realActivities[0]?.runtimeId ?? null;
-    const firstVisibleRuntimeWithActivity = realActivities.find((activity) => VISIBLE_PHONE_RUNTIME_ORDER.includes(activity.runtimeId))?.runtimeId ?? null;
-    const activeRuntimeId = rawActiveRuntimeId && VISIBLE_PHONE_RUNTIME_ORDER.includes(rawActiveRuntimeId)
+    const runtimeActivitiesById = new Map<PhoneRuntimeId, PhoneRuntimeStageActivity[]>();
+    const visibleRuntimeOrder = VISIBLE_PHONE_RUNTIME_ORDER.filter((runtimeId) => {
+        const runtimeActivities = runtimeActivitiesForCard(runtimeId, activities);
+        if (runtimeActivities.length === 0) {
+            return false;
+        }
+        runtimeActivitiesById.set(runtimeId, runtimeActivities);
+        return true;
+    });
+    const firstVisibleRuntimeWithActivity = activities
+        .map(runtimeCardIdForActivity)
+        .find((runtimeId) => runtimeActivitiesById.has(runtimeId)) ?? null;
+    const activeRuntimeId = rawActiveRuntimeId && runtimeActivitiesById.has(rawActiveRuntimeId)
         ? rawActiveRuntimeId
-        : firstVisibleRuntimeWithActivity || "chat";
+        : firstVisibleRuntimeWithActivity;
     const runtimeStatus = String(options?.status || "").trim().toLowerCase();
     const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
 
-    const visibleRuntimeOrder = VISIBLE_PHONE_RUNTIME_ORDER.filter((runtimeId) => (
-        runtimeId !== "context_governance"
-        || activities.some((activity) => activity.runtimeId === "context_governance")
-    ));
-
     const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getPhoneRuntimeDescriptor(runtimeId, options?.locale);
-        const runtimeActivities = runtimeId === "chat"
-            ? activities.filter((activity) => activity.runtimeId === "chat" || activity.runtimeId === "subagent_swarm" || isPhoneRuntimeEpisodeGraphActivity(activity))
-            : activities.filter((activity) => activity.runtimeId === runtimeId);
+        const runtimeActivities = runtimeActivitiesById.get(runtimeId) || [];
         const lastActivity = runtimeActivities[0];
 
         let status: PhoneRuntimeCardStatus = "idle";

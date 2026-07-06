@@ -56,7 +56,7 @@ export type PhoneChatProjection = {
     activeScopeTags: string[];
     projectedMessages: ChatMessage[];
     runtimeStageModel: ReturnType<typeof buildPhoneRuntimeStageModel>;
-    selectedRuntimeId: PhoneRuntimeId;
+    selectedRuntimeId: PhoneRuntimeId | null;
     selectedRuntimeActivities: PhoneRuntimeStageActivity[];
     selectedRuntimeDockItem: PhoneRuntimeStageCard | undefined;
     currentRunLabel: string;
@@ -441,7 +441,7 @@ export function buildPhoneChatProjection({
     contextGovernanceHistory?: ContextGovernanceView[];
     runtime: RuntimeSummary;
     runtimeTimeline: PhoneRuntimeTimelineEntry[];
-    selectedRuntimeId: PhoneRuntimeId;
+    selectedRuntimeId: PhoneRuntimeId | null;
     t: Translate;
     locale: LocaleCode;
 }): PhoneChatProjection {
@@ -524,8 +524,8 @@ export function buildPhoneChatProjection({
     const preferredRuntimeId = runtimeStageModel.items.find((item) => runtimeIdsWithActivities.has(item.id))?.id
         || runtimeStageModel.activeRuntimeId
         || runtimeStageModel.items[0]?.id
-        || "chat";
-    const resolvedRuntimeId = runtimeStageModel.items.some((item) => item.id === selectedRuntimeId)
+        || null;
+    const resolvedRuntimeId = selectedRuntimeId && runtimeStageModel.items.some((item) => item.id === selectedRuntimeId)
         ? selectedRuntimeId
         : preferredRuntimeId;
     const governanceApprovals = approvals;
@@ -547,7 +547,9 @@ export function buildPhoneChatProjection({
         projectedMessages: messages,
         runtimeStageModel,
         selectedRuntimeId: resolvedRuntimeId,
-        selectedRuntimeActivities: runtimeStageModel.activities.filter((entry) => entry.runtimeId === resolvedRuntimeId),
+        selectedRuntimeActivities: resolvedRuntimeId
+            ? runtimeStageModel.activities.filter((entry) => entry.runtimeId === resolvedRuntimeId)
+            : [],
         selectedRuntimeDockItem: runtimeStageModel.items.find((item) => item.id === resolvedRuntimeId) || runtimeStageModel.items[0],
         currentRunLabel: summarizePhoneRuntimeStatus(runtime.status, t),
         currentStepTitle: activeConversation?.currentStepTitle || activeConversation?.workflowStatus || null,

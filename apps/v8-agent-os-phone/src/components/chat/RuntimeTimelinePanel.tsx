@@ -32,6 +32,7 @@ import {
 } from "@v8/session-realtime";
 
 const CHAT_RUNTIME_ACTIVITY_WINDOW = 80;
+const RUNTIME_ACTIVITY_FEED_LIMIT = 40;
 type ChatExecutionSection = "episodes" | "swarm";
 
 function getKindTone(kind: PhoneRuntimeStageActivity["kind"], colors: ReturnType<typeof useUiPrefs>["colors"]) {
@@ -79,6 +80,61 @@ function readString(value: unknown): string {
 
 function readRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function normalizeActivitySummary(value: string): string {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/[a-f0-9]{8,}/g, "#")
+        .replace(/\d+(?:\.\d+)?/g, "#")
+        .replace(/\s+/g, " ")
+        .slice(0, 160);
+}
+
+function readActivityStatus(activity: PhoneRuntimeStageActivity): string {
+    const data = readExecutionData(activity);
+    const nodeStatus = "status" in activity.node ? activity.node.status : undefined;
+    return readString(nodeStatus)
+        || readString(data.status)
+        || readString(data.state)
+        || readString(data.phase)
+        || "";
+}
+
+function getActivityCompactKey(activity: PhoneRuntimeStageActivity): string {
+    const data = readExecutionData(activity);
+    const dedupeKey = readString(data.dedupeKey) || readString(data.dedupe_key);
+    if (dedupeKey) {
+        return `${activity.runtimeId}:dedupe:${dedupeKey}`;
+    }
+    return [
+        activity.runtimeId,
+        activity.topic || "",
+        activity.kind,
+        readActivityStatus(activity),
+        normalizeActivitySummary(activity.summary),
+    ].join("|");
+}
+
+function compactRuntimeActivities(
+    activities: PhoneRuntimeStageActivity[],
+    limit = RUNTIME_ACTIVITY_FEED_LIMIT,
+): PhoneRuntimeStageActivity[] {
+    const compacted: PhoneRuntimeStageActivity[] = [];
+    const indexByKey = new Map<string, number>();
+    for (const activity of activities) {
+        const key = getActivityCompactKey(activity);
+        const existingIndex = indexByKey.get(key);
+        if (existingIndex === undefined) {
+            indexByKey.set(key, compacted.length);
+            compacted.push({ ...activity, compactedCount: activity.compactedCount || 1 });
+            continue;
+        }
+        const existing = compacted[existingIndex];
+        existing.compactedCount = (existing.compactedCount || 1) + (activity.compactedCount || 1);
+    }
+    return compacted.slice(0, limit);
 }
 
 function getSwarmTaskBriefId(activity?: PhoneRuntimeStageActivity): string {
@@ -643,6 +699,11 @@ function ActivityFeedItem({
                         <Text style={[styles.feedActorText, { color: colors.textMuted }]}>{activity.actorLabel}</Text>
                     </View>
                 ) : null}
+                {activity.compactedCount && activity.compactedCount > 1 ? (
+                    <View style={[styles.feedActorPill, { backgroundColor: colors.surface }]}>
+                        <Text style={[styles.feedActorText, { color: colors.textMuted }]}>×{activity.compactedCount}</Text>
+                    </View>
+                ) : null}
                 <Text style={[styles.feedTimeText, { color: colors.textSoft }]}>
                     {formatPhoneRelativeRuntimeTime(activity.timestamp, locale, getEngineNowMs())}
                 </Text>
@@ -707,7 +768,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
         if (!effectiveSelectedRuntimeId) {
             return [];
         }
-        return activities
+        const filteredActivities = activities
             .filter((activity) => {
                 if (activity.runtimeId !== effectiveSelectedRuntimeId) {
                     return false;
@@ -729,6 +790,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                 }
                 return true;
             });
+        return compactRuntimeActivities(filteredActivities);
     }, [activities, effectiveSelectedRuntimeId]);
     const globalEpisodeActivities = useMemo(
         () => activities.filter(isPhoneRuntimeEpisodeActivity),
@@ -888,7 +950,7 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     );
 
     return (
-        <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+        <Modal visible={visible && items.length > 0} transparent animationType="fade" onRequestClose={onClose}>
             <View style={[styles.overlay, { backgroundColor: overlayColor }]}>
                 <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
                 <View style={[styles.panelCard, { width: panelWidth, borderColor: colors.border, shadowColor: colors.text }]}>

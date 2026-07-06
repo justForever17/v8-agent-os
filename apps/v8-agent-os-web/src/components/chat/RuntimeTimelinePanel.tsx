@@ -72,12 +72,70 @@ function readExecutionData(activity: RuntimeStageActivity): Record<string, unkno
     return activity.node.data as Record<string, unknown>;
 }
 
+const CHAT_RUNTIME_ACTIVITY_WINDOW = 80;
+const RUNTIME_ACTIVITY_FEED_LIMIT = 40;
+
 function readString(value: unknown): string {
     return typeof value === "string" ? value.trim() : "";
 }
 
 function readRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function normalizeActivitySummary(value: string): string {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/[a-f0-9]{8,}/g, "#")
+        .replace(/\d+(?:\.\d+)?/g, "#")
+        .replace(/\s+/g, " ")
+        .slice(0, 160);
+}
+
+function readActivityStatus(activity: RuntimeStageActivity): string {
+    const data = readExecutionData(activity);
+    const nodeStatus = "status" in activity.node ? activity.node.status : undefined;
+    return readString(nodeStatus)
+        || readString(data.status)
+        || readString(data.state)
+        || readString(data.phase)
+        || "";
+}
+
+function getActivityCompactKey(activity: RuntimeStageActivity): string {
+    const data = readExecutionData(activity);
+    const dedupeKey = readString(data.dedupeKey) || readString(data.dedupe_key);
+    if (dedupeKey) {
+        return `${activity.runtimeId}:dedupe:${dedupeKey}`;
+    }
+    return [
+        activity.runtimeId,
+        activity.topic || "",
+        activity.kind,
+        readActivityStatus(activity),
+        normalizeActivitySummary(activity.summary),
+    ].join("|");
+}
+
+function compactRuntimeActivities(
+    activities: RuntimeStageActivity[],
+    limit = RUNTIME_ACTIVITY_FEED_LIMIT,
+): RuntimeStageActivity[] {
+    const compacted: RuntimeStageActivity[] = [];
+    const indexByKey = new Map<string, number>();
+    for (const activity of activities) {
+        const key = getActivityCompactKey(activity);
+        const existingIndex = indexByKey.get(key);
+        if (existingIndex === undefined) {
+            indexByKey.set(key, compacted.length);
+            compacted.push({ ...activity, compactedCount: activity.compactedCount || 1 });
+            continue;
+        }
+        const existing = compacted[existingIndex];
+        existing.compactedCount = (existing.compactedCount || 1) + (activity.compactedCount || 1);
+    }
+    return compacted.slice(0, limit);
 }
 
 function getSwarmTaskBriefId(activity?: RuntimeStageActivity): string {
@@ -590,6 +648,11 @@ function ActivityFeedItem({
                         {activity.actorLabel}
                     </span>
                 )}
+                {activity.compactedCount && activity.compactedCount > 1 && (
+                    <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-[10px] text-muted-foreground dark:bg-white/5">
+                        ×{activity.compactedCount}
+                    </span>
+                )}
                 <span className="ml-auto text-[10px] text-muted-foreground">
                     {formatRelativeRuntimeTime(activity.timestamp)}
                 </span>
@@ -760,17 +823,26 @@ export function RuntimeTimelinePanel({
         : model.activeRuntimeId || model.items[0]?.id || null;
     const runtime = runtimeId ? getRuntimeDescriptor(runtimeId, locale) : null;
     const Icon = runtimeId ? runtimeIcons[runtimeId] : Cpu;
-    const activities = runtimeId
-        ? model.activities.filter((activity) => activity.runtimeId === runtimeId)
-        : [];
-    const globalEpisodeActivities = model.activities.filter(isWebRuntimeEpisodeActivity);
-    const swarmActivities = model.activities.filter((activity) => activity.runtimeId === "subagent_swarm");
+    const activities = React.useMemo(
+        () => runtimeId
+            ? compactRuntimeActivities(model.activities.filter((activity) => activity.runtimeId === runtimeId))
+            : [],
+        [model.activities, runtimeId],
+    );
+    const globalEpisodeActivities = React.useMemo(
+        () => model.activities.filter(isWebRuntimeEpisodeActivity).slice(0, CHAT_RUNTIME_ACTIVITY_WINDOW),
+        [model.activities],
+    );
+    const swarmActivities = React.useMemo(
+        () => model.activities.filter((activity) => activity.runtimeId === "subagent_swarm").slice(0, CHAT_RUNTIME_ACTIVITY_WINDOW),
+        [model.activities],
+    );
     const isChatRuntime = runtimeId === "chat";
     const hasChatExecutionMap = globalEpisodeActivities.length > 0 || swarmActivities.length > 0;
     const isSubagentRuntime = runtimeId === "subagent_swarm";
     return (
         <AnimatePresence>
-            {isOpen && (
+            {isOpen && model.items.length > 0 && (
                 <>
                     <motion.button
                         type="button"

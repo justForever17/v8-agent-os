@@ -13,7 +13,6 @@ contextBridge.exposeInMainWorld('v8CyberCore', {
   getMediaPermissionStatus: (kind) => ipcRenderer.invoke('v8-desktop:get-media-permission-status', kind),
   requestMediaAccess: (kind) => ipcRenderer.invoke('v8-desktop:request-media-access', kind),
   openMediaPrivacySettings: (kind) => ipcRenderer.invoke('v8-desktop:open-media-privacy-settings', kind),
-  getWakeEngineStatus: () => ipcRenderer.invoke('v8-desktop:get-wake-engine-status'),
   updateTrayContext: (payload) => ipcRenderer.invoke('v8-desktop:update-tray-context', payload),
   onTraySelectConversation: (callback) => {
     const listener = (_event, conversationId) => {

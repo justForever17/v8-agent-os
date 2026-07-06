@@ -41,10 +41,6 @@ export interface PetSettings {
   rate: number; // 0.5 to 2.0
   voiceURI: string;
   customSystemPrompt: string;
-  wakeword: string;
-  isWakewordActive: boolean;
-  wakeEngine: 'local_kws' | 'v8os_stt' | 'webspeech';
-  wakeWindowMs: number;
   floatAmplitude: number; // 0 to 20
   floatSpeed: number; // 0.1 to 3
   petScale: number; // 0.4 to 3.0, 0.7 keeps the current default size

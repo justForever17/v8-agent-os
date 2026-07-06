@@ -324,27 +324,6 @@ function openMediaPrivacySettings(kind) {
   return false;
 }
 
-function getWakeEngineStatus() {
-  let sherpaAvailable = false;
-  let reason = 'sherpa-onnx package is not available in the Electron main process';
-  try {
-    require.resolve('sherpa-onnx');
-    sherpaAvailable = true;
-    reason = 'sherpa-onnx package is available; keyword model paths still need to be configured';
-  } catch {
-    // Optional local wake engine dependency is intentionally not required for boot.
-  }
-  const config = readLocalConfigFile().wakeEngine || {};
-  const modelConfigured = Boolean(config && typeof config === 'object' && config.modelPath && config.tokensPath);
-  return {
-    engine: 'sherpa-onnx',
-    available: sherpaAvailable && modelConfigured,
-    packageAvailable: sherpaAvailable,
-    modelConfigured,
-    reason: modelConfigured ? reason : `${reason}; no keyword model paths configured`,
-  };
-}
-
 async function waitForLocalServer(timeoutMs = 10000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -583,10 +562,6 @@ ipcMain.handle('v8-desktop:request-media-access', async (_event, kind) => {
 
 ipcMain.handle('v8-desktop:open-media-privacy-settings', (_event, kind) => {
   return openMediaPrivacySettings(kind === 'camera' ? 'camera' : 'microphone');
-});
-
-ipcMain.handle('v8-desktop:get-wake-engine-status', () => {
-  return getWakeEngineStatus();
 });
 
 ipcMain.handle('v8-desktop:read-local-config', (_event, key) => {

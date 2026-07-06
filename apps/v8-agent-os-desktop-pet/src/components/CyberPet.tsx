@@ -45,7 +45,9 @@ declare global {
       getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
-      getWakeEngineStatus?: () => Promise<Record<string, unknown>>;
+      updateTrayContext?: (payload: Record<string, unknown>) => Promise<boolean>;
+      onTraySelectConversation?: (callback: (conversationId: string) => void) => () => void;
+      onTrayStartListening?: (callback: () => void) => () => void;
       onPrepareShutdown?: (callback: () => void) => () => void;
       onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
     };
@@ -68,14 +70,10 @@ interface CyberPetProps {
   handleChatSubmit: (customMessage?: string, customFileUrls?: string[], customAttachments?: Record<string, unknown>[]) => Promise<void>;
   isMuted: boolean;
   setIsMuted: (v: boolean) => void;
-  isListening: boolean;
-  toggleListening: () => void;
   isWebcamActive: boolean;
   toggleWebcam: () => Promise<void>;
   webcamStatus?: string;
   voiceStatus?: string;
-  wakeEngineStatus?: string;
-  onReleaseMicrophone?: () => void;
   onReleaseCamera?: () => void;
   onTestSpeech?: (text?: string) => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -102,11 +100,10 @@ interface CyberPetProps {
 const translations = {
   zh: {
     coreOperatorNode: 'Fairy 仙灵控制中枢',
-    presetsAndParams: '全息配置端 • 眼神聚焦与唤醒监控',
+    presetsAndParams: '全息配置端 • 眼神聚焦与会话伴随',
     close: '关闭 ×',
     agentNode: '智能对话',
     voice: '合成声学',
-    wakeword: '语音唤醒',
     cosmetic: '特效光谱',
     chatConsole: '会话交互',
     visorCam: '光学眼镜',
@@ -126,11 +123,6 @@ const translations = {
     synthRate: '合成语速 (Speed)',
     testVoice: '声学试听',
     helloFriend: '你好，我的造物主。量子网络图层连接十分稳定。',
-    wakewordControl: '🎙️ 首选自动语音唤醒配置',
-    wakewordDetection: '唤醒词监听状态',
-    detectionActive: '监听中 (LISTENING)',
-    detectionDeactive: '已休眠 (STANDBY)',
-    customWakeword: '自定义唤醒词 (Wakeword Triggers)',
     floatAmplitude: '虚空悬浮摆动幅度 (Float Amp)',
     floatSpeed: '悬浮摆动频率周期 (Float Freq)',
     spectralIntensity: '✨ 核心偏振光谱色彩',
@@ -171,11 +163,10 @@ const translations = {
   },
   en: {
     coreOperatorNode: 'FAIRY OPERATOR PORTAL',
-    presetsAndParams: 'Holographic Controls • Gaze & Vocal Sync',
+    presetsAndParams: 'Holographic Controls • Gaze & Session Sync',
     close: 'CLOSE ×',
     agentNode: 'AGENT NODE',
     voice: 'VOICE SYNTH',
-    wakeword: 'WAKEWORD',
     cosmetic: 'COSMETICS',
     chatConsole: 'INTERACTION',
     visorCam: 'VISOR CAM',
@@ -195,11 +186,6 @@ const translations = {
     synthRate: 'Speech Rate SpeedMultiplier',
     testVoice: 'Vocal Audio Audition',
     helloFriend: 'Hello programmer. Fairy mainframe status looks stable.',
-    wakewordControl: '🎙️ AUTOMATED VOCAL WAKE TRIGGER',
-    wakewordDetection: 'Vocal Listener Status',
-    detectionActive: 'MONITORING (LISTENING)',
-    detectionDeactive: 'STANDBY SLUMBER',
-    customWakeword: 'Custom Wakeword Phrase',
     floatAmplitude: 'Core Floating Altitude Amp',
     floatSpeed: 'Hovering Oscillation Frequency',
     spectralIntensity: '✨ SPECTRAL LIGHTWAVE EMISSION GLOW',
@@ -319,14 +305,10 @@ export default function CyberPet({
   handleChatSubmit,
   isMuted,
   setIsMuted,
-  isListening,
-  toggleListening,
   isWebcamActive,
   toggleWebcam,
   webcamStatus,
   voiceStatus,
-  wakeEngineStatus,
-  onReleaseMicrophone,
   onReleaseCamera,
   onTestSpeech,
   videoRef,

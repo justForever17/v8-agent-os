@@ -22,7 +22,13 @@ import CyberPet from './components/CyberPet';
 import { ChatMessage, PetEmotion, SystemMetric, PetSettings } from './types';
 import { V8DesktopClientAdapter, V8AuthSession, V8Conversation, V8Project } from './lib/v8DesktopClient';
 import type { V8DesktopPetConfig } from './lib/v8DesktopClient';
-import { DesktopActivity, extractDesktopMessages, extractRuntimeActivities, latestAssistantText } from './lib/desktopActivity';
+import {
+  DesktopActivity,
+  buildActivityFromRealtimeEvent,
+  extractDesktopMessages,
+  extractRuntimeActivities,
+  latestAssistantText,
+} from './lib/desktopActivity';
 
 declare global {
   interface Window {
@@ -40,7 +46,9 @@ declare global {
       getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
-      getWakeEngineStatus?: () => Promise<Record<string, unknown>>;
+      updateTrayContext?: (payload: Record<string, unknown>) => Promise<boolean>;
+      onTraySelectConversation?: (callback: (conversationId: string) => void) => () => void;
+      onTrayStartListening?: (callback: () => void) => () => void;
       onPrepareShutdown?: (callback: () => void) => () => void;
       onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
     };
@@ -68,7 +76,105 @@ function defaultV8EventRulesJson() {
   return JSON.stringify(DEFAULT_V8_EVENT_RULES, null, 2);
 }
 
-const V8_VOICE_CONVERSATION_TITLE = 'CyberCore 语音输入';
+type DesktopPetSessionState =
+  | 'disconnected'
+  | 'idle_no_conversation'
+  | 'attached_idle'
+  | 'recording'
+  | 'sending_audio'
+  | 'listening_running'
+  | 'playback'
+  | 'error';
+
+const RUNNING_STATUS_PATTERN = /(running|active|in_progress|processing|queued|streaming|executing|进行中|运行中)/i;
+const TERMINAL_STATUS_PATTERN = /(complete|completed|done|success|succeeded|failed|error|cancel|cancelled|interrupted|finished|结束|完成|失败|取消)/i;
+const TERMINAL_RUN_EVENT_PATTERN = /(run|session|workflow|conversation|response)[._:-]?(complete|completed|done|success|succeeded|failed|error|cancel|cancelled|canceled|interrupted|finished|结束|完成|失败|取消)|(complete|completed|done|success|succeeded|failed|error|cancel|cancelled|canceled|interrupted|finished|结束|完成|失败|取消)[._:-]?(run|session|workflow|conversation|response)/i;
+
+function readConversationStatus(conversation: unknown) {
+  const record = conversation && typeof conversation === 'object' ? conversation as Record<string, unknown> : {};
+  return String(
+    record.status
+      || record.runStatus
+      || record.runtimeStatus
+      || record.state
+      || '',
+  );
+}
+
+function isConversationRunning(conversation: unknown) {
+  return RUNNING_STATUS_PATTERN.test(readConversationStatus(conversation));
+}
+
+function conversationTimestamp(conversation: unknown) {
+  const record = conversation && typeof conversation === 'object' ? conversation as Record<string, unknown> : {};
+  const candidates = [record.updatedAt, record.lastMessageAt, record.lastActivityAt, record.createdAt, record.timestamp];
+  for (const value of candidates) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
+}
+
+function latestRunningConversation(conversations: V8Conversation[]) {
+  return [...conversations]
+    .filter(isConversationRunning)
+    .sort((left, right) => conversationTimestamp(right) - conversationTimestamp(left))[0] || null;
+}
+
+function projectNameForConversation(conversation: unknown) {
+  const record = conversation && typeof conversation === 'object' ? conversation as Record<string, unknown> : {};
+  const direct = String(record.projectName || record.projectId || '').trim();
+  if (direct) return direct;
+  const workspacePath = String(record.workspacePath || '').trim();
+  if (!workspacePath) return 'V8OS';
+  const parts = workspacePath.split(/[\\/]+/g).filter(Boolean);
+  return parts[parts.length - 1] || 'V8OS';
+}
+
+function nestedRecord(value: unknown) {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function isTerminalRunEvent(eventName: string, rawPayload: unknown) {
+  const record = nestedRecord(rawPayload);
+  const data = nestedRecord(record.data);
+  const eventText = [
+    eventName,
+    record.event,
+    record.eventName,
+    record.type,
+    record.topic,
+    data.event,
+    data.eventName,
+    data.type,
+    data.topic,
+  ].filter(Boolean).join(' ');
+  if (TERMINAL_RUN_EVENT_PATTERN.test(eventText)) return true;
+
+  const ownerText = [
+    record.kind,
+    record.scope,
+    record.resource,
+    data.kind,
+    data.scope,
+    data.resource,
+  ].filter(Boolean).join(' ');
+  const statusText = [
+    record.runStatus,
+    record.workflowStatus,
+    record.sessionStatus,
+    record.responseStatus,
+    data.runStatus,
+    data.workflowStatus,
+    data.sessionStatus,
+    data.responseStatus,
+  ].filter(Boolean).join(' ');
+  return /(run|session|workflow|conversation|response)/i.test(ownerText)
+    && TERMINAL_STATUS_PATTERN.test(statusText);
+}
 
 function audioExtensionFromMime(mimeType: string) {
   const normalized = String(mimeType || '').toLowerCase();
@@ -204,14 +310,6 @@ function readReusableAudioPhrases() {
   }
 }
 
-function readWakewordSetting() {
-  const stored = localStorage.getItem('v8.cybercore.wakeword');
-  if (!stored || stored.trim() === '仙灵, Fairy, 小八') {
-    return 'Fairy';
-  }
-  return stored;
-}
-
 function nowLabel() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
@@ -263,7 +361,7 @@ export default function App() {
 You assist Phaethon (the Operator/绳匠) in managing data, visual optical feeds, and system diagnostics.
 Your personality is calm, clear, exceptionally smart, highly analytical, and polite yet filled with witty/dry humor.
 You have sensory systems:
-1. Hearing: You hear what the user says via Web speech input.
+1. Hearing: You receive V8OS conversation audio after the user clicks the pet to record and send.
 2. Vision: When the user captures their camera feed, you can actually see them, their environment, or items they show you.
 3. Voice synthesis: You speak directly to them in an authoritative yet charming, helpful cybernetic manner.
 
@@ -276,10 +374,6 @@ You must always output your response as valid JSON matching the following schema
 }
 
 If the user uploaded an image representation (which represents what you 'see' through your visor), dynamically inspect and comment on what you see in the image while returning the "scanning" or "curious" or "happy" emotion!`,
-    wakeword: readWakewordSetting(),
-    isWakewordActive: localStorage.getItem('v8.cybercore.isWakewordActive') === 'true',
-    wakeEngine: (localStorage.getItem('v8.cybercore.wakeEngine') as PetSettings['wakeEngine']) || 'local_kws',
-    wakeWindowMs: Number(localStorage.getItem('v8.cybercore.wakeWindowMs') || '6500'),
     floatAmplitude: Number(localStorage.getItem('v8.cybercore.floatAmplitude') || '8'),
     floatSpeed: Number(localStorage.getItem('v8.cybercore.floatSpeed') || '1.0'),
     petScale: Number(localStorage.getItem('v8.cybercore.petScale') || '0.7'),
@@ -317,7 +411,6 @@ If the user uploaded an image representation (which represents what you 'see' th
 
   // Systems toggles
   const [isMuted, setIsMuted] = useState(false);
-  const [isListening, setIsListening] = useState(false);
   const [isWebcamActive, setIsWebcamActive] = useState(false);
   const [webcamAllowed, setWebcamAllowed] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -330,8 +423,10 @@ If the user uploaded an image representation (which represents what you 'see' th
   const [webcamStatus, setWebcamStatus] = useState('光学追踪未开启');
   const [isExiting, setIsExiting] = useState(false);
 
-  const [voiceStatus, setVoiceStatus] = useState('语音唤醒待机');
-  const [wakeEngineStatus, setWakeEngineStatus] = useState('本地唤醒引擎待检测');
+  const [petSessionState, setPetSessionState] = useState<DesktopPetSessionState>(
+    v8ActiveConversationId ? 'attached_idle' : (v8Session ? 'idle_no_conversation' : 'disconnected'),
+  );
+  const [voiceStatus, setVoiceStatus] = useState(v8ActiveConversationId ? '已选择会话，点击桌宠开始录音' : '请先选择一个会话');
 
   // Diagnostic states
   const [metrics, setMetrics] = useState<SystemMetric[]>([
@@ -345,18 +440,15 @@ If the user uploaded an image representation (which represents what you 'see' th
   const messageEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const speechRecognitionRef = useRef<any>(null);
   const speakTimeoutRef = useRef<any>(null);
   const fallbackAudioRef = useRef<any>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const hardwareStreamsRef = useRef<Map<MediaStream, 'microphone' | 'camera'>>(new Map());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const speechAudioChunksRef = useRef<Blob[]>([]);
-  const localMediaShutdownRef = useRef(false);
-  const wakewordPollTimerRef = useRef<number | null>(null);
-  const wakewordPollInFlightRef = useRef(false);
-  const lastWakewordTranscriptRef = useRef('');
-  const wakeCommandDeadlineRef = useRef(0);
+  const recordingAudioChunksRef = useRef<Blob[]>([]);
+  const recordingStopResolverRef = useRef<((blob: Blob) => void) | null>(null);
+  const autoAttachedConversationRef = useRef(false);
+  const petSessionStateRef = useRef<DesktopPetSessionState>(petSessionState);
   const v8SeenActivityIdsRef = useRef<Set<string>>(new Set());
   const v8LastAudioUrlRef = useRef('');
   const v8LastSnapshotAudioPlayedRef = useRef(false);
@@ -364,6 +456,10 @@ If the user uploaded an image representation (which represents what you 'see' th
 
   const desktopStreamRef = useRef<MediaStream | null>(null);
   const desktopVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    petSessionStateRef.current = petSessionState;
+  }, [petSessionState]);
 
   // Scroll to bottom of chat
   useEffect(() => {
@@ -406,9 +502,6 @@ If the user uploaded an image representation (which represents what you 'see' th
     localStorage.setItem('v8.cybercore.petScale', String(settings.petScale || 0.7));
     localStorage.setItem('v8.cybercore.ttsEngine', settings.ttsEngine || 'v8os');
     localStorage.setItem('v8.cybercore.sttLanguage', settings.sttLanguage || 'zh-CN');
-    localStorage.setItem('v8.cybercore.wakeword', settings.wakeword || '');
-    localStorage.setItem('v8.cybercore.wakeEngine', settings.wakeEngine || 'local_kws');
-    localStorage.setItem('v8.cybercore.wakeWindowMs', String(settings.wakeWindowMs || 6500));
 
     localStorage.setItem('v8.cybercore.lang', settings.lang || 'zh');
     localStorage.setItem('v8.cybercore.gender', settings.gender || 'robotic_female');
@@ -416,7 +509,6 @@ If the user uploaded an image representation (which represents what you 'see' th
     localStorage.setItem('v8.cybercore.rate', String(settings.rate));
     localStorage.setItem('v8.cybercore.voiceURI', settings.voiceURI || '');
     localStorage.setItem('v8.cybercore.customSystemPrompt', settings.customSystemPrompt || '');
-    localStorage.setItem('v8.cybercore.isWakewordActive', String(settings.isWakewordActive));
     localStorage.setItem('v8.cybercore.floatAmplitude', String(settings.floatAmplitude));
     localStorage.setItem('v8.cybercore.floatSpeed', String(settings.floatSpeed));
     localStorage.setItem('v8.cybercore.customGlowColor', settings.customGlowColor || 'default');
@@ -427,16 +519,12 @@ If the user uploaded an image representation (which represents what you 'see' th
     settings.petScale,
     settings.ttsEngine,
     settings.sttLanguage,
-    settings.wakeword,
-    settings.wakeEngine,
-    settings.wakeWindowMs,
     settings.lang,
     settings.gender,
     settings.pitch,
     settings.rate,
     settings.voiceURI,
     settings.customSystemPrompt,
-    settings.isWakewordActive,
     settings.floatAmplitude,
     settings.floatSpeed,
     settings.customGlowColor,
@@ -472,11 +560,6 @@ If the user uploaded an image representation (which represents what you 'see' th
       customTtsModel: settings.customTtsModel || '',
     });
   }, [settings.customTtsUrl, settings.customTtsKey, settings.customTtsVoice, settings.customTtsModel]);
-
-  useEffect(() => {
-    void refreshWakeEngineStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.wakeEngine]);
 
   useEffect(() => {
     void window.v8CyberCore?.setCompanionScale?.(settings.petScale || 0.7);
@@ -542,6 +625,33 @@ If the user uploaded an image representation (which represents what you 'see' th
     }
   };
 
+  const updatePetStateForConversationId = (
+    conversationId: string,
+    conversations: V8Conversation[] = v8Conversations,
+  ) => {
+    if (!conversationId) {
+      setPetSessionState(v8Session ? 'idle_no_conversation' : 'disconnected');
+      setVoiceStatus('请先在右键菜单选择会话');
+      return;
+    }
+    const current = conversations.find((item) => String(item.id) === String(conversationId));
+    if (isConversationRunning(current)) {
+      setPetSessionState((previous) => (
+        previous === 'recording' || previous === 'sending_audio'
+          ? previous
+          : 'listening_running'
+      ));
+      setVoiceStatus('当前会话运行中，正在监听事件');
+      return;
+    }
+    setPetSessionState((previous) => (
+      previous === 'recording' || previous === 'sending_audio'
+        ? previous
+        : 'attached_idle'
+    ));
+    setVoiceStatus('已选择会话，点击桌宠开始录音');
+  };
+
   const syncV8Snapshot = async (conversationId: string) => {
     const client = v8ClientRef.current;
     if (!client || !conversationId) return '';
@@ -573,8 +683,30 @@ If the user uploaded an image representation (which represents what you 'see' th
         client.listConversations(),
         client.listProjects().catch(() => ({ projects: [] as V8Project[] })),
       ]);
-      setV8Conversations(Array.isArray(conversations) ? conversations : []);
+      const conversationList = Array.isArray(conversations) ? conversations : [];
+      setV8Conversations(conversationList);
       setV8Projects(Array.isArray(projectPayload.projects) ? projectPayload.projects : []);
+
+      const runningConversation = latestRunningConversation(conversationList);
+      const storedConversationId = client.getActiveConversationId();
+      let nextConversationId = v8ActiveConversationId || storedConversationId;
+      const storedStillExists = nextConversationId
+        ? conversationList.some((item) => String(item.id) === String(nextConversationId))
+        : false;
+
+      if (runningConversation && (!autoAttachedConversationRef.current || !storedStillExists)) {
+        nextConversationId = String(runningConversation.id || '');
+      } else if (!storedStillExists) {
+        nextConversationId = '';
+      }
+
+      if (nextConversationId) {
+        client.setActiveConversationId(nextConversationId);
+      } else {
+        client.setActiveConversationId('');
+      }
+      setV8ActiveConversationId(nextConversationId);
+      updatePetStateForConversationId(nextConversationId, conversationList);
     } catch (error: any) {
       setV8Error(error?.message || 'V8OS 列表刷新失败');
     }
@@ -618,12 +750,14 @@ If the user uploaded an image representation (which represents what you 'see' th
       }
       setV8Session(session);
       setV8Status('V8OS 已连接');
+      setPetSessionState('idle_no_conversation');
       await refreshDesktopPetConfig();
       await refreshV8Lists();
     } catch (error: any) {
       setV8Session(null);
       setV8Error(error?.message || 'V8OS 本机自动连接失败');
       setV8Status('V8OS 连接失败');
+      setPetSessionState('disconnected');
       setEmotion('worried');
     }
   };
@@ -634,9 +768,11 @@ If the user uploaded an image representation (which represents what you 'see' th
     setV8ActiveConversationId('');
     setV8Conversations([]);
     setV8Status('等待连接 V8OS');
+    setPetSessionState('disconnected');
+    setVoiceStatus('等待连接 V8OS');
   };
 
-  const ensureV8Conversation = async (title: string) => {
+  const requireActiveConversation = async () => {
     const client = v8ClientRef.current;
     if (!client?.getSession()) {
       await connectV8();
@@ -644,76 +780,65 @@ If the user uploaded an image representation (which represents what you 'see' th
     if (!client?.getSession()) {
       throw new Error('尚未连接 V8OS Admin');
     }
-    
-    try {
-      const conversations = await client.listConversations();
-      if (Array.isArray(conversations)) {
-        const runningConv = conversations.find((c: any) => c.status === 'running');
-        if (runningConv) {
-          if (v8ActiveConversationId !== runningConv.id) {
-             setV8ActiveConversationId(runningConv.id);
-             await refreshV8Lists();
-          }
-          return runningConv.id;
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to scan for running conversations', e);
-    }
-
-    let conversationId = v8ActiveConversationId || client.getActiveConversationId();
+    const conversationId = v8ActiveConversationId || client.getActiveConversationId();
     if (!conversationId) {
-      const conversation = await client.createConversation({
-        title: title.slice(0, 40) || 'CyberCore Desktop',
-        workspacePath: settingsRef.current.v8WorkspacePath || undefined,
-      });
-      conversationId = conversation.id;
-      setV8ActiveConversationId(conversationId);
-      await refreshV8Lists();
-    }
-    if (settingsRef.current.v8WorkspacePath) {
-      await client.updateSessionScope(conversationId, {
-        workspacePath: settingsRef.current.v8WorkspacePath,
-        scopeSource: 'cybercore_desktop_menu',
-      }).catch(() => undefined);
+      setPetSessionState('idle_no_conversation');
+      setVoiceStatus('请先在右键菜单选择会话');
+      speakString('请先在右键菜单选择会话。');
+      throw new Error('请先在右键菜单选择会话');
     }
     return conversationId;
   };
 
-  // Synthesize custom futuristic dual-sine beep tone programmatically
-  const playQuantumWakeChime = () => {
-    if (!('AudioContext' in window || 'webkitAudioContext' in window)) return;
-    const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
-    try {
-      const ctx = new AudioContextClass();
-      const osc1 = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
-      const gain = ctx.createGain();
-      
-      osc1.type = 'sine';
-      osc1.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-      osc1.frequency.exponentialRampToValueAtTime(1174.66, ctx.currentTime + 0.15); // D6
-      
-      osc2.type = 'triangle';
-      osc2.frequency.setValueAtTime(440, ctx.currentTime); // A4
-      osc2.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
-      
-      gain.gain.setValueAtTime(0.12, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
-      
-      osc1.connect(gain);
-      osc2.connect(gain);
-      gain.connect(ctx.destination);
-      
-      osc1.start();
-      osc2.start();
-      osc1.stop(ctx.currentTime + 0.35);
-      osc2.stop(ctx.currentTime + 0.35);
-    } catch (e) {
-      console.warn("Chime blocked by user interaction gesture.");
+  const selectV8Conversation = async (conversationId: string, options?: { listen?: boolean }) => {
+    const id = String(conversationId || '').trim();
+    if (!id) return;
+    autoAttachedConversationRef.current = true;
+    v8ClientRef.current?.setActiveConversationId(id);
+    setV8ActiveConversationId(id);
+    updatePetStateForConversationId(id);
+    if (options?.listen) {
+      setPetSessionState('listening_running');
+      setVoiceStatus('当前会话运行中，正在监听事件');
     }
+    await syncV8Snapshot(id).catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
   };
 
+  useEffect(() => {
+    void window.v8CyberCore?.updateTrayContext?.({
+      activeConversationId: v8ActiveConversationId,
+      conversations: v8Conversations.map((conversation) => ({
+        id: String(conversation.id || ''),
+        title: String(conversation.title || '未命名会话'),
+        projectName: projectNameForConversation(conversation),
+        workspacePath: conversation.workspacePath || '',
+        running: isConversationRunning(conversation),
+      })),
+    });
+  }, [v8ActiveConversationId, v8Conversations]);
+
+  useEffect(() => {
+    const removeSelect = window.v8CyberCore?.onTraySelectConversation?.((conversationId) => {
+      void selectV8Conversation(conversationId);
+    });
+    const removeStartListening = window.v8CyberCore?.onTrayStartListening?.(() => {
+      const conversationId = v8ActiveConversationId || v8ClientRef.current?.getActiveConversationId() || '';
+      if (conversationId) {
+        const active = v8Conversations.find((item) => String(item.id) === String(conversationId));
+        void selectV8Conversation(conversationId, { listen: isConversationRunning(active) });
+      } else {
+        setPetSessionState('idle_no_conversation');
+        setVoiceStatus('请先在右键菜单选择会话');
+        speakString('请先在右键菜单选择会话。');
+      }
+    });
+    return () => {
+      removeSelect?.();
+      removeStartListening?.();
+    };
+  }, [v8ActiveConversationId, v8Conversations]);
+
+  // Synthesize custom futuristic dual-sine beep tone programmatically
   const playAudioBlob = (blob: Blob) => {
     if (isMuted || !blob.size) return false;
     const objectUrl = URL.createObjectURL(blob);
@@ -968,79 +1093,22 @@ If the user uploaded an image representation (which represents what you 'see' th
     window.speechSynthesis.speak(utterance);
   };
 
-  const resolveSpeechLanguage = () => {
-    const configured = settingsRef.current.sttLanguage || 'zh-CN';
-    if (configured === 'auto') {
-      return settingsRef.current.lang === 'zh' ? 'zh-CN' : 'en-US';
-    }
-    return configured;
-  };
-
-  const normalizeSpeechText = (value: string) => (
-    value
-      .toLowerCase()
-      .replace(/\s+/g, '')
-      .replace(/[，。！？,.!?;；:：'"“”‘’()[\]{}<>《》]/g, '')
-  );
-
-  const getWakewordAliases = (): string[] => {
-    const configured = settingsRef.current.wakeword.trim();
-    const configuredAliases = configured
-      .split(/[,，、|/;\n]+/g)
-      .map((item) => item.trim())
-      .filter(Boolean);
-    const base = configuredAliases.length ? configuredAliases : ['Fairy'];
-    return Array.from(new Set<string>(base));
-  };
-
-  const isWakeCommandWindowOpen = () => Date.now() < wakeCommandDeadlineRef.current;
-
-  const openWakeCommandWindow = (source: string, alias: string) => {
-    const windowMs = Math.max(2500, Math.min(15000, Number(settingsRef.current.wakeWindowMs || 6500)));
-    wakeCommandDeadlineRef.current = Date.now() + windowMs;
-    setEmotion('listening');
-    setVoiceStatus(`已通过 ${source} 唤醒：${alias}。${Math.round(windowMs / 1000)} 秒内请直接说指令。`);
-  };
-
-  const refreshWakeEngineStatus = async () => {
-    if (settingsRef.current.wakeEngine !== 'local_kws') {
-      setWakeEngineStatus(settingsRef.current.wakeEngine === 'v8os_stt'
-        ? '当前使用 V8OS STT 唤醒兜底'
-        : '当前使用 WebSpeech fallback');
-      return;
-    }
-    try {
-      const status = await window.v8CyberCore?.getWakeEngineStatus?.();
-      if (!status) {
-        setWakeEngineStatus('本地唤醒引擎状态不可读取，已降级');
-        return;
+  const pickAudioRecorderMimeType = () => {
+    if (typeof MediaRecorder === 'undefined') return '';
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/mpeg',
+      'audio/wav',
+    ];
+    return candidates.find((item) => {
+      try {
+        return MediaRecorder.isTypeSupported(item);
+      } catch {
+        return false;
       }
-      const available = Boolean(status.available);
-      const reason = String(status.reason || '');
-      setWakeEngineStatus(available
-        ? '本地 sherpa-onnx 唤醒引擎已就绪'
-        : `本地 sherpa-onnx 未就绪：${reason || '缺少模型配置'}；将降级到 V8OS STT/WebSpeech`);
-    } catch (error: any) {
-      setWakeEngineStatus(`本地唤醒引擎检查失败：${error?.message || 'unknown'}；将降级`);
-    }
-  };
-
-  const matchWakeword = (transcript: string) => {
-    const normalizedTranscript = normalizeSpeechText(transcript);
-    const aliases = getWakewordAliases();
-    for (const alias of aliases) {
-      const normalizedAlias = normalizeSpeechText(alias);
-      if (!normalizedAlias) continue;
-      if (normalizedTranscript.includes(normalizedAlias)) {
-        const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const directMatch = new RegExp(escapedAlias, 'i').exec(transcript);
-        const command = directMatch
-          ? transcript.slice((directMatch.index || 0) + directMatch[0].length).trim()
-          : '';
-        return { matched: true, alias, command };
-      }
-    }
-    return { matched: false, alias: '', command: '' };
+    }) || '';
   };
 
   const registerHardwareStream = (kind: 'microphone' | 'camera', stream: MediaStream) => {
@@ -1081,21 +1149,134 @@ If the user uploaded an image representation (which represents what you 'see' th
 
   const stopMicrophoneBuffer = () => {
     try {
-      mediaRecorderRef.current?.stop();
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== 'inactive') {
+        recorder.stop();
+      }
     } catch {}
     mediaRecorderRef.current = null;
     stopHardwareStream(microphoneStreamRef.current);
     microphoneStreamRef.current = null;
     stopTrackedHardwareStreams('microphone');
-    speechAudioChunksRef.current = [];
+    recordingAudioChunksRef.current = [];
   };
 
-  const stopWakewordSttFallback = () => {
-    if (wakewordPollTimerRef.current) {
-      window.clearInterval(wakewordPollTimerRef.current);
-      wakewordPollTimerRef.current = null;
+  const startPetRecording = async () => {
+    if (petSessionState === 'recording') return;
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setPetSessionState('error');
+      setVoiceStatus('当前环境不支持录音');
+      speakString('当前环境不支持录音。');
+      return;
     }
-    wakewordPollInFlightRef.current = false;
+    const conversationId = await requireActiveConversation();
+    const active = v8Conversations.find((item) => String(item.id) === String(conversationId));
+    if (isConversationRunning(active)) {
+      setPetSessionState('listening_running');
+      setVoiceStatus('当前会话运行中，不能发送新的语音');
+      speakString('当前会话正在运行，稍后再发送语音。');
+      return;
+    }
+    await window.v8CyberCore?.requestMediaAccess?.('microphone');
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    registerHardwareStream('microphone', stream);
+    microphoneStreamRef.current = stream;
+    const mimeType = pickAudioRecorderMimeType();
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recordingAudioChunksRef.current = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size) {
+        recordingAudioChunksRef.current.push(event.data);
+      }
+    };
+    recorder.onerror = () => {
+      setPetSessionState('error');
+      setVoiceStatus('录音异常，请稍后重试');
+    };
+    recorder.onstop = () => {
+      const type = recorder.mimeType || mimeType || 'audio/webm';
+      const blob = new Blob(recordingAudioChunksRef.current, { type });
+      recordingAudioChunksRef.current = [];
+      stopHardwareStream(stream);
+      if (microphoneStreamRef.current === stream) {
+        microphoneStreamRef.current = null;
+      }
+      if (recordingStopResolverRef.current) {
+        const resolve = recordingStopResolverRef.current;
+        recordingStopResolverRef.current = null;
+        resolve(blob);
+      }
+    };
+    recorder.start(500);
+    mediaRecorderRef.current = recorder;
+    setPetSessionState('recording');
+    setEmotion('listening');
+    setVoiceStatus('录音中，再次点击发送到当前会话');
+  };
+
+  const stopPetRecording = async () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') return null;
+    const blobPromise = new Promise<Blob>((resolve) => {
+      recordingStopResolverRef.current = resolve;
+    });
+    recorder.stop();
+    mediaRecorderRef.current = null;
+    const blob = await blobPromise;
+    return blob.size ? blob : null;
+  };
+
+  const sendAudioBlobToActiveConversation = async (audioBlob: Blob) => {
+    const client = v8ClientRef.current;
+    if (!client?.getSession()) {
+      throw new Error('尚未连接 V8OS Admin');
+    }
+    const conversationId = await requireActiveConversation();
+    const active = v8Conversations.find((item) => String(item.id) === String(conversationId));
+    if (isConversationRunning(active)) {
+      setPetSessionState('listening_running');
+      throw new Error('当前会话仍在运行，暂不能发送新的语音');
+    }
+    const extension = audioExtensionFromMime(audioBlob.type);
+    const mimeType = audioBlob.type || `audio/${extension}`;
+    const file = new File([audioBlob], `desktop-pet-voice-${Date.now()}.${extension}`, { type: mimeType });
+    const uploadRes = await client.uploadFile(file, {
+      conversationId,
+      workspacePath: settingsRef.current.v8WorkspacePath || undefined,
+    });
+    const fileUrl = String(uploadRes.url || uploadRes.path || '').trim();
+    if (!fileUrl) {
+      throw new Error('V8OS 上传语音后没有返回可用链接');
+    }
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `user-audio-${Date.now()}`,
+        sender: 'user',
+        text: '已发送一段语音。',
+        timestamp: nowLabel(),
+      },
+    ]);
+    await client.submitMessage({
+      conversationId,
+      content: '',
+      clientMessageId: `desktop-pet-voice-${Date.now()}`,
+      fileUrls: [fileUrl],
+      attachments: [{
+        ...uploadRes,
+        url: fileUrl,
+        publicUrl: String(uploadRes.publicUrl || uploadRes.url || fileUrl),
+        name: String(uploadRes.name || file.name),
+        mimeType,
+        size: audioBlob.size,
+        mediaKind: 'audio',
+        source: 'desktop_pet_voice',
+      }],
+    });
+    setPetSessionState('listening_running');
+    setVoiceStatus('语音已发送，正在监听当前会话');
+    setV8Status('V8OS 已接收桌宠语音');
+    await syncV8Snapshot(conversationId).catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
   };
 
   const stopWebcamStream = (status = '光学追踪已关闭，鼠标接管') => {
@@ -1117,436 +1298,17 @@ If the user uploaded an image representation (which represents what you 'see' th
   };
 
   const cleanupLocalMedia = () => {
-    localMediaShutdownRef.current = true;
-    stopWakewordSttFallback();
     stopMicrophoneBuffer();
     stopWebcamStream('本地媒体已释放');
     stopTrackedHardwareStreams();
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
-    try {
-      speechRecognitionRef.current?.stop?.();
-    } catch {}
     if (fallbackAudioRef.current) {
       try {
         fallbackAudioRef.current.pause();
       } catch {}
       fallbackAudioRef.current = null;
-    }
-  };
-
-  const startMicrophoneBuffer = async () => {
-    if (microphoneStreamRef.current || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      return;
-    }
-    try {
-      await window.v8CyberCore?.requestMediaAccess?.('microphone');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      registerHardwareStream('microphone', stream);
-      microphoneStreamRef.current = stream;
-      stream.getAudioTracks().forEach((track) => {
-        track.onended = () => {
-          stopMicrophoneBuffer();
-          setVoiceStatus('麦克风流已结束，语音唤醒已停止');
-        };
-        track.onmute = () => setVoiceStatus('麦克风无输入，等待恢复或手动释放');
-        track.onunmute = () => setVoiceStatus('麦克风输入恢复，语音唤醒监听中');
-      });
-      const options = MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
-      const recorder = new MediaRecorder(stream, options);
-      recorder.ondataavailable = (event) => {
-        if (event.data?.size) {
-          speechAudioChunksRef.current.push(event.data);
-          speechAudioChunksRef.current = speechAudioChunksRef.current.slice(-6);
-        }
-      };
-      recorder.onerror = () => {
-        setVoiceStatus('语音录音缓冲异常，改用本地转写');
-      };
-      recorder.start(1500);
-      mediaRecorderRef.current = recorder;
-      setVoiceStatus('语音唤醒监听中，V8OS STT 缓冲已就绪');
-    } catch (error: any) {
-      setVoiceStatus(`麦克风缓冲不可用：${error?.message || '权限或设备异常'}`);
-    }
-  };
-
-  const snapshotRecentSpeechBlob = async () => {
-    const recorder = mediaRecorderRef.current;
-    if (recorder?.state === 'recording') {
-      try {
-        recorder.requestData();
-        await new Promise((resolve) => setTimeout(resolve, 180));
-      } catch {}
-    }
-    const chunks = speechAudioChunksRef.current;
-    if (!chunks.length) return null;
-    return new Blob(chunks, { type: chunks[chunks.length - 1]?.type || 'audio/webm' });
-  };
-
-  const resolveTranscriptWithV8Stt = async (localTranscript: string) => {
-    const client = v8ClientRef.current;
-    if (!client?.getSession()) {
-      return localTranscript;
-    }
-    const audioBlob = await snapshotRecentSpeechBlob();
-    if (!audioBlob || audioBlob.size < 512) {
-      return localTranscript;
-    }
-    const extension = audioExtensionFromMime(audioBlob.type);
-    try {
-      setVoiceStatus('正在用 V8OS STT 复核语音...');
-      const payload = await client.transcribeSpeech(audioBlob, {
-        language: resolveSpeechLanguage(),
-        filename: `cybercore-voice.${extension}`,
-      });
-      const text = String(payload.text || payload.transcript || '').trim();
-      if (text) {
-        setVoiceStatus(`V8OS STT 完成：${text.slice(0, 28)}${text.length > 28 ? '...' : ''}`);
-        return text;
-      }
-    } catch (error: any) {
-      setVoiceStatus(`V8OS STT 失败，使用本地转写：${error?.message || 'unknown'}`);
-    }
-    return localTranscript;
-  };
-
-  const sendV8VoiceAudioToSupervisor = async (audioBlob: Blob) => {
-    const client = v8ClientRef.current;
-    if (!client?.getSession()) {
-      throw new Error('尚未连接 V8OS Admin');
-    }
-    const extension = audioExtensionFromMime(audioBlob.type);
-    const mimeType = audioBlob.type || `audio/${extension}`;
-    const conversationId = await ensureV8Conversation(V8_VOICE_CONVERSATION_TITLE);
-    const file = new File([audioBlob], `cybercore-voice.${extension}`, { type: mimeType });
-    const uploadRes = await client.uploadFile(file, {
-      conversationId,
-      workspacePath: settingsRef.current.v8WorkspacePath || undefined,
-    });
-    const fileUrl = String(uploadRes.url || uploadRes.path || '').trim();
-    if (!fileUrl) {
-      throw new Error('V8OS 上传语音后没有返回可用链接');
-    }
-    await handleChatSubmit('', [fileUrl], [{
-      ...uploadRes,
-      url: fileUrl,
-      publicUrl: String(uploadRes.publicUrl || uploadRes.url || fileUrl),
-      name: String(uploadRes.name || file.name),
-      mimeType,
-      size: audioBlob.size,
-      mediaKind: 'audio',
-      source: 'cybercore_v8os_voice',
-    }]);
-  };
-
-  const submitRecognizedAudio = async (transcript: string, options?: { preferAudio?: boolean }) => {
-    const text = transcript.trim();
-    const client = v8ClientRef.current;
-    if (!client?.getSession()) {
-      await handleChatSubmit(text);
-      return;
-    }
-    const audioBlob = await snapshotRecentSpeechBlob();
-    if (!audioBlob || audioBlob.size < 512) {
-      await handleChatSubmit(text);
-      return;
-    }
-
-    let audioStatusRoute = '';
-    let audioStatusReason = '';
-    try {
-      setVoiceStatus('正在检查 V8OS 语音输入路径...');
-      const status = await client.getAudioInputStatus();
-      audioStatusRoute = String(status.route || '');
-      audioStatusReason = String(status.stt?.reason || status.visionAudio?.reason || status.error || '');
-    } catch (error: any) {
-      audioStatusReason = error?.message || 'audio_input_status_failed';
-    }
-
-    if (audioStatusRoute === 'vision_audio' || (options?.preferAudio && audioStatusRoute !== 'stt')) {
-      try {
-        setVoiceStatus('正在发送语音给 V8OS 多模态模型...');
-        await sendV8VoiceAudioToSupervisor(audioBlob);
-        setVoiceStatus('语音已发送给 V8OS Supervisor');
-        return;
-      } catch (err: any) {
-        console.warn('Audio direct upload failed, falling back to text', err);
-        setVoiceStatus(`语音直传失败：${err?.message || 'unknown'}，改用文本`);
-      }
-    }
-
-    if (audioStatusRoute === 'stt') {
-      const resolved = await resolveTranscriptWithV8Stt(text);
-      if (resolved.trim()) {
-        await handleChatSubmit(resolved.trim());
-        return;
-      }
-    }
-
-    if (audioStatusRoute === 'unavailable' && !text) {
-      setVoiceStatus(`V8OS 语音不可用：${audioStatusReason || '未配置 STT 或音频模型'}`);
-      return;
-    }
-
-    if (text) {
-      await handleChatSubmit(text);
-      return;
-    }
-
-    try {
-      setVoiceStatus('STT 未返回文本，尝试发送原始语音给 V8OS...');
-      await sendV8VoiceAudioToSupervisor(audioBlob);
-      return;
-    } catch (err: any) {
-      console.warn('Audio direct upload fallback failed', err);
-      setVoiceStatus(`语音发送失败：${err?.message || audioStatusReason || 'unknown'}`);
-    }
-  };
-
-  const submitRecognizedSpeech = async (transcript: string) => {
-    await submitRecognizedAudio(transcript);
-  };
-
-  const submitRecognizedSpeechDirect = async (transcript: string) => {
-    await submitRecognizedAudio(transcript, { preferAudio: true });
-  };
-
-  const handleWakewordTranscript = (transcript: string, source: 'WebSpeech' | 'V8OS STT') => {
-    const clean = transcript.replace(/\s+/g, ' ').trim();
-    if (!clean) return;
-    const preview = clean.length > 36 ? `${clean.slice(0, 36)}...` : clean;
-    setVoiceStatus(`${source} 听到：${preview}`);
-
-    if (!settingsRef.current.isWakewordActive) {
-      void (source === 'V8OS STT' ? submitRecognizedSpeechDirect(clean) : submitRecognizedSpeech(clean));
-      return;
-    }
-
-    if (isWakeCommandWindowOpen()) {
-      const wake = matchWakeword(clean);
-      if (wake.matched && wake.command.length <= 2) {
-        setVoiceStatus(`${source} 已在窗口期内，继续等待指令`);
-        return;
-      }
-      wakeCommandDeadlineRef.current = 0;
-      void (source === 'V8OS STT' ? submitRecognizedSpeechDirect(wake.matched && wake.command ? wake.command : clean) : submitRecognizedSpeech(wake.matched && wake.command ? wake.command : clean));
-      return;
-    }
-
-    const wake = matchWakeword(clean);
-    if (!wake.matched) {
-      setVoiceStatus(`${source} 听到但未命中唤醒词：${preview}`);
-      return;
-    }
-
-    playQuantumWakeChime();
-    openWakeCommandWindow(source, wake.alias);
-
-    if (wake.command.length > 2) {
-      wakeCommandDeadlineRef.current = 0;
-      void (source === 'V8OS STT' ? submitRecognizedSpeechDirect(wake.command) : submitRecognizedSpeech(wake.command));
-      return;
-    }
-
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `awake-${Date.now()}`,
-        sender: 'pet',
-        text: `Fairy 已通过唤醒词 "${wake.alias}" 唤醒。等待指令，操作者。`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        emotion: 'listening'
-      }
-    ]);
-    speakString("我在，操作者。");
-  };
-
-  const runWakewordSttFallbackTick = async () => {
-    if (!settingsRef.current.isWakewordActive || localMediaShutdownRef.current || wakewordPollInFlightRef.current) {
-      return;
-    }
-    const client = v8ClientRef.current;
-    if (!client?.getSession()) {
-      if (!speechRecognitionRef.current) {
-        setVoiceStatus('WebSpeech 不可用；连接 V8OS 后可启用 STT 兜底唤醒');
-      }
-      return;
-    }
-    const audioBlob = await snapshotRecentSpeechBlob();
-    if (!audioBlob || audioBlob.size < 512) {
-      setVoiceStatus('语音唤醒监听中：等待有效麦克风片段');
-      return;
-    }
-    wakewordPollInFlightRef.current = true;
-    try {
-      setVoiceStatus('正在用 V8OS STT 检查唤醒词...');
-      const payload = await client.transcribeSpeech(audioBlob, {
-        language: resolveSpeechLanguage(),
-        filename: 'cybercore-wakeword.webm',
-      });
-      const text = String(payload.text || payload.transcript || '').trim();
-      speechAudioChunksRef.current = [];
-      if (!text || text === lastWakewordTranscriptRef.current) {
-        setVoiceStatus(text ? '语音唤醒监听中：暂无新指令' : '语音唤醒监听中：未识别到文本');
-        return;
-      }
-      lastWakewordTranscriptRef.current = text;
-      handleWakewordTranscript(text, 'V8OS STT');
-    } catch (error: any) {
-      setVoiceStatus(`V8OS STT 唤醒兜底失败：${error?.message || 'unknown'}`);
-    } finally {
-      wakewordPollInFlightRef.current = false;
-    }
-  };
-
-  const startWakewordSttFallback = () => {
-    if (wakewordPollTimerRef.current) return;
-    wakewordPollTimerRef.current = window.setInterval(() => {
-      void runWakewordSttFallbackTick();
-    }, 4500);
-    window.setTimeout(() => {
-      void runWakewordSttFallbackTick();
-    }, 2200);
-  };
-
-  const shouldUseV8SttWakeFallback = () => (
-    settingsRef.current.wakeEngine === 'v8os_stt'
-    || settingsRef.current.wakeEngine === 'local_kws'
-  );
-
-  const shouldUseWebSpeechWakeFallback = () => (
-    !window.v8CyberCore && (
-      settingsRef.current.wakeEngine === 'webspeech'
-      || settingsRef.current.wakeEngine === 'local_kws'
-    )
-  );
-
-  // Web Speech API Recognition Setup (Voice Input)
-  useEffect(() => {
-    if (window.v8CyberCore) {
-      setVoiceStatus('本地运行中，已使用 V8OS STT 兜底唤醒监听');
-      return;
-    }
-    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRec) {
-      const rec = new SpeechRec();
-      rec.continuous = true; // Stay listening for continuous wakewords
-      rec.interimResults = false;
-      rec.lang = resolveSpeechLanguage();
-
-      rec.onstart = () => {
-        setIsListening(true);
-        setVoiceStatus(`WebSpeech fallback 监听中：请说 ${settingsRef.current.wakeword || 'Fairy'}`);
-      };
-
-      rec.onresult = (event: any) => {
-        const lastIndex = event.results.length - 1;
-        const transcript = event.results[lastIndex][0].transcript.trim();
-        if (!transcript) return;
-        handleWakewordTranscript(transcript, 'WebSpeech');
-      };
-
-      rec.onend = () => {
-        if (localMediaShutdownRef.current) {
-          setIsListening(false);
-          setVoiceStatus('本地语音监听已释放');
-          return;
-        }
-        // Automatically regain continuous microphone locks if the thread deactivates
-        if (settingsRef.current.isWakewordActive) {
-          try {
-            rec.start();
-            setVoiceStatus(`WebSpeech fallback 监听中：请说 ${settingsRef.current.wakeword || 'Fairy'}`);
-          } catch {
-            // Already active
-          }
-        } else {
-          setIsListening(false);
-          setVoiceStatus('语音唤醒已暂停');
-          setEmotion(prev => prev === 'listening' ? 'idle' : prev);
-        }
-      };
-
-      rec.onerror = (e: any) => {
-        console.error("Speech Recognition Error:", e);
-        if (localMediaShutdownRef.current) {
-          setIsListening(false);
-          setVoiceStatus('本地语音监听已释放');
-          return;
-        }
-        if (settingsRef.current.isWakewordActive && e.error !== 'not-allowed') {
-          setTimeout(() => {
-            try { rec.start(); } catch {}
-          }, 1000);
-        } else {
-          setIsListening(false);
-          setVoiceStatus(e.error === 'not-allowed' ? '麦克风权限被拒绝' : `语音识别异常：${e.error || 'unknown'}`);
-          setEmotion('idle');
-        }
-      };
-
-      speechRecognitionRef.current = rec;
-    } else {
-      setVoiceStatus('WebSpeech 唤醒不可用；将使用 V8OS STT 兜底');
-    }
-  }, []);
-
-  // Monitor wakeword active state dynamically to turn mic on/off (Micro-sensing)
-  useEffect(() => {
-    const rec = speechRecognitionRef.current;
-    if (rec) {
-      rec.lang = resolveSpeechLanguage();
-    }
-    
-    if (settings.isWakewordActive) {
-      localMediaShutdownRef.current = false;
-      setIsListening(true);
-      void startMicrophoneBuffer();
-      if (settings.wakeEngine === 'local_kws') {
-        void refreshWakeEngineStatus();
-      }
-      if (shouldUseV8SttWakeFallback()) {
-        startWakewordSttFallback();
-      } else {
-        stopWakewordSttFallback();
-      }
-      try {
-        if (shouldUseWebSpeechWakeFallback()) {
-          rec?.start?.();
-        } else {
-          rec?.stop?.();
-        }
-      } catch (e) {
-        // already listening
-      }
-      if (!rec) {
-        setVoiceStatus('WebSpeech 不可用，V8OS STT 兜底唤醒监听中');
-      }
-    } else {
-      setIsListening(false);
-      stopWakewordSttFallback();
-      stopMicrophoneBuffer();
-      wakeCommandDeadlineRef.current = 0;
-      try {
-        rec?.stop?.();
-      } catch (e) {
-        // already stopped
-      }
-    }
-  }, [settings.isWakewordActive, settings.sttLanguage, settings.lang, settings.wakeEngine]);
-
-  const toggleListening = () => {
-    if (isListening) {
-      setSettings(prev => ({ ...prev, isWakewordActive: false }));
-      speechRecognitionRef.current?.stop?.();
-      setVoiceStatus('语音唤醒已暂停');
-    } else {
-      setSettings(prev => ({ ...prev, isWakewordActive: true }));
-      setVoiceStatus(speechRecognitionRef.current
-        ? `准备启动唤醒监听：${settingsRef.current.wakeword || 'Fairy'}`
-        : '准备启动 V8OS STT 兜底唤醒监听');
     }
   };
 
@@ -1708,7 +1470,11 @@ If the user uploaded an image representation (which represents what you 'see' th
     try {
       const client = v8ClientRef.current;
       if (!client) throw new Error('V8OS client unavailable');
-      const conversationId = await ensureV8Conversation(userMsgText || V8_VOICE_CONVERSATION_TITLE);
+      const conversationId = await requireActiveConversation();
+      const active = v8Conversations.find((item) => String(item.id) === String(conversationId));
+      if (isConversationRunning(active)) {
+        throw new Error('当前会话仍在运行，暂不能发送新的消息');
+      }
       setV8Status('已发送到 V8OS Supervisor');
       await client.submitMessage({
         conversationId,
@@ -1762,45 +1528,51 @@ If the user uploaded an image representation (which represents what you 'see' th
       setIsLoading(false);
     }
   };
-  // Let core express random actions when double-clicked
-  const triggerRandomEmotion = () => {
-    const emotions: PetEmotion[] = ['happy', 'curious', 'resting', 'worried', 'scanning'];
-    const random = emotions[Math.floor(Math.random() * emotions.length)];
-    setEmotion(random);
-    
-    let dialogue = "主人，仙灵核心在线。语音矩阵已切换为中文电子女声。";
-    if (random === 'happy') dialogue = "能量回路稳定上扬，主人，我现在状态很好。";
-    if (random === 'resting') dialogue = "我进入低功耗待机，但仍会监听你的指令。";
-    if (random === 'curious') dialogue = "我正在扫描周围信号，这里有点有趣。";
-    if (random === 'worried') dialogue = "检测到轻微异常波动，建议稍后检查连接状态。";
-    if (random === 'scanning') dialogue = "光学阵列开始扫描，请保持目标稳定。";
-
-    speakString(dialogue);
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `reactive-${Date.now()}`,
-        sender: 'pet',
-        text: dialogue,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        emotion: random
-      }
-    ]);
-  };
-
   // Master left-click handler on pet companion
   const handlePetClick = () => {
-    const hasActiveStreams = isListening || isWebcamActive;
-    if (hasActiveStreams) {
-      stopWakewordSttFallback();
-      stopMicrophoneBuffer();
-      stopWebcamStream('光学与声学信道已手动切断');
-      wakeCommandDeadlineRef.current = 0;
-      setIsListening(false);
-      setSettings(prev => ({ ...prev, isWakewordActive: false }));
-    } else {
-      triggerRandomEmotion();
-    }
+    void (async () => {
+      if (petSessionState === 'recording') {
+        try {
+          setPetSessionState('sending_audio');
+          setVoiceStatus('正在发送语音到当前会话');
+          const audioBlob = await stopPetRecording();
+          if (!audioBlob) {
+            setPetSessionState('attached_idle');
+            setVoiceStatus('没有录到有效语音');
+            return;
+          }
+          await sendAudioBlobToActiveConversation(audioBlob);
+        } catch (error: any) {
+          setPetSessionState('error');
+          setVoiceStatus(error?.message || '语音发送失败');
+          setEmotion('worried');
+        }
+        return;
+      }
+
+      if (!v8ActiveConversationId) {
+        setPetSessionState('idle_no_conversation');
+        setVoiceStatus('请先在右键菜单选择会话');
+        speakString('请先在右键菜单选择会话。');
+        return;
+      }
+
+      const active = v8Conversations.find((item) => String(item.id) === String(v8ActiveConversationId));
+      if (petSessionState === 'sending_audio' || petSessionState === 'listening_running' || isConversationRunning(active)) {
+        setPetSessionState('listening_running');
+        setVoiceStatus('当前会话运行中，不能发送新的语音');
+        speakString('当前会话正在运行，稍后再发送语音。');
+        return;
+      }
+
+      try {
+        await startPetRecording();
+      } catch (error: any) {
+        setPetSessionState('error');
+        setVoiceStatus(error?.message || '无法开始录音');
+        setEmotion('worried');
+      }
+    })();
   };
 
   // --- V8OS SSE Stream Listener ---
@@ -1818,34 +1590,24 @@ If the user uploaded an image representation (which represents what you 'see' th
           conversationId,
           (eventName, rawPayload: any) => {
             if (eventName === 'ping') return;
-            
-            let rules: any[] = [];
-            try { rules = JSON.parse(settingsRef.current.v8EventRulesJson || '[]'); } catch {}
+
+            const activity = buildActivityFromRealtimeEvent(rawPayload);
+            if (activity) {
+              applyV8EventRules([activity]);
+              if (isTerminalRunEvent(eventName, rawPayload)) {
+                setPetSessionState('attached_idle');
+                setVoiceStatus('当前会话已结束，可再次点击录音');
+                void refreshV8Lists();
+              } else if (petSessionStateRef.current !== 'recording' && petSessionStateRef.current !== 'sending_audio') {
+                setPetSessionState('listening_running');
+                setVoiceStatus('当前会话运行中，正在监听事件');
+              }
+            }
 
             const data = rawPayload?.data || {};
-            const topic = rawPayload?.topic || data?.topic || rawPayload?.name || '';
-            const summary = rawPayload?.summary || data?.summary || data?.message || '';
-            const runtimeId = rawPayload?.runtimeId || data?.runtimeId || '';
-            
-            let kind = 'message';
-            const joined = `${topic} ${runtimeId} ${summary}`.toLowerCase();
-            if (joined.includes('approval') || joined.includes('ask_user')) kind = 'approval_needed';
-            else if (joined.includes('artifact')) kind = 'artifact_ready';
-            else if (joined.includes('tool') || joined.includes('command')) kind = 'tool_calling';
-            else if (joined.includes('reasoning') || joined.includes('thinking')) kind = 'thinking';
-            else if (joined.includes('subagent') || joined.includes('delegation')) kind = 'subagent_active';
-            else if (joined.includes('runtime') || joined.includes('episode') || runtimeId) kind = 'runtime_active';
-            
-            if (rawPayload?.status && /fail|error/i.test(rawPayload.status)) kind = 'error';
-
-            const matchedRule = rules.find((r: any) => r.match === kind);
-            if (matchedRule) {
-              if (matchedRule.emotion) setEmotion(matchedRule.emotion);
-              if (matchedRule.speak && matchedRule.phrase) speakString(matchedRule.phrase);
-            }
-            
             // Auto-play audio if V8OS returned an audio buffer
-            const audioData = data?.audio || rawPayload?.audio || data?.voiceData;
+            const directAudioUrl = findLatestAudioUrl(rawPayload);
+            const audioData = directAudioUrl || data?.audio || rawPayload?.audio || data?.voiceData;
             if (audioData) {
               if (typeof audioData === 'string') {
                 if (audioData.startsWith('data:audio') || audioData.startsWith('http')) {
@@ -1895,21 +1657,10 @@ If the user uploaded an image representation (which represents what you 'see' th
           handleChatSubmit={handleChatSubmit}
           isMuted={isMuted}
           setIsMuted={setIsMuted}
-          isListening={isListening}
-          toggleListening={toggleListening}
           isWebcamActive={isWebcamActive}
           toggleWebcam={toggleWebcam}
           webcamStatus={webcamStatus}
           voiceStatus={voiceStatus}
-          wakeEngineStatus={wakeEngineStatus}
-          onReleaseMicrophone={() => {
-            stopWakewordSttFallback();
-            stopMicrophoneBuffer();
-            wakeCommandDeadlineRef.current = 0;
-            setIsListening(false);
-            setSettings(prev => ({ ...prev, isWakewordActive: false }));
-            setVoiceStatus('麦克风已手动释放');
-          }}
           onReleaseCamera={() => stopWebcamStream('手动释放光学流')}
           onTestSpeech={(text?: string) => speakString(text || '主人，中文电子女声测试完成。')}
           videoRef={videoRef}
@@ -1924,9 +1675,7 @@ If the user uploaded an image representation (which represents what you 'see' th
             projects: v8Projects,
             activeConversationId: v8ActiveConversationId,
             onSelectConversation: (id: string) => {
-              setV8ActiveConversationId(id);
-              v8ClientRef.current?.setActiveConversationId(id);
-              if (id) syncV8Snapshot(id).catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
+              void selectV8Conversation(id);
             },
             onConnect: connectV8,
             onDisconnect: disconnectV8,

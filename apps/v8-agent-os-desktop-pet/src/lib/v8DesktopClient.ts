@@ -272,7 +272,7 @@ export class V8DesktopClientAdapter {
     });
   }
 
-  async synthesizeSpeech(text: string) {
+  async synthesizeSpeech(text: string, input?: { voiceRef?: string }) {
     const session = this.session;
     if (!session?.accessToken) {
       throw new Error("尚未连接 V8OS Admin");
@@ -284,7 +284,7 @@ export class V8DesktopClientAdapter {
         Authorization: `Bearer ${session.accessToken}`,
         "x-v8-admin-base": session.adminBaseUrl,
       },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, voiceRef: input?.voiceRef || undefined }),
     });
     if (!response.ok) {
       const payload = await response.json().catch(async () => ({ error: await response.text().catch(() => "") }));
@@ -365,6 +365,13 @@ export class V8DesktopClientAdapter {
   async getRealtimeSnapshot(conversationId: string) {
     return this.request<Record<string, unknown>>(
       `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/snapshot?surface=desktop&compact=1`,
+      { cache: "no-store" },
+    );
+  }
+
+  async getConversationDetail(conversationId: string) {
+    return this.request<Record<string, unknown>>(
+      `/api/client/conversations/${encodeURIComponent(conversationId)}`,
       { cache: "no-store" },
     );
   }

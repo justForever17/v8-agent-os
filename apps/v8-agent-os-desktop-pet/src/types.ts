@@ -51,6 +51,10 @@ export interface PetSettings {
   v8AdminBaseUrl: string;
   v8WorkspacePath: string;
   v8EventRulesJson: string;
+  eventVoiceMode: 'system_tts' | 'voice_tag' | 'muted';
+  eventVoiceVoiceRef: string;
+  speakVoiceTags: boolean;
+  speakSupervisorReplies: boolean;
   
   // Custom TTS engine options
   ttsEngine: 'v8os' | 'custom' | 'webspeech' | 'edge';

@@ -301,6 +301,41 @@ function findLatestAudioUrl(value: unknown, depth = 0): string {
   return '';
 }
 
+function normalizeEventVoiceMode(value: unknown): PetSettings['eventVoiceMode'] {
+  const mode = String(value || '').trim();
+  if (mode === 'voice_tag' || mode === 'muted' || mode === 'system_tts') {
+    return mode;
+  }
+  return 'system_tts';
+}
+
+function cleanSpeechText(text: string) {
+  return String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/<think>[\s\S]*$/gi, '')
+    .replace(/<reasoning>[\s\S]*$/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractVoiceTagText(text: string) {
+  const segments: string[] = [];
+  const pattern = /<voice(?:\s[^>]*)?>([\s\S]*?)<\/voice>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(String(text || ''))) !== null) {
+    const clean = cleanSpeechText(match[1]);
+    if (clean) segments.push(clean);
+  }
+  return segments.join(' ');
+}
+
+function stripVoiceTagMarkup(text: string) {
+  return cleanSpeechText(
+    String(text || '').replace(/<voice(?:\s[^>]*)?>([\s\S]*?)<\/voice>/gi, '$1'),
+  );
+}
+
 function readReusableAudioPhrases() {
   try {
     const parsed = JSON.parse(localStorage.getItem('v8.cybercore.reusableAudioPhrases') || '[]');
@@ -383,6 +418,10 @@ If the user uploaded an image representation (which represents what you 'see' th
     v8AdminBaseUrl: localStorage.getItem('v8.cybercore.v8AdminBaseUrl') || v8ClientRef.current.getStoredAdminBaseUrl(),
     v8WorkspacePath: localStorage.getItem('v8.cybercore.workspacePath') || '',
     v8EventRulesJson: localStorage.getItem('v8.cybercore.eventRulesJson') || defaultV8EventRulesJson(),
+    eventVoiceMode: normalizeEventVoiceMode(localStorage.getItem('v8.cybercore.eventVoiceMode')),
+    eventVoiceVoiceRef: localStorage.getItem('v8.cybercore.eventVoiceVoiceRef') || '',
+    speakVoiceTags: localStorage.getItem('v8.cybercore.speakVoiceTags') !== 'false',
+    speakSupervisorReplies: localStorage.getItem('v8.cybercore.speakSupervisorReplies') !== 'false',
     ttsEngine: (localStorage.getItem('v8.cybercore.ttsEngine') as PetSettings['ttsEngine']) || 'v8os',
     edgeTtsVoice: (localStorage.getItem('v8.cybercore.edgeTtsVoice') as PetSettings['edgeTtsVoice']) || 'zh-CN-XiaoxiaoNeural',
     customTtsUrl: '',
@@ -452,6 +491,7 @@ If the user uploaded an image representation (which represents what you 'see' th
   const v8SeenActivityIdsRef = useRef<Set<string>>(new Set());
   const v8LastAudioUrlRef = useRef('');
   const v8LastSnapshotAudioPlayedRef = useRef(false);
+  const v8SpokenAssistantKeysRef = useRef<Set<string>>(new Set());
   const reusableAudioPhrasesRef = useRef<Set<string>>(new Set(readReusableAudioPhrases()));
 
   const desktopStreamRef = useRef<MediaStream | null>(null);
@@ -515,6 +555,10 @@ If the user uploaded an image representation (which represents what you 'see' th
     localStorage.setItem('v8.cybercore.gazeTracking', String(settings.gazeTracking));
     localStorage.setItem('v8.cybercore.edgeTtsVoice', settings.edgeTtsVoice || '');
     localStorage.setItem('v8.cybercore.v8AdminBaseUrl', settings.v8AdminBaseUrl || '');
+    localStorage.setItem('v8.cybercore.eventVoiceMode', settings.eventVoiceMode || 'system_tts');
+    localStorage.setItem('v8.cybercore.eventVoiceVoiceRef', settings.eventVoiceVoiceRef || '');
+    localStorage.setItem('v8.cybercore.speakVoiceTags', String(settings.speakVoiceTags !== false));
+    localStorage.setItem('v8.cybercore.speakSupervisorReplies', String(settings.speakSupervisorReplies !== false));
   }, [
     settings.petScale,
     settings.ttsEngine,
@@ -531,6 +575,10 @@ If the user uploaded an image representation (which represents what you 'see' th
     settings.gazeTracking,
     settings.edgeTtsVoice,
     settings.v8AdminBaseUrl,
+    settings.eventVoiceMode,
+    settings.eventVoiceVoiceRef,
+    settings.speakVoiceTags,
+    settings.speakSupervisorReplies,
   ]);
 
   useEffect(() => {
@@ -672,6 +720,16 @@ If the user uploaded an image representation (which represents what you 'see' th
       }
       return assistantText;
     }
+    const detail = await client.getConversationDetail(conversationId).catch(() => null);
+    const detailMessages = extractDesktopMessages(detail);
+    if (detailMessages.length) {
+      setMessages(detailMessages.map(toCyberMessage));
+      const assistantText = latestAssistantText(detailMessages);
+      if (assistantText) {
+        setEmotion('talking');
+      }
+      return assistantText;
+    }
     return '';
   };
 
@@ -719,7 +777,9 @@ If the user uploaded an image representation (which represents what you 'see' th
       const payload = await client.getDesktopPetConfig();
       const config = unpackDesktopPetConfig(payload);
       const appearance = config.appearance || {};
-      const voiceEnabled = config.eventVoice?.enabled !== false && config.eventVoice?.mode !== 'muted';
+      const eventVoice = config.eventVoice || {};
+      const voiceEnabled = eventVoice.enabled !== false && eventVoice.mode !== 'muted';
+      const eventVoiceMode = voiceEnabled ? normalizeEventVoiceMode(eventVoice.mode) : 'muted';
       const voiceRules = normalizeDesktopPetVoiceRules(config, voiceEnabled);
       setSettings((current) => ({
         ...current,
@@ -727,6 +787,10 @@ If the user uploaded an image representation (which represents what you 'see' th
         floatAmplitude: clampFiniteNumber(appearance.floatAmplitude, current.floatAmplitude ?? 8, 0, 24),
         floatSpeed: clampFiniteNumber(appearance.floatSpeed, current.floatSpeed || 1, 0.1, 3),
         customGlowColor: mapEffectSpectrumToGlowColor(config, current.customGlowColor || 'default'),
+        eventVoiceMode,
+        eventVoiceVoiceRef: typeof eventVoice.voiceRef === 'string' ? eventVoice.voiceRef : current.eventVoiceVoiceRef,
+        speakVoiceTags: eventVoice.speakVoiceTags !== false,
+        speakSupervisorReplies: eventVoice.speakSupervisorReplies !== false,
         v8EventRulesJson: voiceRules ? JSON.stringify(voiceRules, null, 2) : current.v8EventRulesJson,
       }));
     } catch (error) {
@@ -927,8 +991,7 @@ If the user uploaded an image representation (which represents what you 'see' th
       clearTimeout(speakTimeoutRef.current);
     }
 
-    // Remove tags like <think> from vocals
-    const cleanText = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    const cleanText = cleanSpeechText(text);
     if (!cleanText) {
       setEmotion('idle');
       return;
@@ -938,7 +1001,9 @@ If the user uploaded an image representation (which represents what you 'see' th
     if (settingsRef.current.ttsEngine === 'v8os') {
       const client = v8ClientRef.current;
       if (client?.getSession()) {
-        void client.synthesizeSpeech(cleanText)
+        void client.synthesizeSpeech(cleanText, {
+          voiceRef: settingsRef.current.eventVoiceVoiceRef || undefined,
+        })
           .then((blob) => {
             if (!playAudioBlob(blob)) {
               speakStandardWebSpeech(cleanText);
@@ -1023,6 +1088,32 @@ If the user uploaded an image representation (which represents what you 'see' th
     } else {
       speakStandardWebSpeech(cleanText);
     }
+  };
+
+  const speakAssistantReply = (text: string, options?: { audioAlreadyPlayed?: boolean }) => {
+    if (options?.audioAlreadyPlayed) return false;
+    const mode = settingsRef.current.eventVoiceMode || 'system_tts';
+    if (mode === 'muted') return false;
+
+    let speechText = '';
+    if (mode === 'voice_tag') {
+      if (settingsRef.current.speakVoiceTags === false) return false;
+      speechText = extractVoiceTagText(text);
+    } else {
+      if (settingsRef.current.speakSupervisorReplies === false) return false;
+      speechText = stripVoiceTagMarkup(text);
+    }
+
+    if (!speechText) return false;
+    const key = `${v8ActiveConversationId || 'conversation'}:${mode}:${speechText}`;
+    if (v8SpokenAssistantKeysRef.current.has(key)) return false;
+    v8SpokenAssistantKeysRef.current.add(key);
+    if (v8SpokenAssistantKeysRef.current.size > 80) {
+      const recent = Array.from(v8SpokenAssistantKeysRef.current).slice(-40);
+      v8SpokenAssistantKeysRef.current = new Set(recent);
+    }
+    speakString(speechText);
+    return true;
   };
 
   const speakStandardWebSpeech = (text: string) => {
@@ -1494,9 +1585,7 @@ If the user uploaded an image representation (which represents what you 'see' th
       }
 
       if (latestText) {
-        if (!v8LastSnapshotAudioPlayedRef.current) {
-          speakString(latestText);
-        }
+        speakAssistantReply(latestText, { audioAlreadyPlayed: v8LastSnapshotAudioPlayedRef.current });
         setV8Status('V8OS Supervisor 已回流');
       } else {
         setV8Status('V8OS 正在运行，稍后可在会话里查看回流');
@@ -1598,6 +1687,13 @@ If the user uploaded an image representation (which represents what you 'see' th
                 setPetSessionState('attached_idle');
                 setVoiceStatus('当前会话已结束，可再次点击录音');
                 void refreshV8Lists();
+                void syncV8Snapshot(conversationId)
+                  .then((latestText) => {
+                    if (latestText) {
+                      speakAssistantReply(latestText, { audioAlreadyPlayed: v8LastSnapshotAudioPlayedRef.current });
+                    }
+                  })
+                  .catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
               } else if (petSessionStateRef.current !== 'recording' && petSessionStateRef.current !== 'sending_audio') {
                 setPetSessionState('listening_running');
                 setVoiceStatus('当前会话运行中，正在监听事件');
@@ -1611,6 +1707,7 @@ If the user uploaded an image representation (which represents what you 'see' th
             if (audioData) {
               if (typeof audioData === 'string') {
                 if (audioData.startsWith('data:audio') || audioData.startsWith('http')) {
+                  if (directAudioUrl) v8LastAudioUrlRef.current = directAudioUrl;
                   fetch(audioData).then(res => res.blob()).then(blob => playAudioBlob(blob)).catch(console.error);
                 } else if (audioData.length > 50) {
                   fetch(`data:audio/wav;base64,${audioData}`).then(res => res.blob()).then(blob => playAudioBlob(blob)).catch(console.error);

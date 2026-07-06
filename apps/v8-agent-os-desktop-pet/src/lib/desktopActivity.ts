@@ -93,6 +93,27 @@ function messageContent(record: Record<string, unknown>) {
     .join("\n");
 }
 
+function isChatTextMessage(record: Record<string, unknown>, content: string) {
+  const marker = readString(
+    record.kind,
+    record.type,
+    record.messageType,
+    record.message_type,
+    record.contentType,
+    record.content_type,
+    record.topic,
+  ).toLowerCase();
+  if (/(reasoning|thinking|thought|tool|runtime|episode|artifact|approval|ask_user|event|activity)/.test(marker)) {
+    return false;
+  }
+  if (/^<(think|reasoning)(\s|>)/i.test(content.trim())) {
+    return false;
+  }
+  const role = readString(record.role, record.sender).toLowerCase();
+  const hasChatRole = role === "user" || role === "assistant" || role === "system" || role === "supervisor";
+  return hasChatRole || /(message|text|chat)/.test(marker);
+}
+
 export function extractDesktopMessages(snapshotPayload: unknown): DesktopMessage[] {
   const root = asRecord(snapshotPayload);
   const messages = firstArray(root, ["snapshot.messages", "messages", "projection.messages"]);
@@ -102,6 +123,7 @@ export function extractDesktopMessages(snapshotPayload: unknown): DesktopMessage
       const role = readString(record.role, record.sender).toLowerCase();
       const content = messageContent(record);
       if (!content) return null;
+      if (!isChatTextMessage(record, content)) return null;
       return {
         id: readString(record.id, record.messageId, record.message_id) || `message-${index}`,
         role: role === "user" ? "user" : role === "system" ? "system" : "assistant",

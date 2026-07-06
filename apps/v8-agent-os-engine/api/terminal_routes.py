@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from core.system_base import get_internal_secret
 from core.client_terminal_broker import (
+    consume_terminal_ws_ticket,
     consume_terminal_session_output,
     create_terminal_session,
+    issue_terminal_ws_ticket,
+    list_terminal_sessions,
     list_terminal_profiles,
     read_terminal_session,
     resize_terminal_session,
@@ -19,6 +24,12 @@ from core.client_terminal_broker import (
 
 
 router = APIRouter(prefix="/terminal")
+
+
+def require_terminal_internal_secret(x_v8_agent_os_secret: str | None = Header(default=None)) -> None:
+    expected_secret = get_internal_secret()
+    if not expected_secret or not hmac.compare_digest(str(x_v8_agent_os_secret or ""), expected_secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 class CreateTerminalSessionRequest(BaseModel):
@@ -32,7 +43,7 @@ class TerminalInputRequest(BaseModel):
 
 
 @router.get("/profiles")
-async def get_terminal_profiles():
+async def get_terminal_profiles(_auth: None = Depends(require_terminal_internal_secret)):
     try:
         return list_terminal_profiles()
     except Exception as exc:
@@ -40,7 +51,10 @@ async def get_terminal_profiles():
 
 
 @router.post("/sessions")
-async def create_terminal_session_route(request: CreateTerminalSessionRequest):
+async def create_terminal_session_route(
+    request: CreateTerminalSessionRequest,
+    _auth: None = Depends(require_terminal_internal_secret),
+):
     try:
         return create_terminal_session(
             profile_id=request.profileId,
@@ -51,23 +65,65 @@ async def create_terminal_session_route(request: CreateTerminalSessionRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.get("/sessions")
+async def list_terminal_sessions_route(
+    conversationId: str | None = Query(default=None),
+    _auth: None = Depends(require_terminal_internal_secret),
+):
+    return list_terminal_sessions(conversation_id=conversationId)
+
+
 @router.get("/sessions/{session_id}")
-async def read_terminal_session_route(session_id: str):
+async def read_terminal_session_route(
+    session_id: str,
+    _auth: None = Depends(require_terminal_internal_secret),
+):
     return read_terminal_session(session_id)
 
 
+@router.post("/sessions/{session_id}/ws-ticket")
+async def issue_terminal_session_ws_ticket_route(
+    session_id: str,
+    x_v8_agent_os_secret: str | None = Header(default=None),
+    x_v8_agent_os_user_email: str | None = Header(default=None),
+):
+    expected_secret = get_internal_secret()
+    if not expected_secret or not hmac.compare_digest(str(x_v8_agent_os_secret or ""), expected_secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    user_email = str(x_v8_agent_os_user_email or "").strip()
+    if not user_email:
+        raise HTTPException(status_code=401, detail="Terminal user is required")
+    try:
+        return issue_terminal_ws_ticket(session_id, user_email=user_email)
+    except RuntimeError as exc:
+        detail = str(exc)
+        raise HTTPException(status_code=404 if "not found" in detail.lower() else 400, detail=detail)
+
+
 @router.post("/sessions/{session_id}/input")
-async def send_terminal_input_route(session_id: str, request: TerminalInputRequest):
+async def send_terminal_input_route(
+    session_id: str,
+    request: TerminalInputRequest,
+    _auth: None = Depends(require_terminal_internal_secret),
+):
     return send_terminal_input(session_id, request.inputText)
 
 
 @router.post("/sessions/{session_id}/terminate")
-async def terminate_terminal_session_route(session_id: str):
+async def terminate_terminal_session_route(
+    session_id: str,
+    _auth: None = Depends(require_terminal_internal_secret),
+):
     return terminate_terminal_session(session_id)
 
 
 @router.websocket("/sessions/{session_id}/ws")
 async def terminal_session_websocket(websocket: WebSocket, session_id: str):
+    ticket_result = consume_terminal_ws_ticket(session_id, websocket.query_params.get("ticket") or "")
+    if not ticket_result.get("ok"):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
 
     async def send_payload(payload: dict) -> None:

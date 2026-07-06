@@ -46,6 +46,10 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
+        source: "/api/terminal-ws/:path*",
+        destination: `${resolveEngineOrigin()}/v1/terminal/:path*`,
+      },
+      {
         source: "/api/client/bg_processes/:path*",
         destination: `${resolveEngineOrigin()}/v1/bg_processes/:path*`,
       },

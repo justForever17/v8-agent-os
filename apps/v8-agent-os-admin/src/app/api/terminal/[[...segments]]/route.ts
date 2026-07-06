@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { resolveClientUserEmail, unauthorizedClientJson } from "@/lib/server/client-request-auth";
+import { verifyServiceAuth } from "@/lib/service-auth";
 import { resolveEngineBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -12,9 +12,9 @@ function buildTarget(req: NextRequest, segments?: string[]) {
 }
 
 async function proxy(req: NextRequest, context: { params: Promise<{ segments?: string[] }> }, method: "GET" | "POST") {
-    const userEmail = await resolveClientUserEmail(req);
+    const userEmail = await verifyServiceAuth(req);
     if (!userEmail) {
-        return unauthorizedClientJson();
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const internalSecret = resolveInternalSecret();
     if (!internalSecret) {
@@ -39,7 +39,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ segments?: s
         const data = await response.json().catch(() => ({}));
         return NextResponse.json(data, { status: response.status });
     } catch (error) {
-        console.error("[Client Terminal Proxy] failed:", error);
+        console.error("[Terminal Service Proxy] failed:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

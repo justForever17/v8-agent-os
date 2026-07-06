@@ -4,7 +4,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Square, TerminalSquare, X } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import type { AdminProcessRef } from '@v8/session-realtime';
 import { cn } from '@/lib/utils';
+import { InteractiveTerminalCard } from './InteractiveTerminalCard';
 import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalProfileView {
@@ -38,17 +40,20 @@ interface ManualTerminalPanelProps {
     profiles: TerminalProfileView[];
     profileId: string;
     sessions: ManualTerminalSessionView[];
-    activeSessionId: string;
+    processes?: AdminProcessRef[];
+    activeTabId: string;
+    hiddenTabCount?: number;
     busy?: boolean;
     error?: string;
     onProfileChange: (profileId: string) => void;
     onStart: () => void;
-    onActivate: (sessionId: string) => void;
-    onCloseSession: (sessionId: string) => Promise<void> | void;
+    onActivate: (tabId: string) => void;
+    onHideTab: (tabId: string) => Promise<void> | void;
+    onShowHidden?: () => void;
     onClosePanel: () => void;
 }
 
-function buildTerminalSessionWsUrl(sessionId?: string) {
+function buildTerminalSessionWsUrl(sessionId: string, ticket: string) {
     if (!sessionId || typeof window === 'undefined') {
         return '';
     }
@@ -57,9 +62,13 @@ function buildTerminalSessionWsUrl(sessionId?: string) {
         || process.env.NEXT_PUBLIC_V8_AGENT_OS_ENGINE_WS_BASE_URL
         || '',
     ).trim();
-    const base = configured || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname || '127.0.0.1'}:9530`;
-    const normalizedBase = base.replace(/\/$/, '').endsWith('/v1') ? base.replace(/\/$/, '') : `${base.replace(/\/$/, '')}/v1`;
-    return `${normalizedBase}/terminal/sessions/${encodeURIComponent(sessionId)}/ws`;
+    const query = `ticket=${encodeURIComponent(ticket)}`;
+    if (configured) {
+        const normalizedBase = configured.replace(/\/$/, '').endsWith('/v1') ? configured.replace(/\/$/, '') : `${configured.replace(/\/$/, '')}/v1`;
+        return `${normalizedBase}/terminal/sessions/${encodeURIComponent(sessionId)}/ws?${query}`;
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/api/terminal-ws/sessions/${encodeURIComponent(sessionId)}/ws?${query}`;
 }
 
 function formatTerminalTitle(session: ManualTerminalSessionView) {
@@ -69,51 +78,23 @@ function formatTerminalTitle(session: ManualTerminalSessionView) {
     return `${label}${suffix}`;
 }
 
+function isProcessRunning(process: AdminProcessRef) {
+    const status = String(process.status || '').trim().toLowerCase();
+    return !['stopped', 'terminated', 'completed', 'failed'].includes(status);
+}
+
+function formatProcessTitle(process: AdminProcessRef) {
+    const id = String(process.commandId || process.processId || '').trim();
+    const shortId = id ? ` · ${id.slice(-6)}` : '';
+    return `${process.title || process.commandPreview || 'Process'}${shortId}`;
+}
+
 function writePlainSnapshot(term: Terminal, text: string) {
     if (!text) {
         return;
     }
     term.reset();
     term.write(text.replace(/\r?\n/g, '\r\n'));
-}
-
-function isNativeXtermInputTarget(target: EventTarget | null) {
-    if (!(target instanceof HTMLElement)) {
-        return false;
-    }
-    if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable) {
-        return true;
-    }
-    return false;
-}
-
-function keyEventToTerminalInput(event: React.KeyboardEvent<HTMLDivElement>) {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
-        return 'paste';
-    }
-    if (event.ctrlKey && event.key.toLowerCase() === 'c') {
-        return '\x03';
-    }
-    if (event.ctrlKey && event.key.toLowerCase() === 'd') {
-        return '\x04';
-    }
-    if (event.key === 'Enter') return '\r';
-    if (event.key === 'Escape') return '\x1b';
-    if (event.key === 'Backspace') return '\x7f';
-    if (event.key === 'Tab') return '\t';
-    if (event.key === 'ArrowUp') return '\x1b[A';
-    if (event.key === 'ArrowDown') return '\x1b[B';
-    if (event.key === 'ArrowRight') return '\x1b[C';
-    if (event.key === 'ArrowLeft') return '\x1b[D';
-    if (event.key === 'Home') return '\x1b[H';
-    if (event.key === 'End') return '\x1b[F';
-    if (event.key === 'Delete') return '\x1b[3~';
-    if (event.key === 'PageUp') return '\x1b[5~';
-    if (event.key === 'PageDown') return '\x1b[6~';
-    if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) {
-        return event.key;
-    }
-    return '';
 }
 
 interface ManualTerminalXtermProps {
@@ -278,90 +259,111 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
         });
         term.focus();
 
-        const wsUrl = buildTerminalSessionWsUrl(sessionId);
-        if (!wsUrl) {
-            term.write('Terminal session is missing a connection URL.\r\n');
-            return () => {
-                resizeObserver.disconnect();
-                dataDisposable.dispose();
-                term.dispose();
-                terminalRef.current = null;
-                fitAddonRef.current = null;
-            };
-        }
+        let disposed = false;
+        let ws: WebSocket | null = null;
 
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-        ws.onopen = () => {
-            setConnected(true);
-            setSocketError('');
-            scheduleResize();
-            flushPendingInput();
-        };
-        ws.onmessage = (event) => {
-            if (typeof event.data !== 'string') {
-                return;
-            }
-            let payload: Record<string, unknown> | null = null;
+        const connect = async () => {
             try {
-                payload = JSON.parse(event.data) as Record<string, unknown>;
-            } catch {
-                term.write(event.data);
-                wroteInitialSnapshotRef.current = true;
-                return;
-            }
-            const type = String(payload?.type || '');
-            if (type === 'output') {
-                const data = String(payload.data || '');
-                if (data) {
-                    term.write(data);
-                    wroteInitialSnapshotRef.current = true;
+                const ticketResponse = await fetch(`/api/client/terminal/sessions/${encodeURIComponent(sessionId)}/ws-ticket`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+                const ticketPayload = await ticketResponse.json().catch(() => ({}));
+                const ticket = String(ticketPayload?.ticket || '').trim();
+                if (!ticketResponse.ok || !ticket) {
+                    throw new Error(String(ticketPayload?.detail || ticketPayload?.error || 'Terminal connection ticket is unavailable.'));
                 }
-                return;
-            }
-            if (type === 'snapshot') {
-                const nextSession = (payload.session || {}) as ManualTerminalSessionView;
-                setRunning(nextSession.isRunning !== false);
-                localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
-                const delta = String(nextSession.outputDelta || '');
-                if (delta) {
-                    term.write(delta);
-                    wroteInitialSnapshotRef.current = true;
+                if (disposed) {
                     return;
                 }
-                const snapshot = String(nextSession.rawScreenSnapshot || nextSession.screenSnapshot || '');
-                if (!wroteInitialSnapshotRef.current && snapshot) {
-                    writePlainSnapshot(term, snapshot);
-                    wroteInitialSnapshotRef.current = true;
+                const wsUrl = buildTerminalSessionWsUrl(sessionId, ticket);
+                if (!wsUrl) {
+                    throw new Error('Terminal session is missing a connection URL.');
                 }
-                return;
-            }
-            if (type === 'status') {
-                const nextSession = (payload.session || {}) as ManualTerminalSessionView;
-                setRunning(nextSession.isRunning !== false);
-                localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
-                return;
-            }
-            if (type === 'error') {
-                setSocketError(String(payload.message || '终端连接异常'));
+
+                ws = new WebSocket(wsUrl);
+                wsRef.current = ws;
+                ws.onopen = () => {
+                    setConnected(true);
+                    setSocketError('');
+                    scheduleResize();
+                    flushPendingInput();
+                };
+                ws.onmessage = (event) => {
+                    if (typeof event.data !== 'string') {
+                        return;
+                    }
+                    let payload: Record<string, unknown> | null = null;
+                    try {
+                        payload = JSON.parse(event.data) as Record<string, unknown>;
+                    } catch {
+                        term.write(event.data);
+                        wroteInitialSnapshotRef.current = true;
+                        return;
+                    }
+                    const type = String(payload?.type || '');
+                    if (type === 'output') {
+                        const data = String(payload.data || '');
+                        if (data) {
+                            term.write(data);
+                            wroteInitialSnapshotRef.current = true;
+                        }
+                        return;
+                    }
+                    if (type === 'snapshot') {
+                        const nextSession = (payload.session || {}) as ManualTerminalSessionView;
+                        setRunning(nextSession.isRunning !== false);
+                        localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
+                        const delta = String(nextSession.outputDelta || '');
+                        if (delta) {
+                            term.write(delta);
+                            wroteInitialSnapshotRef.current = true;
+                            return;
+                        }
+                        const snapshot = String(nextSession.rawScreenSnapshot || nextSession.screenSnapshot || '');
+                        if (!wroteInitialSnapshotRef.current && snapshot) {
+                            writePlainSnapshot(term, snapshot);
+                            wroteInitialSnapshotRef.current = true;
+                        }
+                        return;
+                    }
+                    if (type === 'status') {
+                        const nextSession = (payload.session || {}) as ManualTerminalSessionView;
+                        setRunning(nextSession.isRunning !== false);
+                        localEchoRef.current = nextSession.usesTty === false || String((nextSession as ManualTerminalSessionView & { ttyMode?: string }).ttyMode || '').toLowerCase() === 'pipe';
+                        return;
+                    }
+                    if (type === 'error') {
+                        setSocketError(String(payload.message || '终端连接异常'));
+                    }
+                };
+                ws.onerror = () => {
+                    setSocketError('终端连接异常。');
+                };
+                ws.onclose = () => {
+                    wsRef.current = null;
+                    setConnected(false);
+                };
+            } catch (connectError) {
+                if (disposed) {
+                    return;
+                }
+                const message = connectError instanceof Error ? connectError.message : '终端连接异常。';
+                setSocketError(message);
+                term.writeln(`\r\n[${message}]`);
             }
         };
-        ws.onerror = () => {
-            setSocketError('终端连接异常。');
-        };
-        ws.onclose = () => {
-            wsRef.current = null;
-            setConnected(false);
-        };
+        void connect();
 
         return () => {
+            disposed = true;
             if (resizeTimerRef.current !== null) {
                 window.clearTimeout(resizeTimerRef.current);
                 resizeTimerRef.current = null;
             }
             resizeObserver.disconnect();
             dataDisposable.dispose();
-            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
                 ws.close();
             }
             term.dispose();
@@ -381,21 +383,6 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             onPointerDownCapture={(event) => {
                 event.currentTarget.focus();
                 terminalRef.current?.focus();
-            }}
-            onKeyDownCapture={(event) => {
-                if (isNativeXtermInputTarget(event.target)) {
-                    return;
-                }
-                const data = keyEventToTerminalInput(event);
-                if (!data) {
-                    return;
-                }
-                event.preventDefault();
-                if (data === 'paste') {
-                    void pasteClipboard();
-                    return;
-                }
-                sendTerminalInput(data);
             }}
             onContextMenu={(event) => {
                 event.preventDefault();
@@ -428,18 +415,61 @@ export function ManualTerminalPanel({
     profiles,
     profileId,
     sessions,
-    activeSessionId,
+    processes = [],
+    activeTabId,
+    hiddenTabCount = 0,
     busy,
     error,
     onProfileChange,
     onStart,
     onActivate,
-    onCloseSession,
+    onHideTab,
+    onShowHidden,
     onClosePanel,
 }: ManualTerminalPanelProps) {
-    const activeSession = useMemo(
-        () => sessions.find((item) => item.sessionId === activeSessionId) || sessions[0] || null,
-        [activeSessionId, sessions],
+    const tabs = useMemo(() => {
+        const manualCommandIds = new Set(
+            sessions
+                .map((session) => String(session.commandId || session.sessionId || '').trim())
+                .filter(Boolean),
+        );
+        return [
+            ...sessions
+                .map((session) => {
+                    const sessionId = String(session.sessionId || '').trim();
+                    if (!sessionId) {
+                        return null;
+                    }
+                    return {
+                        id: `manual:${sessionId}`,
+                        kind: 'manual' as const,
+                        title: formatTerminalTitle(session),
+                        isRunning: session.isRunning !== false,
+                        session,
+                    };
+                })
+                .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+            ...processes
+                .map((process) => {
+                    const processId = String(process.processId || process.commandId || '').trim();
+                    if (!processId || manualCommandIds.has(processId) || manualCommandIds.has(String(process.commandId || '').trim())) {
+                        return null;
+                    }
+                    return {
+                        id: `process:${processId}`,
+                        kind: 'process' as const,
+                        title: formatProcessTitle(process),
+                        isRunning: isProcessRunning(process),
+                        process,
+                    };
+                })
+                .filter((item): item is NonNullable<typeof item> => Boolean(item)),
+        ];
+    }, [processes, sessions]);
+
+    const activeTab = useMemo(
+        () => tabs.find((item) => item.id === activeTabId) || tabs[0] || null,
+        [activeTabId, tabs],
     );
 
     return (
@@ -453,12 +483,11 @@ export function ManualTerminalPanel({
                     </span>
                 </div>
                 <div className="ml-2 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-                    {sessions.map((session) => {
-                        const sessionId = String(session.sessionId || '');
-                        const active = activeSession?.sessionId === sessionId;
+                    {tabs.map((tab) => {
+                        const active = activeTab?.id === tab.id;
                         return (
                             <div
-                                key={sessionId}
+                                key={tab.id}
                                 role="button"
                                 tabIndex={0}
                                 className={cn(
@@ -467,32 +496,32 @@ export function ManualTerminalPanel({
                                         ? "border-primary/45 bg-primary/10 text-foreground"
                                         : "border-border/50 bg-background/80 hover:bg-muted",
                                 )}
-                                onClick={() => onActivate(sessionId)}
+                                onClick={() => onActivate(tab.id)}
                                 onKeyDown={(event) => {
                                     if (event.key === 'Enter' || event.key === ' ') {
                                         event.preventDefault();
-                                        onActivate(sessionId);
+                                        onActivate(tab.id);
                                     }
                                 }}
-                                title={formatTerminalTitle(session)}
+                                title={tab.title}
                             >
-                                <span className={cn("h-1.5 w-1.5 rounded-full", session.isRunning ? "bg-emerald-500" : "bg-slate-400")} />
-                                <span className="truncate font-mono">{formatTerminalTitle(session)}</span>
+                                <span className={cn("h-1.5 w-1.5 rounded-full", tab.isRunning ? "bg-emerald-500" : "bg-slate-400")} />
+                                <span className="truncate font-mono">{tab.title}</span>
                                 <span
                                     role="button"
                                     tabIndex={0}
                                     className="ml-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded opacity-55 hover:bg-muted-foreground/10 hover:opacity-100"
                                     onClick={(event) => {
                                         event.stopPropagation();
-                                        void onCloseSession(sessionId);
+                                        void onHideTab(tab.id);
                                     }}
                                     onKeyDown={(event) => {
                                         if (event.key === 'Enter' || event.key === ' ') {
                                             event.stopPropagation();
-                                            void onCloseSession(sessionId);
+                                            void onHideTab(tab.id);
                                         }
                                     }}
-                                    title="关闭标签"
+                                    title="隐藏标签"
                                 >
                                     <X className="h-3 w-3" />
                                 </span>
@@ -500,6 +529,16 @@ export function ManualTerminalPanel({
                         );
                     })}
                 </div>
+                {hiddenTabCount > 0 && onShowHidden && (
+                    <button
+                        type="button"
+                        className="inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                        onClick={onShowHidden}
+                        title="显示隐藏的终端"
+                    >
+                        显示 {hiddenTabCount}
+                    </button>
+                )}
                 {profiles.length > 1 && (
                     <select
                         value={profileId}
@@ -532,12 +571,19 @@ export function ManualTerminalPanel({
                     <X className="h-3.5 w-3.5" />
                 </button>
             </div>
-            {activeSession ? (
+            {activeTab?.kind === 'manual' ? (
                 <ManualTerminalXterm
-                    key={activeSession.sessionId}
-                    session={activeSession}
+                    key={activeTab.session.sessionId}
+                    session={activeTab.session}
                     error={error}
                 />
+            ) : activeTab?.kind === 'process' ? (
+                <div className="min-h-0 flex-1 overflow-auto bg-[#05070b] p-2">
+                    <InteractiveTerminalCard
+                        key={activeTab.process.processId}
+                        process={activeTab.process}
+                    />
+                </div>
             ) : (
                 <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-[#05070b] text-[12px] text-slate-400">
                     <TerminalSquare className="h-8 w-8 opacity-45" />

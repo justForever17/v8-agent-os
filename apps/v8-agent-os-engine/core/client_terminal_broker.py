@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -15,7 +16,9 @@ from core.tools.native.command import BackgroundProcess, _bg_processes, _prune_s
 
 
 MANUAL_TERMINAL_SESSION_PREFIX = "manual-terminal:"
+TERMINAL_WS_TICKET_TTL_SECONDS = 60
 _manual_terminal_sessions: dict[str, dict[str, Any]] = {}
+_terminal_ws_tickets: dict[str, dict[str, Any]] = {}
 
 
 def _now_iso() -> str:
@@ -188,6 +191,20 @@ def create_terminal_session(
     return _snapshot_for_session(terminal_id, output_delta=process.get_new_output())
 
 
+def list_terminal_sessions(*, conversation_id: str | None = None) -> dict[str, Any]:
+    normalized_conversation_id = str(conversation_id or "").strip()
+    sessions: list[dict[str, Any]] = []
+    for session_id, session in list(_manual_terminal_sessions.items()):
+        if normalized_conversation_id and str(session.get("conversationId") or "").strip() != normalized_conversation_id:
+            continue
+        snapshot = _snapshot_for_session(session_id)
+        if not snapshot.get("ok") and snapshot.get("status") == "not_found":
+            continue
+        sessions.append(snapshot)
+    sessions.sort(key=lambda item: str(item.get("createdAt") or ""))
+    return {"ok": True, "sessions": sessions}
+
+
 def read_terminal_session(session_id: str) -> dict[str, Any]:
     session_id = str(session_id or "").strip()
     session = _manual_terminal_sessions.get(session_id)
@@ -248,3 +265,66 @@ def terminate_terminal_session(session_id: str) -> dict[str, Any]:
     session["status"] = "stopped"
     session["updatedAt"] = _now_iso()
     return _snapshot_for_session(str(session_id), output_delta=process.get_new_output() if process else "")
+
+
+def _prune_terminal_ws_tickets(now: float | None = None) -> None:
+    current = float(now if now is not None else time.time())
+    for ticket, record in list(_terminal_ws_tickets.items()):
+        if bool(record.get("used")) or float(record.get("expiresAtEpoch") or 0) <= current:
+            _terminal_ws_tickets.pop(ticket, None)
+
+
+def issue_terminal_ws_ticket(
+    session_id: str,
+    *,
+    user_email: str,
+    ttl_seconds: int = TERMINAL_WS_TICKET_TTL_SECONDS,
+) -> dict[str, Any]:
+    normalized_session_id = str(session_id or "").strip()
+    normalized_user_email = str(user_email or "").strip()
+    if not normalized_session_id or normalized_session_id not in _manual_terminal_sessions:
+        raise RuntimeError("Terminal session not found.")
+    if not normalized_user_email:
+        raise RuntimeError("Terminal user is required.")
+
+    _prune_terminal_ws_tickets()
+    ticket = secrets.token_urlsafe(32)
+    ttl = max(5, min(int(ttl_seconds or TERMINAL_WS_TICKET_TTL_SECONDS), 300))
+    expires_at_epoch = time.time() + ttl
+    _terminal_ws_tickets[ticket] = {
+        "sessionId": normalized_session_id,
+        "userEmail": normalized_user_email,
+        "expiresAtEpoch": expires_at_epoch,
+        "used": False,
+    }
+    return {
+        "ok": True,
+        "sessionId": normalized_session_id,
+        "ticket": ticket,
+        "expiresAt": datetime.fromtimestamp(expires_at_epoch, timezone.utc).isoformat(),
+        "ttlSeconds": ttl,
+    }
+
+
+def consume_terminal_ws_ticket(session_id: str, ticket: str) -> dict[str, Any]:
+    normalized_session_id = str(session_id or "").strip()
+    normalized_ticket = str(ticket or "").strip()
+    if not normalized_session_id or not normalized_ticket:
+        return {"ok": False, "reason": "missing_ticket"}
+
+    _prune_terminal_ws_tickets()
+    record = _terminal_ws_tickets.get(normalized_ticket)
+    if not record:
+        return {"ok": False, "reason": "invalid_ticket"}
+    if float(record.get("expiresAtEpoch") or 0) <= time.time():
+        _terminal_ws_tickets.pop(normalized_ticket, None)
+        return {"ok": False, "reason": "expired_ticket"}
+    if not secrets.compare_digest(str(record.get("sessionId") or ""), normalized_session_id):
+        return {"ok": False, "reason": "session_mismatch"}
+
+    _terminal_ws_tickets.pop(normalized_ticket, None)
+    return {
+        "ok": True,
+        "sessionId": normalized_session_id,
+        "userEmail": str(record.get("userEmail") or ""),
+    }

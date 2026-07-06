@@ -401,6 +401,25 @@ function dedupeProcesses(processes: AdminProcessRef[]) {
     );
 }
 
+function isActiveTerminalProcess(process: AdminProcessRef) {
+    const status = String(process.status || '').trim().toLowerCase();
+    return Boolean(process.canInput) && !['stopped', 'terminated', 'completed', 'failed'].includes(status);
+}
+
+function terminalTabIdForManualSession(sessionId: string) {
+    const normalized = String(sessionId || '').trim();
+    return normalized ? `manual:${normalized}` : '';
+}
+
+function terminalTabIdForProcess(process: AdminProcessRef) {
+    const normalized = String(process.processId || process.commandId || '').trim();
+    return normalized ? `process:${normalized}` : '';
+}
+
+function terminalHiddenStorageKey(conversationId: string) {
+    return `v8-web-terminal-hidden-tabs:${conversationId}`;
+}
+
 function filterConversationProcesses(
     processes: AdminProcessRef[],
     {
@@ -555,7 +574,9 @@ export default function ChatClient() {
     const [terminalProfiles, setTerminalProfiles] = useState<TerminalProfileView[]>([]);
     const [terminalProfileId, setTerminalProfileId] = useState("");
     const [manualTerminalSessions, setManualTerminalSessions] = useState<ManualTerminalSessionView[]>([]);
-    const [activeManualTerminalId, setActiveManualTerminalId] = useState("");
+    const [activeTerminalTabId, setActiveTerminalTabId] = useState("");
+    const [hiddenTerminalTabIds, setHiddenTerminalTabIds] = useState<Set<string>>(() => new Set());
+    const autoActivatedProcessTerminalIdsRef = useRef<Set<string>>(new Set());
     const [terminalBusy, setTerminalBusy] = useState(false);
     const [terminalError, setTerminalError] = useState("");
 
@@ -570,6 +591,30 @@ export default function ChatClient() {
             localStorage.setItem("v8-web-terminal-open", String(terminalOpen));
         }
     }, [terminalOpen]);
+
+    useEffect(() => {
+        autoActivatedProcessTerminalIdsRef.current = new Set();
+        setManualTerminalSessions([]);
+        setActiveTerminalTabId("");
+        if (typeof window === "undefined" || !activeConversationId) {
+            setHiddenTerminalTabIds(new Set());
+            return;
+        }
+        try {
+            const raw = localStorage.getItem(terminalHiddenStorageKey(activeConversationId));
+            const parsed = raw ? JSON.parse(raw) : [];
+            setHiddenTerminalTabIds(new Set(Array.isArray(parsed) ? parsed.map((item) => String(item || "")).filter(Boolean) : []));
+        } catch {
+            setHiddenTerminalTabIds(new Set());
+        }
+    }, [activeConversationId]);
+
+    useEffect(() => {
+        if (typeof window === "undefined" || !activeConversationId) {
+            return;
+        }
+        localStorage.setItem(terminalHiddenStorageKey(activeConversationId), JSON.stringify(Array.from(hiddenTerminalTabIds)));
+    }, [activeConversationId, hiddenTerminalTabIds]);
 
     const [isContextExpanded, setIsContextExpanded] = useState(false);
     const [localHour, setLocalHour] = useState<number>(9);
@@ -595,6 +640,7 @@ export default function ChatClient() {
         if (!sessionId) {
             return;
         }
+        const tabId = terminalTabIdForManualSession(sessionId);
         setManualTerminalSessions((prev) => {
             const index = prev.findIndex((item) => item.sessionId === sessionId);
             if (index < 0) {
@@ -604,8 +650,18 @@ export default function ChatClient() {
             next[index] = { ...next[index], ...payload };
             return next;
         });
+        if (tabId) {
+            setHiddenTerminalTabIds((prev) => {
+                if (!prev.has(tabId)) {
+                    return prev;
+                }
+                const next = new Set(prev);
+                next.delete(tabId);
+                return next;
+            });
+        }
         if (makeActive) {
-            setActiveManualTerminalId(sessionId);
+            setActiveTerminalTabId(tabId);
         }
     }, []);
 
@@ -670,12 +726,49 @@ export default function ChatClient() {
         }
     }, [activeConversationId, terminalBusy, terminalProfileId, terminalWorkspacePath, upsertManualTerminalSession]);
 
-    const closeManualTerminalSession = useCallback((sessionId: string) => {
-        setManualTerminalSessions((prev) => {
-            const next = prev.filter((item) => item.sessionId !== sessionId);
-            setActiveManualTerminalId((current) => current === sessionId ? (next[0]?.sessionId || "") : current);
+    const loadManualTerminalSessions = useCallback(async () => {
+        if (!activeConversationId) {
+            setManualTerminalSessions([]);
+            return;
+        }
+        try {
+            const response = await fetch(`/api/client/terminal/sessions?conversationId=${encodeURIComponent(activeConversationId)}`, {
+                cache: "no-store",
+            });
+            if (!response.ok) {
+                return;
+            }
+            const payload = await response.json().catch(() => ({}));
+            const sessions = Array.isArray(payload?.sessions) ? payload.sessions as ManualTerminalSessionView[] : [];
+            setManualTerminalSessions(sessions);
+            setActiveTerminalTabId((current) => current || terminalTabIdForManualSession(sessions[0]?.sessionId || ""));
+        } catch (error) {
+            console.warn("[ChatClient] Failed to restore manual terminal sessions:", error);
+        }
+    }, [activeConversationId]);
+
+    useEffect(() => {
+        if (!terminalOpen || !activeConversationId) {
+            return;
+        }
+        void loadManualTerminalSessions();
+    }, [activeConversationId, loadManualTerminalSessions, terminalOpen]);
+
+    const hideTerminalTab = useCallback((tabId: string) => {
+        const normalized = String(tabId || "").trim();
+        if (!normalized) {
+            return;
+        }
+        setHiddenTerminalTabIds((prev) => {
+            const next = new Set(prev);
+            next.add(normalized);
             return next;
         });
+        setActiveTerminalTabId((current) => current === normalized ? "" : current);
+    }, []);
+
+    const showHiddenTerminalTabs = useCallback(() => {
+        setHiddenTerminalTabIds(new Set());
     }, []);
 
     useEffect(() => {
@@ -901,6 +994,55 @@ export default function ChatClient() {
         ]),
         [projectionProcesses, sessionProcessSurface],
     );
+    const terminalProcesses = useMemo(
+        () => hudProcesses.filter(isActiveTerminalProcess),
+        [hudProcesses],
+    );
+    const visibleManualTerminalSessions = useMemo(
+        () => manualTerminalSessions.filter((session) => !hiddenTerminalTabIds.has(terminalTabIdForManualSession(session.sessionId || ""))),
+        [hiddenTerminalTabIds, manualTerminalSessions],
+    );
+    const visibleTerminalProcesses = useMemo(
+        () => terminalProcesses.filter((process) => !hiddenTerminalTabIds.has(terminalTabIdForProcess(process))),
+        [hiddenTerminalTabIds, terminalProcesses],
+    );
+    const hiddenTerminalTabCount = useMemo(() => {
+        const allTabIds = [
+            ...manualTerminalSessions.map((session) => terminalTabIdForManualSession(session.sessionId || "")),
+            ...terminalProcesses.map((process) => terminalTabIdForProcess(process)),
+        ].filter(Boolean);
+        return allTabIds.filter((tabId) => hiddenTerminalTabIds.has(tabId)).length;
+    }, [hiddenTerminalTabIds, manualTerminalSessions, terminalProcesses]);
+    const visibleTerminalTabIds = useMemo(
+        () => [
+            ...visibleManualTerminalSessions.map((session) => terminalTabIdForManualSession(session.sessionId || "")),
+            ...visibleTerminalProcesses.map((process) => terminalTabIdForProcess(process)),
+        ].filter(Boolean),
+        [visibleManualTerminalSessions, visibleTerminalProcesses],
+    );
+    const visibleTerminalTabKey = visibleTerminalTabIds.join("|");
+
+    useEffect(() => {
+        if (activeTerminalTabId && visibleTerminalTabIds.includes(activeTerminalTabId)) {
+            return;
+        }
+        setActiveTerminalTabId(visibleTerminalTabIds[0] || "");
+    }, [activeTerminalTabId, visibleTerminalTabKey, visibleTerminalTabIds]);
+
+    useEffect(() => {
+        const nextProcess = terminalProcesses.find((process) => {
+            const processId = String(process.processId || process.commandId || "").trim();
+            const tabId = terminalTabIdForProcess(process);
+            return processId && tabId && !hiddenTerminalTabIds.has(tabId) && !autoActivatedProcessTerminalIdsRef.current.has(processId);
+        });
+        if (!nextProcess) {
+            return;
+        }
+        const processId = String(nextProcess.processId || nextProcess.commandId || "").trim();
+        autoActivatedProcessTerminalIdsRef.current.add(processId);
+        setTerminalOpen(true);
+        setActiveTerminalTabId(terminalTabIdForProcess(nextProcess));
+    }, [hiddenTerminalTabIds, terminalProcesses]);
     const projectionContextReferences = sessionProjection?.contextReferences || [];
     const projectionContextGovernanceRaw = sessionProjection?.contextGovernance || null;
     const projectionContextGovernanceHistoryRaw = useMemo(
@@ -960,10 +1102,18 @@ export default function ChatClient() {
     }, []);
 
     useEffect(() => {
-        if (runtimeStageModel.activeRuntimeId) {
-            setSelectedRuntimeId((prev) => prev || runtimeStageModel.activeRuntimeId);
+        if (runtimeStageModel.items.length === 0) {
+            setSelectedRuntimeId(null);
+            setIsTimelineOpen(false);
+            return;
         }
-    }, [runtimeStageModel.activeRuntimeId]);
+        setSelectedRuntimeId((prev) => {
+            if (prev && runtimeStageModel.items.some((item) => item.id === prev)) {
+                return prev;
+            }
+            return runtimeStageModel.activeRuntimeId || runtimeStageModel.items[0]?.id || null;
+        });
+    }, [runtimeStageModel.activeRuntimeId, runtimeStageModel.items]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -2408,14 +2558,17 @@ export default function ChatClient() {
                     workspacePath={terminalWorkspacePath}
                     profiles={terminalProfiles}
                     profileId={terminalProfileId}
-                    sessions={manualTerminalSessions}
-                    activeSessionId={activeManualTerminalId}
+                    sessions={visibleManualTerminalSessions}
+                    processes={visibleTerminalProcesses}
+                    activeTabId={activeTerminalTabId}
+                    hiddenTabCount={hiddenTerminalTabCount}
                     busy={terminalBusy}
                     error={terminalError}
                     onProfileChange={setTerminalProfileId}
                     onStart={() => void startManualTerminal()}
-                    onActivate={setActiveManualTerminalId}
-                    onCloseSession={closeManualTerminalSession}
+                    onActivate={setActiveTerminalTabId}
+                    onHideTab={hideTerminalTab}
+                    onShowHidden={showHiddenTerminalTabs}
                     onClosePanel={() => setTerminalOpen(false)}
                 />
             )}

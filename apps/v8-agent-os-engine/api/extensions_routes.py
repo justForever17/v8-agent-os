@@ -10,6 +10,7 @@ from core.extensions_store_service import (
     list_store_mcp,
     list_store_skills,
     get_store_mcp_detail,
+    get_store_skill_detail,
 )
 from core.mcp_config_service import McpConfigValidationError
 from core.skills_install_service import SkillInstallValidationError
@@ -102,6 +103,20 @@ async def install_extensions_store_skill(payload: dict = Body(...)):
         return install_store_skill(payload)
     except SkillInstallValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.to_payload())
+    except ExtensionStoreError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/extensions/store/skills/detail")
+async def get_extensions_store_skill_detail(
+    source: str,
+    skillId: str,
+    refresh: bool = False,
+):
+    try:
+        return get_store_skill_detail(source=source, skill_id=skillId, refresh=refresh)
     except ExtensionStoreError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_payload())
     except Exception as exc:

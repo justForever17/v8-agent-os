@@ -6,10 +6,12 @@ import json
 import os
 import re
 import time
+import base64
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 import httpx
 
@@ -22,6 +24,7 @@ from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 _CACHE_TTL_SECONDS = 30 * 60
 _HTTP_TIMEOUT_SECONDS = 20.0
 _SKILLS_SEARCH_URL = "https://skills.sh/api/search"
+_SKILLS_DOWNLOAD_URL = "https://skills.sh/api/download"
 _SKILLS_HOME_URL = "https://skills.sh/"
 _GITHUB_MCP_URL = "https://github.com/mcp"
 _USER_AGENT = "v8-agent-os-admin-extensions-store/1.0"
@@ -181,6 +184,100 @@ def _skill_detail_url(source: str, skill_id: str) -> str:
     return f"https://skills.sh/{source.strip('/')}/{skill_id}"
 
 
+def _skill_download_url(source: str, skill_id: str) -> str:
+    owner, repo = source.split("/", 1)
+    return f"{_SKILLS_DOWNLOAD_URL}/{quote(owner)}/{quote(repo)}/{quote(skill_id)}"
+
+
+def _strip_skill_frontmatter(markdown: str) -> tuple[dict[str, str], str]:
+    text = str(markdown or "").replace("\r\n", "\n")
+    if not text.startswith("---\n"):
+        return {}, text.strip()
+    end = text.find("\n---", 4)
+    if end < 0:
+        return {}, text.strip()
+    raw_frontmatter = text[4:end]
+    body = text[text.find("\n", end + 1) + 1 :]
+    meta: dict[str, str] = {}
+    for line in raw_frontmatter.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        meta[key.strip()] = value.strip().strip("\"'")
+    return meta, body.strip()
+
+
+def parse_skill_download_response(payload: dict[str, Any], *, source: str, skill_id: str) -> dict[str, Any]:
+    files = payload.get("files") if isinstance(payload, dict) else []
+    skill_md = ""
+    if isinstance(files, list):
+        for file_item in files:
+            if not isinstance(file_item, dict):
+                continue
+            path = str(file_item.get("path") or "").replace("\\", "/").lower()
+            if path.endswith("skill.md"):
+                skill_md = str(file_item.get("contents") or "")
+                break
+    meta, body = _strip_skill_frontmatter(skill_md)
+    name = str(meta.get("name") or skill_id).strip()
+    description = str(meta.get("description") or "").strip()
+    if not description:
+        for line in body.splitlines():
+            candidate = line.strip().strip("# ").strip()
+            if candidate and not candidate.startswith("```"):
+                description = candidate[:240]
+                break
+    return {
+        "id": f"{source}@{skill_id}",
+        "kind": "skill",
+        "provider": "skills.sh",
+        "source": source,
+        "skillId": skill_id,
+        "name": name,
+        "title": name,
+        "description": description,
+        "markdown": body,
+        "detailUrl": _skill_detail_url(source, skill_id),
+        "hash": str(payload.get("hash") or "") if isinstance(payload, dict) else "",
+    }
+
+
+def _skill_detail_cache_name(source: str, skill_id: str) -> str:
+    return _cache_key("skill-detail", f"{source}@{skill_id}")
+
+
+def get_store_skill_detail(*, source: str, skill_id: str, refresh: bool = False) -> dict[str, Any]:
+    normalized_source = str(source or "").strip()
+    normalized_skill_id = str(skill_id or "").strip()
+    if not _SKILL_SOURCE_PATTERN.fullmatch(normalized_source):
+        raise ExtensionStoreError("invalid_skill_source", "Skills 详情请求缺少合法的 owner/repo 来源。")
+    if not _SKILL_ID_PATTERN.fullmatch(normalized_skill_id):
+        raise ExtensionStoreError("invalid_skill_id", "Skills 详情请求缺少合法的 skillId。")
+    cache_name = _skill_detail_cache_name(normalized_source, normalized_skill_id)
+    if not refresh:
+        cached, _ = _read_cache(cache_name)
+        if isinstance(cached, dict):
+            return {**cached, "freshness": "cached"}
+    try:
+        detail = parse_skill_download_response(
+            _fetch_json(_skill_download_url(normalized_source, normalized_skill_id)),
+            source=normalized_source,
+            skill_id=normalized_skill_id,
+        )
+        _write_cache(cache_name, detail)
+        return {**detail, "freshness": "live"}
+    except Exception as exc:
+        cached, _ = _read_cache(cache_name, allow_stale=True)
+        if isinstance(cached, dict):
+            return {**cached, "freshness": "cached"}
+        raise ExtensionStoreError(
+            "skill_detail_unavailable",
+            "Skill 详情暂时不可用，请稍后重试。",
+            status_code=502,
+            details={"error": str(exc)},
+        ) from exc
+
+
 def _normalize_skill_item(raw: dict[str, Any]) -> dict[str, Any] | None:
     source = str(raw.get("source") or "").strip()
     skill_id = str(raw.get("skillId") or raw.get("skill_id") or raw.get("name") or "").strip()
@@ -203,6 +300,7 @@ def _normalize_skill_item(raw: dict[str, Any]) -> dict[str, Any] | None:
         "source": source,
         "skillId": skill_id,
         "installs": installs,
+        "description": str(raw.get("description") or "").strip(),
         "weeklyInstalls": [int(value or 0) for value in weekly if isinstance(value, (int, float)) or str(value).isdigit()],
         "detailUrl": _skill_detail_url(source, skill_id),
         "installCommand": f"npx --yes skills add {source}@{skill_id} -g",
@@ -259,13 +357,38 @@ def parse_skills_search_response(payload: dict[str, Any]) -> list[dict[str, Any]
     return _dedupe_skill_items([item for item in skills if isinstance(item, dict)])
 
 
+def _enrich_skill_summary(item: dict[str, Any]) -> dict[str, Any]:
+    if str(item.get("description") or "").strip():
+        return item
+    source = str(item.get("source") or "").strip()
+    skill_id = str(item.get("skillId") or "").strip()
+    cache_name = _skill_detail_cache_name(source, skill_id)
+    cached, _ = _read_cache(cache_name)
+    if isinstance(cached, dict) and str(cached.get("description") or "").strip():
+        next_item = dict(item)
+        next_item["description"] = str(cached.get("description") or "").strip()
+        return next_item
+    try:
+        detail = get_store_skill_detail(source=source, skill_id=skill_id)
+    except Exception:
+        return item
+    next_item = dict(item)
+    next_item["description"] = str(detail.get("description") or "").strip()
+    return next_item
+
+
 def _decorate_skill_items(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     installed = _installed_skill_ids()
     sorted_items = sorted(items, key=lambda item: int(item.get("installs") or 0), reverse=True)
+    selected_items = [dict(item) for item in sorted_items[:limit]]
+    if selected_items:
+        with ThreadPoolExecutor(max_workers=min(8, len(selected_items))) as executor:
+            enriched_items = list(executor.map(_enrich_skill_summary, selected_items))
+    else:
+        enriched_items = []
     decorated: list[dict[str, Any]] = []
-    for item in sorted_items[:limit]:
-        next_item = dict(item)
-        next_item["installed"] = str(item.get("skillId") or "").lower() in installed
+    for next_item in enriched_items:
+        next_item["installed"] = str(next_item.get("skillId") or "").lower() in installed
         decorated.append(next_item)
     return decorated
 
@@ -297,13 +420,13 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
             if cached is None:
                 raise ExtensionStoreError(
                     "skills_source_unavailable",
-                    "skills.sh 搜索暂时不可用，且本地没有可用缓存。",
+                    "Skills 商店暂时不可用，请稍后重试。",
                     status_code=502,
                     details={"error": str(exc)},
                 ) from exc
             items = cached if isinstance(cached, list) else []
             freshness = "cached"
-            warnings.append("skills.sh 搜索暂时不可用，已使用本地缓存。")
+            warnings.append("当前展示上次可用的 Skills 结果。")
         return {
             "provider": "skills.sh",
             "sourceUrl": _SKILLS_HOME_URL,
@@ -336,13 +459,13 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
         if cached is None:
             raise ExtensionStoreError(
                 "skills_home_unavailable",
-                "skills.sh 榜单暂时不可用，且本地没有可用缓存。",
+                "Skills 商店暂时不可用，请稍后重试。",
                 status_code=502,
                 details={"error": str(exc)},
             ) from exc
         items = cached if isinstance(cached, list) else []
         freshness = "cached"
-        warnings.append("skills.sh 榜单暂时不可用，已使用本地缓存。")
+        warnings.append("当前展示上次可用的 Skills 结果。")
     return {
         "provider": "skills.sh",
         "sourceUrl": _SKILLS_HOME_URL,
@@ -411,6 +534,7 @@ def _normalize_mcp_card(raw: dict[str, Any]) -> dict[str, Any] | None:
         "repositoryUrl": url,
         "detailUrl": f"{_GITHUB_MCP_URL}/{quote(name, safe='/._-')}",
         "stars": stars,
+        "avatarUrl": str(raw.get("owner_avatar_url") or "").strip(),
         "language": str(raw.get("primary_language") or "").strip(),
         "license": str(raw.get("license") or "").strip(),
         "topics": [str(topic) for topic in topics[:8]],
@@ -499,13 +623,13 @@ def list_store_mcp(*, query: str = "", limit: int = 24, refresh: bool = False) -
         if cached is None:
             raise ExtensionStoreError(
                 "github_mcp_source_unavailable",
-                "GitHub MCP Registry 暂时不可用，且本地没有可用缓存。",
+                "MCP 商店暂时不可用，请稍后重试。",
                 status_code=502,
                 details={"error": str(exc)},
             ) from exc
         cards = cached if isinstance(cached, list) else []
         freshness = "cached"
-        warnings.append("GitHub MCP Registry 暂时不可用，已使用本地缓存。")
+        warnings.append("当前展示上次可用的 MCP 结果。")
     return {
         "provider": "github.com/mcp",
         "sourceUrl": _GITHUB_MCP_URL,
@@ -738,17 +862,18 @@ def _server_configs_from_payload(payload: dict[str, Any], *, default_server_name
 def parse_mcp_install_redirect_candidates(detail_html: str, *, default_server_name: str) -> list[dict[str, Any]]:
     text = _decode_jsonish_text(detail_html)
     candidates: list[dict[str, Any]] = []
-    for match in re.finditer(r"https://(?:insiders\.)?vscode\.dev/redirect/mcp/install\?[^\"'<>\s)]+", text):
+    url_pattern = re.compile(
+        r"(?:https?|vscode):[^\"'<>\s)]*(?:redirect/mcp/install|mcp/install|install-mcp)[^\"'<>\s)]*",
+        flags=re.I,
+    )
+    for match in url_pattern.finditer(text):
         raw_url = match.group(0).rstrip("\\")
         parsed = urlparse(raw_url)
         params = parse_qs(parsed.query)
         raw_config = (params.get("config") or [""])[0]
         if not raw_config:
             continue
-        try:
-            payload = json.loads(raw_config)
-        except Exception:
-            continue
+        payload = _decode_install_config(raw_config)
         if not isinstance(payload, dict):
             continue
         name = str((params.get("name") or [""])[0] or default_server_name).strip() or default_server_name
@@ -762,6 +887,23 @@ def parse_mcp_install_redirect_candidates(detail_html: str, *, default_server_na
             if candidate:
                 candidates.append(candidate)
     return candidates
+
+
+def _decode_install_config(raw_config: str) -> dict[str, Any] | None:
+    decoded = unquote(str(raw_config or "").strip())
+    if not decoded:
+        return None
+    try:
+        payload = json.loads(decoded)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        pass
+    try:
+        padded = decoded + "=" * (-len(decoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
 
 
 def _readable_detail_text(detail_html: str) -> str:
@@ -853,7 +995,7 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
         )
         public_candidates = [_public_candidate(candidate) for candidate in candidates]
         if not public_candidates:
-            warnings.append("该 GitHub MCP 条目没有解析到明确的一键安装配置。")
+            warnings.append("该 MCP 条目没有解析到明确的一键安装配置。")
         payload = {
             "id": normalized_id,
             "provider": "github.com/mcp",
@@ -869,11 +1011,11 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
         cached, _ = _read_cache(cache_name, allow_stale=True)
         if isinstance(cached, dict):
             cached_warnings = list(cached.get("warnings") or [])
-            cached_warnings.append("GitHub MCP 详情暂时不可用，已使用本地缓存。")
+            cached_warnings.append("当前展示上次可用的 MCP 详情。")
             return {**cached, "freshness": "cached", "warnings": cached_warnings}
         raise ExtensionStoreError(
             "github_mcp_detail_unavailable",
-            "GitHub MCP 详情暂时不可用，且本地没有可用缓存。",
+            "MCP 详情暂时不可用，请稍后重试。",
             status_code=502,
             details={"error": str(exc)},
         ) from exc

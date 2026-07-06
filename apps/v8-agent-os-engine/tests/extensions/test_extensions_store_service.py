@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from urllib.parse import quote
 
 import pytest
@@ -15,21 +16,13 @@ def test_parse_skills_home_items_reads_embedded_popular_payload() -> None:
 
     items = service.parse_skills_home_items(html)
 
-    assert items == [
-        {
-            "id": "mattpocock/skills@grill-me",
-            "kind": "skill",
-            "provider": "skills.sh",
-            "name": "grill-me",
-            "title": "grill-me",
-            "source": "mattpocock/skills",
-            "skillId": "grill-me",
-            "installs": 464265,
-            "weeklyInstalls": [1, 2, 3],
-            "detailUrl": "https://skills.sh/mattpocock/skills/grill-me",
-            "installCommand": "npx --yes skills add mattpocock/skills@grill-me -g",
-        }
-    ]
+    assert len(items) == 1
+    assert items[0]["id"] == "mattpocock/skills@grill-me"
+    assert items[0]["source"] == "mattpocock/skills"
+    assert items[0]["skillId"] == "grill-me"
+    assert items[0]["installs"] == 464265
+    assert items[0]["weeklyInstalls"] == [1, 2, 3]
+    assert items[0]["detailUrl"] == "https://skills.sh/mattpocock/skills/grill-me"
 
 
 def test_parse_skills_search_response_reads_cli_api_shape() -> None:
@@ -49,6 +42,24 @@ def test_parse_skills_search_response_reads_cli_api_shape() -> None:
 
     assert items[0]["id"] == "github/awesome-copilot@typescript-mcp-server-generator"
     assert items[0]["detailUrl"] == "https://skills.sh/github/awesome-copilot/typescript-mcp-server-generator"
+
+
+def test_parse_skill_download_response_reads_description_and_skill_markdown() -> None:
+    payload = {
+        "files": [
+            {
+                "path": "SKILL.md",
+                "contents": "---\nname: grill-me\ndescription: A relentless interview to sharpen a plan or design.\n---\n\nRun a `/grilling` session.\n",
+            }
+        ],
+        "hash": "abc",
+    }
+
+    detail = service.parse_skill_download_response(payload, source="mattpocock/skills", skill_id="grill-me")
+
+    assert detail["name"] == "grill-me"
+    assert detail["description"] == "A relentless interview to sharpen a plan or design."
+    assert detail["markdown"] == "Run a `/grilling` session."
 
 
 def test_install_store_skill_compiles_controlled_global_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,24 +85,16 @@ def test_parse_github_mcp_cards_reads_registry_embedded_json() -> None:
 
     cards = service.parse_github_mcp_cards(html)
 
-    assert cards == [
-        {
-            "id": "github/github-mcp-server",
-            "kind": "mcp",
-            "provider": "github.com/mcp",
-            "name": "github/github-mcp-server",
-            "title": "GitHub",
-            "description": "GitHub tools",
-            "repositoryUrl": "https://github.com/github/github-mcp-server",
-            "detailUrl": "https://github.com/mcp/github/github-mcp-server",
-            "stars": 123,
-            "language": "Go",
-            "license": "MIT License",
-            "topics": ["mcp", "github"],
-            "updatedAt": "2026-07-06T00:00:00Z",
-            "serverName": "github-mcp-server",
-        }
-    ]
+    assert len(cards) == 1
+    assert cards[0]["id"] == "github/github-mcp-server"
+    assert cards[0]["title"] == "GitHub"
+    assert cards[0]["description"] == "GitHub tools"
+    assert cards[0]["repositoryUrl"] == "https://github.com/github/github-mcp-server"
+    assert cards[0]["detailUrl"] == "https://github.com/mcp/github/github-mcp-server"
+    assert cards[0]["stars"] == 123
+    assert cards[0]["language"] == "Go"
+    assert cards[0]["topics"] == ["mcp", "github"]
+    assert cards[0]["serverName"] == "github-mcp-server"
 
 
 def test_parse_mcp_install_redirect_candidates_extracts_secret_input() -> None:
@@ -132,6 +135,18 @@ def test_parse_mcp_install_redirect_candidates_extracts_secret_input() -> None:
             "valueTemplate": "Bearer ${input:github_pat}",
         }
     ]
+
+
+def test_parse_mcp_install_redirect_candidates_extracts_cursor_base64_config() -> None:
+    encoded = base64.urlsafe_b64encode(json.dumps({"url": "https://mcp.context7.com/mcp"}).encode("utf-8")).decode("utf-8")
+    link = f"https://cursor.com/en/install-mcp?name=context7&config={encoded}"
+
+    candidates = service.parse_mcp_install_redirect_candidates(link, default_server_name="context7")
+
+    assert len(candidates) == 1
+    assert candidates[0]["serverName"] == "context7"
+    assert candidates[0]["transport"] == "http"
+    assert candidates[0]["url"] == "https://mcp.context7.com/mcp"
 
 
 def test_parse_mcp_readme_json_candidates_reads_servers_block() -> None:

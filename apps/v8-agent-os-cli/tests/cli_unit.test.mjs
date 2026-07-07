@@ -1,15 +1,33 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { ALL_COMPONENTS, COMPONENTS, DEFAULT_START_COMPONENTS, parseComponentSelection } from "../src/components.mjs";
 import { buildMcpInstallPayload, extractModelRoles } from "../src/config_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
+
+const currentFile = fileURLToPath(import.meta.url);
+const cliRoot = path.resolve(path.dirname(currentFile), "..");
+const repoRoot = path.resolve(cliRoot, "..", "..");
+
+function runWindowsCommand(command, args, options = {}) {
+  return spawnSync(command, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: options.timeoutMs || 10000,
+  });
+}
+
+function powershellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
 
 test("default start components exclude CyberCore", () => {
   assert.deepEqual(DEFAULT_START_COMPONENTS, ["engine", "admin", "web"]);
@@ -82,6 +100,51 @@ test("admin and web commands use managed auth launcher", () => {
   assert.ok(web.args.includes("web"));
   assert.ok(admin.args.includes("9528"));
   assert.ok(web.args.includes("9527"));
+});
+
+test("Windows root wrappers reach the CLI help without entering the app directory", { skip: process.platform !== "win32" }, () => {
+  const cmdPath = path.join(repoRoot, "v8os.cmd");
+  const ps1Path = path.join(repoRoot, "v8os.ps1");
+
+  const cmd = runWindowsCommand("powershell", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    `& ${powershellLiteral(cmdPath)} --help`,
+  ]);
+  assert.equal(cmd.status, 0, cmd.stderr || cmd.stdout);
+  assert.match(cmd.stdout, /v8os start/);
+  assert.match(cmd.stdout, /v8os config phone/);
+
+  const ps1 = runWindowsCommand("powershell", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    ps1Path,
+    "--help",
+  ]);
+  assert.equal(ps1.status, 0, ps1.stderr || ps1.stdout);
+  assert.match(ps1.stdout, /v8os start/);
+  assert.match(ps1.stdout, /v8os config phone/);
+});
+
+test("Windows PATH helper defaults to a non-mutating dry run", { skip: process.platform !== "win32" }, () => {
+  const helperPath = path.join(repoRoot, "scripts", "install-v8os-path.ps1");
+  const result = runWindowsCommand("powershell", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    helperPath,
+  ]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /V8OS PATH helper|already on the user PATH/);
+  if (!/already on the user PATH/.test(result.stdout)) {
+    assert.match(result.stdout, /Dry run only/);
+    assert.match(result.stdout, /-Apply/);
+  }
 });
 
 test("doctor fallback returns local checks without requiring engine", async () => {

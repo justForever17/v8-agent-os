@@ -4,13 +4,6 @@ import { resolveClientUser } from "@/lib/server/client-request-auth";
 import { createDevicePairingTicket } from "@/lib/server/device-pairing";
 import { buildClientLinkManifest, resolvePairingAdminBaseUrlFromRequest } from "@/lib/server/runtime-config";
 
-function pairingScheme(surface: string) {
-    if (surface === "cyber") return "v8agentoscyber";
-    if (surface === "web") return "v8agentosweb";
-    if (surface === "custom") return "v8agentos";
-    return "v8agentosphone";
-}
-
 function collectAdminUrls(linkManifest: ReturnType<typeof buildClientLinkManifest>, fallbackBaseUrl: string) {
     const urls = [
         fallbackBaseUrl,
@@ -29,11 +22,16 @@ export async function POST(req: NextRequest) {
     }
 
     const payload = await req.json().catch(() => ({}));
+    const requestedSurface = String(payload?.surface || "phone").trim().toLowerCase();
+    if (requestedSurface !== "phone") {
+        return NextResponse.json({ error: "phone_pairing_only" }, { status: 400 });
+    }
+
     const adminBaseUrl = resolvePairingAdminBaseUrlFromRequest(req);
     try {
         const ticket = createDevicePairingTicket({
             owner,
-            surface: payload?.surface,
+            surface: "phone",
             adminBaseUrl,
             deviceName: payload?.deviceName,
             ttlMs: payload?.ttlMs,
@@ -62,7 +60,7 @@ export async function POST(req: NextRequest) {
             serverId: pairingManifest.serverId,
             adminUrls: pairingManifest.adminUrls,
             pairingManifest,
-            pairingUri: `${pairingScheme(ticket.surface)}://pair?${query.toString()}`,
+            pairingUri: `v8agentosphone://pair?${query.toString()}`,
         });
     } catch (error) {
         return NextResponse.json(

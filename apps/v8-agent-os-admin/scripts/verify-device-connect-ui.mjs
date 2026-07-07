@@ -69,7 +69,7 @@ try {
     await page.waitForURL(/\/admin(?:\?.*)?$/, { timeout: 20_000 });
     await page.goto(`${baseUrl}/admin/users`, { waitUntil: "networkidle" });
 
-    const connectButton = page.getByRole("button", { name: "连接设备" });
+    const connectButton = page.getByRole("button", { name: "连接手机" });
     if (await connectButton.count() === 0) {
         const labels = await page.getByRole("button").allTextContents();
         throw new Error(`Connect button not found at ${page.url()}; buttons=${JSON.stringify(labels)}`);
@@ -78,19 +78,18 @@ try {
     await page.getByRole("dialog").waitFor();
     await page.getByText("当前 Admin URL", { exact: true }).waitFor();
     const dialogText = await page.getByRole("dialog").textContent();
-    assert.match(dialogText || "", /Web (使用|通过)本机可信会话/);
+    assert.match(dialogText || "", /Phone 是唯一需要远程配对的交互端/);
+    assert.match(dialogText || "", /Web 与桌宠在本机自动连接/);
     assert.equal(await page.locator('select option[value="web"]').count(), 0, "Web should not be exposed as an Admin pairing surface");
+    assert.equal(await page.locator('select option[value="cyber"]').count(), 0, "Desktop pet should not be exposed as an Admin pairing surface");
+    assert.equal(await page.locator('select option[value="custom"]').count(), 0, "Custom clients should not be exposed as an Admin pairing surface");
     await page.getByRole("button", { name: "生成配对链接" }).click();
     await page.getByText("配对链接", { exact: true }).waitFor();
-    const phoneQrImage = page.getByAltText("设备配对二维码");
+    const phoneQrImage = page.getByAltText("Phone 配对二维码");
     await phoneQrImage.waitFor({ timeout: 10_000 });
     const phoneQrSource = await phoneQrImage.getAttribute("src");
     assert.ok(phoneQrSource?.startsWith("data:image/png;base64,"));
 
-    await page.locator("select").selectOption("cyber");
-    await page.getByRole("button", { name: "生成配对链接" }).click();
-    await page.getByText("配对链接", { exact: true }).waitFor();
-    assert.equal(await page.getByAltText("设备配对二维码").count(), 0, "CyberCore pairing should not render a QR code");
     assert.equal(pageErrors.length, 0, `Browser page errors: ${pageErrors.join(" | ")}`);
 
     const screenshot = path.join(reportRoot, "admin-device-connect-dialog.png");
@@ -101,9 +100,8 @@ try {
         checks: [
             "topbar_connect_button_visible",
             "admin_url_visible",
-            "web_pairing_surface_hidden_for_local_trusted_session",
+            "local_trusted_clients_not_pairing_surfaces",
             "phone_pairing_qr_code_rendered_locally",
-            "cybercore_pairing_copy_link_without_qr",
             "no_browser_page_errors",
         ],
     }, null, 2));

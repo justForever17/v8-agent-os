@@ -144,18 +144,46 @@ async function main() {
         const payload = await json(response);
         assert.equal(response.status, 200, JSON.stringify(payload));
         assert.equal(payload.instanceId, initialManifest.instanceId);
-        const pairedAdminUrl = new URL(payload.adminBaseUrl);
         assert.ok(payload.pairingCode);
         assert.ok(!payload.pairingUri.includes(loginPayload.accessToken));
         assert.ok(!("refreshToken" in payload));
         return payload;
     };
 
+    const rejectNonPhoneTicket = async (surface) => {
+        const response = await request("/api/client/pairing/tickets", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${loginPayload.accessToken}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ surface, deviceName: `test-${surface}` }),
+        });
+        const payload = await json(response);
+        assert.equal(response.status, 400, JSON.stringify(payload));
+        assert.equal(payload.error, "phone_pairing_only");
+    };
+
+    await rejectNonPhoneTicket("web");
+    await rejectNonPhoneTicket("cyber");
+
     const phoneTicket = await createTicket("phone", {
         headers: { "x-v8-client-surface-origin": reachablePhoneOrigin },
     });
     assert.equal(phoneTicket.adminBaseUrl, reachablePhoneOrigin);
     assert.ok(phoneTicket.pairingUri.includes(encodeURIComponent(reachablePhoneOrigin)));
+    const staleWebSessionConsume = await request("/api/client/pairing/consume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            code: phoneTicket.pairingCode,
+            instanceId: phoneTicket.instanceId,
+            sessionKind: "web_session",
+        }),
+    });
+    assert.equal(staleWebSessionConsume.status, 400);
+    assert.equal((await json(staleWebSessionConsume)).error, "web_local_session_required");
+
     const phoneConsume = await request("/api/client/pairing/consume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -228,37 +256,6 @@ async function main() {
     assert.equal(expiredConsume.status, 410);
     assert.equal((await json(expiredConsume)).error, "pairing_ticket_expired");
 
-    const webTicket = await createTicket("web");
-    const webConsume = await request("/api/client/pairing/consume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            code: webTicket.pairingCode,
-            instanceId: webTicket.instanceId,
-            sessionKind: "web_session",
-        }),
-    });
-    const webPayload = await json(webConsume);
-    assert.equal(webConsume.status, 200, JSON.stringify(webPayload));
-    assert.equal(webPayload.user.role, "ADMIN");
-    assert.ok(!("accessToken" in webPayload));
-    assert.ok(!("refreshToken" in webPayload));
-
-    const cyberTicket = await createTicket("cyber");
-    assert.ok(cyberTicket.pairingUri.startsWith("v8agentoscyber://pair?"));
-    const cyberConsume = await request("/api/client/pairing/consume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            code: cyberTicket.pairingCode,
-            instanceId: cyberTicket.instanceId,
-            deviceName: "test-cyber",
-        }),
-    });
-    const cyberPayload = await json(cyberConsume);
-    assert.equal(cyberConsume.status, 200, JSON.stringify(cyberPayload));
-    assert.ok(cyberPayload.accessToken);
-
     const identityFile = path.join(stateRoot, "runtime", "instance.json");
     const identityText = fs.readFileSync(identityFile, "utf8");
     assert.ok(identityText.includes(initialManifest.instanceId));
@@ -275,11 +272,11 @@ async function main() {
             "root_redirects_to_login",
             "registration_routes_removed",
             "owner_bootstrap_and_login",
+            "non_phone_pairing_surface_rejected",
             "phone_pairing_single_use",
+            "web_pairing_session_kind_rejected",
             "expired_pairing_ticket_rejected",
             "device_revocation_invalidates_new_access_tokens",
-            "legacy_web_pairing_compat_without_device_token",
-            "cybercore_pairing_uses_admin_bff_device_token",
             "instance_manifest_contains_no_secret",
         ],
     }, null, 2));

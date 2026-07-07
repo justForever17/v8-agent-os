@@ -10,6 +10,7 @@
     "verify:instance-pairing": "node scripts/verify-instance-pairing.mjs",
     "smoke:owner-pairing": "node scripts/verify-instance-pairing.mjs",
     "verify:device-connect-ui": "node scripts/verify-device-connect-ui.mjs",
+    "verify:extensions-skills-noninteractive": "node scripts/verify-extensions-skills-noninteractive.mjs",
     "sync:lobe-icons": "node scripts/sync-lobe-icons.mjs"
   },
   "dependencies": {

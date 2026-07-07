@@ -64,13 +64,13 @@
         "expo-build-properties",
         {
           "ios": {
-            "deploymentTarget": "15.1"
+            "deploymentTarget": "16.4"
           },
           "android": {
             "compileSdkVersion": 36,
             "targetSdkVersion": 35,
             "buildToolsVersion": "36.0.0",
-            "minSdkVersion": 24,
+            "minSdkVersion": 30,
             "usesCleartextTraffic": true
           }
         }

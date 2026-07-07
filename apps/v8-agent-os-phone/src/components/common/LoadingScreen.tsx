@@ -5,7 +5,7 @@ import { PhoneWordmark } from "@/src/components/layout/PhoneTopbar";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors } from "@/src/theme/tokens";
 
-const BRAND_MARK = require("../../../assets/images/brand-mark.png");
+const PRODUCT_MARK = require("../../../assets/images/product-mark.png");
 
 export function LoadingScreen({ label }: { label?: string }) {
     const { colors: palette, themeMode, t } = useUiPrefs();
@@ -19,7 +19,7 @@ export function LoadingScreen({ label }: { label?: string }) {
             style={styles.container}
         >
             <View style={[styles.markWrap, { backgroundColor: themeMode === "dark" ? "rgba(15,23,42,0.74)" : "rgba(255,255,255,0.82)", borderColor: `${palette.border}A6` }]}>
-                <Image source={BRAND_MARK} style={styles.mark} />
+                <Image source={PRODUCT_MARK} style={styles.mark} />
             </View>
             <View style={styles.wordmarkWrap}>
                 <PhoneWordmark dark={themeMode === "dark"} text="V8 Agent OS" fontSize={31} />

@@ -17,7 +17,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { LocaleMenu } from "@/src/components/layout/LocaleMenu";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 
-const BRAND_MARK = require("../../../assets/images/brand-mark.png");
+const PRODUCT_MARK = require("../../../assets/images/product-mark.png");
 
 export type PhoneTopbarAction = {
     key: string;
@@ -31,15 +31,15 @@ export type PhoneTopbarAction = {
 
 const ACTION_ORDER = ["desktop-live", "rpa", "theme"] as const;
 const WORDMARK_COLORS = [
-    "#8B5CF6", "#38BDF8", "#34D399", "#F59E0B", "#FB7185", "#A855F7",
-    "#8B5CF6", "#38BDF8", "#34D399", "#F59E0B", "#FB7185", "#A855F7",
-    "#8B5CF6"
+    "#F8FAFC", "#E5E7EB", "#BFC4CC", "#7F8794", "#D8DCE3", "#F6F7F9",
+    "#A8AFBA", "#ECEFF4", "#727A86", "#DADDE4", "#F8FAFC", "#B5BBC5",
+    "#F8FAFC"
 ] as const;
 const WORDMARK_SHINE_COLORS = [
     "rgba(255,255,255,0)",
-    "rgba(255,255,255,0.14)",
-    "rgba(255,255,255,0.98)",
-    "rgba(255,255,255,0.22)",
+    "rgba(255,255,255,0.10)",
+    "rgba(255,255,255,0.88)",
+    "rgba(255,255,255,0.16)",
     "rgba(255,255,255,0)",
 ] as const;
 
@@ -144,7 +144,7 @@ export function PhoneWordmark({
         }
     };
 
-    const glowColor = dark ? "rgba(99,102,241,0.20)" : "rgba(99,102,241,0.14)";
+    const glowColor = dark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.12)";
 
     return (
         <View style={[styles.wordmark, { width: textWidth, height: lineHeight }]}>
@@ -275,7 +275,7 @@ function BrandArea({
     const content = (
         <>
             <View style={[styles.brandMarkWrap, { borderColor: `${colors.border}A6`, backgroundColor: colors.surfaceStrong }]}>
-                <Image source={BRAND_MARK} style={styles.brandMark} />
+                <Image source={PRODUCT_MARK} style={styles.brandMark} />
             </View>
             <PhoneWordmark dark={themeMode === "dark"} />
         </>
@@ -372,7 +372,7 @@ export function PhoneTopbar({
                     {userImageUri ? (
                         <Image source={{ uri: userImageUri }} style={styles.profileImage} />
                     ) : (
-                        <Image source={BRAND_MARK} style={styles.profileImage} />
+                        <Image source={PRODUCT_MARK} style={styles.profileImage} />
                     )}
                 </Pressable>
             </View>
@@ -456,7 +456,7 @@ const styles = StyleSheet.create({
         left: 0,
         top: 1.4,
         opacity: 0.88,
-        textShadowColor: "rgba(99,102,241,0.18)",
+        textShadowColor: "rgba(255,255,255,0.16)",
         textShadowOffset: { width: 0, height: 0 },
         textShadowRadius: 18,
     },

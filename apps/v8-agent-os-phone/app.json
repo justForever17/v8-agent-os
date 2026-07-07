@@ -11,9 +11,9 @@
     "scheme": "v8agentosphone",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/images/brand-mark.png",
+      "image": "./assets/images/splash-transparent.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#050505"
     },
     "ios": {
       "supportsTablet": true,
@@ -26,7 +26,7 @@
       "softwareKeyboardLayoutMode": "pan",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#050505"
       },
       "predictiveBackGestureEnabled": false,
       "allowBackup": false,

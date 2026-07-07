@@ -1,9 +1,9 @@
 "use client";
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ProductTopbar, TopbarGlowActionButton } from "@v8/product-ui";
 import { Bell, Loader2, Monitor, Search, Server, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import Image from "next/image";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +11,6 @@ import { Input } from "@/components/ui/input";
 import { searchAdminTopbarEntries } from "@/components/layout/admin-topbar-search";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
-import { TopbarGlowActionButton } from "@/components/layout/TopbarGlowActionButton";
 import { DeviceConnectDialog } from "@/components/admin/DeviceConnectDialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
@@ -52,7 +51,7 @@ function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
     );
 }
 
-export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
+export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) {
     const pathname = usePathname();
     const router = useRouter();
     const current = getAdminNavItem(pathname);
@@ -303,34 +302,13 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
     const InstallIcon = installState?.installProfile === "desktop" ? Monitor : Server;
 
     return (
-        <header className="sticky top-0 z-30 h-[35px] border-b border-slate-200 bg-white/90 backdrop-blur dark:border-white/10 dark:bg-zinc-950/90">
-            <div className="flex h-[35px] items-center justify-between gap-3 px-4">
-                <div className="flex h-[27px] min-w-0 items-center gap-3">
-                    <div className="flex h-[27px] items-center gap-2">
-                        <div className="relative h-[25px] w-[25px] shrink-0 overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-200 dark:bg-zinc-900 dark:ring-white/10">
-                            <Image
-                                src="/brand-mark.png"
-                                alt="V8 Agent OS"
-                                fill
-                                sizes="25px"
-                                className="object-cover notranslate"
-                                priority
-                                translate="no"
-                            />
-                        </div>
-                        <h1 className="v8os-wordmark notranslate [&>span]:!min-w-[7.4rem] [&>span]:!pb-0 [&>span]:!text-[15px] [&>span]:!leading-5" aria-label="V8 Agent OS" translate="no">
-                            <span className="v8os-wordmark__glow" aria-hidden="true">V8 Agent OS</span>
-                            <span className="v8os-wordmark__shine" aria-hidden="true">V8 Agent OS</span>
-                            <span className="v8os-wordmark__text">V8 Agent OS</span>
-                        </h1>
-                    </div>
-                    <span className="select-none text-sm font-light leading-none text-slate-300 dark:text-slate-700">/</span>
-                    <div className="hidden min-w-0 md:block">
-                        <div className="truncate text-[11px] font-semibold leading-[12px] text-slate-900 dark:text-slate-100">{t(current.title)}</div>
-                        <div className="truncate text-[10px] leading-[11px] text-slate-500 dark:text-slate-400">{t(current.description)}</div>
-                    </div>
-                </div>
-                <div className="flex h-[25px] shrink-0 items-center gap-1.5">
+        <ProductTopbar
+            brandImageSrc="/product-mark.png"
+            brandLabel="V8 Agent OS"
+            title={t(current.title)}
+            subtitle={t(current.description)}
+            actions={(
+                <>
                     <DeviceConnectDialog />
                     <LocaleToggle />
                     <ThemeToggle />
@@ -530,13 +508,11 @@ export function Topbar({ windowControls }: { windowControls?: ReactNode }) {
                             </Card>
                         ) : null}
                     </div>
-                    {windowControls ? (
-                        <div className="ml-1 flex h-[25px] items-center">
-                            {windowControls}
-                        </div>
-                    ) : null}
-                </div>
-            </div>
-        </header>
+                </>
+            )}
+            windowControls={windowControls}
+        />
     );
 }
+
+export const Topbar = AdminTopbar;

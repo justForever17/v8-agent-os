@@ -25,7 +25,7 @@ import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 
-const BRAND_MARK = require("../assets/images/brand-mark.png");
+const PRODUCT_MARK = require("../assets/images/product-mark.png");
 
 export default function LoginScreen() {
     const { status, pairDevice } = useAppSession();
@@ -125,7 +125,7 @@ export default function LoginScreen() {
                     <View style={styles.header}>
                         <View style={styles.headerTopRow}>
                             <View style={styles.brandRow}>
-                                <Image source={BRAND_MARK} style={styles.brandMark} />
+                                <Image source={PRODUCT_MARK} style={styles.brandMark} />
                                 <View style={styles.brandTextWrap}>
                                     <PhoneWordmark dark={false} />
                                 </View>

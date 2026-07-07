@@ -6,13 +6,15 @@ from core import skills_install_service as service
 from core.skills_install_service import parse_skill_install_command
 
 
-def test_parse_skill_install_command_adds_global_flag() -> None:
+def test_parse_skill_install_command_adds_noninteractive_and_global_flags() -> None:
     parsed = parse_skill_install_command("npx skills add signerlabs/ShipSwift")
 
     assert parsed.source == "signerlabs/ShipSwift"
     assert parsed.global_install is True
     assert parsed.global_flag_added is True
-    assert parsed.normalized_command == "npx skills add signerlabs/ShipSwift -g"
+    assert parsed.yes is True
+    assert parsed.yes_flag_added is True
+    assert parsed.normalized_command == "npx --yes skills add signerlabs/ShipSwift -g"
 
 
 def test_parse_skill_install_command_accepts_explicit_global_and_skill_alias() -> None:
@@ -22,6 +24,7 @@ def test_parse_skill_install_command_accepts_explicit_global_and_skill_alias() -
     assert parsed.skill_name == "add-component"
     assert parsed.global_flag_added is False
     assert parsed.yes is True
+    assert parsed.yes_flag_added is False
     assert parsed.normalized_command == "npx --yes skills add signerlabs/ShipSwift -g --skill add-component"
 
 
@@ -71,5 +74,8 @@ def test_install_skill_from_command_reports_normalized_global_command(monkeypatc
 
     result = service.install_skill_from_command("npx skills add signerlabs/ShipSwift")
 
-    assert result["normalizedCommand"] == "npx skills add signerlabs/ShipSwift -g"
-    assert result["warnings"] == ["未检测到 `-g/--global`，已自动按全局安装写入 `~/.agents/skills`。"]
+    assert result["normalizedCommand"] == "npx --yes skills add signerlabs/ShipSwift -g"
+    assert result["warnings"] == [
+        "未检测到 `--yes/-y`，已自动按非交互模式执行 Skills 安装。",
+        "未检测到 `-g/--global`，已自动按全局安装写入 `~/.agents/skills`。",
+    ]

@@ -92,6 +92,8 @@ type McpDetail = {
     id: string;
     detailUrl: string;
     repositoryUrl: string;
+    description?: string;
+    markdown?: string;
     candidates: McpCandidate[];
     canInstall: boolean;
     warnings?: string[];
@@ -528,11 +530,16 @@ export default function ExtensionsStorePage() {
                         <>
                             <DialogHeader>
                                 <DialogTitle>{selectedMcp.title || selectedMcp.name}</DialogTitle>
-                                <DialogDescription>{selectedMcp.description || selectedMcp.name}</DialogDescription>
+                                <DialogDescription>{mcpDetail?.description || selectedMcp.description || selectedMcp.name}</DialogDescription>
                             </DialogHeader>
                             {mcpDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
                             {mcpDetailError ? <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{mcpDetailError}</div> : null}
                             {mcpDetail?.warnings?.map((warning) => <div key={warning} className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{warning}</div>)}
+                            {mcpDetail?.markdown ? (
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm leading-7 text-slate-800 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
+                                    <ReactMarkdown>{mcpDetail.markdown}</ReactMarkdown>
+                                </div>
+                            ) : null}
 
                             {mcpDetail && mcpDetail.candidates.length > 0 ? (
                                 <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/[0.03]">

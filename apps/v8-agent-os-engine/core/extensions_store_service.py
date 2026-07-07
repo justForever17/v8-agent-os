@@ -911,6 +911,83 @@ def _readable_detail_text(detail_html: str) -> str:
     return text.replace("\\n", "\n").replace('\\"', '"')
 
 
+def _strip_html_tags(value: str) -> str:
+    text = re.sub(r"(?is)<[^>]+>", "", str(value or ""))
+    return html.unescape(text).strip()
+
+
+def _extract_markdown_body_fragment(detail_html: str) -> str:
+    text = _decode_jsonish_text(detail_html)
+    match = re.search(r'<div\b[^>]*class=["\'][^"\']*\bmarkdown-body\b[^"\']*["\'][^>]*>', text, flags=re.I)
+    if not match:
+        return ""
+    open_end = text.find(">", match.start())
+    if open_end < 0:
+        return ""
+    depth = 1
+    cursor = open_end + 1
+    while depth > 0:
+        next_open = text.find("<div", cursor)
+        next_close = text.find("</div", cursor)
+        if next_close < 0:
+            return text[open_end + 1 :]
+        if 0 <= next_open < next_close:
+            depth += 1
+            cursor = next_open + 4
+            continue
+        depth -= 1
+        if depth == 0:
+            return text[open_end + 1 : next_close]
+        cursor = next_close + 6
+    return ""
+
+
+def _html_fragment_to_markdown(fragment: str) -> str:
+    text = str(fragment or "")
+    text = re.sub(r"(?is)<(script|style|svg|button)[^>]*>.*?</\1>", "", text)
+    text = re.sub(r"(?is)<img\b[^>]*>", "", text)
+    text = re.sub(r"(?is)<a\b[^>]*>(.*?)</a>", lambda match: _strip_html_tags(match.group(1)), text)
+    text = re.sub(
+        r"(?is)<h([1-6])\b[^>]*>(.*?)</h\1>",
+        lambda match: "\n\n" + "#" * int(match.group(1)) + " " + _strip_html_tags(match.group(2)) + "\n\n",
+        text,
+    )
+    text = re.sub(r"(?is)<li\b[^>]*>(.*?)</li>", lambda match: "\n- " + _strip_html_tags(match.group(1)), text)
+    text = re.sub(r"(?is)</p\s*>", "\n\n", text)
+    text = re.sub(r"(?is)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?is)</?(ul|ol|p|div|section|article|blockquote|hr)\b[^>]*>", "\n", text)
+    text = re.sub(r"(?is)<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(lines).strip()
+
+
+def parse_mcp_detail_page_text(detail_html: str) -> dict[str, str]:
+    fragment = _extract_markdown_body_fragment(detail_html)
+    markdown = _html_fragment_to_markdown(fragment) if fragment else ""
+    description = ""
+    for line in markdown.splitlines():
+        candidate = line.strip()
+        if not candidate or candidate.startswith("#") or candidate.startswith("-"):
+            continue
+        description = candidate[:320]
+        break
+    if not description:
+        text = _decode_jsonish_text(detail_html)
+        for meta in re.finditer(r"<meta\b[^>]*>", text, flags=re.I):
+            tag = meta.group(0)
+            if not re.search(r'(?:name|property)=["\'](?:description|og:description)["\']', tag, flags=re.I):
+                continue
+            content_match = re.search(r'content=["\']([^"\']+)["\']', tag, flags=re.I)
+            if content_match:
+                description = html.unescape(content_match.group(1)).strip()[:320]
+                break
+    return {"description": description, "markdown": markdown[:12000]}
+
+
 def parse_mcp_readme_json_candidates(detail_html: str, *, default_server_name: str) -> list[dict[str, Any]]:
     text = _readable_detail_text(detail_html)
     payloads: list[dict[str, Any]] = []
@@ -970,7 +1047,7 @@ def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _mcp_detail_cache_name(mcp_id: str) -> str:
-    return _cache_key("github-mcp-detail", mcp_id)
+    return _cache_key("github-mcp-detail-v2", mcp_id)
 
 
 def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any]:
@@ -986,6 +1063,7 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
             return {**cached, "freshness": "cached"}
     try:
         page_html = _fetch_text(detail_url)
+        detail_text = parse_mcp_detail_page_text(page_html)
         default_server_name = _server_name_from_mcp_name(normalized_id)
         candidates = _dedupe_candidates(
             [
@@ -1001,6 +1079,8 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
             "provider": "github.com/mcp",
             "detailUrl": detail_url,
             "repositoryUrl": detail_url,
+            "description": detail_text.get("description") or "",
+            "markdown": detail_text.get("markdown") or "",
             "candidates": public_candidates,
             "canInstall": bool(public_candidates),
             "warnings": warnings,

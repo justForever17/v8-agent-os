@@ -190,6 +190,27 @@ def test_parse_mcp_readme_json_candidates_reads_servers_block() -> None:
     assert candidates[0]["requirements"][0]["secret"] is True
 
 
+def test_parse_mcp_detail_page_text_reads_markdown_body_description() -> None:
+    html = """
+    <html><body>
+      <div class="McpDetails-module__content__t4MUc">
+        <div class="markdown-body">
+          <h1>GitHub MCP Server</h1>
+          <p>The GitHub MCP Server connects AI tools directly to GitHub's platform.</p>
+          <h2>Use Cases</h2>
+          <ul><li>Repository Management: Browse and query code.</li></ul>
+        </div>
+      </div>
+    </body></html>
+    """
+
+    detail = service.parse_mcp_detail_page_text(html)
+
+    assert detail["description"] == "The GitHub MCP Server connects AI tools directly to GitHub's platform."
+    assert "# GitHub MCP Server" in detail["markdown"]
+    assert "- Repository Management: Browse and query code." in detail["markdown"]
+
+
 def test_install_store_mcp_applies_requirements_and_uses_config_service(monkeypatch: pytest.MonkeyPatch) -> None:
     candidate = {
         "id": "abc123",

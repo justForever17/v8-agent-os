@@ -1211,7 +1211,7 @@ export default function ExtensionsPage() {
                     <div className="space-y-4">
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.extensions.page.k94e8c946")}</Label>
-                            <Input value={commandInput} onChange={(event) => setCommandInput(event.target.value)} placeholder="npx skills add https://github.com/vercel-labs/skills --skill find-skills" />
+                            <Input value={commandInput} onChange={(event) => setCommandInput(event.target.value)} placeholder="npx --yes skills add https://github.com/vercel-labs/skills -g --skill find-skills" />
                         </div>
                         {installResult ? <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-700">
                                 <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{t("app.admin.dashboard.extensions.page.ke7139376")}</Badge><span className="break-all">{installResult.source}</span></div>

@@ -47,6 +47,7 @@ class ParsedSkillInstallCommand:
     global_install: bool
     global_flag_added: bool
     yes: bool
+    yes_flag_added: bool
     overwrite: bool
 
 
@@ -86,14 +87,14 @@ def parse_skill_install_command(command: str) -> ParsedSkillInstallCommand:
 
     tokens = shlex.split(stripped, posix=os.name != "nt")
     if not tokens or tokens[0] != "npx":
-        raise ValueError("当前只支持以 `npx skills add ...` 开头的安装命令。")
+        raise ValueError("当前只支持以 `npx --yes skills add ...` 开头的安装命令；未带 `--yes` 时会自动补齐。")
 
     index = 1
     while index < len(tokens) and tokens[index] in _SUPPORTED_NPX_FLAGS:
         index += 1
 
     if index >= len(tokens) or tokens[index] != "skills":
-        raise ValueError("当前仅支持 `npx skills add <source>` 形式的命令。")
+        raise ValueError("当前仅支持 `npx --yes skills add <source>` 形式的命令。")
     index += 1
 
     if index >= len(tokens) or tokens[index] != "add":
@@ -104,6 +105,7 @@ def parse_skill_install_command(command: str) -> ParsedSkillInstallCommand:
     skill_name: str | None = None
     global_install = False
     yes = any(flag in tokens[1:index] for flag in _SUPPORTED_NPX_FLAGS)
+    yes_flag_added = not yes
     overwrite = False
 
     while index < len(tokens):
@@ -154,9 +156,7 @@ def parse_skill_install_command(command: str) -> ParsedSkillInstallCommand:
         skill_name = source_skill_match.group("skill")
 
     global_flag_added = not global_install
-    normalized_tokens = ["npx"]
-    if yes:
-        normalized_tokens.append("--yes")
+    normalized_tokens = ["npx", "--yes"]
     normalized_tokens.extend(["skills", "add", source, "-g"])
     if skill_name:
         normalized_tokens.extend(["--skill", skill_name])
@@ -170,7 +170,8 @@ def parse_skill_install_command(command: str) -> ParsedSkillInstallCommand:
         skill_name=skill_name,
         global_install=True,
         global_flag_added=global_flag_added,
-        yes=yes,
+        yes=True,
+        yes_flag_added=yes_flag_added,
         overwrite=overwrite,
     )
 
@@ -476,6 +477,8 @@ def install_skill_from_command(command: str) -> dict[str, Any]:
         selected = _select_manifests(manifests, skill_name=parsed.skill_name)
         result = _install_manifests(selected, source=parsed.source, overwrite=parsed.overwrite)
         result["normalizedCommand"] = parsed.normalized_command
+        if parsed.yes_flag_added:
+            result.setdefault("warnings", []).append("未检测到 `--yes/-y`，已自动按非交互模式执行 Skills 安装。")
         if parsed.global_flag_added:
             result.setdefault("warnings", []).append("未检测到 `-g/--global`，已自动按全局安装写入 `~/.agents/skills`。")
         return result

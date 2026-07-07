@@ -28,12 +28,15 @@ _SKILLS_DOWNLOAD_URL = "https://skills.sh/api/download"
 _SKILLS_HOME_URL = "https://skills.sh/"
 _GITHUB_MCP_URL = "https://github.com/mcp"
 _USER_AGENT = "v8-agent-os-admin-extensions-store/1.0"
+_MIN_SKILL_INSTALLS = 200
 _SKILL_SOURCE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SKILL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _INPUT_PLACEHOLDER_PATTERN = re.compile(r"\$\{input:([A-Za-z0-9_.-]+)\}")
 _ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{env:([A-Za-z0-9_.-]+)\}")
 _BRACE_PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z][A-Za-z0-9_.-]*)\}")
 _SECRET_HINT_PATTERN = re.compile(r"(api[_-]?key|apikey|token|secret|password|authorization|bearer|pat|credential)", re.I)
+_SKILL_RUN_COMMAND_PATTERN = re.compile(r"^run\s+(?:an?\s+|the\s+)?[`'\"]?/[A-Za-z0-9_.-]+", re.I)
+_MCP_EXPLICIT_HEADER_PATTERN = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b\s+header\b", re.I)
 
 
 class ExtensionStoreError(ValueError):
@@ -207,6 +210,67 @@ def _strip_skill_frontmatter(markdown: str) -> tuple[dict[str, str], str]:
     return meta, body.strip()
 
 
+def _is_low_signal_skill_text(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    text = text.strip("`*_~#> \t")
+    if not text:
+        return True
+    if _SKILL_RUN_COMMAND_PATTERN.match(text):
+        return True
+    if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", text):
+        return True
+    return False
+
+
+def _clean_skill_description(value: str, *, limit: int = 320) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().strip("#> \t")).strip()
+    if _is_low_signal_skill_text(text):
+        return ""
+    return text[:limit]
+
+
+def _clean_skill_markdown_body(markdown: str, *, skill_name: str) -> str:
+    lines = str(markdown or "").replace("\r\n", "\n").splitlines()
+    cleaned: list[str] = []
+    in_code_block = False
+    normalized_name = skill_name.strip().lower()
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            cleaned.append(line.rstrip())
+            continue
+        if not in_code_block:
+            heading = stripped.strip("# ").strip().lower()
+            if normalized_name and heading == normalized_name:
+                continue
+            if _is_low_signal_skill_text(stripped):
+                continue
+        cleaned.append(line.rstrip())
+    text = "\n".join(cleaned).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    if not any(not _is_low_signal_skill_text(line) for line in text.splitlines() if not line.strip().startswith("```")):
+        return ""
+    return text[:12000]
+
+
+def _first_skill_summary_line(markdown: str) -> str:
+    in_code_block = False
+    for line in str(markdown or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        summary = _clean_skill_description(stripped.strip("-*#> "))
+        if summary:
+            return summary[:240]
+    return ""
+
+
 def parse_skill_download_response(payload: dict[str, Any], *, source: str, skill_id: str) -> dict[str, Any]:
     files = payload.get("files") if isinstance(payload, dict) else []
     skill_md = ""
@@ -220,13 +284,10 @@ def parse_skill_download_response(payload: dict[str, Any], *, source: str, skill
                 break
     meta, body = _strip_skill_frontmatter(skill_md)
     name = str(meta.get("name") or skill_id).strip()
-    description = str(meta.get("description") or "").strip()
+    description = _clean_skill_description(str(meta.get("description") or ""))
+    cleaned_body = _clean_skill_markdown_body(body, skill_name=name)
     if not description:
-        for line in body.splitlines():
-            candidate = line.strip().strip("# ").strip()
-            if candidate and not candidate.startswith("```"):
-                description = candidate[:240]
-                break
+        description = _first_skill_summary_line(cleaned_body or body)
     return {
         "id": f"{source}@{skill_id}",
         "kind": "skill",
@@ -236,14 +297,14 @@ def parse_skill_download_response(payload: dict[str, Any], *, source: str, skill
         "name": name,
         "title": name,
         "description": description,
-        "markdown": body,
+        "markdown": cleaned_body,
         "detailUrl": _skill_detail_url(source, skill_id),
         "hash": str(payload.get("hash") or "") if isinstance(payload, dict) else "",
     }
 
 
 def _skill_detail_cache_name(source: str, skill_id: str) -> str:
-    return _cache_key("skill-detail", f"{source}@{skill_id}")
+    return _cache_key("skill-detail-v2", f"{source}@{skill_id}")
 
 
 def get_store_skill_detail(*, source: str, skill_id: str, refresh: bool = False) -> dict[str, Any]:
@@ -300,11 +361,36 @@ def _normalize_skill_item(raw: dict[str, Any]) -> dict[str, Any] | None:
         "source": source,
         "skillId": skill_id,
         "installs": installs,
-        "description": str(raw.get("description") or "").strip(),
+        "description": _clean_skill_description(str(raw.get("description") or "")),
         "weeklyInstalls": [int(value or 0) for value in weekly if isinstance(value, (int, float)) or str(value).isdigit()],
         "detailUrl": _skill_detail_url(source, skill_id),
         "installCommand": f"npx --yes skills add {source}@{skill_id} -g",
     }
+
+
+def _is_pinned_skill(item: dict[str, Any]) -> bool:
+    return (
+        str(item.get("source") or "").strip().lower() == "vercel-labs/skills"
+        and str(item.get("skillId") or "").strip().lower() == "find-skills"
+    )
+
+
+def _is_trusted_skill_item(item: dict[str, Any]) -> bool:
+    if _is_pinned_skill(item):
+        return True
+    try:
+        installs = int(item.get("installs") or 0)
+    except Exception:
+        installs = 0
+    return installs >= _MIN_SKILL_INSTALLS
+
+
+def _skill_sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+    return (
+        0 if _is_pinned_skill(item) else 1,
+        -int(item.get("installs") or 0),
+        str(item.get("name") or item.get("skillId") or ""),
+    )
 
 
 def _dedupe_skill_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -364,22 +450,23 @@ def _enrich_skill_summary(item: dict[str, Any]) -> dict[str, Any]:
     skill_id = str(item.get("skillId") or "").strip()
     cache_name = _skill_detail_cache_name(source, skill_id)
     cached, _ = _read_cache(cache_name)
-    if isinstance(cached, dict) and str(cached.get("description") or "").strip():
+    cached_description = _clean_skill_description(str(cached.get("description") or "")) if isinstance(cached, dict) else ""
+    if cached_description:
         next_item = dict(item)
-        next_item["description"] = str(cached.get("description") or "").strip()
+        next_item["description"] = cached_description
         return next_item
     try:
         detail = get_store_skill_detail(source=source, skill_id=skill_id)
     except Exception:
         return item
     next_item = dict(item)
-    next_item["description"] = str(detail.get("description") or "").strip()
+    next_item["description"] = _clean_skill_description(str(detail.get("description") or ""))
     return next_item
 
 
 def _decorate_skill_items(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     installed = _installed_skill_ids()
-    sorted_items = sorted(items, key=lambda item: int(item.get("installs") or 0), reverse=True)
+    sorted_items = sorted([item for item in items if _is_trusted_skill_item(item)], key=_skill_sort_key)
     selected_items = [dict(item) for item in sorted_items[:limit]]
     if selected_items:
         with ThreadPoolExecutor(max_workers=min(8, len(selected_items))) as executor:
@@ -398,7 +485,8 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
     safe_limit = _normalize_limit(limit)
     warnings: list[str] = []
     if len(normalized_query) >= 2:
-        params = urlencode({"q": normalized_query, "limit": str(safe_limit)})
+        fetch_limit = min(max(safe_limit * 3, safe_limit), 100)
+        params = urlencode({"q": normalized_query, "limit": str(fetch_limit)})
         cache_name = _cache_key("skills-search", params)
         if not refresh:
             cached, state = _read_cache(cache_name)
@@ -436,7 +524,7 @@ def list_store_skills(*, query: str = "", limit: int = 24, refresh: bool = False
             "warnings": warnings,
         }
 
-    cache_name = "skills-home-popular"
+    cache_name = "skills-home-popular-v2"
     if not refresh:
         cached, _ = _read_cache(cache_name)
         if cached is not None:
@@ -1037,7 +1125,7 @@ def _public_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
-    for candidate in sorted(candidates, key=lambda item: (int(item.get("priority") or 99), str(item.get("label") or ""))):
+    for candidate in sorted(candidates, key=_candidate_sort_key):
         key = _stable_hash(candidate.get("_serverConfig") or candidate)
         if key in seen:
             continue
@@ -1046,8 +1134,70 @@ def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
     return result
 
 
+def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[int, int, int, str]:
+    requirements = candidate.get("requirements") if isinstance(candidate.get("requirements"), list) else []
+    source_rank = 0 if str(candidate.get("source") or "") == "vscode_install_link" else 1
+    return (
+        int(candidate.get("priority") or 99),
+        0 if requirements else 1,
+        source_rank,
+        str(candidate.get("label") or ""),
+    )
+
+
+def _explicit_remote_header_names_from_text(markdown: str) -> list[str]:
+    names: set[str] = set()
+    for match in _MCP_EXPLICIT_HEADER_PATTERN.finditer(str(markdown or "")):
+        raw_name = match.group(1).strip()
+        name = "Authorization" if raw_name.lower() == "authorization" else raw_name.upper()
+        if _is_secret_hint(raw_name):
+            names.add(name)
+    return sorted(names)
+
+
+def _augment_mcp_candidates_from_detail_text(candidates: list[dict[str, Any]], markdown: str) -> list[dict[str, Any]]:
+    header_names = _explicit_remote_header_names_from_text(markdown)
+    if not header_names:
+        return candidates
+    augmented: list[dict[str, Any]] = []
+    for candidate in candidates:
+        next_candidate = deepcopy(candidate)
+        if str(next_candidate.get("transport") or "") not in {"http", "sse"}:
+            augmented.append(next_candidate)
+            continue
+        requirements = next_candidate.get("requirements") if isinstance(next_candidate.get("requirements"), list) else []
+        server_config = next_candidate.get("_serverConfig") if isinstance(next_candidate.get("_serverConfig"), dict) else {}
+        headers = server_config.get("headers") if isinstance(server_config.get("headers"), dict) else {}
+        known_headers = {str(key).strip().lower() for key in headers}
+        for requirement in requirements:
+            if isinstance(requirement, dict) and str(requirement.get("target") or "") == "header":
+                known_headers.add(str(requirement.get("name") or "").strip().lower())
+        for header_name in header_names:
+            if header_name.lower() in known_headers:
+                continue
+            requirements.append(
+                _requirement(
+                    target="header",
+                    name=header_name,
+                    key=f"header.{header_name}.{header_name}",
+                    value_template="",
+                    placeholder=header_name,
+                    input_defs={},
+                )
+            )
+            server_config.setdefault("headers", {})
+            if isinstance(server_config["headers"], dict):
+                server_config["headers"].setdefault(header_name, "")
+            known_headers.add(header_name.lower())
+        next_candidate["requirements"] = requirements
+        next_candidate["_serverConfig"] = server_config
+        next_candidate["headerKeys"] = sorted(str(key) for key in (server_config.get("headers") or {}).keys()) if isinstance(server_config.get("headers"), dict) else []
+        augmented.append(next_candidate)
+    return augmented
+
+
 def _mcp_detail_cache_name(mcp_id: str) -> str:
-    return _cache_key("github-mcp-detail-v2", mcp_id)
+    return _cache_key("github-mcp-detail-v3", mcp_id)
 
 
 def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any]:
@@ -1071,6 +1221,7 @@ def get_store_mcp_detail(*, mcp_id: str, refresh: bool = False) -> dict[str, Any
                 *parse_mcp_readme_json_candidates(page_html, default_server_name=default_server_name),
             ]
         )
+        candidates = _dedupe_candidates(_augment_mcp_candidates_from_detail_text(candidates, detail_text.get("markdown") or ""))
         public_candidates = [_public_candidate(candidate) for candidate in candidates]
         if not public_candidates:
             warnings.append("该 MCP 条目没有解析到明确的一键安装配置。")
@@ -1121,12 +1272,14 @@ def _candidate_by_id(mcp_id: str, candidate_id: str) -> dict[str, Any]:
     detail_url = f"{_GITHUB_MCP_URL}/{quote(normalized_id, safe='/._-')}"
     page_html = _fetch_text(detail_url)
     default_server_name = _server_name_from_mcp_name(normalized_id)
+    detail_text = parse_mcp_detail_page_text(page_html)
     candidates = _dedupe_candidates(
         [
             *parse_mcp_install_redirect_candidates(page_html, default_server_name=default_server_name),
             *parse_mcp_readme_json_candidates(page_html, default_server_name=default_server_name),
         ]
     )
+    candidates = _dedupe_candidates(_augment_mcp_candidates_from_detail_text(candidates, detail_text.get("markdown") or ""))
     for candidate in candidates:
         if str(candidate.get("id") or "") == candidate_id:
             return candidate

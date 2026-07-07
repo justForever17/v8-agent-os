@@ -59,7 +59,42 @@ def test_parse_skill_download_response_reads_description_and_skill_markdown() ->
 
     assert detail["name"] == "grill-me"
     assert detail["description"] == "A relentless interview to sharpen a plan or design."
-    assert detail["markdown"] == "Run a `/grilling` session."
+    assert detail["markdown"] == ""
+
+
+def test_parse_skill_download_response_ignores_symbol_only_description() -> None:
+    payload = {
+        "files": [
+            {
+                "path": "SKILL.md",
+                "contents": "---\nname: noisy\ndescription: |\n---\n\n>\n\nUse this skill to prepare a concise project brief.\n",
+            }
+        ],
+    }
+
+    detail = service.parse_skill_download_response(payload, source="example/skills", skill_id="noisy")
+
+    assert detail["description"] == "Use this skill to prepare a concise project brief."
+    assert detail["markdown"] == "Use this skill to prepare a concise project brief."
+
+
+def test_decorate_skill_items_pins_find_skills_and_filters_low_install_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(service, "_installed_skill_ids", lambda: set())
+    monkeypatch.setattr(service, "_enrich_skill_summary", lambda item: item)
+    items = service._dedupe_skill_items(
+        [
+            {"source": "example/skills", "skillId": "tiny", "name": "tiny", "installs": 199},
+            {"source": "example/skills", "skillId": "useful", "name": "useful", "installs": 400},
+            {"source": "vercel-labs/skills", "skillId": "find-skills", "name": "find-skills", "installs": 1},
+        ]
+    )
+
+    decorated = service._decorate_skill_items(items, limit=10)
+
+    assert [item["id"] for item in decorated] == [
+        "vercel-labs/skills@find-skills",
+        "example/skills@useful",
+    ]
 
 
 def test_install_store_skill_compiles_controlled_global_command(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -188,6 +223,35 @@ def test_parse_mcp_readme_json_candidates_reads_servers_block() -> None:
     assert candidates[0]["command"] == "npx"
     assert candidates[0]["requirements"][0]["key"] == "env.DEMO_API_KEY.demo_key"
     assert candidates[0]["requirements"][0]["secret"] is True
+
+
+def test_mcp_candidates_prefer_requirements_and_infer_explicit_remote_header() -> None:
+    no_input = service._candidate_from_config(
+        server_name="context7",
+        config={"type": "http", "url": "https://mcp.context7.com/mcp"},
+        source="vscode_install_link",
+    )
+    with_input = service._candidate_from_config(
+        server_name="github",
+        config={
+            "type": "http",
+            "url": "https://api.githubcopilot.com/mcp/",
+            "headers": {"Authorization": "Bearer ${input:github_mcp_pat}"},
+        },
+        source="readme_json",
+    )
+
+    inferred = service._augment_mcp_candidates_from_detail_text(
+        [no_input],
+        "Pass your API key via the CONTEXT7_API_KEY header.",
+    )
+    ordered = service._dedupe_candidates([no_input, with_input])
+
+    assert inferred[0]["requirements"][0]["target"] == "header"
+    assert inferred[0]["requirements"][0]["name"] == "CONTEXT7_API_KEY"
+    assert inferred[0]["_serverConfig"]["headers"] == {"CONTEXT7_API_KEY": ""}
+    assert ordered[0]["serverName"] == "github"
+    assert ordered[0]["requirements"][0]["name"] == "Authorization"
 
 
 def test_parse_mcp_detail_page_text_reads_markdown_body_description() -> None:

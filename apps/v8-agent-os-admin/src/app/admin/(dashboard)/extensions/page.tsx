@@ -235,6 +235,7 @@ type McpInstallFormState = {
   envText: string;
   headersText: string;
 };
+type McpFormMode = "create" | "edit";
 type TranslateFn = (value: string, params?: Record<string, string | number>) => string;
 const DEFAULT_MCP_INSTALL_FORM: McpInstallFormState = {
   name: "",
@@ -431,6 +432,29 @@ function parseMcpKeyValueLines(value: string, label: string, t: TranslateFn): Re
   }
   return result;
 }
+function formatMcpArgsText(value: unknown): string {
+  return Array.isArray(value) ? value.map((item) => String(item ?? "")).filter(Boolean).join("\n") : "";
+}
+function formatMcpKeyValueText(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "";
+  }
+  return Object.entries(value as Record<string, unknown>).
+  map(([key, item]) => `${key}=${String(item ?? "")}`).
+  join("\n");
+}
+function mcpFormFromServerConfig(name: string, server: Record<string, unknown>): McpInstallFormState {
+  const type = normalizeMcpTransportType(server.type ?? server.transport) || (server.url ? "http" : "stdio");
+  return {
+    name,
+    type,
+    command: typeof server.command === "string" ? server.command : "",
+    url: typeof server.url === "string" ? server.url : "",
+    argsText: formatMcpArgsText(server.args),
+    envText: formatMcpKeyValueText(server.env),
+    headersText: formatMcpKeyValueText(server.headers)
+  };
+}
 function buildMcpFormPayload(form: McpInstallFormState, t: TranslateFn): Record<string, unknown> {
   const name = form.name.trim();
   if (!name) {
@@ -555,6 +579,7 @@ export default function ExtensionsPage() {
   const [mcpValidationSummary, setMcpValidationSummary] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const [mcpFormMode, setMcpFormMode] = useState<McpFormMode>("create");
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
@@ -788,6 +813,45 @@ export default function ExtensionsPage() {
       setSavingMcp(false);
     }
   };
+  const openMcpCreateForm = () => {
+    setMcpFormMode("create");
+    setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
+    setMcpValidationError("");
+    setMcpFormDialogOpen(true);
+  };
+  const openMcpEditForm = async (serverName: string) => {
+    const normalizedName = String(serverName || "").trim();
+    if (!normalizedName)
+    return;
+    setMcpFormMode("edit");
+    setMcpValidationError("");
+    try {
+      const res = await fetch("/api/mcp/config", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const validationError = extractValidationPayload(data);
+        throw new Error(localizeMcpValidationPayload(validationError, t) || t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"));
+      }
+      const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const serverMap = record.mcpServers && typeof record.mcpServers === "object" && !Array.isArray(record.mcpServers) ?
+      record.mcpServers as Record<string, unknown> :
+      record;
+      const server = serverMap[normalizedName];
+      if (!server || typeof server !== "object" || Array.isArray(server)) {
+        throw new Error(t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"));
+      }
+      setMcpInstallForm(mcpFormFromServerConfig(normalizedName, server as Record<string, unknown>));
+      setMcpFormDialogOpen(true);
+    }
+    catch (error) {
+      setMcpFormMode("create");
+      toast({
+        title: t("app.admin.dashboard.extensions.page.mcpEditLoadFailed"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"),
+        variant: "destructive"
+      });
+    }
+  };
   const saveMcpFormConfig = async () => {
     setSavingMcp(true);
     setMcpValidationError("");
@@ -805,6 +869,7 @@ export default function ExtensionsPage() {
       }
       setMcpFormDialogOpen(false);
       setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
+      setMcpFormMode("create");
       toast({ title: t("app.admin.dashboard.extensions.page.kceb42548"), description: t("app.admin.dashboard.extensions.page.kcc0b918f") });
       await loadData();
     }
@@ -1191,6 +1256,16 @@ export default function ExtensionsPage() {
                   type="button"
                   variant="ghost"
                   size="icon"
+                  className="h-8 w-8 text-sky-600 hover:bg-sky-50 hover:text-sky-700"
+                  title={t("app.admin.dashboard.extensions.page.mcpEditServer")}
+                  onClick={() => void openMcpEditForm(server.name)}>
+
+                                                <Wrench className="h-4 w-4" />
+                                            </Button>
+                                            <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
                   className="h-8 w-8 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
                   title={tg(t, "3d2ba7c9")}
                   onClick={() => void deleteMcpServer(server.name)}
@@ -1265,17 +1340,17 @@ export default function ExtensionsPage() {
           setMcpFormDialogOpen(open);
           if (open)
           setMcpValidationError("");
+          else
+          setMcpFormMode("create");
         }}>
-                            <DialogTrigger asChild>
-                                <Button>
-                                    <Plus className="mr-2 h-4 w-4" />
-                                    {t("app.admin.dashboard.extensions.page.mcpFormInstall")}
-                                </Button>
-                            </DialogTrigger>
+                            <Button type="button" onClick={openMcpCreateForm}>
+                                <Plus className="mr-2 h-4 w-4" />
+                                {t("app.admin.dashboard.extensions.page.mcpFormInstall")}
+                            </Button>
                             <DialogContent className="max-w-3xl">
                                 <DialogHeader>
-                                    <DialogTitle>{t("app.admin.dashboard.extensions.page.mcpFormInstall")}</DialogTitle>
-                                    <DialogDescription>{t("app.admin.dashboard.extensions.page.mcpFormInstallDescription")}</DialogDescription>
+                                    <DialogTitle>{mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpFormEdit") : t("app.admin.dashboard.extensions.page.mcpFormInstall")}</DialogTitle>
+                                    <DialogDescription>{mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpFormEditDescription") : t("app.admin.dashboard.extensions.page.mcpFormInstallDescription")}</DialogDescription>
                                 </DialogHeader>
                                 <div className="space-y-4 py-4">
                                     <div className="space-y-2">
@@ -1284,7 +1359,7 @@ export default function ExtensionsPage() {
                     setMcpInstallForm((previous) => ({ ...previous, name: event.target.value }));
                     if (mcpValidationError)
                     setMcpValidationError("");
-                  }} placeholder="context7" />
+                  }} placeholder="context7" disabled={mcpFormMode === "edit"} />
                                     </div>
                                     <div className="space-y-2">
                                         <Label>{t("app.admin.dashboard.extensions.page.mcpTransportType")}</Label>
@@ -1341,7 +1416,7 @@ export default function ExtensionsPage() {
                                 </div>
                                 <DialogFooter>
                                     <Button variant="outline" onClick={() => setMcpFormDialogOpen(false)}>{t("app.admin.dashboard.extensions.page.kb92cb20c")}</Button>
-                                    <Button onClick={() => void saveMcpFormConfig()} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : t("app.admin.dashboard.extensions.page.mcpSaveServer")}</Button>
+                                    <Button onClick={() => void saveMcpFormConfig()} disabled={savingMcp}>{savingMcp ? t("app.admin.dashboard.extensions.page.kfc8f3cfd") : mcpFormMode === "edit" ? t("app.admin.dashboard.extensions.page.mcpUpdateServer") : t("app.admin.dashboard.extensions.page.mcpSaveServer")}</Button>
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>

@@ -66,6 +66,12 @@ export type V8DesktopPetConfig = {
     customGlowColor?: string;
     [key: string]: unknown;
   };
+  attachmentCapture?: {
+    cameraEnabled?: boolean;
+    includeDesktopScreenshot?: boolean;
+    layout?: "desktop_pip_camera" | string;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 };
 

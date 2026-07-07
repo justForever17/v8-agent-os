@@ -48,6 +48,11 @@ export interface PetSettings {
   gazeTracking: boolean;
   
   captureMode?: 'camera' | 'desktop_camera';
+  attachmentCapture?: {
+    cameraEnabled: boolean;
+    includeDesktopScreenshot: boolean;
+    layout: 'desktop_pip_camera';
+  };
   v8AdminBaseUrl: string;
   v8WorkspacePath: string;
   v8EventRulesJson: string;

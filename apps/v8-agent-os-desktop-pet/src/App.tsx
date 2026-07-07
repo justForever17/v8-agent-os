@@ -22,6 +22,7 @@ import CyberPet from './components/CyberPet';
 import { ChatMessage, PetEmotion, SystemMetric, PetSettings } from './types';
 import { V8DesktopClientAdapter, V8AuthSession, V8Conversation, V8Project } from './lib/v8DesktopClient';
 import type { V8DesktopPetConfig } from './lib/v8DesktopClient';
+import { isEventVoiceEnabled, normalizeAttachmentCapture, normalizeEventVoiceMode } from './lib/desktopPetConfigContract';
 import {
   DesktopActivity,
   buildActivityFromRealtimeEvent,
@@ -301,14 +302,6 @@ function findLatestAudioUrl(value: unknown, depth = 0): string {
   return '';
 }
 
-function normalizeEventVoiceMode(value: unknown): PetSettings['eventVoiceMode'] {
-  const mode = String(value || '').trim();
-  if (mode === 'voice_tag' || mode === 'muted' || mode === 'system_tts') {
-    return mode;
-  }
-  return 'system_tts';
-}
-
 function cleanSpeechText(text: string) {
   return String(text || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -334,6 +327,62 @@ function stripVoiceTagMarkup(text: string) {
   return cleanSpeechText(
     String(text || '').replace(/<voice(?:\s[^>]*)?>([\s\S]*?)<\/voice>/gi, '$1'),
   );
+}
+
+function waitForVideoReady(video: HTMLVideoElement, timeoutMs = 2000) {
+  if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('视频帧准备超时'));
+    }, timeoutMs);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.removeEventListener('loadeddata', onReady);
+      video.removeEventListener('canplay', onReady);
+      video.removeEventListener('error', onError);
+    };
+    const onReady = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error('视频帧读取失败'));
+    };
+    video.addEventListener('loadeddata', onReady);
+    video.addEventListener('canplay', onReady);
+    video.addEventListener('error', onError);
+  });
+}
+
+function drawVideoFrameToCanvas(video: HTMLVideoElement, maxWidth = 1280) {
+  const width = video.videoWidth || 640;
+  const height = video.videoHeight || 360;
+  const scale = Math.min(1, maxWidth / width);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('无法创建截图画布');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+function canvasToImageBlob(canvas: HTMLCanvasElement, type = 'image/jpeg', quality = 0.88) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob?.size) {
+        resolve(blob);
+      } else {
+        reject(new Error('截图导出失败'));
+      }
+    }, type, quality);
+  });
 }
 
 function readReusableAudioPhrases() {
@@ -415,6 +464,11 @@ If the user uploaded an image representation (which represents what you 'see' th
     customGlowColor: (localStorage.getItem('v8.cybercore.customGlowColor') as PetSettings['customGlowColor']) || 'default',
     gazeTracking: localStorage.getItem('v8.cybercore.gazeTracking') !== 'false',
     captureMode: (localStorage.getItem('v8.cybercore.captureMode') as PetSettings['captureMode']) || 'desktop_camera',
+    attachmentCapture: {
+      cameraEnabled: localStorage.getItem('v8.cybercore.attachmentCapture.cameraEnabled') === 'true',
+      includeDesktopScreenshot: localStorage.getItem('v8.cybercore.attachmentCapture.includeDesktopScreenshot') === 'true',
+      layout: 'desktop_pip_camera',
+    },
     v8AdminBaseUrl: localStorage.getItem('v8.cybercore.v8AdminBaseUrl') || v8ClientRef.current.getStoredAdminBaseUrl(),
     v8WorkspacePath: localStorage.getItem('v8.cybercore.workspacePath') || '',
     v8EventRulesJson: localStorage.getItem('v8.cybercore.eventRulesJson') || defaultV8EventRulesJson(),
@@ -559,6 +613,8 @@ If the user uploaded an image representation (which represents what you 'see' th
     localStorage.setItem('v8.cybercore.eventVoiceVoiceRef', settings.eventVoiceVoiceRef || '');
     localStorage.setItem('v8.cybercore.speakVoiceTags', String(settings.speakVoiceTags !== false));
     localStorage.setItem('v8.cybercore.speakSupervisorReplies', String(settings.speakSupervisorReplies !== false));
+    localStorage.setItem('v8.cybercore.attachmentCapture.cameraEnabled', String(settings.attachmentCapture?.cameraEnabled === true));
+    localStorage.setItem('v8.cybercore.attachmentCapture.includeDesktopScreenshot', String(settings.attachmentCapture?.includeDesktopScreenshot === true));
   }, [
     settings.petScale,
     settings.ttsEngine,
@@ -579,6 +635,8 @@ If the user uploaded an image representation (which represents what you 'see' th
     settings.eventVoiceVoiceRef,
     settings.speakVoiceTags,
     settings.speakSupervisorReplies,
+    settings.attachmentCapture?.cameraEnabled,
+    settings.attachmentCapture?.includeDesktopScreenshot,
   ]);
 
   useEffect(() => {
@@ -778,9 +836,10 @@ If the user uploaded an image representation (which represents what you 'see' th
       const config = unpackDesktopPetConfig(payload);
       const appearance = config.appearance || {};
       const eventVoice = config.eventVoice || {};
-      const voiceEnabled = eventVoice.enabled !== false && eventVoice.mode !== 'muted';
+      const voiceEnabled = isEventVoiceEnabled(eventVoice);
       const eventVoiceMode = voiceEnabled ? normalizeEventVoiceMode(eventVoice.mode) : 'muted';
       const voiceRules = normalizeDesktopPetVoiceRules(config, voiceEnabled);
+      const attachmentCapture = normalizeAttachmentCapture(config.attachmentCapture);
       setSettings((current) => ({
         ...current,
         petScale: clampFiniteNumber(appearance.petScale, current.petScale || 0.7, 0.4, 3),
@@ -792,6 +851,8 @@ If the user uploaded an image representation (which represents what you 'see' th
         speakVoiceTags: eventVoice.speakVoiceTags !== false,
         speakSupervisorReplies: eventVoice.speakSupervisorReplies !== false,
         v8EventRulesJson: voiceRules ? JSON.stringify(voiceRules, null, 2) : current.v8EventRulesJson,
+        captureMode: attachmentCapture.includeDesktopScreenshot ? 'desktop_camera' : 'camera',
+        attachmentCapture,
       }));
     } catch (error) {
       console.warn('Desktop pet config sync failed:', error);
@@ -1317,6 +1378,98 @@ If the user uploaded an image representation (which represents what you 'see' th
     return blob.size ? blob : null;
   };
 
+  const captureFrameFromStream = async (stream: MediaStream, maxWidth = 1280) => {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = stream;
+    try {
+      await video.play().catch(() => undefined);
+      await waitForVideoReady(video);
+      return drawVideoFrameToCanvas(video, maxWidth);
+    } finally {
+      try {
+        video.pause();
+      } catch {}
+      video.srcObject = null;
+    }
+  };
+
+  const captureCameraCanvas = async () => {
+    const activeVideo = videoRef.current;
+    if (isWebcamActive && activeVideo && activeVideo.readyState >= 2 && activeVideo.videoWidth > 0) {
+      return drawVideoFrameToCanvas(activeVideo, 720);
+    }
+    await window.v8CyberCore?.requestMediaAccess?.('camera');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    });
+    try {
+      return await captureFrameFromStream(stream, 720);
+    } finally {
+      stopHardwareStream(stream);
+    }
+  };
+
+  const captureDesktopCanvas = async () => {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error('当前环境不支持桌面截图');
+    }
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    try {
+      return await captureFrameFromStream(stream, 1280);
+    } finally {
+      stopHardwareStream(stream);
+    }
+  };
+
+  const composeDesktopWithCamera = async () => {
+    const desktopCanvas = await captureDesktopCanvas();
+    let cameraCanvas: HTMLCanvasElement | null = null;
+    try {
+      cameraCanvas = await captureCameraCanvas();
+    } catch (error) {
+      console.warn('[V8 Desktop Pet] camera snapshot skipped:', error);
+    }
+    if (!cameraCanvas) return desktopCanvas;
+
+    const output = document.createElement('canvas');
+    output.width = desktopCanvas.width;
+    output.height = desktopCanvas.height;
+    const ctx = output.getContext('2d');
+    if (!ctx) throw new Error('无法合成截图');
+    ctx.drawImage(desktopCanvas, 0, 0);
+
+    const margin = Math.max(16, Math.round(output.width * 0.018));
+    const pipWidth = Math.min(320, Math.max(180, Math.round(output.width * 0.24)));
+    const pipHeight = Math.round(pipWidth * (cameraCanvas.height / Math.max(1, cameraCanvas.width)));
+    const pipX = output.width - pipWidth - margin;
+    const pipY = output.height - pipHeight - margin;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.fillRect(pipX - 4, pipY - 4, pipWidth + 8, pipHeight + 8);
+    ctx.drawImage(cameraCanvas, pipX, pipY, pipWidth, pipHeight);
+    return output;
+  };
+
+  const captureDesktopPetVisualAttachment = async () => {
+    const capture = settingsRef.current.attachmentCapture;
+    if (capture?.cameraEnabled !== true) return null;
+    try {
+      const canvas = capture.includeDesktopScreenshot
+        ? await composeDesktopWithCamera()
+        : await captureCameraCanvas();
+      return await canvasToImageBlob(canvas, 'image/jpeg', 0.88);
+    } catch (error) {
+      console.warn('[V8 Desktop Pet] visual attachment skipped:', error);
+      setVoiceStatus('画面截图失败，已继续发送语音');
+      return null;
+    }
+  };
+
   const sendAudioBlobToActiveConversation = async (audioBlob: Blob) => {
     const client = v8ClientRef.current;
     if (!client?.getSession()) {
@@ -1339,12 +1492,50 @@ If the user uploaded an image representation (which represents what you 'see' th
     if (!fileUrl) {
       throw new Error('V8OS 上传语音后没有返回可用链接');
     }
+    const fileUrls = [fileUrl];
+    const attachments: Array<Record<string, unknown>> = [{
+      ...uploadRes,
+      url: fileUrl,
+      publicUrl: String(uploadRes.publicUrl || uploadRes.url || fileUrl),
+      name: String(uploadRes.name || file.name),
+      mimeType,
+      size: audioBlob.size,
+      mediaKind: 'audio',
+      source: 'desktop_pet_voice',
+    }];
+    const visualBlob = await captureDesktopPetVisualAttachment();
+    if (visualBlob) {
+      try {
+        const visualFile = new File([visualBlob], `desktop-pet-snapshot-${Date.now()}.jpg`, { type: 'image/jpeg' });
+        const visualUploadRes = await client.uploadFile(visualFile, {
+          conversationId,
+          workspacePath: settingsRef.current.v8WorkspacePath || undefined,
+        });
+        const visualUrl = String(visualUploadRes.url || visualUploadRes.path || '').trim();
+        if (visualUrl) {
+          fileUrls.push(visualUrl);
+          attachments.push({
+            ...visualUploadRes,
+            url: visualUrl,
+            publicUrl: String(visualUploadRes.publicUrl || visualUploadRes.url || visualUrl),
+            name: String(visualUploadRes.name || visualFile.name),
+            mimeType: 'image/jpeg',
+            size: visualBlob.size,
+            mediaKind: 'image',
+            source: 'desktop_pet_snapshot',
+          });
+        }
+      } catch (error) {
+        console.warn('[V8 Desktop Pet] visual attachment upload skipped:', error);
+        setVoiceStatus('画面上传失败，已继续发送语音');
+      }
+    }
     setMessages((prev) => [
       ...prev,
       {
         id: `user-audio-${Date.now()}`,
         sender: 'user',
-        text: '已发送一段语音。',
+        text: attachments.length > 1 ? '已发送语音和画面。' : '已发送一段语音。',
         timestamp: nowLabel(),
       },
     ]);
@@ -1352,17 +1543,8 @@ If the user uploaded an image representation (which represents what you 'see' th
       conversationId,
       content: '',
       clientMessageId: `desktop-pet-voice-${Date.now()}`,
-      fileUrls: [fileUrl],
-      attachments: [{
-        ...uploadRes,
-        url: fileUrl,
-        publicUrl: String(uploadRes.publicUrl || uploadRes.url || fileUrl),
-        name: String(uploadRes.name || file.name),
-        mimeType,
-        size: audioBlob.size,
-        mediaKind: 'audio',
-        source: 'desktop_pet_voice',
-      }],
+      fileUrls,
+      attachments,
     });
     setPetSessionState('listening_running');
     setVoiceStatus('语音已发送，正在监听当前会话');

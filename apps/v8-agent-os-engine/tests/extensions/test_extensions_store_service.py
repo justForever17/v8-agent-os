@@ -80,7 +80,7 @@ def test_install_store_skill_compiles_controlled_global_command(monkeypatch: pyt
 def test_parse_github_mcp_cards_reads_registry_embedded_json() -> None:
     html = '''
     <a href="/mcp/github/github-mcp-server"></a>
-    {"id":"github/github-mcp-server","name":"github/github-mcp-server","display_name":"GitHub","description":"GitHub tools","url":"https://github.com/github/github-mcp-server","created_at":"1.0.0","updated_at":"2026-07-06T00:00:00Z","stargazer_count":123,"owner_avatar_url":"","primary_language":"Go","license":"MIT License","topics":["mcp","github"],"repository":{"source":"github","url":"https://github.com/github/github-mcp-server"},"full_name":"io.github.github/github-mcp-server","api_name":"github/github-mcp-server"}
+    {"id":"github/github-mcp-server","name":"github/github-mcp-server","display_name":"GitHub","description":"GitHub tools","url":"https://github.com/github/github-mcp-server","created_at":"1.0.0","updated_at":"2026-07-06T00:00:00Z","stargazer_count":123,"owner_avatar_url":"https://avatars.githubusercontent.com/u/1?v=4","opengraph_image_url":"https://opengraph.githubassets.com/demo/github/github-mcp-server","primary_language":"Go","license":"MIT License","topics":["mcp","github"],"repository":{"source":"github","url":"https://github.com/github/github-mcp-server"},"full_name":"io.github.github/github-mcp-server","api_name":"github/github-mcp-server"}
     '''
 
     cards = service.parse_github_mcp_cards(html)
@@ -92,9 +92,21 @@ def test_parse_github_mcp_cards_reads_registry_embedded_json() -> None:
     assert cards[0]["repositoryUrl"] == "https://github.com/github/github-mcp-server"
     assert cards[0]["detailUrl"] == "https://github.com/mcp/github/github-mcp-server"
     assert cards[0]["stars"] == 123
+    assert cards[0]["avatarUrl"] == "https://avatars.githubusercontent.com/u/1?v=4"
     assert cards[0]["language"] == "Go"
     assert cards[0]["topics"] == ["mcp", "github"]
     assert cards[0]["serverName"] == "github-mcp-server"
+
+
+def test_parse_github_mcp_cards_falls_back_to_opengraph_avatar() -> None:
+    html = '''
+    {"id":"microsoft/markitdown","name":"microsoft/markitdown","display_name":"Markitdown","description":"Convert files","url":"https://github.com/microsoft/markitdown","stargazer_count":456,"owner_avatar_url":"","opengraph_image_url":"https://opengraph.githubassets.com/demo/microsoft/markitdown","primary_language":"Python","topics":[],"repository":{"source":"github","url":"https://github.com/microsoft/markitdown"}}
+    '''
+
+    cards = service.parse_github_mcp_cards(html)
+
+    assert len(cards) == 1
+    assert cards[0]["avatarUrl"] == "https://opengraph.githubassets.com/demo/microsoft/markitdown"
 
 
 def test_parse_mcp_install_redirect_candidates_extracts_secret_input() -> None:

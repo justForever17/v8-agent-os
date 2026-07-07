@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import ReactMarkdown from "react-markdown";
-import { Blocks, Bot, ExternalLink, Loader2, RefreshCw, Search, Server, Sparkles, Star } from "lucide-react";
+import { Blocks, Bot, Loader2, RefreshCw, Search, Server, Sparkles, Star } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -397,7 +397,6 @@ export default function ExtensionsStorePage() {
                                     <div className="flex items-start justify-between gap-4">
                                         <div className="min-w-0">
                                             <h3 className="truncate text-xl font-semibold text-slate-950 dark:text-slate-100">{item.name}</h3>
-                                            <div className="mt-1 text-sm font-medium text-slate-500 dark:text-slate-400">{t("app.admin.dashboard.extensions.store.page.byOwner", { owner: ownerFromName(item.source) })}</div>
                                         </div>
                                         <Button size="sm" onClick={() => void installSkill(item)} disabled={installingSkillId === item.id}>
                                             {installingSkillId === item.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -496,7 +495,7 @@ export default function ExtensionsStorePage() {
                         <>
                             <DialogHeader>
                                 <DialogTitle>{skillDetail?.name || selectedSkill.name}</DialogTitle>
-                                <DialogDescription>{skillDetail?.description || selectedSkill.description || selectedSkill.source}</DialogDescription>
+                                <DialogDescription>{skillDetail?.description || selectedSkill.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</DialogDescription>
                             </DialogHeader>
                             {skillDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
                             {skillDetailError ? <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{skillDetailError}</div> : null}
@@ -506,12 +505,6 @@ export default function ExtensionsStorePage() {
                                 </div>
                             ) : null}
                             <DialogFooter>
-                                <Button variant="outline" asChild>
-                                    <a href={selectedSkill.detailUrl} target="_blank" rel="noreferrer">
-                                        <ExternalLink className="mr-2 h-4 w-4" />
-                                        {t("app.admin.dashboard.extensions.store.page.viewSource")}
-                                    </a>
-                                </Button>
                                 <Button onClick={() => void installSkill(selectedSkill)} disabled={Boolean(installingSkillId)}>
                                     {installingSkillId === selectedSkill.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                                     {selectedSkill.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}
@@ -567,8 +560,6 @@ export default function ExtensionsStorePage() {
                                             <div className="grid gap-2 rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">
                                                 <div><span className="font-medium">{t("app.admin.dashboard.extensions.store.page.serverName")}</span> {selectedCandidate.serverName}</div>
                                                 <div><span className="font-medium">{t("app.admin.dashboard.extensions.store.page.transport")}</span> {selectedCandidate.transport}</div>
-                                                {selectedCandidate.url ? <div className="break-all"><span className="font-medium">URL</span> {selectedCandidate.url}</div> : null}
-                                                {selectedCandidate.command ? <div className="break-all"><span className="font-medium">Command</span> {selectedCandidate.command} {(selectedCandidate.args || []).join(" ")}</div> : null}
                                             </div>
 
                                             {(selectedCandidate.requirements || []).length > 0 ? (
@@ -600,12 +591,6 @@ export default function ExtensionsStorePage() {
                                 </div>
                             ) : null}
                             <DialogFooter>
-                                <Button variant="outline" asChild>
-                                    <a href={selectedMcp.detailUrl} target="_blank" rel="noreferrer">
-                                        <ExternalLink className="mr-2 h-4 w-4" />
-                                        {t("app.admin.dashboard.extensions.store.page.viewSource")}
-                                    </a>
-                                </Button>
                                 <Button onClick={() => void installMcp()} disabled={!selectedCandidate || installingMcp}>
                                     {installingMcp ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Server className="mr-2 h-4 w-4" />}
                                     {selectedMcp.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}

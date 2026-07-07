@@ -1,15 +1,13 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { CheckCircle2, ExternalLink, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Store, Terminal, Trash2, Upload, Wrench } from "lucide-react";
+import { CheckCircle2, Loader2, PackageCheck, Plus, RefreshCw, Save, Server, Store, Terminal, Trash2, Upload, Wrench } from "lucide-react";
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { DomainSummaryStrip } from "@/components/admin-shell/DomainSummaryStrip";
 import { EmptyState } from "@/components/admin-shell/EmptyState";
-import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { InlineSaveState } from "@/components/admin-shell/InlineSaveState";
-import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
 import { StatusNotice } from "@/components/admin-shell/StatusNotice";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Badge } from "@/components/ui/badge";
@@ -199,12 +197,6 @@ type SysModel = {
   };
   providerName?: string;
 };
-type ProjectRecord = {
-  id: string;
-  name?: string;
-  workspaceId?: string;
-  workspacePath?: string;
-};
 type ExtensionsConfigData = {
   prefilterPolicy?: {
     enabled?: boolean;
@@ -226,139 +218,6 @@ type ExtensionsConfigData = {
   };
   modelBindings?: {
     prefilterModel?: string;
-  };
-};
-type ExtensionPreviewSkillEntry = {
-  skillId?: string;
-  skillName?: string;
-  skillRoot?: string;
-  instructionPath?: string;
-  sourceType?: string;
-  visibility?: string;
-  workspacePath?: string;
-  workspaceId?: string;
-  projectId?: string;
-  rootPath?: string;
-  referencesDir?: string;
-  scriptsDir?: string;
-  assetsDir?: string;
-  templatesDir?: string;
-  availableFiles?: string[];
-};
-type ExtensionPreviewMcpServer = {
-  serverKey?: string;
-  familyKey: string;
-  serverName: string;
-  title: string;
-  toolCount: number;
-  toolNames: string[];
-  tools?: Array<{
-    name: string;
-    description?: string;
-  }>;
-  descriptions?: string[];
-};
-type ExtensionPrefilterPreviewResponse = {
-  queryPreview?: string;
-  skillStage1Entries?: ExtensionPreviewSkillEntry[];
-  skillEntries?: ExtensionPreviewSkillEntry[];
-  skillRootDescriptors?: NonNullable<ExtensionCatalogResponse["skills"]>["rootDescriptors"];
-  mcpStage1Servers?: ExtensionPreviewMcpServer[];
-  mcpServers?: ExtensionPreviewMcpServer[];
-  mcpFamilies?: ExtensionPreviewMcpServer[];
-  counts?: {
-    mode?: string;
-    routingMode?: string;
-    skillsRoutingMode?: string;
-    mcpRoutingMode?: string;
-    modelId?: string;
-    role?: string;
-    reason?: string | null;
-    prefilterTimedOut?: boolean;
-    prefilterCacheHit?: boolean;
-    stage1Enabled?: {
-      skills?: boolean;
-      mcp?: boolean;
-    };
-    stage1TopK?: {
-      skills?: number;
-      mcp?: number;
-    };
-    stage2Enabled?: {
-      skills?: boolean;
-      mcp?: boolean;
-    };
-    stage2TopK?: {
-      skills?: number;
-      mcp?: number;
-    };
-    llmTimeoutSeconds?: {
-      skills?: number;
-      mcp?: number;
-    };
-    skillCandidates?: number;
-    mcpCandidates?: number;
-    mcpServerCandidates?: number;
-    skillInventoryCount?: number;
-    mcpInventoryCount?: number;
-    skillPoolSize?: number;
-    mcpPoolSize?: number;
-    mcpServerPoolSize?: number;
-    mcpFamilyPoolSize?: number;
-    skillStage1HitCount?: number;
-    skillStage1ShortlistCount?: number;
-    skillFinalExposedCount?: number;
-    mcpStage1HitCount?: number;
-    mcpStage1ShortlistCount?: number;
-    mcpFinalExposedCount?: number;
-  };
-  routing?: {
-    mode?: string;
-    routingMode?: string;
-    skillsRoutingMode?: string;
-    mcpRoutingMode?: string;
-    modelId?: string;
-    role?: string;
-    reason?: string | null;
-    prefilterTimedOut?: boolean;
-    prefilterCacheHit?: boolean;
-    stage1Enabled?: {
-      skills?: boolean;
-      mcp?: boolean;
-    };
-    stage1TopK?: {
-      skills?: number;
-      mcp?: number;
-    };
-    stage2Enabled?: {
-      skills?: boolean;
-      mcp?: boolean;
-    };
-    stage2TopK?: {
-      skills?: number;
-      mcp?: number;
-    };
-    llmTimeoutSeconds?: {
-      skills?: number;
-      mcp?: number;
-    };
-    selectedSkills?: string[];
-    selectedSkillIds?: string[];
-    selectedMcpServers?: string[];
-    selectedMcpFamilies?: string[];
-    selectedMcpTools?: string[];
-    skillInventoryCount?: number;
-    mcpInventoryCount?: number;
-    skillPoolSize?: number;
-    mcpPoolSize?: number;
-    mcpServerPoolSize?: number;
-    mcpFamilyPoolSize?: number;
-    skillStage1HitCount?: number;
-    skillStage1ShortlistCount?: number;
-    skillFinalExposedCount?: number;
-    mcpStage1HitCount?: number;
-    mcpStage1ShortlistCount?: number;
-    mcpFinalExposedCount?: number;
   };
 };
 type StructuredValidationPayload = {
@@ -408,7 +267,7 @@ function PolicyToggleCard({ title, description, checked, onCheckedChange, childr
 
 
 
-}: {title: string;description: string;checked: boolean;onCheckedChange: (checked: boolean) => void;children?: ReactNode;}) {
+}: {title: string;description?: string;checked: boolean;onCheckedChange: (checked: boolean) => void;children?: ReactNode;}) {
   return <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-border dark:bg-muted/40">
             <SettingToggleCard
                 title={title}
@@ -449,15 +308,6 @@ function SliderField({ label, value, min, max, step = 1, disabled, onValueChange
             </div>
             {hint ? <div className="text-xs leading-5 text-slate-500 dark:text-muted-foreground">{hint}</div> : null}
         </div>;
-}
-function previewMcpServerTools(server: ExtensionPreviewMcpServer): Array<{
-  name: string;
-  description?: string;
-}> {
-  if (server.tools && server.tools.length > 0) {
-    return server.tools;
-  }
-  return (server.toolNames || []).map((name) => ({ name, description: "" }));
 }
 function skillSourceBadgeLabel(sourceType: string | undefined, t: TranslateFn) {
   if (sourceType === "main_workspace")
@@ -683,9 +533,7 @@ export default function ExtensionsPage() {
   const [health, setHealth] = useState<ExtensionHealthResponse | null>(null);
   const [configEnvelope, setConfigEnvelope] = useState<ConfigRegistryEnvelope<ExtensionsConfigData> | null>(null);
   const [models, setModels] = useState<SysModel[]>([]);
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [skillSafetyReviews, setSkillSafetyReviews] = useState<SkillSafetyReview[]>([]);
-  const [previewScope, setPreviewScope] = useState("default");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -705,44 +553,22 @@ export default function ExtensionsPage() {
   const [zipValidationError, setZipValidationError] = useState("");
   const [mcpValidationError, setMcpValidationError] = useState("");
   const [mcpValidationSummary, setMcpValidationSummary] = useState("");
-  const [previewQuery, setPreviewQuery] = useState("");
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState("");
-  const [previewedQuery, setPreviewedQuery] = useState("");
-  const [previewResult, setPreviewResult] = useState<ExtensionPrefilterPreviewResponse | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [healthResponse, config, modelList, projectsPayload, skillSafetyPayload] = await Promise.all([
+      const [healthResponse, config, modelList, skillSafetyPayload] = await Promise.all([
       fetch("/api/extensions/health", { cache: "no-store" }),
       fetchConfigDomain<ExtensionsConfigData>("extensions"),
       fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
-      fetch("/api/projects", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
       fetch("/api/skills/safety/reviews?limit=100", { cache: "no-store" }).then((response) => response.json().catch(() => ({ items: [] })))]
       );
       if (!healthResponse.ok) {
         throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
       }
       const healthPayload = await healthResponse.json();
-      const projectItems = Array.isArray(projectsPayload?.projects) ? projectsPayload.projects : [];
-      const catalogParams = new URLSearchParams();
-      if (previewScope.startsWith("project:")) {
-        const projectId = previewScope.slice("project:".length);
-        const project = projectItems.find((item: ProjectRecord) => item.id === projectId);
-        if (project?.workspacePath) {
-          catalogParams.set("workspacePath", project.workspacePath);
-          catalogParams.set("projectId", project.id);
-          if (project.workspaceId) {
-            catalogParams.set("workspaceId", project.workspaceId);
-          }
-        }
-      }
-      const catalogResponse = await fetch(
-        `/api/extensions/catalog${catalogParams.toString() ? `?${catalogParams.toString()}` : ""}`,
-        { cache: "no-store" }
-      );
+      const catalogResponse = await fetch("/api/extensions/catalog", { cache: "no-store" });
       if (!catalogResponse.ok) {
         throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
       }
@@ -751,13 +577,12 @@ export default function ExtensionsPage() {
       setHealth(healthPayload);
       setConfigEnvelope(config);
       setModels(Array.isArray(modelList) ? modelList : []);
-      setProjects(projectItems);
       setSkillSafetyReviews(Array.isArray(skillSafetyPayload?.items) ? skillSafetyPayload.items : []);
     } finally
     {
       setLoading(false);
     }
-  }, [previewScope, t]);
+  }, [t]);
   useEffect(() => {
     void loadData();
   }, [loadData]);
@@ -768,19 +593,6 @@ export default function ExtensionsPage() {
   { label: "app.admin.dashboard.extensions.page.k80047162", value: catalog?.summary.connectedMcpServerCount ?? 0, description: "app.admin.dashboard.extensions.page.kc0f82f02" },
   { label: "app.admin.dashboard.extensions.page.k1521f304", value: catalog?.summary.mcpToolCount ?? 0, description: "app.admin.dashboard.extensions.page.k0e799947" }],
   [catalog]);
-  const previewSkillStage1Entries = previewResult?.skillStage1Entries || [];
-  const previewSkillFinalEntries = previewResult?.skillEntries || [];
-  const previewMcpStage1Servers = previewResult?.mcpStage1Servers || [];
-  const previewMcpFinalServers = previewResult?.mcpServers || previewResult?.mcpFamilies || [];
-  const defaultWorkspacePath = useMemo(() => {
-    const descriptors = catalog?.skills?.rootDescriptors || [];
-    return String(descriptors.find((item) => item.sourceType === "main_workspace")?.workspacePath || "").trim();
-  }, [catalog?.skills?.rootDescriptors]);
-  const selectedPreviewProject = useMemo(() => {
-    if (!previewScope.startsWith("project:")) return null;
-    const id = previewScope.slice("project:".length);
-    return projects.find((project) => project.id === id) || null;
-  }, [previewScope, projects]);
   const prefilterPolicy = (configEnvelope?.data?.prefilterPolicy || {}) as NonNullable<ExtensionsConfigData["prefilterPolicy"]>;
   const skillsPrefilter = (prefilterPolicy.skills || {}) as NonNullable<NonNullable<ExtensionsConfigData["prefilterPolicy"]>["skills"]>;
   const mcpPrefilter = (prefilterPolicy.mcp || {}) as NonNullable<NonNullable<ExtensionsConfigData["prefilterPolicy"]>["mcp"]>;
@@ -864,45 +676,6 @@ export default function ExtensionsPage() {
     } finally
     {
       setReloading(false);
-    }
-  };
-  const previewExtensionsSelection = async () => {
-    const normalizedQuery = String(previewQuery || "").trim();
-    if (!normalizedQuery)
-    return;
-    setPreviewLoading(true);
-    setPreviewError("");
-    setPreviewedQuery(normalizedQuery);
-    try {
-      const params = new URLSearchParams({ query: normalizedQuery });
-      if (selectedPreviewProject?.workspacePath) {
-        params.set("workspacePath", selectedPreviewProject.workspacePath);
-        params.set("projectId", selectedPreviewProject.id);
-        if (selectedPreviewProject.workspaceId) {
-          params.set("workspaceId", selectedPreviewProject.workspaceId);
-        }
-      } else if (defaultWorkspacePath) {
-        params.set("workspacePath", defaultWorkspacePath);
-      }
-      const res = await fetch(`/api/extensions/preview?${params.toString()}`, { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(String(data?.detail || data?.error || t("app.admin.dashboard.extensions.page.kca3eef0d")));
-      }
-      setPreviewResult(data as ExtensionPrefilterPreviewResponse);
-    }
-    catch (error) {
-      const message = error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.kca3eef0d");
-      setPreviewResult(null);
-      setPreviewError(message);
-      toast({
-        title: t("app.admin.dashboard.extensions.page.k69be1591"),
-        description: message,
-        variant: "destructive"
-      });
-    } finally
-    {
-      setPreviewLoading(false);
     }
   };
   const handleCommandInstall = async () => {
@@ -1149,18 +922,11 @@ export default function ExtensionsPage() {
   const mcpLlmEnabled = Boolean(mcpPrefilter.llmEnabled ?? true);
   const mcpStage2TopK = Number(mcpPrefilter.stage2TopK || 2);
   const mcpLlmTimeoutSeconds = Number(mcpPrefilter.llmTimeoutSeconds || 5);
-  const previewCounts = previewResult?.counts;
-  const previewSkillsStage1Enabled = Boolean(previewCounts?.stage1Enabled?.skills ?? true);
-  const previewMcpStage1Enabled = Boolean(previewCounts?.stage1Enabled?.mcp ?? true);
   const skillSafetyDisabledCount = skillSafetyReviews.filter((item) => item.disabled).length;
   const skillSafetyReviewCount = skillSafetyReviews.filter((item) => String(item.effective_verdict || "").toLowerCase() === "review" && !item.disabled).length;
   const skillSafetyApprovedCount = skillSafetyReviews.filter((item) => String(item.user_override || "").toLowerCase() === "approved" && !item.disabled).length;
   const runtimeStartupState = String(health.runtime?.startupState || catalog.startupState || "cold").trim().toLowerCase();
   const snapshotFreshness = String(health.runtime?.snapshotFreshness || catalog.snapshotFreshness || "cold").trim().toLowerCase();
-  const silkAvailable = Boolean(health.silk?.available ?? health.runtime?.silk?.available);
-  const silkVersion = String(health.silk?.version || health.runtime?.silk?.version || "").trim();
-  const silkRoot = String(health.silk?.toolRoot || health.runtime?.silk?.toolRoot || "").trim();
-  const dependencyPolicy = catalog.skillDependencyPolicy || health.skillDependencyPolicy || {};
   const skillsPolicyBadge = skillsStage1Enabled ?
   skillsLlmEnabled ? `${skillsStage1TopK} → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : `${skillsStage1TopK}` :
   skillsLlmEnabled ? `full → ${skillsStage2TopK} / ${skillsLlmTimeoutSeconds}s` : t("admin.pages.extensions.prefilter.fullInventory");
@@ -1195,20 +961,12 @@ export default function ExtensionsPage() {
       snapshotFreshness_live_live_snapshotFreshness_cached: snapshotFreshness === "live" ? "live" : t("components.plugin.host.PluginHostWorkbench.snapshotFreshnessCached")
     })} tone="info" /> : null}
             {runtimeStartupState === "error" ? <StatusNotice title={"app.admin.dashboard.extensions.page.kc3221dca"} description={health.lastRefreshError || catalog.lastRefreshError || t("app.admin.dashboard.extensions.page.ka1c8eb51")} tone="warning" /> : null}
-            <StatusNotice title={silkAvailable ? "app.admin.dashboard.extensions.page.kdba6ed3d" : "app.admin.dashboard.extensions.page.kf4e67cdf"} description={silkAvailable ?
-    t("app.admin.dashboard.extensions.page.kc090216b", {
-      silkVersion_silkVersion: silkVersion ? tg(t, "be614a10", { value1: silkVersion }) : "",
-      silkRoot_silkRoot: silkRoot ? tg(t, "a91318cc", { value1: silkRoot }) : ""
-    }) : t("app.admin.dashboard.extensions.page.k8c0be031", {
-      silkRoot_silkRoot: silkRoot ? tg(t, "3baf9380", { value1: silkRoot }) : ""
-    })} tone={silkAvailable ? "success" : "warning"} />
 
             <ConfigCard title={"app.admin.dashboard.extensions.page.kcc06e009"} description={"app.admin.dashboard.extensions.page.k3605ab6b"}>
                 <div className="space-y-5">
                     <div className="space-y-5">
                         <SettingToggleCard
                             title={t("app.admin.dashboard.extensions.page.k74dc7104")}
-                            description={t("app.admin.dashboard.extensions.page.k758d3280")}
                             checked={prefilterEnabled}
                             onCheckedChange={(checked) => updateConfig({ prefilterPolicy: { enabled: checked, mode: "two_stage" } })}
                             className="border-slate-200 bg-slate-50/80 px-4 py-3 rounded-2xl"
@@ -1222,10 +980,6 @@ export default function ExtensionsPage() {
               emptyLabel={t("app.admin.dashboard.extensions.page.kccd8e176")}
               placeholder={t("app.admin.dashboard.extensions.page.kccd8e176")}
               onValueChange={(value) => updateConfig({ modelBindings: { prefilterModel: value } })} />
-
-                            <p className="text-xs leading-5 text-slate-500 dark:text-muted-foreground">
-                                {t("app.admin.dashboard.extensions.page.k2cebabf6")}
-                            </p>
                         </div>
 
                         <div className="grid gap-4 xl:grid-cols-2">
@@ -1234,16 +988,16 @@ export default function ExtensionsPage() {
                                     <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{tg(t, "79736210")}</div>
                                     <Badge variant="outline">{skillsPolicyBadge}</Badge>
                                 </div>
-                                <PolicyToggleCard title={tg(t, "49bc8921")} description={tg(t, "20cdf19c")} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "49bc8921")} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { stage1Enabled: checked })
               })}>
                                     <SliderField label={tg(t, "ca97d660")} value={skillsStage1TopK} min={1} max={100} disabled={!skillsStage1Enabled} onValueChange={(value) => updateConfig({
                   prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", {
                     stage1TopK: clampRange(value, 1, 100)
                   })
-                })} hint={tg(t, "2656f849")} />
+                })} />
                                 </PolicyToggleCard>
-                                <PolicyToggleCard title={tg(t, "ab537e9f")} description={tg(t, "ff8dca4e")} checked={skillsLlmEnabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "ab537e9f")} checked={skillsLlmEnabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "skills", { llmEnabled: checked })
               })}>
                                     <div className="grid gap-4 md:grid-cols-2">
@@ -1266,16 +1020,16 @@ export default function ExtensionsPage() {
                                     <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{tg(t, "48ba093e")}</div>
                                     <Badge variant="outline">{mcpPolicyBadge}</Badge>
                                 </div>
-                                <PolicyToggleCard title={tg(t, "49bc8921")} description={tg(t, "0abf4d17")} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "49bc8921")} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { stage1Enabled: checked })
               })}>
                                     <SliderField label={tg(t, "ca97d660")} value={mcpStage1TopK} min={1} max={100} disabled={!mcpStage1Enabled} onValueChange={(value) => updateConfig({
                   prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", {
                     stage1TopK: clampRange(value, 1, 100)
                   })
-                })} hint={tg(t, "0e9110ba")} />
+                })} />
                                 </PolicyToggleCard>
-                                <PolicyToggleCard title={tg(t, "ab537e9f")} description={tg(t, "71de3a30")} checked={mcpLlmEnabled} onCheckedChange={(checked) => updateConfig({
+                                <PolicyToggleCard title={tg(t, "ab537e9f")} checked={mcpLlmEnabled} onCheckedChange={(checked) => updateConfig({
                 prefilterPolicy: mergeStageConfig(prefilterPolicy, "mcp", { llmEnabled: checked })
               })}>
                                     <div className="grid gap-4 md:grid-cols-2">
@@ -1295,163 +1049,8 @@ export default function ExtensionsPage() {
                         </div>
                     </div>
 
-                    <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm text-slate-600">
-                        <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.stability.strategy.page.k2837705a")}</div>
-                        <div className="flex items-center justify-between gap-3"><span>{t("app.admin.dashboard.extensions.page.k626da329")}</span><Badge variant={prefilterEnabled ? "default" : "secondary"}>{prefilterEnabled ? t("app.admin.dashboard.extensions.page.kdb6c0cc1") : t("app.admin.dashboard.extensions.page.k12b31ba6")}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{t("app.admin.dashboard.extensions.page.k154a393b")}</span><Badge variant="outline">{prefilterModel || t("app.admin.dashboard.extensions.page.k54745147")}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{tg(t, "67306bc1")}</span><Badge variant="outline">{skillsPolicyBadge}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{tg(t, "3f37427c")}</span><Badge variant="outline">{mcpPolicyBadge}</Badge></div>
-                        <div className="flex items-center justify-between gap-3"><span>{tg(t, "2d1ba0ff")}</span><Badge variant="outline">{tg(t, "e23e4778")}</Badge></div>
-                        <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs leading-6 text-slate-500">
-                            {tg(t, "4b107a8b")
-
-            }
-                        </div>
-                    </div>
                 </div>
             </ConfigCard>
-
-            <ConfigCard title={"app.admin.dashboard.extensions.page.kb4447c01"} description={"app.admin.dashboard.extensions.page.keda55a79"}>
-                <div className="space-y-5">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm leading-6 text-slate-600">
-                        {t("app.admin.dashboard.extensions.page.k66034ec1")}
-                    </div>
-
-                    <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)_120px]">
-                        <Select value={previewScope} onValueChange={setPreviewScope}>
-                            <SelectTrigger className="h-11">
-                                <SelectValue placeholder={tg(t, "0a0abb6e")} />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="default">{t("app.admin.dashboard.projects.workspaces.page.defaultCard.title")}</SelectItem>
-                                {projects.map((project) =>
-              <SelectItem key={project.id} value={`project:${project.id}`}>
-                                        {project.name || project.id}
-                                    </SelectItem>
-              )}
-                            </SelectContent>
-                        </Select>
-                        <Input value={previewQuery} onChange={(event) => setPreviewQuery(event.target.value)} onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void previewExtensionsSelection();
-            }
-          }} placeholder={t("app.admin.dashboard.extensions.page.kff8e3438")} className="h-11 flex-1" />
-                        <Button onClick={() => void previewExtensionsSelection()} disabled={previewLoading || !previewQuery.trim()} className="h-11 min-w-[120px]">
-                            {previewLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                            {t("app.admin.dashboard.extensions.page.k76932896")}
-                        </Button>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-xs leading-5 text-slate-500">
-                        {selectedPreviewProject ?
-          tg(t, "f5181fbd", { value1:
-            selectedPreviewProject.name || selectedPreviewProject.id, value2: selectedPreviewProject.workspacePath || "" }) :
-          tg(t, "0b6e9949", { value1:
-            defaultWorkspacePath || t("app.admin.dashboard.system.base.page.k6ed9c299") })}
-                    </div>
-
-                    {previewResult ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-                            <StatPill label={tg(t, "b9b6b6e7")} value={previewCounts?.skillInventoryCount ?? previewCounts?.skillPoolSize ?? 0} />
-                            <StatPill label={tg(t, "2d31de55")} value={previewCounts?.skillStage1ShortlistCount ?? previewSkillStage1Entries.length} />
-                            <StatPill label={tg(t, "00365fb5")} value={previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length} />
-                            <StatPill label={tg(t, "c92c805c")} value={previewCounts?.mcpInventoryCount ?? previewCounts?.mcpServerPoolSize ?? previewCounts?.mcpFamilyPoolSize ?? 0} />
-                            <StatPill label={tg(t, "fc4516cc")} value={previewCounts?.mcpStage1ShortlistCount ?? previewMcpStage1Servers.length} />
-                            <StatPill label={tg(t, "3819c372")} value={previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length} />
-                        </div> : null}
-
-                    {previewResult ? <div className="grid gap-3 lg:grid-cols-3">
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
-                                <div className="text-xs uppercase tracking-wide text-slate-500">{tg(t, "15779211")}</div>
-                                <div className="mt-2 font-medium text-slate-900">{previewCounts?.routingMode || previewCounts?.mode || "stage1_only"}</div>
-                                <div className="mt-2 text-xs leading-6 text-slate-500">
-                                    {`skills=${previewCounts?.skillsRoutingMode || "stage1_only"} · mcp=${previewCounts?.mcpRoutingMode || "stage1_only"}`}
-                                </div>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
-                                <div className="text-xs uppercase tracking-wide text-slate-500">{tg(t, "912c7155")}</div>
-                                <div className="mt-2 text-slate-900">
-                                    {`stage1=${previewSkillsStage1Enabled ? `on(${previewCounts?.stage1TopK?.skills ?? 0})` : "off"}, hits=${previewCounts?.skillStage1HitCount ?? 0}, shortlist=${previewCounts?.skillStage1ShortlistCount ?? previewSkillStage1Entries.length}, stage2=${previewCounts?.stage2Enabled?.skills ? previewCounts?.stage2TopK?.skills ?? 0 : "off"}, final=${previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length}, timeout=${previewCounts?.llmTimeoutSeconds?.skills ?? 0}s`}
-                                </div>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
-                                <div className="text-xs uppercase tracking-wide text-slate-500">{tg(t, "eaa43b49")}</div>
-                                <div className="mt-2 text-slate-900">
-                                    {`stage1=${previewMcpStage1Enabled ? `on(${previewCounts?.stage1TopK?.mcp ?? 0})` : "off"}, hits=${previewCounts?.mcpStage1HitCount ?? 0}, shortlist=${previewCounts?.mcpStage1ShortlistCount ?? previewMcpStage1Servers.length}, stage2=${previewCounts?.stage2Enabled?.mcp ? previewCounts?.stage2TopK?.mcp ?? 0 : "off"}, final=${previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length}, timeout=${previewCounts?.llmTimeoutSeconds?.mcp ?? 0}s`}
-                                </div>
-                            </div>
-                        </div> : null}
-
-                    {previewResult ? <div className="grid gap-6 xl:grid-cols-2">
-                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "fbecfab2")}</div>
-                                    <Badge variant="outline">{previewCounts?.skillFinalExposedCount ?? previewSkillFinalEntries.length}</Badge>
-                                </div>
-                                {previewSkillFinalEntries.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                        {tg(t, "34558308")}
-                                    </div> : <div className="max-h-[42rem] space-y-3 overflow-y-auto pr-1">
-                                        {previewSkillFinalEntries.map((skill) => <div key={`final:${skill.skillId || skill.instructionPath || skill.skillRoot || skill.skillName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <PackageCheck className="h-4 w-4 text-emerald-600" />
-                                                    <div className="text-sm font-semibold text-slate-900">{skill.skillName || "unknown"}</div>
-                                                    <Badge variant="secondary">{skillSourceBadgeLabel(skill.sourceType, t)}</Badge>
-                                                    {skill.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k43e1d513")}</Badge> : null}
-                                                </div>
-                                                {skill.skillId ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">id: {skill.skillId}</div> : null}
-                                                {skill.workspacePath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{skill.workspacePath}</div> : null}
-                                                {skill.projectId ? <div className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{skill.projectId}</div> : null}
-                                                {skill.instructionPath ? <div className="mt-2 break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{skill.instructionPath}</div> : null}
-                                            </div>)}
-                                    </div>}
-                            </div>
-
-                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                                <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900">{tg(t, "2c0b2ebf")}</div>
-                                    <Badge variant="outline">{previewCounts?.mcpFinalExposedCount ?? previewMcpFinalServers.length}</Badge>
-                                </div>
-                                {previewMcpFinalServers.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-sm leading-6 text-slate-500">
-                                        {tg(t, "657e53a4")}
-                                    </div> : <div className="max-h-[42rem] space-y-3 overflow-y-auto pr-1">
-                                        {previewMcpFinalServers.map((server) => <div key={`final:${server.serverKey || server.familyKey || server.serverName}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <Server className="h-4 w-4 text-sky-600" />
-                                                    <div className="text-sm font-semibold text-slate-900">{server.serverName || server.title}</div>
-                                                    <Badge variant="secondary">server</Badge>
-                                                    <Badge variant="outline">{t("app.admin.dashboard.extensions.page.kb1d8ed4b", {
-                      server_toolCount: server.toolCount
-                    })}</Badge>
-                                                </div>
-                                                {(server.descriptions || []).length > 0 ? <div className="mt-2 text-xs leading-6 text-slate-500">
-                                                        {(server.descriptions || []).slice(0, 3).join(" / ")}
-                                                    </div> : null}
-                                                <div className="mt-3 space-y-2">
-                                                    {previewMcpServerTools(server).map((tool) => <div key={`${server.serverKey || server.familyKey || server.serverName}:${tool.name}`} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
-                                                            <div className="font-mono text-xs font-semibold text-slate-800">{tool.name}</div>
-                                                            {tool.description ? <div className="mt-1 text-xs leading-5 text-slate-500">{tool.description}</div> : null}
-                                                        </div>)}
-                                                </div>
-                                            </div>)}
-                                    </div>}
-                            </div>
-                        </div> : <div className="space-y-3">
-                            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-6 text-sm leading-6 text-slate-500">
-                                {previewError ?
-            previewError :
-            t("app.admin.dashboard.extensions.page.k90f6d4f7")}
-                            </div>
-                        </div>}
-
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-6 text-slate-500">
-                        {previewedQuery ?
-          t("app.admin.dashboard.extensions.page.kff12c04d", {
-            previewedQuery: previewedQuery
-          }) : t("app.admin.dashboard.extensions.page.k4113b1ce")}
-                    </div>
-                </div>
-            </ConfigCard>
-
-            <SourceMetaRow source={configEnvelope.source} savePath={configEnvelope.savePath} reloadRequired={configEnvelope.reloadRequired} />
 
             <ConfigCard title={tg(t, "75497cb2")} description={tg(t, "ee842ada")} variant="list">
                 <div className="space-y-4">
@@ -1611,35 +1210,8 @@ export default function ExtensionsPage() {
                 <ConfigCard title={"app.admin.dashboard.extensions.page.kf6bbc138"} description={"app.admin.dashboard.extensions.page.kde458108"} variant="editor" bodyHeight="clamp" bodyScroll="auto" className="h-full">
                     <div className="space-y-4">
                         <div className="space-y-2">
-                            <AdminHoverInfo
-              panelClassName="text-xs leading-6"
-              content={
-              <>
-                                        {t("app.admin.dashboard.extensions.page.k8d26505b")}<span className="font-mono text-white">{"npx skills add <source> [--skill <name>] [--overwrite]"}</span>。
-                                        {t("app.admin.dashboard.extensions.page.k684bddc4")}<span className="font-mono text-white">~/.agents/skills</span>。
-                                        {t("app.admin.dashboard.extensions.page.k0cd07ab9")}<span className="font-mono text-white">workspace/.agents/skills</span>{t("app.admin.dashboard.extensions.page.k9181443f")}
-                                    </>
-              }>
-
-                                <Label className="cursor-help">{t("app.admin.dashboard.extensions.page.k94e8c946")}</Label>
-                            </AdminHoverInfo>
+                            <Label>{t("app.admin.dashboard.extensions.page.k94e8c946")}</Label>
                             <Input value={commandInput} onChange={(event) => setCommandInput(event.target.value)} placeholder="npx skills add https://github.com/vercel-labs/skills --skill find-skills" />
-                            <div className="rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-xs leading-6 text-amber-900">
-                                <div className="font-medium">
-                                    {t("app.admin.dashboard.extensions.page.k2aa71b7e")}
-                                </div>
-                                <div className="mt-1">
-                                    {t("app.admin.dashboard.extensions.page.kf2884ea3")}<span className="font-mono">{dependencyPolicy.pythonTarget || "apps/v8-agent-os-engine/.venv"}</span>{t("app.admin.dashboard.extensions.page.k48288d81")}
-                                </div>
-                            </div>
-                            <div className="text-xs leading-5 text-slate-500">
-                                {t("app.admin.dashboard.extensions.page.k55339092")}{" "}
-                                <a href="https://skills.sh/" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sky-600 underline">
-                                    skills.sh
-                                    <ExternalLink className="h-3 w-3" />
-                                </a>
-                                {t("app.admin.dashboard.extensions.page.k032a368a")}
-                            </div>
                         </div>
                         {installResult ? <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-700">
                                 <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{t("app.admin.dashboard.extensions.page.ke7139376")}</Badge><span className="break-all">{installResult.source}</span></div>

@@ -534,7 +534,7 @@ def _normalize_mcp_card(raw: dict[str, Any]) -> dict[str, Any] | None:
         "repositoryUrl": url,
         "detailUrl": f"{_GITHUB_MCP_URL}/{quote(name, safe='/._-')}",
         "stars": stars,
-        "avatarUrl": str(raw.get("owner_avatar_url") or "").strip(),
+        "avatarUrl": str(raw.get("owner_avatar_url") or raw.get("opengraph_image_url") or "").strip(),
         "language": str(raw.get("primary_language") or "").strip(),
         "license": str(raw.get("license") or "").strip(),
         "topics": [str(topic) for topic in topics[:8]],
@@ -600,7 +600,7 @@ def list_store_mcp(*, query: str = "", limit: int = 24, refresh: bool = False) -
     normalized_query = str(query or "").strip()
     safe_limit = _normalize_limit(limit)
     warnings: list[str] = []
-    cache_name = "github-mcp-list"
+    cache_name = "github-mcp-list-v2"
     if not refresh:
         cached, _ = _read_cache(cache_name)
         if cached is not None:

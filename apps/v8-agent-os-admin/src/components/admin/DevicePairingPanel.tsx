@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Clipboard, Link2, Loader2, Trash2 } from "lucide-react";
+import { Check, Clipboard, Loader2, QrCode, Trash2 } from "lucide-react";
 import Image from "next/image";
 import QRCode from "qrcode";
 
@@ -141,7 +141,7 @@ export function DevicePairingPanel() {
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
                     <Button type="button" onClick={() => void createTicket()} disabled={busy}>
-                        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Link2 className="mr-2 h-4 w-4" />}
+                        {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <QrCode className="mr-2 h-4 w-4" />}
                         {t("components.admin.DevicePairingPanel.create")}
                     </Button>
                 </div>
@@ -154,29 +154,31 @@ export function DevicePairingPanel() {
             ) : null}
 
             {ticket ? (
-                <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px] sm:items-start">
-                    <div className="grid gap-3">
-                        <div className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900">
-                            <div className="text-xs text-slate-500">{t("components.admin.DevicePairingPanel.link")}</div>
-                            <div className="mt-1 break-all font-mono text-xs leading-5 text-slate-800 dark:text-slate-200">
-                                {ticket.pairingUri}
-                            </div>
-                        </div>
-                        <Button type="button" variant="outline" onClick={() => void copyPairingUri()}>
-                            {copied ? <Check className="mr-2 h-4 w-4" /> : <Clipboard className="mr-2 h-4 w-4" />}
-                            {copied ? t("components.admin.DevicePairingPanel.copied") : t("components.admin.DevicePairingPanel.copy")}
-                        </Button>
-                        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500">
-                            <span>{t("components.admin.DevicePairingPanel.instance")}: {ticket.instanceId}</span>
-                            <span>{t("components.admin.DevicePairingPanel.expires")}: {new Date(ticket.expiresAt).toLocaleTimeString()}</span>
-                        </div>
-                    </div>
-                    <div className="flex min-h-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
+                <div className="mt-4 grid gap-3 rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-[160px_minmax(0,1fr)] sm:items-start dark:border-slate-800 dark:bg-slate-900">
+                    <div className="flex min-h-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-950">
                         {qrDataUrl ? (
                             <Image src={qrDataUrl} alt={t("components.admin.DevicePairingPanel.qrAlt")} width={144} height={144} unoptimized />
                         ) : (
                             <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
                         )}
+                    </div>
+                    <div className="grid gap-3">
+                        <div className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900">
+                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                {t("components.admin.DevicePairingPanel.scanTitle")}
+                            </div>
+                            <div className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+                                {t("components.admin.DevicePairingPanel.scanHint")}
+                            </div>
+                        </div>
+                        <Button type="button" variant="outline" onClick={() => void copyPairingUri()}>
+                            {copied ? <Check className="mr-2 h-4 w-4" /> : <Clipboard className="mr-2 h-4 w-4" />}
+                            {copied ? t("components.admin.DevicePairingPanel.copied") : t("components.admin.DevicePairingPanel.copyBackup")}
+                        </Button>
+                        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500">
+                            <span>{t("components.admin.DevicePairingPanel.instance")}: {ticket.instanceId}</span>
+                            <span>{t("components.admin.DevicePairingPanel.expires")}: {new Date(ticket.expiresAt).toLocaleTimeString()}</span>
+                        </div>
                     </div>
                 </div>
             ) : null}

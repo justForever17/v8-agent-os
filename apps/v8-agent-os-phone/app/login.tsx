@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
     Image,
@@ -11,7 +11,7 @@ import {
     TextInput,
     View,
 } from "react-native";
-import { Redirect, router, useLocalSearchParams, type Href } from "expo-router";
+import { Redirect, useLocalSearchParams, type Href } from "expo-router";
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as Linking from "expo-linking";
 import { LinearGradient } from "expo-linear-gradient";
@@ -36,20 +36,53 @@ export default function LoginScreen() {
     const [pairingUri, setPairingUri] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
+    const [manualOpen, setManualOpen] = useState(Platform.OS === "web");
     const [scannerOpen, setScannerOpen] = useState(false);
     const [scanLocked, setScanLocked] = useState(false);
+    const attemptedPairingUriRef = useRef("");
+
+    const pageTitle = useMemo(() => t("app.login.connect_this_device"), [t]);
+    const pageSubtitle = useMemo(() => t("app.login.open_or_paste_the_single_use_link_created_by_your_v8_os_owner"), [t]);
+
+    const connectWithPairingUri = useCallback(async (rawPairingUri: string, options?: { revealManualOnError?: boolean }) => {
+        const nextPairingUri = String(rawPairingUri || "").trim();
+        if (!nextPairingUri.includes("://pair?")) {
+            attemptedPairingUriRef.current = "";
+            if (options?.revealManualOnError) setManualOpen(true);
+            setError(t("app.login.invalid_pairing_link"));
+            return;
+        }
+        if (attemptedPairingUriRef.current === nextPairingUri) {
+            return;
+        }
+        attemptedPairingUriRef.current = nextPairingUri;
+        setBusy(true);
+        setError("");
+        try {
+            await pairDevice({ pairingUri: nextPairingUri });
+        } catch (nextError) {
+            attemptedPairingUriRef.current = "";
+            if (options?.revealManualOnError) {
+                setManualOpen(true);
+                setPairingUri(nextPairingUri);
+            }
+            setError(
+                nextError instanceof Error
+                    ? nextError.message
+                    : t("app.login.pairing_failed"),
+            );
+        } finally {
+            setBusy(false);
+        }
+    }, [pairDevice, t]);
 
     useEffect(() => {
         const nextPairingUri = String(pairingUriParam || incomingUrl || "");
         if (!nextPairingUri.includes("://pair?")) {
             return;
         }
-        setPairingUri(nextPairingUri);
-        setError("");
-    }, [incomingUrl, pairingUriParam]);
-
-    const pageTitle = useMemo(() => t("app.login.connect_this_device"), [t]);
-    const pageSubtitle = useMemo(() => t("app.login.open_or_paste_the_single_use_link_created_by_your_v8_os_owner"), [t]);
+        void connectWithPairingUri(nextPairingUri, { revealManualOnError: true });
+    }, [connectWithPairingUri, incomingUrl, pairingUriParam]);
 
     if (status === "authenticated") {
         return <Redirect href={"/chat" as Href} />;
@@ -58,8 +91,13 @@ export default function LoginScreen() {
     const resetError = () => setError("");
 
     const validate = () => {
-        if (!pairingUri.trim()) {
+        const nextPairingUri = pairingUri.trim();
+        if (!nextPairingUri) {
             setError(t("app.login.please_enter_a_pairing_link"));
+            return false;
+        }
+        if (!nextPairingUri.includes("://pair?")) {
+            setError(t("app.login.invalid_pairing_link"));
             return false;
         }
         return true;
@@ -69,19 +107,7 @@ export default function LoginScreen() {
         if (!validate()) {
             return;
         }
-        setBusy(true);
-        setError("");
-        try {
-            await pairDevice({ pairingUri });
-        } catch (nextError) {
-            setError(
-                nextError instanceof Error
-                    ? nextError.message
-                    : t("app.login.pairing_failed"),
-            );
-        } finally {
-            setBusy(false);
-        }
+        await connectWithPairingUri(pairingUri, { revealManualOnError: false });
     };
 
     const openScanner = async () => {
@@ -106,8 +132,7 @@ export default function LoginScreen() {
             setError(t("app.login.invalid_pairing_link"));
             return;
         }
-        setPairingUri(nextPairingUri);
-        setError("");
+        void connectWithPairingUri(nextPairingUri, { revealManualOnError: true });
     };
 
     return (
@@ -138,31 +163,42 @@ export default function LoginScreen() {
 
                     <GlassCard>
                         <View style={styles.form}>
-                            <View style={styles.field}>
-                                <View style={styles.labelRow}>
-                                    <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
-                                    {Platform.OS === "web" ? null : (
-                                        <Pressable style={styles.scanButton} onPress={() => void openScanner()}>
-                                            <MaterialCommunityIcons name="qrcode-scan" size={16} color={colors.primaryDeep} />
-                                            <Text style={styles.scanButtonText}>{t("app.login.scan_pairing_qr")}</Text>
-                                        </Pressable>
-                                    )}
-                                </View>
-                                <TextInput
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    value={pairingUri}
-                                    onChangeText={(next) => {
-                                        setPairingUri(next);
-                                        resetError();
-                                    }}
-                                    placeholder="v8agentosphone://pair?..."
-                                    placeholderTextColor={colors.textSoft}
-                                    multiline
-                                    style={[styles.input, styles.pairingInput]}
-                                />
-                                <Text style={styles.fieldHint}>{t("app.login.pairing_link_hint")}</Text>
+                            <View style={styles.quickActions}>
+                                {Platform.OS === "web" ? null : (
+                                    <Pressable disabled={busy} style={[styles.scanPrimary, busy && styles.disabled]} onPress={() => void openScanner()}>
+                                        <MaterialCommunityIcons name="qrcode-scan" size={18} color="#FFFFFF" />
+                                        <Text style={styles.scanPrimaryText}>{t("app.login.scan_pairing_qr")}</Text>
+                                    </Pressable>
+                                )}
+                                <Pressable disabled={busy} style={styles.manualToggle} onPress={() => setManualOpen((value) => !value)}>
+                                    <Text style={styles.manualToggleText}>{t("app.login.manual_pairing_link")}</Text>
+                                </Pressable>
                             </View>
+                            {busy ? (
+                                <View style={styles.statusRow}>
+                                    <ActivityIndicator color={colors.primaryDeep} />
+                                    <Text style={styles.statusText}>{t("app.login.connecting")}</Text>
+                                </View>
+                            ) : null}
+                            {manualOpen ? (
+                                <View style={styles.field}>
+                                    <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
+                                    <TextInput
+                                        autoCapitalize="none"
+                                        autoCorrect={false}
+                                        value={pairingUri}
+                                        onChangeText={(next) => {
+                                            setPairingUri(next);
+                                            resetError();
+                                        }}
+                                        placeholder="v8agentosphone://pair?..."
+                                        placeholderTextColor={colors.textSoft}
+                                        multiline
+                                        style={[styles.input, styles.pairingInput]}
+                                    />
+                                    <Text style={styles.fieldHint}>{t("app.login.pairing_link_hint")}</Text>
+                                </View>
+                            ) : null}
 
                             {error ? (
                                 <View style={styles.errorRow}>
@@ -171,20 +207,22 @@ export default function LoginScreen() {
                                 </View>
                             ) : null}
 
-                            <Pressable disabled={busy} onPress={() => void submit()} style={[styles.submit, busy && styles.disabled]}>
-                                <LinearGradient
-                                    colors={[colors.primary, colors.primaryDeep]}
-                                    start={{ x: 0, y: 0 }}
-                                    end={{ x: 1, y: 1 }}
-                                    style={styles.submitGradient}
-                                >
-                                    {busy ? (
-                                        <ActivityIndicator color="#FFFFFF" />
-                                    ) : (
-                                        <Text style={styles.submitText}>{t("app.login.connect_and_enter_v8_os_phone")}</Text>
-                                    )}
-                                </LinearGradient>
-                            </Pressable>
+                            {manualOpen ? (
+                                <Pressable disabled={busy} onPress={() => void submit()} style={[styles.submit, busy && styles.disabled]}>
+                                    <LinearGradient
+                                        colors={[colors.primary, colors.primaryDeep]}
+                                        start={{ x: 0, y: 0 }}
+                                        end={{ x: 1, y: 1 }}
+                                        style={styles.submitGradient}
+                                    >
+                                        {busy ? (
+                                            <ActivityIndicator color="#FFFFFF" />
+                                        ) : (
+                                            <Text style={styles.submitText}>{t("app.login.connect_and_enter_v8_os_phone")}</Text>
+                                        )}
+                                    </LinearGradient>
+                                </Pressable>
+                            ) : null}
                         </View>
                     </GlassCard>
                 </KeyboardAvoidingView>
@@ -268,6 +306,57 @@ const styles = StyleSheet.create({
     },
     form: {
         gap: spacing.lg,
+    },
+    quickActions: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        flexWrap: "wrap",
+    },
+    scanPrimary: {
+        minHeight: 44,
+        borderRadius: radii.pill,
+        paddingHorizontal: 18,
+        backgroundColor: colors.primaryDeep,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 8,
+        flexGrow: 1,
+    },
+    scanPrimaryText: {
+        color: "#FFFFFF",
+        fontSize: 14,
+        fontWeight: "900",
+    },
+    manualToggle: {
+        minHeight: 44,
+        borderRadius: radii.pill,
+        borderWidth: 1,
+        borderColor: "rgba(124,58,237,0.18)",
+        backgroundColor: "rgba(255,255,255,0.7)",
+        paddingHorizontal: 16,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    manualToggleText: {
+        color: colors.primaryDeep,
+        fontSize: 13,
+        fontWeight: "900",
+    },
+    statusRow: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        borderRadius: radii.md,
+        backgroundColor: "rgba(124,58,237,0.08)",
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+    },
+    statusText: {
+        color: colors.primaryDeep,
+        fontSize: 13,
+        fontWeight: "800",
     },
     field: {
         gap: 8,

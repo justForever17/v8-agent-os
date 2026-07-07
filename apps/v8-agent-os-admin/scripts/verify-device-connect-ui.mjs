@@ -83,8 +83,10 @@ try {
     assert.equal(await page.locator('select option[value="web"]').count(), 0, "Web should not be exposed as an Admin pairing surface");
     assert.equal(await page.locator('select option[value="cyber"]').count(), 0, "Desktop pet should not be exposed as an Admin pairing surface");
     assert.equal(await page.locator('select option[value="custom"]').count(), 0, "Custom clients should not be exposed as an Admin pairing surface");
-    await page.getByRole("button", { name: "生成配对链接" }).click();
-    await page.getByText("配对链接", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "生成 Phone 二维码" }).click();
+    await page.getByText("用 Phone 扫码连接", { exact: true }).waitFor();
+    const nextDialogText = await page.getByRole("dialog").textContent();
+    assert.doesNotMatch(nextDialogText || "", /v8agentosphone:\/\/pair/, "Pairing URI should not be visibly rendered in Admin");
     const phoneQrImage = page.getByAltText("Phone 配对二维码");
     await phoneQrImage.waitFor({ timeout: 10_000 });
     const phoneQrSource = await phoneQrImage.getAttribute("src");

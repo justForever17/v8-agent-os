@@ -1,7 +1,12 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { ProductSurfaceSwitcher, ProductTopbar, TopbarGlowActionButton } from "@v8/product-ui";
+import { type ReactNode, useEffect, useState } from "react";
+import {
+    ProductShellTopbar,
+    ProductSurfaceSwitcher,
+    ProductTopbar,
+    TopbarGlowActionButton,
+} from "@v8/product-ui";
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { UserProfile } from "@/components/layout/UserProfile";
@@ -9,14 +14,36 @@ import { VoiceToggle } from "@/components/layout/VoiceToggle";
 import Link from "next/link";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Bot } from "lucide-react";
+import { ShellWindowControls } from "./ShellWindowControls";
 
 const ADMIN_SURFACE_URL = "http://localhost:9528/admin";
 
 export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
     const t = useT();
+    const [isShell, setIsShell] = useState(false);
+
+    useEffect(() => {
+        setIsShell(Boolean(window.v8osShell?.isShell));
+    }, []);
+
+    const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
+    const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);
+    const adminSurfaceItem = isShell
+        ? {
+            id: "admin",
+            label: t("web.generated.surface.admin"),
+            onSelect: () => window.v8osShell?.openAdmin(),
+            title: t("web.generated.surface.openAdmin"),
+        }
+        : {
+            id: "admin",
+            label: t("web.generated.surface.admin"),
+            href: ADMIN_SURFACE_URL,
+            title: t("web.generated.surface.openAdmin"),
+        };
 
     return (
-        <ProductTopbar
+        <TopbarComponent
             brandImageSrc="/product-mark.png"
             brandLabel={t("web.generated.e42cc67653")}
             surfaceSwitcher={(
@@ -29,12 +56,7 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
                             active: true,
                             title: t("web.generated.surface.currentChat"),
                         },
-                        {
-                            id: "admin",
-                            label: t("web.generated.surface.admin"),
-                            href: ADMIN_SURFACE_URL,
-                            title: t("web.generated.surface.openAdmin"),
-                        },
+                        adminSurfaceItem,
                     ]}
                 />
             )}
@@ -52,7 +74,7 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
                 <UserProfile />
                 </>
             )}
-            windowControls={windowControls}
+            windowControls={resolvedWindowControls}
         />
     );
 }

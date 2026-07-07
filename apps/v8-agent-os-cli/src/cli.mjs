@@ -50,8 +50,8 @@ Usage:
   v8os [start]
   v8os start [--with cybercore|--all|--only engine,admin] [--mode dev|start]
   v8os preview [--rebuild|--no-build]
-  v8os stop [--all|--only engine,admin]
-  v8os restart [--all|--only engine,admin]
+  v8os stop [--only engine,admin]
+  v8os restart [--only engine,admin]
   v8os status [--json]
   v8os chat "message" [--session id] [--workspace path] [--interactive]
   v8os sessions list|show|turns|open|resume [--json]
@@ -96,7 +96,7 @@ async function runPreview(args) {
 }
 
 async function commandStop(args) {
-  const selected = hasFlag(args, "--all") ? ALL_COMPONENTS : parseComponentSelection(args);
+  const selected = hasFlag(args, "--only") ? parseComponentSelection(args) : ALL_COMPONENTS;
   const results = stopComponents(selected);
   if (hasFlag(args, "--json")) printJson(results);
   else results.forEach((item) => console.log(`${item.id}: ${item.status}${item.reason ? ` (${item.reason})` : ""}`));

@@ -117,6 +117,7 @@ export const COMPONENTS = {
         env: {
           V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
           V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
+          V8_ENGINE_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.engine}`,
           V8_REPO_ROOT: REPO_ROOT,
           V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
         },

@@ -1,7 +1,12 @@
 "use client";
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ProductSurfaceSwitcher, ProductTopbar, TopbarGlowActionButton } from "@v8/product-ui";
+import {
+    ProductShellTopbar,
+    ProductSurfaceSwitcher,
+    ProductTopbar,
+    TopbarGlowActionButton,
+} from "@v8/product-ui";
 import { Bell, Loader2, Monitor, Search, Server, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -18,6 +23,7 @@ import { getAdminNavItem } from "@/lib/admin-navigation";
 import { cn } from "@/lib/utils";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useDebugMode } from "@/lib/useDebugMode";
+import { ShellWindowControls } from "./ShellWindowControls";
 
 type InboxItem = {
     id: string;
@@ -70,10 +76,31 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const [installState, setInstallState] = useState<RuntimeInstallState | null>(null);
     const [installLoading, setInstallLoading] = useState(false);
     const [installSubmitting, setInstallSubmitting] = useState(false);
+    const [isShell, setIsShell] = useState(false);
     const searchContainerRef = useRef<HTMLDivElement | null>(null);
     const inboxContainerRef = useRef<HTMLDivElement | null>(null);
     const installContainerRef = useRef<HTMLDivElement | null>(null);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+        setIsShell(Boolean(window.v8osShell?.isShell));
+    }, []);
+
+    const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
+    const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);
+    const chatSurfaceItem = isShell
+        ? {
+            id: "chat",
+            label: t("components.layout.Topbar.surface.chat"),
+            onSelect: () => window.v8osShell?.openWeb(),
+            title: t("components.layout.Topbar.surface.openChat"),
+        }
+        : {
+            id: "chat",
+            label: t("components.layout.Topbar.surface.chat"),
+            href: WEB_CHAT_SURFACE_URL,
+            title: t("components.layout.Topbar.surface.openChat"),
+        };
 
     const searchResults = useMemo(
         () => searchAdminTopbarEntries(searchQuery, 8),
@@ -304,19 +331,14 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const InstallIcon = installState?.installProfile === "desktop" ? Monitor : Server;
 
     return (
-        <ProductTopbar
+        <TopbarComponent
             brandImageSrc="/product-mark.png"
             brandLabel="V8 Agent OS"
             surfaceSwitcher={(
                 <ProductSurfaceSwitcher
                     ariaLabel={t("components.layout.Topbar.surfaceSwitcher")}
                     items={[
-                        {
-                            id: "chat",
-                            label: t("components.layout.Topbar.surface.chat"),
-                            href: WEB_CHAT_SURFACE_URL,
-                            title: t("components.layout.Topbar.surface.openChat"),
-                        },
+                        chatSurfaceItem,
                         {
                             id: "admin",
                             label: t("components.layout.Topbar.surface.admin"),
@@ -531,7 +553,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                     </div>
                 </>
             )}
-            windowControls={windowControls}
+            windowControls={resolvedWindowControls}
         />
     );
 }

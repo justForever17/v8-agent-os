@@ -55,14 +55,14 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
     const readableResult = buildReadableResult(toolInvocation);
 
     return (
-        <div className="group relative my-1 w-full">
+        <div className="group relative my-0.5 w-full">
             {/* Ambient Back Glow when Active */}
             {!isComplete && (
-                <div className="absolute inset-0 bg-blue-500/10 blur-xl rounded-xl -z-10 animate-pulse" />
+                <div className="absolute inset-0 bg-blue-500/10 blur-xl rounded-lg -z-10 animate-pulse" />
             )}
 
             <motion.div layout className={cn(
-                "w-full overflow-hidden rounded-xl border backdrop-blur-md transition-all duration-500 ease-out",
+                "w-full overflow-hidden rounded-lg border backdrop-blur-md transition-all duration-500 ease-out",
                 isExpanded 
                     ? isComplete 
                         ? "bg-white/40 dark:bg-zinc-900/40 border-teal-500/30 dark:border-teal-500/20 shadow-[0_4px_24px_-8px_rgba(20,184,166,0.3)]"
@@ -70,26 +70,26 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                     : "bg-white/20 dark:bg-zinc-900/20 border-white/20 dark:border-white/10 hover:border-foreground/20 hover:bg-white/30 dark:hover:bg-zinc-900/30"
             )}>
                 <div
-                    className="relative z-10 flex w-full cursor-pointer select-none items-center justify-between px-3.5 py-1.5"
+                    className="relative z-10 flex w-full cursor-pointer select-none items-center justify-between px-2.5 py-1"
                     onClick={() => setIsExpanded(!isExpanded)}
                 >
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 min-w-0">
                         {/* Icon Node */}
                         <div className={cn(
-                            "relative flex h-[22px] w-[22px] items-center justify-center rounded-md border",
+                            "relative flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded border",
                             isComplete 
                                 ? "bg-teal-500/10 border-teal-500/30 text-teal-600 dark:text-teal-400"
                                 : "bg-blue-500/20 border-blue-500/50 text-blue-600 dark:text-blue-400"
                         )}>
-                            <Workflow className={cn("h-3 w-3", !isComplete && "animate-pulse")} />
+                            <Workflow className={cn("h-2.5 w-2.5", !isComplete && "animate-pulse")} />
                             {!isComplete && (
-                                <span className="absolute inset-0 rounded-md ring-1 ring-blue-500 animate-ping opacity-30" />
+                                <span className="absolute inset-0 rounded ring-1 ring-blue-500 animate-ping opacity-30" />
                             )}
                         </div>
 
                         {/* Title */}
                         <span className={cn(
-                            "font-mono text-[11px] font-semibold tracking-wide transition-colors",
+                            "font-mono text-[11px] font-semibold tracking-wide transition-colors truncate",
                             isExpanded ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"
                         )}>
                             {toolName}
@@ -97,19 +97,19 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
 
                         {/* Status Badge */}
                         <span className={cn(
-                            "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] shadow-sm transition-colors duration-500",
+                            "flex items-center gap-1 rounded-full border px-1.5 py-0.2 text-[9px] shadow-sm transition-colors duration-500 shrink-0",
                             isComplete
                                 ? "bg-teal-500/10 border-teal-500/20 text-teal-600 dark:text-teal-400"
                                 : "bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400"
                         )}>
                             {isComplete ? (
                                 <>
-                                    <CheckCircle2 className="h-3 w-3" />
+                                    <CheckCircle2 className="h-2.5 w-2.5" />
                                     <span>已完成</span>
                                 </>
                             ) : (
                                 <>
-                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                    <Loader2 className="h-2.5 w-2.5 animate-spin" />
                                     <span>执行中</span>
                                 </>
                             )}
@@ -121,7 +121,7 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                         transition={{ duration: 0.3, type: "spring", stiffness: 200, damping: 20 }}
                     >
                         <ChevronDown className={cn(
-                            "w-4 h-4 transition-colors",
+                            "w-3.5 h-3.5 transition-colors",
                             isExpanded 
                                 ? isComplete ? "text-teal-500 dark:text-teal-400" : "text-blue-500 dark:text-blue-400" 
                                 : "text-muted-foreground/50 group-hover:text-foreground/70"
@@ -130,7 +130,7 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                 </div>
 
                 {toolInvocation.clientSurface?.summary ? (
-                    <div className="px-3.5 pb-1.5 text-[11px] leading-4 text-muted-foreground">
+                    <div className="px-2.5 pb-1 text-[11px] leading-4 text-muted-foreground">
                         {toolInvocation.clientSurface.summary}
                     </div>
                 ) : null}
@@ -145,11 +145,11 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                             transition={{ type: "spring", stiffness: 300, damping: 25, mass: 0.8 }}
                             className="overflow-hidden"
                         >
-                            <div className="space-y-2.5 px-3.5 pb-3.5 pt-0.5">
+                            <div className="space-y-2 px-2.5 pb-2.5 pt-0.5">
                                 {/* Arguments */}
                                 <div>
-                                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">输入</div>
-                                    <div className="overflow-x-auto rounded-lg border border-black/5 bg-black/5 p-2.5 shadow-inner dark:border-white/5 dark:bg-black/20">
+                                    <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">输入</div>
+                                    <div className="overflow-x-auto rounded border border-black/5 bg-black/5 p-2 shadow-inner dark:border-white/5 dark:bg-black/20">
                                         <pre className="text-[11px] font-mono text-zinc-600 dark:text-zinc-400">{JSON.stringify(args, null, 2)}</pre>
                                     </div>
                                 </div>
@@ -161,8 +161,8 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                                         animate={{ opacity: 1, y: 0 }}
                                         transition={{ delay: 0.1, type: "spring", stiffness: 300, damping: 25 }}
                                     >
-                                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">输出</div>
-                                        <div className="custom-scrollbar max-h-56 overflow-x-auto rounded-lg border border-black/5 bg-black/5 p-2.5 shadow-inner dark:border-white/5 dark:bg-black/20">
+                                        <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">输出</div>
+                                        <div className="custom-scrollbar max-h-56 overflow-x-auto rounded border border-black/5 bg-black/5 p-2 shadow-inner dark:border-white/5 dark:bg-black/20">
                                             <pre className="text-[11px] font-mono text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-all">
                                                 {readableResult}
                                             </pre>
@@ -176,16 +176,13 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
             </motion.div>
         </div>
     );
-}, (prev, next) => {
-    // Custom comparison for toolInvocation
-    return (
-        prev.toolInvocation.toolCallId === next.toolInvocation.toolCallId &&
-        prev.toolInvocation.state === next.toolInvocation.state &&
-        prev.hideResult === next.hideResult &&
-        JSON.stringify('args' in prev.toolInvocation ? prev.toolInvocation.args : {}) === JSON.stringify('args' in next.toolInvocation ? next.toolInvocation.args : {}) &&
-        JSON.stringify('result' in prev.toolInvocation ? prev.toolInvocation.result : null) === JSON.stringify('result' in next.toolInvocation ? next.toolInvocation.result : null) &&
-        JSON.stringify(prev.toolInvocation.clientSurface ?? null) === JSON.stringify(next.toolInvocation.clientSurface ?? null)
-    );
-});
+}, (prev, next) => (
+    prev.toolInvocation.toolCallId === next.toolInvocation.toolCallId &&
+    prev.toolInvocation.state === next.toolInvocation.state &&
+    prev.hideResult === next.hideResult &&
+    JSON.stringify('args' in prev.toolInvocation ? prev.toolInvocation.args : {}) === JSON.stringify('args' in next.toolInvocation ? next.toolInvocation.args : {}) &&
+    JSON.stringify('result' in prev.toolInvocation ? prev.toolInvocation.result : null) === JSON.stringify('result' in next.toolInvocation ? next.toolInvocation.result : null) &&
+    JSON.stringify(prev.toolInvocation.clientSurface ?? null) === JSON.stringify(next.toolInvocation.clientSurface ?? null)
+));
 
 ToolCard.displayName = "ToolCard";

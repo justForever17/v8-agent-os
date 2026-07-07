@@ -156,7 +156,7 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                         >
                             <MaterialCommunityIcons
                                 name={iconName as never}
-                                size={13}
+                                size={10}
                                 color={isComplete ? "#14B8A6" : "#3B82F6"}
                             />
                             {!isComplete ? <View style={[styles.pingRing, { borderColor: "rgba(59,130,246,0.20)" }]} /> : null}
@@ -246,39 +246,39 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
 const styles = StyleSheet.create({
     wrap: {
         width: "100%",
-        marginVertical: 1,
+        marginVertical: 0.5,
         position: "relative",
     },
     activeGlow: {
         position: "absolute",
         inset: 0,
-        borderRadius: 13,
+        borderRadius: 8,
     },
     card: {
         width: "100%",
         overflow: "hidden",
-        borderRadius: 13,
+        borderRadius: 8,
         borderWidth: 1,
     },
     header: {
-        minHeight: 27,
+        minHeight: 22,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
     },
     headerLeft: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 5,
+        gap: 4,
         flex: 1,
         minWidth: 0,
     },
     iconWrap: {
-        width: 18,
-        height: 18,
-        borderRadius: 6,
+        width: 14,
+        height: 14,
+        borderRadius: 4,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -287,7 +287,7 @@ const styles = StyleSheet.create({
     pingRing: {
         position: "absolute",
         inset: -1,
-        borderRadius: 7,
+        borderRadius: 5,
         borderWidth: 1,
     },
     title: {
@@ -302,32 +302,32 @@ const styles = StyleSheet.create({
         overflow: "hidden",
         borderRadius: 999,
         borderWidth: 1,
-        paddingHorizontal: 5,
-        paddingVertical: 1,
-        fontSize: 9,
-        lineHeight: 12,
+        paddingHorizontal: 4,
+        paddingVertical: 0.5,
+        fontSize: 8,
+        lineHeight: 11,
         fontWeight: "800",
         flexShrink: 0,
     },
     summary: {
-        paddingHorizontal: 8,
-        paddingBottom: 5,
+        paddingHorizontal: 6,
+        paddingBottom: 4,
         marginTop: -1,
         fontSize: 10,
-        lineHeight: 15,
+        lineHeight: 14,
         fontWeight: "600",
     },
     content: {
-        paddingHorizontal: 8,
-        paddingBottom: 6,
-        paddingTop: 1,
+        paddingHorizontal: 6,
+        paddingBottom: 4,
+        paddingTop: 0.5,
         gap: 4,
     },
     section: {
-        gap: 3,
+        gap: 2,
     },
     sectionLabel: {
-        fontSize: 10,
+        fontSize: 9,
         fontWeight: "700",
         letterSpacing: 1.2,
         textTransform: "uppercase",

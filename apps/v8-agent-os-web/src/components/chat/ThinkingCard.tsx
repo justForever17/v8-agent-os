@@ -89,40 +89,40 @@ export const ThinkingCard = memo(({
     const shouldFadeContent = content.length > 900;
 
     return (
-        <div className="group relative my-1 w-full">
+        <div className="group relative my-0.5 w-full">
             {/* Ambient Back Glow when Active */}
             {isStreaming && (
-                <div className="absolute inset-0 bg-violet-500/10 blur-xl rounded-xl -z-10 animate-pulse" />
+                <div className="absolute inset-0 bg-violet-500/10 blur-xl rounded-lg -z-10 animate-pulse" />
             )}
 
             <div className={cn(
-                "w-full overflow-hidden rounded-xl border backdrop-blur-md transition-all duration-500 ease-out",
+                "w-full overflow-hidden rounded-lg border backdrop-blur-md transition-all duration-500 ease-out",
                 isExpanded 
                     ? "bg-white/40 dark:bg-zinc-900/40 border-violet-500/30 dark:border-violet-500/20 shadow-[0_4px_24px_-8px_rgba(139,92,246,0.3)]" 
                     : "bg-white/20 dark:bg-zinc-900/20 border-white/20 dark:border-white/10 hover:border-violet-500/30 hover:bg-white/30 dark:hover:bg-zinc-900/30"
             )}>
                 {/* Header (Clickable Area) */}
                 <div
-                    className="relative z-10 flex w-full cursor-pointer select-none items-center justify-between px-3.5 py-1.5"
+                    className="relative z-10 flex w-full cursor-pointer select-none items-center justify-between px-2.5 py-1"
                     onClick={() => setIsExpanded(!isExpanded)}
                 >
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 min-w-0">
                         {/* Icon Node */}
                         <div className={cn(
-                            "relative flex h-[22px] w-[22px] items-center justify-center rounded-md border",
+                            "relative flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded border",
                             isStreaming 
                                 ? "bg-violet-500/20 border-violet-500/50 text-violet-600 dark:text-violet-400" 
                                 : "bg-zinc-100 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-500"
                         )}>
-                            <Atom className={cn("h-3 w-3", isStreaming && "animate-pulse")} />
+                            <Atom className={cn("h-2.5 w-2.5", isStreaming && "animate-pulse")} />
                             {isStreaming && (
-                                <span className="absolute inset-0 rounded-md ring-1 ring-violet-500 animate-ping opacity-30" />
+                                <span className="absolute inset-0 rounded ring-1 ring-violet-500 animate-ping opacity-30" />
                             )}
                         </div>
 
                         {/* Title and Time */}
                         <span className={cn(
-                            "text-[11px] font-semibold tracking-wide transition-colors",
+                            "text-[11px] font-semibold tracking-wide transition-colors truncate",
                             isExpanded
                                 ? "text-foreground"
                                 : isUnverified
@@ -148,7 +148,7 @@ export const ThinkingCard = memo(({
                         transition={{ duration: 0.3, ease: "circOut" }}
                     >
                         <ChevronDown className={cn(
-                            "w-4 h-4 transition-colors",
+                            "w-3.5 h-3.5 transition-colors",
                             isExpanded ? "text-violet-500 dark:text-violet-400" : "text-muted-foreground/50 group-hover:text-foreground/70"
                         )} />
                     </motion.div>
@@ -163,9 +163,9 @@ export const ThinkingCard = memo(({
                             exit={{ height: 0, opacity: 0 }}
                             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
                         >
-                            <div className="px-3.5 pb-3.5 pt-0.5">
+                            <div className="px-2.5 pb-2.5 pt-0.5">
                                 <div className={cn(
-                                    "relative rounded-lg border border-black/5 bg-black/5 p-2.5 shadow-inner dark:border-white/5 dark:bg-black/20",
+                                    "relative rounded border border-black/5 bg-black/5 p-2 shadow-inner dark:border-white/5 dark:bg-black/20",
                                     shouldFadeContent && "max-h-40 overflow-hidden"
                                 )}>
                                     <div className="whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-600 selection:bg-violet-500/30 dark:text-zinc-400 font-mono">

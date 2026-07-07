@@ -685,35 +685,43 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         const hasActiveProgress = segment.isStreaming || (isLoading && isLast && index === timelineSegments.length - 1);
 
                         return (
-                            <div key={segment.id} className="my-2 flex flex-col rounded-2xl border border-zinc-200/50 dark:border-zinc-800/50 bg-zinc-500/5 dark:bg-zinc-400/5 overflow-hidden shadow-sm">
+                            <div key={segment.id} className="my-1.5 flex flex-col rounded-xl border border-zinc-200/50 dark:border-zinc-800/50 bg-zinc-500/5 dark:bg-zinc-400/5 overflow-hidden shadow-sm">
                                 <button
                                     type="button"
                                     onClick={() => setExpandedTraceGroups((prev) => ({ ...prev, [segment.id]: !isExpanded }))}
-                                    className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-zinc-500/10 dark:hover:bg-zinc-400/10 transition-colors duration-200"
+                                    className="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-zinc-500/10 dark:hover:bg-zinc-400/10 transition-colors duration-200"
                                 >
-                                    <div className="flex items-center gap-2.5 min-w-0">
+                                    <div className="flex items-center gap-2 min-w-0">
                                         <div className={cn(
-                                            "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-zinc-500/10 dark:bg-zinc-400/10 text-muted-foreground",
+                                            "flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-zinc-500/10 dark:bg-zinc-400/10 text-muted-foreground",
                                             hasActiveProgress && "animate-pulse text-amber-500 bg-amber-500/10"
                                         )}>
-                                            <Orbit className="h-4 w-4" />
+                                            <Orbit className="h-3.5 w-3.5" />
                                         </div>
                                         <div className="min-w-0 flex-1">
-                                            <div className="text-xs font-semibold text-foreground/90">
-                                                {hasActiveProgress ? "正在运行推理与工具调用..." : "运行轨迹"}
+                                            <div className="text-xs font-semibold text-foreground/80 leading-normal">
+                                                {hasActiveProgress ? (
+                                                    "正在进行推理与工具调用..."
+                                                ) : (
+                                                    <>
+                                                        {segment.reasoningCount > 0 && `进行了 ${segment.reasoningCount} 次思考`}
+                                                        {segment.reasoningCount > 0 && segment.toolCount > 0 && "，"}
+                                                        {segment.toolCount > 0 && `调用了 ${segment.toolCount} 次工具`}
+                                                    </>
+                                                )}
                                             </div>
-                                            <div className="mt-0.5 text-[10px] text-muted-foreground/80 truncate">
-                                                {segment.reasoningCount > 0 && `思考了 ${segment.reasoningCount} 步`}
-                                                {segment.toolCount > 0 && `${segment.reasoningCount > 0 ? "，" : ""}调用了 ${segment.toolCount} 次工具`}
-                                                {segment.totalDuration > 0 && ` (累计耗时 ${segment.totalDuration}s)`}
-                                            </div>
+                                            {segment.totalDuration > 0 && (
+                                                <div className="mt-0.5 text-[10px] text-muted-foreground/60 leading-none truncate">
+                                                    累计耗时 {segment.totalDuration}s
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
-                                    <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform duration-200", isExpanded && "rotate-180")} />
+                                    <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform duration-200", isExpanded && "rotate-180")} />
                                 </button>
 
                                 {isExpanded && (
-                                    <div className="border-t border-zinc-200/40 dark:border-zinc-800/40 bg-background/30 p-4 space-y-4">
+                                    <div className="border-t border-zinc-200/40 dark:border-zinc-800/40 bg-background/30 p-2.5 space-y-2">
                                         {segment.nodes.map((node, nodeIdx) => (
                                             <ContentDispatcher 
                                                 key={node.id || nodeIdx}

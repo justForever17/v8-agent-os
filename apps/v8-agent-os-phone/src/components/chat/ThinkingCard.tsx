@@ -165,7 +165,7 @@ export const ThinkingCard = memo(function ThinkingCard({
                         >
                             <MaterialCommunityIcons
                                 name="atom"
-                                size={12}
+                                size={10}
                                 color={isStreaming ? colors.primary : colors.textMuted}
                             />
                             {isStreaming ? <View style={[styles.pingRing, { borderColor: "rgba(139,92,246,0.20)" }]} /> : null}
@@ -243,39 +243,39 @@ export const ThinkingCard = memo(function ThinkingCard({
 const styles = StyleSheet.create({
     wrap: {
         width: "100%",
-        marginVertical: 1,
+        marginVertical: 0.5,
         position: "relative",
     },
     activeGlow: {
         position: "absolute",
         inset: 0,
-        borderRadius: 13,
+        borderRadius: 8,
     },
     card: {
         width: "100%",
         overflow: "hidden",
-        borderRadius: 13,
+        borderRadius: 8,
         borderWidth: 1,
     },
     header: {
-        minHeight: 27,
+        minHeight: 22,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
     },
     headerLeft: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 5,
+        gap: 4,
         flex: 1,
         minWidth: 0,
     },
     iconWrap: {
-        width: 18,
-        height: 18,
-        borderRadius: 6,
+        width: 14,
+        height: 14,
+        borderRadius: 4,
         borderWidth: 1,
         alignItems: "center",
         justifyContent: "center",
@@ -284,7 +284,7 @@ const styles = StyleSheet.create({
     pingRing: {
         position: "absolute",
         inset: -1,
-        borderRadius: 7,
+        borderRadius: 5,
         borderWidth: 1,
     },
     title: {
@@ -301,15 +301,15 @@ const styles = StyleSheet.create({
         flexShrink: 0,
     },
     contentOuter: {
-        paddingHorizontal: 8,
-        paddingBottom: 6,
-        paddingTop: 1,
+        paddingHorizontal: 6,
+        paddingBottom: 4,
+        paddingTop: 0.5,
     },
     contentInner: {
-        borderRadius: 10,
+        borderRadius: 6,
         borderWidth: 1,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
+        paddingHorizontal: 6,
+        paddingVertical: 4,
         flexDirection: "row",
         alignItems: "flex-end",
         flexWrap: "wrap",
@@ -337,7 +337,7 @@ const styles = StyleSheet.create({
         right: 0,
         bottom: 0,
         height: 34,
-        borderBottomLeftRadius: 10,
-        borderBottomRightRadius: 10,
+        borderBottomLeftRadius: 6,
+        borderBottomRightRadius: 6,
     },
 });

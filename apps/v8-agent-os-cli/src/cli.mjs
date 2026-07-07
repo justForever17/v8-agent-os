@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { ALL_COMPONENTS, parseComponentSelection } from "./components.mjs";
+import { interactiveChat, sendChatMessage } from "./chat_commands.mjs";
 import {
   getConfigDomain,
   installMcpServer,
@@ -14,9 +15,12 @@ import {
   setModelRole,
 } from "./config_commands.mjs";
 import { runDoctor } from "./doctor.mjs";
+import { commandInbox } from "./inbox_commands.mjs";
 import { runRepair } from "./repair.mjs";
 import { DEFAULT_PORTS, LOG_DIR, REPO_ROOT } from "./paths.mjs";
 import { startComponents, statusComponents, stopComponents } from "./process_manager.mjs";
+import { commandSessions } from "./session_commands.mjs";
+import { commandWorkspace } from "./workspace_commands.mjs";
 import {
   printJson,
   renderConfigDomains,
@@ -47,6 +51,10 @@ Usage:
   v8os stop [--all|--only engine,admin]
   v8os restart [--all|--only engine,admin]
   v8os status [--json]
+  v8os chat "message" [--session id] [--workspace path] [--interactive]
+  v8os sessions list|show|turns|open|resume [--json]
+  v8os inbox list|approve|reject|answer [--json]
+  v8os workspace show|doctor|create|select|open [--json]
   v8os doctor [--json]
   v8os config list|get <domain> [--json]
   v8os config mcp list|status|install|remove [--json]
@@ -77,6 +85,13 @@ async function commandStatus(args) {
   const statuses = await statusComponents(ALL_COMPONENTS);
   if (hasFlag(args, "--json")) printJson(statuses);
   else renderStatus(statuses);
+}
+
+async function commandChat(args) {
+  if (hasFlag(args, "--interactive") || hasFlag(args, "-i")) {
+    return interactiveChat(args);
+  }
+  return sendChatMessage(args);
 }
 
 async function commandDoctor(args) {
@@ -184,6 +199,10 @@ export async function main(argv) {
     return commandStart(args);
   }
   if (command === "status") return commandStatus(args);
+  if (command === "chat") return commandChat(args);
+  if (command === "sessions") return commandSessions(args);
+  if (command === "inbox") return commandInbox(args);
+  if (command === "workspace") return commandWorkspace(args);
   if (command === "doctor") return commandDoctor(args);
   if (command === "config") return commandConfig(args);
   if (command === "repair") return commandRepair(args);

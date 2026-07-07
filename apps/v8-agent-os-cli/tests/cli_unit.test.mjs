@@ -8,10 +8,13 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ALL_COMPONENTS, COMPONENTS, DEFAULT_START_COMPONENTS, parseComponentSelection } from "../src/components.mjs";
+import { buildChatSubmitPayload, extractMessageText } from "../src/chat_commands.mjs";
 import { buildMcpInstallPayload, extractModelRoles } from "../src/config_commands.mjs";
+import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
+import { currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
 const cliRoot = path.resolve(path.dirname(currentFile), "..");
@@ -199,4 +202,46 @@ test("model role extractor accepts registry payload shape", () => {
   assert.deepEqual(extractModelRoles({ payload: { data: { roles: { default: "provider:model" } } } }), {
     default: "provider:model",
   });
+});
+
+test("chat payload preserves session, workspace, project, and spec mode", () => {
+  const payload = buildChatSubmitPayload({
+    sessionId: "session-a",
+    message: "你好",
+    workspacePath: "E:/Projects/demo",
+    projectId: "demo",
+    specMode: true,
+  });
+  assert.equal(payload.session_id, "session-a");
+  assert.equal(payload.conversationId, "session-a");
+  assert.equal(payload.messages[0].content, "你好");
+  assert.equal(payload.data.workspacePath, "E:/Projects/demo");
+  assert.equal(payload.data.projectId, "demo");
+  assert.equal(payload.data.specMode, true);
+});
+
+test("chat text extractor handles string and rich parts", () => {
+  assert.equal(extractMessageText({ content: "plain" }), "plain");
+  assert.equal(extractMessageText({ content: [{ text: "a" }, { content: "b" }] }), "a\nb");
+  assert.equal(extractMessageText({ parts: ["x", { text: "y" }] }), "x\ny");
+});
+
+test("inbox pending filter excludes closed and empty items", () => {
+  assert.deepEqual(filterPendingInboxItems([
+    { id: "a", status: "pending" },
+    { id: "b", status: "resolved" },
+    { id: "", status: "pending" },
+    { id: "c", status: "waiting" },
+  ]).map((item) => item.id), ["a", "c"]);
+});
+
+test("workspace helpers resolve and inspect local directories without touching config", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-cli-workspace-"));
+  fs.mkdirSync(path.join(dir, ".agents", "rules"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".agents", "rules", "AGENTS.md"), "# Rules\n", "utf8");
+  assert.equal(resolveWorkspacePath(dir), path.resolve(dir));
+  assert.equal(currentWorkspacePath({ workspace: { agent_workspace_path: dir } }), path.resolve(dir));
+  const report = inspectWorkspace(dir);
+  assert.equal(report.path, path.resolve(dir));
+  assert.ok(report.checks.some((check) => check.id === "agents_rules" && check.status === "ok"));
 });

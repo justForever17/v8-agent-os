@@ -5,7 +5,7 @@ import { buildClientLinkManifest, resolveRequestOrigin } from "@/lib/server/runt
 import { listUsers } from "@/lib/users";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-const TRUSTED_LOCAL_SURFACES = new Set(["web", "cyber", "desktop_pet"]);
+const TRUSTED_LOCAL_SURFACES = new Set(["web", "cyber", "desktop_pet", "cli"]);
 
 function normalizeHost(value: string | null) {
     const text = String(value || "")

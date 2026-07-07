@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
 
-const WEB_CHAT_URL = "http://127.0.0.1:9527/chat";
+const WEB_CHAT_URL = "http://localhost:9527/chat";
 
 function isGroupActive(pathname: string, hrefs: string[]) {
     return hrefs.some((href) => pathname === href || (href !== "/admin" && pathname.startsWith(href)));
@@ -52,12 +52,14 @@ export function Sidebar() {
             )}
         >
 
-            <div className={cn("shrink-0 border-b border-slate-200 dark:border-white/10", isCollapsed ? "p-2" : "px-4 py-3")}>
+            <div className={cn(
+                "flex h-9 shrink-0 items-center border-b border-slate-200 dark:border-white/10",
+                isCollapsed ? "justify-center px-0" : "px-3"
+            )}>
                 <a
                     href={WEB_CHAT_URL}
                     className={cn(
-                        "flex items-center rounded-2xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/[0.06] dark:hover:text-slate-100",
-                        isCollapsed ? "h-11 w-11 justify-center" : "h-10 w-10 justify-center",
+                        "flex h-7 w-7 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/[0.06] dark:hover:text-slate-100",
                     )}
                     title={t("components.layout.Sidebar.backToChat")}
                 >

@@ -66,6 +66,81 @@
   user-select: none;
 }
 
+.v8-product-topbar__surface-switcher {
+  display: none;
+  height: 25px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.v8-product-surface-switcher {
+  display: inline-flex;
+  height: 25px;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid hsl(var(--border, 240 5.9% 90%) / 0.72);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.55);
+  padding: 2px;
+}
+
+.dark .v8-product-surface-switcher {
+  border-color: rgb(255 255 255 / 0.1);
+  background: rgb(255 255 255 / 0.06);
+}
+
+.v8-product-surface-switcher__item {
+  display: inline-flex;
+  min-width: 42px;
+  height: 19px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--muted-foreground, 240 3.8% 46.1%));
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 19px;
+  padding: 0 8px;
+  text-decoration: none;
+  transition:
+    background-color 260ms var(--v8-product-motion),
+    color 260ms var(--v8-product-motion),
+    box-shadow 260ms var(--v8-product-motion);
+}
+
+.v8-product-surface-switcher__item:hover {
+  background: rgb(255 255 255 / 0.76);
+  color: hsl(var(--foreground, 240 10% 3.9%));
+}
+
+.dark .v8-product-surface-switcher__item:hover {
+  background: rgb(255 255 255 / 0.1);
+}
+
+.v8-product-surface-switcher__item--active,
+.v8-product-surface-switcher__item--active:hover {
+  background: rgb(15 23 42 / 0.9);
+  color: white;
+  cursor: default;
+  box-shadow: 0 6px 18px rgb(15 23 42 / 0.18);
+}
+
+.dark .v8-product-surface-switcher__item--active,
+.dark .v8-product-surface-switcher__item--active:hover {
+  background: rgb(255 255 255 / 0.88);
+  color: rgb(9 9 11);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.32);
+}
+
+.v8-product-surface-switcher__item--disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .v8-product-topbar__divider {
   color: rgb(148 163 184 / 0.42);
   font-size: 14px;
@@ -122,6 +197,7 @@
 }
 
 .v8-product-shell-topbar--drag .v8-product-topbar__actions,
+.v8-product-shell-topbar--drag .v8-product-topbar__surface-switcher,
 .v8-product-shell-topbar--drag .v8-product-topbar__window-controls,
 .v8-product-shell-topbar--drag button,
 .v8-product-shell-topbar--drag a,
@@ -310,6 +386,10 @@
 @media (min-width: 768px) {
   .v8-product-topbar__title-wrap {
     display: block;
+  }
+
+  .v8-product-topbar__surface-switcher {
+    display: flex;
   }
 }
 

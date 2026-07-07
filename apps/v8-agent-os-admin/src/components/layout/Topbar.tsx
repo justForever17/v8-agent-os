@@ -1,7 +1,7 @@
 "use client";
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ProductTopbar, TopbarGlowActionButton } from "@v8/product-ui";
+import { ProductSurfaceSwitcher, ProductTopbar, TopbarGlowActionButton } from "@v8/product-ui";
 import { Bell, Loader2, Monitor, Search, Server, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -38,6 +38,8 @@ type RuntimeInstallState = {
     canInstallDesktop: boolean;
     canAutoRestart: boolean;
 };
+
+const WEB_CHAT_SURFACE_URL = "http://localhost:9527/chat";
 
 function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
     return (
@@ -305,6 +307,25 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         <ProductTopbar
             brandImageSrc="/product-mark.png"
             brandLabel="V8 Agent OS"
+            surfaceSwitcher={(
+                <ProductSurfaceSwitcher
+                    ariaLabel={t("components.layout.Topbar.surfaceSwitcher")}
+                    items={[
+                        {
+                            id: "chat",
+                            label: t("components.layout.Topbar.surface.chat"),
+                            href: WEB_CHAT_SURFACE_URL,
+                            title: t("components.layout.Topbar.surface.openChat"),
+                        },
+                        {
+                            id: "admin",
+                            label: t("components.layout.Topbar.surface.admin"),
+                            active: true,
+                            title: t("components.layout.Topbar.surface.currentAdmin"),
+                        },
+                    ]}
+                />
+            )}
             title={t(current.title)}
             subtitle={t(current.description)}
             actions={(

@@ -10,6 +10,7 @@ export type ProductTopbarProps = {
   brandLabel?: string;
   title?: ReactNode;
   subtitle?: ReactNode;
+  surfaceSwitcher?: ReactNode;
   actions?: ReactNode;
   windowControls?: ReactNode;
   className?: string;
@@ -25,6 +26,7 @@ function ProductTopbarContent({
   brandLabel = "V8 Agent OS",
   title,
   subtitle,
+  surfaceSwitcher,
   actions,
   windowControls,
 }: ProductTopbarProps) {
@@ -43,6 +45,11 @@ function ProductTopbarContent({
           />
           <ProductWordmark label={brandLabel} text="V8 Agent OS" />
         </div>
+        {surfaceSwitcher ? (
+          <div className="v8-product-topbar__surface-switcher">
+            {surfaceSwitcher}
+          </div>
+        ) : null}
         {title || subtitle ? (
           <>
             <span className="v8-product-topbar__divider" aria-hidden="true">/</span>

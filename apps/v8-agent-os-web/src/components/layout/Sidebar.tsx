@@ -12,7 +12,6 @@ import {
     ChevronRight,
     Loader2,
     AlertCircle,
-    Settings,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -29,8 +28,6 @@ import { useConversationContext } from "@/context/ConversationContext";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useT } from "@/components/providers/LocaleProvider";
 import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/lib/conversation-groups";
-
-const LOCAL_ADMIN_CONFIG_URL = "http://127.0.0.1:9528/admin";
 
 export function Sidebar() {
     const { conversations, deleteConversation, clearConversations } = useConversationContext();
@@ -230,19 +227,6 @@ export function Sidebar() {
                 </div>
             </ScrollArea>
 
-            <div className={cn("mt-auto border-t border-border/40 bg-background/70 backdrop-blur-sm", collapsed ? "p-2" : "p-3")}>
-                <a
-                    href={LOCAL_ADMIN_CONFIG_URL}
-                    className={cn(
-                        "flex items-center rounded-2xl text-sm text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground",
-                        collapsed ? "h-10 w-10 justify-center" : "h-10 gap-2 px-3",
-                    )}
-                    title={t("web.generated.a5e7fe6d64")}
-                >
-                    <Settings className="h-4 w-4 shrink-0" />
-                    {!collapsed && <span>{t("web.generated.36b502ac91")}</span>}
-                </a>
-            </div>
         </div>
     );
 

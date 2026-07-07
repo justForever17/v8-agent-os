@@ -10,6 +10,11 @@ export {
   type ProductWordmarkVariant,
 } from "./ProductWordmark.js";
 export {
+  ProductSurfaceSwitcher,
+  type ProductSurfaceSwitcherItem,
+  type ProductSurfaceSwitcherProps,
+} from "./ProductSurfaceSwitcher.js";
+export {
   TopbarGlowActionButton,
   type TopbarGlowActionButtonProps,
   type TopbarGlowTone,

@@ -2178,6 +2178,7 @@
   "app.admin.dashboard.subagents.page.defaultInheritedModel": "Default inherited: {model}",
   "app.admin.dashboard.subagents.page.externalWorkers.arrayJsonDescription": "Please provide a JSON array of external worker descriptors.",
   "app.admin.dashboard.subagents.page.externalWorkers.arrayJsonTitle": "External worker JSON must be an array",
+  "app.admin.dashboard.subagents.page.externalWorkers.advancedConfigSummary": "Configuration details (advanced)",
   "app.admin.dashboard.subagents.page.externalWorkers.capabilityJsonInvalidDescription": "Please enter a valid JSON object.",
   "app.admin.dashboard.subagents.page.externalWorkers.capabilityJsonInvalidTitle": "capabilitySnapshot JSON is invalid",
   "app.admin.dashboard.subagents.page.externalWorkers.description": "",

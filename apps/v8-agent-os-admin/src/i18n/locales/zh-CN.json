@@ -2178,6 +2178,7 @@
   "app.admin.dashboard.subagents.page.defaultInheritedModel": "默认继承：{model}",
   "app.admin.dashboard.subagents.page.externalWorkers.arrayJsonDescription": "请提供 external worker descriptor 组成的 JSON 数组。",
   "app.admin.dashboard.subagents.page.externalWorkers.arrayJsonTitle": "外部工作节点 JSON 必须是数组",
+  "app.admin.dashboard.subagents.page.externalWorkers.advancedConfigSummary": "配置详情（高级）",
   "app.admin.dashboard.subagents.page.externalWorkers.capabilityJsonInvalidDescription": "请输入有效的 JSON 对象。",
   "app.admin.dashboard.subagents.page.externalWorkers.capabilityJsonInvalidTitle": "capabilitySnapshot JSON 无效",
   "app.admin.dashboard.subagents.page.externalWorkers.description": "",

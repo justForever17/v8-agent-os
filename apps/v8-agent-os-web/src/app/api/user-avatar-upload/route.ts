@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
         const session = await auth();
         const userIdentifier = String(session?.user?.email || session?.user?.login || "").trim();
         if (!userIdentifier) {
-            return NextResponse.json({ error: "未登录" }, { status: 401 });
+            return NextResponse.json({ error: "本机会话不可用，请确认本机 Admin 已启动。" }, { status: 401 });
         }
         const internalSecret = await resolveInternalSecret();
         if (!internalSecret) {

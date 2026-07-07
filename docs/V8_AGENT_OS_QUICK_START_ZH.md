@@ -58,7 +58,7 @@ flowchart LR
 3. SQLite 可读写环境
 4. Expo / Android 模拟器或真机（如果要验证 `os-phone`）
 
-如果你在 Windows 上工作，优先使用仓库自带的启动脚本，而不是手工逐个服务启动。
+如果你在 Windows 上工作，优先使用仓库根目录的 `v8os.cmd` / `v8os.ps1`，而不是手工逐个服务启动。
 
 ---
 
@@ -66,11 +66,31 @@ flowchart LR
 
 ### 4.1 启动主仓
 
-在 `E:\Projects\v8chat\v8-agent-os` 下优先使用仓库脚本：
+在 `E:\Projects\v8chat\v8-agent-os` 下优先使用本机 CLI 入口：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
+.\v8os.cmd start
 ```
+
+PowerShell 执行策略较严格时，也可以用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\v8os.ps1 start
+```
+
+启动后先确认三件事：
+
+```powershell
+.\v8os.cmd status --json
+.\v8os.cmd doctor --json
+.\v8os.cmd config phone manifest --json
+```
+
+`v8os start` 默认看护：
+
+- Engine：`9530`
+- Admin：`9528`
+- Web：`9527`
 
 如果只做局部开发，也可以分别启动：
 
@@ -95,10 +115,12 @@ powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
 5. `systemBase`
 6. `runtimeRegistry`
 
-### 4.3 再启动 Phone / Web
+### 4.3 再进入 Phone / Web
 
-- `os-phone`：主远端 surface，优先用 Expo Go / dev client / 真机验证
-- `os-web`：备用 surface，只用于桌面调试与回归验证
+- `os-web`：本机可信入口。打开 `http://127.0.0.1:9527` 后自动向本机 Admin 建立会话，不需要扫码、注册或手动登录。
+- `os-phone`：唯一远程交互入口。它需要在 Admin 中生成一次性二维码配对；扫码成功后 Phone 保存 server profile，后续网络失败不应清空旧配置。
+
+Web、桌宠、CLI 都属于本机可信入口，不走 Phone 配对票据，也不出现在已配对设备列表。Network Supervisor 的多设备协作是高级网络能力，不是普通本机启动或手机配对流程。
 
 ---
 
@@ -162,4 +184,3 @@ powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1
 
 - `E:\Projects\v8chat\openclaw-v8-bridge`
 - `E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\core\plugin_host`
-

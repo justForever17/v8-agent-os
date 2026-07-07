@@ -23,6 +23,15 @@ export async function runRepair({ dryRun = true, yes = false } = {}) {
       applied.push({ ...action, dryRun });
       continue;
     }
+    if (action.id === "refresh_admin_auth_secret") {
+      if (!dryRun || yes) {
+        const result = repairAuthSecret();
+        applied.push({ ...action, dryRun, result });
+      } else {
+        applied.push({ ...action, dryRun });
+      }
+      continue;
+    }
     skipped.push({ ...action, reason: action.safe ? "manual_review" : "requires_explicit_install_or_kill" });
   }
 

@@ -1,11 +1,33 @@
 import { spawn } from "node:child_process";
 import { ALL_COMPONENTS, parseComponentSelection } from "./components.mjs";
-import { getConfigDomain, listConfigDomains, listMcpServers, modelRoleDoctor, pairingSummary } from "./config_commands.mjs";
+import {
+  getConfigDomain,
+  installMcpServer,
+  listConfigDomains,
+  listMcpServers,
+  mcpStatus,
+  modelRoleDoctor,
+  modelRoles,
+  pairingManifest,
+  pairingSummary,
+  removeMcpServer,
+  setModelRole,
+} from "./config_commands.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { runRepair } from "./repair.mjs";
 import { DEFAULT_PORTS, LOG_DIR, REPO_ROOT } from "./paths.mjs";
 import { startComponents, statusComponents, stopComponents } from "./process_manager.mjs";
-import { printJson, renderConfigDomains, renderDoctor, renderMcpServers, renderStartResults, renderStatus } from "./render.mjs";
+import {
+  printJson,
+  renderConfigDomains,
+  renderDoctor,
+  renderMcpServers,
+  renderMcpStatus,
+  renderModelRoles,
+  renderPairingManifest,
+  renderStartResults,
+  renderStatus,
+} from "./render.mjs";
 
 function hasFlag(args, flag) {
   return args.includes(flag);
@@ -26,7 +48,10 @@ Usage:
   v8os restart [--all|--only engine,admin]
   v8os status [--json]
   v8os doctor [--json]
-  v8os config list|get <domain>|mcp list|models doctor|pairing show [--json]
+  v8os config list|get <domain> [--json]
+  v8os config mcp list|status|install|remove [--json]
+  v8os config models doctor|roles|set-role <role> <modelRef> [--json]
+  v8os config pairing show|manifest [--json]
   v8os repair [--dry-run|--yes] [--json]
   v8os logs
   v8os open admin|web
@@ -80,12 +105,42 @@ async function commandConfig(args) {
     json ? printJson(result) : renderMcpServers(result);
     return;
   }
+  if (sub === "mcp" && args[1] === "status") {
+    const result = await mcpStatus();
+    json ? printJson(result) : renderMcpStatus(result);
+    return;
+  }
+  if (sub === "mcp" && args[1] === "install") {
+    const result = await installMcpServer(args.slice(2));
+    json ? printJson(result) : console.log(`MCP 已提交安装：${result.installed.join(", ")}`);
+    return;
+  }
+  if (sub === "mcp" && args[1] === "remove") {
+    const result = await removeMcpServer(args[2]);
+    json ? printJson(result) : console.log(`MCP 已移除：${result.removed}`);
+    return;
+  }
   if (sub === "models" && args[1] === "doctor") {
     printJson(await modelRoleDoctor());
     return;
   }
+  if (sub === "models" && args[1] === "roles") {
+    const result = await modelRoles();
+    json ? printJson(result) : renderModelRoles(result);
+    return;
+  }
+  if (sub === "models" && args[1] === "set-role") {
+    const result = await setModelRole(args[2], args[3]);
+    json ? printJson(result) : console.log(`模型角色已保存：${result.role} -> ${result.modelRef}`);
+    return;
+  }
   if (sub === "pairing" && args[1] === "show") {
     printJson(await pairingSummary());
+    return;
+  }
+  if (sub === "pairing" && args[1] === "manifest") {
+    const result = await pairingManifest();
+    json ? printJson(result) : renderPairingManifest(result);
     return;
   }
   throw new Error(`Unknown config command: ${args.join(" ")}`);

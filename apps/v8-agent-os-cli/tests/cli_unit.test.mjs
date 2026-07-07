@@ -6,8 +6,9 @@ import path from "node:path";
 import test from "node:test";
 
 import { ALL_COMPONENTS, COMPONENTS, DEFAULT_START_COMPONENTS, parseComponentSelection } from "../src/components.mjs";
+import { buildMcpInstallPayload, extractModelRoles } from "../src/config_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
-import { isPortOpen } from "../src/ports.mjs";
+import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
 
 test("default start components exclude CyberCore", () => {
@@ -39,6 +40,12 @@ test("local repair plan treats runtime installation as explicit action", () => {
   assert.equal(plan.actions[0].safe, false);
 });
 
+test("local repair plan can safely refresh missing admin auth secret", () => {
+  const plan = buildLocalRepairPlan([{ id: "admin_auth_secret", status: "warning", path: "secret" }]);
+  assert.equal(plan.actions[0].id, "refresh_admin_auth_secret");
+  assert.equal(plan.actions[0].safe, true);
+});
+
 test("port probe detects a listening local port", async () => {
   const server = net.createServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -48,6 +55,10 @@ test("port probe detects a listening local port", async () => {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("port owner probe is safe for invalid or unopened ports", () => {
+  assert.deepEqual(getPortOwners(0), []);
 });
 
 test("json backup writes timestamped backup without changing source", () => {
@@ -78,4 +89,51 @@ test("doctor fallback returns local checks without requiring engine", async () =
   assert.equal(result.source, "local_fallback");
   assert.ok(result.summary.total >= 4);
   assert.ok(result.checks.some((check) => check.id === "config.json"));
+});
+
+test("mcp install payload builds stdio config", () => {
+  const payload = buildMcpInstallPayload([
+    "sqlite",
+    "--type",
+    "stdio",
+    "--command",
+    "npx",
+    "--arg",
+    "-y",
+    "--arg",
+    "@modelcontextprotocol/server-sqlite",
+    "--env",
+    "FOO=bar",
+  ]);
+  assert.deepEqual(payload, {
+    mcpServers: {
+      sqlite: {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-sqlite"],
+        env: { FOO: "bar" },
+      },
+    },
+  });
+});
+
+test("mcp install payload builds http config", () => {
+  const payload = buildMcpInstallPayload([
+    "remote",
+    "--type",
+    "http",
+    "--url",
+    "http://127.0.0.1:3000/mcp",
+    "--header",
+    "Authorization=Bearer token",
+  ]);
+  assert.equal(payload.mcpServers.remote.type, "http");
+  assert.equal(payload.mcpServers.remote.url, "http://127.0.0.1:3000/mcp");
+  assert.equal(payload.mcpServers.remote.headers.Authorization, "Bearer token");
+});
+
+test("model role extractor accepts registry payload shape", () => {
+  assert.deepEqual(extractModelRoles({ payload: { data: { roles: { default: "provider:model" } } } }), {
+    default: "provider:model",
+  });
 });

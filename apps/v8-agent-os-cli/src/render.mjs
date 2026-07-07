@@ -54,3 +54,45 @@ export function renderMcpServers(result) {
     console.log(`- ${server.name}: ${server.type}${server.disabled ? " (disabled)" : ""}`);
   }
 }
+
+export function renderMcpStatus(result) {
+  console.log(`MCP status (${result.source})`);
+  const servers = result.payload?.servers || result.servers || [];
+  if (result.message) console.log(result.message);
+  if (!servers.length) {
+    console.log("- none");
+    return;
+  }
+  for (const server of servers) {
+    const name = server.name || server.id || "unknown";
+    const state = server.status || server.state || (server.disabled ? "disabled" : "configured");
+    console.log(`- ${name}: ${state}`);
+  }
+}
+
+export function renderModelRoles(result) {
+  console.log(`Model roles (${result.source})`);
+  const roles = result.roles || {};
+  const entries = Object.entries(roles).sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) {
+    console.log("- none");
+    return;
+  }
+  for (const [role, modelRef] of entries) {
+    console.log(`- ${role}: ${modelRef}`);
+  }
+}
+
+export function renderPairingManifest(result) {
+  console.log(`Pairing manifest (${result.source})`);
+  const manifest = result.manifest || {};
+  console.log(`serverId: ${manifest.serverId || ""}`);
+  console.log(`instanceId: ${manifest.instanceId || ""}`);
+  const urls = manifest.adminUrls || [];
+  if (!urls.length) {
+    console.log("adminUrls: none");
+    return;
+  }
+  console.log("adminUrls:");
+  for (const url of urls) console.log(`- ${url}`);
+}

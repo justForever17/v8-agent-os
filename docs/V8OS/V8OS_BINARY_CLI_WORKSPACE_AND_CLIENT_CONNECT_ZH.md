@@ -90,13 +90,11 @@ Admin 主导航和页面标题默认不应出现 `RUNTIME` 这类工程词。需
 
 它不能完成：
 
-- 安装 `v8os` 命令到 PATH。
-- 提供二进制 launcher。
+- 提供正式二进制 launcher 或系统服务。
 - 以非源码目录运行 Admin/Engine。
 - 作为系统服务或守护进程管理生命周期。
-- 生成 Phone/TUI/Web shell/Custom Client 可扫码或可复制的连接 manifest。
 
-因此它适合作为开发启动脚本，不适合作为正式安装入口。
+因此它适合作为开发启动脚本，不适合作为正式安装入口。当前 CLI P1 已补根目录 `v8os.cmd` / `v8os.ps1`、PATH dry-run helper、冷启动验收脚本和配对 manifest 命令，但它仍是源码树内的产品入口，不等同于 Windows/macOS/Linux 安装包。
 
 ### 2.2 Admin 的 Auth secret 仍然需要环境注入
 
@@ -228,15 +226,43 @@ CyberCore companion 当前定位：
 已落地能力：
 
 - `v8os` 等价于 `v8os start`。
+- 仓库根目录已提供 `v8os.cmd` / `v8os.ps1`，用户不需要进入 `apps/v8-agent-os-cli` 目录。
 - `v8os start/stop/status/restart` 默认看护 Engine + Admin + Web；CyberCore 需 `--with cybercore` 或 `--all`。
 - Admin/Web 启动复用 `scripts/run-next-with-managed-auth.mjs`，继续由现有脚本托管 Auth secret。
 - CLI 启动的进程状态写入 `~/.v8-agent-os/runtime/cli/processes.json`；外部占用端口会被标记为 `external_port_in_use`，不会被 CLI 强行接管。
-- `v8os doctor` 在线优先调用 Engine system doctor，离线自动降级为本地检查。
-- `v8os config` 第一版覆盖配置域查看、MCP 列表、模型角色诊断、配对地址摘要。
-- `v8os repair` 默认安全 dry-run；真正写入或副作用需要显式 `--yes`。
+- `v8os doctor` 在线优先调用 Engine system doctor，离线自动降级为本地检查；本地检查覆盖端口占用、Node/npm/Python/pip、Engine venv、Admin/Web 依赖、Electron、config/mcp JSON、模型角色和配对地址。
+- `v8os config` 覆盖配置域查看、MCP list/status/install/remove、模型角色查看/设置、配对地址 manifest。
+- `v8os repair` 默认安全 dry-run；创建缺失目录、刷新缺失 Auth secret、备份坏配置和修复报告属于安全动作，依赖安装、杀进程、覆盖配置仍需要显式 `--yes` 或后续明确子命令。
 - `v8os logs/open` 作为薄入口，方便定位日志和打开 Admin/Web。
 
-未落地能力仍按后续阶段推进：TUI 聊天、sessions/schedule/inbox、完整 provider/MCP 安装向导、Windows/macOS/Linux 安装包入口。
+冷启动验收入口：
+
+```powershell
+.\v8os.cmd start
+.\v8os.cmd status --json
+.\v8os.cmd doctor --json
+.\v8os.cmd stop
+node apps\v8-agent-os-cli\tests\scripts\run_v8os_cli_cold_start_smoke.mjs
+```
+
+PATH helper 默认只预览，不修改系统：
+
+```powershell
+.\scripts\install-v8os-path.ps1
+.\scripts\install-v8os-path.ps1 -Apply
+```
+
+配置入口示例：
+
+```powershell
+.\v8os.cmd config mcp list
+.\v8os.cmd config mcp status
+.\v8os.cmd config models roles
+.\v8os.cmd config models set-role supervisor minimax-cn:MiniMax-M3
+.\v8os.cmd config pairing manifest --json
+```
+
+未落地能力仍按后续阶段推进：TUI 聊天、sessions/schedule/inbox、完整 provider 安装向导、Windows/macOS/Linux 安装包入口。
 
 ### 4.1 顶层命令
 

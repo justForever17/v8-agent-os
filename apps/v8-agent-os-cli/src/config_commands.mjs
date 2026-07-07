@@ -203,7 +203,7 @@ export async function setModelRole(role, modelRef) {
   return { source: "engine", role: normalizedRole, modelRef: normalizedModelRef, payload: saved };
 }
 
-export async function pairingSummary() {
+export async function phonePairingSummary() {
   const systemBase = await getConfigDomain("system-base");
   const data = systemBase.payload?.data || systemBase.payload || {};
   return {
@@ -213,8 +213,8 @@ export async function pairingSummary() {
   };
 }
 
-export async function pairingManifest() {
-  const summary = await pairingSummary();
+export async function phonePairingManifest() {
+  const summary = await phonePairingSummary();
   const manifest = summary.manifest || {};
   const remoteLink = summary.remoteLink || {};
   const adminUrls = [

@@ -8,8 +8,8 @@ import {
   mcpStatus,
   modelRoleDoctor,
   modelRoles,
-  pairingManifest,
-  pairingSummary,
+  phonePairingManifest,
+  phonePairingSummary,
   removeMcpServer,
   setModelRole,
 } from "./config_commands.mjs";
@@ -24,7 +24,7 @@ import {
   renderMcpServers,
   renderMcpStatus,
   renderModelRoles,
-  renderPairingManifest,
+  renderPhoneManifest,
   renderStartResults,
   renderStatus,
 } from "./render.mjs";
@@ -51,7 +51,7 @@ Usage:
   v8os config list|get <domain> [--json]
   v8os config mcp list|status|install|remove [--json]
   v8os config models doctor|roles|set-role <role> <modelRef> [--json]
-  v8os config pairing show|manifest [--json]
+  v8os config phone show|manifest [--json]
   v8os repair [--dry-run|--yes] [--json]
   v8os logs
   v8os open admin|web
@@ -134,13 +134,13 @@ async function commandConfig(args) {
     json ? printJson(result) : console.log(`模型角色已保存：${result.role} -> ${result.modelRef}`);
     return;
   }
-  if (sub === "pairing" && args[1] === "show") {
-    printJson(await pairingSummary());
+  if (sub === "phone" && args[1] === "show") {
+    printJson(await phonePairingSummary());
     return;
   }
-  if (sub === "pairing" && args[1] === "manifest") {
-    const result = await pairingManifest();
-    json ? printJson(result) : renderPairingManifest(result);
+  if (sub === "phone" && args[1] === "manifest") {
+    const result = await phonePairingManifest();
+    json ? printJson(result) : renderPhoneManifest(result);
     return;
   }
   throw new Error(`Unknown config command: ${args.join(" ")}`);

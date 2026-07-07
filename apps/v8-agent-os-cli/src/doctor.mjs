@@ -124,7 +124,7 @@ function checkModelRoles() {
   }
 }
 
-function checkPairingManifest() {
+function checkPhoneConnectionManifest() {
   try {
     const config = readJsonFile(CONFIG_PATH, {});
     const systemBase = config?.systemBase || config?.["system-base"] || {};
@@ -137,13 +137,13 @@ function checkPairingManifest() {
       remoteLink?.manualUrl,
     ].filter(Boolean);
     return {
-      id: "pairing_manifest",
+      id: "phone_connection_manifest",
       status: urls.length ? "ok" : "warning",
-      summary: urls.length ? `配对地址候选 ${urls.length} 个` : "没有可用配对地址候选",
+      summary: urls.length ? `Phone 可用连接地址候选 ${urls.length} 个` : "没有可用的 Phone 连接地址候选",
       urls,
     };
   } catch (error) {
-    return { id: "pairing_manifest", status: "warning", summary: "无法读取配对地址配置", message: error.message };
+    return { id: "phone_connection_manifest", status: "warning", summary: "无法读取 Phone 连接地址配置", message: error.message };
   }
 }
 
@@ -212,7 +212,7 @@ export async function runDoctor({ preferEngine = true } = {}) {
   checks.push(checkNodeAppDependencies("cybercore_dependencies", "CyberCore", CYBERCORE_DIR));
   checks.push(checkAdminAuthSecret());
   checks.push(checkModelRoles());
-  checks.push(checkPairingManifest());
+  checks.push(checkPhoneConnectionManifest());
 
   let ok = 0;
   let warning = 0;

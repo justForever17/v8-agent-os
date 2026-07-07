@@ -9,12 +9,10 @@ import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
 
-type PairingSurface = "phone" | "custom";
-
 type PairingTicket = {
     pairingId: string;
     instanceId: string;
-    surface: PairingSurface;
+    surface: "phone";
     adminBaseUrl: string;
     pairingCode: string;
     pairingUri: string;
@@ -30,7 +28,6 @@ type DeviceSession = {
 
 export function DevicePairingPanel() {
     const t = useT();
-    const [surface, setSurface] = useState<PairingSurface>("phone");
     const [ticket, setTicket] = useState<PairingTicket | null>(null);
     const [busy, setBusy] = useState(false);
     const [copied, setCopied] = useState(false);
@@ -58,7 +55,7 @@ export function DevicePairingPanel() {
     }, [loadDevices]);
 
     useEffect(() => {
-        if (!ticket?.pairingUri || ticket.surface !== "phone") {
+        if (!ticket?.pairingUri) {
             setQrDataUrl("");
             return;
         }
@@ -87,8 +84,8 @@ export function DevicePairingPanel() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    surface,
-                    deviceName: `v8-${surface}`,
+                    surface: "phone",
+                    deviceName: "v8-phone",
                 }),
             });
             const payload = await response.json().catch(() => ({}));
@@ -143,14 +140,6 @@ export function DevicePairingPanel() {
                     </div>
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
-                    <select
-                        value={surface}
-                        onChange={(event) => setSurface(event.target.value as PairingSurface)}
-                        className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-                    >
-                        <option value="phone">Phone</option>
-                        <option value="custom">{t("components.admin.DevicePairingPanel.customClient")}</option>
-                    </select>
                     <Button type="button" onClick={() => void createTicket()} disabled={busy}>
                         {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Link2 className="mr-2 h-4 w-4" />}
                         {t("components.admin.DevicePairingPanel.create")}
@@ -165,7 +154,7 @@ export function DevicePairingPanel() {
             ) : null}
 
             {ticket ? (
-                <div className={`mt-4 grid gap-3 ${ticket.surface === "phone" ? "sm:grid-cols-[minmax(0,1fr)_160px] sm:items-start" : ""}`}>
+                <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px] sm:items-start">
                     <div className="grid gap-3">
                         <div className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900">
                             <div className="text-xs text-slate-500">{t("components.admin.DevicePairingPanel.link")}</div>
@@ -182,15 +171,13 @@ export function DevicePairingPanel() {
                             <span>{t("components.admin.DevicePairingPanel.expires")}: {new Date(ticket.expiresAt).toLocaleTimeString()}</span>
                         </div>
                     </div>
-                    {ticket.surface === "phone" ? (
-                        <div className="flex min-h-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
-                            {qrDataUrl ? (
-                                <Image src={qrDataUrl} alt={t("components.admin.DevicePairingPanel.qrAlt")} width={144} height={144} unoptimized />
-                            ) : (
-                                <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
-                            )}
-                        </div>
-                    ) : null}
+                    <div className="flex min-h-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
+                        {qrDataUrl ? (
+                            <Image src={qrDataUrl} alt={t("components.admin.DevicePairingPanel.qrAlt")} width={144} height={144} unoptimized />
+                        ) : (
+                            <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+                        )}
+                    </div>
                 </div>
             ) : null}
 

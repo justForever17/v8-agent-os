@@ -25,10 +25,12 @@ V8OS 下一阶段要从“源码目录里启动 Engine/Admin”正规化为三�
 - `v8os acp` 是第三方编辑器 / Agent Client 标准接入适配器入口，用于 Zed 等外部客户端把 V8OS 当成编程 Agent；它不是 Phone/Web/CyberCore 的内部连接协议。
 - 不再公开细分 `v8os ask` / `v8os run`；若未来保留，只能作为隐藏兼容 alias。
 - 未注册路径首次进入会话类命令时，用左右键 `Yes/No` 询问是否信任并创建持久工作区。
-- `v8os link` 只服务 Phone、外部自定义客户端、远程 TUI 或诊断；桌面 GUI 内置 Web shell / CyberCore companion 不要求用户手动 link，也不展示“已连接设备”记录。
+- `v8os link` 只服务 Phone 远程配对或诊断；桌面 GUI 内置 Web shell / CyberCore companion / 本机 TUI 不要求用户手动 link，也不展示“已连接设备”记录。
 - `v8os doctor` 不只是诊断，还要能生成修复计划、备份、修复、回滚配置错误。
 - `v8os sessions`、`v8os schedule`、`v8os inbox` 默认只作用于当前工作区；`--all` 才进入全局治理视角。
-- 本地可信客户端边界：桌面 GUI 内置的 Web shell / CyberCore companion 可以直连 Engine WebSocket 获取实时事件，但不得直连数据库、不得接触 `systemBase.bridge.internalSecret`；Phone 和外部自定义客户端仍只连接 Admin BFF。
+- 本地可信客户端边界：桌面 GUI 内置的 Web shell / CyberCore companion 可以直连 Engine WebSocket 获取实时事件，但不得直连数据库、不得接触 `systemBase.bridge.internalSecret`；Phone 作为唯一远程交互入口仍只连接 Admin BFF。
+
+Network Supervisor 的可信邻居、V8 Relay 和多设备远程协作是另一条高级协作链路，不是普通用户的 Phone/Web/桌宠连接入口；它只应在“网络连接”治理页面中作为多设备主理人协作能力出现。
 
 这套设计借鉴 Codex CLI、Claude Code、Gemini CLI 的共同体验：安装后在本机终端或桌面里直接进入 agent；第一次只处理账号/API key/模型授权；工作区通常来自当前目录或用户显式选择；远程设备连接才需要二维码、token 或 pairing。V8OS 比它们多了 Engine/Admin/Phone/CyberCore，因此更需要把“本机免连接”和“远程才配对”分开，避免把控制面复杂度推给普通用户。
 
@@ -43,7 +45,7 @@ V8OS 下一阶段要从“源码目录里启动 Engine/Admin”正规化为三�
 这些产品都没有让本机用户先理解“Admin 地址、客户端配对、连接票据、Web 登录”。V8OS 文档早期把 Phone/Web/CyberCore/CLI 放进同一套连接叙事，是产品体验上的偏差。正确原则是：
 
 - **本机入口**：安装包、`v8os`、桌面 GUI、内置 Web shell、CyberCore companion 自动连接本机服务，不显示连接页。
-- **远程入口**：Phone、外部自定义客户端、远程 TUI 使用 pairing manifest。
+- **远程入口**：Phone 使用 pairing manifest。
 - **外部标准入口**：ACP / OpenAI-compatible / Anthropic-compatible 使用专门连接卡和 token，不影响普通本机体验。
 - **治理入口**：Admin 是配置与治理中心，不是普通用户每天都要登录的前置门槛。
 
@@ -57,7 +59,7 @@ V8OS 下一阶段要从“源码目录里启动 Engine/Admin”正规化为三�
 | Phone | 移动主入口 | 配对链路已接近目标，仍需减少用户记 Admin URL | 保持扫码/复制配对，统一 Owner/device pairing |
 | Web | 桌面 GUI 内部 shell 和回归面 | 曾被叙述成独立桌面主入口，甚至继承登录/连接语义 | 从产品叙事中降级为 GUI 内嵌/开发回归，本机静默连接 |
 | CyberCore | GUI 最小化/伴侣层 | 曾被叙述成独立桌面客户端 | 嵌入桌面 GUI 生命周期，不单独承担账号/工作区主链，本机静默连接 |
-| TUI | 类 Claude Code 的终端交互客户端 | 文档尚未展开 TUI，曾被混入 link 流程 | 在当前工作区直接聊天、看运行态、处理阻塞交互；远程 TUI 才需要 link |
+| TUI | 类 Claude Code 的终端交互客户端 | 文档尚未展开 TUI，曾被混入 link 流程 | 在当前工作区直接聊天、看运行态、处理阻塞交互；不作为远程设备配对入口 |
 | CLI | 配置、doctor、接入管理 | 仍混有较重连接/登录叙事 | 主打 `doctor/config/link/provider/mcp/logs`；`chat/tui/sessions` 保留本机高级入口 |
 | ACP Bridge | 第三方编辑器 / Agent Client 标准接入 | 尚未成为安装包入口 | 通过 `v8os acp` 暴露 stdio JSON-RPC 桥接，内部仍走 Admin BFF + Engine WS |
 
@@ -164,14 +166,14 @@ Engine 默认端口：
 Phone 当前行为：
 
 - 默认消费 Admin 生成的五分钟单次配对链接，不要求用户记忆 Admin URL。
-- 配对走 `/api/client/pairing/consume`；账号密码登录仅保留为高级回退。
+- 配对走 `/api/client/pairing/consume`；不走普通用户注册或账号密码登录。
 - token 存系统安全存储，Owner 可在 Admin 撤销设备会话。
 - 会话、上传、实时事件都走 Admin BFF。
 
 Web shell 当前定位：
 
 - 作为桌面 GUI 内嵌聊天 shell 和本地回归面。
-- 可以消费同一配对/Owner session 体系，但不再承担“独立桌面正式客户端”的产品叙事。
+- 使用本机可信会话自动连接，不消费 Phone 配对链接，也不再承担“独立桌面正式客户端”的产品叙事。
 - 不应出现公开普通用户注册语义。
 
 CyberCore companion 当前定位：
@@ -179,14 +181,14 @@ CyberCore companion 当前定位：
 - 只作为桌面 GUI 最小化、悬浮、语音和轻量动画伴侣层。
 - V8OS 模式下不应维护第二套 persona、memory、runtime 或工作区真相。
 - 连接仍走 Admin BFF 的 client auth、conversation、chat-submit、upload、realtime、audio 接口。
-- Gemini/OpenAI 直连模式可以作为 CyberCore 独立 demo 保留，但不能进入 V8OS 正式主链叙事。
+- 旧 Gemini/OpenAI 直连 demo 若保留在外部演示仓，也不能进入 V8OS 正式主链叙事。
 
 结论：
 
 - Phone 不应该直连 Engine；它是远程设备身份，所有连接、配对、刷新和同步都走 Admin BFF。
 - 桌面 GUI 内置的 Web shell / CyberCore companion 可以直连 Engine WebSocket 获取本机实时事件，但不能直连 DB，也不能接触 `NEXTAUTH_SECRET` 或 `systemBase.bridge.internalSecret`。
 - 个人实例只创建一个 Owner，不开放普通用户注册；Phone 是移动设备身份，Web shell 是本地/桌面会话，CyberCore 是桌面 companion 身份。
-- 自定义客户端只需要单次配对信息、后续 client auth token、可选 session/workspace scope。
+- Network Supervisor 的多设备远程协作、可信邻居和 V8 Relay 属于“网络连接”高级能力，不借用 Phone 配对语义，也不进入普通本地使用流程。
 
 ## 3. Claude Code / OpenClaw 对照
 
@@ -246,8 +248,8 @@ CyberCore companion 当前定位：
 - `v8os start/stop/status/restart` 默认看护 Engine + Admin + Web；CyberCore 需 `--with cybercore` 或 `--all`。
 - Admin/Web 启动复用 `scripts/run-next-with-managed-auth.mjs`，继续由现有脚本托管 Auth secret。
 - CLI 启动的进程状态写入 `~/.v8-agent-os/runtime/cli/processes.json`；外部占用端口会被标记为 `external_port_in_use`，不会被 CLI 强行接管。
-- `v8os doctor` 在线优先调用 Engine system doctor，离线自动降级为本地检查；本地检查覆盖端口占用、Node/npm/Python/pip、Engine venv、Admin/Web 依赖、Electron、config/mcp JSON、模型角色和配对地址。
-- `v8os config` 覆盖配置域查看、MCP list/status/install/remove、模型角色查看/设置、配对地址 manifest。
+- `v8os doctor` 在线优先调用 Engine system doctor，离线自动降级为本地检查；本地检查覆盖端口占用、Node/npm/Python/pip、Engine venv、Admin/Web 依赖、Electron、config/mcp JSON、模型角色和 Phone 连接地址。
+- `v8os config` 覆盖配置域查看、MCP list/status/install/remove、模型角色查看/设置、Phone 连接 manifest。
 - `v8os repair` 默认安全 dry-run；创建缺失目录、刷新缺失 Auth secret、备份坏配置和修复报告属于安全动作，依赖安装、杀进程、覆盖配置仍需要显式 `--yes` 或后续明确子命令。
 - `v8os logs/open` 作为薄入口，方便定位日志和打开 Admin/Web。
 
@@ -275,7 +277,7 @@ PATH helper 默认只预览，不修改系统：
 .\v8os.cmd config mcp status
 .\v8os.cmd config models roles
 .\v8os.cmd config models set-role supervisor minimax-cn:MiniMax-M3
-.\v8os.cmd config pairing manifest --json
+.\v8os.cmd config phone manifest --json
 ```
 
 未落地能力仍按后续阶段推进：TUI 聊天、sessions/schedule/inbox、完整 provider 安装向导、Windows/macOS/Linux 安装包入口。
@@ -295,7 +297,7 @@ PATH helper 默认只预览，不修改系统：
 | `v8os config` | 配置读取、校验、导入导出 | 否 |
 | `v8os providers` | Provider / 模型 / 音频 / 媒体接入管理 | 否 |
 | `v8os mcp` | MCP server 安装、列表、状态、移除 | 否 |
-| `v8os link` | Phone、远程 TUI、外部自定义客户端连接入口；本机 GUI/Web/CyberCore 不走它 | 否 |
+| `v8os link` | Phone 远程配对入口；本机 GUI/Web/CyberCore/TUI 不走它 | 否 |
 | `v8os inbox` | 查看当前工作区 approval / ask_user | 是 |
 | `v8os sessions` | 查看当前工作区 session 列表 | 是 |
 | `v8os schedule` | 管理当前工作区定时任务 | 是 |
@@ -530,8 +532,8 @@ Admin 不应要求用户手写 `.env.local`。
 | Admin Auth Secret | NextAuth/Auth.js session/JWT 签名 | `~/.v8-agent-os/secrets/admin-auth-secret` | 否 |
 | Bridge Internal Secret | Admin ↔ Engine 内部鉴权 | `~/.v8-agent-os/config.json` 或 secrets 引用 | 否 |
 | Local Shell Token | 本机 CLI / TUI / 桌面 GUI shell 访问本机 Admin BFF | `~/.v8-agent-os/client-auth/local-shell.json` 或等价安全存储 | 仅本机 |
-| Device Token | Phone、远程 TUI、外部自定义客户端的可撤销访问/刷新 token | `~/.v8-agent-os/mobile_app_tokens.json` | 仅对应设备本地 |
-| Web Session | Web 自身 Auth.js session | Web app secret/cookie | 否 |
+| Device Token | Phone 的可撤销访问/刷新 token | `~/.v8-agent-os/mobile_app_tokens.json` | 仅对应设备本地 |
+| Local Web Shell Session | 桌面 GUI 内置 Web shell 的本机会话 | launcher / Admin BFF 托管 | 仅本机 |
 | Provider API Key | 模型/工具供应商 | config/secrets 管理 | 否 |
 
 ### 8.2 本机免登录与 token 边界
@@ -542,38 +544,34 @@ Admin 不应要求用户手写 `.env.local`。
 
 - CLI 不持有 Engine secret，也不伪造 Admin session。
 - `v8os whoami` 只做诊断：显示本机 Owner 状态、本机服务地址、shell token 是否可用和过期时间。
-- `logout` 不作为普通本机入口；如果未来保留，也只清除本机 shell token，不影响 Phone、远程 TUI、桌面 GUI 内部 Web shell 或 CyberCore companion。
-- 远程设备和外部客户端仍走 `v8os link` / Admin pairing manifest。
+- `logout` 不作为普通本机入口；如果未来保留，也只清除本机 shell token，不影响 Phone、桌面 GUI 内部 Web shell 或 CyberCore companion。
+- Phone 仍走 `v8os link` / Admin pairing manifest。
 
 这避免把“远程设备鉴权”误搬到本机日常体验里。
 
-## 9. 远程设备与外部客户端连接：`v8os link`
+## 9. Phone 远程连接：`v8os link`
 
 ### 9.1 交互式入口
 
-`v8os link` 只用于本机之外的连接目标，或需要明确生成连接 manifest 的诊断场景。桌面 GUI 内置 Web shell、CyberCore companion、本机 TUI 默认由 launcher 自动注入连接状态，不要求用户手动 link。
+`v8os link` 只用于 Phone 远程配对，或需要明确生成 Phone 连接 manifest 的诊断场景。桌面 GUI 内置 Web shell、CyberCore companion、本机 TUI 默认由 launcher 自动注入连接状态，不要求用户手动 link。
 
 `v8os link` 进入方向键选择：
 
 ```text
-选择要连接的客户端：
+生成 Phone 配对链接：
 
 > Phone
-  Remote TUI
-  Custom Client
 ```
 
 也支持非交互：
 
 ```powershell
 v8os link --surface phone
-v8os link --surface remote-tui
-v8os link --surface custom
 ```
 
 ### 9.2 输出内容
 
-所有远程 surface 都输出：
+Phone manifest 输出：
 
 - Admin URL。
 - 五分钟、单次使用的配对票据与 consume endpoint。
@@ -584,9 +582,7 @@ v8os link --surface custom
 - 可复制链接/二维码/manifest；其中不含永久 token 或内部 secret。
 - 当前默认工作区和当前目录解析出的工作区。
 
-Phone manifest 包含 `surface=phone`。
-Remote TUI manifest 包含终端交互客户端需要的 Admin BFF、client auth、realtime endpoint 和当前工作区提示。
-Custom Client manifest 只暴露 Admin BFF，不暴露 Engine 端口或 internal secret。
+Phone manifest 包含 `surface=phone`，不暴露 Engine 端口或 internal secret。
 
 ### 9.3 OS Web 定位
 
@@ -609,7 +605,7 @@ CyberCore 不再单独作为“桌面客户端”让用户理解和配置。正�
 
 ### 9.5 TUI 定位
 
-TUI 是类 Claude Code 的终端交互客户端，不是普通命令集合。本机 TUI 直接从当前工作区进入；只有跨机器远程 TUI 才需要 `v8os link --surface remote-tui`。它应支持：
+TUI 是类 Claude Code 的终端交互客户端，不是普通命令集合。本机 TUI 直接从当前工作区进入，不使用 Phone 配对链路。它应支持：
 
 - 在当前工作区启动/恢复会话。
 - 通过 Admin BFF 收发消息和实时事件。
@@ -821,11 +817,11 @@ CLI 处理阻塞交互时必须：
 - 注入 Admin secret/env。
 - 输出本机 status、打开入口和 Phone 连接提示。
 
-### Phase 2：单 Owner、设备配对与地址免记忆
+### Phase 2：单 Owner、Phone 配对与地址免记忆
 
 - 首次启动初始化唯一 Owner 管理员。
-- Phone 扫码/复制配对；远程 TUI / Custom Client 消费同一 pairing 体系。
-- Admin topbar 提供“连接设备”入口，显示二维码、复制链接、LAN/Tailscale 可达地址。
+- Phone 扫码/复制配对。
+- Admin topbar 提供“连接手机”入口，显示二维码、复制链接、LAN/Tailscale 可达地址。
 - 删除公开普通用户注册、旧账号密码客户端登录叙事。
 
 ### Phase 3：Admin standalone 与 Engine 托管
@@ -846,7 +842,6 @@ CLI 处理阻塞交互时必须：
 
 - 提供类似 `out/Claude` 的终端会话体验。
 - 本机直接进入当前工作区；若作为桌面 GUI 的一部分运行，可以复用同一条本地可信 Engine WebSocket 边界，但仍不得直连 DB。
-- 远程 TUI 才通过 `v8os link --surface remote-tui` 获取 Admin BFF 连接信息。
 - 支持工作区信任、聊天、实时事件、approval/ask_user、简洁工具/运行态。
 - 与 Phone/桌面 GUI 共享 session 和 workspace 语义；本机 TUI 不伪装成远程设备。
 
@@ -859,7 +854,7 @@ CLI 处理阻塞交互时必须：
 
 ### Phase 7：Link / Doctor / Inbox / Sessions / Schedule
 
-- `v8os link` 服务 Phone、远程 TUI、Custom Client；桌面 GUI 内部 Web shell / CyberCore companion 由 launcher 自动注入连接状态。
+- `v8os link` 服务 Phone；桌面 GUI 内部 Web shell / CyberCore companion / 本机 TUI 由 launcher 自动注入连接状态。
 - `v8os doctor repair config` 支持备份、修复、回滚。
 - `v8os inbox` 接入 approval / ask_user。
 - `v8os sessions` 默认当前工作区。
@@ -870,7 +865,7 @@ CLI 处理阻塞交互时必须：
 - Windows installer。
 - PATH 注册。
 - 升级/回滚。
-- Phone / 远程 TUI / Custom Client connection manifest。
+- Phone connection manifest。
 
 ### Phase 9：普通用户易用性验收
 
@@ -906,9 +901,9 @@ CLI 处理阻塞交互时必须：
 ### 客户端连接
 
 - 本机桌面 GUI / Web shell / CyberCore companion 自动连接本机服务，不出现连接页。
-- `v8os link` 可选择 Phone / Remote TUI / Custom Client。
+- `v8os link` 只生成 Phone 配对信息。
 - Phone 使用扫码或复制链接进入同一套会话。
-- 本机 TUI 使用 `v8os tui` 直接进入当前工作区；Remote TUI 才使用输出的 Admin BFF/client auth 信息进入终端交互。
+- 本机 TUI 使用 `v8os tui` 直接进入当前工作区。
 - Web shell 作为桌面 GUI 内部入口或本地测试入口，由 launcher 注入本机连接状态。
 - CyberCore companion 由桌面 GUI launcher 注入连接状态，不要求用户单独 link。
 - 输出不包含 Engine internal secret。
@@ -917,7 +912,7 @@ CLI 处理阻塞交互时必须：
 
 - 删除 Admin Auth Secret 后，launcher 能重新生成。
 - CLI/日志不打印 secret 明文。
-- Phone/Remote TUI/Custom Client 不接触任何 internal secret。
+- Phone 不接触任何 internal secret。
 - 本机 Web shell / CyberCore companion 可使用 launcher 注入的本机会话状态，但不得读取 DB 或 internal secret。
 
 ### Doctor
@@ -942,7 +937,7 @@ CLI 处理阻塞交互时必须：
 - 不要让 `v8os` 裸命令绑定 cwd，否则用户在任意目录启动系统都会污染 session/workspace 语义。
 - 不要保留公开 `ask/run` 入口叙事，否则 CLI 语义会继续分裂。
 - 不要让 `--yes` 在未知 cwd 上静默创建工作区。
-- 不要让 Phone 或外部自定义客户端直连 Engine；桌面 GUI 内置的 Web shell / CyberCore companion 只允许直连 Engine WebSocket 这类本地实时通道，不允许直连 DB 或读取内部 secret。
+- 不要让 Phone 直连 Engine；桌面 GUI 内置的 Web shell / CyberCore companion 只允许直连 Engine WebSocket 这类本地实时通道，不允许直连 DB 或读取内部 secret。
 - 不要为了 CLI 方便绕过工作区边界、审批、Spec、runtime handoff 和 proof 链；CLI 只是入口，不改变 `Supervisor First, Runtime Grounded`。
 - 不要把 Admin/Web 的 `.env` 当 runtime truth；它只是 Next.js 启动环境。
 - 不要让定时任务成为无 scope 的全局 agent 活动；所有 schedule 都必须绑定工作区或明确是治理任务。
@@ -972,10 +967,8 @@ v8os chat
 # 直接提交一条任务
 v8os chat "检查这个项目并给出修复建议"
 
-# 远程设备或外部客户端才需要连接 manifest
+# Phone 才需要连接 manifest
 v8os link --surface phone
-v8os link --surface remote-tui
-v8os link --surface custom
 
 # 进入终端交互客户端
 v8os tui

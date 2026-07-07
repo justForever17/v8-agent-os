@@ -23,51 +23,23 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     },
     providers: [
         CredentialsProvider({
-            name: "Device pairing",
+            name: "Local V8OS session",
             credentials: {
-                pairingUri: { label: "Pairing link", type: "text" },
                 adminBaseUrl: { label: "Admin URL", type: "text" },
                 localSession: { label: "Local session", type: "text" },
             },
             async authorize(credentials) {
                 const localSession = String(credentials?.localSession || "").trim() === "1";
-                if (localSession) {
-                    const adminBaseUrl = String(credentials?.adminBaseUrl || "http://127.0.0.1:9528").trim().replace(/\/+$/, "");
-                    if (!adminBaseUrl) return null;
-                    try {
-                        const response = await fetch(`${adminBaseUrl}/api/client/auth/local-session`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                surface: "web",
-                                deviceName: "v8-web-local",
-                            }),
-                        });
-                        const payload = await response.json().catch(() => ({}));
-                        return response.ok && payload?.user ? payload.user : null;
-                    } catch {
-                        return null;
-                    }
-                }
-
-                const pairingUri = String(credentials?.pairingUri || "").trim();
-                if (!pairingUri) {
-                    return null;
-                }
+                if (!localSession) return null;
+                const adminBaseUrl = String(credentials?.adminBaseUrl || "http://127.0.0.1:9528").trim().replace(/\/+$/, "");
+                if (!adminBaseUrl) return null;
                 try {
-                    const parsed = new URL(pairingUri);
-                    const adminBaseUrl = String(parsed.searchParams.get("admin") || "").trim().replace(/\/+$/, "");
-                    const code = String(parsed.searchParams.get("code") || "").trim();
-                    const instanceId = String(parsed.searchParams.get("instance") || "").trim();
-                    if (!adminBaseUrl || !code) return null;
-                    const response = await fetch(`${adminBaseUrl}/api/client/pairing/consume`, {
+                    const response = await fetch(`${adminBaseUrl}/api/client/auth/local-session`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
-                            code,
-                            instanceId: instanceId || undefined,
-                            sessionKind: "web_session",
-                            deviceName: "v8-web",
+                            surface: "web",
+                            deviceName: "v8-web-local",
                         }),
                     });
                     const payload = await response.json().catch(() => ({}));

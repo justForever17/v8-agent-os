@@ -83,8 +83,8 @@ export function renderModelRoles(result) {
   }
 }
 
-export function renderPairingManifest(result) {
-  console.log(`Pairing manifest (${result.source})`);
+export function renderPhoneManifest(result) {
+  console.log(`Phone connection manifest (${result.source})`);
   const manifest = result.manifest || {};
   console.log(`serverId: ${manifest.serverId || ""}`);
   console.log(`instanceId: ${manifest.instanceId || ""}`);

@@ -6,6 +6,10 @@ import { LOG_DIR } from "./paths.mjs";
 import { isPortOpen } from "./ports.mjs";
 import { isPidAlive, readProcessState, writeProcessState } from "./process_state.mjs";
 
+function componentHasPort(component) {
+  return Number.isInteger(component?.port) && component.port > 0;
+}
+
 export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
   const state = readProcessState();
   const statuses = [];
@@ -14,7 +18,8 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
     if (!component) continue;
     const record = state.processes[id] || null;
     const pidAlive = record?.pid ? isPidAlive(record.pid) : false;
-    const portOpen = await isPortOpen(component.port);
+    const hasPort = componentHasPort(component);
+    const portOpen = hasPort ? await isPortOpen(component.port) : false;
     statuses.push({
       id,
       label: component.label,
@@ -23,7 +28,7 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
       pid: record?.pid || null,
       pidAlive,
       portOpen,
-      state: pidAlive ? "managed_running" : portOpen ? "external_port_in_use" : "stopped",
+      state: pidAlive ? "managed_running" : hasPort && portOpen ? "external_port_in_use" : "stopped",
       startedAt: record?.startedAt || null,
       logOut: record?.logOut || null,
       logErr: record?.logErr || null,
@@ -44,7 +49,7 @@ export async function startComponents(componentIds, options = {}) {
       results.push({ id, status: "already_running", pid: record.pid });
       continue;
     }
-    if (await isPortOpen(component.port)) {
+    if (componentHasPort(component) && await isPortOpen(component.port)) {
       results.push({ id, status: "port_in_use", port: component.port });
       continue;
     }
@@ -70,12 +75,12 @@ export async function startComponents(componentIds, options = {}) {
       command: commandSpec.command,
       args: commandSpec.args,
       cwd: commandSpec.cwd,
-      port: component.port,
+      port: componentHasPort(component) ? component.port : null,
       startedAt: new Date().toISOString(),
       logOut: logs.out,
       logErr: logs.err,
     };
-    results.push({ id, status: "started", pid: child.pid, port: component.port, logOut: logs.out, logErr: logs.err });
+    results.push({ id, status: "started", pid: child.pid, port: componentHasPort(component) ? component.port : null, logOut: logs.out, logErr: logs.err });
   }
   writeProcessState(state);
   return results;

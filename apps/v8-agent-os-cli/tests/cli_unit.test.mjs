@@ -14,6 +14,7 @@ import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
+import { isNextBuildPresent, nextBuildIdPath, previewBuildLogPaths } from "../src/preview_commands.mjs";
 import { currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
@@ -35,6 +36,8 @@ function powershellLiteral(value) {
 test("default start components exclude CyberCore", () => {
   assert.deepEqual(DEFAULT_START_COMPONENTS, ["engine", "admin", "web"]);
   assert.deepEqual(parseComponentSelection([]), ["engine", "admin", "web"]);
+  assert.equal(DEFAULT_START_COMPONENTS.includes("shell"), false);
+  assert.equal(DEFAULT_START_COMPONENTS.includes("desktop-pet"), false);
 });
 
 test("--with adds optional components without replacing defaults", () => {
@@ -47,6 +50,8 @@ test("--only narrows component set", () => {
 
 test("--all returns all components", () => {
   assert.deepEqual(parseComponentSelection(["--all"]), ALL_COMPONENTS);
+  assert.ok(ALL_COMPONENTS.includes("shell"));
+  assert.ok(ALL_COMPONENTS.includes("desktop-pet"));
 });
 
 test("local repair plan proposes safe state root creation", () => {
@@ -103,6 +108,39 @@ test("admin and web commands use managed auth launcher", () => {
   assert.ok(web.args.includes("web"));
   assert.ok(admin.args.includes("9528"));
   assert.ok(web.args.includes("9527"));
+});
+
+test("preview shell and desktop pet are no-port managed components", () => {
+  assert.equal(COMPONENTS.shell.port, null);
+  assert.equal(COMPONENTS["desktop-pet"].port, null);
+  const shell = COMPONENTS.shell.command();
+  const pet = COMPONENTS["desktop-pet"].command();
+  assert.equal(shell.command, process.execPath);
+  assert.equal(pet.command, process.execPath);
+  assert.ok(shell.args.some((part) => part.endsWith("launch-shell.mjs")));
+  assert.ok(pet.args.some((part) => part.endsWith("launch-desktop-pet.mjs")));
+  assert.equal(pet.env.V8_DESKTOP_PET_MANAGED_BY_SHELL, "1");
+});
+
+test("desktop pet managed mode suppresses its own tray", () => {
+  const main = fs.readFileSync(path.join(repoRoot, "apps", "v8-agent-os-desktop-pet", "electron", "main.cjs"), "utf8");
+  assert.match(main, /V8_DESKTOP_PET_MANAGED_BY_SHELL/);
+  assert.match(main, /MANAGED_BY_SHELL/);
+  assert.match(main, /if \(!MANAGED_BY_SHELL\) createTray\(\)/);
+});
+
+test("preview build check is based on Next BUILD_ID", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-preview-build-"));
+  assert.equal(isNextBuildPresent(dir), false);
+  fs.mkdirSync(path.dirname(nextBuildIdPath(dir)), { recursive: true });
+  fs.writeFileSync(nextBuildIdPath(dir), "unit-build\n", "utf8");
+  assert.equal(isNextBuildPresent(dir), true);
+});
+
+test("preview build logs are written to CLI logs", () => {
+  const logs = previewBuildLogPaths({ app: "web" });
+  assert.match(logs.out, /web\.build\.out\.log$/);
+  assert.match(logs.err, /web\.build\.err\.log$/);
 });
 
 test("Windows root wrappers reach the CLI help without entering the app directory", { skip: process.platform !== "win32" }, () => {

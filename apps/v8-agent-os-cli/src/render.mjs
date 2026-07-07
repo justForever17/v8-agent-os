@@ -7,13 +7,14 @@ export function renderStatus(statuses) {
   for (const item of statuses) {
     const marker = item.state === "managed_running" ? "RUNNING" : item.state === "external_port_in_use" ? "EXTERNAL" : "STOPPED";
     const pid = item.pid ? ` pid=${item.pid}` : "";
-    console.log(`- ${item.label}: ${marker} port=${item.port}${pid}`);
+    const port = item.port ? ` port=${item.port}` : "";
+    console.log(`- ${item.label}: ${marker}${port}${pid}`);
   }
 }
 
 export function renderStartResults(results) {
   for (const item of results) {
-    if (item.status === "started") console.log(`Started ${item.id}: pid=${item.pid}, port=${item.port}`);
+    if (item.status === "started") console.log(`Started ${item.id}: pid=${item.pid}${item.port ? `, port=${item.port}` : ""}`);
     else if (item.status === "already_running") console.log(`${item.id} already running: pid=${item.pid}`);
     else if (item.status === "port_in_use") console.log(`${item.id} skipped: port ${item.port} is already in use by an external process.`);
     else console.log(`${item.id}: ${item.status}`);

@@ -20,6 +20,7 @@ export const ENGINE_DIR = path.join(REPO_ROOT, "apps", "v8-agent-os-engine");
 export const ADMIN_DIR = path.join(REPO_ROOT, "apps", "v8-agent-os-admin");
 export const WEB_DIR = path.join(REPO_ROOT, "apps", "v8-agent-os-web");
 export const DESKTOP_PET_DIR = path.join(REPO_ROOT, "apps", "v8-agent-os-desktop-pet");
+export const SHELL_DIR = path.join(REPO_ROOT, "apps", "v8-agent-os-shell");
 export const CYBERCORE_DIR = path.resolve(REPO_ROOT, "..", "out", "CyberCore");
 
 export const DEFAULT_PORTS = {

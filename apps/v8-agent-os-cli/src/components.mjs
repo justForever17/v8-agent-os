@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { ADMIN_DIR, CYBERCORE_DIR, DEFAULT_PORTS, ENGINE_DIR, LOG_DIR, REPO_ROOT, WEB_DIR } from "./paths.mjs";
+import { ADMIN_DIR, CYBERCORE_DIR, DEFAULT_PORTS, DESKTOP_PET_DIR, ENGINE_DIR, LOG_DIR, REPO_ROOT, SHELL_DIR, WEB_DIR } from "./paths.mjs";
 
 function enginePython() {
   const candidate = process.platform === "win32"
@@ -86,10 +86,47 @@ export const COMPONENTS = {
       };
     },
   },
+  "desktop-pet": {
+    id: "desktop-pet",
+    label: "Desktop Pet",
+    port: null,
+    cwd: REPO_ROOT,
+    command() {
+      return {
+        command: process.execPath,
+        args: ["apps/v8-agent-os-shell/scripts/launch-desktop-pet.mjs"],
+        cwd: REPO_ROOT,
+        env: {
+          V8_DESKTOP_PET_MANAGED_BY_SHELL: "1",
+          V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
+          V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
+        },
+      };
+    },
+  },
+  shell: {
+    id: "shell",
+    label: "V8OS Shell",
+    port: null,
+    cwd: SHELL_DIR,
+    command() {
+      return {
+        command: process.execPath,
+        args: ["apps/v8-agent-os-shell/scripts/launch-shell.mjs"],
+        cwd: REPO_ROOT,
+        env: {
+          V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
+          V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
+          V8_REPO_ROOT: REPO_ROOT,
+          V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
+        },
+      };
+    },
+  },
 };
 
 export const DEFAULT_START_COMPONENTS = ["engine", "admin", "web"];
-export const ALL_COMPONENTS = ["engine", "admin", "web", "cybercore"];
+export const ALL_COMPONENTS = ["engine", "admin", "web", "cybercore", "desktop-pet", "shell"];
 
 export function parseComponentSelection(args) {
   if (args.includes("--all")) return ALL_COMPONENTS;

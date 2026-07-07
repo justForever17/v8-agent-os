@@ -19,6 +19,7 @@ let trayContext = {
 const LOCAL_SERVER_URL = 'http://127.0.0.1:3000';
 const V8_ADMIN_URL = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
 const V8_WEB_URL = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
+const MANAGED_BY_SHELL = process.env.V8_DESKTOP_PET_MANAGED_BY_SHELL === '1';
 const CLOSED_WIDTH = 380;
 const CLOSED_HEIGHT = 380;
 const PANEL_WIDTH = 940;
@@ -425,6 +426,7 @@ function showOrFocusWindow() {
 }
 
 function createTray() {
+  if (MANAGED_BY_SHELL) return;
   tray = new Tray(createTrayIcon());
   tray.setToolTip('V8OS 桌宠');
   updateTrayMenu();
@@ -588,7 +590,7 @@ app.whenReady().then(() => {
   app.setAppUserModelId('V8OS.CyberCoreDesktop');
   setupPermissionHandlers();
   void createMainWindow();
-  createTray();
+  if (!MANAGED_BY_SHELL) createTray();
   globalShortcut.register('Control+Alt+V', showOrFocusWindow);
 
   app.on('activate', () => {

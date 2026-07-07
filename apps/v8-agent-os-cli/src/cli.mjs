@@ -16,6 +16,7 @@ import {
 } from "./config_commands.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { commandInbox } from "./inbox_commands.mjs";
+import { commandPreview } from "./preview_commands.mjs";
 import { runRepair } from "./repair.mjs";
 import { DEFAULT_PORTS, LOG_DIR, REPO_ROOT } from "./paths.mjs";
 import { startComponents, statusComponents, stopComponents } from "./process_manager.mjs";
@@ -48,6 +49,7 @@ function help() {
 Usage:
   v8os [start]
   v8os start [--with cybercore|--all|--only engine,admin] [--mode dev|start]
+  v8os preview [--rebuild|--no-build]
   v8os stop [--all|--only engine,admin]
   v8os restart [--all|--only engine,admin]
   v8os status [--json]
@@ -72,6 +74,25 @@ async function commandStart(args) {
   const results = await startComponents(selected, { mode });
   if (hasFlag(args, "--json")) printJson(results);
   else renderStartResults(results);
+}
+
+async function runPreview(args) {
+  const result = await commandPreview({
+    rebuild: hasFlag(args, "--rebuild"),
+    noBuild: hasFlag(args, "--no-build"),
+  });
+  if (hasFlag(args, "--json")) {
+    printJson(result);
+    return;
+  }
+  for (const item of result.buildResults || result.buildPlan) {
+    if (item.status === "built") console.log(`${item.label}: production build ready. Log: ${item.logOut}`);
+    else if (item.status === "already_built" || !item.shouldBuild) console.log(`${item.label}: production build already exists.`);
+    else console.log(`${item.label}: production build ready.`);
+  }
+  renderStartResults(result.serviceResults);
+  renderStartResults(result.shellResults);
+  console.log("V8OS preview shell is starting. Close the window to hide it; use the tray menu to exit V8OS.");
 }
 
 async function commandStop(args) {
@@ -193,6 +214,7 @@ export async function main(argv) {
     return;
   }
   if (command === "start") return commandStart(args);
+  if (command === "preview") return runPreview(args);
   if (command === "stop") return commandStop(args);
   if (command === "restart") {
     await commandStop(args);

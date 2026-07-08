@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-const TAG_RE = /^v8-os-(phone|desktop|desktop-preview)-v(\d{4}\.\d{2}\.\d{2}\.\d+)$/;
+const TAG_RE = /^v8-os-(phone|desktop)-v(\d{4}\.\d{2}\.\d{2}\.\d+)$/;
 
 function parseArgs(argv) {
   const args = {};
@@ -32,8 +32,8 @@ function inferRelease(args) {
     if (!match) {
       throw new Error(`Invalid V8OS release tag: ${tag}`);
     }
-    const tagProduct = match[1] === "desktop-preview" ? "desktop" : match[1];
-    const tagChannel = match[1] === "desktop-preview" ? "preview" : "";
+    const tagProduct = match[1];
+    const tagChannel = "";
     product = product || tagProduct;
     version = version || match[2];
     if (product !== tagProduct) {
@@ -83,9 +83,7 @@ function repoUrl() {
 }
 
 function previousTag(currentTag, product) {
-  const prefix = currentTag.startsWith("v8-os-desktop-preview-v")
-    ? "v8-os-desktop-preview-v"
-    : `v8-os-${product}-v`;
+  const prefix = `v8-os-${product}-v`;
   const tags = git(["tag", "--list", `${prefix}*`, "--sort=-creatordate"])
     .split(/\r?\n/)
     .map((value) => value.trim())
@@ -120,6 +118,7 @@ function assetSection(product, version, channel) {
     "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：" + desktopLabel + "。",
     "- `V8-Agent-OS-" + desktopVersion + "-win-x64.zip`：" + desktopZipLabel + "。",
     "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
+    "- `RUNTIME_PROBE.json`：本次桌面包内置运行时与功能依赖探针结果；若 Git/ffmpeg 等能力显示 degraded，请按探针结果理解实际可用范围。",
     "",
     desktopChannelNote,
   ].join("\n");

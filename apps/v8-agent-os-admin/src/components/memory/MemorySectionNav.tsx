@@ -39,7 +39,7 @@ export default function MemorySectionNav({ activeKey }: { activeKey: MemorySecti
 
     const visibleItems = MEMORY_SECTION_ITEMS.filter((item) => {
         if (!debugMode) {
-            return !["logs", "runtime", "config", "graph"].includes(item.key);
+            return !["logs", "runtime", "config"].includes(item.key);
         }
         return true;
     });

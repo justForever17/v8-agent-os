@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - "v8-os-desktop-preview-v*"
+      - "v8-os-desktop-v*"
 
 permissions:
   contents: write
@@ -35,13 +35,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Node dependencies
+      - name: Install Admin dependencies
         shell: pwsh
-        run: |
-          npm ci --include=dev --prefix apps/v8-agent-os-admin
-          npm ci --include=dev --prefix apps/v8-agent-os-web
-          npm ci --include=dev --prefix apps/v8-agent-os-desktop-pet
-          npm ci --include=dev --prefix apps/v8-agent-os-shell
+        working-directory: apps/v8-agent-os-admin
+        run: npm ci --include=dev --workspaces=false
+
+      - name: Install Web dependencies
+        shell: pwsh
+        working-directory: apps/v8-agent-os-web
+        run: npm ci --include=dev --workspaces=false
+
+      - name: Install desktop pet dependencies
+        shell: pwsh
+        working-directory: apps/v8-agent-os-desktop-pet
+        run: npm ci --include=dev --workspaces=false
+
+      - name: Install Shell dependencies
+        shell: pwsh
+        working-directory: apps/v8-agent-os-shell
+        run: npm ci --include=dev --workspaces=false
 
       - name: Prepare embedded Engine Python runtime
         shell: pwsh
@@ -49,6 +61,10 @@ jobs:
           python -m venv apps/v8-agent-os-engine/.venv
           apps/v8-agent-os-engine/.venv/Scripts/python.exe -m pip install --upgrade pip
           apps/v8-agent-os-engine/.venv/Scripts/python.exe -m pip install -r apps/v8-agent-os-engine/requirements.txt
+          $browserPath = Join-Path (Resolve-Path "apps/v8-agent-os-engine").Path ".playwright-browsers"
+          New-Item -ItemType Directory -Force -Path $browserPath | Out-Null
+          $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
+          apps/v8-agent-os-engine/.venv/Scripts/python.exe -m playwright install chromium
 
       - name: Build Admin and Web production bundles
         shell: pwsh
@@ -58,7 +74,15 @@ jobs:
 
       - name: Build desktop pet
         shell: pwsh
-        run: npm --prefix apps/v8-agent-os-desktop-pet run build
+        working-directory: apps/v8-agent-os-desktop-pet
+        run: |
+          npm exec -- vite --version
+          npm exec -- esbuild --version
+          npm run build
+
+      - name: Verify desktop runtime payload
+        shell: pwsh
+        run: node apps/v8-agent-os-shell/tests/scripts/verify_desktop_release_runtime.mjs
 
       - name: Shell release contract tests
         shell: pwsh
@@ -68,11 +92,27 @@ jobs:
         shell: pwsh
         run: npm --prefix apps/v8-agent-os-shell run dist:win
 
+      - name: Installed desktop smoke
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          $shellExe = Get-ChildItem "apps/v8-agent-os-shell/dist/release" -Recurse -File -Filter "V8 Agent OS.exe" | Select-Object -First 1
+          if (-not $shellExe) { throw "No unpacked Shell executable found in apps/v8-agent-os-shell/dist/release" }
+          node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs --shell-exe "$($shellExe.FullName)"
+
+      - name: Cleanup desktop smoke processes
+        if: always()
+        shell: pwsh
+        run: |
+          node apps/v8-agent-os-cli/bin/v8os.mjs stop --all
+          Get-Process "V8 Agent OS" -ErrorAction SilentlyContinue | Stop-Process -Force
+        continue-on-error: true
+
       - name: Normalize desktop artifact names
         shell: pwsh
         run: |
           $outDir = "apps/v8-agent-os-shell/dist/release"
-          if ($env:GITHUB_REF_NAME -match '^v8-os-desktop-preview-v(.+)$') {
+          if ($env:GITHUB_REF_NAME -match '^v8-os-desktop-v(.+)$') {
             $releaseVersion = "preview-$($Matches[1])"
           } else {
             $releaseVersion = "preview-$env:GITHUB_RUN_NUMBER"
@@ -98,7 +138,7 @@ jobs:
           Get-Content "$outDir/SHA256SUMS.txt"
 
       - name: Generate desktop release notes
-        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-preview-v')
+        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         shell: pwsh
         run: |
           node scripts/release/generate-release-notes.mjs `
@@ -115,10 +155,11 @@ jobs:
             apps/v8-agent-os-shell/dist/release/*.exe
             apps/v8-agent-os-shell/dist/release/*.zip
             apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
+            apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json
           if-no-files-found: error
 
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-preview-v')
+        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: false
@@ -127,3 +168,4 @@ jobs:
             apps/v8-agent-os-shell/dist/release/*.exe
             apps/v8-agent-os-shell/dist/release/*.zip
             apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
+            apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json

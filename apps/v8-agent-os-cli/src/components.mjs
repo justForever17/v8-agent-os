@@ -3,6 +3,11 @@ import path from "node:path";
 import process from "node:process";
 import { ADMIN_DIR, CYBERCORE_DIR, DEFAULT_PORTS, DESKTOP_PET_DIR, ENGINE_DIR, LOG_DIR, REPO_ROOT, SHELL_DIR, WEB_DIR } from "./paths.mjs";
 
+function enginePlaywrightEnv() {
+  const browsersPath = path.join(ENGINE_DIR, ".playwright-browsers");
+  return fs.existsSync(browsersPath) ? { PLAYWRIGHT_BROWSERS_PATH: browsersPath } : {};
+}
+
 function enginePython() {
   if (process.env.V8_ENGINE_PYTHON) return process.env.V8_ENGINE_PYTHON;
   const candidates = process.platform === "win32"
@@ -40,6 +45,7 @@ export const COMPONENTS = {
         env: {
           ENGINE_HOST: "127.0.0.1",
           ENGINE_PORT: String(DEFAULT_PORTS.engine),
+          ...enginePlaywrightEnv(),
         },
       };
     },

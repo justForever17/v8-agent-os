@@ -59,9 +59,6 @@ function sha512Integrity(pathname) {
 }
 
 function toTag(product, version, channel = "preview") {
-  if (product === "desktop" && channel === "preview") {
-    return `v8-os-desktop-preview-v${version}`;
-  }
   return `v8-os-${product}-v${version}`;
 }
 

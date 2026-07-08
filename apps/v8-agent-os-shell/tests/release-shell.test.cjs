@@ -44,18 +44,36 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /SHA256/);
 });
 
-test('desktop preview release uses a preview-only tag namespace', () => {
+test('desktop release uses current desktop tag namespace and runtime probes', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
-  assert.match(workflow, /v8-os-desktop-preview-v\*/);
-  assert.match(workflow, /\^v8-os-desktop-preview-v\(\.\+\)\$/);
-  assert.doesNotMatch(workflow, /refs\/tags\/v8-os-desktop-v/);
+  assert.match(workflow, /v8-os-desktop-v\*/);
+  assert.match(workflow, /\^v8-os-desktop-v\(\.\+\)\$/);
+  assert.match(workflow, /Verify desktop runtime payload/);
+  assert.match(workflow, /verify_desktop_release_runtime\.mjs/);
+  assert.match(workflow, /Installed desktop smoke/);
+  assert.match(workflow, /RUNTIME_PROBE\.json/);
+  assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
 
   const prepareRelease = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs'), 'utf8');
-  assert.match(prepareRelease, /v8-os-desktop-preview-v\$\{version\}/);
+  assert.match(prepareRelease, /v8-os-\$\{product\}-v\$\{version\}/);
+  assert.doesNotMatch(prepareRelease, /desktop-preview/);
 
   const releaseNotes = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs'), 'utf8');
-  assert.match(releaseNotes, /desktop-preview/);
+  assert.match(releaseNotes, /\^v8-os-\(phone\|desktop\)-v/);
+  assert.match(releaseNotes, /RUNTIME_PROBE\.json/);
+  assert.doesNotMatch(releaseNotes, /desktop-preview/);
 
   const baseline = fs.readFileSync(path.join(repoRoot, 'docs', 'V8OS', 'V8OS_RELEASE_VERSIONING_BASELINE_ZH.md'), 'utf8');
-  assert.match(baseline, /v8-os-desktop-preview-vYYYY\.MM\.DD\.N/);
+  assert.match(baseline, /v8-os-desktop-vYYYY\.MM\.DD\.N/);
+  assert.match(baseline, /RUNTIME_PROBE\.json/);
+});
+
+test('memory knowledge graph stays visible without advanced mode', () => {
+  const navSource = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'src', 'components', 'memory', 'MemorySectionNav.tsx'),
+    'utf8',
+  );
+  assert.match(navSource, /!\["logs", "runtime", "config"\]\.includes\(item\.key\)/);
+  assert.match(navSource, /key: "graph"/);
+  assert.doesNotMatch(navSource, /"logs", "runtime", "config", "graph"/);
 });

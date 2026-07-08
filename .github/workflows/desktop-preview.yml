@@ -38,10 +38,10 @@ jobs:
       - name: Install Node dependencies
         shell: pwsh
         run: |
-          npm ci --prefix apps/v8-agent-os-admin
-          npm ci --prefix apps/v8-agent-os-web
-          npm ci --prefix apps/v8-agent-os-desktop-pet
-          npm ci --prefix apps/v8-agent-os-shell
+          npm ci --include=dev --prefix apps/v8-agent-os-admin
+          npm ci --include=dev --prefix apps/v8-agent-os-web
+          npm ci --include=dev --prefix apps/v8-agent-os-desktop-pet
+          npm ci --include=dev --prefix apps/v8-agent-os-shell
 
       - name: Prepare embedded Engine Python runtime
         shell: pwsh

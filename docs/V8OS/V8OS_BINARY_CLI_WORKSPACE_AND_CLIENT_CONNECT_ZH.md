@@ -2,6 +2,9 @@
 
 更新时间：2026-07-07
 
+产品线总纲见：`docs/V8OS/V8OS_PRODUCTIZATION_MASTERPLAN_ZH.md`。
+发布版本基线见：`docs/V8OS/V8OS_RELEASE_VERSIONING_BASELINE_ZH.md`。
+
 ## 定位
 
 这篇文档只说明 V8OS 本地产品入口和客户端连接边界。核心原则很简单：
@@ -63,7 +66,7 @@ Web 和桌宠是本地可信客户端：
 - 不需要用户手动复制连接地址。
 - 通过本机 Admin BFF / 本机可信会话进入。
 
-Web 面向桌面调试和备用聊天；桌宠是会话运行状态伴随器，负责会话监听、动作反馈、语音发送和播报。
+Web 是桌面版本地聊天界面；桌宠是会话运行状态伴随器，负责会话监听、动作反馈、语音发送和播报。二者都不需要用户理解端口或配对链接。
 
 ### Phone 配对
 
@@ -112,9 +115,10 @@ node apps/v8-agent-os-cli/tests/scripts/run_v8os_cli_cold_start_smoke.mjs
 
 近期 CLI 还需要补：
 
-- `v8os chat`：本机终端里直接和主理人中枢对话。
-- `v8os sessions`：列出、进入、恢复工作区会话。
-- `v8os workspace`：创建、选择、诊断工作区。
+- `v8os chat`：从骨架补到稳定的本机终端对话。
+- `v8os sessions`：从骨架补到稳定的会话列出、进入、恢复。
+- `v8os inbox`：处理 ask_user / approval。
+- `v8os workspace`：从骨架补到稳定的工作区创建、选择、诊断。
 - `v8os doctor` 更完整地定位端口、依赖、模型、MCP、Phone 连接问题。
 - `v8os repair` 支持更多明确授权后的修复动作。
 - `v8os config` 覆盖 MCP 安装/移除、模型角色、Phone 地址候选、常见配置健康检查。
@@ -177,11 +181,22 @@ Network Supervisor 的多设备远程协作、V8 Relay、可信邻居、第三�
 
 ### TUI
 
-TUI 放在后期。它应类似本地终端交互界面，而不是替代 Web/Phone：
+TUI 放在后期。它应类似本地终端交互界面，不依赖 Admin 端，也不是替代 Web/Phone：
 
 - 适合低配机器。
-- 支持工作区会话、工具状态、审批、文件产物、终端输出。
-- 复用 Engine 和 Admin BFF，不另造一套历史真相。
+- CLI/TUI 承担基础配置、鉴权、连接管理、会话、inbox 和工作区操作。
+- 支持工具状态、审批、文件产物、终端输出。
+- 不包含 `computer_use` 与 `RPA` 两个 runtime。
+- 复用 Engine 核心和共享契约，不另造一套历史真相。
+
+### 极简二进制轻量版
+
+极简二进制轻量版是长期线，面向老旧机型和低配边缘设备：
+
+- 砍掉桌面版重依赖和非必要 runtime。
+- 只保留基础必需 runtime。
+- 额外保留 `network_supervisor`，用于连接、转发、协作或边缘状态同步。
+- 不承诺 ESP32 级设备直接运行完整 V8OS。
 
 ### Phone 远程体验
 
@@ -215,6 +230,7 @@ ACP、OpenAI-compatible、Anthropic-compatible 都是外部接入面：
 - 已有正式安装器。
 - 已是系统级后台服务。
 - CLI 已具备完整聊天/TUI/工作区会话能力。
+- 桌面版已有 GitHub 自动 release、自动更新或代码签名。
 - 所有本地入口已经完全免配置。
 
 这几个边界必须在产品化宣传和交付说明中保持清楚。

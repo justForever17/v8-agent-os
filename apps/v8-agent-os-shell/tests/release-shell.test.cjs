@@ -14,6 +14,13 @@ test('shell main uses embedded CLI API instead of source-tree v8os wrappers', ()
   assert.match(mainSource, /shell_api\.mjs/);
 });
 
+test('packaged shell starts core services before waiting for them', () => {
+  const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
+  assert.match(mainSource, /ensureCoreServicesStarted/);
+  assert.match(mainSource, /shellStart\(\['engine', 'admin', 'web'\], \{ mode: 'start' \}\)/);
+  assert.match(mainSource, /await ensureCoreServicesStarted\(\);\s*await waitForServices\(\);/);
+});
+
 test('electron launcher strips ELECTRON_RUN_AS_NODE before starting child Electron apps', () => {
   const launcherSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'electron-launcher.mjs'), 'utf8');
   assert.match(launcherSource, /delete env\.ELECTRON_RUN_AS_NODE/);
@@ -55,6 +62,8 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(workflow, /Verify desktop runtime payload/);
   assert.match(workflow, /verify_desktop_release_runtime\.mjs/);
   assert.match(workflow, /Installed desktop smoke/);
+  assert.match(workflow, /Upload desktop smoke diagnostics/);
+  assert.match(workflow, /desktop-smoke-diagnostics/);
   assert.match(workflow, /RUNTIME_PROBE\.json/);
   assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
 

@@ -21,6 +21,7 @@ let tray = null;
 let quitting = false;
 let desktopPetRunning = false;
 let cliApiPromise = null;
+let coreServicesStartPromise = null;
 
 function cliApi() {
   if (!cliApiPromise) {
@@ -105,6 +106,18 @@ async function waitForServices() {
   await waitForUrl(`${webBaseUrl}/chat`, { timeoutMs: 120000 });
 }
 
+async function ensureCoreServicesStarted() {
+  if (!coreServicesStartPromise) {
+    coreServicesStartPromise = cliApi()
+      .then(({ shellStart }) => shellStart(['engine', 'admin', 'web'], { mode: 'start' }))
+      .catch((error) => {
+        coreServicesStartPromise = null;
+        throw error;
+      });
+  }
+  return coreServicesStartPromise;
+}
+
 async function isAdminLoggedIn() {
   try {
     const cookies = await session.defaultSession.cookies.get({ url: adminBaseUrl });
@@ -154,6 +167,7 @@ function errorDataUrl(error) {
 async function loadInitialSurface() {
   if (!mainWindow) return;
   try {
+    await ensureCoreServicesStarted();
     await waitForServices();
     const loggedIn = await isAdminLoggedIn();
     await mainWindow.loadURL(loggedIn ? `${webBaseUrl}/chat` : `${adminBaseUrl}/login`);

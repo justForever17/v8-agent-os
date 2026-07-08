@@ -117,6 +117,29 @@ jobs:
           Get-Process "V8 Agent OS" -ErrorAction SilentlyContinue | Stop-Process -Force
         continue-on-error: true
 
+      - name: Collect desktop smoke diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          $diag = "desktop-smoke-diagnostics"
+          New-Item -ItemType Directory -Force -Path $diag | Out-Null
+          $v8Home = Join-Path $env:USERPROFILE ".v8-agent-os"
+          if (Test-Path (Join-Path $v8Home "reports\desktop_release")) {
+            Copy-Item (Join-Path $v8Home "reports\desktop_release") (Join-Path $diag "reports") -Recurse -Force
+          }
+          if (Test-Path (Join-Path $v8Home "logs")) {
+            Copy-Item (Join-Path $v8Home "logs") (Join-Path $diag "logs") -Recurse -Force
+          }
+        continue-on-error: true
+
+      - name: Upload desktop smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8os-desktop-smoke-diagnostics
+          path: desktop-smoke-diagnostics/**
+          if-no-files-found: ignore
+
       - name: Normalize desktop artifact names
         shell: pwsh
         run: |

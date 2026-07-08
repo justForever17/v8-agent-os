@@ -63,6 +63,44 @@ function resolvePreviewUri(adminBaseUrl: string, file: UploadedWorkspaceFile) {
         : normalizeRenderableWorkspaceUrl(adminBaseUrl, candidate);
 }
 
+function SpecModeOrbitIcon({
+    active,
+    color,
+}: {
+    active: boolean;
+    color: string;
+}) {
+    const spin = useSharedValue(0);
+
+    useEffect(() => {
+        if (!active) {
+            cancelAnimation(spin);
+            spin.value = withTiming(0, { duration: 180 });
+            return;
+        }
+
+        spin.value = withRepeat(
+            withTiming(1, { duration: 1600, easing: Easing.linear }),
+            -1,
+            false,
+        );
+
+        return () => {
+            cancelAnimation(spin);
+        };
+    }, [active, spin]);
+
+    const orbitStyle = useAnimatedStyle(() => ({
+        transform: [{ rotate: `${spin.value * 360}deg` }],
+    }));
+
+    return (
+        <Animated.View style={orbitStyle}>
+            <MaterialCommunityIcons name="orbit" size={17} color={color} />
+        </Animated.View>
+    );
+}
+
 function ComposerActionButton({
     mode,
     disabled,
@@ -496,9 +534,8 @@ export const Composer = memo(function Composer({
                                 ]}
                                 onPress={onToggleTaskPlanningMode}
                             >
-                                <MaterialCommunityIcons
-                                    name="file-document-edit-outline"
-                                    size={15}
+                                <SpecModeOrbitIcon
+                                    active={taskPlanningMode}
                                     color={taskPlanningMode ? colors.primaryDeep : colors.textMuted}
                                 />
                             </Pressable>

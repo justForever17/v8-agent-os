@@ -5,7 +5,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, FileText, AtSign, Gauge } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -1139,18 +1139,18 @@ export function InputArea({
                         <Button
                             type="button"
                             variant={taskPlanningMode ? "secondary" : "ghost"}
-                            size="sm"
+                            size="icon"
                             onClick={() => setTaskPlanningMode((current) => !current)}
+                            aria-pressed={taskPlanningMode}
                             className={cn(
-                                "h-[28px] rounded-lg px-2.5 text-[11px] font-medium",
+                                "h-[28px] w-[28px] rounded-lg transition-colors",
                                 taskPlanningMode
-                                    ? "bg-red-500/12 text-red-700 hover:bg-red-500/18 dark:bg-red-500/15 dark:text-red-200"
+                                    ? "bg-violet-500/12 text-violet-700 shadow-[0_0_16px_rgba(139,92,246,0.22)] hover:bg-violet-500/18 dark:bg-violet-500/15 dark:text-violet-200"
                                     : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
                             )}
                             title={t("web.generated.d802f23b2a")}
                         >
-                            <FileText className="mr-1 h-3.5 w-3.5" />
-                            Spec
+                            <Orbit className={cn("h-4 w-4", taskPlanningMode && "animate-[spin_1.6s_linear_infinite]")} />
                         </Button>
                         {reasoningEffortVisible ? (
                             <div className="relative">

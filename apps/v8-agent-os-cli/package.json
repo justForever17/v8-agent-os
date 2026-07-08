@@ -8,6 +8,7 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
+    "smoke:daily": "node tests/scripts/run_v8os_cli_daily_entry_smoke.mjs",
     "smoke:live": "node tests/scripts/run_v8os_cli_live_smoke.mjs",
     "smoke:cold": "node tests/scripts/run_v8os_cli_cold_start_smoke.mjs"
   },

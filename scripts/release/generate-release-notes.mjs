@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-const TAG_RE = /^v8-os-(phone|desktop)-v(\d{4}\.\d{2}\.\d{2}\.\d+)$/;
+const TAG_RE = /^v8-os-(phone|desktop|desktop-preview)-v(\d{4}\.\d{2}\.\d{2}\.\d+)$/;
 
 function parseArgs(argv) {
   const args = {};
@@ -32,11 +32,17 @@ function inferRelease(args) {
     if (!match) {
       throw new Error(`Invalid V8OS release tag: ${tag}`);
     }
-    product = product || match[1];
+    const tagProduct = match[1] === "desktop-preview" ? "desktop" : match[1];
+    const tagChannel = match[1] === "desktop-preview" ? "preview" : "";
+    product = product || tagProduct;
     version = version || match[2];
-    if (product !== match[1]) {
-      throw new Error(`Tag product (${match[1]}) does not match --product (${product}).`);
+    if (product !== tagProduct) {
+      throw new Error(`Tag product (${tagProduct}) does not match --product (${product}).`);
     }
+    if (tagChannel && args.channel && args.channel !== tagChannel) {
+      throw new Error(`Tag channel (${tagChannel}) does not match --channel (${args.channel}).`);
+    }
+    args.channel = args.channel || tagChannel;
   }
 
   if (!product || !["phone", "desktop"].includes(product)) {
@@ -77,7 +83,9 @@ function repoUrl() {
 }
 
 function previousTag(currentTag, product) {
-  const prefix = `v8-os-${product}-v`;
+  const prefix = currentTag.startsWith("v8-os-desktop-preview-v")
+    ? "v8-os-desktop-preview-v"
+    : `v8-os-${product}-v`;
   const tags = git(["tag", "--list", `${prefix}*`, "--sort=-creatordate"])
     .split(/\r?\n/)
     .map((value) => value.trim())
@@ -103,12 +111,17 @@ function assetSection(product, version, channel) {
   }
 
   const desktopLabel = channel === "stable" ? "Windows 安装包" : "Windows unsigned preview 安装包";
+  const desktopVersion = channel === "stable" ? version : `preview-${version}`;
+  const desktopZipLabel = channel === "stable" ? "免安装包" : "免安装预览包";
+  const desktopChannelNote = channel === "stable"
+    ? "请确认本次桌面包已完成 stable 门禁；签名、更新和校验信息应与发布资产同批提供。"
+    : "当前桌面包未签名。Windows 可能显示安全确认；代码签名、SmartScreen 信誉和自动更新属于后续阶段。";
   return [
-    "- `V8-Agent-OS-" + version + "-win-x64-setup.exe`：" + desktopLabel + "。",
-    "- `V8-Agent-OS-" + version + "-win-x64.zip`：免安装预览包。",
+    "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：" + desktopLabel + "。",
+    "- `V8-Agent-OS-" + desktopVersion + "-win-x64.zip`：" + desktopZipLabel + "。",
     "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
     "",
-    "当前桌面包未签名。Windows 可能显示安全确认；代码签名、SmartScreen 信誉和自动更新属于后续阶段。",
+    desktopChannelNote,
   ].join("\n");
 }
 
@@ -118,6 +131,13 @@ function knownLimits(product, channel) {
       "- Phone 是远程交互端，需要通过 V8OS 桌面/控制台配对。",
       "- Android 支持目标为 11 及以上；iOS 发布仍在后续完善。",
       "- 若你从旧 `phone-v*` release 升级，请优先使用新的 `v8-os-phone-v*` 版本线。",
+    ].join("\n");
+  }
+  if (channel === "stable") {
+    return [
+      "- 本版本属于 desktop-stable 通道，请仅在 stable 门禁完成后发布。",
+      "- Shell 会托管 Engine/Admin/Web/桌宠；退出 V8OS 时会清理受管子进程。",
+      "- macOS/Linux 安装包仍在后续版本中推进。",
     ].join("\n");
   }
   return [

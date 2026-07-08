@@ -43,3 +43,19 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:win/);
   assert.match(workflow, /SHA256/);
 });
+
+test('desktop preview release uses a preview-only tag namespace', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
+  assert.match(workflow, /v8-os-desktop-preview-v\*/);
+  assert.match(workflow, /\^v8-os-desktop-preview-v\(\.\+\)\$/);
+  assert.doesNotMatch(workflow, /refs\/tags\/v8-os-desktop-v/);
+
+  const prepareRelease = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs'), 'utf8');
+  assert.match(prepareRelease, /v8-os-desktop-preview-v\$\{version\}/);
+
+  const releaseNotes = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs'), 'utf8');
+  assert.match(releaseNotes, /desktop-preview/);
+
+  const baseline = fs.readFileSync(path.join(repoRoot, 'docs', 'V8OS', 'V8OS_RELEASE_VERSIONING_BASELINE_ZH.md'), 'utf8');
+  assert.match(baseline, /v8-os-desktop-preview-vYYYY\.MM\.DD\.N/);
+});

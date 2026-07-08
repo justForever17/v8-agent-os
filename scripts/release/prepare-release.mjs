@@ -58,7 +58,10 @@ function sha512Integrity(pathname) {
   return `sha512-${digest}`;
 }
 
-function toTag(product, version) {
+function toTag(product, version, channel = "preview") {
+  if (product === "desktop" && channel === "preview") {
+    return `v8-os-desktop-preview-v${version}`;
+  }
   return `v8-os-${product}-v${version}`;
 }
 
@@ -178,7 +181,7 @@ function updateManifest(product, version, channel) {
   manifest.products[product] = {
     version,
     channel,
-    tag: toTag(product, version),
+    tag: toTag(product, version, channel),
     updatedAt: new Date().toISOString(),
   };
   writeJson(manifestPath, manifest);
@@ -236,7 +239,7 @@ function main() {
     throw new Error("Invalid --channel. Use preview or stable.");
   }
 
-  const tag = toTag(product, version);
+  const tag = toTag(product, version, channel);
   ensureTagAvailable(tag);
   ensureCleanForApply(apply);
 

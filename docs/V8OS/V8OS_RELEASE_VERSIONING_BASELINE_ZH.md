@@ -24,7 +24,7 @@
 
 - 已有源码树 `v8os preview`。
 - 已有 Windows unsigned preview installer workflow。
-- GitHub tag `v8-os-desktop-vYYYY.MM.DD.N` 会创建 GitHub Release，上传 installer、zip 和 `SHA256SUMS.txt`。
+- GitHub tag `v8-os-desktop-preview-vYYYY.MM.DD.N` 会创建 GitHub Release，上传 installer、zip 和 `SHA256SUMS.txt`。
 - 尚未签名，没有自动更新，不宣传为 stable。
 
 ### `desktop-stable`
@@ -81,7 +81,7 @@
 
 ```text
 v8-os-phone-vYYYY.MM.DD.N
-v8-os-desktop-vYYYY.MM.DD.N
+v8-os-desktop-preview-vYYYY.MM.DD.N
 ```
 
 示例：
@@ -97,6 +97,8 @@ node scripts/release/prepare-release.mjs --product desktop --version 2026.07.08.
 node scripts/release/prepare-release.mjs --product phone --version 2026.07.08.1 --apply
 node scripts/release/prepare-release.mjs --product desktop --version 2026.07.08.1 --apply
 ```
+
+`desktop` 默认准备 preview 通道，因此会创建 `v8-os-desktop-preview-v...`。未来 stable 通道必须显式使用 `--channel stable`，对应 tag 才是 `v8-os-desktop-v...`。
 
 脚本不会自动 push。推送 tag 前应先完成对应通道的验收。
 

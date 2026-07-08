@@ -647,93 +647,6 @@ PUBMED_SITE_PROFILE: dict[str, Any] = {
         }
     },
 }
-JOURNAL_ARTICLE_SITE_PROFILE: dict[str, Any] = {
-    "description": "Journal article pages: keep article title, authors, abstract and main body sections; skip ads, metrics, references, related content and access chrome.",
-    "extracts": {
-        "article": {
-            "containerSelectors": (
-                "main",
-                "article",
-                "#content",
-                "#article",
-                "#article-body",
-                ".article",
-                ".article__body",
-                ".c-article-body",
-                ".article-content",
-                "body",
-            ),
-            "articleSelectors": (
-                "main h1",
-                "article h1",
-                "h1",
-                ".c-article-title",
-                "[data-test='article-title']",
-                ".article__title",
-                ".article-title",
-                ".c-article-author-list",
-                ".article__authors",
-                ".authors",
-                ".c-article-identifiers",
-                ".article__info",
-                ".c-article-info-details",
-                ".c-article-summary",
-                ".c-article-teaser-text",
-                ".article__abstract",
-                ".abstract",
-                "#Abs1",
-                ".c-article-section",
-                ".article-section__content",
-                ".article__body",
-                ".article-content",
-                "[property='articleBody']",
-                "article",
-            ),
-            "removeSelectors": (
-                ".c-article-extras",
-                ".c-article-metrics-bar",
-                ".c-article-references",
-                ".article__references",
-                ".references",
-                ".reference-list",
-                ".c-ad",
-                ".js-ad",
-                ".ad",
-                ".advertisement",
-                ".related",
-                ".recommend",
-                ".recommendations",
-                ".article-nav",
-                ".access-options",
-                ".sign-in",
-                ".login",
-                ".sticky",
-                ".sidebar",
-                ".toc",
-                "aside",
-                "nav",
-                "footer",
-                "header",
-                "form",
-                "button",
-            ),
-            "skipMarkerTokens": (
-                "metrics",
-                "references",
-                "reference-list",
-                "advert",
-                "related",
-                "recommend",
-                "article-nav",
-                "access",
-                "sign-in",
-                "login",
-                "sidebar",
-                "toc",
-            ),
-        }
-    },
-}
 ACM_DIGITAL_LIBRARY_SITE_PROFILE: dict[str, Any] = {
     "description": "ACM Digital Library paper pages: keep title, authors, venue/date, abstract, DOI and keywords; skip login, metrics, recommendations and reference chrome.",
     "extracts": {
@@ -803,78 +716,6 @@ ACM_DIGITAL_LIBRARY_SITE_PROFILE: dict[str, Any] = {
         }
     },
 }
-IEEE_XPLORE_SITE_PROFILE: dict[str, Any] = {
-    "description": "IEEE Xplore paper pages: keep document title, authors, publication metadata, abstract, DOI and index terms; skip metrics, references, recommendations and access chrome.",
-    "extracts": {
-        "article": {
-            "containerSelectors": (
-                "main",
-                "article",
-                "#LayoutWrapper",
-                ".document-main",
-                ".document",
-                ".article",
-                ".abstract",
-                "body",
-            ),
-            "articleSelectors": (
-                "main h1",
-                "article h1",
-                "h1.document-title",
-                ".document-title",
-                ".authors-info",
-                ".authors",
-                ".publication-title",
-                ".u-pb-1",
-                ".doi",
-                ".abstract-desktop-div",
-                ".abstract-text",
-                ".doc-abstract",
-                ".document-abstract",
-                ".stats-document-abstract",
-                ".doc-all-keywords",
-                ".keywords-section",
-            ),
-            "removeSelectors": (
-                ".global-nav",
-                ".document-banner-metric-container",
-                ".references",
-                ".References",
-                ".reference-list",
-                ".recommendations",
-                ".related",
-                ".metrics",
-                ".stats",
-                ".advertisement",
-                ".article-metadata-sidebar",
-                ".right-rail",
-                ".access-options",
-                ".sign-in",
-                ".login",
-                "xpl-reference-list",
-                "aside",
-                "nav",
-                "footer",
-                "header",
-                "form",
-                "button",
-            ),
-            "skipMarkerTokens": (
-                "global-nav",
-                "metric",
-                "references",
-                "reference-list",
-                "recommend",
-                "related",
-                "right-rail",
-                "access",
-                "sign-in",
-                "login",
-                "advert",
-            ),
-        }
-    },
-}
 PAPERS_WITH_CODE_SITE_PROFILE: dict[str, Any] = {
     "description": "Papers With Code paper and benchmark pages: keep paper summary, tasks, datasets, methods, code and leaderboard text; skip comments, recommendations and navigation.",
     "extracts": {
@@ -937,6 +778,52 @@ PAPERS_WITH_CODE_SITE_PROFILE: dict[str, Any] = {
                 "modal",
                 "popup",
                 "login",
+            ),
+        }
+    },
+}
+HACKER_NEWS_SITE_PROFILE: dict[str, Any] = {
+    "description": "Hacker News item pages: keep story title, points, age, comment count and readable comments; skip navigation, voting chrome, reply forms and footer links.",
+    "extracts": {
+        "article": {
+            "allowTableLayout": True,
+            "containerSelectors": (
+                "body",
+                "center",
+                "table.itemlist",
+                ".itemlist",
+                "table",
+            ),
+            "articleSelectors": (
+                "tr.athing .titleline",
+                "tr.athing .title",
+                "tr.athing + tr .subtext",
+                "td.subtext",
+                "tr.comtr .comhead",
+                "tr.comtr .commtext",
+                ".commtext",
+            ),
+            "removeSelectors": (
+                ".votearrow",
+                ".reply",
+                ".pagetop",
+                ".yclinks",
+                ".morelink",
+                ".hnmore",
+                "tr.spacer",
+                "form",
+                "textarea",
+                "input",
+                "button",
+            ),
+            "skipMarkerTokens": (
+                "votearrow",
+                "reply",
+                "pagetop",
+                "yclinks",
+                "morelink",
+                "hnmore",
+                "spacer",
             ),
         }
     },
@@ -1233,11 +1120,9 @@ BUILTIN_WEB_FETCH_SITE_PROFILES: dict[str, dict[str, Any]] = {
     "openreview.net": OPENREVIEW_SITE_PROFILE,
     "aclanthology.org": ACL_ANTHOLOGY_SITE_PROFILE,
     "pubmed.ncbi.nlm.nih.gov": PUBMED_SITE_PROFILE,
-    "nature.com": JOURNAL_ARTICLE_SITE_PROFILE,
-    "science.org": JOURNAL_ARTICLE_SITE_PROFILE,
     "dl.acm.org": ACM_DIGITAL_LIBRARY_SITE_PROFILE,
-    "ieeexplore.ieee.org": IEEE_XPLORE_SITE_PROFILE,
     "paperswithcode.com": PAPERS_WITH_CODE_SITE_PROFILE,
+    "news.ycombinator.com": HACKER_NEWS_SITE_PROFILE,
     "npmjs.com": {
         "description": "npm package pages: keep package summary and README; skip package chrome, tabs, install widgets and sidebars.",
         "extracts": {
@@ -1537,7 +1422,6 @@ BUILTIN_WEB_FETCH_SITE_PROFILES: dict[str, dict[str, Any]] = {
     "eastmoney.com": FINANCE_DISCLOSURE_SITE_PROFILE,
     "finance.sina.com.cn": FINANCE_DISCLOSURE_SITE_PROFILE,
     "finance.yahoo.com": FINANCE_DISCLOSURE_SITE_PROFILE,
-    "tradingview.com": FINANCE_DISCLOSURE_SITE_PROFILE,
     "investing.com": FINANCE_DISCLOSURE_SITE_PROFILE,
     "binance.com": CRYPTO_INFO_SITE_PROFILE,
     "coinbase.com": CRYPTO_INFO_SITE_PROFILE,
@@ -2959,6 +2843,7 @@ def _site_profile_node_should_skip(node: Any, *, url: str, extract: WebExtractMo
     profile = _builtin_extract_profile(url, extract)
     if not profile:
         return False
+    allow_table_layout = bool(profile.get("allowTableLayout"))
     noisy_tokens = tuple(
         _safe_text(token).lower()
         for token in (
@@ -2979,7 +2864,9 @@ def _site_profile_node_should_skip(node: Any, *, url: str, extract: WebExtractMo
     current = node
     while current is not None and getattr(current, "name", None):
         name = _safe_text(getattr(current, "name", "")).lower()
-        if name in {"table", "aside", "nav", "footer", "header"}:
+        if name == "table" and not allow_table_layout:
+            return True
+        if name in {"aside", "nav", "footer", "header"}:
             return True
         classes = current.get("class") if hasattr(current, "get") else []
         class_text = " ".join(classes) if isinstance(classes, list) else _safe_text(classes)
@@ -4116,8 +4003,6 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
         "baike.baidu.com",
         "wikipedia.org",
         "www.wikipedia.org",
-        "britannica.com",
-        "www.britannica.com",
     } or catalog_tier == "background"
     low_quality = any(
         hint in host or hint in str(url or "").lower()

@@ -92,7 +92,6 @@ def test_finance_crypto_and_shopping_catalog_sources_are_ranked_by_authority_tie
     }
     secondary_cases = {
         "https://finance.yahoo.com/quote/AAPL": "market_data_secondary",
-        "https://www.tradingview.com/symbols/NASDAQ-AAPL/": "market_data_secondary",
         "https://www.coingecko.com/en/coins/bitcoin": "crypto_aggregate_secondary",
         "https://defillama.com/protocol/example": "crypto_aggregate_secondary",
     }
@@ -134,10 +133,7 @@ def test_academic_sources_split_primary_papers_from_discovery_and_benchmarks():
         "https://openreview.net/forum?id=example": "academic_paper_primary",
         "https://aclanthology.org/2024.acl-long.1/": "academic_paper_primary",
         "https://pubmed.ncbi.nlm.nih.gov/12345678/": "academic_paper_primary",
-        "https://www.nature.com/articles/example": "academic_paper_primary",
-        "https://www.science.org/doi/10.1126/science.example": "academic_paper_primary",
         "https://dl.acm.org/doi/10.1145/example": "academic_paper_primary",
-        "https://ieeexplore.ieee.org/document/1234567": "academic_paper_primary",
     }
     secondary_cases = {
         "https://scholar.google.com/scholar?q=transformer": "academic_discovery_secondary",
@@ -174,6 +170,56 @@ def test_academic_sources_split_primary_papers_from_discovery_and_benchmarks():
         assert quality["tier"] == "secondary"
         assert 55 <= quality["authorityScore"] < 80
         assert f"source_catalog:{catalog_id}" in quality["reasons"]
+
+
+def test_hacker_news_is_higher_scored_developer_signal_but_not_primary_evidence():
+    hn_quality = research_module._source_quality(
+        "https://news.ycombinator.com/item?id=123",
+        allowed_domains=[],
+        source_policy="authoritative",
+        title="Show HN: V8 Agent OS",
+        snippet="123 points and 42 comments",
+    )
+    generic_community_quality = research_module._source_quality(
+        "https://lobste.rs/s/example",
+        allowed_domains=[],
+        source_policy="authoritative",
+        title="Developer discussion",
+        snippet="field report",
+    )
+
+    assert hn_quality["catalogSourceId"] == "hacker_news_developer_signal"
+    assert hn_quality["catalogCategory"] == "developer_signal"
+    assert hn_quality["authorityTier"] == "secondary"
+    assert hn_quality["tier"] == "secondary"
+    assert hn_quality["authorityScore"] > generic_community_quality["authorityScore"]
+    assert "source_catalog:hacker_news_developer_signal" in hn_quality["reasons"]
+
+
+def test_removed_paywall_and_tradingview_hosts_are_not_catalog_ranked():
+    urls = (
+        "https://www.nature.com/articles/example",
+        "https://www.science.org/doi/10.1126/science.example",
+        "https://ieeexplore.ieee.org/document/1234567",
+        "https://britannica.com/topic/example",
+        "https://www.britannica.com/topic/example",
+        "https://www.tradingview.com/symbols/NASDAQ-AAPL/",
+    )
+
+    for url in urls:
+        quality = research_module._source_quality(
+            url,
+            allowed_domains=[],
+            source_policy="authoritative",
+            title="removed source",
+            snippet="removed from trusted catalog",
+        )
+
+        assert quality["catalogSourceId"] is None
+        assert quality["catalogCategory"] is None
+        assert quality["authorityTier"] is None
+        assert quality["tier"] == "weak"
+        assert not any(str(reason).startswith("source_catalog:") for reason in quality["reasons"])
 
 
 def test_primary_sources_rank_above_secondary_market_portals():

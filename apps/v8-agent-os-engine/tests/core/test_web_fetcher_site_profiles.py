@@ -82,11 +82,9 @@ def test_p0_site_profiles_are_registered() -> None:
         "https://openreview.net/forum?id=example",
         "https://aclanthology.org/2024.acl-long.1/",
         "https://pubmed.ncbi.nlm.nih.gov/12345678/",
-        "https://www.nature.com/articles/example",
-        "https://www.science.org/doi/10.1126/science.example",
         "https://dl.acm.org/doi/10.1145/example",
-        "https://ieeexplore.ieee.org/document/1234567",
         "https://paperswithcode.com/paper/example",
+        "https://news.ycombinator.com/item?id=123",
         "https://www.npmjs.com/package/react",
         "https://pypi.org/project/requests/",
         "https://stackoverflow.com/questions/1/example",
@@ -184,6 +182,58 @@ def test_stackoverflow_profile_keeps_question_and_answers_without_comments() -> 
     assert "High-vote answer body." in text
     assert "noisy comments" not in text
     assert "hot network questions" not in text
+
+
+def test_hacker_news_profile_keeps_story_signal_and_comments_without_table_chrome() -> None:
+    html = """
+    <html><body><center>
+      <table class="itemlist">
+        <tr class="athing" id="123">
+          <td class="votelinks"><div class="votearrow">vote</div></td>
+          <td class="title">
+            <span class="titleline"><a href="https://example.com">Show HN: V8 Agent OS</a></span>
+          </td>
+        </tr>
+        <tr>
+          <td colspan="2"></td>
+          <td class="subtext">
+            <span class="score">123 points</span> by <a class="hnuser">sunny</a>
+            <span class="age">1 hour ago</span> | <a>42 comments</a>
+          </td>
+        </tr>
+        <tr class="spacer"><td>layout spacer</td></tr>
+        <tr class="athing comtr">
+          <td class="default">
+            <div class="comment">
+              <span class="comhead">alice 30 minutes ago</span>
+              <div class="commtext"><p>This is a useful launch discussion.</p></div>
+              <div class="reply">reply link</div>
+            </div>
+          </td>
+        </tr>
+        <tr><td class="title"><a class="morelink">More</a></td></tr>
+      </table>
+    </center></body></html>
+    """
+
+    text = web_fetcher._extract_main_text(_soup(html), "https://news.ycombinator.com/item?id=123")
+    hints = web_fetcher._search_result_quality_hints("https://news.ycombinator.com/item?id=123")
+
+    assert "Show HN: V8 Agent OS" in text
+    assert "123 points" in text
+    assert "42 comments" in text
+    assert "alice 30 minutes ago" in text
+    assert "This is a useful launch discussion." in text
+    assert "vote" not in text
+    assert "reply link" not in text
+    assert "layout spacer" not in text
+    assert "More" not in text
+    assert hints["catalogSourceId"] == "hacker_news_developer_signal"
+    assert hints["catalogCategory"] == "developer_signal"
+    assert hints["authorityTier"] == "secondary"
+    assert hints["authorityScore"] > web_fetcher._search_result_quality_hints("https://lobste.rs/s/example")["authorityScore"]
+    assert hints["tier"] == "secondary"
+    assert "secondary_source_hint" in hints["signals"]
 
 
 def test_chinese_community_profiles_clean_body_without_authority_boost() -> None:
@@ -303,23 +353,6 @@ def test_academic_paper_profiles_clean_body_with_existing_site_profile_path() ->
             "primary",
         ),
         (
-            "https://www.nature.com/articles/example",
-            """
-            <html><body><article>
-              <h1 class="c-article-title">Scaling Laws for Reliable Agents</h1>
-              <ul class="c-article-author-list"><li>Doe J</li></ul>
-              <div class="c-article-summary"><p>Agent reliability improves with better supervision.</p></div>
-              <section class="c-article-section"><h2>Results</h2><p>We observe lower error rates.</p></section>
-              <div class="c-article-references">Reference list noise</div>
-              <div class="recommendations">Recommended articles noise</div>
-            </article></body></html>
-            """,
-            ("Scaling Laws", "Doe J", "better supervision", "lower error rates"),
-            ("Reference list noise", "Recommended articles noise"),
-            "academic_paper_primary",
-            "primary",
-        ),
-        (
             "https://dl.acm.org/doi/10.1145/example",
             """
             <html><body><main>
@@ -333,23 +366,6 @@ def test_academic_paper_profiles_clean_body_with_existing_site_profile_path() ->
             """,
             ("A User Study", "Kim Example", "controlled user study", "10.1145/example"),
             ("Recommended paper noise", "Reference list noise"),
-            "academic_paper_primary",
-            "primary",
-        ),
-        (
-            "https://ieeexplore.ieee.org/document/1234567",
-            """
-            <html><body><main class="document-main">
-              <h1 class="document-title">Robust Edge Inference Systems</h1>
-              <div class="authors-info">Lee Example; Wang Example</div>
-              <div class="publication-title">IEEE Transactions on Example Systems</div>
-              <div class="abstract-desktop-div"><p>This work studies robust inference at the edge.</p></div>
-              <div class="doc-all-keywords"><p>Index Terms: edge inference, robustness</p></div>
-              <div class="recommendations">Recommended IEEE noise</div>
-            </main></body></html>
-            """,
-            ("Robust Edge Inference", "Lee Example", "IEEE Transactions", "edge inference, robustness"),
-            ("Recommended IEEE noise",),
             "academic_paper_primary",
             "primary",
         ),
@@ -507,7 +523,6 @@ def test_finance_crypto_and_shopping_profiles_clean_with_existing_site_profile_p
 def test_secondary_market_and_crypto_aggregate_sources_are_marked_as_supporting_evidence() -> None:
     cases = {
         "https://finance.yahoo.com/quote/AAPL": "market_data_secondary",
-        "https://www.tradingview.com/symbols/NASDAQ-AAPL/": "market_data_secondary",
         "https://www.coingecko.com/en/coins/bitcoin": "crypto_aggregate_secondary",
         "https://defillama.com/protocol/example": "crypto_aggregate_secondary",
     }
@@ -519,6 +534,27 @@ def test_secondary_market_and_crypto_aggregate_sources_are_marked_as_supporting_
         assert hints["authorityTier"] == "secondary"
         assert hints["tier"] == "secondary"
         assert "secondary_source_hint" in hints["signals"]
+
+
+def test_paywall_and_removed_market_hosts_are_not_trusted_catalog_sources() -> None:
+    urls = (
+        "https://www.nature.com/articles/example",
+        "https://www.science.org/doi/10.1126/science.example",
+        "https://ieeexplore.ieee.org/document/1234567",
+        "https://britannica.com/topic/example",
+        "https://www.britannica.com/topic/example",
+        "https://www.tradingview.com/symbols/NASDAQ-AAPL/",
+    )
+
+    for url in urls:
+        hints = web_fetcher._search_result_quality_hints(url)
+
+        assert hints["catalogSourceId"] is None
+        assert hints["catalogCategory"] is None
+        assert hints["authorityTier"] is None
+        assert "primary_source_hint" not in hints["signals"]
+        assert "secondary_source_hint" not in hints["signals"]
+        assert "encyclopedic_background_source" not in hints["signals"]
 
 
 def test_auto_fetch_uses_reader_fallback_after_static_challenge_and_browser_unavailable() -> None:

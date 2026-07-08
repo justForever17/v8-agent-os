@@ -100,10 +100,7 @@
         "openreview.net",
         "aclanthology.org",
         "pubmed.ncbi.nlm.nih.gov",
-        "www.nature.com",
-        "www.science.org",
-        "dl.acm.org",
-        "ieeexplore.ieee.org"
+        "dl.acm.org"
       ],
       "authorityTier": "primary",
       "authorityBoost": 30,
@@ -135,6 +132,19 @@
       "notes": "Useful for leaderboard and implementation context, not a primary paper source."
     },
     {
+      "id": "hacker_news_developer_signal",
+      "category": "developer_signal",
+      "displayName": "Hacker News Developer Signal",
+      "hosts": [
+        "news.ycombinator.com"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 15,
+      "bestFor": ["launch_signal", "field_report", "adoption_signal", "engineering_discussion"],
+      "popularitySignals": ["points", "comments", "rank", "age"],
+      "notes": "Use for engineering discussion, launch/adoption signals and field reports. Verify factual claims with primary sources."
+    },
+    {
       "id": "developer_community",
       "category": "developer_community",
       "displayName": "Developer Community Evidence",
@@ -142,7 +152,6 @@
         "stackoverflow.com",
         "stackexchange.com",
         "dev.to",
-        "news.ycombinator.com",
         "lobste.rs",
         "reddit.com",
         "www.reddit.com"
@@ -236,7 +245,6 @@
       "displayName": "Market Data and Quote Portals",
       "hosts": [
         "finance.yahoo.com",
-        "www.tradingview.com",
         "www.investing.com",
         "quote.eastmoney.com",
         "data.eastmoney.com",
@@ -334,9 +342,7 @@
       "hosts": [
         "baike.baidu.com",
         "wikipedia.org",
-        "www.wikipedia.org",
-        "britannica.com",
-        "www.britannica.com"
+        "www.wikipedia.org"
       ],
       "authorityTier": "background",
       "authorityBoost": 0,

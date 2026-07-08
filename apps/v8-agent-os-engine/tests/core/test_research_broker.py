@@ -128,6 +128,54 @@ def test_finance_crypto_and_shopping_catalog_sources_are_ranked_by_authority_tie
         assert f"source_catalog:{catalog_id}" in quality["reasons"]
 
 
+def test_academic_sources_split_primary_papers_from_discovery_and_benchmarks():
+    primary_cases = {
+        "https://arxiv.org/abs/1706.03762": "academic_paper_primary",
+        "https://openreview.net/forum?id=example": "academic_paper_primary",
+        "https://aclanthology.org/2024.acl-long.1/": "academic_paper_primary",
+        "https://pubmed.ncbi.nlm.nih.gov/12345678/": "academic_paper_primary",
+        "https://www.nature.com/articles/example": "academic_paper_primary",
+        "https://www.science.org/doi/10.1126/science.example": "academic_paper_primary",
+        "https://dl.acm.org/doi/10.1145/example": "academic_paper_primary",
+        "https://ieeexplore.ieee.org/document/1234567": "academic_paper_primary",
+    }
+    secondary_cases = {
+        "https://scholar.google.com/scholar?q=transformer": "academic_discovery_secondary",
+        "https://paperswithcode.com/paper/example": "academic_benchmark_secondary",
+    }
+
+    for url, catalog_id in primary_cases.items():
+        quality = research_module._source_quality(
+            url,
+            allowed_domains=[],
+            source_policy="authoritative",
+            title="paper abstract",
+            snippet="method and publication metadata",
+        )
+
+        assert quality["catalogSourceId"] == catalog_id
+        assert quality["catalogCategory"] == "academic_paper"
+        assert quality["authorityTier"] == "primary"
+        assert quality["tier"] == "primary"
+        assert quality["authorityScore"] >= 80
+        assert f"source_catalog:{catalog_id}" in quality["reasons"]
+
+    for url, catalog_id in secondary_cases.items():
+        quality = research_module._source_quality(
+            url,
+            allowed_domains=[],
+            source_policy="authoritative",
+            title="paper discovery or benchmark context",
+            snippet="supporting discovery data",
+        )
+
+        assert quality["catalogSourceId"] == catalog_id
+        assert quality["authorityTier"] == "secondary"
+        assert quality["tier"] == "secondary"
+        assert 55 <= quality["authorityScore"] < 80
+        assert f"source_catalog:{catalog_id}" in quality["reasons"]
+
+
 def test_primary_sources_rank_above_secondary_market_portals():
     sec_quality = research_module._source_quality(
         "https://www.sec.gov/Archives/edgar/data/example",

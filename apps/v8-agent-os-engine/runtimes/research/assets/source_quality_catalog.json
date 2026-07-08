@@ -92,15 +92,13 @@
       "notes": "Repository source often beats docs for current implementation, but distinguish maintainers from user comments."
     },
     {
-      "id": "academic_sources",
-      "category": "academic",
-      "displayName": "Academic and Research Literature",
+      "id": "academic_paper_primary",
+      "category": "academic_paper",
+      "displayName": "Academic Paper and Publication Sources",
       "hosts": [
         "arxiv.org",
         "openreview.net",
         "aclanthology.org",
-        "paperswithcode.com",
-        "scholar.google.com",
         "pubmed.ncbi.nlm.nih.gov",
         "www.nature.com",
         "www.science.org",
@@ -108,9 +106,33 @@
         "ieeexplore.ieee.org"
       ],
       "authorityTier": "primary",
-      "authorityBoost": 25,
-      "bestFor": ["research_claim", "benchmark", "method", "scientific_context"],
-      "notes": "Use publication venue and recency. Papers With Code is useful for leaderboard context, not a primary paper source."
+      "authorityBoost": 30,
+      "bestFor": ["research_claim", "method", "scientific_context", "publication_metadata"],
+      "notes": "Use for paper abstracts, methods, publication metadata and scientific claims; still cite venue, date and version when facts may change."
+    },
+    {
+      "id": "academic_discovery_secondary",
+      "category": "academic_discovery",
+      "displayName": "Academic Discovery Sources",
+      "hosts": [
+        "scholar.google.com"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 10,
+      "bestFor": ["paper_discovery", "citation_discovery", "related_work_scan"],
+      "notes": "Use for discovery only. Prefer publisher, repository, DOI or paper pages for evidence."
+    },
+    {
+      "id": "academic_benchmark_secondary",
+      "category": "academic_benchmark",
+      "displayName": "Academic Benchmark and Code Sources",
+      "hosts": [
+        "paperswithcode.com"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 10,
+      "bestFor": ["benchmark", "leaderboard", "task_context", "code_link"],
+      "notes": "Useful for leaderboard and implementation context, not a primary paper source."
     },
     {
       "id": "developer_community",

@@ -79,6 +79,14 @@ def test_p0_site_profiles_are_registered() -> None:
         "https://github.com/owner/repo/releases/tag/v1.0.0",
         "https://github.com/owner/repo/issues/12",
         "https://arxiv.org/abs/1706.03762",
+        "https://openreview.net/forum?id=example",
+        "https://aclanthology.org/2024.acl-long.1/",
+        "https://pubmed.ncbi.nlm.nih.gov/12345678/",
+        "https://www.nature.com/articles/example",
+        "https://www.science.org/doi/10.1126/science.example",
+        "https://dl.acm.org/doi/10.1145/example",
+        "https://ieeexplore.ieee.org/document/1234567",
+        "https://paperswithcode.com/paper/example",
         "https://www.npmjs.com/package/react",
         "https://pypi.org/project/requests/",
         "https://stackoverflow.com/questions/1/example",
@@ -93,6 +101,17 @@ def test_p0_site_profiles_are_registered() -> None:
 
     for url in urls:
         assert web_fetcher._builtin_extract_profile(url, "article"), url
+
+
+def test_google_scholar_is_discovery_source_without_body_profile() -> None:
+    hints = web_fetcher._search_result_quality_hints("https://scholar.google.com/scholar?q=transformer")
+
+    assert not web_fetcher._builtin_extract_profile("https://scholar.google.com/scholar?q=transformer", "article")
+    assert hints["catalogSourceId"] == "academic_discovery_secondary"
+    assert hints["catalogCategory"] == "academic_discovery"
+    assert hints["authorityTier"] == "secondary"
+    assert hints["tier"] == "secondary"
+    assert "secondary_source_hint" in hints["signals"]
 
 
 def test_p2_community_site_profiles_are_registered() -> None:
@@ -228,6 +247,142 @@ def test_chinese_community_profiles_clean_body_without_authority_boost() -> None
         assert noise not in text
         assert hints["tier"] == "weak"
         assert "low_quality_host_hint" in hints["signals"]
+
+
+def test_academic_paper_profiles_clean_body_with_existing_site_profile_path() -> None:
+    cases = (
+        (
+            "https://openreview.net/forum?id=example",
+            """
+            <html><body><main class="forum-container">
+              <nav>OpenReview navigation</nav>
+              <h1 class="forum-title">A Better Alignment Method</h1>
+              <div class="authors">Alice Example, Bob Example</div>
+              <div class="abstract"><p>This paper introduces a stable alignment method.</p></div>
+              <div class="tldr">TL;DR: Stable alignment.</div>
+              <div class="note-replies"><p>Reviewer discussion noise.</p></div>
+            </main></body></html>
+            """,
+            ("A Better Alignment Method", "Alice Example", "stable alignment method", "TL;DR"),
+            ("OpenReview navigation", "Reviewer discussion noise"),
+            "academic_paper_primary",
+            "primary",
+        ),
+        (
+            "https://aclanthology.org/2024.acl-long.1/",
+            """
+            <html><body><main id="main-container">
+              <header>ACL header</header>
+              <h1 id="title">Efficient Parsing for Long Documents</h1>
+              <div class="authors">Chen Example and Singh Example</div>
+              <div class="venue">ACL 2024</div>
+              <div class="abstract"><p>We present a parser for long documents.</p></div>
+              <div class="related">Related proceedings noise</div>
+            </main></body></html>
+            """,
+            ("Efficient Parsing", "Chen Example", "ACL 2024", "parser for long documents"),
+            ("ACL header", "Related proceedings noise"),
+            "academic_paper_primary",
+            "primary",
+        ),
+        (
+            "https://pubmed.ncbi.nlm.nih.gov/12345678/",
+            """
+            <html><body><main id="article-page">
+              <h1 class="heading-title">Clinical Study of Example Treatment</h1>
+              <ul class="authors-list"><li>Rivera A</li><li>Ng B</li></ul>
+              <div class="cit">Nature Medicine. 2026 Jul.</div>
+              <div class="abstract"><p>Objective: evaluate treatment response.</p></div>
+              <div class="identifiers"><span class="doi">doi:10.1000/example</span></div>
+              <div class="similar-articles">Similar article noise</div>
+            </main></body></html>
+            """,
+            ("Clinical Study", "Rivera A", "Nature Medicine", "treatment response", "doi:10.1000/example"),
+            ("Similar article noise",),
+            "academic_paper_primary",
+            "primary",
+        ),
+        (
+            "https://www.nature.com/articles/example",
+            """
+            <html><body><article>
+              <h1 class="c-article-title">Scaling Laws for Reliable Agents</h1>
+              <ul class="c-article-author-list"><li>Doe J</li></ul>
+              <div class="c-article-summary"><p>Agent reliability improves with better supervision.</p></div>
+              <section class="c-article-section"><h2>Results</h2><p>We observe lower error rates.</p></section>
+              <div class="c-article-references">Reference list noise</div>
+              <div class="recommendations">Recommended articles noise</div>
+            </article></body></html>
+            """,
+            ("Scaling Laws", "Doe J", "better supervision", "lower error rates"),
+            ("Reference list noise", "Recommended articles noise"),
+            "academic_paper_primary",
+            "primary",
+        ),
+        (
+            "https://dl.acm.org/doi/10.1145/example",
+            """
+            <html><body><main>
+              <h1 class="citation__title">A User Study of AI Assistants</h1>
+              <div class="citation__authors">Kim Example; Patel Example</div>
+              <section class="abstractInFull"><p>We report findings from a controlled user study.</p></section>
+              <div class="doi">https://doi.org/10.1145/example</div>
+              <div class="recommendations">Recommended paper noise</div>
+              <div class="article__references">Reference list noise</div>
+            </main></body></html>
+            """,
+            ("A User Study", "Kim Example", "controlled user study", "10.1145/example"),
+            ("Recommended paper noise", "Reference list noise"),
+            "academic_paper_primary",
+            "primary",
+        ),
+        (
+            "https://ieeexplore.ieee.org/document/1234567",
+            """
+            <html><body><main class="document-main">
+              <h1 class="document-title">Robust Edge Inference Systems</h1>
+              <div class="authors-info">Lee Example; Wang Example</div>
+              <div class="publication-title">IEEE Transactions on Example Systems</div>
+              <div class="abstract-desktop-div"><p>This work studies robust inference at the edge.</p></div>
+              <div class="doc-all-keywords"><p>Index Terms: edge inference, robustness</p></div>
+              <div class="recommendations">Recommended IEEE noise</div>
+            </main></body></html>
+            """,
+            ("Robust Edge Inference", "Lee Example", "IEEE Transactions", "edge inference, robustness"),
+            ("Recommended IEEE noise",),
+            "academic_paper_primary",
+            "primary",
+        ),
+        (
+            "https://paperswithcode.com/paper/example",
+            """
+            <html><body><main class="paper-detail">
+              <h1 class="paper-title">ExampleNet for Image Classification</h1>
+              <div class="paper-abstract"><p>ExampleNet improves top-1 accuracy.</p></div>
+              <div class="tasks"><p>Task: Image Classification</p></div>
+              <div class="leaderboard"><p>Leaderboard: 90.1 top-1</p></div>
+              <div class="comments">Discussion noise</div>
+            </main></body></html>
+            """,
+            ("ExampleNet", "top-1 accuracy", "Image Classification", "Leaderboard: 90.1"),
+            ("Discussion noise",),
+            "academic_benchmark_secondary",
+            "secondary",
+        ),
+    )
+
+    for url, html, expected_texts, noise_texts, catalog_id, tier in cases:
+        text = web_fetcher._extract_main_text(_soup(html), url)
+        hints = web_fetcher._search_result_quality_hints(url)
+        _profile_key, _candidates, profile_selectors, _selector_entries = web_fetcher._selector_candidates_for_extract(url, "article")
+
+        for expected in expected_texts:
+            assert expected in text
+        for noise in noise_texts:
+            assert noise not in text
+        assert hints["catalogSourceId"] == catalog_id
+        assert hints["tier"] == tier
+        assert profile_selectors
 
 
 def test_finance_crypto_and_shopping_profiles_clean_with_existing_site_profile_path() -> None:

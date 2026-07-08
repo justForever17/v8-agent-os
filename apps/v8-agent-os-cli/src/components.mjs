@@ -4,10 +4,25 @@ import process from "node:process";
 import { ADMIN_DIR, CYBERCORE_DIR, DEFAULT_PORTS, DESKTOP_PET_DIR, ENGINE_DIR, LOG_DIR, REPO_ROOT, SHELL_DIR, WEB_DIR } from "./paths.mjs";
 
 function enginePython() {
-  const candidate = process.platform === "win32"
-    ? path.join(ENGINE_DIR, ".venv", "Scripts", "python.exe")
-    : path.join(ENGINE_DIR, ".venv", "bin", "python");
-  return fs.existsSync(candidate) ? candidate : "python";
+  if (process.env.V8_ENGINE_PYTHON) return process.env.V8_ENGINE_PYTHON;
+  const candidates = process.platform === "win32"
+    ? [
+        path.join(ENGINE_DIR, ".venv", "Scripts", "pythonw.exe"),
+        path.join(ENGINE_DIR, ".venv", "Scripts", "python.exe"),
+      ]
+    : [path.join(ENGINE_DIR, ".venv", "bin", "python")];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "python";
+}
+
+function nodeRuntime(extraEnv = {}) {
+  const env = { ...extraEnv };
+  if (process.versions?.electron) {
+    env.ELECTRON_RUN_AS_NODE = "1";
+  }
+  return {
+    command: process.execPath,
+    env,
+  };
 }
 
 export const COMPONENTS = {
@@ -37,11 +52,12 @@ export const COMPONENTS = {
     healthUrl: `http://127.0.0.1:${DEFAULT_PORTS.admin}/admin`,
     command(options = {}) {
       const mode = options.mode || "dev";
+      const runtime = nodeRuntime();
       return {
-        command: process.execPath,
+        command: runtime.command,
         args: ["scripts/run-next-with-managed-auth.mjs", "--app", "admin", "--mode", mode, "--port", String(DEFAULT_PORTS.admin)],
         cwd: REPO_ROOT,
-        env: {},
+        env: runtime.env,
       };
     },
   },
@@ -53,11 +69,12 @@ export const COMPONENTS = {
     healthUrl: `http://127.0.0.1:${DEFAULT_PORTS.web}/chat`,
     command(options = {}) {
       const mode = options.mode || "dev";
+      const runtime = nodeRuntime();
       return {
-        command: process.execPath,
+        command: runtime.command,
         args: ["scripts/run-next-with-managed-auth.mjs", "--app", "web", "--mode", mode, "--port", String(DEFAULT_PORTS.web)],
         cwd: REPO_ROOT,
-        env: {},
+        env: runtime.env,
       };
     },
   },
@@ -92,15 +109,18 @@ export const COMPONENTS = {
     port: null,
     cwd: REPO_ROOT,
     command() {
+      const runtime = nodeRuntime({
+        V8_DESKTOP_PET_MANAGED_BY_SHELL: "1",
+        V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
+        V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
+        V8_REPO_ROOT: REPO_ROOT,
+        V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
+      });
       return {
-        command: process.execPath,
+        command: runtime.command,
         args: ["apps/v8-agent-os-shell/scripts/launch-desktop-pet.mjs"],
         cwd: REPO_ROOT,
-        env: {
-          V8_DESKTOP_PET_MANAGED_BY_SHELL: "1",
-          V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
-          V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
-        },
+        env: runtime.env,
       };
     },
   },
@@ -110,17 +130,18 @@ export const COMPONENTS = {
     port: null,
     cwd: SHELL_DIR,
     command() {
+      const runtime = nodeRuntime({
+        V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
+        V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
+        V8_ENGINE_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.engine}`,
+        V8_REPO_ROOT: REPO_ROOT,
+        V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
+      });
       return {
-        command: process.execPath,
+        command: runtime.command,
         args: ["apps/v8-agent-os-shell/scripts/launch-shell.mjs"],
         cwd: REPO_ROOT,
-        env: {
-          V8_ADMIN_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.admin}`,
-          V8_WEB_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.web}`,
-          V8_ENGINE_BASE_URL: `http://127.0.0.1:${DEFAULT_PORTS.engine}`,
-          V8_REPO_ROOT: REPO_ROOT,
-          V8_DESKTOP_PET_DIR: DESKTOP_PET_DIR,
-        },
+        env: runtime.env,
       };
     },
   },

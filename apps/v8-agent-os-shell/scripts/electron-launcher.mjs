@@ -14,6 +14,7 @@ export function ensureElectron() {
     cwd: desktopPetDir,
     stdio: "inherit",
     env: process.env,
+    windowsHide: true,
   });
   if (result.status !== 0) {
     throw new Error("Electron is not ready. Run v8os doctor or reinstall desktop pet dependencies.");
@@ -30,10 +31,12 @@ export function electronCliPath() {
 
 export function launchElectron(target, extraEnv = {}) {
   ensureElectron();
+  const env = { ...process.env, ...extraEnv };
+  delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(process.execPath, [electronCliPath(), target], {
     cwd: repoRoot,
     stdio: "inherit",
-    env: { ...process.env, ...extraEnv },
+    env,
     windowsHide: true,
   });
   const stop = () => {

@@ -1,0 +1,89 @@
+name: Desktop Preview Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+jobs:
+  windows-preview:
+    name: Windows unsigned preview installer
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/v8-agent-os-admin/package-lock.json
+            apps/v8-agent-os-web/package-lock.json
+            apps/v8-agent-os-desktop-pet/package-lock.json
+            apps/v8-agent-os-shell/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Node dependencies
+        shell: pwsh
+        run: |
+          npm ci --prefix apps/v8-agent-os-admin
+          npm ci --prefix apps/v8-agent-os-web
+          npm ci --prefix apps/v8-agent-os-desktop-pet
+          npm ci --prefix apps/v8-agent-os-shell
+
+      - name: Prepare embedded Engine Python runtime
+        shell: pwsh
+        run: |
+          python -m venv apps/v8-agent-os-engine/.venv
+          apps/v8-agent-os-engine/.venv/Scripts/python.exe -m pip install --upgrade pip
+          apps/v8-agent-os-engine/.venv/Scripts/python.exe -m pip install -r apps/v8-agent-os-engine/requirements.txt
+
+      - name: Build Admin and Web production bundles
+        shell: pwsh
+        run: |
+          node scripts/run-next-with-managed-auth.mjs --app admin --mode build --port 9528
+          node scripts/run-next-with-managed-auth.mjs --app web --mode build --port 9527
+
+      - name: Build desktop pet
+        shell: pwsh
+        run: npm --prefix apps/v8-agent-os-desktop-pet run build
+
+      - name: Shell release contract tests
+        shell: pwsh
+        run: npm --prefix apps/v8-agent-os-shell test
+
+      - name: Build unsigned Windows desktop preview
+        shell: pwsh
+        run: npm --prefix apps/v8-agent-os-shell run dist:win
+
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          $outDir = "apps/v8-agent-os-shell/dist/release"
+          $files = Get-ChildItem $outDir -File | Where-Object { $_.Extension -in ".exe", ".zip" }
+          if (-not $files) { throw "No desktop preview artifacts found in $outDir" }
+          $lines = foreach ($file in $files) {
+            $hash = Get-FileHash $file.FullName -Algorithm SHA256
+            "$($hash.Hash)  $($file.Name)"
+          }
+          $lines | Set-Content -Path "$outDir/SHA256SUMS.txt" -Encoding utf8
+          Get-Content "$outDir/SHA256SUMS.txt"
+
+      - name: Upload desktop preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8os-desktop-preview-windows
+          path: |
+            apps/v8-agent-os-shell/dist/release/*.exe
+            apps/v8-agent-os-shell/dist/release/*.zip
+            apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
+          if-no-files-found: error

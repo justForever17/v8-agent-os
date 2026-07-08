@@ -1,0 +1,92 @@
+appId: com.v8agentos.desktop.preview
+productName: V8 Agent OS
+artifactName: V8-Agent-OS-${version}-${os}-${arch}.${ext}
+asar: true
+directories:
+  output: dist/release
+files:
+  - assets/**/*
+  - electron/**/*
+  - lib/**/*
+  - scripts/**/*
+  - package.json
+extraResources:
+  - from: ../../apps/v8-agent-os-cli
+    to: v8os/apps/v8-agent-os-cli
+    filter:
+      - "**/*"
+      - "!node_modules/**"
+      - "!dist/**"
+      - "!coverage/**"
+  - from: ../../apps/v8-agent-os-engine
+    to: v8os/apps/v8-agent-os-engine
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!.pytest_cache/**"
+      - "!workspace/**"
+      - "!tmp/**"
+      - "!reports/**"
+      - "!*.db"
+      - "!*.log"
+  - from: ../../apps/v8-agent-os-admin
+    to: v8os/apps/v8-agent-os-admin
+    filter:
+      - "**/*"
+      - "!.next/dev/**"
+      - "!.next/cache/**"
+      - "!.next/diagnostics/**"
+      - "!logs/**"
+      - "!cache/**"
+      - "!node_modules/.cache/**"
+      - "!node_modules/**/.cache/**"
+      - "!*.log"
+  - from: ../../apps/v8-agent-os-web
+    to: v8os/apps/v8-agent-os-web
+    filter:
+      - "**/*"
+      - "!.next/dev/**"
+      - "!.next/cache/**"
+      - "!.next/diagnostics/**"
+      - "!logs/**"
+      - "!cache/**"
+      - "!node_modules/.cache/**"
+      - "!node_modules/**/.cache/**"
+      - "!*.log"
+  - from: ../../apps/v8-agent-os-desktop-pet
+    to: v8os/apps/v8-agent-os-desktop-pet
+    filter:
+      - "**/*"
+      - "!node_modules/.cache/**"
+      - "!node_modules/**/.cache/**"
+      - "!dist/**/*.map"
+      - "!logs/**"
+      - "!*.log"
+  - from: ../../packages
+    to: v8os/packages
+    filter:
+      - "**/*"
+      - "!**/node_modules/**"
+      - "!**/dist/**"
+  - from: ../../scripts
+    to: v8os/scripts
+    filter:
+      - "**/*"
+      - "!*.log"
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: V8 Agent OS

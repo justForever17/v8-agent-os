@@ -2,10 +2,21 @@
   "name": "v8-agent-os-shell",
   "private": true,
   "version": "0.0.0",
+  "description": "V8 Agent OS desktop preview shell",
+  "author": "V8 Agent OS",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justForever17/v8-agent-os.git"
+  },
   "main": "electron/main.cjs",
   "type": "commonjs",
   "scripts": {
     "electron:start": "node scripts/launch-shell.mjs",
+    "dist:win": "electron-builder --config electron-builder.yml --win nsis zip --publish never",
     "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "electron": "^39.8.10",
+    "electron-builder": "^26.0.12"
   }
 }

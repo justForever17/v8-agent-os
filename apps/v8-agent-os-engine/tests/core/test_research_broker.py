@@ -80,6 +80,99 @@ def test_baidu_baike_is_ranked_as_background_encyclopedic_source():
     assert "source_catalog:encyclopedic_background" in quality["reasons"]
 
 
+def test_finance_crypto_and_shopping_catalog_sources_are_ranked_by_authority_tier():
+    primary_cases = {
+        "https://www.sec.gov/Archives/edgar/data/example": "us_equity_primary",
+        "https://www.sse.com.cn/disclosure/listedinfo/announcement/": "cn_equity_primary",
+        "https://www.cninfo.com.cn/new/disclosure/detail": "cn_equity_primary",
+        "https://www.binance.com/en/support/announcement/example": "crypto_market_primary",
+        "https://etherscan.io/tx/0x123": "crypto_onchain_primary",
+        "https://www.amazon.com/dp/B000000": "shopping_platform_primary",
+        "https://item.jd.com/100000.html": "shopping_platform_primary",
+    }
+    secondary_cases = {
+        "https://finance.yahoo.com/quote/AAPL": "market_data_secondary",
+        "https://www.tradingview.com/symbols/NASDAQ-AAPL/": "market_data_secondary",
+        "https://www.coingecko.com/en/coins/bitcoin": "crypto_aggregate_secondary",
+        "https://defillama.com/protocol/example": "crypto_aggregate_secondary",
+    }
+
+    for url, catalog_id in primary_cases.items():
+        quality = research_module._source_quality(
+            url,
+            allowed_domains=[],
+            source_policy="authoritative",
+            title="official source",
+            snippet="official announcement or product listing",
+        )
+
+        assert quality["catalogSourceId"] == catalog_id
+        assert quality["authorityTier"] == "primary"
+        assert quality["tier"] == "primary"
+        assert quality["authorityScore"] >= 80
+        assert f"source_catalog:{catalog_id}" in quality["reasons"]
+
+    for url, catalog_id in secondary_cases.items():
+        quality = research_module._source_quality(
+            url,
+            allowed_domains=[],
+            source_policy="authoritative",
+            title="aggregated market quote",
+            snippet="timely supporting market data",
+        )
+
+        assert quality["catalogSourceId"] == catalog_id
+        assert quality["authorityTier"] == "secondary"
+        assert quality["tier"] == "secondary"
+        assert 55 <= quality["authorityScore"] < 80
+        assert f"source_catalog:{catalog_id}" in quality["reasons"]
+
+
+def test_primary_sources_rank_above_secondary_market_portals():
+    sec_quality = research_module._source_quality(
+        "https://www.sec.gov/Archives/edgar/data/example",
+        allowed_domains=[],
+        source_policy="authoritative",
+        title="10-K filing",
+        snippet="annual report filing",
+    )
+    quote_quality = research_module._source_quality(
+        "https://finance.yahoo.com/quote/AAPL",
+        allowed_domains=[],
+        source_policy="authoritative",
+        title="AAPL quote",
+        snippet="stock price chart",
+    )
+
+    assert sec_quality["authorityScore"] > quote_quality["authorityScore"]
+    assert sec_quality["tier"] == "primary"
+    assert quote_quality["tier"] == "secondary"
+
+
+def test_shopping_source_gate_does_not_select_empty_or_noisy_product_pages():
+    gate = research_module._source_quality_gate(
+        question="Compare this product price and availability",
+        result={
+            "title": "Example Product",
+            "url": "https://www.amazon.com/dp/B000000",
+            "sourceQualityHints": {
+                "authorityScore": 80,
+                "authorityTier": "primary",
+                "catalogSourceId": "shopping_platform_primary",
+            },
+        },
+        read_payload={
+            "ok": True,
+            "text": "Customers also bought | Sponsored | Recommended | Footer | Navigation | Cookie | Related | Ads | Popup",
+            "missingContentReason": "low_text_content",
+        },
+        source_policy="authoritative",
+    )
+
+    assert gate["selectedForEvidence"] is False
+    assert gate["rejectedReason"]
+
+
 def test_chinese_community_sources_stay_low_confidence_evidence():
     urls = (
         "https://www.zhihu.com/question/123/answer/456",

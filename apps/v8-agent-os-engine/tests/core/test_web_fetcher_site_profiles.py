@@ -82,6 +82,13 @@ def test_p0_site_profiles_are_registered() -> None:
         "https://www.npmjs.com/package/react",
         "https://pypi.org/project/requests/",
         "https://stackoverflow.com/questions/1/example",
+        "https://www.sec.gov/Archives/edgar/data/example",
+        "https://www.sse.com.cn/disclosure/listedinfo/announcement/",
+        "https://www.cninfo.com.cn/new/disclosure/detail",
+        "https://www.binance.com/en/support/announcement/example",
+        "https://etherscan.io/tx/0x123",
+        "https://www.amazon.com/dp/B000000",
+        "https://item.jd.com/100000.html",
     )
 
     for url in urls:
@@ -221,6 +228,142 @@ def test_chinese_community_profiles_clean_body_without_authority_boost() -> None
         assert noise not in text
         assert hints["tier"] == "weak"
         assert "low_quality_host_hint" in hints["signals"]
+
+
+def test_finance_crypto_and_shopping_profiles_clean_with_existing_site_profile_path() -> None:
+    cases = (
+        (
+            "https://www.sec.gov/Archives/edgar/data/example",
+            """
+            <html><body><main>
+              <nav>SEC navigation</nav>
+              <h1>Form 10-K Annual Report</h1>
+              <div class="article-content">
+                <p>Registrant revenue increased in fiscal year 2026.</p>
+              </div>
+              <aside class="sidebar">Related filings sidebar</aside>
+              <div class="recommend">Recommended disclosure links</div>
+            </main></body></html>
+            """,
+            ("Form 10-K Annual Report", "Registrant revenue increased"),
+            ("SEC navigation", "Related filings sidebar", "Recommended disclosure links"),
+            "us_equity_primary",
+            "primary",
+        ),
+        (
+            "https://www.cninfo.com.cn/new/disclosure/detail",
+            """
+            <html><body><main>
+              <header>巨潮导航</header>
+              <h1 class="announcement-title">关于重大资产重组的公告</h1>
+              <div class="detail-content"><p>公司董事会审议通过相关议案。</p></div>
+              <div class="search-box">搜索公告</div>
+              <aside>右侧推荐</aside>
+            </main></body></html>
+            """,
+            ("关于重大资产重组的公告", "公司董事会审议通过相关议案。"),
+            ("巨潮导航", "搜索公告", "右侧推荐"),
+            "cn_equity_primary",
+            "primary",
+        ),
+        (
+            "https://www.binance.com/en/support/announcement/example",
+            """
+            <html><body><main>
+              <div class="trade">BTCUSDT trading widget</div>
+              <h1 class="announcement-title">Binance Will List Example Token</h1>
+              <article class="article-content"><p>Trading will open at 2026-07-08 10:00 UTC.</p></article>
+              <div class="promotion">Download app promotion</div>
+            </main></body></html>
+            """,
+            ("Binance Will List Example Token", "Trading will open"),
+            ("BTCUSDT trading widget", "Download app promotion"),
+            "crypto_market_primary",
+            "primary",
+        ),
+        (
+            "https://etherscan.io/tx/0x123",
+            """
+            <html><body><main>
+              <nav class="navbar">Explorer menu</nav>
+              <h1>Transaction Details</h1>
+              <div class="card-body"><p>Status: Success</p><p>Value: 1 ETH</p></div>
+              <div class="ads">Sponsored validator ad</div>
+            </main></body></html>
+            """,
+            ("Transaction Details", "Status: Success", "Value: 1 ETH"),
+            ("Explorer menu", "Sponsored validator ad"),
+            "crypto_onchain_primary",
+            "primary",
+        ),
+        (
+            "https://www.amazon.com/dp/B000000",
+            """
+            <html><body><main id="dp">
+              <h1 id="productTitle">Portable Monitor 15.6 inch</h1>
+              <div class="a-price">$199.99</div>
+              <div id="availability">In Stock</div>
+              <div class="seller">Sold by Example Store</div>
+              <div class="specs"><p>Resolution: 1080p</p></div>
+              <div class="recommendation">Customers also bought noisy item</div>
+              <div class="reviews">Very long review list</div>
+            </main></body></html>
+            """,
+            ("Portable Monitor 15.6 inch", "$199.99", "In Stock", "Sold by Example Store", "Resolution: 1080p"),
+            ("Customers also bought noisy item", "Very long review list"),
+            "shopping_platform_primary",
+            "primary",
+        ),
+        (
+            "https://item.jd.com/100000.html",
+            """
+            <html><body><main id="item">
+              <div class="sku-name">京东自营机械键盘</div>
+              <div class="p-price">￥399.00</div>
+              <div class="stock">现货</div>
+              <div class="shopName">京东自营旗舰店</div>
+              <div class="Ptable"><p>轴体：茶轴</p></div>
+              <div class="recommend">猜你喜欢</div>
+              <div class="comment">用户评论长列表</div>
+            </main></body></html>
+            """,
+            ("京东自营机械键盘", "￥399.00", "现货", "京东自营旗舰店", "轴体：茶轴"),
+            ("猜你喜欢", "用户评论长列表"),
+            "shopping_platform_primary",
+            "primary",
+        ),
+    )
+
+    for url, html, expected_texts, noise_texts, catalog_id, tier in cases:
+        text = web_fetcher._extract_main_text(_soup(html), url)
+        hints = web_fetcher._search_result_quality_hints(url)
+        _profile_key, _candidates, profile_selectors, _selector_entries = web_fetcher._selector_candidates_for_extract(url, "article")
+
+        for expected in expected_texts:
+            assert expected in text
+        for noise in noise_texts:
+            assert noise not in text
+        assert hints["catalogSourceId"] == catalog_id
+        assert hints["tier"] == tier
+        assert "primary_source_hint" in hints["signals"]
+        assert profile_selectors
+
+
+def test_secondary_market_and_crypto_aggregate_sources_are_marked_as_supporting_evidence() -> None:
+    cases = {
+        "https://finance.yahoo.com/quote/AAPL": "market_data_secondary",
+        "https://www.tradingview.com/symbols/NASDAQ-AAPL/": "market_data_secondary",
+        "https://www.coingecko.com/en/coins/bitcoin": "crypto_aggregate_secondary",
+        "https://defillama.com/protocol/example": "crypto_aggregate_secondary",
+    }
+
+    for url, catalog_id in cases.items():
+        hints = web_fetcher._search_result_quality_hints(url)
+
+        assert hints["catalogSourceId"] == catalog_id
+        assert hints["authorityTier"] == "secondary"
+        assert hints["tier"] == "secondary"
+        assert "secondary_source_hint" in hints["signals"]
 
 
 def test_auto_fetch_uses_reader_fallback_after_static_challenge_and_browser_unavailable() -> None:

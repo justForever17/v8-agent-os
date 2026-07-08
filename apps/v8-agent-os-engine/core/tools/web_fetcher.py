@@ -6,6 +6,7 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 import os
 from pathlib import Path
 import ssl
@@ -106,6 +107,348 @@ EXTRACT_CONTAINER_SELECTORS: dict[str, tuple[str, ...]] = {
         ".content",
         "body",
     ),
+}
+FINANCE_DISCLOSURE_SITE_PROFILE: dict[str, Any] = {
+    "description": "Finance regulator, exchange, company filing and announcement pages: keep title, date, disclosure body and visible notice text; skip navigation, search, sidebars and recommendation chrome.",
+    "extracts": {
+        "article": {
+            "containerSelectors": (
+                "main",
+                "article",
+                "#content",
+                "#main",
+                "#mainContent",
+                ".content",
+                ".article",
+                ".article-content",
+                ".detail",
+                ".detail-content",
+                ".announcement",
+                ".notice",
+                ".disclosure",
+                "body",
+            ),
+            "articleSelectors": (
+                "main h1",
+                "article h1",
+                "h1",
+                ".title",
+                ".article-title",
+                ".main-title",
+                ".content-title",
+                ".announcement-title",
+                ".notice-title",
+                ".date",
+                ".time",
+                ".publish-time",
+                ".article-content",
+                ".detail-content",
+                ".content",
+                ".detail",
+                ".announcement",
+                ".notice",
+                ".disclosure",
+                "#content",
+                "#mainContent",
+                "article",
+            ),
+            "removeSelectors": (
+                ".sidebar",
+                ".side",
+                ".toc",
+                ".breadcrumb",
+                ".breadcrumbs",
+                ".search",
+                ".search-box",
+                ".menu",
+                ".nav",
+                ".pagination",
+                ".related",
+                ".recommend",
+                ".advertisement",
+                ".advertise",
+                ".ads",
+                ".ad",
+                ".share",
+                ".toolbar",
+                ".cookie",
+                ".login",
+                ".popup",
+                "aside",
+                "nav",
+                "footer",
+                "header",
+                "form",
+                "button",
+            ),
+            "skipMarkerTokens": (
+                "sidebar",
+                "side",
+                "catalog",
+                "breadcrumb",
+                "search",
+                "menu",
+                "pagination",
+                "related",
+                "recommend",
+                "advert",
+                "share",
+                "toolbar",
+                "cookie",
+                "login",
+                "popup",
+            ),
+        }
+    },
+}
+CRYPTO_INFO_SITE_PROFILE: dict[str, Any] = {
+    "description": "Crypto exchange, market data and announcement pages: keep announcement/API/market explanation body; skip trading widgets, login, promotions and recommendation chrome.",
+    "extracts": {
+        "article": {
+            "containerSelectors": (
+                "main",
+                "article",
+                "#content",
+                ".content",
+                ".article",
+                ".article-content",
+                ".markdown",
+                ".markdown-body",
+                ".prose",
+                ".announcement",
+                "body",
+            ),
+            "articleSelectors": (
+                "main h1",
+                "article h1",
+                "h1",
+                ".title",
+                ".article-title",
+                ".announcement-title",
+                ".article-content",
+                ".content",
+                ".markdown",
+                ".markdown-body",
+                ".prose",
+                ".announcement",
+                "article",
+            ),
+            "removeSelectors": (
+                ".trade",
+                ".trading",
+                ".chart",
+                ".orderbook",
+                ".order-book",
+                ".ticker-tape",
+                ".login",
+                ".signup",
+                ".download",
+                ".app-download",
+                ".promotion",
+                ".promo",
+                ".banner",
+                ".related",
+                ".recommend",
+                ".sidebar",
+                ".toc",
+                ".breadcrumb",
+                ".cookie",
+                "aside",
+                "nav",
+                "footer",
+                "header",
+                "form",
+                "button",
+            ),
+            "skipMarkerTokens": (
+                "trade",
+                "trading",
+                "orderbook",
+                "order-book",
+                "ticker",
+                "login",
+                "signup",
+                "download",
+                "promotion",
+                "promo",
+                "banner",
+                "related",
+                "recommend",
+                "sidebar",
+                "cookie",
+            ),
+        }
+    },
+}
+ONCHAIN_EXPLORER_SITE_PROFILE: dict[str, Any] = {
+    "description": "Blockchain explorer pages: keep visible transaction/token/address summary and status fields; skip ads, menus, charts and footer chrome.",
+    "extracts": {
+        "article": {
+            "containerSelectors": (
+                "main",
+                "#content",
+                ".content",
+                ".container",
+                ".card",
+                ".card-body",
+                ".overview",
+                "body",
+            ),
+            "articleSelectors": (
+                "main h1",
+                "h1",
+                ".title",
+                ".card-header",
+                ".card-body",
+                ".overview",
+                ".hash-tag",
+                ".u-label",
+                ".text-muted",
+                ".content",
+                "#content",
+            ),
+            "removeSelectors": (
+                ".navbar",
+                ".sidebar",
+                ".dropdown-menu",
+                ".ads",
+                ".ad",
+                ".advertisement",
+                ".chart",
+                ".sponsored",
+                ".cookie",
+                ".modal",
+                ".popup",
+                "aside",
+                "nav",
+                "footer",
+                "header",
+                "form",
+                "button",
+            ),
+            "skipMarkerTokens": (
+                "navbar",
+                "sidebar",
+                "dropdown",
+                "advert",
+                "sponsor",
+                "cookie",
+                "modal",
+                "popup",
+            ),
+        }
+    },
+}
+SHOPPING_PRODUCT_SITE_PROFILE: dict[str, Any] = {
+    "description": "Large shopping product pages: keep visible product summary text such as title, price text, availability, seller/shop, specs and rating summary; skip navigation, ads, recommendations, comments and Q&A.",
+    "extracts": {
+        "article": {
+            "containerSelectors": (
+                "main",
+                "#dp",
+                "#centerCol",
+                "#ppd",
+                "#item",
+                "#itemInfo",
+                ".product",
+                ".product-detail",
+                ".product-page",
+                ".goods-detail",
+                ".item-detail",
+                "body",
+            ),
+            "articleSelectors": (
+                "main h1",
+                "h1",
+                "#productTitle",
+                ".product-title",
+                ".prod-ProductTitle",
+                ".sku-name",
+                ".tb-main-title",
+                ".p-name",
+                ".goods-name",
+                ".price",
+                ".a-price",
+                ".p-price",
+                ".tm-price",
+                ".tb-rmb-num",
+                ".summary-price",
+                "[class*='price']",
+                "#availability",
+                ".availability",
+                ".stock",
+                "[class*='stock']",
+                ".delivery",
+                "[class*='delivery']",
+                ".seller",
+                ".seller-name",
+                ".store",
+                ".shop",
+                ".shopName",
+                ".specs",
+                ".parameters",
+                ".Ptable",
+                ".item-props",
+                ".product-params",
+                ".a-icon-alt",
+                ".rating",
+                "[class*='rating']",
+            ),
+            "removeSelectors": (
+                ".recommend",
+                ".recommendation",
+                ".related",
+                ".sponsored",
+                ".advertisement",
+                ".advertise",
+                ".ads",
+                ".ad",
+                ".comments",
+                ".comment",
+                ".reviews",
+                ".review-list",
+                ".qa",
+                ".question",
+                ".ask",
+                ".navbar",
+                ".breadcrumb",
+                ".breadcrumbs",
+                ".sidebar",
+                ".login",
+                ".popup",
+                ".modal",
+                ".share",
+                ".toolbar",
+                ".footer",
+                ".header",
+                "aside",
+                "nav",
+                "footer",
+                "header",
+                "form",
+                "button",
+            ),
+            "skipMarkerTokens": (
+                "recommend",
+                "related",
+                "sponsored",
+                "advert",
+                "comment",
+                "review-list",
+                "qa",
+                "question",
+                "ask",
+                "navbar",
+                "breadcrumb",
+                "sidebar",
+                "login",
+                "popup",
+                "modal",
+                "share",
+                "toolbar",
+            ),
+        }
+    },
 }
 BUILTIN_WEB_FETCH_SITE_PROFILES: dict[str, dict[str, Any]] = {
     "baike.baidu.com": {
@@ -683,6 +1026,43 @@ BUILTIN_WEB_FETCH_SITE_PROFILES: dict[str, dict[str, Any]] = {
             }
         },
     },
+    "sec.gov": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "nasdaq.com": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "nyse.com": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "cboe.com": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "sse.com.cn": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "szse.cn": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "cninfo.com.cn": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "csrc.gov.cn": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "csindex.com.cn": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "eastmoney.com": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "finance.sina.com.cn": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "finance.yahoo.com": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "tradingview.com": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "investing.com": FINANCE_DISCLOSURE_SITE_PROFILE,
+    "binance.com": CRYPTO_INFO_SITE_PROFILE,
+    "coinbase.com": CRYPTO_INFO_SITE_PROFILE,
+    "okx.com": CRYPTO_INFO_SITE_PROFILE,
+    "kraken.com": CRYPTO_INFO_SITE_PROFILE,
+    "coingecko.com": CRYPTO_INFO_SITE_PROFILE,
+    "coinmarketcap.com": CRYPTO_INFO_SITE_PROFILE,
+    "defillama.com": CRYPTO_INFO_SITE_PROFILE,
+    "etherscan.io": ONCHAIN_EXPLORER_SITE_PROFILE,
+    "bscscan.com": ONCHAIN_EXPLORER_SITE_PROFILE,
+    "polygonscan.com": ONCHAIN_EXPLORER_SITE_PROFILE,
+    "solscan.io": ONCHAIN_EXPLORER_SITE_PROFILE,
+    "mempool.space": ONCHAIN_EXPLORER_SITE_PROFILE,
+    "amazon.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "ebay.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "walmart.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "bestbuy.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "target.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "jd.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "tmall.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "taobao.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "pinduoduo.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "1688.com": SHOPPING_PRODUCT_SITE_PROFILE,
+    "suning.com": SHOPPING_PRODUCT_SITE_PROFILE,
 }
 OFFICIAL_DOCS_GENERIC_SITE_PROFILE: dict[str, Any] = {
     "description": "Official documentation pages: keep main docs/reference body; skip navigation, toc, version switchers, feedback and marketing chrome.",
@@ -1037,6 +1417,13 @@ def _guard_url(url: str, *, tool_call_id: str) -> tuple[bool, str | None]:
 
 def _safe_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _runtime_context_value(context: Any, *keys: str) -> str:
@@ -3182,8 +3569,34 @@ def _trim_broker_text(value: Any, *, limit: int = 2400) -> tuple[str, bool]:
     return normalized[:limit].rstrip(), True
 
 
+_WEB_SOURCE_CATALOG_PATH = Path(__file__).resolve().parents[2] / "runtimes" / "research" / "assets" / "source_quality_catalog.json"
+
+
+@lru_cache(maxsize=1)
+def _web_source_catalog() -> dict[str, Any]:
+    try:
+        payload = json.loads(_WEB_SOURCE_CATALOG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {"entries": []}
+    entries = payload.get("entries") if isinstance(payload.get("entries"), list) else []
+    return {"entries": [entry for entry in entries if isinstance(entry, dict)]}
+
+
+def _web_source_catalog_match(url: str) -> dict[str, Any] | None:
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return None
+    for entry in _web_source_catalog().get("entries") or []:
+        for raw_host in list(entry.get("hosts") or []):
+            catalog_host = _safe_text(raw_host).lower()
+            if catalog_host and (host == catalog_host or host.endswith(f".{catalog_host}")):
+                return entry
+    return None
+
+
 def _search_result_quality_hints(url: str) -> dict[str, Any]:
     host = (urlparse(url).hostname or "").lower()
+    catalog_entry = _web_source_catalog_match(url)
     authoritative = any(
         hint in host or hint in str(url or "").lower()
         for hint in (
@@ -3198,13 +3611,15 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
             "github.com",
         )
     )
+    catalog_tier = _safe_text(catalog_entry.get("authorityTier") if catalog_entry else "").lower()
+    catalog_category = _safe_text(catalog_entry.get("category") if catalog_entry else "")
     background = host in {
         "baike.baidu.com",
         "wikipedia.org",
         "www.wikipedia.org",
         "britannica.com",
         "www.britannica.com",
-    }
+    } or catalog_tier == "background"
     low_quality = any(
         hint in host or hint in str(url or "").lower()
         for hint in (
@@ -3219,12 +3634,28 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
         )
     )
     score = 70 if authoritative else (55 if background else 50)
+    if catalog_entry:
+        score += _as_int(catalog_entry.get("authorityBoost"), 0)
+        if catalog_tier == "primary":
+            score = max(score, 80)
+        elif catalog_tier == "secondary":
+            score = max(score, 60)
+        elif catalog_tier == "popularity":
+            score = max(score, 55)
     if low_quality:
         score -= 25
     score = max(0, min(score, 100))
     signals = []
+    if catalog_entry:
+        signals.append(f"source_catalog:{catalog_entry.get('id')}")
+        if catalog_category:
+            signals.append(f"source_category:{catalog_category}")
     if authoritative:
         signals.append("authoritative_host_hint")
+    if catalog_tier == "primary":
+        signals.append("primary_source_hint")
+    elif catalog_tier == "secondary":
+        signals.append("secondary_source_hint")
     if background:
         signals.append("encyclopedic_background_source")
     if low_quality:
@@ -3234,6 +3665,9 @@ def _search_result_quality_hints(url: str) -> dict[str, Any]:
         "authorityScore": score,
         "tier": "primary" if score >= 70 else ("secondary" if score >= 45 else "weak"),
         "signals": signals,
+        "catalogSourceId": catalog_entry.get("id") if catalog_entry else None,
+        "catalogCategory": catalog_category or None,
+        "authorityTier": catalog_entry.get("authorityTier") if catalog_entry else None,
     }
 
 

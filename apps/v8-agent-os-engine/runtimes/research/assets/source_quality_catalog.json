@@ -177,23 +177,133 @@
       "notes": "Useful for style and trend discovery, not for factual claims."
     },
     {
-      "id": "market_and_finance_primary",
+      "id": "us_equity_primary",
       "category": "market_finance",
-      "displayName": "Market and Finance Primary Sources",
+      "displayName": "US Equity Primary Sources",
       "hosts": [
         "www.sec.gov",
-        "www.hkexnews.hk",
+        "data.sec.gov",
         "www.nasdaq.com",
         "www.nyse.com",
-        "www.londonstockexchange.com",
-        "finance.yahoo.com",
-        "www.investing.com",
-        "www.tradingview.com"
+        "www.cboe.com"
       ],
       "authorityTier": "primary",
-      "authorityBoost": 20,
-      "bestFor": ["filing", "market_data", "company_fact", "exchange_notice"],
-      "notes": "Prefer regulator/exchange/company filings for claims; market portals can support quotes and charts."
+      "authorityBoost": 30,
+      "bestFor": ["filing", "company_fact", "exchange_notice", "market_rule", "listed_security"],
+      "notes": "Prefer SEC, exchange and official listing sources for filings, company facts, listing notices and rule changes."
+    },
+    {
+      "id": "cn_equity_primary",
+      "category": "market_finance",
+      "displayName": "A-share Primary Sources",
+      "hosts": [
+        "www.sse.com.cn",
+        "www.szse.cn",
+        "www.cninfo.com.cn",
+        "www.csrc.gov.cn",
+        "www.csindex.com.cn"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 30,
+      "bestFor": ["filing", "company_announcement", "exchange_notice", "regulatory_notice", "index_fact"],
+      "notes": "Prefer exchange, CSRC, CNINFO and CSI sources for A-share announcements, regulatory facts and index information."
+    },
+    {
+      "id": "market_data_secondary",
+      "category": "market_finance",
+      "displayName": "Market Data and Quote Portals",
+      "hosts": [
+        "finance.yahoo.com",
+        "www.tradingview.com",
+        "www.investing.com",
+        "quote.eastmoney.com",
+        "data.eastmoney.com",
+        "finance.sina.com.cn"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 10,
+      "bestFor": ["market_quote", "chart", "market_snapshot", "price_text", "volume_text"],
+      "notes": "Use as timely quote/chart support. Verify factual claims with filings, exchanges, regulators or company announcements."
+    },
+    {
+      "id": "crypto_market_primary",
+      "category": "crypto_market",
+      "displayName": "Crypto Exchange Primary Sources",
+      "hosts": [
+        "www.binance.com",
+        "developers.binance.com",
+        "www.coinbase.com",
+        "docs.cdp.coinbase.com",
+        "www.okx.com",
+        "www.kraken.com"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 30,
+      "bestFor": ["crypto_pair_quote", "exchange_notice", "api_contract", "fee_rule", "listing_notice"],
+      "notes": "Use exchange official pages and API docs for that exchange's products, notices, API contracts and market snapshots."
+    },
+    {
+      "id": "crypto_onchain_primary",
+      "category": "crypto_onchain",
+      "displayName": "On-chain Explorer Primary Sources",
+      "hosts": [
+        "etherscan.io",
+        "docs.etherscan.io",
+        "bscscan.com",
+        "polygonscan.com",
+        "solscan.io",
+        "mempool.space"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 30,
+      "bestFor": ["onchain_fact", "transaction_status", "token_contract", "address_activity", "block_data"],
+      "notes": "Use for visible on-chain facts and explorer/API evidence; still cite chain and timestamp when facts are time-sensitive."
+    },
+    {
+      "id": "crypto_aggregate_secondary",
+      "category": "crypto_market",
+      "displayName": "Crypto Aggregate Market Sources",
+      "hosts": [
+        "www.coingecko.com",
+        "docs.coingecko.com",
+        "coinmarketcap.com",
+        "defillama.com",
+        "api-docs.defillama.com"
+      ],
+      "authorityTier": "secondary",
+      "authorityBoost": 10,
+      "bestFor": ["market_quote", "market_cap", "token_summary", "defi_tvl", "price_text"],
+      "notes": "Use as timely aggregated market context. Verify exchange-specific, contract or chain facts with primary sources."
+    },
+    {
+      "id": "shopping_platform_primary",
+      "category": "shopping_platform",
+      "displayName": "Major Shopping Platform Product Pages",
+      "hosts": [
+        "www.amazon.com",
+        "amazon.com",
+        "www.ebay.com",
+        "ebay.com",
+        "www.walmart.com",
+        "www.bestbuy.com",
+        "www.target.com",
+        "www.jd.com",
+        "item.jd.com",
+        "www.tmall.com",
+        "detail.tmall.com",
+        "www.taobao.com",
+        "item.taobao.com",
+        "www.pinduoduo.com",
+        "mobile.yangkeduo.com",
+        "www.1688.com",
+        "detail.1688.com",
+        "www.suning.com",
+        "product.suning.com"
+      ],
+      "authorityTier": "primary",
+      "authorityBoost": 30,
+      "bestFor": ["product_listing", "price_text", "availability_text", "seller_text", "spec_text", "rating_text"],
+      "notes": "Global and zh shopping product pages are primary only for their visible page text at read time. Do not treat price or stock as guaranteed transaction truth."
     },
     {
       "id": "encyclopedic_background",

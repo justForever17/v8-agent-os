@@ -4,13 +4,13 @@
 
 ## 目标
 
-建立 V8OS 的版本通道、打包边界和发版验收基线。当前只有 Phone 端已有 GitHub 自动打包雏形；桌面版仍是源码树预览壳，不能按正式安装包宣传。
+把 V8OS 的发布入口从临时 tag 和自动 changelog，收口为清晰的产品通道、统一版本号、结构化发布说明、校验文件和可复现打包流程。
 
 ## 版本通道
 
 ### `desktop-preview`
 
-用途：桌面版源码树预览和内部验证。
+用途：桌面版预览安装包和内部验证。
 
 内容：
 
@@ -20,19 +20,12 @@
 - Shell
 - 受控桌宠
 
-当前入口：
+当前状态：
 
-```powershell
-.\v8os.cmd preview
-```
-
-当前限制：
-
-- 不是安装器。
-- 不是系统服务。
-- 无自动更新。
-- 无代码签名。
-- 无桌面 GitHub release workflow。
+- 已有源码树 `v8os preview`。
+- 已有 Windows unsigned preview installer workflow。
+- GitHub tag `v8-os-desktop-vYYYY.MM.DD.N` 会创建 GitHub Release，上传 installer、zip 和 `SHA256SUMS.txt`。
+- 尚未签名，没有自动更新，不宣传为 stable。
 
 ### `desktop-stable`
 
@@ -41,39 +34,35 @@
 最小要求：
 
 - Windows 安装包优先，后续 macOS / Linux。
-- 内置或可靠拉起 Engine。
-- Admin/Web 使用生产构建。
+- 安装后启动不弹终端黑框。
 - Shell 是唯一本地产品窗口。
-- 桌宠由 Shell 受控启动/退出。
-- 退出 V8OS 能清理受管子进程。
-- 支持自动更新或至少可检测新版本。
-- 有 GitHub release workflow、artifact、release notes 和回滚说明。
+- Engine/Admin/Web/桌宠由 Shell 看护。
+- 支持签名、更新、卸载、崩溃日志和修复入口。
 
 ### `phone-preview` / `phone-production`
 
 用途：Phone 远程交互端。
 
-现状：
+当前状态：
 
-- `.github/workflows/phone-build.yml` 已支持 workflow_dispatch。
-- `phone-v*` tag 会触发 APK artifact 和 GitHub release。
+- GitHub tag `v8-os-phone-vYYYY.MM.DD.N` 会构建 Android APK，创建 GitHub Release，上传 APK 和 `SHA256SUMS.txt`。
+- 旧 `phone-v*` tag 只作为历史发布入口，不再用于新版本。
 
 约束：
 
 - Phone 是唯一远程配对入口。
-- Android 目标为 11 及以上。
-- iOS 目标为 16.4 及以上。
+- Android 支持 11 及以上。
+- iOS 支持 16.4 及以上，正式发布仍属后续。
 
 ### `tui-experimental`
 
-用途：未来 TUI版试验。
+用途：未来 TUI 版试验。
 
 边界：
 
 - 不依赖 Admin 端。
 - CLI/TUI 承担基础配置、鉴权、连接管理、会话和 inbox。
-- 不包含 `computer_use` 与 `RPA`。
-- 不替代桌面版和 Phone。
+- 不包含桌面操作与 RPA。
 
 ### `lite-experimental`
 
@@ -82,50 +71,60 @@
 边界：
 
 - 面向老旧机型和低配边缘设备。
-- 只保留基础必需 runtime。
-- 额外保留 `network_supervisor`。
-- 不承诺直接运行完整 V8OS，也不复制桌面版重依赖。
+- 只保留基础必需能力。
+- 额外保留网络连接能力。
+- 不承诺在 ESP32 级设备运行完整 V8OS。
 
-## Tag 建议
+## Tag 规则
 
-当前可用：
+新版本统一使用日期型版本号：
 
-- `phone-vX.Y.Z`：触发 Phone APK release。
+```text
+v8-os-phone-vYYYY.MM.DD.N
+v8-os-desktop-vYYYY.MM.DD.N
+```
 
-建议新增：
+示例：
 
-- `desktop-preview-vX.Y.Z`：触发桌面预览包。
-- `desktop-vX.Y.Z`：触发桌面稳定包。
-- `tui-vX.Y.Z-alpha.N`：未来 TUI 试验包。
-- `lite-vX.Y.Z-alpha.N`：未来轻量二进制试验包。
+```powershell
+node scripts/release/prepare-release.mjs --product phone --version 2026.07.08.1
+node scripts/release/prepare-release.mjs --product desktop --version 2026.07.08.1
+```
 
-在桌面 workflow 未实现前，不创建 `desktop-v*` 正式 tag。
+默认是 dry-run。真正准备本地提交和 annotated tag 时加 `--apply`：
 
-## 桌面发版最小闭环
+```powershell
+node scripts/release/prepare-release.mjs --product phone --version 2026.07.08.1 --apply
+node scripts/release/prepare-release.mjs --product desktop --version 2026.07.08.1 --apply
+```
 
-正式桌面发版前必须具备：
+脚本不会自动 push。推送 tag 前应先完成对应通道的验收。
 
-1. 构建 Admin/Web 生产包。
-2. 打包 Shell。
-3. 打包或启动 Engine。
-4. 桌宠以 managed mode 被 Shell 控制。
-5. 统一托盘可打开 Web/Admin、启动/退出桌宠、退出 V8OS。
-6. 日志写入 `~/.v8-agent-os/logs/cli/` 或发布版等价目录。
-7. 退出后清理受管进程。
-8. doctor 能定位启动失败、端口占用、Electron/Node/Python 依赖问题。
-9. GitHub workflow 上传安装包和校验信息。
+## 发布说明要求
 
-## 发版前兼容门禁
+GitHub Release 正文必须是结构化产品说明，而不是只有自动 changelog：
 
-涉及以下区域的改动，必须额外跑桌面预览验收：
+- 下载对象和适用平台。
+- 安装或更新方式。
+- 本次版本重点。
+- 已知限制。
+- `SHA256SUMS.txt` 校验说明。
+- 完整 changelog 链接。
 
-- Admin/Web topbar 标题栏槽位。
-- 登录态识别和本地 trusted session。
-- Next build/start 生产模式。
-- Electron Shell main/preload/tray IPC。
-- 桌宠 managed mode。
-- 端口和 Admin/Web/Engine URL 投影。
-- 产物资源 URL。
+自动 release notes 只作为补充，不作为正式发布页主体。
+
+## 桌面发版门禁
+
+桌面 preview 或 stable 发版前必须确认：
+
+1. Admin/Web 使用生产构建。
+2. Shell 启动后无 dev server、Turbopack、HMR 日志。
+3. Engine 无控制台黑框，日志进入 V8OS 日志目录。
+4. Shell 可按登录态进入 Admin 或 Web。
+5. 托盘能打开 Web/Admin、启动/退出桌宠、退出 V8OS。
+6. 退出后清理受管进程。
+7. 产物资源在 Shell/Web 与 Phone 可访问。
+8. `SHA256SUMS.txt` 与发布资产同批生成。
 
 最小命令：
 
@@ -136,47 +135,21 @@
 .\v8os.cmd stop
 ```
 
-验收点：
-
-- 不出现 `npm run dev`、Turbopack、HMR。
-- Shell 能按登录态进入 Admin 或 Web。
-- 托盘能启动/退出桌宠。
-- 关闭窗口只隐藏，托盘退出才停止服务。
-- Phone 配对仍只属于 Phone。
-
 ## Phone 发版门禁
 
 Phone 发版前必须确认：
 
 - `npm ci` 不再因本地 tarball integrity 失败。
 - `npm run typecheck` 通过。
-- Android build profile 可生成 APK。
+- Android APK 能成功构建。
 - 配对、server profile、音频/附件、产物访问 smoke 通过。
-
-GitHub 当前入口：
-
-```text
-phone-v*
-```
 
 ## 不能宣称的内容
 
 在对应 workflow 和验收完成前，不得宣称：
 
-- 已有桌面正式安装包。
-- 已支持自动更新。
+- 桌面版已进入 stable。
+- 已有自动更新。
 - 已支持系统服务安装。
 - TUI 已可替代 Admin。
 - 极简二进制已能在 ESP32 级设备运行完整 V8OS。
-
-## 发布说明要求
-
-每次 release note 至少写清：
-
-- 版本通道。
-- 适用平台。
-- 包含哪些端。
-- 需要用户手动配置什么。
-- 已知限制。
-- 回滚或卸载方式。
-- 对 Phone 配对、本地 trusted client、Network Supervisor 的影响。

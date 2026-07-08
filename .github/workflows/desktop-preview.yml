@@ -4,7 +4,10 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - "desktop-v*"
+      - "v8-os-desktop-v*"
+
+permissions:
+  contents: write
 
 jobs:
   windows-preview:
@@ -65,6 +68,22 @@ jobs:
         shell: pwsh
         run: npm --prefix apps/v8-agent-os-shell run dist:win
 
+      - name: Normalize desktop artifact names
+        shell: pwsh
+        run: |
+          $outDir = "apps/v8-agent-os-shell/dist/release"
+          if ($env:GITHUB_REF_NAME -match '^v8-os-desktop-v(.+)$') {
+            $releaseVersion = $Matches[1]
+          } else {
+            $releaseVersion = "preview-$env:GITHUB_RUN_NUMBER"
+          }
+          $exe = Get-ChildItem $outDir -File -Filter "*.exe" | Select-Object -First 1
+          $zip = Get-ChildItem $outDir -File -Filter "*.zip" | Select-Object -First 1
+          if (-not $exe) { throw "No NSIS installer found in $outDir" }
+          if (-not $zip) { throw "No zip package found in $outDir" }
+          Rename-Item -LiteralPath $exe.FullName -NewName "V8-Agent-OS-$releaseVersion-win-x64-setup.exe" -Force
+          Rename-Item -LiteralPath $zip.FullName -NewName "V8-Agent-OS-$releaseVersion-win-x64.zip" -Force
+
       - name: Generate SHA256 checksums
         shell: pwsh
         run: |
@@ -78,6 +97,16 @@ jobs:
           $lines | Set-Content -Path "$outDir/SHA256SUMS.txt" -Encoding utf8
           Get-Content "$outDir/SHA256SUMS.txt"
 
+      - name: Generate desktop release notes
+        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
+        shell: pwsh
+        run: |
+          node scripts/release/generate-release-notes.mjs `
+            --product desktop `
+            --tag "$env:GITHUB_REF_NAME" `
+            --channel preview `
+            --out "apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md"
+
       - name: Upload desktop preview artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -87,3 +116,14 @@ jobs:
             apps/v8-agent-os-shell/dist/release/*.zip
             apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
           if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: false
+          body_path: apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md
+          files: |
+            apps/v8-agent-os-shell/dist/release/*.exe
+            apps/v8-agent-os-shell/dist/release/*.zip
+            apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt

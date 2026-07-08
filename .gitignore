@@ -76,6 +76,8 @@ apps/v8-agent-os-phone-tmp/
 
 # Public docs boundary: only these four docs are intended for source control.
 docs/**
+!docs/assets/
+!docs/assets/banner.svg
 !docs/V8_AGENT_OS_API_REFERENCE_ZH.md
 !docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md
 !docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md

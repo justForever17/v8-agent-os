@@ -1,107 +1,103 @@
 <div align="center">
-  <img src="./docs/assets/banner.svg" alt="V8 Agent OS Banner" width="800">
+  <img src="./docs/assets/banner.svg" alt="V8 Agent OS" width="860">
 </div>
 
 <div align="center">
-  <strong>Context Resilience · Tool Pre-filtering · Visually Transparent · Strongly Recoverable</strong>
+  <strong>A local-first Agent workspace for long-running tasks, project delivery, mobile collaboration, and creative media work.</strong>
 </div>
+
 <br>
 
 <div align="center">
 
-[![OS](https://img.shields.io/badge/Platform-Win_|_Mac_|_Linux-green.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
-[![Node](https://img.shields.io/badge/Runtime-Node.js-orange.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
-[![Security](https://img.shields.io/badge/Security-Fail--Closed-red.svg?style=for-the-badge&color=050505&labelColor=111111)](#)
+[中文](./README-ZH.md) · [Quick Start](./docs/V8_AGENT_OS_QUICK_START_ZH.md) · [Configuration](./docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md) · [Developer Guide](./docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md) · [Releases](https://github.com/justForever17/v8-agent-os/releases)
 
 </div>
-<br>
 
-> 🌐 [**中文文档请点这里**](./README-ZH.md)
+## What Is V8 Agent OS?
 
-## 🪐 The Epoch-Making Agent Runtime
+V8 Agent OS is a local-first Agent OS for people who want AI to work inside real projects, not just answer one-off prompts. It brings chat, workspaces, model management, long-term memory, task orchestration, mobile access, artifacts, and a desktop companion into one governable product.
 
-**V8 Agent OS** is not just another fancy "smart chat wrapper." It is fundamentally engineered as an **Agent Runtime Ecosystem** heavily fortified with security armor and cross-platform asynchronous orchestration capabilities.
+At the center is the Supervisor: a user-facing coordinator that understands your goal, chooses whether to act directly or use a specialized mode, and checks the final result before handing it back to you.
 
-If you are tired of "re-explaining your project context to the model," "blind-running tasks crashing midway," or "unknown third-party Skills creating supply-chain blind spots," V8 is built for you. We provide a global memory graph, highly observable task pipelines, and human-in-the-loop manual overrides to ensure long-running task survival.
+## Who It Is For
 
----
+- Builders who want an AI assistant to stay with a real project over time.
+- Small teams that need research, coding, asset generation, documentation, and delivery proof in one place.
+- Users who run the main system on a desktop but want a phone to monitor progress, answer questions, and send attachments.
+- Power users who care about model routing, memory, tool boundaries, artifacts, and recoverable execution.
 
-## 🛡️ Core Weapons-Grade Architecture
+## Core Experience
 
-<table width="100%">
-  <tr>
-    <td width="50%">
-      <h3>1. Fully Decoupled Auto-runtime</h3>
-      <p>Structurally isolate the <strong>Control Plane (Admin 9528)</strong> from the <strong>Execution Core (Engine 9530)</strong>. This robust decoupling allows massive background agent tasks to survive browser closes, system suspends, and hold patiently for human-prompt interventions over several days.</p>
-    </td>
-    <td width="50%">
-      <h3>2. Reverse OpenClaw Ecosystem Hijack</h3>
-      <p>Through the architectural black magic of <code>v8-bridge</code>, V8 natively hijacks and fully accommodates the massive OpenClaw open-source plugin community, pulling their firepower strictly within our zero-trust secure guardrails.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <h3>3. Compute-Aware Model Routing</h3>
-      <p>Natively intercept and route trivial classification tasks and long-text data summatives to free, local small models on your hardware. This prevents API bill explosions, reserving your premium frontier AI requests solely for extreme reasoning edges.</p>
-    </td>
-    <td width="50%">
-      <h3>4. Zero-Trust Approval Firewalls</h3>
-      <p>Blindly attaching unknown Skills is an open door to hackers. Upon encountering destructive system commands, the backend graph instantly suspends execution, triggering a human-in-the-loop audit on the Control Board. Even a hidden <code>rm -rf</code> cannot escape your gaze.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <h3>5. Omniscient MCP & SKILLS Pre-Filtering</h3>
-      <p>Load massive integrations without blowing out your token limits. A top-level Reranker dynamically normalizes and pre-filters hundreds of separate MCP modules and native Skills into one context window, exposing only the exact razor-sharp edges the task needs.</p>
-    </td>
-    <td width="50%">
-      <h3>6. Graph-Layered Memory Surgery</h3>
-      <p>True memory isn't just dumping a static markdown file. V8 employs a background Memory Agent and projects the data as an interactive UI Node Graph where operators can surgically sculpt, sever, and override individual knowledge clusters.</p>
-    </td>
-  </tr>
-</table>
+### Desktop App
 
----
+The desktop app is the main product line. It brings the chat surface, control center, engine, and desktop companion into a local shell so users do not need to remember service ports or keep several terminals open.
 
-## ⚡ One-Command Bootstrap
+### Phone
 
-Skip the manual dependency hell. Start both the Admin console and the Execution Engine instantly using our cross-platform one-line command (Web UI handled separately).
+Phone is the remote interaction surface. It is used to follow active sessions, answer blocking questions, send voice or files, inspect artifacts, and stay connected when you are away from the desktop.
 
-### Windows (PowerShell)
+### Supervisor
+
+The Supervisor coordinates the work. It can handle simple tasks directly or route complex work into specialized modes such as coding, research, creative media, memory, or subagent collaboration.
+
+### Specialized Modes
+
+- Coding Mode: project creation, code changes, tests, and delivery proof.
+- Research: source-backed search, evidence sorting, and research packs.
+- Creative Media: images, video, audio, music, and 3D assets.
+- Memory: preferences, knowledge, and long-running project context.
+- Desktop Companion: follows the active session, plays actions and speech, and can send voice or snapshots as attachments.
+
+## Quick Start
+
+### Download a Preview
+
+Go to [GitHub Releases](https://github.com/justForever17/v8-agent-os/releases):
+
+- Windows Desktop Preview: installer or zip package.
+- Android Phone Preview: APK package.
+
+The desktop build is currently an unsigned preview. Windows may show a security confirmation. Code signing and auto-update are planned for later releases.
+
+### Run From Source
+
+For developers and early testers:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.ps1 | iex"
+.\v8os.cmd preview --rebuild
 ```
 
-### macOS / Linux (Bash)
-```bash
-curl -fsSL https://raw.githubusercontent.com/justForever17/v8-agent-os/main/bootstrap.sh | bash
-```
-> *(Note: If you have already cloned the checkout locally, you only need to run `./bootstrap.ps1` or `./bootstrap.sh` inside the directory.)*
+This builds and starts the local desktop preview shell. You should see a V8OS desktop window rather than a set of development server pages.
 
----
+### Connect Phone
 
-## ⚙️ Initial Startup Sequence
+Phone is paired through the desktop control center. Once paired, it keeps a local server profile and can reconnect without asking you to scan again after a temporary network failure.
 
-1. **Crucial First Step**: Access the Admin Control Center: `http://127.0.0.1:9528`
-2. **Mandatory Configuration**: Set up your primary main LLM models.
-3. **Absolutely Vital**: You MUST configure the Reranker settings. If left unconfigured, the precision of dynamic tool exposure and continuous memory retrieval will suffer a fatal dropdown.
-4. Save configurations and proceed to the Web interaction frontend: `http://127.0.0.1:9527` to begin your journey.
+## Current Status
 
----
+| Product | Status | Notes |
+| --- | --- | --- |
+| Desktop | Preview | Windows unsigned preview is being finalized. Signing, auto-update, and stable releases are still future work. |
+| Phone | Preview | Android APK first. iOS targets 16.4 and later, with the release pipeline still evolving. |
+| TUI | Not implemented | Planned for terminal and server-first usage without the Admin UI. |
+| Lite Binary | Long-term plan | A trimmed profile for low-power or edge devices. |
 
-## 📚 Technical Arsenal (Documentation)
+## Safety and Boundaries
 
-Establish your architectural mental model of the V8 Engine by consulting the guides below:
+V8OS is local-first by default. Desktop Web, Admin, Shell, and the companion are trusted local clients. Phone is the remote client and uses pairing. Multi-device collaboration, third-party compatibility endpoints, and plugin bridges are advanced surfaces and are kept separate from ordinary local use.
 
-*   [🚀 Quick Start](./docs/ENGINE_QUICK_START.md)
-*   [📖 Developer Guide](./docs/ENGINE_DEVELOPER_GUIDE.md)
-*   [🔌 API Reference](./docs/ENGINE_API_REFERENCE.md)
-*   [🎛️ Configuration Guide](./docs/ENGINE_CONFIG_GUIDE.md)
+User-facing surfaces should stay clean: status, results, risks, next steps, and artifacts. Internal scheduling data, raw model responses, audit records, and recovery metadata stay in diagnostics.
 
----
+## Documentation
 
-<div align="center">
-  <h3>Support V8 Agent OS Continued Operations</h3>
-  <p>If this system helps your team repeat context less, govern background tasks flawlessly, and brings enterprise-scale safety to your automated operations, you can support us here:</p>
-  <a href="https://afdian.com/a/justforever17"><strong>https://afdian.com/a/justforever17</strong></a>
-</div>
+- [Quick Start](./docs/V8_AGENT_OS_QUICK_START_ZH.md)
+- [Configuration Guide](./docs/V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
+- [Developer Guide](./docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md)
+- [API Reference](./docs/V8_AGENT_OS_API_REFERENCE_ZH.md)
+- [Productization Masterplan](./docs/V8OS/V8OS_PRODUCTIZATION_MASTERPLAN_ZH.md)
+- [Release Versioning Baseline](./docs/V8OS/V8OS_RELEASE_VERSIONING_BASELINE_ZH.md)
+
+## Feedback
+
+V8OS is still moving quickly toward a more polished product. If you test the desktop preview or Phone build, please open a GitHub Issue with the version, platform, reproduction path, and screenshots or logs when possible.

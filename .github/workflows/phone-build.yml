@@ -23,7 +23,7 @@ on:
           - all
   push:
     tags:
-      - "phone-v*"
+      - "v8-os-phone-v*"
 
 permissions:
   contents: write
@@ -76,18 +76,39 @@ jobs:
           path: apps/v8-agent-os-phone/app-release.apk
 
   release:
-    if: startsWith(github.ref, 'refs/tags/phone-v')
+    if: startsWith(github.ref, 'refs/tags/v8-os-phone-v')
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
           name: phone-release-apk
           path: .
 
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v8-os-phone-v}"
+          APK_NAME="V8OS-Phone-${VERSION}-android-preview.apk"
+          mv app-release.apk "$APK_NAME"
+          sha256sum "$APK_NAME" > SHA256SUMS.txt
+          node scripts/release/generate-release-notes.mjs \
+            --product phone \
+            --tag "$GITHUB_REF_NAME" \
+            --channel preview \
+            --out RELEASE_NOTES.md
+          cat SHA256SUMS.txt
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          files: app-release.apk
+          generate_release_notes: false
+          body_path: RELEASE_NOTES.md
+          files: |
+            V8OS-Phone-*-android-preview.apk
+            SHA256SUMS.txt

@@ -20,8 +20,9 @@ V8OS 的开发重心从继续堆 runtime 功能，转为把现有能力分层产
 
 当前边界：
 
-- 仍是源码树预览版，不是正式安装器。
-- 没有自动更新、代码签名、桌面 GitHub release workflow。
+- 已有 Windows unsigned preview installer 的 GitHub release workflow。
+- 仍不是 stable 正式安装包。
+- 没有自动更新和代码签名。
 - 小改 topbar、登录态、生产构建、Shell IPC、桌宠 managed mode 都可能破坏预览壳，必须跑预览验收。
 
 ### Phone 远程端
@@ -32,7 +33,7 @@ Phone 是唯一远程交互入口：
 - 保存 server profile。
 - 支持远程访问、SQLite 本地历史、墓碑同步和恢复。
 
-当前已有 GitHub Actions：`phone-v*` tag 可触发 APK artifact / release。
+当前已有 GitHub Actions：`v8-os-phone-vYYYY.MM.DD.N` tag 可触发 APK 与 checksum release。旧 `phone-v*` 只作为历史 tag。
 
 ### CLI 源码树入口
 
@@ -70,8 +71,8 @@ CLI 已具备 `start/stop/status/doctor/config/repair/preview/chat/sessions/inbo
 
 ### P1：发布基线
 
-- 建立桌面 release workflow 之前，不能宣称桌面版正式可安装。
-- Phone tag release 继续保持可用。
+- 桌面 preview release workflow 已建立，但仍是 unsigned preview。
+- Phone tag release 继续保持可用，并使用统一新 tag。
 - 桌面版先做 preview channel，再做 stable channel。
 
 ## 后续版本线
@@ -88,11 +89,10 @@ CLI 已具备 `start/stop/status/doctor/config/repair/preview/chat/sessions/inbo
 
 后续基础建设：
 
-- 桌面安装包。
 - 自动更新。
 - 代码签名。
 - 崩溃日志和 doctor 报告。
-- 桌面 release GitHub workflow。
+- stable 安装包与跨平台 release workflow。
 
 ### TUI版
 
@@ -135,7 +135,7 @@ TUI 是未来线，不是 Web 的复刻，也不依赖 Admin 端。
 ## 近期验收清单
 
 - `v8os preview` 冷启动可用。
-- Phone `phone-v*` tag build 可用。
+- Phone `v8-os-phone-v*` tag build 可用。
 - Web/Shell/桌宠不出现配对或手动地址输入。
 - Admin 不把 Network Supervisor 远程协作当普通手机连接。
 - CLI `chat/sessions/workspace/inbox` 有最小 smoke。

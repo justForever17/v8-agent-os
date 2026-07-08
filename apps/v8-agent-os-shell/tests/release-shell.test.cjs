@@ -40,6 +40,10 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.equal(fs.existsSync(workflowPath), true);
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   assert.match(workflow, /windows-latest/);
+  assert.match(workflow, /packages\/session-realtime\/package-lock\.json/);
+  assert.match(workflow, /Install shared realtime package dependencies/);
+  assert.match(workflow, /working-directory: packages\/session-realtime/);
+  assert.match(workflow, /npm exec -- tsc --version/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:win/);
   assert.match(workflow, /SHA256/);
 });

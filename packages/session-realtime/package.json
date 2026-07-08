@@ -15,7 +15,8 @@
     "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs && node scripts/verify-runtime-timeline-dedupe.mjs",
     "verify:episode-graph": "npm run build && node scripts/verify-runtime-episode-graph.mjs",
     "verify:micro-stage": "npm run build && node scripts/verify-collaboration-micro-stage.mjs",
-    "verify:message-bound-execution": "npm run build && node scripts/verify-message-bound-execution-node.mjs"
+    "verify:message-bound-execution": "npm run build && node scripts/verify-message-bound-execution-node.mjs",
+    "verify:resources": "npm run build && node scripts/verify-admin-resource-url.mjs"
   },
   "exports": {
     ".": {

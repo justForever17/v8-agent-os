@@ -47,9 +47,6 @@ declare global {
       getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
-      updateTrayContext?: (payload: Record<string, unknown>) => Promise<boolean>;
-      onTraySelectConversation?: (callback: (conversationId: string) => void) => () => void;
-      onTrayStartListening?: (callback: () => void) => () => void;
       onPrepareShutdown?: (callback: () => void) => () => void;
       onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
     };
@@ -928,40 +925,6 @@ If the user uploaded an image representation (which represents what you 'see' th
     }
     await syncV8Snapshot(id).catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
   };
-
-  useEffect(() => {
-    void window.v8CyberCore?.updateTrayContext?.({
-      activeConversationId: v8ActiveConversationId,
-      conversations: v8Conversations.map((conversation) => ({
-        id: String(conversation.id || ''),
-        title: String(conversation.title || '未命名会话'),
-        projectName: projectNameForConversation(conversation),
-        workspacePath: conversation.workspacePath || '',
-        running: isConversationRunning(conversation),
-      })),
-    });
-  }, [v8ActiveConversationId, v8Conversations]);
-
-  useEffect(() => {
-    const removeSelect = window.v8CyberCore?.onTraySelectConversation?.((conversationId) => {
-      void selectV8Conversation(conversationId);
-    });
-    const removeStartListening = window.v8CyberCore?.onTrayStartListening?.(() => {
-      const conversationId = v8ActiveConversationId || v8ClientRef.current?.getActiveConversationId() || '';
-      if (conversationId) {
-        const active = v8Conversations.find((item) => String(item.id) === String(conversationId));
-        void selectV8Conversation(conversationId, { listen: isConversationRunning(active) });
-      } else {
-        setPetSessionState('idle_no_conversation');
-        setVoiceStatus('请先在右键菜单选择会话');
-        speakString('请先在右键菜单选择会话。');
-      }
-    });
-    return () => {
-      removeSelect?.();
-      removeStartListening?.();
-    };
-  }, [v8ActiveConversationId, v8Conversations]);
 
   // Synthesize custom futuristic dual-sine beep tone programmatically
   const playAudioBlob = (blob: Blob) => {
@@ -1950,11 +1913,29 @@ If the user uploaded an image representation (which represents what you 'see' th
             connected: Boolean(v8Session),
             status: v8Status,
             error: v8Error,
-            conversations: v8Conversations,
+            conversations: v8Conversations.map((conversation) => ({
+              id: String(conversation.id || ''),
+              title: String(conversation.title || '未命名会话'),
+              projectName: projectNameForConversation(conversation),
+              workspacePath: conversation.workspacePath || null,
+              running: isConversationRunning(conversation),
+              status: conversation.status || null,
+            })),
             projects: v8Projects,
             activeConversationId: v8ActiveConversationId,
             onSelectConversation: (id: string) => {
               void selectV8Conversation(id);
+            },
+            onStartListening: (id?: string) => {
+              const conversationId = id || v8ActiveConversationId || v8ClientRef.current?.getActiveConversationId() || '';
+              if (conversationId) {
+                const active = v8Conversations.find((item) => String(item.id) === String(conversationId));
+                void selectV8Conversation(conversationId, { listen: isConversationRunning(active) });
+                return;
+              }
+              setPetSessionState('idle_no_conversation');
+              setVoiceStatus('请先在右键菜单选择会话');
+              speakString('请先在右键菜单选择会话。');
             },
             onConnect: connectV8,
             onDisconnect: disconnectV8,

@@ -45,9 +45,6 @@ declare global {
       getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
       openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
-      updateTrayContext?: (payload: Record<string, unknown>) => Promise<boolean>;
-      onTraySelectConversation?: (callback: (conversationId: string) => void) => () => void;
-      onTrayStartListening?: (callback: () => void) => () => void;
       onPrepareShutdown?: (callback: () => void) => () => void;
       onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
     };
@@ -84,16 +81,35 @@ interface CyberPetProps {
     connected: boolean;
     status: string;
     error?: string;
-    conversations: Array<{ id: string; title?: string; workspacePath?: string | null }>;
+    conversations: Array<{ id: string; title?: string; projectName?: string | null; workspacePath?: string | null; running?: boolean; status?: string | null }>;
     projects: Array<{ id?: string; name?: string; workspacePath?: string }>;
     activeConversationId: string;
     onSelectConversation: (id: string) => void;
+    onStartListening?: (id?: string) => void;
     onConnect: () => Promise<void>;
     onDisconnect: () => void;
     onRefresh: () => Promise<void>;
     onOpenAdmin?: () => void;
     onQuit?: () => void;
   };
+}
+
+type V8MenuConversation = NonNullable<CyberPetProps['v8Connection']>['conversations'][number];
+
+function compactMenuText(value: unknown, fallback = '未命名会话', max = 18) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim() || fallback;
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(1, max - 1))}…`;
+}
+
+function groupV8MenuConversations(conversations: V8MenuConversation[]) {
+  const groups = new Map<string, V8MenuConversation[]>();
+  for (const conversation of conversations) {
+    const projectName = compactMenuText(conversation.projectName || conversation.workspacePath || 'V8OS', 'V8OS', 18);
+    if (!groups.has(projectName)) groups.set(projectName, []);
+    groups.get(projectName)!.push(conversation);
+  }
+  return Array.from(groups.entries());
 }
 
 // Comprehensive dual-language standard translations
@@ -871,6 +887,21 @@ export default function CyberPet({
     }
   };
 
+  const v8MenuConversations = v8Connection?.conversations || [];
+  const v8ActiveConversation = v8MenuConversations.find(
+    (conversation) => String(conversation.id) === String(v8Connection?.activeConversationId || ''),
+  );
+  const v8RecentRunningConversation = v8MenuConversations.find((conversation) => Boolean(conversation.running));
+  const v8ProjectConversationGroups = groupV8MenuConversations(v8MenuConversations).slice(0, 8);
+  const handleV8MenuConversationClick = (conversation: V8MenuConversation) => {
+    handleCloseMenu();
+    if (conversation.running && v8Connection?.onStartListening) {
+      v8Connection.onStartListening(conversation.id);
+      return;
+    }
+    v8Connection?.onSelectConversation(conversation.id);
+  };
+
   const v8Rules = parseV8Rules(settings.v8EventRulesJson);
   const updateV8Rule = (match: string, patch: Partial<V8EventRule>) => {
     const existing = v8Rules.find((rule) => rule.match === match);
@@ -1301,10 +1332,10 @@ Always output your response as valid JSON matching the following schema structur
         >
           <div
             data-menu-panel="true"
-            className="absolute pointer-events-auto w-[260px] rounded-2xl border border-slate-800/80 bg-slate-950/90 p-2 text-slate-100 shadow-[0_18px_42px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+            className="absolute pointer-events-auto w-[320px] max-h-[calc(100vh-24px)] overflow-y-auto rounded-2xl border border-slate-800/80 bg-slate-950/90 p-2 text-slate-100 shadow-[0_18px_42px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
             style={(() => {
-              const panelW = 260;
-              const panelH = 286;
+              const panelW = 320;
+              const panelH = Math.min(520, window.innerHeight - 24);
               const halfW = window.innerWidth / 2;
               const halfH = window.innerHeight / 2;
               const petCenterX = halfW + position.x;
@@ -1337,6 +1368,75 @@ Always output your response as valid JSON matching the following schema structur
               >
                 ×
               </button>
+            </div>
+
+            <div className="my-1 h-px bg-white/10" />
+
+            <div className="space-y-2 px-1 py-1">
+              <div className="rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2">
+                <div className="mb-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                  <span>当前会话</span>
+                  {v8ActiveConversation?.running ? (
+                    <span className="inline-flex items-center gap-1 text-emerald-300">
+                      <RefreshCw size={10} className="animate-spin" />
+                      运行中
+                    </span>
+                  ) : v8ActiveConversation ? (
+                    <span className="text-slate-400">已选择</span>
+                  ) : null}
+                </div>
+                <div className="truncate text-[12px] font-medium text-slate-100" title={v8ActiveConversation?.title || ''}>
+                  {v8ActiveConversation ? compactMenuText(v8ActiveConversation.title || v8ActiveConversation.id, '未命名会话', 26) : '未选择会话'}
+                </div>
+              </div>
+
+              {v8RecentRunningConversation && String(v8RecentRunningConversation.id) !== String(v8ActiveConversation?.id || '') && (
+                <button
+                  onClick={() => handleV8MenuConversationClick(v8RecentRunningConversation)}
+                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12px] text-slate-200 hover:bg-white/10"
+                  title={v8RecentRunningConversation.title || ''}
+                >
+                  <RefreshCw size={13} className="animate-spin text-emerald-300" />
+                  <span className="min-w-0 flex-1 truncate">最近运行：{compactMenuText(v8RecentRunningConversation.title || v8RecentRunningConversation.id, '未命名会话', 22)}</span>
+                </button>
+              )}
+
+              <div>
+                <div className="px-2 pb-1 text-[10px] font-medium text-slate-500">项目会话</div>
+                {v8ProjectConversationGroups.length ? (
+                  <div className="space-y-1">
+                    {v8ProjectConversationGroups.map(([projectName, conversations]) => (
+                      <div key={projectName} className="rounded-xl bg-white/[0.025] p-1">
+                        <div className="px-2 py-1 text-[10px] text-slate-500">{projectName}</div>
+                        {conversations.slice(0, 5).map((conversation) => {
+                          const active = String(conversation.id) === String(v8Connection?.activeConversationId || '');
+                          return (
+                            <button
+                              key={conversation.id}
+                              onClick={() => handleV8MenuConversationClick(conversation)}
+                              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] hover:bg-white/10 ${active ? 'text-white' : 'text-slate-300'}`}
+                              title={conversation.title || ''}
+                            >
+                              {conversation.running ? (
+                                <RefreshCw size={12} className="shrink-0 animate-spin text-emerald-300" />
+                              ) : active ? (
+                                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-300" />
+                              ) : (
+                                <Activity size={12} className="shrink-0 text-slate-500" />
+                              )}
+                              <span className="min-w-0 flex-1 truncate">{compactMenuText(conversation.title || conversation.id, '未命名会话', 24)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-white/10 px-3 py-3 text-[12px] text-slate-500">
+                    暂无会话，请先在 V8OS 中选择或创建会话。
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="my-1 h-px bg-white/10" />

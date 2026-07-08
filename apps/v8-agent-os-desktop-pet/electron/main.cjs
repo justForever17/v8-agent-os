@@ -11,10 +11,6 @@ let panelOpen = false;
 let companionClosedSize = { width: 380, height: 380 };
 let shuttingDown = false;
 let preExpansionBounds = null;
-let trayContext = {
-  activeConversationId: '',
-  conversations: [],
-};
 
 const LOCAL_SERVER_URL = 'http://127.0.0.1:3000';
 const V8_ADMIN_URL = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
@@ -152,51 +148,10 @@ function emergencyHideWindow() {
   updateTrayMenu();
 }
 
-function truncateTrayLabel(value, max = 28) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim() || '未命名会话';
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1)}…`;
-}
-
-function sendToRenderer(channel, payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) return false;
-  try {
-    mainWindow.webContents.send(channel, payload);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function openLocalProduct(baseUrl, targetPath = '') {
   const base = String(baseUrl || '').replace(/\/+$/, '');
   const pathPart = targetPath ? `/${String(targetPath).replace(/^\/+/, '')}` : '';
   void shell.openExternal(`${base}${pathPart}`);
-}
-
-function groupConversationsByProject() {
-  const groups = new Map();
-  const conversations = Array.isArray(trayContext.conversations) ? trayContext.conversations : [];
-  for (const item of conversations) {
-    const projectName = truncateTrayLabel(item && item.projectName ? item.projectName : 'V8OS', 24);
-    if (!groups.has(projectName)) groups.set(projectName, []);
-    groups.get(projectName).push(item);
-  }
-  return Array.from(groups.entries());
-}
-
-function selectConversationFromTray(conversationId) {
-  if (!conversationId) return;
-  sendToRenderer('v8-desktop:select-conversation', String(conversationId));
-  showOrFocusWindow();
-}
-
-function startListeningFromTray(conversationId) {
-  if (conversationId) {
-    sendToRenderer('v8-desktop:select-conversation', String(conversationId));
-  }
-  sendToRenderer('v8-desktop:start-listening');
-  showOrFocusWindow();
 }
 
 function safeShutdown() {
@@ -435,39 +390,10 @@ function createTray() {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const projectGroups = groupConversationsByProject();
-  const projectItems = projectGroups.length
-    ? projectGroups.slice(0, 8).map(([projectName, conversations]) => ({
-        label: projectName,
-        submenu: conversations.slice(0, 5).map((conversation) => {
-          const running = Boolean(conversation && conversation.running);
-          const active = String(conversation && conversation.id) === String(trayContext.activeConversationId || '');
-          const label = `${running ? '⟳ ' : active ? '● ' : ''}${truncateTrayLabel(conversation && conversation.title, 32)}`;
-          return {
-            label,
-            click: () => {
-              if (running) {
-                startListeningFromTray(conversation.id);
-                return;
-              }
-              selectConversationFromTray(conversation.id);
-            },
-          };
-        }),
-      }))
-    : [{ label: '暂无会话', enabled: false }];
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: '打开 V8OS', click: () => openLocalProduct(V8_WEB_URL, '/chat') },
       { label: '打开桌宠设置', click: () => openLocalProduct(V8_ADMIN_URL, '/admin/desktop-pet') },
-      { type: 'separator' },
-      { label: '项目与会话', enabled: false },
-      ...projectItems,
-      {
-        label: '开始监听当前会话',
-        enabled: Boolean(trayContext.activeConversationId),
-        click: () => startListeningFromTray(trayContext.activeConversationId),
-      },
       { type: 'separator' },
       {
         label: '点击穿透',
@@ -485,24 +411,6 @@ function updateTrayMenu() {
     ]),
   );
 }
-
-ipcMain.handle('v8-desktop:update-tray-context', (_event, payload) => {
-  const conversations = Array.isArray(payload && payload.conversations) ? payload.conversations : [];
-  trayContext = {
-    activeConversationId: typeof payload?.activeConversationId === 'string' ? payload.activeConversationId : '',
-    conversations: conversations
-      .filter((item) => item && typeof item === 'object' && item.id)
-      .map((item) => ({
-        id: String(item.id),
-        title: String(item.title || item.id),
-        projectName: item.projectName ? String(item.projectName) : 'V8OS',
-        workspacePath: item.workspacePath ? String(item.workspacePath) : null,
-        running: Boolean(item.running),
-      })),
-  };
-  updateTrayMenu();
-  return true;
-});
 
 ipcMain.handle('v8-desktop:set-click-through', (_event, enabled) => {
   clickThrough = Boolean(enabled);

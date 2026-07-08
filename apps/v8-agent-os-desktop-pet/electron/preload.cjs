@@ -13,29 +13,6 @@ contextBridge.exposeInMainWorld('v8CyberCore', {
   getMediaPermissionStatus: (kind) => ipcRenderer.invoke('v8-desktop:get-media-permission-status', kind),
   requestMediaAccess: (kind) => ipcRenderer.invoke('v8-desktop:request-media-access', kind),
   openMediaPrivacySettings: (kind) => ipcRenderer.invoke('v8-desktop:open-media-privacy-settings', kind),
-  updateTrayContext: (payload) => ipcRenderer.invoke('v8-desktop:update-tray-context', payload),
-  onTraySelectConversation: (callback) => {
-    const listener = (_event, conversationId) => {
-      try {
-        callback?.(conversationId);
-      } catch {
-        // renderer callback is best effort
-      }
-    };
-    ipcRenderer.on('v8-desktop:select-conversation', listener);
-    return () => ipcRenderer.off('v8-desktop:select-conversation', listener);
-  },
-  onTrayStartListening: (callback) => {
-    const listener = () => {
-      try {
-        callback?.();
-      } catch {
-        // renderer callback is best effort
-      }
-    };
-    ipcRenderer.on('v8-desktop:start-listening', listener);
-    return () => ipcRenderer.off('v8-desktop:start-listening', listener);
-  },
   onPrepareShutdown: (callback) => {
     const listener = () => {
       try {

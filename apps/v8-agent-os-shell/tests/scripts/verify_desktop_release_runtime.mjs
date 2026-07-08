@@ -42,6 +42,15 @@ function walkFor(dir, predicate, maxDepth = 6) {
   return "";
 }
 
+function standaloneServerFor(appRoot, appName) {
+  const standaloneRoot = path.join(appRoot, ".next", "standalone");
+  const candidates = [
+    path.join(standaloneRoot, "apps", `v8-agent-os-${appName}`, "server.js"),
+    path.join(standaloneRoot, "server.js"),
+  ];
+  return candidates.find((candidate) => exists(candidate)) || "";
+}
+
 function commandExists(command, args = ["--version"]) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
@@ -86,6 +95,10 @@ const petRoot = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet");
 const pythonExe = path.join(engineRoot, ".venv", "Scripts", "python.exe");
 const pythonwExe = path.join(engineRoot, ".venv", "Scripts", "pythonw.exe");
 const browserRoot = path.join(engineRoot, ".playwright-browsers");
+const adminStandaloneExpected = path.join(adminRoot, ".next", "standalone", "apps", "v8-agent-os-admin", "server.js");
+const webStandaloneExpected = path.join(webRoot, ".next", "standalone", "apps", "v8-agent-os-web", "server.js");
+const adminStandaloneServer = standaloneServerFor(adminRoot, "admin");
+const webStandaloneServer = standaloneServerFor(webRoot, "web");
 
 const checks = [];
 const degraded = [];
@@ -94,7 +107,9 @@ for (const [name, filePath] of [
   ["engine.python", pythonExe],
   ["engine.pythonw", pythonwExe],
   ["admin.productionBuild", path.join(adminRoot, ".next", "BUILD_ID")],
+  ["admin.standaloneServer", adminStandaloneServer || adminStandaloneExpected],
   ["web.productionBuild", path.join(webRoot, ".next", "BUILD_ID")],
+  ["web.standaloneServer", webStandaloneServer || webStandaloneExpected],
   ["shell.main", path.join(shellRoot, "electron", "main.cjs")],
   ["shell.builderConfig", path.join(shellRoot, "electron-builder.yml")],
   ["desktopPet.serverBundle", path.join(petRoot, "dist", "server.cjs")],

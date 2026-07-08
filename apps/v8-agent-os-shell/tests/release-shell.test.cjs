@@ -55,6 +55,54 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /SHA256/);
 });
 
+test('Admin and Web release builds use Next standalone servers', () => {
+  for (const app of ['admin', 'web']) {
+    const config = fs.readFileSync(
+      path.join(repoRoot, 'apps', `v8-agent-os-${app}`, 'next.config.ts'),
+      'utf8',
+    );
+    assert.match(config, /output:\s*["']standalone["']/);
+  }
+
+  const runner = fs.readFileSync(path.join(repoRoot, 'scripts', 'run-next-with-managed-auth.mjs'), 'utf8');
+  assert.match(runner, /findStandaloneServer/);
+  assert.match(runner, /\.next["'], "standalone"/);
+  assert.match(runner, /mode === "build"/);
+  assert.match(runner, /"--webpack"/);
+  assert.match(runner, /HOSTNAME:\s*"127\.0\.0\.1"/);
+  assert.match(runner, /PORT:\s*port/);
+  assert.match(runner, /buildHome/);
+  assert.match(runner, /V8_AGENT_OS_HOME:\s*mode === "build" \? buildHome/);
+});
+
+test('desktop pet consumes packaged realtime contract instead of rebuilding workspace package', () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'package.json'), 'utf8'),
+  );
+  assert.equal(
+    pkg.dependencies['@v8/session-realtime'],
+    'file:../../packages/session-realtime/v8-session-realtime-0.0.2.tgz',
+  );
+
+  const lock = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'package-lock.json'), 'utf8'),
+  );
+  assert.equal(
+    lock.packages['']?.dependencies?.['@v8/session-realtime'],
+    'file:../../packages/session-realtime/v8-session-realtime-0.0.2.tgz',
+  );
+  assert.equal(lock.packages['../../packages/session-realtime'], undefined);
+});
+
+test('Engine release process forces UTF-8 output on Windows runners', () => {
+  const components = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-cli', 'src', 'components.mjs'),
+    'utf8',
+  );
+  assert.match(components, /PYTHONIOENCODING:\s*"utf-8"/);
+  assert.match(components, /PYTHONUTF8:\s*"1"/);
+});
+
 test('desktop release uses current desktop tag namespace and runtime probes', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
   assert.match(workflow, /v8-os-desktop-v\*/);
@@ -66,6 +114,14 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(workflow, /desktop-smoke-diagnostics/);
   assert.match(workflow, /RUNTIME_PROBE\.json/);
   assert.doesNotMatch(workflow, /v8-os-desktop-preview-v/);
+
+  const runtimeProbe = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'tests', 'scripts', 'verify_desktop_release_runtime.mjs'),
+    'utf8',
+  );
+  assert.match(runtimeProbe, /standaloneServerFor/);
+  assert.match(runtimeProbe, /admin\.standaloneServer/);
+  assert.match(runtimeProbe, /web\.standaloneServer/);
 
   const prepareRelease = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs'), 'utf8');
   assert.match(prepareRelease, /v8-os-\$\{product\}-v\$\{version\}/);

@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import MemoryDashboardClient from "@/components/memory/MemoryDashboardClient";
 
 type MemoryDashboardPageProps = {
-    searchParams?: Promise<Record<string, string | string[] | undefined>> | Record<string, string | string[] | undefined>;
+    searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 function resolveTab(
@@ -17,7 +17,7 @@ function resolveTab(
 }
 
 export default async function MemoryDashboardPage({ searchParams }: MemoryDashboardPageProps) {
-    const resolvedSearchParams = searchParams instanceof Promise ? await searchParams : searchParams;
+    const resolvedSearchParams = searchParams ? await searchParams : undefined;
     const requestedTab = resolveTab(resolvedSearchParams);
 
     if (requestedTab === "projects") {

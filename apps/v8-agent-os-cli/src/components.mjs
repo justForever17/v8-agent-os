@@ -45,6 +45,8 @@ export const COMPONENTS = {
         env: {
           ENGINE_HOST: "127.0.0.1",
           ENGINE_PORT: String(DEFAULT_PORTS.engine),
+          PYTHONIOENCODING: "utf-8",
+          PYTHONUTF8: "1",
           ...enginePlaywrightEnv(),
         },
       };

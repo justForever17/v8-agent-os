@@ -94,7 +94,10 @@ export type CanonicalConfigDiagnostics = {
     notices: LegacyPortNotice[];
 };
 
-const CANONICAL_CONFIG_PATH = path.join(os.homedir(), ".v8-agent-os", "config.json");
+const CANONICAL_CONFIG_PATH = path.join(
+    process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), ".v8-agent-os"),
+    "config.json",
+);
 
 type JsonConfigCacheEntry = {
     mtimeMs: number;
@@ -151,6 +154,9 @@ function hasLegacyLocalPorts(raw: string) {
 }
 
 export function readCanonicalConfig(): CanonicalConfig {
+    if (process.env.V8_NEXT_BUILD === "1") {
+        return {};
+    }
     return readJsonConfig(CANONICAL_CONFIG_PATH);
 }
 

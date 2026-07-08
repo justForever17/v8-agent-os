@@ -40,7 +40,7 @@ function isSafeToken(value: string) {
 
 export async function GET(
     _req: NextRequest,
-    { params }: { params: Promise<{ token: string }> | { token: string } },
+    { params }: { params: Promise<{ token: string }> },
 ) {
     const resolvedParams = await params;
     const token = String(resolvedParams.token || "").trim();

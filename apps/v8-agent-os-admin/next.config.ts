@@ -1,9 +1,29 @@
 import type { NextConfig } from "next";
-import { readCanonicalBridge } from "./src/lib/server/bridge-config";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { PHASE_PRODUCTION_BUILD } from "next/constants";
 
-function resolveEngineOrigin() {
+function isProductionBuildPhase(phase: string) {
+  return phase === PHASE_PRODUCTION_BUILD || process.env.V8_NEXT_BUILD === "1";
+}
+
+function readBridgeConfig(phase: string) {
+  if (isProductionBuildPhase(phase)) {
+    return {};
+  }
   try {
-    const base = String(readCanonicalBridge().engineBaseUrl || "").trim().replace(/\/$/, "");
+    const configPath = path.join(os.homedir(), ".v8-agent-os", "config.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return config?.bridge && typeof config.bridge === "object" ? config.bridge : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveEngineOrigin(phase: string) {
+  try {
+    const base = String(readBridgeConfig(phase).engineBaseUrl || "").trim().replace(/\/$/, "");
     if (base) {
       return base.replace(/\/v1$/, "");
     }
@@ -11,8 +31,9 @@ function resolveEngineOrigin() {
   return "http://127.0.0.1:9530";
 }
 
-const nextConfig: NextConfig = {
+const createNextConfig = (phase: string): NextConfig => ({
   /* config options here */
+  output: "standalone",
   transpilePackages: ["@v8/session-realtime"],
   experimental: {
     externalDir: true,
@@ -22,11 +43,11 @@ const nextConfig: NextConfig = {
       // Proxy background process endpoints (REST + WebSocket) to Engine
       {
         source: '/api/bg_processes/:path*',
-        destination: `${resolveEngineOrigin()}/v1/bg_processes/:path*`,
+        destination: `${resolveEngineOrigin(phase)}/v1/bg_processes/:path*`,
       },
       {
         source: '/api/client/bg_processes/:path*',
-        destination: `${resolveEngineOrigin()}/v1/bg_processes/:path*`,
+        destination: `${resolveEngineOrigin(phase)}/v1/bg_processes/:path*`,
       },
     ];
   },
@@ -51,6 +72,6 @@ const nextConfig: NextConfig = {
       }
     ]
   }
-};
+});
 
-export default nextConfig;
+export default createNextConfig;

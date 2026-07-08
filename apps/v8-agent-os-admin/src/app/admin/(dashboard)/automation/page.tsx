@@ -5,8 +5,8 @@ import { useSearchParams } from "next/navigation";
 import { Cable, Clock3 } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
-import { HooksPage } from "./hooks/page";
-import { ScheduledTasksPage } from "./cron/page";
+import HooksPage from "./hooks/page";
+import ScheduledTasksPage from "./cron/page";
 import { WakeIngressPolicyCard } from "@/components/automation/WakeIngressPolicyCard";
 import { cn } from "@/lib/utils";
 

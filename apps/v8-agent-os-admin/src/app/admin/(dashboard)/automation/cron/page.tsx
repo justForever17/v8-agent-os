@@ -328,7 +328,7 @@ function buildDefaultScheduleDraft() {
     return parseCronExpression(EMPTY_JOB.cron_expression);
 }
 
-export function ScheduledTasksPage() {
+function ScheduledTasksPage() {
     const t = useT();
     const { locale } = useLocale();
     const [envelope, setEnvelope] = useState<ConfigRegistryEnvelope<CronData> | null>(null);
@@ -939,11 +939,4 @@ export function ScheduledTasksPage() {
     );
 }
 
-import { useRouter } from "next/navigation";
-export default function ScheduledTasksPageRedirect() {
-    const router = useRouter();
-    useEffect(() => {
-        router.replace("/admin/automation?tab=cron");
-    }, [router]);
-    return null;
-}
+export default ScheduledTasksPage;

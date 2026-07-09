@@ -88,12 +88,42 @@ print(json.dumps(result, ensure_ascii=False, sort_keys=True))
   }
 }
 
+function pythonRuntimeCheck(pythonExe) {
+  const script = `
+import json
+import sys
+print(json.dumps({"executable": sys.executable, "prefix": sys.prefix}, ensure_ascii=False, sort_keys=True))
+`;
+  const result = spawnSync(pythonExe, ["-c", script], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 30000,
+  });
+  if (result.status !== 0) {
+    return { ok: false, error: `${result.stderr || result.stdout || ""}`.trim() };
+  }
+  try {
+    const payload = JSON.parse(result.stdout);
+    const executable = String(payload.executable || "");
+    const normalized = executable.toLowerCase().replace(/\\/g, "/");
+    return {
+      ok: !normalized.includes("hostedtoolcache") && !normalized.includes("/.venv/"),
+      executable,
+      prefix: payload.prefix || "",
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 const engineRoot = path.join(repoRoot, "apps", "v8-agent-os-engine");
 const adminRoot = path.join(repoRoot, "apps", "v8-agent-os-admin");
 const webRoot = path.join(repoRoot, "apps", "v8-agent-os-web");
 const petRoot = path.join(repoRoot, "apps", "v8-agent-os-desktop-pet");
-const pythonExe = path.join(engineRoot, ".venv", "Scripts", "python.exe");
-const pythonwExe = path.join(engineRoot, ".venv", "Scripts", "pythonw.exe");
+const portablePythonRoot = path.join(engineRoot, ".python");
+const pythonExe = path.join(portablePythonRoot, "python.exe");
+const pythonwExe = path.join(portablePythonRoot, "pythonw.exe");
+const legacyVenvPython = path.join(engineRoot, ".venv", "Scripts", "python.exe");
 const browserRoot = path.join(engineRoot, ".playwright-browsers");
 const adminStandaloneExpected = path.join(adminRoot, ".next", "standalone", "apps", "v8-agent-os-admin", "server.js");
 const webStandaloneExpected = path.join(webRoot, ".next", "standalone", "apps", "v8-agent-os-web", "server.js");
@@ -104,8 +134,9 @@ const checks = [];
 const degraded = [];
 
 for (const [name, filePath] of [
-  ["engine.python", pythonExe],
-  ["engine.pythonw", pythonwExe],
+  ["engine.portablePython", pythonExe],
+  ["engine.portablePythonw", pythonwExe],
+  ["engine.portablePythonPathConfig", walkFor(portablePythonRoot, (_fullPath, fileName) => /^python.*\._pth$/i.test(fileName), 1)],
   ["admin.productionBuild", path.join(adminRoot, ".next", "BUILD_ID")],
   ["admin.standaloneServer", adminStandaloneServer || adminStandaloneExpected],
   ["web.productionBuild", path.join(webRoot, ".next", "BUILD_ID")],
@@ -117,7 +148,14 @@ for (const [name, filePath] of [
   pushCheck(checks, name, exists(filePath), { path: rel(filePath) });
 }
 
+pushCheck(checks, "engine.noPackagedVenvPython", !exists(legacyVenvPython), {
+  path: rel(legacyVenvPython),
+});
+
 if (exists(pythonExe)) {
+  const runtimeResult = pythonRuntimeCheck(pythonExe);
+  pushCheck(checks, "engine.portablePythonExecutable", runtimeResult.ok, runtimeResult);
+
   const requiredModules = {
     playwright: "playwright",
     patchright: "patchright",
@@ -172,7 +210,7 @@ const payload = {
   checks,
   notes: [
     "Git/ffmpeg are treated as degraded external capabilities until bundled by the installer.",
-    "Hard checks cover embedded Engine Python, production bundles, desktop pet bundle, Python media/automation modules, and Playwright Chromium.",
+    "Hard checks cover portable Engine Python, production bundles, desktop pet bundle, Python media/automation modules, and Playwright Chromium.",
   ],
 };
 

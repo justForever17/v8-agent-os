@@ -12,6 +12,8 @@ function enginePython() {
   if (process.env.V8_ENGINE_PYTHON) return process.env.V8_ENGINE_PYTHON;
   const candidates = process.platform === "win32"
     ? [
+        path.join(ENGINE_DIR, ".python", "pythonw.exe"),
+        path.join(ENGINE_DIR, ".python", "python.exe"),
         path.join(ENGINE_DIR, ".venv", "Scripts", "pythonw.exe"),
         path.join(ENGINE_DIR, ".venv", "Scripts", "python.exe"),
       ]

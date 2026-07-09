@@ -20,8 +20,14 @@ function buildStartupHtml(options = {}) {
     :root {
       color-scheme: light dark;
       font-family: Inter, "SF Pro Display", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      --bg: #f7f8fb;
+      --text-base: #d9e0ea;
+      --text-mid: #8d98a8;
+      --text-dark: #252b34;
+      --text-shine: rgba(255, 255, 255, 0.92);
+      --text-shadow: rgba(15, 23, 42, 0.14);
       color: #111827;
-      background: #f8fbff;
+      background: var(--bg);
     }
     * { box-sizing: border-box; }
     body {
@@ -30,67 +36,60 @@ function buildStartupHtml(options = {}) {
       display: grid;
       place-items: center;
       overflow: hidden;
-      background:
-        radial-gradient(circle at 50% 38%, rgba(124, 58, 237, 0.14), transparent 28%),
-        radial-gradient(circle at 28% 18%, rgba(236, 72, 153, 0.10), transparent 26%),
-        radial-gradient(circle at 74% 18%, rgba(34, 211, 238, 0.12), transparent 30%),
-        linear-gradient(135deg, #fff7fb 0%, #f8fbff 48%, #eefaff 100%);
+      background: var(--bg);
     }
     .brand-stage {
       display: grid;
       justify-items: center;
-      gap: 26px;
+      gap: 42px;
       padding: 48px;
       -webkit-app-region: drag;
     }
     .product-mark {
-      width: min(32vw, 210px);
-      height: min(32vw, 210px);
-      min-width: 132px;
-      min-height: 132px;
+      width: min(24vw, 220px);
+      height: min(24vw, 220px);
+      min-width: 150px;
+      min-height: 150px;
       object-fit: contain;
-      filter: drop-shadow(0 24px 48px rgba(124, 58, 237, 0.20));
-      animation: breathe 2.8s ease-in-out infinite;
+      filter: drop-shadow(0 28px 64px rgba(15, 23, 42, 0.22));
       user-select: none;
       -webkit-user-drag: none;
     }
     .brand-text {
+      position: relative;
+      display: inline-block;
       white-space: nowrap;
-      font-size: clamp(44px, 8vw, 88px);
-      line-height: 1;
+      font-size: clamp(56px, 10vw, 128px);
+      line-height: 1.18;
       font-weight: 900;
       letter-spacing: 0;
       background:
-        linear-gradient(100deg, #fb923c 0%, #ec4899 24%, #8b5cf6 46%, #06b6d4 68%, #22c55e 100%),
-        linear-gradient(110deg, transparent 34%, rgba(255,255,255,0.92) 47%, transparent 60%);
-      background-size: 100% 100%, 260% 100%;
-      background-position: 0 0, -160% 0;
+        linear-gradient(180deg, #f8fafc 0%, var(--text-base) 35%, var(--text-mid) 68%, var(--text-dark) 100%),
+        linear-gradient(105deg, transparent 38%, var(--text-shine) 48%, transparent 58%);
+      background-size: 100% 100%, 300% 100%;
+      background-position: 0 0, -170% 0;
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
-      animation: shine 2.4s ease-in-out infinite;
-      text-shadow: 0 18px 54px rgba(124, 58, 237, 0.16);
+      animation: text-shine 2.9s ease-in-out infinite;
+      text-shadow: 0 22px 58px var(--text-shadow);
       user-select: none;
     }
-    @keyframes shine {
-      0% { background-position: 0 0, -180% 0; }
-      100% { background-position: 0 0, 180% 0; }
-    }
-    @keyframes breathe {
-      0%, 100% { transform: translateY(0) scale(1); }
-      50% { transform: translateY(-3px) scale(1.025); }
+    @keyframes text-shine {
+      0%, 20% { background-position: 0 0, -190% 0; }
+      72%, 100% { background-position: 0 0, 190% 0; }
     }
     @media (prefers-color-scheme: dark) {
-      :root { color: #f8fafc; background: #05070d; }
-      body {
-        background:
-          radial-gradient(circle at 50% 38%, rgba(124, 58, 237, 0.20), transparent 30%),
-          radial-gradient(circle at 24% 18%, rgba(236, 72, 153, 0.12), transparent 28%),
-          radial-gradient(circle at 76% 18%, rgba(34, 211, 238, 0.14), transparent 30%),
-          linear-gradient(135deg, #07050d 0%, #070914 52%, #06131b 100%);
+      :root {
+        --bg: #05070d;
+        --text-base: #eef2f8;
+        --text-mid: #aeb8c8;
+        --text-dark: #687386;
+        --text-shine: rgba(255, 255, 255, 0.98);
+        --text-shadow: rgba(148, 163, 184, 0.16);
+        color: #f8fafc;
       }
-      .product-mark { filter: drop-shadow(0 26px 58px rgba(34, 211, 238, 0.16)); }
-      .brand-text { text-shadow: 0 20px 64px rgba(34, 211, 238, 0.14); }
+      .product-mark { filter: drop-shadow(0 28px 64px rgba(255, 255, 255, 0.12)); }
     }
   </style>
 </head>

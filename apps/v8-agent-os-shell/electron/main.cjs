@@ -1,7 +1,6 @@
 const { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, net, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { pathToFileURL } = require('url');
 const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 
@@ -148,9 +147,23 @@ function productImagePath() {
   return candidates.find((candidate) => fs.existsSync(candidate)) || '';
 }
 
+function mimeForImagePath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.ico') return 'image/x-icon';
+  return 'image/png';
+}
+
 function productMarkUrl() {
   const found = productImagePath();
-  return found ? pathToFileURL(found).href : '';
+  if (!found) return '';
+  try {
+    const data = fs.readFileSync(found);
+    return `data:${mimeForImagePath(found)};base64,${data.toString('base64')}`;
+  } catch {
+    return '';
+  }
 }
 
 function startupDataUrl(detail) {

@@ -31,10 +31,10 @@ jobs:
             apps/v8-agent-os-desktop-pet/package-lock.json
             apps/v8-agent-os-shell/package-lock.json
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Verify desktop release manifest
+        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
+        shell: pwsh
+        run: node scripts/release/verify-release-manifest.mjs --product desktop --tag "$env:GITHUB_REF_NAME"
 
       - name: Install shared realtime package dependencies
         shell: pwsh
@@ -66,14 +66,7 @@ jobs:
 
       - name: Prepare embedded Engine Python runtime
         shell: pwsh
-        run: |
-          python -m venv apps/v8-agent-os-engine/.venv
-          apps/v8-agent-os-engine/.venv/Scripts/python.exe -m pip install --upgrade pip
-          apps/v8-agent-os-engine/.venv/Scripts/python.exe -m pip install -r apps/v8-agent-os-engine/requirements.txt
-          $browserPath = Join-Path (Resolve-Path "apps/v8-agent-os-engine").Path ".playwright-browsers"
-          New-Item -ItemType Directory -Force -Path $browserPath | Out-Null
-          $env:PLAYWRIGHT_BROWSERS_PATH = $browserPath
-          apps/v8-agent-os-engine/.venv/Scripts/python.exe -m playwright install chromium
+        run: scripts/desktop/prepare-windows-python-runtime.ps1 -PythonVersion 3.11.9
 
       - name: Build Admin and Web production bundles
         shell: pwsh

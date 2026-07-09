@@ -26,6 +26,8 @@ type ProjectRecord = {
     name?: string;
     workspaceId?: string;
     workspacePath?: string;
+    workspaceTrustState?: "trusted" | "restricted";
+    workspaceTrustSource?: string;
     defaultScope?: string;
     active?: boolean;
 };
@@ -117,6 +119,35 @@ function estimatePromptTokens(text: string) {
         }
     }
     return cjkCount + Math.ceil(nonCjkVisible / 4);
+}
+
+function isWorkspaceTrustRequiredPayload(payload: Record<string, unknown>) {
+    const detail = payload.detail;
+    if (detail === "workspace_trust_required" || payload.error === "workspace_trust_required") {
+        return true;
+    }
+    if (detail && typeof detail === "object" && "error" in detail) {
+        return (detail as { error?: unknown }).error === "workspace_trust_required";
+    }
+    return false;
+}
+
+function payloadErrorMessage(payload: Record<string, unknown>, fallback: string) {
+    if (typeof payload.error === "string" && payload.error) {
+        return payload.error;
+    }
+    if (typeof payload.detail === "string" && payload.detail) {
+        return payload.detail;
+    }
+    const detail = payload.detail;
+    if (detail && typeof detail === "object" && "error" in detail && typeof (detail as { error?: unknown }).error === "string") {
+        return String((detail as { error?: unknown }).error);
+    }
+    return fallback;
+}
+
+function projectTrustState(project: ProjectRecord) {
+    return project.workspaceTrustState === "restricted" ? "restricted" : "trusted";
 }
 
 function getWorkspaceRulesInitialContent(payload: WorkspaceRulesPayload | null) {
@@ -483,16 +514,33 @@ export default function ProjectsWorkspacesPage() {
         }
         setCreatingProject(true);
         try {
-            const response = await fetch("/api/projects", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    workspacePath: normalized,
-                }),
-            });
-            const payload = await response.json().catch(() => ({}));
+            const submitProject = async (trusted: boolean) => {
+                const response = await fetch("/api/projects", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        workspacePath: normalized,
+                        ...(trusted
+                            ? {
+                                workspaceTrustState: "trusted",
+                                workspaceTrustSource: "user_confirmed",
+                            }
+                            : {}),
+                    }),
+                });
+                const payload = await response.json().catch(() => ({}));
+                return { response, payload: payload as Record<string, unknown> };
+            };
+            let { response, payload } = await submitProject(false);
+            if (!response.ok && isWorkspaceTrustRequiredPayload(payload)) {
+                const confirmed = window.confirm(t("app.admin.dashboard.projects.workspaces.page.trust.confirmExternal", { path: normalized }));
+                if (!confirmed) {
+                    return;
+                }
+                ({ response, payload } = await submitProject(true));
+            }
             if (!response.ok) {
-                throw new Error(payload?.detail || payload?.error || t("app.admin.dashboard.projects.workspaces.page.error.projectCreateFailed"));
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.error.projectCreateFailed")));
             }
             await load();
             setExpandedProjectId(String(payload?.id || ""));
@@ -535,17 +583,34 @@ export default function ProjectsWorkspacesPage() {
         }
         patchProjectEditor(project.id, { savingProject: true });
         try {
-            const response = await fetch(`/api/projects/${project.id}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    workspacePath: normalized,
-                    name: deriveFolderName(normalized) || project.name || project.id,
-                }),
-            });
-            const payload = await response.json().catch(() => ({}));
+            const submitProject = async (trusted: boolean) => {
+                const response = await fetch(`/api/projects/${project.id}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        workspacePath: normalized,
+                        name: deriveFolderName(normalized) || project.name || project.id,
+                        ...(trusted
+                            ? {
+                                workspaceTrustState: "trusted",
+                                workspaceTrustSource: "user_confirmed",
+                            }
+                            : {}),
+                    }),
+                });
+                const payload = await response.json().catch(() => ({}));
+                return { response, payload: payload as Record<string, unknown> };
+            };
+            let { response, payload } = await submitProject(false);
+            if (!response.ok && isWorkspaceTrustRequiredPayload(payload)) {
+                const confirmed = window.confirm(t("app.admin.dashboard.projects.workspaces.page.trust.confirmExternal", { path: normalized }));
+                if (!confirmed) {
+                    return;
+                }
+                ({ response, payload } = await submitProject(true));
+            }
             if (!response.ok) {
-                throw new Error(payload?.detail || payload?.error || t("app.admin.dashboard.projects.workspaces.page.error.projectSaveFailed"));
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.error.projectSaveFailed")));
             }
             await load();
             setExpandedProjectId(project.id);
@@ -597,6 +662,14 @@ export default function ProjectsWorkspacesPage() {
     }, [expandedProjectId, load, patchProjectEditor, t, toast]);
 
     const handleSaveProjectRules = useCallback(async (project: ProjectRecord) => {
+        if (projectTrustState(project) === "restricted") {
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.error.rulesSaveTitle"),
+                description: t("app.admin.dashboard.projects.workspaces.page.trust.rulesBlocked"),
+                variant: "destructive",
+            });
+            return;
+        }
         const editor = projectEditors[project.id];
         const normalized = String(editor?.workspacePathDraft || "").trim();
         if (!normalized || !isAbsolutePath(normalized)) {
@@ -838,6 +911,8 @@ export default function ProjectsWorkspacesPage() {
                                 const projectRulesEstimatedTokens = estimatePromptTokens(editor?.agentsContent || "");
                                 const projectRulesOverBudget = projectRulesEstimatedTokens > WORKSPACE_RULES_BUDGET_TOKENS;
                                 const projectStatus = editor?.rules?.workspaceStatus || {};
+                                const trustState = projectTrustState(project);
+                                const rulesBlockedByTrust = trustState === "restricted";
                                 return (
                                     <div key={project.id} className="rounded-2xl border border-slate-200 bg-white">
                                         <button
@@ -849,6 +924,16 @@ export default function ProjectsWorkspacesPage() {
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <span className="font-medium text-slate-900">{project.name || deriveFolderName(project.workspacePath || "") || project.id}</span>
                                                     <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[11px] text-slate-600">{project.id}</span>
+                                                    <span className={cn(
+                                                        "rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                                                        trustState === "trusted"
+                                                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                                            : "border-amber-200 bg-amber-50 text-amber-700",
+                                                    )}>
+                                                        {trustState === "trusted"
+                                                            ? t("app.admin.dashboard.projects.workspaces.page.trust.badgeTrusted")
+                                                            : t("app.admin.dashboard.projects.workspaces.page.trust.badgeRestricted")}
+                                                    </span>
                                                 </div>
                                                 <div className="mt-1 text-xs text-slate-500">{project.workspacePath || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
                                             </div>
@@ -905,7 +990,9 @@ export default function ProjectsWorkspacesPage() {
                                                     </div>
 
                                                     <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-5 text-slate-500">
-                                                        {t("app.admin.dashboard.projects.workspaces.page.projectsCard.singleChoiceHint")}
+                                                        {rulesBlockedByTrust
+                                                            ? t("app.admin.dashboard.projects.workspaces.page.trust.restrictedHint")
+                                                            : t("app.admin.dashboard.projects.workspaces.page.projectsCard.singleChoiceHint")}
                                                     </div>
 
                                                     <div className="rounded-2xl border border-slate-200">
@@ -915,7 +1002,7 @@ export default function ProjectsWorkspacesPage() {
                                                                     <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.projectTitle")}</div>
                                                                     <div className="mt-1 text-xs text-slate-500">{editor?.rules?.path || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
                                                                 </div>
-                                                                <Button type="button" onClick={() => void handleSaveProjectRules(project)} disabled={editor?.rulesSaving || editor?.rulesLoading || projectRulesOverBudget}>
+                                                                <Button type="button" onClick={() => void handleSaveProjectRules(project)} disabled={editor?.rulesSaving || editor?.rulesLoading || projectRulesOverBudget || rulesBlockedByTrust}>
                                                                     {editor?.rulesSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                                                                     {t("app.admin.dashboard.projects.workspaces.page.agentsRules.save")}
                                                                 </Button>

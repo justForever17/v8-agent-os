@@ -60,6 +60,8 @@ type CreateConversationInput = {
 type CreateProjectInput = {
     name?: string;
     workspacePath?: string;
+    workspaceTrustState?: "trusted" | "restricted";
+    workspaceTrustSource?: string;
 };
 
 function normalizeArray<T>(value: unknown): T[] {
@@ -67,12 +69,20 @@ function normalizeArray<T>(value: unknown): T[] {
 }
 
 async function readJsonOrThrow<T>(response: Response, fallbackMessage: string): Promise<T> {
-    const payload = await parseJsonSafe<T & { error?: string }>(response);
+    const payload = await parseJsonSafe<T & { detail?: unknown; error?: string }>(response);
     if (!response.ok) {
-        const detail = payload && typeof payload === "object" && "error" in payload
-            ? String(payload.error || fallbackMessage)
-            : await parseTextSafe(response) || fallbackMessage;
-        throw new Error(detail || fallbackMessage);
+        const detailPayload = payload && typeof payload === "object" && payload.detail && typeof payload.detail === "object"
+            ? payload.detail as Record<string, unknown>
+            : {};
+        const detail = payload && typeof payload === "object"
+            ? payload.error
+                || (typeof payload.detail === "string" ? payload.detail : "")
+                || (typeof detailPayload.error === "string" ? detailPayload.error : "")
+                || (typeof detailPayload.summary === "string" ? detailPayload.summary : "")
+                || (typeof detailPayload.recommendedNextAction === "string" ? detailPayload.recommendedNextAction : "")
+            : "";
+        const message = String(detail || await parseTextSafe(response) || fallbackMessage).trim();
+        throw new Error(message || fallbackMessage);
     }
     return (payload || {}) as T;
 }
@@ -932,6 +942,9 @@ export async function submitChatMessage(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             clientMessageId: options.clientMessageId || undefined,
+            projectId: options.projectId || undefined,
+            workspaceId: options.workspaceId || undefined,
+            workspacePath: options.workspacePath || undefined,
             messages: [
                 ...options.messages,
                 { role: "user", content: userText },
@@ -939,6 +952,9 @@ export async function submitChatMessage(
             data: {
                 conversationId: options.conversationId || undefined,
                 clientMessageId: options.clientMessageId || undefined,
+                projectId: options.projectId || undefined,
+                workspaceId: options.workspaceId || undefined,
+                workspacePath: options.workspacePath || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
@@ -947,6 +963,7 @@ export async function submitChatMessage(
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
+                safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
                         name: skill.name,
@@ -1195,6 +1212,9 @@ type SendChatOptions = {
     messages: Array<{ role: string; content: string }>;
     conversationId?: string | null;
     clientMessageId?: string | null;
+    projectId?: string | null;
+    workspaceId?: string | null;
+    workspacePath?: string | null;
     commandPresetName?: string | null;
     skillReferences?: SkillReferenceSummary[];
     contextMentions?: ContextMentionSummary[];
@@ -1203,6 +1223,7 @@ type SendChatOptions = {
     taskPlanningMode?: boolean;
     specMode?: boolean;
     supervisorReasoningEffort?: string;
+    safetyApprovalMode?: "manual" | "reduced" | "minimal";
 };
 
 export async function sendChatMessageStream(
@@ -1216,6 +1237,9 @@ export async function sendChatMessageStream(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             clientMessageId: options.clientMessageId || undefined,
+            projectId: options.projectId || undefined,
+            workspaceId: options.workspaceId || undefined,
+            workspacePath: options.workspacePath || undefined,
             messages: [
                 ...options.messages,
                 { role: "user", content: userText },
@@ -1223,6 +1247,9 @@ export async function sendChatMessageStream(
             data: {
                 conversationId: options.conversationId || undefined,
                 clientMessageId: options.clientMessageId || undefined,
+                projectId: options.projectId || undefined,
+                workspaceId: options.workspaceId || undefined,
+                workspacePath: options.workspacePath || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
@@ -1231,6 +1258,7 @@ export async function sendChatMessageStream(
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
+                safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
                     ? options.skillReferences.map((skill) => ({
                         name: skill.name,

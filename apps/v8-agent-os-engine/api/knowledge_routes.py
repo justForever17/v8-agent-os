@@ -30,10 +30,12 @@ from core.realtime_protocol import format_ndjson
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
 from core.system_tools.baseline import build_baseline_system_tool_descriptors
+from core.workspace_capability import ensure_workspace_side_effect_allowed
 from core.workspace_resolution import workspace_resolution_service
+from core.workspace_guard import build_workspace_path_status
 from runtimes.chat.runtime import StreamFilter
 from runtimes.memory.prompts import render_memory_admin_chat_prompt
-from runtimes.memory.project_registry import project_registry_service
+from runtimes.memory.project_registry import DEFAULT_AGENTS_TEMPLATE, WorkspaceTrustRequiredError, project_registry_service
 from runtimes.memory.runtime import memory_runtime
 from runtimes.memory.workflow_service import WORKFLOW_MEMORY_DEFAULTS
 from runtimes.rpa.default_templates import ensure_system_rpa_seed_templates
@@ -840,6 +842,71 @@ def _can_create_in_folder(path: Path) -> bool:
         return False
 
 
+WORKSPACE_RULES_BUDGET_TOKENS = 10_000
+
+
+def _estimate_prompt_tokens(text: str) -> int:
+    raw = str(text or "")
+    if not raw:
+        return 0
+    cjk_count = 0
+    non_cjk_visible = 0
+    for char in raw:
+        codepoint = ord(char)
+        if (
+            0x4E00 <= codepoint <= 0x9FFF
+            or 0x3400 <= codepoint <= 0x4DBF
+            or 0x3040 <= codepoint <= 0x30FF
+            or 0xAC00 <= codepoint <= 0xD7AF
+        ):
+            cjk_count += 1
+        elif not char.isspace():
+            non_cjk_visible += 1
+    return cjk_count + ((non_cjk_visible + 3) // 4)
+
+
+def _rules_budget_diagnostics(content: str, *, save_rejected: bool = False) -> dict:
+    estimated = _estimate_prompt_tokens(content)
+    return {
+        "estimatedTokens": estimated,
+        "budgetTokens": WORKSPACE_RULES_BUDGET_TOKENS,
+        "truncated": estimated > WORKSPACE_RULES_BUDGET_TOKENS,
+        "saveRejected": save_rejected,
+        "omittedReason": "workspace_agents_md_budget_exceeded" if estimated > WORKSPACE_RULES_BUDGET_TOKENS else "",
+    }
+
+
+def _workspace_rules_path(workspace_path: str) -> Path:
+    return Path(str(workspace_path or "").strip()).expanduser().resolve(strict=False) / ".agents" / "rules" / "AGENTS.md"
+
+
+def _workspace_rules_context(payload: dict) -> dict:
+    return {
+        "runtime_kind": "chat",
+        "session_id": str(payload.get("sessionId") or payload.get("session_id") or "").strip() or None,
+        "workspace_id": str(payload.get("workspaceId") or payload.get("workspace_id") or "").strip() or None,
+        "workspace_path": str(payload.get("workspacePath") or payload.get("workspace_path") or "").strip() or None,
+        "project_id": str(payload.get("projectId") or payload.get("project_id") or "").strip() or None,
+    }
+
+
+def _read_workspace_rules_response(workspace_path: str, binding: dict) -> dict:
+    normalized_workspace = str(Path(str(workspace_path or "")).expanduser().resolve(strict=False))
+    rules_path = _workspace_rules_path(normalized_workspace)
+    exists = rules_path.is_file()
+    content = rules_path.read_text(encoding="utf-8") if exists else ""
+    return {
+        "workspacePath": normalized_workspace,
+        "path": str(rules_path),
+        "exists": exists,
+        "content": content,
+        "suggestedContent": DEFAULT_AGENTS_TEMPLATE,
+        "workspaceStatus": build_workspace_path_status(normalized_workspace),
+        "budgetDiagnostics": _rules_budget_diagnostics(content),
+        "workspaceBinding": binding,
+    }
+
+
 def _folder_node(
     path: Path,
     *,
@@ -992,12 +1059,82 @@ async def create_workspace_folder(payload: dict = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/workspace/agents-rules")
+async def get_workspace_agents_rules(
+    workspace_path: str = Query("", alias="workspacePath"),
+    workspace_id: str | None = Query(default=None, alias="workspaceId"),
+    project_id: str | None = Query(default=None, alias="projectId"),
+    session_id: str | None = Query(default=None, alias="sessionId"),
+):
+    payload = {
+        "workspacePath": workspace_path,
+        "workspaceId": workspace_id,
+        "projectId": project_id,
+        "sessionId": session_id,
+    }
+    context = _workspace_rules_context(payload)
+    preflight = ensure_workspace_side_effect_allowed(
+        context,
+        runtime_kind="chat",
+        operation="workspace_rules",
+        subject=str(workspace_path or ""),
+    )
+    if not preflight.get("ok"):
+        raise HTTPException(status_code=403, detail=preflight)
+    binding = dict(preflight.get("binding") or {})
+    workspace_root = str(binding.get("activeWorkspaceRoot") or context.get("workspace_path") or workspace_resolution_service.get_main_workspace_path())
+    return _read_workspace_rules_response(workspace_root, binding)
+
+
+@router.post("/workspace/agents-rules")
+async def save_workspace_agents_rules(payload: dict = Body(...)):
+    context = _workspace_rules_context(payload)
+    preflight = ensure_workspace_side_effect_allowed(
+        context,
+        runtime_kind="chat",
+        operation="workspace_rules",
+        subject=str(context.get("workspace_path") or ""),
+    )
+    if not preflight.get("ok"):
+        raise HTTPException(status_code=403, detail=preflight)
+    binding = dict(preflight.get("binding") or {})
+    workspace_root = str(binding.get("activeWorkspaceRoot") or context.get("workspace_path") or workspace_resolution_service.get_main_workspace_path())
+    rules_path = _workspace_rules_path(workspace_root)
+    if payload.get("ensureOnly") is True:
+        rules_path.parent.mkdir(parents=True, exist_ok=True)
+        (rules_path.parent.parent / "skills").mkdir(parents=True, exist_ok=True)
+        if not rules_path.exists():
+            rules_path.write_text(DEFAULT_AGENTS_TEMPLATE, encoding="utf-8")
+        return _read_workspace_rules_response(workspace_root, binding)
+
+    content = str(payload.get("content") if isinstance(payload.get("content"), str) else DEFAULT_AGENTS_TEMPLATE)
+    diagnostics = _rules_budget_diagnostics(content, save_rejected=True)
+    if diagnostics["estimatedTokens"] > WORKSPACE_RULES_BUDGET_TOKENS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"AGENTS.md exceeds {WORKSPACE_RULES_BUDGET_TOKENS} estimated tokens ({diagnostics['estimatedTokens']}).",
+                "budgetDiagnostics": diagnostics,
+            },
+        )
+    rules_path.parent.mkdir(parents=True, exist_ok=True)
+    (rules_path.parent.parent / "skills").mkdir(parents=True, exist_ok=True)
+    rules_path.write_text(content, encoding="utf-8")
+    return _read_workspace_rules_response(workspace_root, binding)
+
+
 @router.post("/projects")
 async def create_project(payload: ProjectDescriptorPayload):
     try:
         project = project_registry_service.save_project(payload.model_dump(by_alias=True, exclude_none=True))
         ensure_system_rpa_seed_templates()
         return project.model_dump(by_alias=True, exclude_none=True)
+    except WorkspaceTrustRequiredError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        if str(e) == "workspace_trust_state_invalid":
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1022,6 +1159,12 @@ async def patch_project(project_id: str, updates: dict = Body(...)):
         if project is None:
             raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
         return project.model_dump(by_alias=True, exclude_none=True)
+    except WorkspaceTrustRequiredError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        if str(e) == "workspace_trust_state_invalid":
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -1048,6 +1191,8 @@ async def bind_project_workspace(project_id: str, payload: WorkspaceBindingPaylo
             project_id=project_id,
             workspace_id=payload.workspace_id,
             workspace_path=payload.workspace_path,
+            workspace_trust_state=payload.workspace_trust_state,
+            workspace_trust_source=payload.workspace_trust_source,
             source=payload.source or "admin_selected",
             confidence=payload.confidence or 1.0,
         )
@@ -1055,6 +1200,12 @@ async def bind_project_workspace(project_id: str, payload: WorkspaceBindingPaylo
         if project is None:
             raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
         return project.model_dump(by_alias=True, exclude_none=True)
+    except WorkspaceTrustRequiredError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        if str(e) == "workspace_trust_state_invalid":
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

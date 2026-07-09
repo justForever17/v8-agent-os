@@ -224,7 +224,29 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             signal: abortController.signal
         });
 
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        if (!response.ok) {
+            const errorText = await response.text().catch(() => "");
+            let detail = "";
+            if (errorText.trim()) {
+                try {
+                    const payload = JSON.parse(errorText) as Record<string, unknown>;
+                    const nested = payload.detail && typeof payload.detail === "object"
+                        ? payload.detail as Record<string, unknown>
+                        : {};
+                    detail = String(
+                        nested.error
+                        || nested.summary
+                        || payload.error
+                        || payload.detail
+                        || payload.message
+                        || "",
+                    ).trim();
+                } catch {
+                    detail = errorText.trim();
+                }
+            }
+            throw new Error(detail || `HTTP error! status: ${response.status}`);
+        }
         if (!response.body) throw new Error('Response body is null');
 
         const convId = response.headers.get('x-v8-agent-os-conversation-id');

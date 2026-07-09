@@ -1172,6 +1172,8 @@ def delegation_broker(
                     descriptor=external_worker,
                     task_brief=task_brief,
                     workspace_path=str(base_state.get("workspace_path") or ""),
+                    workspace_id=str(base_state.get("workspace_id") or ""),
+                    project_id=str(base_state.get("project_id") or ""),
                 )
                 if not rendered_command:
                     item = _delegation_compact_item(

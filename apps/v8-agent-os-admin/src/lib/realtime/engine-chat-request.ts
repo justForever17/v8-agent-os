@@ -79,6 +79,9 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const supervisorReasoningEffort = typeof data.supervisorReasoningEffort === "string"
         ? data.supervisorReasoningEffort
         : undefined;
+    const safetyApprovalMode = typeof data.safetyApprovalMode === "string"
+        ? data.safetyApprovalMode
+        : undefined;
 
     return {
         conversationId: String(conversationId),
@@ -132,6 +135,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 taskPlanningSource: typeof data.taskPlanningSource === "string" ? data.taskPlanningSource : undefined,
                 taskPlanningRequestedByComposer: data.taskPlanningRequestedByComposer === true,
                 supervisorReasoningEffort,
+                safetyApprovalMode,
                 skillReferences: Array.isArray(data.skillReferences) ? data.skillReferences : undefined,
             },
         },

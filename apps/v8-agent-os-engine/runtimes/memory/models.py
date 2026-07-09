@@ -32,6 +32,8 @@ class ProjectDescriptor(BaseModel):
     tags: List[str] = Field(default_factory=list)
     channel_bindings: List[ChannelBinding] = Field(default_factory=list, alias="channelBindings")
     workflow_bindings: List[WorkflowBinding] = Field(default_factory=list, alias="workflowBindings")
+    workspace_trust_state: str = Field(default="trusted", alias="workspaceTrustState")
+    workspace_trust_source: str = Field(default="legacy_auto_trusted", alias="workspaceTrustSource")
     active: bool = True
 
     def normalized(self) -> "ProjectDescriptor":
@@ -43,6 +45,9 @@ class ProjectDescriptor(BaseModel):
         data.workspace_id = str(data.workspace_id or "").strip() or data.project_id
         data.default_scope = f"project:{data.project_id}"
         data.tags = [str(tag).strip() for tag in list(data.tags or []) if str(tag).strip()]
+        trust_state = str(data.workspace_trust_state or "").strip().lower()
+        data.workspace_trust_state = trust_state if trust_state in {"trusted", "restricted"} else "trusted"
+        data.workspace_trust_source = str(data.workspace_trust_source or "").strip() or "legacy_auto_trusted"
         return data
 
 

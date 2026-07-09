@@ -13,10 +13,11 @@ from core.scoped_workspace_resource import (
 
 
 class _FakeProject:
-    def __init__(self, *, project_id: str, workspace_id: str, workspace_path: str):
+    def __init__(self, *, project_id: str, workspace_id: str, workspace_path: str, workspace_trust_state: str = "trusted"):
         self.project_id = project_id
         self.workspace_id = workspace_id
         self.workspace_path = workspace_path
+        self.workspace_trust_state = workspace_trust_state
 
 
 class ScopedWorkspaceResourceTests(unittest.TestCase):
@@ -86,6 +87,25 @@ class ScopedWorkspaceResourceTests(unittest.TestCase):
                         path_plane="workspace_download",
                         workspace_id="ws_demo",
                         project_id="proj_other",
+                    )
+
+    def test_resolve_scoped_workspace_resource_blocks_restricted_project(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project = _FakeProject(
+                project_id="proj_restricted",
+                workspace_id="ws_restricted",
+                workspace_path=temp_dir,
+                workspace_trust_state="restricted",
+            )
+            with patch(
+                "core.scoped_workspace_resource.project_registry_service.find_project_for_workspace",
+                return_value=project,
+            ):
+                with self.assertRaises(PermissionError):
+                    resolve_scoped_workspace_resource(
+                        workspace_relative_path="foo.txt",
+                        path_plane="workspace_download",
+                        workspace_id="ws_restricted",
                     )
 
     def test_build_client_workspace_resource_admin_path_includes_scope(self):

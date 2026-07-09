@@ -28,6 +28,7 @@ from core.models.control_plane import model_control_plane
 from core.llm_tree_prefilter import select_family_keys_with_llm
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.storage import storage
+from core.tools.native.tool_governance import log_safety_review_auto_approved, should_auto_approve_safety_review
 from core.v8_agent_os_paths import OPENCLAW_DEFAULT_STATE_ROOT, PLUGIN_HOST_ROOT, PLUGIN_INSTALL_LOG_ROOT
 from erc.safety_guardian import safety_guardian
 from core.context.workspace import workspace_resolution_service
@@ -6644,20 +6645,28 @@ Get-CimInstance Win32_Process |
         if safety_decision.is_block():
             raise RuntimeError(f"Safety Guardian 已阻止 OpenClaw bridge 工具调用：{safety_decision.reason}")
         if safety_decision.is_review():
-            request_payload = safety_decision.to_interrupt_request(
-                question=(
-                    "Safety Guardian 检测到 Plugin Host 外部工具命中本地系统敏感面，是否允许继续？"
-                    f"\n工具：{canonical_name}"
-                ),
-                tool_call_id="",
-            )
-            raise ModelGovernanceInterventionRequired(
-                f"Safety Guardian 检测到 Plugin Host 工具审批请求：{safety_decision.reason}",
-                approval_kind="safety_review",
-                question=request_payload.get("question") or request_payload.get("prompt") or "需要 Safety 审批。",
-                details={"safety": safety_decision.to_payload()},
-                request_payload=request_payload,
-            )
+            if should_auto_approve_safety_review(safety_decision):
+                log_safety_review_auto_approved(
+                    safety_decision,
+                    action="plugin_host_bridge_tool",
+                    subject=canonical_name,
+                    metadata={"pluginId": normalized_plugin_id},
+                )
+            else:
+                request_payload = safety_decision.to_interrupt_request(
+                    question=(
+                        "Safety Guardian 检测到 Plugin Host 外部工具命中本地系统敏感面，是否允许继续？"
+                        f"\n工具：{canonical_name}"
+                    ),
+                    tool_call_id="",
+                )
+                raise ModelGovernanceInterventionRequired(
+                    f"Safety Guardian 检测到 Plugin Host 工具审批请求：{safety_decision.reason}",
+                    approval_kind="safety_review",
+                    question=request_payload.get("question") or request_payload.get("prompt") or "需要 Safety 审批。",
+                    details={"safety": safety_decision.to_payload()},
+                    request_payload=request_payload,
+                )
         body = self._openclaw_gateway_request_json(
             suffix="/plugins/openclaw-v8-bridge/tools/invoke",
             payload={

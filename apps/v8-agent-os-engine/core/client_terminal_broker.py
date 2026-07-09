@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import secrets
 import shlex
 import shutil
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from core.tools.native.command import BackgroundProcess, _bg_processes, _prune_stale_background_processes
+from core.workspace_capability import build_workspace_binding, workspace_side_effect_block_payload
+from core.workspace_resolution import workspace_resolution_service
 
 
 MANUAL_TERMINAL_SESSION_PREFIX = "manual-terminal:"
@@ -158,9 +161,28 @@ def create_terminal_session(
     profile_id: str | None = None,
     cwd: str | None = None,
     conversation_id: str | None = None,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
 ) -> dict[str, Any]:
     profile = _resolve_profile(profile_id)
-    resolved_cwd = _resolve_cwd(cwd)
+    requested_cwd = str(cwd or "").strip() or workspace_resolution_service.get_main_workspace_path()
+    binding = build_workspace_binding(
+        {
+            "runtime_kind": "chat",
+            "workspace_path": requested_cwd,
+            "workspace_id": str(workspace_id or "").strip() or None,
+            "project_id": str(project_id or "").strip() or None,
+        },
+        runtime_kind="chat",
+    )
+    if not binding.side_effects_allowed:
+        raise RuntimeError(
+            json.dumps(
+                workspace_side_effect_block_payload(binding, operation="manual_terminal", subject=requested_cwd),
+                ensure_ascii=False,
+            )
+        )
+    resolved_cwd = _resolve_cwd(str(binding.active_workspace_root))
     terminal_id = f"term_{uuid.uuid4().hex[:12]}"
     command_id = terminal_id
     marker_session_id = f"{MANUAL_TERMINAL_SESSION_PREFIX}{terminal_id}"

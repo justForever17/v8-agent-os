@@ -101,11 +101,21 @@ interface ProjectDescriptor {
     defaultScope?: string;
     tags?: string[];
     active?: boolean;
+    workspaceTrustState?: "trusted" | "restricted";
+    workspaceTrustSource?: string;
 }
 
 type WorkspaceBindingDraft =
     | { kind: "main" }
     | { kind: "project"; projectId: string }
+
+function isWorkspaceTrustRequiredPayload(payload: Record<string, unknown>) {
+    const detail = payload.detail;
+    if (detail === "workspace_trust_required" || payload.error === "workspace_trust_required") {
+        return true;
+    }
+    return Boolean(detail && typeof detail === "object" && (detail as Record<string, unknown>).error === "workspace_trust_required");
+}
 
 interface ScopeBindingView {
     projectId?: string;
@@ -177,6 +187,22 @@ function asPlainRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string {
     return typeof value === "string" ? value.trim() : "";
+}
+
+function isWorkspaceBindingErrorMessage(value: unknown) {
+    const text = String(value || "").toLowerCase();
+    return text.includes("workspace_binding_required")
+        || text.includes("workspace_trust_required")
+        || text.includes("workspace_side_effect_blocked");
+}
+
+function readErrorPayloadMessage(payload: Record<string, unknown>) {
+    const detail = asPlainRecord(payload.detail);
+    return readString(detail.error)
+        || readString(detail.summary)
+        || readString(detail.recommendedNextAction)
+        || readString(payload.error)
+        || readString(payload.message);
 }
 
 function normalizeQueuedMessage(value: unknown): QueuedChatMessage | null {
@@ -1062,6 +1088,8 @@ export default function ChatClient() {
                     profileId: terminalProfileId || undefined,
                     cwd: terminalWorkspacePath || undefined,
                     conversationId: activeConversationId || undefined,
+                    workspaceId: scopeBinding?.workspaceId || undefined,
+                    projectId: scopeBinding?.projectId || undefined,
                 }),
             });
             const payload = await response.json().catch(() => ({}));
@@ -1076,7 +1104,15 @@ export default function ChatClient() {
         } finally {
             setTerminalBusy(false);
         }
-    }, [activeConversationId, terminalBusy, terminalProfileId, terminalWorkspacePath, upsertManualTerminalSession]);
+    }, [
+        activeConversationId,
+        scopeBinding?.projectId,
+        scopeBinding?.workspaceId,
+        terminalBusy,
+        terminalProfileId,
+        terminalWorkspacePath,
+        upsertManualTerminalSession,
+    ]);
 
     const loadManualTerminalSessions = useCallback(async () => {
         if (!activeConversationId) {
@@ -2026,7 +2062,7 @@ export default function ChatClient() {
             }
         }
         if (!response.ok) {
-            throw new Error(readString(payload.error) || `Queue request failed: ${response.status}`);
+            throw new Error(readErrorPayloadMessage(payload as Record<string, unknown>) || `Queue request failed: ${response.status}`);
         }
         if (payload.queued && payload.queuedMessage) {
             upsertQueuedMessage(payload.queuedMessage);
@@ -2187,15 +2223,37 @@ export default function ChatClient() {
         }
         setWorkspaceChooserBusy(true);
         try {
-            const res = await fetch("/api/projects", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ workspacePath: trimmedPath }),
-            });
-            if (!res.ok) {
-                throw new Error(`Project creation failed: ${res.status}`);
+            const createProjectAtPath = async (trusted: boolean) => {
+                const res = await fetch("/api/projects", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        workspacePath: trimmedPath,
+                        ...(trusted ? {
+                            workspaceTrustState: "trusted",
+                            workspaceTrustSource: "user_confirmed",
+                        } : {}),
+                    }),
+                });
+                const payload = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    return { ok: false, status: res.status, payload };
+                }
+                return { ok: true, status: res.status, payload };
+            };
+            let result = await createProjectAtPath(false);
+            if (!result.ok && result.status === 400 && isWorkspaceTrustRequiredPayload(result.payload as Record<string, unknown>)) {
+                const confirmed = window.confirm(t("web.chat.workspaceTrust.confirmExternal", { value0: trimmedPath }));
+                if (!confirmed) {
+                    return;
+                }
+                result = await createProjectAtPath(true);
             }
-            const createdProject = await res.json();
+            if (!result.ok) {
+                const payload = result.payload as Record<string, unknown>;
+                throw new Error(String(payload.detail || payload.error || `Project creation failed: ${result.status}`));
+            }
+            const createdProject = result.payload as ProjectDescriptor;
             await loadProjects();
             const creationPayload: CreateConversationPayload = {
                 title: "New Chat",
@@ -2219,7 +2277,7 @@ export default function ChatClient() {
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [createConversation, loadProjects, loadSessionScope, newProjectPath, refreshConversations, workspaceChooserBusy]);
+    }, [createConversation, loadProjects, loadSessionScope, newProjectPath, refreshConversations, t, workspaceChooserBusy]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -2606,8 +2664,12 @@ export default function ChatClient() {
                 await submitQueuedMessage(currentInput, options?.data || {});
             } catch (error) {
                 console.error("[ChatClient] Failed to queue message:", error);
+                const errorMessage = error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f");
+                if (isWorkspaceBindingErrorMessage(errorMessage)) {
+                    setWorkspaceChooserVisible(true);
+                }
                 setInput(currentInput);
-                setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f"));
+                setQueuedMessageError(errorMessage);
             }
             return;
         }
@@ -2630,11 +2692,16 @@ export default function ChatClient() {
             });
         } catch (error) {
             console.error("[ChatClient] Failed to send initial message:", error);
+            const errorMessage = error instanceof Error && error.message ? error.message : "";
+            if (isWorkspaceBindingErrorMessage(errorMessage)) {
+                setWorkspaceChooserVisible(true);
+                setQueuedMessageError(errorMessage);
+            }
             setInput(currentInput);
         }
     };
 
-    const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>> }) => {
+    const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>>; safetyApprovalMode?: "manual" | "reduced" | "minimal" }) => {
         const hasFiles = Array.isArray(data.fileUrls) && data.fileUrls.length > 0;
         if (status !== 'authenticated' || !hasFiles) return;
         if (!activeConversationIdRef.current) {
@@ -2647,7 +2714,11 @@ export default function ChatClient() {
         if (isLoading) {
             void submitQueuedMessage("", data).catch((error) => {
                 console.error("[ChatClient] Failed to queue voice audio message:", error);
-                setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f"));
+                const errorMessage = error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f");
+                if (isWorkspaceBindingErrorMessage(errorMessage)) {
+                    setWorkspaceChooserVisible(true);
+                }
+                setQueuedMessageError(errorMessage);
             });
             return;
         }
@@ -2665,6 +2736,11 @@ export default function ChatClient() {
             ...data,
         }).catch((error) => {
             console.error("[ChatClient] Failed to send voice audio message:", error);
+            const errorMessage = error instanceof Error && error.message ? error.message : "";
+            if (isWorkspaceBindingErrorMessage(errorMessage)) {
+                setWorkspaceChooserVisible(true);
+                setQueuedMessageError(errorMessage);
+            }
         });
     };
 

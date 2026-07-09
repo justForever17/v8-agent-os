@@ -1467,17 +1467,52 @@ def _write_external_worker_task_brief(
     return str(brief_path), str(relative_path).replace("\\", "/")
 
 
+def _external_worker_workspace_preflight(
+    workspace_path: str,
+    *,
+    workspace_id: str = "",
+    project_id: str = "",
+) -> tuple[bool, str, dict[str, Any] | None]:
+    from core.workspace_capability import build_workspace_binding, workspace_side_effect_block_payload
+
+    binding = build_workspace_binding(
+        {
+            "runtime_kind": "chat",
+            "workspace_path": str(workspace_path or "").strip() or None,
+            "workspace_id": str(workspace_id or "").strip() or None,
+            "project_id": str(project_id or "").strip() or None,
+        },
+        runtime_kind="chat",
+    )
+    if binding.side_effects_allowed:
+        return True, str(binding.active_workspace_root), None
+    return False, "", workspace_side_effect_block_payload(
+        binding,
+        operation="external_worker",
+        subject=str(workspace_path or ""),
+    )
+
+
 def _render_claude_code_worker_command(
     *,
     descriptor: dict[str, Any],
     task_brief: dict[str, Any],
     workspace_path: str,
+    workspace_id: str = "",
+    project_id: str = "",
 ) -> str:
     launch_profile = descriptor.get("launchProfile") if isinstance(descriptor.get("launchProfile"), dict) else {}
+    preflight_ok, effective_workspace_path, block_payload = _external_worker_workspace_preflight(
+        workspace_path,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+    if not preflight_ok:
+        return json.dumps(block_payload or {"ok": False, "kind": "workspace_side_effect_blocked"}, ensure_ascii=False)
     permission_mode = str(launch_profile.get("permissionMode") or "acceptEdits").strip() or "acceptEdits"
     _brief_path, relative_brief_path = _write_external_worker_task_brief(
         task_brief=task_brief,
-        workspace_path=workspace_path,
+        workspace_path=effective_workspace_path,
     )
     instruction = (
         f"V8 external worker task. Read task brief JSON from file: {relative_brief_path}. "
@@ -1498,7 +1533,7 @@ def _render_claude_code_worker_command(
     return _prefix_external_worker_command_with_cwd(
         command,
         cwd_policy=str(launch_profile.get("cwdPolicy") or "").strip(),
-        workspace_path=workspace_path,
+        workspace_path=effective_workspace_path,
     )
 
 
@@ -1521,6 +1556,8 @@ def render_external_worker_command(
     descriptor: dict[str, Any],
     task_brief: dict[str, Any],
     workspace_path: str = "",
+    workspace_id: str = "",
+    project_id: str = "",
 ) -> str:
     launch_profile = descriptor.get("launchProfile") if isinstance(descriptor.get("launchProfile"), dict) else {}
     if _uses_claude_code_dedicated_renderer(descriptor):
@@ -1528,7 +1565,16 @@ def render_external_worker_command(
             descriptor=descriptor,
             task_brief=task_brief,
             workspace_path=workspace_path,
+            workspace_id=workspace_id,
+            project_id=project_id,
         )
+    preflight_ok, effective_workspace_path, block_payload = _external_worker_workspace_preflight(
+        workspace_path,
+        workspace_id=workspace_id,
+        project_id=project_id,
+    )
+    if not preflight_ok:
+        return json.dumps(block_payload or {"ok": False, "kind": "workspace_side_effect_blocked"}, ensure_ascii=False)
     command_template = str(launch_profile.get("commandTemplate") or "").strip()
     if not command_template:
         return ""
@@ -1546,7 +1592,7 @@ def render_external_worker_command(
         "parallel_group": str(task_brief.get("parallelGroup") or ""),
         "task_brief_json": task_brief_json,
         "task_brief_b64": base64.b64encode(task_brief_json.encode("utf-8")).decode("ascii"),
-        "workspace_path": workspace_path,
+        "workspace_path": effective_workspace_path,
     }
 
     class _SafeDict(dict[str, str]):
@@ -1560,7 +1606,7 @@ def render_external_worker_command(
     return _prefix_external_worker_command_with_cwd(
         rendered,
         cwd_policy=str(launch_profile.get("cwdPolicy") or "").strip(),
-        workspace_path=workspace_path,
+        workspace_path=effective_workspace_path,
     )
 
 

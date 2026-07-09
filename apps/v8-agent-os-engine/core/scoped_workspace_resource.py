@@ -21,6 +21,12 @@ class ScopedWorkspaceResource:
     project_id: str | None = None
 
 
+def _ensure_project_workspace_trusted(project) -> None:
+    trust_state = str(getattr(project, "workspace_trust_state", "") or "trusted").strip().lower()
+    if trust_state != "trusted":
+        raise PermissionError("project workspace 未被信任，拒绝访问。")
+
+
 def normalize_workspace_relative_path(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -91,6 +97,7 @@ def resolve_scoped_workspace_resource(
             raise FileNotFoundError("workspace_id 未命中 allowlisted project workspace 绑定。")
         if normalized_project_id and str(project.project_id or "").strip() != normalized_project_id:
             raise PermissionError("workspace_id 与 project_id 绑定不匹配。")
+        _ensure_project_workspace_trusted(project)
         resolved_root = str(project.workspace_path or "").strip()
         resolved_project_id = str(project.project_id or "").strip() or normalized_project_id
         resolved_workspace_id = str(project.workspace_id or "").strip() or normalized_workspace_id
@@ -98,6 +105,7 @@ def resolve_scoped_workspace_resource(
         project = project_registry_service.get_project(normalized_project_id)
         if project is None or not str(project.workspace_path or "").strip():
             raise FileNotFoundError("project_id 未命中 allowlisted project workspace 绑定。")
+        _ensure_project_workspace_trusted(project)
         resolved_root = str(project.workspace_path or "").strip()
         resolved_project_id = str(project.project_id or "").strip() or normalized_project_id
         resolved_workspace_id = str(project.workspace_id or "").strip() or normalized_workspace_id

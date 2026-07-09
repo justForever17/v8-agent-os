@@ -12,6 +12,7 @@ const KEYS = {
     locale: "v8.phone.locale",
     themeMode: "v8.phone.themeMode",
     voiceEnabled: "v8.phone.voiceEnabled",
+    safetyApprovalMode: "v8.phone.safetyApprovalMode",
 } as const;
 
 export async function getStoredValue(key: keyof typeof KEYS) {

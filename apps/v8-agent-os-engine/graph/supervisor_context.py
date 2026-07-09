@@ -216,6 +216,27 @@ def _collect_workspace_rules_roots(*, state, session_id: str | None) -> list[dic
         explicit_workspace_path=state.get("workspace_path"),
         explicit_project_id=state.get("project_id"),
     )
+    authority_binding = build_workspace_binding(
+        {
+            "runtime_kind": "chat",
+            "session_id": session_id,
+            "workspace_id": state.get("workspace_id"),
+            "workspace_path": state.get("workspace_path"),
+            "project_id": state.get("project_id"),
+        },
+        runtime_kind="chat",
+    )
+    if not authority_binding.side_effects_allowed:
+        return [
+            {
+                "source": "workspace_omitted",
+                "label": "workspace omitted",
+                "workspacePath": str(authority_binding.active_workspace_root),
+                "workspaceId": authority_binding.workspace_id,
+                "projectId": authority_binding.project_id,
+                "omittedReason": "workspace_rules_omitted_restricted_or_fallback",
+            }
+        ]
     scoped_workspace_path = _normalize_workspace_path(str(descriptor.get("workspaceRoot") or ""))
     if scoped_workspace_path and bool(descriptor.get("isScopedOverride")):
         return [
@@ -248,6 +269,21 @@ def _build_workspace_rules_context(*, state, session_id: str | None) -> tuple[st
     diagnostics: list[dict[str, object]] = []
     for root in _collect_workspace_rules_roots(state=state, session_id=session_id):
         workspace_path = str(root.get("workspacePath") or "").strip()
+        if root.get("omittedReason"):
+            diagnostics.append(
+                {
+                    "source": f"workspace:{root.get('source')}",
+                    "estimatedTokens": 0,
+                    "budgetTokens": DEFAULT_WORKSPACE_RULES_BUDGET_TOKENS,
+                    "truncated": False,
+                    "saveRejected": False,
+                    "omittedReason": str(root.get("omittedReason") or "workspace_rules_omitted"),
+                    "workspacePath": workspace_path,
+                    "workspaceId": root.get("workspaceId"),
+                    "projectId": root.get("projectId"),
+                }
+            )
+            continue
         if not workspace_path:
             continue
         rules_dir = Path(workspace_path) / ".agents" / "rules"

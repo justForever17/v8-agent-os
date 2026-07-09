@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.workspace_authority import workspace_authority_service
 from core.workspace_resolution import workspace_resolution_service
 
 
@@ -19,6 +20,11 @@ class WorkspaceBinding:
     source: str
     uses_scoped_workspace: bool
     is_scoped_override: bool
+    trust_state: str = "trusted"
+    trust_source: str = "legacy_auto_trusted"
+    is_fallback_to_main: bool = False
+    side_effects_allowed: bool = True
+    capabilities: dict[str, bool] | None = None
     allowed_extra_roots: tuple[Path, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -31,6 +37,11 @@ class WorkspaceBinding:
             "source": self.source,
             "usesScopedWorkspace": self.uses_scoped_workspace,
             "isScopedOverride": self.is_scoped_override,
+            "trustState": self.trust_state,
+            "trustSource": self.trust_source,
+            "isFallbackToMain": self.is_fallback_to_main,
+            "sideEffectsAllowed": self.side_effects_allowed,
+            "capabilities": dict(self.capabilities or {}),
             "allowedExtraRoots": [str(item) for item in self.allowed_extra_roots],
         }
 
@@ -91,15 +102,9 @@ def _iter_extra_roots(context: dict[str, Any]) -> tuple[Path, ...]:
 def build_workspace_binding(runtime_context: dict[str, Any] | None = None, *, runtime_kind: str | None = None) -> WorkspaceBinding:
     context = dict(runtime_context or {})
     effective_runtime_kind = str(runtime_kind or context.get("runtime_kind") or context.get("runtimeKind") or "chat").strip() or "chat"
-    descriptor = workspace_resolution_service.resolve_workspace_descriptor(
-        runtime_kind=effective_runtime_kind,
-        session_id=str(context.get("session_id") or context.get("sessionId") or "").strip() or None,
-        explicit_workspace_id=str(context.get("workspace_id") or context.get("workspaceId") or "").strip() or None,
-        explicit_workspace_path=str(context.get("workspace_path") or context.get("workspacePath") or "").strip() or None,
-        explicit_project_id=str(context.get("project_id") or context.get("projectId") or "").strip() or None,
-    )
+    descriptor = workspace_authority_service.resolve_from_context(context, runtime_kind=effective_runtime_kind).as_dict()
     active_root = _resolve_path(str(descriptor.get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path()))
-    main_root = _resolve_path(str(descriptor.get("mainWorkspacePath") or workspace_resolution_service.get_main_workspace_path()))
+    main_root = _resolve_path(str(descriptor.get("mainWorkspaceRoot") or descriptor.get("mainWorkspacePath") or workspace_resolution_service.get_main_workspace_path()))
     return WorkspaceBinding(
         runtime_kind=effective_runtime_kind,
         workspace_id=str(descriptor.get("workspaceId") or context.get("workspace_id") or context.get("workspaceId") or "").strip(),
@@ -109,8 +114,45 @@ def build_workspace_binding(runtime_context: dict[str, Any] | None = None, *, ru
         source=str(descriptor.get("source") or "").strip() or "main_workspace",
         uses_scoped_workspace=bool(descriptor.get("usesScopedWorkspace")),
         is_scoped_override=bool(descriptor.get("isScopedOverride")),
+        trust_state=str(descriptor.get("trustState") or "trusted").strip() or "trusted",
+        trust_source=str(descriptor.get("trustSource") or "legacy_auto_trusted").strip() or "legacy_auto_trusted",
+        is_fallback_to_main=bool(descriptor.get("isFallbackToMain")),
+        side_effects_allowed=bool(descriptor.get("sideEffectsAllowed")),
+        capabilities=dict(descriptor.get("capabilities") or {}),
         allowed_extra_roots=_iter_extra_roots(context),
     )
+
+
+def workspace_side_effect_block_payload(binding: WorkspaceBinding, *, operation: str, subject: str = "") -> dict[str, Any]:
+    reason = "workspace_fallback_to_main" if binding.is_fallback_to_main else "workspace_not_trusted"
+    summary = (
+        "当前会话尚未绑定明确项目工作区，已阻止本机副作用操作以避免误写入主工作区。"
+        if binding.is_fallback_to_main
+        else "当前工作区尚未被信任，已阻止本机副作用操作。"
+    )
+    return {
+        "ok": False,
+        "kind": "workspace_side_effect_blocked",
+        "error": reason,
+        "summary": summary,
+        "operation": operation,
+        "subject": subject,
+        "workspaceBinding": binding.as_dict(),
+        "recommendedNextAction": "先选择并信任项目工作区，再重试该操作。",
+    }
+
+
+def ensure_workspace_side_effect_allowed(
+    runtime_context: dict[str, Any] | None = None,
+    *,
+    runtime_kind: str | None = None,
+    operation: str = "workspace_side_effect",
+    subject: str = "",
+) -> dict[str, Any]:
+    binding = build_workspace_binding(runtime_context, runtime_kind=runtime_kind)
+    if binding.side_effects_allowed:
+        return {"ok": True, "binding": binding.as_dict()}
+    return workspace_side_effect_block_payload(binding, operation=operation, subject=subject)
 
 
 def resolve_workspace_tool_path(
@@ -202,6 +244,9 @@ def preflight_command_workspace(
     runtime_kind: str | None = None,
 ) -> dict[str, Any]:
     binding = build_workspace_binding(runtime_context, runtime_kind=runtime_kind)
+    if not binding.side_effects_allowed:
+        payload = workspace_side_effect_block_payload(binding, operation="command", subject=command)
+        return {**payload, "binding": binding.as_dict()}
     cwd_result = resolve_workspace_tool_path(cwd or ".", runtime_context=runtime_context, runtime_kind=runtime_kind)
     if not cwd_result.get("ok"):
         return {

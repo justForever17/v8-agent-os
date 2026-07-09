@@ -17,6 +17,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 
 from core.artifact_store import artifact_store
 from core.storage import storage
+from core.tools.native.tool_governance import log_safety_review_auto_approved, should_auto_approve_safety_review
 from core.v8_agent_os_paths import workspace_download_root
 from core.workspace_guard import build_workspace_path_status, ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
@@ -179,6 +180,15 @@ def _enforce_safety_decision(decision, *, tool_call_id: str, question: str) -> t
         metadata={"toolCallId": tool_call_id},
     )
     if decision.is_allow():
+        return True, None
+
+    if should_auto_approve_safety_review(decision):
+        log_safety_review_auto_approved(
+            decision,
+            action="media_download_safety",
+            subject=question,
+            tool_call_id=tool_call_id,
+        )
         return True, None
 
     from langgraph.types import interrupt

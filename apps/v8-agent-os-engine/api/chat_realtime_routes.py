@@ -17,7 +17,7 @@ from .models import ChatMessage, ChatRequest
 from core.database import db
 from core.json_safe import to_jsonable
 from core.scoped_workspace_resource import build_workspace_resource_ref
-from core.workspace_capability import build_workspace_binding
+from core.workspace_capability import build_workspace_binding, ensure_workspace_side_effect_allowed
 from core.workspace_state_digest import mark_workspace_state_stale
 from core.realtime_protocol import (
     build_runtime_event,
@@ -33,7 +33,7 @@ from erc.command_router import runtime_command_router
 from erc.models import RuntimeCommand
 from erc.run_service import run_service
 from erc.session_runtime import session_runtime_service
-from runtimes.memory.scope_resolution import ScopeBindingConflictError
+from runtimes.memory.scope_resolution import ScopeBindingConflictError, session_scope_binding_service
 from runtimes.chat.runtime import chat_runtime
 
 
@@ -153,6 +153,7 @@ _ACTIVE_CHAT_STATUSES = {
 }
 _TERMINAL_CHAT_STATUSES = {"completed", "finished", "failed", "cancelled", "canceled", "blocked", "error"}
 _FALLBACK_ACTIVE_CHAT_STATUSES = _ACTIVE_CHAT_STATUSES - {"paused"}
+_NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 
 
 def _resolve_request_session_id(request: ChatRequest) -> str:
@@ -170,6 +171,61 @@ def _resolve_request_session_id(request: ChatRequest) -> str:
     if data is not None and not getattr(data, "conversation_id", None):
         data.conversation_id = resolved
     return resolved
+
+
+def _workspace_binding_required_payload() -> dict:
+    return {
+        "error": "workspace_binding_required",
+        "summary": "先选择并信任项目工作区，再发送任务。",
+        "recommendedNextAction": "选择项目工作区后重试。",
+    }
+
+
+def _has_explicit_workspace_binding(request: ChatRequest) -> bool:
+    data = request.data
+    candidates = (
+        request.project_id,
+        request.workspace_id,
+        request.workspace_path,
+        getattr(data, "project_id", None) if data else None,
+        getattr(data, "workspace_id", None) if data else None,
+        getattr(data, "workspace_path", None) if data else None,
+    )
+    return any(str(value or "").strip() for value in candidates)
+
+
+def _session_has_workspace_binding(session_id: str) -> bool:
+    if not session_id:
+        return False
+    try:
+        binding = session_scope_binding_service.get_binding(session_id)
+    except Exception:
+        return False
+    if not binding or str(getattr(binding, "status", "active") or "active").strip().lower() != "active":
+        return False
+    return any(
+        str(getattr(binding, field, "") or "").strip()
+        for field in ("project_id", "workspace_id", "workspace_path")
+    )
+
+
+def _should_require_workspace_binding(request: ChatRequest, *, transport: str) -> bool:
+    if request.resume_run_id or request.tool_outputs:
+        return False
+    if str(transport or "").strip() in _NETWORK_COMPAT_TRANSPORTS:
+        return False
+    diagnostics = getattr(request.data, "compat_ingress_diagnostics", None) if request.data else None
+    if isinstance(diagnostics, dict) and str(diagnostics.get("compatContextMode") or "").strip():
+        return False
+    return True
+
+
+def _ensure_workspace_binding_for_user_task(request: ChatRequest, *, session_id: str, transport: str) -> None:
+    if not _should_require_workspace_binding(request, transport=transport):
+        return
+    if _has_explicit_workspace_binding(request) or _session_has_workspace_binding(session_id):
+        return
+    raise HTTPException(status_code=400, detail=_workspace_binding_required_payload())
 
 
 def _emit_human_guidance_event(topic: str, *, session_id: str, run_id: str | None, payload: dict) -> dict:
@@ -595,6 +651,8 @@ async def chat_upload(request: Request):
     workspace_id = _form_text(form, "workspaceId", "workspace_id")
     workspace_path = _form_text(form, "workspacePath", "workspace_path")
     project_id = _form_text(form, "projectId", "project_id")
+    if not any((workspace_id, workspace_path, project_id)) and not _session_has_workspace_binding(session_id):
+        raise HTTPException(status_code=400, detail=_workspace_binding_required_payload())
     binding = build_workspace_binding(
         {
             "session_id": session_id,
@@ -604,6 +662,19 @@ async def chat_upload(request: Request):
         },
         runtime_kind="chat",
     )
+    side_effect_preflight = ensure_workspace_side_effect_allowed(
+        {
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "workspace_path": workspace_path,
+            "project_id": project_id,
+        },
+        runtime_kind="chat",
+        operation="upload",
+        subject=filename,
+    )
+    if not side_effect_preflight.get("ok"):
+        raise HTTPException(status_code=403, detail=side_effect_preflight)
     workspace_root = binding.active_workspace_root.resolve(strict=False)
     if not workspace_root.exists() or not workspace_root.is_dir():
         raise HTTPException(status_code=404, detail=f"Active Workspace Root 不存在或不是目录: {workspace_root}")
@@ -681,6 +752,7 @@ async def chat_upload(request: Request):
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
     session_id = _resolve_request_session_id(request)
+    _ensure_workspace_binding_for_user_task(request, session_id=session_id, transport="http")
     if not request.resume_run_id:
         active_run = _find_active_chat_run(session_id)
         if active_run:
@@ -739,6 +811,7 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks):
 @router.post("/chat/submit")
 async def chat_submit(request: ChatRequest):
     session_id = _resolve_request_session_id(request)
+    _ensure_workspace_binding_for_user_task(request, session_id=session_id, transport="submit")
 
     run_id = request.resume_run_id or f"run_{uuid.uuid4().hex}"
     client_message_id = request.client_message_id or (getattr(request.data, "client_message_id", None) if request.data else None)
@@ -1103,10 +1176,30 @@ async def chat_websocket(websocket: WebSocket):
                 )
                 continue
 
-            if not request.session_id:
-                request.session_id = str(uuid.uuid4())
+            session_id = _resolve_request_session_id(request)
             if (not request.user_id or request.user_id == "anonymous") and ticket_payload:
                 request.user_id = ticket_payload.get("sub") or "anonymous"
+            try:
+                _ensure_workspace_binding_for_user_task(request, session_id=session_id, transport="websocket")
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {"error": str(exc.detail or "workspace_binding_required")}
+                await _send_json_safe(
+                    websocket,
+                    build_runtime_event(
+                        kind="error",
+                        topic="workspace.binding_required",
+                        session_id=session_id,
+                        run_id=None,
+                        payload=detail,
+                        source={
+                            "plane": "engine",
+                            "component": "chat_ws",
+                            "node": "workspace_binding_guard",
+                            "agent_id": None,
+                        },
+                    ),
+                )
+                continue
 
             run_id = request.resume_run_id or f"run_{uuid.uuid4().hex}"
             seq = 0

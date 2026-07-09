@@ -3,27 +3,58 @@ from __future__ import annotations
 from pathlib import Path
 
 from core import workspace_capability as workspace_capability_module
+from core import workspace_authority as workspace_authority_module
 from core.workspace_capability import preflight_command_workspace, resolve_workspace_tool_path
 from erc.runtime_context import bind_runtime_context
 
 
-def _patch_descriptor(monkeypatch, *, active_root: Path, main_root: Path) -> None:
+class _FakeProject:
+    def __init__(self, *, project_id: str, workspace_id: str, workspace_path: str, workspace_trust_state: str = "trusted"):
+        self.project_id = project_id
+        self.workspace_id = workspace_id
+        self.workspace_path = workspace_path
+        self.workspace_trust_state = workspace_trust_state
+        self.workspace_trust_source = "user_confirmed" if workspace_trust_state == "trusted" else "restricted_default"
+
+
+def _patch_descriptor(
+    monkeypatch,
+    *,
+    active_root: Path,
+    main_root: Path,
+    project_id: str = "test2",
+    workspace_id: str = "test2",
+    source: str = "explicit_workspace_path",
+    uses_scoped: bool = True,
+    workspace_trust_state: str = "trusted",
+) -> None:
     def _descriptor(**_kwargs):
         return {
             "runtimeKind": "chat",
-            "projectId": "test2",
-            "workspaceId": "test2",
+            "projectId": project_id,
+            "workspaceId": workspace_id,
             "workspaceRoot": str(active_root),
-            "source": "explicit_workspace_path",
-            "usesScopedWorkspace": True,
+            "source": source,
+            "usesScopedWorkspace": uses_scoped,
             "isScopedOverride": active_root != main_root,
             "mainWorkspacePath": str(main_root),
         }
+    fake_project = _FakeProject(
+        project_id=project_id,
+        workspace_id=workspace_id,
+        workspace_path=str(active_root),
+        workspace_trust_state=workspace_trust_state,
+    ) if project_id else None
 
     monkeypatch.setattr(
         workspace_capability_module.workspace_resolution_service,
         "resolve_workspace_descriptor",
         _descriptor,
+    )
+    monkeypatch.setattr(
+        workspace_authority_module.project_registry_service,
+        "get_project",
+        lambda value: fake_project if fake_project and value == project_id else None,
     )
 
 
@@ -145,6 +176,45 @@ def test_command_preflight_blocks_global_skill_mutation(tmp_path, monkeypatch):
     assert result["ok"] is False
     assert result["error"] == "global_skill_mutation_violation"
     assert result["violations"][0]["relation"] == "global_skill_read_execute_only"
+
+
+def test_command_preflight_blocks_restricted_project_workspace(tmp_path, monkeypatch):
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(
+        monkeypatch,
+        active_root=active_root,
+        main_root=main_root,
+        workspace_trust_state="restricted",
+    )
+
+    result = preflight_command_workspace("npm install", runtime_context={"workspace_path": str(active_root), "project_id": "test2"})
+
+    assert result["ok"] is False
+    assert result["kind"] == "workspace_side_effect_blocked"
+    assert result["error"] == "workspace_not_trusted"
+
+
+def test_command_preflight_blocks_scoped_fallback_to_main_workspace(tmp_path, monkeypatch):
+    main_root = tmp_path / "main"
+    main_root.mkdir()
+    _patch_descriptor(
+        monkeypatch,
+        active_root=main_root,
+        main_root=main_root,
+        project_id="",
+        workspace_id="",
+        source="main_workspace",
+        uses_scoped=True,
+    )
+
+    result = preflight_command_workspace("npm install", runtime_context={"runtime_kind": "engineering"})
+
+    assert result["ok"] is False
+    assert result["kind"] == "workspace_side_effect_blocked"
+    assert result["error"] == "workspace_fallback_to_main"
 
 
 def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkeypatch):

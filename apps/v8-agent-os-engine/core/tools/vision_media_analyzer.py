@@ -32,6 +32,7 @@ from core.multimodal_payload_adapter import (
     describe_multimodal_payload_shape,
     infer_media_kind,
 )
+from core.tools.native.tool_governance import log_safety_review_auto_approved, should_auto_approve_safety_review
 from core.workspace_resolution import workspace_resolution_service
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
@@ -145,6 +146,15 @@ def _enforce_remote_media_guard(url: str, *, tool_call_id: str) -> tuple[bool, s
         metadata={"toolCallId": tool_call_id},
     )
     if decision.is_allow():
+        return True, None
+
+    if should_auto_approve_safety_review(decision):
+        log_safety_review_auto_approved(
+            decision,
+            action="vision_media_safety",
+            subject=f"GET {url}",
+            tool_call_id=tool_call_id,
+        )
         return True, None
 
     response = interrupt(

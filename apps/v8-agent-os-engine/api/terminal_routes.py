@@ -36,6 +36,8 @@ class CreateTerminalSessionRequest(BaseModel):
     profileId: str | None = None
     cwd: str | None = None
     conversationId: str | None = None
+    workspaceId: str | None = None
+    projectId: str | None = None
 
 
 class TerminalInputRequest(BaseModel):
@@ -60,6 +62,8 @@ async def create_terminal_session_route(
             profile_id=request.profileId,
             cwd=request.cwd,
             conversation_id=request.conversationId,
+            workspace_id=request.workspaceId,
+            project_id=request.projectId,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))

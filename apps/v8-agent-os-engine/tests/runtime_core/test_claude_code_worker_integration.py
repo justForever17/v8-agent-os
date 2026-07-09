@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.delegation_broker import (
     default_external_worker_descriptors,
@@ -28,13 +30,23 @@ def test_claude_code_renderer_writes_brief_file_and_uses_short_prompt(tmp_path: 
         "acceptanceContract": "Document exists and has a concise summary.",
     }
 
-    command = render_external_worker_command(
-        descriptor=descriptor,
-        task_brief=task_brief,
-        workspace_path=str(tmp_path),
-    )
-
     brief_path = tmp_path / ".v8-agent-os" / "external-workers" / "docs-task" / "task_brief.json"
+    project = SimpleNamespace(
+        project_id="proj_docs",
+        workspace_id="ws_docs",
+        workspace_path=str(tmp_path),
+        workspace_trust_state="trusted",
+        workspace_trust_source="user_confirmed",
+    )
+    with patch("core.workspace_authority.project_registry_service.get_project", return_value=project):
+        command = render_external_worker_command(
+            descriptor=descriptor,
+            task_brief=task_brief,
+            workspace_path=str(tmp_path),
+            workspace_id="ws_docs",
+            project_id="proj_docs",
+        )
+
     assert brief_path.exists()
     payload = json.loads(brief_path.read_text(encoding="utf-8"))
     assert payload["taskBrief"]["goal"] == task_brief["goal"]
@@ -44,6 +56,23 @@ def test_claude_code_renderer_writes_brief_file_and_uses_short_prompt(tmp_path: 
     assert "--permission-mode" in command
     assert "acceptEdits" in command
     assert external_worker_command_profile(descriptor) == "chat_cli"
+
+
+def test_claude_code_renderer_blocks_untrusted_workspace_path(tmp_path: Path):
+    descriptor = default_external_worker_descriptors()[0]
+    command = render_external_worker_command(
+        descriptor=descriptor,
+        task_brief={
+            "taskBriefId": "blocked-task",
+            "goal": "Write a short handoff document.",
+        },
+        workspace_path=str(tmp_path),
+    )
+
+    brief_path = tmp_path / ".v8-agent-os" / "external-workers" / "blocked-task" / "task_brief.json"
+    assert not brief_path.exists()
+    payload = json.loads(command)
+    assert payload["kind"] == "workspace_side_effect_blocked"
 
 
 def test_cd_prefixed_claude_print_is_chat_cli_but_not_interactive():

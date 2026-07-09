@@ -8,7 +8,7 @@ from core.scoped_workspace_resource import (
     build_workspace_resource_ref,
     normalize_workspace_relative_path,
 )
-from core.workspace_resolution import workspace_resolution_service
+from core.workspace_capability import build_workspace_binding
 from erc.runtime_context import get_runtime_context
 
 
@@ -35,20 +35,17 @@ def resolve_workspace_file_to_share(path: str, mode: str) -> dict[str, Any]:
     if normalized_mode not in _SHARE_WORKSPACE_FILE_MODES:
         raise ValueError("mode 仅允许 auto、preview 或 download。")
 
-    descriptor = workspace_resolution_service.resolve_workspace_descriptor(
-        runtime_kind=str(runtime_context.get("runtime_kind") or "chat").strip() or "chat",
-        session_id=str(runtime_context.get("session_id") or "").strip() or None,
-        explicit_workspace_id=str(runtime_context.get("workspace_id") or "").strip() or None,
-        explicit_project_id=str(runtime_context.get("project_id") or "").strip() or None,
-        explicit_workspace_path=str(runtime_context.get("workspace_path") or "").strip() or None,
-    )
-    workspace_root = Path(str(descriptor.get("workspaceRoot") or "")).expanduser().resolve(strict=False)
+    binding = build_workspace_binding(runtime_context)
+    if not binding.side_effects_allowed:
+        raise PermissionError("当前 workspace 未被信任或来自 fallback，拒绝生成远程 URL。")
+
+    workspace_root = Path(str(binding.active_workspace_root or "")).expanduser().resolve(strict=False)
     if not workspace_root.exists() or not workspace_root.is_dir():
         raise FileNotFoundError("当前 workspace 根目录不存在或不是目录。")
 
-    main_workspace_root = Path(workspace_resolution_service.get_main_workspace_path()).expanduser().resolve(strict=False)
-    workspace_id = str(descriptor.get("workspaceId") or "").strip() or None
-    project_id = str(descriptor.get("projectId") or "").strip() or None
+    main_workspace_root = Path(str(binding.main_workspace_root or "")).expanduser().resolve(strict=False)
+    workspace_id = str(binding.workspace_id or "").strip() or None
+    project_id = str(binding.project_id or "").strip() or None
     if workspace_root != main_workspace_root and not (workspace_id or project_id):
         raise PermissionError("当前 project workspace 缺少 allowlisted workspace_id/project_id 绑定，拒绝生成远程 URL。")
 

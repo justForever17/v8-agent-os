@@ -55,6 +55,7 @@ from core.agents import build_specialist_family_registry, normalize_specialist_f
 from core.task_boundary_resolver import attach_task_boundary_decision
 from core.task_shape_classifier import classify_task_shape
 from core.tool_invocation_ids import make_tool_invocation_id
+from core.tools.native.tool_governance import normalize_safety_approval_mode
 from core.workspace_capability import build_workspace_binding
 from core.context.workspace import workspace_resolution_service
 from erc.chat_canonical_transcript import (
@@ -10050,6 +10051,11 @@ class ChatRuntime:
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "goal": chat_run.prepared.latest_user_content,
         }
+        safety_approval_mode = normalize_safety_approval_mode(
+            getattr(chat_run.request.data, "safety_approval_mode", None) if chat_run.request.data else None
+        )
+        context["safety_approval_mode"] = safety_approval_mode
+        context["safetyApprovalMode"] = safety_approval_mode
         spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
         resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
         spec_continuation = resume_value.get("specContinuation") if isinstance(resume_value.get("specContinuation"), dict) else {}

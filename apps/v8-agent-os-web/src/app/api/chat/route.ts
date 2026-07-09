@@ -53,8 +53,16 @@ export async function POST(req: NextRequest) {
         if (!response.ok) {
             const errorText = await response.text();
             console.error(`[ChatProxy] Backend error: ${response.status} ${errorText}`);
+            let errorPayload: Record<string, unknown> = {};
+            if (errorText.trim()) {
+                try {
+                    errorPayload = JSON.parse(errorText) as Record<string, unknown>;
+                } catch {
+                    errorPayload = { error: errorText };
+                }
+            }
             return NextResponse.json(
-                { error: `Backend error: ${response.statusText}` },
+                Object.keys(errorPayload).length > 0 ? errorPayload : { error: `Backend error: ${response.statusText}` },
                 { status: response.status }
             );
         }

@@ -30,6 +30,39 @@ _LANGGRAPH_INTERRUPT_CLASS_NAMES = {
     "NodeInterrupt",
 }
 
+SAFETY_APPROVAL_MODES = {"manual", "reduced", "minimal"}
+_REDUCED_AUTO_APPROVE_RISK_CODES = {
+    "review_host",
+    "external_mutating_http",
+    "trusted_provider_api_http",
+    "computer_use_mutation",
+}
+_HARD_REVIEW_RISK_TOKENS = (
+    "blocked",
+    "credential",
+    "database",
+    "destructive",
+    "download_execute",
+    "encoded",
+    "financial",
+    "firewall",
+    "hotkey",
+    "package_install",
+    "persistence",
+    "privilege",
+    "process",
+    "profile",
+    "protected",
+    "recent_download",
+    "secret",
+    "sensitive",
+)
+_HARD_REVIEW_TARGETS = {
+    "private_data_exfiltration",
+    "v8_integrity",
+    "extensions_integrity",
+}
+
 
 def _is_langgraph_interrupt(value: Any, *, _depth: int = 0) -> bool:
     if _depth > 4 or value is None:
@@ -69,6 +102,76 @@ def _raise_runtime_governance_exception_if_needed(exc: Exception) -> None:
     if isinstance(exc, ModelGovernanceInterventionRequired):
         raise exc
     _raise_langgraph_interrupt_if_needed(exc)
+
+
+def normalize_safety_approval_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in SAFETY_APPROVAL_MODES else "manual"
+
+
+def current_safety_approval_mode() -> str:
+    runtime_context = get_runtime_context()
+    return normalize_safety_approval_mode(
+        runtime_context.get("safety_approval_mode")
+        or runtime_context.get("safetyApprovalMode")
+    )
+
+
+def _decision_details_text(decision: SafetyDecision) -> str:
+    details = decision.details if isinstance(decision.details, dict) else {}
+    values = [
+        decision.risk_code,
+        decision.governance_target,
+        details.get("path"),
+        details.get("command"),
+        details.get("url"),
+        details.get("target"),
+        details.get("matched_command"),
+    ]
+    return " ".join(str(value or "").lower() for value in values)
+
+
+def safety_review_is_hard_stop(decision: SafetyDecision) -> bool:
+    if decision.is_block() or not decision.allow_override:
+        return True
+    risk_code = str(decision.risk_code or "").strip().lower()
+    governance_target = str(decision.governance_target or "").strip().lower()
+    if governance_target in _HARD_REVIEW_TARGETS:
+        return True
+    text = _decision_details_text(decision)
+    return any(token in risk_code or token in text for token in _HARD_REVIEW_RISK_TOKENS)
+
+
+def should_auto_approve_safety_review(decision: SafetyDecision, *, mode: str | None = None) -> bool:
+    normalized_mode = normalize_safety_approval_mode(mode or current_safety_approval_mode())
+    if normalized_mode == "manual" or not decision.is_review() or safety_review_is_hard_stop(decision):
+        return False
+    risk_code = str(decision.risk_code or "").strip().lower()
+    if normalized_mode == "reduced":
+        return risk_code in _REDUCED_AUTO_APPROVE_RISK_CODES
+    return True
+
+
+def log_safety_review_auto_approved(
+    decision: SafetyDecision,
+    *,
+    action: str,
+    subject: str,
+    tool_call_id: str = "",
+    mode: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    resolved_mode = normalize_safety_approval_mode(mode or current_safety_approval_mode())
+    safety_guardian.log_decision_event(
+        action=f"{action}_auto_approved",
+        decision=decision,
+        subject=subject,
+        metadata={
+            "toolCallId": tool_call_id,
+            "safetyApprovalMode": resolved_mode,
+            **(metadata or {}),
+        },
+    )
 
 
 def _safety_operation_fingerprint(
@@ -169,6 +272,19 @@ def _enforce_safety_decision(
             subject=question,
             metadata={
                 "toolCallId": tool_call_id,
+                "operationFingerprint": operation_fingerprint,
+                "operationTargetFingerprint": operation_target_fingerprint,
+            },
+        )
+        return True, None
+
+    if should_auto_approve_safety_review(decision):
+        log_safety_review_auto_approved(
+            decision,
+            action="native_tool_safety",
+            subject=question,
+            tool_call_id=tool_call_id,
+            metadata={
                 "operationFingerprint": operation_fingerprint,
                 "operationTargetFingerprint": operation_target_fingerprint,
             },

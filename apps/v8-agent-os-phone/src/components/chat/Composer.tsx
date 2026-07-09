@@ -26,6 +26,7 @@ import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import type { CommandPresetSummary, SkillReferenceSummary, SubagentFamilySummary, UploadedWorkspaceFile } from "@/src/types/admin";
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+type SafetyApprovalMode = "manual" | "reduced" | "minimal";
 
 function fileExtension(name?: string) {
     const ext = String(name || "").split(".").pop()?.trim();
@@ -254,6 +255,8 @@ export const Composer = memo(function Composer({
     selectedSubagentFamilies,
     taskPlanningMode,
     onToggleTaskPlanningMode,
+    safetyApprovalMode,
+    onChangeSafetyApprovalMode,
     reasoningEffortVisible = false,
     reasoningEffortLevels = ["auto"],
     reasoningEffort = "auto",
@@ -285,6 +288,8 @@ export const Composer = memo(function Composer({
     selectedSubagentFamilies: SubagentFamilySummary[];
     taskPlanningMode: boolean;
     onToggleTaskPlanningMode: () => void;
+    safetyApprovalMode: SafetyApprovalMode;
+    onChangeSafetyApprovalMode: (mode: SafetyApprovalMode) => void;
     reasoningEffortVisible?: boolean;
     reasoningEffortLevels?: ReasoningEffortLevel[];
     reasoningEffort?: ReasoningEffortLevel;
@@ -300,6 +305,7 @@ export const Composer = memo(function Composer({
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const [isFocused, setIsFocused] = useState(false);
+    const [safetyApprovalOpen, setSafetyApprovalOpen] = useState(false);
     const bodyInputRef = useRef<TextInput | null>(null);
     const queryInputRef = useRef<TextInput | null>(null);
     const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || uploadedFiles.length > 0);
@@ -314,6 +320,36 @@ export const Composer = memo(function Composer({
         medium: t("src.components.chat.composer.reasoning_effort_medium_short"),
         high: t("src.components.chat.composer.reasoning_effort_high_short"),
     };
+    const safetyApprovalOptions: Array<{
+        mode: SafetyApprovalMode;
+        title: string;
+        description: string;
+        icon: React.ComponentProps<typeof MaterialCommunityIcons>["name"];
+        color: string;
+    }> = [
+        {
+            mode: "manual",
+            title: t("src.components.chat.composer.safety_approval_manual_title"),
+            description: t("src.components.chat.composer.safety_approval_manual_description"),
+            icon: "shield-alert-outline",
+            color: colors.danger,
+        },
+        {
+            mode: "reduced",
+            title: t("src.components.chat.composer.safety_approval_reduced_title"),
+            description: t("src.components.chat.composer.safety_approval_reduced_description"),
+            icon: "shield-outline",
+            color: colors.warning,
+        },
+        {
+            mode: "minimal",
+            title: t("src.components.chat.composer.safety_approval_minimal_title"),
+            description: t("src.components.chat.composer.safety_approval_minimal_description"),
+            icon: "shield-check-outline",
+            color: colors.success,
+        },
+    ];
+    const activeSafetyApproval = safetyApprovalOptions.find((option) => option.mode === safetyApprovalMode) || safetyApprovalOptions[1]!;
     const cycleReasoningEffort = () => {
         if (!reasoningEffortVisible || !onChangeReasoningEffort) return;
         const levels: ReasoningEffortLevel[] = reasoningEffortLevels.length > 0 ? reasoningEffortLevels : ["auto"];
@@ -539,6 +575,78 @@ export const Composer = memo(function Composer({
                                     color={taskPlanningMode ? colors.primaryDeep : colors.textMuted}
                                 />
                             </Pressable>
+
+                            <View style={styles.safetyControl}>
+                                <Pressable
+                                    accessibilityRole="button"
+                                    accessibilityLabel={activeSafetyApproval.title}
+                                    style={[
+                                        styles.safetyModeButton,
+                                        {
+                                            backgroundColor: safetyApprovalOpen
+                                                ? `${activeSafetyApproval.color}1A`
+                                                : "transparent",
+                                            borderColor: safetyApprovalOpen
+                                                ? `${activeSafetyApproval.color}33`
+                                                : "transparent",
+                                        },
+                                    ]}
+                                    onPress={() => setSafetyApprovalOpen((current) => !current)}
+                                >
+                                    <MaterialCommunityIcons
+                                        name={activeSafetyApproval.icon}
+                                        size={18}
+                                        color={activeSafetyApproval.color}
+                                    />
+                                </Pressable>
+                                {safetyApprovalOpen ? (
+                                    <View
+                                        style={[
+                                            styles.safetyMenu,
+                                            {
+                                                backgroundColor: themeMode === "dark" ? "rgba(28,25,23,0.98)" : "rgba(255,255,255,0.98)",
+                                                borderColor: colors.border,
+                                                shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
+                                            },
+                                        ]}
+                                    >
+                                        {safetyApprovalOptions.map((option) => {
+                                            const active = option.mode === safetyApprovalMode;
+                                            return (
+                                                <Pressable
+                                                    key={option.mode}
+                                                    accessibilityRole="button"
+                                                    accessibilityLabel={option.title}
+                                                    style={[
+                                                        styles.safetyMenuItem,
+                                                        {
+                                                            backgroundColor: active ? `${option.color}1A` : "transparent",
+                                                        },
+                                                    ]}
+                                                    onPress={() => {
+                                                        onChangeSafetyApprovalMode(option.mode);
+                                                        setSafetyApprovalOpen(false);
+                                                    }}
+                                                >
+                                                    <MaterialCommunityIcons
+                                                        name={option.icon}
+                                                        size={17}
+                                                        color={active ? option.color : colors.textMuted}
+                                                    />
+                                                    <View style={styles.safetyMenuText}>
+                                                        <Text style={[styles.safetyMenuTitle, { color: colors.text }]} numberOfLines={1}>
+                                                            {option.title}
+                                                        </Text>
+                                                        <Text style={[styles.safetyMenuDescription, { color: colors.textMuted }]} numberOfLines={2}>
+                                                            {option.description}
+                                                        </Text>
+                                                    </View>
+                                                </Pressable>
+                                            );
+                                        })}
+                                    </View>
+                                ) : null}
+                            </View>
 
                             {reasoningEffortVisible ? (
                                 <Pressable
@@ -814,6 +922,55 @@ const styles = StyleSheet.create({
         justifyContent: "center",
         borderRadius: 12,
         borderWidth: 1,
+    },
+    safetyControl: {
+        position: "relative",
+        zIndex: 20,
+    },
+    safetyModeButton: {
+        width: 32,
+        height: 32,
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 12,
+        borderWidth: 1,
+    },
+    safetyMenu: {
+        position: "absolute",
+        left: 0,
+        bottom: 38,
+        width: 272,
+        borderRadius: 18,
+        borderWidth: 1,
+        padding: 6,
+        gap: 3,
+        shadowOpacity: 0.18,
+        shadowRadius: 24,
+        shadowOffset: { width: 0, height: 14 },
+        elevation: 8,
+    },
+    safetyMenuItem: {
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: 8,
+        borderRadius: 14,
+        paddingHorizontal: 10,
+        paddingVertical: 9,
+    },
+    safetyMenuText: {
+        flex: 1,
+        minWidth: 0,
+        gap: 2,
+    },
+    safetyMenuTitle: {
+        fontSize: 12,
+        lineHeight: 16,
+        fontWeight: "800",
+    },
+    safetyMenuDescription: {
+        fontSize: 11,
+        lineHeight: 15,
+        fontWeight: "600",
     },
     reasoningEffortButton: {
         height: 32,

@@ -5,7 +5,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -165,6 +165,8 @@ interface InputAreaProps {
 }
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+type SafetyApprovalMode = "manual" | "reduced" | "minimal";
+const SAFETY_APPROVAL_MODE_STORAGE_KEY = "v8-web-safety-approval-mode";
 
 interface ReasoningEffortControl {
     visible?: boolean;
@@ -177,6 +179,7 @@ interface ReasoningEffortControl {
 interface VoiceAudioMessageData {
     fileUrls: string[];
     attachments: Array<Record<string, unknown>>;
+    safetyApprovalMode?: SafetyApprovalMode;
 }
 
 interface AudioInputStatusPayload {
@@ -253,6 +256,8 @@ export function InputArea({
     const [taskPlanningMode, setTaskPlanningMode] = React.useState(false);
     const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffortLevel>("auto");
     const [reasoningEffortOpen, setReasoningEffortOpen] = React.useState(false);
+    const [safetyApprovalMode, setSafetyApprovalMode] = React.useState<SafetyApprovalMode>("reduced");
+    const [safetyApprovalModeOpen, setSafetyApprovalModeOpen] = React.useState(false);
     const [files, setFiles] = React.useState<File[]>([]);
     const [uploadedUrls, setUploadedUrls] = React.useState<string[]>([]);
     const [uploading, setUploading] = React.useState(false);
@@ -268,6 +273,43 @@ export function InputArea({
     const audioChunksRef = React.useRef<Float32Array[]>([]);
     const sampleRateRef = React.useRef(16000);
     const inlineNoticeTimerRef = React.useRef<number | null>(null);
+
+    const safetyApprovalOptions = React.useMemo(() => ([
+        {
+            mode: "manual" as const,
+            title: t("web.chat.safetyApproval.manual.title"),
+            description: t("web.chat.safetyApproval.manual.description"),
+        },
+        {
+            mode: "reduced" as const,
+            title: t("web.chat.safetyApproval.reduced.title"),
+            description: t("web.chat.safetyApproval.reduced.description"),
+        },
+        {
+            mode: "minimal" as const,
+            title: t("web.chat.safetyApproval.minimal.title"),
+            description: t("web.chat.safetyApproval.minimal.description"),
+        },
+    ]), [t]);
+    const activeSafetyApprovalOption = safetyApprovalOptions.find((option) => option.mode === safetyApprovalMode) || safetyApprovalOptions[1]!;
+    const SafetyApprovalIcon = safetyApprovalMode === "manual"
+        ? ShieldAlert
+        : safetyApprovalMode === "minimal"
+            ? ShieldCheck
+            : Shield;
+
+    React.useEffect(() => {
+        if (typeof window === "undefined") return;
+        const stored = window.localStorage.getItem(SAFETY_APPROVAL_MODE_STORAGE_KEY);
+        if (stored === "manual" || stored === "reduced" || stored === "minimal") {
+            setSafetyApprovalMode(stored);
+        }
+    }, []);
+
+    React.useEffect(() => {
+        if (typeof window === "undefined") return;
+        window.localStorage.setItem(SAFETY_APPROVAL_MODE_STORAGE_KEY, safetyApprovalMode);
+    }, [safetyApprovalMode]);
     const [isFocused, setIsFocused] = React.useState(false);
     const [inlineNotice, setInlineNotice] = React.useState<InlineNotice | null>(null);
     
@@ -637,6 +679,7 @@ export function InputArea({
                 mediaKind: "audio",
                 source: "os_web_voice_upload",
             }],
+            safetyApprovalMode,
         };
         try {
             const result = onVoiceAudioMessage(messageData);
@@ -648,7 +691,7 @@ export function InputArea({
             const message = error instanceof Error ? error.message : t("web.generated.accc20bbec");
             showInlineNotice("error", t("web.generated.8b30d36521", { value0: message }));
         }
-    }, [onVoiceAudioMessage, showInlineNotice, t]);
+    }, [onVoiceAudioMessage, safetyApprovalMode, showInlineNotice, t]);
 
     const transcribeAudio = React.useCallback(async (blob: Blob) => {
         try {
@@ -802,6 +845,7 @@ export function InputArea({
             onSubmit={async (e) => {
                 const nextData: Record<string, unknown> = {};
                 const pendingTaskPlanningMode = taskPlanningMode;
+                nextData.safetyApprovalMode = safetyApprovalMode;
                 if (uploadedUrls.length > 0) {
                     nextData.fileUrls = uploadedUrls;
                     nextData.attachments = uploadedUrls.map((url, index) => ({
@@ -1153,6 +1197,55 @@ export function InputArea({
                         >
                             <Orbit className={cn("h-4 w-4", taskPlanningMode && "animate-[spin_1.6s_linear_infinite]")} />
                         </Button>
+                        <div className="relative">
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setSafetyApprovalModeOpen((current) => !current)}
+                                aria-label={activeSafetyApprovalOption.title}
+                                title={activeSafetyApprovalOption.title}
+                                className={cn(
+                                    "h-[28px] w-[28px] rounded-lg transition-colors",
+                                    safetyApprovalMode === "manual"
+                                        ? "text-rose-500 hover:bg-rose-500/10"
+                                        : safetyApprovalMode === "minimal"
+                                            ? "text-emerald-500 hover:bg-emerald-500/10"
+                                            : "text-amber-500 hover:bg-amber-500/10"
+                                )}
+                            >
+                                <SafetyApprovalIcon className="h-4 w-4" />
+                            </Button>
+                            {safetyApprovalModeOpen ? (
+                                <div className="absolute bottom-full left-0 z-30 mb-2 w-72 overflow-hidden rounded-2xl border border-zinc-200/70 bg-white/95 p-1.5 shadow-[0_14px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-zinc-700/70 dark:bg-zinc-950/95">
+                                    {safetyApprovalOptions.map((option) => {
+                                        const active = option.mode === safetyApprovalMode;
+                                        return (
+                                            <button
+                                                key={option.mode}
+                                                type="button"
+                                                onClick={() => {
+                                                    setSafetyApprovalMode(option.mode);
+                                                    setSafetyApprovalModeOpen(false);
+                                                }}
+                                                className={cn(
+                                                    "flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left transition",
+                                                    active
+                                                        ? "bg-amber-500/10 text-amber-800 dark:bg-amber-400/12 dark:text-amber-100"
+                                                        : "text-zinc-600 hover:bg-zinc-100/80 dark:text-zinc-300 dark:hover:bg-zinc-800/80"
+                                                )}
+                                            >
+                                                <Shield className={cn("mt-0.5 h-4 w-4 shrink-0", active ? "text-amber-500" : "text-muted-foreground")} />
+                                                <span className="min-w-0 flex-1">
+                                                    <span className="block text-[12px] font-semibold">{option.title}</span>
+                                                    <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{option.description}</span>
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            ) : null}
+                        </div>
                         {reasoningEffortVisible ? (
                             <div className="relative">
                                 <button

@@ -73,6 +73,7 @@ import { buildDesktopLiveBridgeInjection, buildDesktopLivePreviewHtml } from "@/
 import { mergeSessionHistoryOverlay, sortSessionHistory } from "@/src/lib/session-history";
 import { saveResponseToCache } from "@/src/lib/file-transfer";
 import { createTranslator, translateCurrent } from "@/src/lib/locale";
+import { getStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
 import {
     emitPhonePerfAuditSample,
     isPhonePerfAuditEnabled,
@@ -174,6 +175,7 @@ type SendComposerOptions = {
 };
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+type SafetyApprovalMode = "manual" | "reduced" | "minimal";
 
 type ComposerMentionItem =
     | { kind: "skill"; key: string; skill: SkillReferenceSummary }
@@ -194,6 +196,13 @@ function deriveWorkspaceLabelFromPath(value?: string | null) {
     }
     const segments = normalized.split(/[\\/]/).filter(Boolean);
     return segments[segments.length - 1] || normalized;
+}
+
+function isWorkspaceBindingErrorMessage(value: unknown) {
+    const text = String(value || "").toLowerCase();
+    return text.includes("workspace_binding_required")
+        || text.includes("workspace_trust_required")
+        || text.includes("workspace_side_effect_blocked");
 }
 
 function approvalRequestRecord(approval?: PendingApproval | null): Record<string, unknown> {
@@ -2124,6 +2133,7 @@ export default function ChatScreen() {
     const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
     const [activeQueryText, setActiveQueryText] = useState("");
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
+    const [safetyApprovalMode, setSafetyApprovalModeState] = useState<SafetyApprovalMode>("reduced");
     const [reasoningEffortControl, setReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
     const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffortLevel>("auto");
     const [bottomLayerHeight, setBottomLayerHeight] = useState(132);
@@ -2158,6 +2168,24 @@ export default function ChatScreen() {
         return levels.includes("auto") ? levels : ["auto", ...levels];
     }, [reasoningEffortControl?.levels]);
     const reasoningEffortVisible = Boolean(reasoningEffortControl?.visible && reasoningEffortLevels.length > 1);
+
+    useEffect(() => {
+        let active = true;
+        void getStoredValue("safetyApprovalMode").then((stored) => {
+            if (!active) return;
+            if (stored === "manual" || stored === "reduced" || stored === "minimal") {
+                setSafetyApprovalModeState(stored);
+            }
+        });
+        return () => {
+            active = false;
+        };
+    }, []);
+
+    const setSafetyApprovalMode = useCallback((nextMode: SafetyApprovalMode) => {
+        setSafetyApprovalModeState(nextMode);
+        void setStoredValue("safetyApprovalMode", nextMode);
+    }, []);
 
     useEffect(() => {
         if (status !== "authenticated") {
@@ -2973,7 +3001,7 @@ export default function ChatScreen() {
             setProjects([]);
             setMainWorkspacePath("");
         }
-    }, [authorizedFetch]);
+    }, [adminBaseUrl, authorizedFetch, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, t]);
 
     const loadFolderRoots = useCallback(async () => {
         try {
@@ -3103,6 +3131,37 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch, availableProjects, clearNewConversationIntent, loadSessionScope, mainWorkspacePath, setActiveConversationId, t, workspaceChooserBusy]);
 
+    const confirmWorkspaceTrust = useCallback((workspacePath: string) => new Promise<boolean>((resolve) => {
+        Alert.alert(
+            t("src.screens.chatscreen.create_project_workspace_failed"),
+            t("src.screens.chatscreen.workspace_trust_confirm", { workspacePath }),
+            [
+                { text: t("src.screens.chatscreen.cancel"), style: "cancel", onPress: () => resolve(false) },
+                { text: t("src.screens.chatscreen.workspace_trust_continue"), style: "default", onPress: () => resolve(true) },
+            ],
+        );
+    }), [t]);
+
+    const createProjectWithTrustConfirmation = useCallback(async (workspacePath: string) => {
+        try {
+            return await createProject(authorizedFetch, { workspacePath });
+        } catch (error) {
+            const message = error instanceof Error ? String(error.message || "") : "";
+            if (message !== "workspace_trust_required") {
+                throw error;
+            }
+            const confirmed = await confirmWorkspaceTrust(workspacePath);
+            if (!confirmed) {
+                throw new Error("workspace_trust_cancelled");
+            }
+            return createProject(authorizedFetch, {
+                workspacePath,
+                workspaceTrustState: "trusted",
+                workspaceTrustSource: "user_confirmed",
+            });
+        }
+    }, [authorizedFetch, confirmWorkspaceTrust]);
+
     const handleCreateProjectConversation = useCallback(async () => {
         const nextProjectPath = newProjectPath.trim();
         if (!nextProjectPath || workspaceChooserBusy) {
@@ -3110,7 +3169,7 @@ export default function ChatScreen() {
         }
         setWorkspaceChooserBusy(true);
         try {
-            const createdProject = await createProject(authorizedFetch, { workspacePath: nextProjectPath });
+            const createdProject = await createProjectWithTrustConfirmation(nextProjectPath);
             const createdProjectId = String(createdProject?.id || "").trim();
             if (!createdProjectId) {
                 throw new Error(t("src.screens.chatscreen.project_creation_succeeded_but_returned_no_valid_project_id"));
@@ -3135,6 +3194,9 @@ export default function ChatScreen() {
             await setActiveConversationId(createdSessionId);
             await loadSessionScope(createdSessionId);
         } catch (error) {
+            if (error instanceof Error && error.message === "workspace_trust_cancelled") {
+                return;
+            }
             Alert.alert(
                 t("src.screens.chatscreen.create_project_workspace_failed"),
                 error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_create_a_new_project_workspace"),
@@ -3142,7 +3204,7 @@ export default function ChatScreen() {
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, newProjectPath, setActiveConversationId, t, workspaceChooserBusy]);
+    }, [clearNewConversationIntent, createProjectWithTrustConfirmation, loadProjects, loadSessionScope, newProjectPath, setActiveConversationId, t, workspaceChooserBusy]);
 
     const createProjectConversationAtPath = useCallback(async (workspacePath: string) => {
         const nextProjectPath = workspacePath.trim();
@@ -3151,7 +3213,7 @@ export default function ChatScreen() {
         }
         setWorkspaceChooserBusy(true);
         try {
-            const createdProject = await createProject(authorizedFetch, { workspacePath: nextProjectPath });
+            const createdProject = await createProjectWithTrustConfirmation(nextProjectPath);
             const createdProjectId = String(createdProject?.id || "").trim();
             if (!createdProjectId) {
                 throw new Error(t("src.screens.chatscreen.project_creation_succeeded_but_returned_no_valid_project_id"));
@@ -3177,6 +3239,9 @@ export default function ChatScreen() {
             await setActiveConversationId(createdSessionId);
             await loadSessionScope(createdSessionId);
         } catch (error) {
+            if (error instanceof Error && error.message === "workspace_trust_cancelled") {
+                return;
+            }
             Alert.alert(
                 t("src.screens.chatscreen.create_project_workspace_failed"),
                 error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_create_a_new_project_workspace"),
@@ -3184,7 +3249,7 @@ export default function ChatScreen() {
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [authorizedFetch, clearNewConversationIntent, loadProjects, loadSessionScope, setActiveConversationId, t, workspaceChooserBusy]);
+    }, [clearNewConversationIntent, createProjectWithTrustConfirmation, loadProjects, loadSessionScope, setActiveConversationId, t, workspaceChooserBusy]);
 
     const handleCreateFromSelectedFolder = useCallback(async () => {
         if (!selectedFolderPath || workspaceChooserBusy) {
@@ -5033,7 +5098,12 @@ export default function ChatScreen() {
 
             setUploadedFiles((current) => mergeUploadedWorkspaceFiles(current, uploaded));
         } catch (error) {
-            Alert.alert(t("src.screens.chatscreen.upload_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_upload_the_attachment"));
+            const errorMessage = error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_upload_the_attachment");
+            if (isWorkspaceBindingErrorMessage(errorMessage)) {
+                setWorkspaceChooserVisible(true);
+                setWorkspaceInfoOpen(false);
+            }
+            Alert.alert(t("src.screens.chatscreen.upload_failed"), errorMessage);
         } finally {
             setAttachmentBusy(false);
         }
@@ -5124,7 +5194,12 @@ export default function ChatScreen() {
             }
             setInput((current) => [current.trim(), text].filter(Boolean).join(current.trim() ? "\n" : ""));
         } catch (error) {
-            Alert.alert(t("src.screens.chatscreen.recording_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_transcribe_recording"));
+            const errorMessage = error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_transcribe_recording");
+            if (isWorkspaceBindingErrorMessage(errorMessage)) {
+                setWorkspaceChooserVisible(true);
+                setWorkspaceInfoOpen(false);
+            }
+            Alert.alert(t("src.screens.chatscreen.recording_failed"), errorMessage);
         } finally {
             setTranscribing(false);
         }
@@ -5735,6 +5810,7 @@ export default function ChatScreen() {
         const pendingSubagentFamilies = [...selectedSubagentFamilies];
         const pendingFiles = [...effectiveUploadedFiles];
         const pendingTaskPlanningMode = taskPlanningMode;
+        const pendingSafetyApprovalMode = safetyApprovalMode;
         if (pendingTaskPlanningMode) {
             setTaskPlanningMode(false);
         }
@@ -5830,6 +5906,9 @@ export default function ChatScreen() {
                         messages: historyMessages,
                         conversationId: currentConversationId,
                         clientMessageId,
+                        projectId: scopeBinding?.projectId || null,
+                        workspaceId: scopeBinding?.workspaceId || null,
+                        workspacePath: scopeBinding?.workspacePath || null,
                         commandPresetName: pendingCommand?.name || null,
                         skillReferences: pendingSkills,
                         contextMentions: [
@@ -5855,6 +5934,7 @@ export default function ChatScreen() {
                         attachments: buildUploadedFileAttachments(pendingFiles),
                         taskPlanningMode: pendingTaskPlanningMode,
                         supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
+                        safetyApprovalMode: pendingSafetyApprovalMode,
                     },
                 );
                 if (submitResult.accepted === false) {
@@ -5994,6 +6074,9 @@ export default function ChatScreen() {
                     messages: historyMessages,
                     conversationId: currentConversationId,
                     clientMessageId,
+                    projectId: scopeBinding?.projectId || null,
+                    workspaceId: scopeBinding?.workspaceId || null,
+                    workspacePath: scopeBinding?.workspacePath || null,
                     commandPresetName: pendingCommand?.name || null,
                     skillReferences: pendingSkills,
                     contextMentions: [
@@ -6019,6 +6102,7 @@ export default function ChatScreen() {
                     attachments: buildUploadedFileAttachments(pendingFiles),
                     taskPlanningMode: pendingTaskPlanningMode,
                     supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
+                    safetyApprovalMode: pendingSafetyApprovalMode,
                 },
             );
             if (submitResult.accepted === false) {
@@ -6136,7 +6220,12 @@ export default function ChatScreen() {
                     return next;
                 });
             }
-            Alert.alert(t("src.screens.chatscreen.send_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_send_message"));
+            const errorMessage = error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_send_message");
+            if (isWorkspaceBindingErrorMessage(errorMessage)) {
+                setWorkspaceChooserVisible(true);
+                setWorkspaceInfoOpen(false);
+            }
+            Alert.alert(t("src.screens.chatscreen.send_failed"), errorMessage);
         } finally {
             setSending(false);
         }
@@ -6150,9 +6239,13 @@ export default function ChatScreen() {
         queuedMessages.length,
         reasoningEffort,
         reasoningEffortVisible,
+        safetyApprovalMode,
         selectedCommand,
         selectedSkills,
         selectedSubagentFamilies,
+        scopeBinding?.projectId,
+        scopeBinding?.workspaceId,
+        scopeBinding?.workspacePath,
         taskPlanningMode,
         t,
         uploadedFiles,
@@ -6440,6 +6533,8 @@ export default function ChatScreen() {
                     selectedSubagentFamilies={selectedSubagentFamilies}
                     taskPlanningMode={taskPlanningMode}
                     onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
+                    safetyApprovalMode={safetyApprovalMode}
+                    onChangeSafetyApprovalMode={setSafetyApprovalMode}
                     reasoningEffortVisible={reasoningEffortVisible}
                     reasoningEffortLevels={reasoningEffortLevels}
                     reasoningEffort={reasoningEffort}

@@ -148,6 +148,7 @@ class ChatRequestData(BaseModel):
     planner_dispatch_mode: Optional[str] = Field(default=None, alias="plannerDispatchMode")
     engineering_mode: Optional[str] = Field(default=None, alias="engineeringMode")
     supervisor_reasoning_effort: Optional[str] = Field(default=None, alias="supervisorReasoningEffort")
+    safety_approval_mode: Optional[str] = Field(default=None, alias="safetyApprovalMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
     context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
@@ -199,6 +200,8 @@ class ProjectDescriptorPayload(BaseModel):
     tags: List[str] = Field(default_factory=list)
     channel_bindings: List[Dict[str, Any]] = Field(default_factory=list, alias="channelBindings")
     workflow_bindings: List[Dict[str, Any]] = Field(default_factory=list, alias="workflowBindings")
+    workspace_trust_state: Optional[str] = Field(default=None, alias="workspaceTrustState")
+    workspace_trust_source: Optional[str] = Field(default=None, alias="workspaceTrustSource")
     active: bool = True
 
 
@@ -207,6 +210,8 @@ class WorkspaceBindingPayload(BaseModel):
 
     workspace_id: str = Field(alias="workspaceId")
     workspace_path: str = Field(alias="workspacePath")
+    workspace_trust_state: Optional[str] = Field(default=None, alias="workspaceTrustState")
+    workspace_trust_source: Optional[str] = Field(default=None, alias="workspaceTrustSource")
     source: Optional[str] = "admin_selected"
     confidence: Optional[float] = 1.0
 

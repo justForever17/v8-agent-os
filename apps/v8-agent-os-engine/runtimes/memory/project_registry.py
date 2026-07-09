@@ -23,6 +23,10 @@ DEFAULT_AGENTS_TEMPLATE = "\n".join(
 )
 
 
+class WorkspaceTrustRequiredError(ValueError):
+    pass
+
+
 class ProjectRegistryService:
     def __init__(
         self,
@@ -46,10 +50,13 @@ class ProjectRegistryService:
 
     def save_project(self, payload: Dict[str, Any]) -> ProjectDescriptor:
         prepared_payload = dict(payload or {})
+        payload_has_trust = any(key in prepared_payload for key in ("workspaceTrustState", "workspace_trust_state"))
         project_id = str(prepared_payload.get("id") or "").strip()
         resolved_workspace_path = str(
             prepared_payload.get("workspacePath") or prepared_payload.get("workspace_path") or ""
         ).strip()
+        user_supplied_workspace_path = bool(resolved_workspace_path)
+        existing_project = self.get_project(project_id) if project_id else None
         resolved_name = self._derive_project_name(
             name=prepared_payload.get("name"),
             workspace_path=resolved_workspace_path,
@@ -82,6 +89,13 @@ class ProjectRegistryService:
                 project_id=project_id,
             )
         prepared_payload["defaultScope"] = f"project:{project_id}"
+        self._apply_workspace_trust_defaults(
+            prepared_payload,
+            workspace_path=workspace_path,
+            user_supplied_workspace_path=user_supplied_workspace_path,
+            existing_project=existing_project,
+            payload_has_trust=payload_has_trust,
+        )
 
         try:
             Path(workspace_path).expanduser().mkdir(parents=True, exist_ok=True)
@@ -102,6 +116,14 @@ class ProjectRegistryService:
         if current is None:
             return None
         merged = current.model_dump(by_alias=True, exclude_none=True)
+        current_path = str(current.workspace_path or "").strip()
+        next_path = str((updates or {}).get("workspacePath") or (updates or {}).get("workspace_path") or current_path).strip()
+        if next_path and current_path and self._normalize_path_key(next_path) != self._normalize_path_key(current_path):
+            if not any(key in (updates or {}) for key in ("workspaceTrustState", "workspace_trust_state")):
+                merged.pop("workspaceTrustState", None)
+                merged.pop("workspace_trust_state", None)
+                merged.pop("workspaceTrustSource", None)
+                merged.pop("workspace_trust_source", None)
         merged.update(updates or {})
         merged["id"] = project_id
         return self.save_project(merged)
@@ -121,6 +143,8 @@ class ProjectRegistryService:
         project_id: str,
         workspace_id: str,
         workspace_path: str,
+        workspace_trust_state: str | None = None,
+        workspace_trust_source: str | None = None,
         source: str = "project_registry",
         confidence: float = 1.0,
     ) -> Optional[ProjectDescriptor]:
@@ -132,6 +156,8 @@ class ProjectRegistryService:
             {
                 "workspaceId": workspace_id,
                 "workspacePath": workspace_path,
+                **({"workspaceTrustState": workspace_trust_state} if workspace_trust_state else {}),
+                **({"workspaceTrustSource": workspace_trust_source} if workspace_trust_source else {}),
             },
         )
         self.scope_repo.upsert_workspace_binding(
@@ -255,6 +281,8 @@ class ProjectRegistryService:
                 "default_scope": descriptor.default_scope or f"project:{descriptor.project_id}",
                 "tags": descriptor.tags,
                 "active": descriptor.active,
+                "workspace_trust_state": descriptor.workspace_trust_state,
+                "workspace_trust_source": descriptor.workspace_trust_source,
             }
         )
 
@@ -318,7 +346,71 @@ class ProjectRegistryService:
 
     @staticmethod
     def _default_project_workspace_path(project_id: str) -> Path:
-        return WORKSPACE_HOME.expanduser() / "projects" / str(project_id or "").strip()
+        return ProjectRegistryService._main_workspace_root() / "projects" / str(project_id or "").strip()
+
+    @staticmethod
+    def _normalize_path_key(value: str) -> str:
+        try:
+            return str(Path(str(value or "")).expanduser().resolve(strict=False)).rstrip("\\/").lower()
+        except Exception:
+            return str(value or "").strip().rstrip("\\/").lower()
+
+    @staticmethod
+    def _is_under_main_workspace(workspace_path: str) -> bool:
+        try:
+            path = Path(str(workspace_path or "")).expanduser().resolve(strict=False)
+            main = ProjectRegistryService._main_workspace_root()
+            path.relative_to(main)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _main_workspace_root() -> Path:
+        try:
+            from core.storage import storage
+
+            configured = str((storage.get_workspace_config() or {}).get("agent_workspace_path") or "").strip()
+            if configured:
+                return Path(configured).expanduser().resolve(strict=False)
+        except Exception:
+            pass
+        return WORKSPACE_HOME.expanduser().resolve(strict=False)
+
+    def _apply_workspace_trust_defaults(
+        self,
+        payload: Dict[str, Any],
+        *,
+        workspace_path: str,
+        user_supplied_workspace_path: bool,
+        existing_project: ProjectDescriptor | None,
+        payload_has_trust: bool,
+    ) -> None:
+        raw_state = str(payload.get("workspaceTrustState") or payload.get("workspace_trust_state") or "").strip().lower()
+        if raw_state:
+            if raw_state not in {"trusted", "restricted"}:
+                raise ValueError("workspace_trust_state_invalid")
+            payload["workspaceTrustState"] = raw_state
+            payload["workspaceTrustSource"] = (
+                str(payload.get("workspaceTrustSource") or payload.get("workspace_trust_source") or "").strip()
+                or ("user_confirmed" if raw_state == "trusted" else "restricted_default")
+            )
+            return
+
+        existing_same_workspace = (
+            existing_project is not None
+            and self._normalize_path_key(str(existing_project.workspace_path or "")) == self._normalize_path_key(workspace_path)
+        )
+        if existing_same_workspace and not payload_has_trust:
+            payload["workspaceTrustState"] = str(existing_project.workspace_trust_state or "trusted").strip() or "trusted"
+            payload["workspaceTrustSource"] = str(existing_project.workspace_trust_source or "legacy_auto_trusted").strip() or "legacy_auto_trusted"
+            return
+
+        if user_supplied_workspace_path and workspace_path and not self._is_under_main_workspace(workspace_path):
+            raise WorkspaceTrustRequiredError("workspace_trust_required")
+
+        payload["workspaceTrustState"] = "trusted"
+        payload["workspaceTrustSource"] = "system_main" if self._is_under_main_workspace(workspace_path) else "legacy_auto_trusted"
 
 
 project_registry_service = ProjectRegistryService()

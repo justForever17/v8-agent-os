@@ -125,6 +125,8 @@ export type ProjectSummary = {
     defaultScope?: string;
     tags?: string[];
     active?: boolean;
+    workspaceTrustState?: "trusted" | "restricted";
+    workspaceTrustSource?: string;
     status?: string;
     updatedAt?: string;
 };

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 import api.chat_realtime_routes as routes
 import erc.run_service as run_service_module
@@ -35,13 +36,63 @@ def _create_active_chat_run(test_db: DatabaseManager, *, session_id: str, run_id
     )
 
 
-def _chat_request(*, session_id: str | None = None, data_session_id: str | None = None, client_message_id: str = "client-1", content: str = "continue this") -> ChatRequest:
+def _chat_request(
+    *,
+    session_id: str | None = None,
+    data_session_id: str | None = None,
+    client_message_id: str = "client-1",
+    content: str = "continue this",
+    include_workspace: bool = True,
+) -> ChatRequest:
     return ChatRequest(
         messages=[ChatMessage(role="user", content=content)],
         session_id=session_id,
         clientMessageId=client_message_id,
+        projectId="project-test" if include_workspace else None,
+        workspaceId="workspace-test" if include_workspace else None,
+        workspacePath="E:\\Projects\\test-workspace" if include_workspace else None,
         data=ChatRequestData(conversationId=data_session_id, clientMessageId=client_message_id),
     )
+
+
+def test_chat_submit_requires_workspace_binding_for_user_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_db(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        routes.chat_runtime,
+        "prepare_run_context",
+        lambda *_args, **_kwargs: pytest.fail("chat runtime should not prepare without workspace binding"),
+    )
+
+    request = _chat_request(session_id="session-no-binding", include_workspace=False)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(routes.chat_submit(request))
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"] == "workspace_binding_required"
+
+
+def test_chat_submit_allows_existing_session_workspace_binding(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_db(monkeypatch, tmp_path)
+    fake_chat_run = SimpleNamespace(session_id="session-bound", active_run_id="run-bound")
+    monkeypatch.setattr(
+        routes.session_scope_binding_service,
+        "get_binding",
+        lambda _session_id: SimpleNamespace(
+            status="active",
+            project_id="project-bound",
+            workspace_id="workspace-bound",
+            workspace_path="E:\\Projects\\bound-workspace",
+        ),
+    )
+    monkeypatch.setattr(routes.chat_runtime, "prepare_run_context", lambda *_args, **_kwargs: fake_chat_run)
+    monkeypatch.setattr(routes.chat_runtime, "record_request_inputs", lambda _chat_run: {"id": "msg-bound", "role": "user"})
+    monkeypatch.setattr(routes, "_schedule_chat_run", lambda *_args, **_kwargs: None)
+
+    response = asyncio.run(routes.chat_submit(_chat_request(session_id="session-bound", include_workspace=False)))
+
+    assert response["accepted"] is True
+    assert response["session_id"] == "session-bound"
 
 
 def test_chat_submit_queues_against_data_conversation_id_and_is_idempotent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

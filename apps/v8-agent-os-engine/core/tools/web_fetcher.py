@@ -29,6 +29,7 @@ from core.agent_browser_profile import (
 )
 from core.source_provider_registry import get_source_provider_capabilities, get_source_router_defaults
 from core.system_base import get_web_fetch_config
+from core.tools.native.tool_governance import log_safety_review_auto_approved, should_auto_approve_safety_review
 from core.storage import storage
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
@@ -1770,6 +1771,15 @@ def _enforce_safety_decision(decision, *, tool_call_id: str, question: str) -> t
         metadata={"toolCallId": tool_call_id},
     )
     if decision.is_allow():
+        return True, None
+
+    if should_auto_approve_safety_review(decision):
+        log_safety_review_auto_approved(
+            decision,
+            action="web_fetch_safety",
+            subject=question,
+            tool_call_id=tool_call_id,
+        )
         return True, None
 
     from langgraph.types import interrupt

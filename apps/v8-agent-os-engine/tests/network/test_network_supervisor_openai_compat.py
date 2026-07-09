@@ -67,6 +67,21 @@ from graph.supervisor_turn import _filter_network_supervisor_compat_tools, _shou
 
 
 class NetworkSupervisorOpenAICompatTests(unittest.TestCase):
+    def setUp(self):
+        self._model_budget_patch = patch(
+            "runtimes.network_supervisor.compat_model_budget.model_control_plane.resolve_model_for_role",
+            return_value={
+                "resolvedModelRef": "fixture-supervisor",
+                "resolvedModelId": "fixture-supervisor",
+                "bindingState": "test_fixture",
+                "resolvedModel": {"contextWindow": 128000},
+            },
+        )
+        self._model_budget_patch.start()
+
+    def tearDown(self):
+        self._model_budget_patch.stop()
+
     def _enabled_network_config(self) -> NetworkSupervisorRuntimeConfig:
         config = NetworkSupervisorRuntimeConfig()
         config.enabled = True

@@ -28,7 +28,12 @@ from core.tools.native.workspace_governance import (
     _workspace_inventory_status,
     _workspace_inventory_tokens,
 )
-from core.workspace_capability import build_workspace_binding, is_global_skill_path, resolve_workspace_tool_path
+from core.workspace_capability import (
+    build_workspace_binding,
+    ensure_workspace_side_effect_allowed,
+    is_global_skill_path,
+    resolve_workspace_tool_path,
+)
 from core.workspace_state_digest import mark_workspace_state_stale, record_workspace_inventory_token
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
@@ -509,6 +514,13 @@ def write_native_file(
     """
     try:
         runtime_context = get_runtime_context()
+        side_effect_preflight = ensure_workspace_side_effect_allowed(
+            runtime_context,
+            operation="file_write",
+            subject=path,
+        )
+        if not side_effect_preflight.get("ok"):
+            return json.dumps(side_effect_preflight, ensure_ascii=False, indent=2)
         if str(path or "").strip() and is_global_skill_path(path):
             return json.dumps(_global_skill_write_block_payload(path), ensure_ascii=False, indent=2)
         path_preflight = resolve_workspace_tool_path(path, runtime_context=runtime_context)

@@ -593,3 +593,77 @@ def test_spec_service_tasks_analysis_blocks_large_task_without_mvp_and_independe
     approval = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
     assert approval["ok"] is False
     assert approval["kind"] == "spec_stage_analysis_blocked"
+
+
+def test_spec_service_tasks_analysis_accepts_task_level_mvp_and_acceptance_annex(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个跨 runtime 的交付闭环。",
+        feature_name="Large Spec Task",
+        stage="requirements",
+    )
+    created = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=created["specId"],
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: Deliver the runtime workflow with proof.\n",
+    )
+    spec_id = created["specId"]
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个跨 runtime 的交付闭环。",
+        spec_id=spec_id,
+        stage="design",
+    )
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design\n\n- DES-001: Engineering coordinates subagent execution and proof reconciliation.\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个跨 runtime 的交付闭环。",
+        spec_id=spec_id,
+        stage="tasks",
+    )
+    tasks = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# Tasks\n\n"
+            "### TASK-001: Implement parallel subagent delivery\n\n"
+            "- runtimeLane: Engineering + subagent worker\n"
+            "- dependsOn: []\n"
+            "- specRefs: REQ-001, DES-001\n"
+            "- expectedOutput: `src/runtime.ts`, `tests/runtime.test.ts`\n"
+            "- acceptance: typecheck and targeted pytest pass\n"
+            "- proofRequired: changed files and test output\n\n"
+            "### mvpSlice annotation (per task)\n\n"
+            "| Task ID | Part of mvpSlice? | Why |\n"
+            "| --- | --- | --- |\n"
+            "| TASK-001 | Yes | First independently runnable runtime handoff. |\n\n"
+            "### independentAcceptance (per task)\n\n"
+            "- TASK-001 independentAcceptance: reviewer can inspect the proof and rerun the targeted test without trusting the worker summary.\n"
+        ),
+    )
+
+    paths = spec_service.resolve_paths(str(workspace), spec_id=spec_id)
+    manifest = spec_service._load_manifest(paths)
+    task_slice = spec_service._traceability_index(paths, manifest)["tasks"][0]
+    assert task_slice["mvpSlice"] == "First independently runnable runtime handoff."
+    assert task_slice["independentAcceptance"].startswith("reviewer can inspect")
+    analysis = spec_service.analyze_spec(workspace_path=str(workspace), spec_id=spec_id)
+    assert analysis["hardBlockers"] == []
+    approval = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    assert approval["ok"] is True
+    assert approval["pipelineControl"]["runtimeExecutionAllowed"] is True

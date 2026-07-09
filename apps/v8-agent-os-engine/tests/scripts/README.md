@@ -58,6 +58,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | `run_supervisor_runtime_skill_live_audit.py` | Supervisor / Runtime / Skill 真实断点审计。 | `--live --case ...` |
 | `run_engineering_continuation_live_audit.py` | 同 session 工程续接与 debug 路由 live 验收。 | `--live --allow-side-effects` 视 case 而定 |
 | `run_huashu_nuwa_skill_live_audit.py` | huashu-nuwa skill 生成、续读、写入和复用 live 验收。 | `--live --allow-side-effects --workspace ...` |
+| `run_spec_mode_project_live_audit.py` | Spec Mode 简易真实闭环验收：requirements → design → tasks 审批 → runtime 执行 → index/README 交付；默认先建空 Spec shell 与 clarification evidence，不预写阶段文档；自动回答 Spec 澄清 `ask_user`，并显式报告 workspace binding/trust/side-effect 阻断。 | `--live --workspace ... --write-report`；默认不传 `modelProfile`，使用 Admin 已配置 supervisor 模型；默认 `--safety-approval-mode reduced`；默认等待窗口 480 秒，`--no-bootstrap-spec-shell` 可复现纯 `/spec new` 路径。 |
 | `run_research_runtime_deep_live_audit.py` | Research Runtime 三层深研 live 审计。 | `--live --write-report` |
 | `run_web_source_router_live_audit.py` | Source Router / web read / extract live smoke。 | `--live` |
 | `run_tool_surface_live_audit.py` | 工具表面和 detail/ref 输出 live 审计。 | `--live` |

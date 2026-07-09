@@ -319,6 +319,7 @@ def ask_user(
     media: Optional[List[Dict[str, Any]]] = None,
     artifacts: Optional[List[Dict[str, Any]]] = None,
     selection_mode: Optional[str] = None,
+    specContext: Optional[Dict[str, Any]] = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Ask the human for missing input and pause until they answer.
@@ -339,6 +340,35 @@ def ask_user(
     normalized_tool_call_id = str(tool_call_id or "").strip()
 
     if session_id:
+        if normalized_tool_call_id:
+            try:
+                resolved_interactions = db.list_ask_user_interactions(
+                    session_id=session_id,
+                    run_id=run_id or None,
+                    status="resolved",
+                )
+            except Exception:
+                resolved_interactions = []
+            for item in resolved_interactions:
+                if not isinstance(item, dict):
+                    continue
+                existing_tool_call_id = str(item.get("tool_call_id") or item.get("toolCallId") or "").strip()
+                if existing_tool_call_id != normalized_tool_call_id:
+                    continue
+                answer_text = str(item.get("answer_text") or "").strip()
+                if answer_text:
+                    return answer_text
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "status": "already_answered",
+                        "kind": "ask_user_answer",
+                        "interactionId": item.get("id"),
+                        "question": item.get("question") or item.get("prompt"),
+                        "answer": "",
+                    },
+                    ensure_ascii=False,
+                )
         try:
             pending_interactions = db.list_ask_user_interactions(session_id=session_id, status="pending")
         except Exception:
@@ -395,6 +425,8 @@ def ask_user(
     }
     if details:
         request["details"] = details
+    if isinstance(specContext, dict) and specContext:
+        request["specContext"] = specContext
     if isinstance(questions, list) and questions:
         request["questions"] = questions[:8]
     merged_media: list[dict[str, Any]] = []
@@ -413,14 +445,21 @@ def ask_user(
     except Exception as exc:
         _raise_langgraph_interrupt_if_needed(exc)
         if "__pregel_scratchpad" in str(exc):
-            return json.dumps(
-                {
-                    "ok": False,
-                    "error": "ask_user_unavailable_in_runtime_gate",
-                    "summary": "当前工具调用上下文不能暂停询问用户。",
-                    "recommendedNextAction": "runtime_broker(mode='route') or queue human guidance for the active run.",
+            request_payload = dict(request)
+            request_payload["approvalKind"] = "ask_user"
+            request_payload["interactionKind"] = "ask_user"
+            raise ModelGovernanceInterventionRequired(
+                "ask_user 需要暂停等待用户输入，但当前工具上下文不能直接 interrupt。",
+                approval_kind="ask_user",
+                question=question,
+                details={
+                    "toolCallId": tool_call_id,
+                    "runtimeKind": runtime_kind,
+                    "agentId": agent_id,
+                    "node": node,
+                    **({"specContext": specContext} if isinstance(specContext, dict) and specContext else {}),
                 },
-                ensure_ascii=False,
+                request_payload=request_payload,
             )
         raise
     if isinstance(response, dict):

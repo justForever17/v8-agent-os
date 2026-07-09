@@ -703,6 +703,8 @@ def _design_fragments(markdown: str) -> tuple[list[dict[str, Any]], str]:
 
 def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], design_fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     text = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n")
+    supplemental_mvp = _task_mvp_annotations(text)
+    supplemental_independent = _task_independent_acceptance_annotations(text)
     task_re = re.compile(r"(?m)^(\s*)-\s+\[[ xX]\]\s+((?:TASK|TSK|T)-\d{2,}|\d+(?:\.\d+)*)\.?\s*(.*)$", re.IGNORECASE)
     matches = list(task_re.finditer(text))
     task_style = "checkbox"
@@ -737,10 +739,14 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
         acceptance = _extract_task_field(block, ("acceptance", "acceptanceProof", "验收", "验收标准", "验收检查", "验收方式"))
         proof_required = _extract_task_field(block, ("proofRequired", "proof required", "proof", "证明", "证明方式", "证明材料"))
         mvp_slice = _extract_task_field(block, ("mvpSlice", "mvp slice", "MVP", "MVP 切片", "最小切片", "最小可验收切片"))
+        if not mvp_slice:
+            mvp_slice = supplemental_mvp.get(task_id, "")
         independent_acceptance = _extract_task_field(
             block,
             ("independentAcceptance", "independent acceptance", "独立验收", "独立验收方式", "独立可验收"),
         )
+        if not independent_acceptance:
+            independent_acceptance = supplemental_independent.get(task_id, "")
         req_refs = [
             item
             for item in _extract_requirement_ref_ids(body_for_refs)
@@ -805,6 +811,52 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
             }
         )
     return slices[:30]
+
+
+def _task_mvp_annotations(markdown: str) -> dict[str, str]:
+    annotations: dict[str, str] = {}
+    lines = str(markdown or "").splitlines()
+    for index, line in enumerate(lines):
+        if "|" not in line or "task" not in line.lower() or "mvp" not in line.lower():
+            continue
+        if index + 1 >= len(lines) or not re.search(r"\|\s*:?-{3,}", lines[index + 1]):
+            continue
+        headers = [cell.strip().lower() for cell in line.strip().strip("|").split("|")]
+        try:
+            task_idx = next(i for i, header in enumerate(headers) if "task" in header)
+        except StopIteration:
+            continue
+        mvp_idx = next((i for i, header in enumerate(headers) if "mvp" in header), -1)
+        reason_idx = next((i for i, header in enumerate(headers) if any(token in header for token in ("why", "reason", "理由", "说明"))), -1)
+        if mvp_idx < 0:
+            continue
+        for row in lines[index + 2 :]:
+            if "|" not in row:
+                break
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            if len(cells) <= max(task_idx, mvp_idx):
+                continue
+            task_match = re.search(r"\b((?:TASK|TSK|T)-\d{2,})\b", cells[task_idx], re.IGNORECASE)
+            if not task_match:
+                continue
+            task_id = _canonical_id(task_match.group(1), "TASK")
+            mvp_value = cells[mvp_idx].strip()
+            reason = cells[reason_idx].strip() if 0 <= reason_idx < len(cells) else ""
+            if not re.search(r"(?i)\b(yes|y|true|included|part of)\b|是|包含|属于", mvp_value):
+                continue
+            annotations[task_id] = _compact_snippet(reason or mvp_value, limit=260)
+    return annotations
+
+
+def _task_independent_acceptance_annotations(markdown: str) -> dict[str, str]:
+    annotations: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?im)^\s*[-*]\s*((?:TASK|TSK|T)-\d{2,})\s+(?:independentAcceptance|independent acceptance|独立验收|独立验收方式)\s*[:：-]\s*(.+)$",
+        str(markdown or ""),
+    ):
+        task_id = _canonical_id(match.group(1), "TASK")
+        annotations[task_id] = _compact_snippet(match.group(2), limit=360)
+    return annotations
 
 
 def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:

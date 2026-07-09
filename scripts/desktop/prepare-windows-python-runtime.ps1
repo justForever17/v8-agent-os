@@ -58,6 +58,57 @@ function Invoke-Checked {
   }
 }
 
+function Invoke-WithRetry {
+  param(
+    [Parameter(Mandatory = $true)][scriptblock]$Script,
+    [Parameter(Mandatory = $true)][string]$Description,
+    [int]$Attempts = 3
+  )
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    try {
+      if ($attempt -gt 1) {
+        Write-Host "Retrying $Description (attempt $attempt/$Attempts)..."
+      }
+      & $Script
+      return
+    } catch {
+      if ($attempt -ge $Attempts) {
+        throw
+      }
+      $delaySeconds = [Math]::Min(20, 5 * $attempt)
+      Write-Host "$Description failed: $($_.Exception.Message)"
+      Write-Host "Waiting $delaySeconds seconds before retry..."
+      Start-Sleep -Seconds $delaySeconds
+    }
+  }
+}
+
+function Invoke-WebRequestWithRetry {
+  param(
+    [Parameter(Mandatory = $true)][string]$Uri,
+    [Parameter(Mandatory = $true)][string]$OutFile
+  )
+  Invoke-WithRetry -Description "Download $Uri" -Script {
+    Invoke-WebRequest -Uri $Uri -OutFile $OutFile
+  }
+}
+
+function Invoke-CheckedWithRetry {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [string[]]$Arguments = @(),
+    [hashtable]$Environment = @{},
+    [string]$Description = "",
+    [int]$Attempts = 2
+  )
+  if (-not $Description) {
+    $Description = "$FilePath $($Arguments -join ' ')"
+  }
+  Invoke-WithRetry -Description $Description -Attempts $Attempts -Script {
+    Invoke-Checked -FilePath $FilePath -Arguments $Arguments -Environment $Environment
+  }
+}
+
 $repoRoot = Resolve-RepoRoot
 if (-not $EngineDir) {
   $EngineDir = Join-Path $repoRoot "apps\v8-agent-os-engine"
@@ -102,7 +153,7 @@ if (Test-Path $runtimeDir) {
 }
 New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 
-Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+Invoke-WebRequestWithRetry -Uri $zipUrl -OutFile $zipPath
 Expand-Archive -LiteralPath $zipPath -DestinationPath $runtimeDir -Force
 
 $pythonExe = Join-Path $runtimeDir "python.exe"
@@ -146,10 +197,10 @@ if (-not $hasImportSite) {
 }
 Set-Content -LiteralPath $pthFile.FullName -Value $updatedLines -Encoding ascii
 
-Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
-Invoke-Checked -FilePath $pythonExe -Arguments @($getPipPath, "--no-warn-script-location")
-Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel")
-Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $requirementsFile)
+Invoke-WebRequestWithRetry -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
+Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @($getPipPath, "--no-warn-script-location") -Description "Install pip into portable Python"
+Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel") -Description "Upgrade portable Python packaging tools"
+Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $requirementsFile) -Description "Install desktop preview Engine requirements"
 
 New-Item -ItemType Directory -Force -Path $BrowserDir | Out-Null
 if ($SkipPlaywrightBrowsers) {
@@ -157,7 +208,7 @@ if ($SkipPlaywrightBrowsers) {
   Set-Content -LiteralPath $markerPath -Value "Playwright browsers were intentionally skipped for the desktop preview build." -Encoding utf8
   Write-Host "Skipping Playwright Chromium install for this release profile. Browser automation will be reported as degraded."
 } else {
-  Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "playwright", "install", "chromium") -Environment @{
+  Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "playwright", "install", "chromium") -Description "Install Playwright Chromium" -Environment @{
     PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
   }
 }

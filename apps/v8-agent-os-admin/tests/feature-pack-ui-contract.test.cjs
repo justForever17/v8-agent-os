@@ -27,6 +27,32 @@ test("feature pack API exposes GET/POST and legacy runtime install is deprecated
   assert.doesNotMatch(legacySource, /desktop dependencies/i);
 });
 
+test("feature pack installer retries official PyPI through trusted zh mirrors without exposing raw pip logs", () => {
+  const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
+  const topbarSource = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Topbar.tsx"), "utf8");
+
+  const officialIndex = installerSource.indexOf('id: "official"');
+  const tunaIndex = installerSource.indexOf('id: "tuna"');
+  const ustcIndex = installerSource.indexOf('id: "ustc"');
+  const aliyunIndex = installerSource.indexOf('id: "aliyun"');
+  assert.ok(officialIndex > -1, "official source is missing");
+  assert.ok(tunaIndex > officialIndex, "TUNA mirror must be tried after official PyPI");
+  assert.ok(ustcIndex > tunaIndex, "USTC mirror must be tried after TUNA");
+  assert.ok(aliyunIndex > ustcIndex, "Aliyun mirror must be tried after USTC");
+
+  assert.match(installerSource, /https:\/\/pypi\.tuna\.tsinghua\.edu\.cn\/simple/);
+  assert.match(installerSource, /https:\/\/pypi\.mirrors\.ustc\.edu\.cn\/simple/);
+  assert.match(installerSource, /https:\/\/mirrors\.aliyun\.com\/pypi\/simple/);
+  assert.match(installerSource, /sourceStrategy/);
+  assert.match(installerSource, /Could not fetch URL/);
+  assert.match(installerSource, /No matching distribution found/);
+  assert.match(installerSource, /runFeaturePackInstallSequence/);
+  assert.ok(installerSource.indexOf("if (dryRun)") < installerSource.indexOf("fs.mkdirSync(targetDir"));
+
+  assert.doesNotMatch(topbarSource, /commandSummary/);
+  assert.doesNotMatch(topbarSource, /stdout|stderr/);
+});
+
 test("dependency-gated runtime pages open the feature pack panel when pack is missing", () => {
   const desktopSource = fs.readFileSync(path.join(adminRoot, "src", "app", "admin", "(dashboard)", "desktop-automation", "page.tsx"), "utf8");
   const rpaSource = fs.readFileSync(path.join(adminRoot, "src", "app", "admin", "(dashboard)", "rpa", "page.tsx"), "utf8");

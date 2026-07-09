@@ -179,10 +179,10 @@ if (exists(pythonExe)) {
     ytDlp: "yt_dlp",
     psdTools: "psd_tools",
     pillow: "PIL",
-    pywinauto: "pywinauto",
     pywin32: "win32api",
   };
   const optionalModules = {
+    pywinauto: "pywinauto",
     patchright: "patchright",
     av: "av",
     soundcard: "soundcard",

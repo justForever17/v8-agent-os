@@ -55,6 +55,22 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /SHA256/);
 });
 
+test('desktop workflow uses free-tier guardrails and keeps release permissions scoped', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
+
+  assert.match(workflow, /concurrency:\s*\n\s+group: desktop-preview-/);
+  assert.match(workflow, /permissions:\s*\n\s+contents: read/);
+  assert.match(workflow, /desktop-contract:/);
+  assert.match(workflow, /Desktop release contract tests/);
+  assert.match(workflow, /node --test apps\/v8-agent-os-shell\/tests\/release-shell\.test\.cjs/);
+  assert.match(workflow, /node --test apps\/v8-agent-os-admin\/tests\/feature-pack-ui-contract\.test\.cjs/);
+  assert.match(workflow, /windows-preview:[\s\S]*if: github\.event_name == 'workflow_dispatch' \|\| startsWith\(github\.ref, 'refs\/tags\/v8-os-desktop-v'\)/);
+  assert.match(workflow, /create-release:[\s\S]*permissions:\s*\n\s+contents: write/);
+  assert.match(workflow, /actions\/download-artifact@v4/);
+  assert.match(workflow, /retention-days: 7/);
+  assert.match(workflow, /compression-level: 0/);
+});
+
 test('desktop preview uses a slim portable Python release profile', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
   assert.match(workflow, /-RequirementsPath apps\/v8-agent-os-engine\/requirements\/desktop-preview\.txt/);
@@ -68,6 +84,9 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(runtimeScript, /\[switch\]\$SkipPlaywrightBrowsers/);
   assert.match(runtimeScript, /BeginOutputReadLine/);
   assert.match(runtimeScript, /BeginErrorReadLine/);
+  assert.match(runtimeScript, /Invoke-WebRequestWithRetry/);
+  assert.match(runtimeScript, /Invoke-CheckedWithRetry/);
+  assert.match(runtimeScript, /Install desktop preview Engine requirements/);
   assert.match(runtimeScript, /--prefer-binary/);
   assert.match(runtimeScript, /DEGRADED\.txt/);
 
@@ -157,6 +176,25 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(runtimeProbe, /standaloneServerFor/);
   assert.match(runtimeProbe, /admin\.standaloneServer/);
   assert.match(runtimeProbe, /web\.standaloneServer/);
+  const requiredModulesBlock = runtimeProbe.slice(
+    runtimeProbe.indexOf('const requiredModules'),
+    runtimeProbe.indexOf('const optionalModules'),
+  );
+  const optionalModulesBlock = runtimeProbe.slice(
+    runtimeProbe.indexOf('const optionalModules'),
+    runtimeProbe.indexOf('const moduleResult'),
+  );
+  assert.doesNotMatch(requiredModulesBlock, /pywinauto/);
+  assert.match(optionalModulesBlock, /pywinauto/);
+
+  const installSmoke = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-shell', 'tests', 'scripts', 'run_desktop_install_smoke.mjs'),
+    'utf8',
+  );
+  assert.match(installSmoke, /featurePackApi/);
+  assert.match(installSmoke, /featurePackState/);
+  assert.match(installSmoke, /failureStage/);
+  assert.doesNotMatch(installSmoke, /stdout|stderr/);
 
   const prepareRelease = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs'), 'utf8');
   assert.match(prepareRelease, /v8-os-\$\{product\}-v\$\{version\}/);

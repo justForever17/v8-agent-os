@@ -31,6 +31,73 @@ async function waitFor(url, timeoutMs = 120000) {
   return { ok: false, error: lastError || "timeout" };
 }
 
+async function fetchJson(url, options = {}) {
+  try {
+    const response = await fetch(url, { cache: "no-store", ...options });
+    const payload = await response.json().catch(() => ({}));
+    return {
+      ok: response.ok,
+      status: response.status,
+      payload,
+      error: response.ok ? "" : `HTTP ${response.status}`,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function readLocalConfig() {
+  const configPath = path.join(os.homedir(), ".v8-agent-os", "config.json");
+  try {
+    return {
+      configPath,
+      data: JSON.parse(fs.readFileSync(configPath, "utf8")),
+    };
+  } catch (error) {
+    return {
+      configPath,
+      data: {},
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function serviceAuthHeaders(config) {
+  const secret = String(config?.systemBase?.bridge?.internalSecret || "").trim();
+  if (!secret) return null;
+  return {
+    "x-v8-agent-os-secret": secret,
+    "x-v8-agent-os-user-email": "desktop-smoke@local.v8os",
+  };
+}
+
+function summarizeFeaturePacks(payload) {
+  const packs = Array.isArray(payload?.packs)
+    ? payload.packs
+    : Array.isArray(payload?.featurePacks)
+      ? payload.featurePacks
+      : [];
+  return {
+    summary: payload?.summary || null,
+    packs: packs.map((pack) => ({
+      id: String(pack?.id || ""),
+      status: String(pack?.status || ""),
+      installed: Boolean(pack?.installed),
+      restartRequired: Boolean(pack?.restartRequired),
+      logRef: pack?.logRef ? String(pack.logRef) : null,
+      lastError: pack?.lastError ? String(pack.lastError) : null,
+    })).filter((pack) => pack.id),
+  };
+}
+
+function firstFailureStage(checks) {
+  const failed = Object.entries(checks).find(([, check]) => !check?.ok && !check?.skipped);
+  return failed ? failed[0] : null;
+}
+
 function reportPath() {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "_");
   const dir = path.join(os.homedir(), ".v8-agent-os", "reports", "desktop_release", stamp);
@@ -52,19 +119,47 @@ const child = spawn(shellExe, [], {
 });
 child.unref();
 
-const checks = {
+const serviceChecks = {
   engine: await waitFor("http://127.0.0.1:9530/health"),
   admin: await waitFor("http://127.0.0.1:9528/login"),
   web: await waitFor("http://127.0.0.1:9527/chat"),
 };
+const config = readLocalConfig();
+const headers = serviceAuthHeaders(config.data);
+const engineHealth = serviceChecks.engine.ok
+  ? await fetchJson("http://127.0.0.1:9530/health")
+  : { ok: false, skipped: true, error: "engine_not_ready" };
+const featurePackApi = serviceChecks.admin.ok && headers
+  ? await fetchJson("http://127.0.0.1:9528/api/runtime-feature-packs", { headers })
+  : { ok: false, skipped: true, error: headers ? "admin_not_ready" : "internal_secret_missing" };
+const checks = {
+  ...serviceChecks,
+  engineHealth,
+  featurePackApi,
+};
+const featurePackState = {
+  engine: summarizeFeaturePacks(engineHealth.payload || {}),
+  admin: summarizeFeaturePacks(featurePackApi.payload || {}),
+};
+const featurePackLogRefs = [...featurePackState.engine.packs, ...featurePackState.admin.packs]
+  .map((pack) => pack.logRef)
+  .filter(Boolean);
 
 const payload = {
   startedAt,
   finishedAt: new Date().toISOString(),
   shellExe,
   shellPid: child.pid || null,
+  ports: {
+    engine: 9530,
+    admin: 9528,
+    web: 9527,
+  },
   checks,
-  passed: Object.values(checks).every((item) => item.ok),
+  featurePackState,
+  featurePackLogRefs,
+  failureStage: firstFailureStage(checks),
+  passed: Object.values(checks).every((item) => item.ok || item.skipped),
   note: "Use the Shell tray menu to verify desktop-pet toggle and Exit V8OS cleanup in the installed app.",
 };
 

@@ -2,18 +2,71 @@ name: Desktop Preview Build
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-preview.yml"
+      - "apps/v8-agent-os-admin/**"
+      - "apps/v8-agent-os-engine/**"
+      - "apps/v8-agent-os-shell/**"
+      - "apps/v8-agent-os-web/**"
+      - "apps/v8-agent-os-desktop-pet/**"
+      - "packages/session-realtime/**"
+      - "scripts/desktop/**"
+      - "scripts/release/**"
   push:
+    branches:
+      - main
     tags:
       - "v8-os-desktop-v*"
+    paths:
+      - ".github/workflows/desktop-preview.yml"
+      - "apps/v8-agent-os-admin/**"
+      - "apps/v8-agent-os-engine/**"
+      - "apps/v8-agent-os-shell/**"
+      - "apps/v8-agent-os-web/**"
+      - "apps/v8-agent-os-desktop-pet/**"
+      - "packages/session-realtime/**"
+      - "scripts/desktop/**"
+      - "scripts/release/**"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: desktop-preview-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  desktop-contract:
+    name: Desktop preview static contracts
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Desktop release contract tests
+        shell: bash
+        run: |
+          node --test apps/v8-agent-os-shell/tests/release-shell.test.cjs
+          node --test apps/v8-agent-os-admin/tests/feature-pack-ui-contract.test.cjs
+
   windows-preview:
     name: Windows unsigned preview installer
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
     runs-on: windows-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -34,11 +87,13 @@ jobs:
       - name: Verify desktop release manifest
         if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         shell: pwsh
+        timeout-minutes: 3
         run: node scripts/release/verify-release-manifest.mjs --product desktop --tag "$env:GITHUB_REF_NAME"
 
       - name: Install shared realtime package dependencies
         shell: pwsh
         working-directory: packages/session-realtime
+        timeout-minutes: 8
         run: |
           npm ci --include=dev --workspaces=false
           npm exec -- tsc --version
@@ -47,25 +102,30 @@ jobs:
       - name: Install Admin dependencies
         shell: pwsh
         working-directory: apps/v8-agent-os-admin
+        timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Install Web dependencies
         shell: pwsh
         working-directory: apps/v8-agent-os-web
+        timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Install desktop pet dependencies
         shell: pwsh
         working-directory: apps/v8-agent-os-desktop-pet
+        timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Install Shell dependencies
         shell: pwsh
         working-directory: apps/v8-agent-os-shell
+        timeout-minutes: 8
         run: npm ci --include=dev --workspaces=false
 
       - name: Prepare embedded Engine Python runtime
         shell: pwsh
+        timeout-minutes: 25
         run: |
           scripts/desktop/prepare-windows-python-runtime.ps1 `
             -PythonVersion 3.11.9 `
@@ -74,6 +134,7 @@ jobs:
 
       - name: Build Admin and Web production bundles
         shell: pwsh
+        timeout-minutes: 20
         run: |
           node scripts/run-next-with-managed-auth.mjs --app admin --mode build --port 9528
           node scripts/run-next-with-managed-auth.mjs --app web --mode build --port 9527
@@ -81,6 +142,7 @@ jobs:
       - name: Build desktop pet
         shell: pwsh
         working-directory: apps/v8-agent-os-desktop-pet
+        timeout-minutes: 8
         run: |
           npm exec -- vite --version
           npm exec -- esbuild --version
@@ -88,14 +150,17 @@ jobs:
 
       - name: Verify desktop runtime payload
         shell: pwsh
+        timeout-minutes: 5
         run: node apps/v8-agent-os-shell/tests/scripts/verify_desktop_release_runtime.mjs
 
       - name: Shell release contract tests
         shell: pwsh
+        timeout-minutes: 8
         run: npm --prefix apps/v8-agent-os-shell test
 
       - name: Build unsigned Windows desktop preview
         shell: pwsh
+        timeout-minutes: 25
         run: npm --prefix apps/v8-agent-os-shell run dist:win
 
       - name: Installed desktop smoke
@@ -136,9 +201,12 @@ jobs:
           name: v8os-desktop-smoke-diagnostics
           path: desktop-smoke-diagnostics/**
           if-no-files-found: ignore
+          retention-days: 7
+          compression-level: 0
 
       - name: Normalize desktop artifact names
         shell: pwsh
+        timeout-minutes: 3
         run: |
           $outDir = "apps/v8-agent-os-shell/dist/release"
           if ($env:GITHUB_REF_NAME -match '^v8-os-desktop-v(.+)$') {
@@ -155,6 +223,7 @@ jobs:
 
       - name: Generate SHA256 checksums
         shell: pwsh
+        timeout-minutes: 3
         run: |
           $outDir = "apps/v8-agent-os-shell/dist/release"
           $files = Get-ChildItem $outDir -File | Where-Object { $_.Extension -in ".exe", ".zip" }
@@ -169,6 +238,7 @@ jobs:
       - name: Generate desktop release notes
         if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         shell: pwsh
+        timeout-minutes: 3
         run: |
           node scripts/release/generate-release-notes.mjs `
             --product desktop `
@@ -185,16 +255,34 @@ jobs:
             apps/v8-agent-os-shell/dist/release/*.zip
             apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
             apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json
+            apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md
           if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  create-release:
+    name: Publish desktop preview release
+    if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
+    needs: windows-preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download desktop preview artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: v8os-desktop-preview-windows
+          path: desktop-preview-artifacts
 
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: false
-          body_path: apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md
+          body_path: desktop-preview-artifacts/RELEASE_NOTES.md
           files: |
-            apps/v8-agent-os-shell/dist/release/*.exe
-            apps/v8-agent-os-shell/dist/release/*.zip
-            apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
-            apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json
+            desktop-preview-artifacts/*.exe
+            desktop-preview-artifacts/*.zip
+            desktop-preview-artifacts/SHA256SUMS.txt
+            desktop-preview-artifacts/RUNTIME_PROBE.json

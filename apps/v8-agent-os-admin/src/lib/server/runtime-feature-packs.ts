@@ -13,6 +13,20 @@ import { resolveEngineOrigin } from "@/lib/server/runtime-config";
 
 export type FeaturePackStatus = "installed" | "not_installed" | "installing" | "failed";
 
+type PipSource = {
+    id: string;
+    label: string;
+    indexUrl: string | null;
+};
+
+type PipAttemptSummary = {
+    sourceId: string;
+    sourceLabel: string;
+    exitCode: number | null;
+    recoverable: boolean;
+    error: string | null;
+};
+
 export type RuntimeFeaturePack = {
     id: string;
     productName: string;
@@ -92,6 +106,42 @@ const FEATURE_PACK_DEFINITIONS: FeaturePackDefinition[] = [
 ];
 
 const FEATURE_PACK_BY_ID = new Map(FEATURE_PACK_DEFINITIONS.map((definition) => [definition.id, definition]));
+
+export const PIP_SOURCE_STRATEGY: PipSource[] = [
+    { id: "official", label: "Official PyPI", indexUrl: null },
+    { id: "tuna", label: "TUNA mirror", indexUrl: "https://pypi.tuna.tsinghua.edu.cn/simple" },
+    { id: "ustc", label: "USTC mirror", indexUrl: "https://pypi.mirrors.ustc.edu.cn/simple" },
+    { id: "aliyun", label: "Aliyun mirror", indexUrl: "https://mirrors.aliyun.com/pypi/simple" },
+];
+
+const TERMINAL_PIP_FAILURE_PATTERNS = [
+    /Could not find a version that satisfies/i,
+    /No matching distribution found/i,
+    /Invalid requirement/i,
+    /is not a valid editable requirement/i,
+    /Directory ['"].+['"] is not installable/i,
+    /Permission denied/i,
+    /Access is denied/i,
+];
+
+const RECOVERABLE_PIP_FAILURE_PATTERNS = [
+    /Could not fetch URL/i,
+    /Read timed out/i,
+    /\btimed out\b/i,
+    /Temporary failure in name resolution/i,
+    /Failed to establish a new connection/i,
+    /NameResolutionError/i,
+    /Network is unreachable/i,
+    /Connection(?: aborted| reset| refused| error| broken)/i,
+    /Remote end closed connection/i,
+    /ProxyError/i,
+    /SSLError/i,
+    /CERTIFICATE_VERIFY_FAILED/i,
+    /\b50[234]\b/,
+    /Bad Gateway/i,
+    /Service Unavailable/i,
+    /Gateway Timeout/i,
+];
 
 function v8Home() {
     return process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), ".v8-agent-os");
@@ -263,6 +313,171 @@ function resolvePythonExecutable(config: CanonicalConfig) {
     return process.platform === "win32" ? "python.exe" : "python3";
 }
 
+function formatCommandSummary(pythonExe: string, args: string[]) {
+    return `${pythonExe} ${args.map((item) => (item.includes(" ") ? `"${item}"` : item)).join(" ")}`;
+}
+
+function sourceStrategyForResponse() {
+    return PIP_SOURCE_STRATEGY.map((source) => ({
+        id: source.id,
+        label: source.label,
+        indexUrl: source.indexUrl,
+    }));
+}
+
+function buildPipInstallArgs(targetDir: string, requirementsFile: string, source: PipSource) {
+    const args = [
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+        "--prefer-binary",
+        "--retries",
+        "2",
+        "--timeout",
+        "30",
+        "--target",
+        targetDir,
+        "-r",
+        requirementsFile,
+    ];
+    if (source.indexUrl) {
+        args.push("--index-url", source.indexUrl);
+    }
+    return args;
+}
+
+function isTerminalPipFailure(output: string) {
+    return TERMINAL_PIP_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+function isRecoverablePipFailure(output: string) {
+    if (isTerminalPipFailure(output)) return false;
+    return RECOVERABLE_PIP_FAILURE_PATTERNS.some((pattern) => pattern.test(output));
+}
+
+function buildInstallFailureMessage(attempts: PipAttemptSummary[]) {
+    const terminal = attempts.find((attempt) => !attempt.recoverable);
+    if (terminal?.error) {
+        return "Feature pack install failed before package download completed. See logRef for details.";
+    }
+    if (terminal) {
+        return "pip reported a package or environment error. See logRef for details.";
+    }
+    if (attempts.some((attempt) => attempt.recoverable) && attempts.every((attempt) => attempt.exitCode !== 0)) {
+        return "Package download failed from the configured sources. See logRef for details.";
+    }
+    return "pip reported a package or environment error. See logRef for details.";
+}
+
+function runPipAttempt(
+    pythonExe: string,
+    args: string[],
+    output: fs.WriteStream,
+): Promise<{ exitCode: number | null; outputPreview: string; error: string | null }> {
+    return new Promise((resolve) => {
+        let settled = false;
+        let outputPreview = "";
+        const appendOutput = (chunk: Buffer | string) => {
+            const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+            if (outputPreview.length < 120000) {
+                outputPreview += text.slice(0, 120000 - outputPreview.length);
+            }
+            output.write(text);
+        };
+        const child = spawn(pythonExe, args, {
+            cwd: resolveRepoRoot(),
+            windowsHide: true,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+                ...process.env,
+                PYTHONUTF8: "1",
+                PYTHONIOENCODING: "utf-8",
+            },
+        });
+        child.stdout?.on("data", appendOutput);
+        child.stderr?.on("data", appendOutput);
+        child.on("error", (error) => {
+            if (settled) return;
+            settled = true;
+            output.write(`\n[Install error] ${error.message}\n`);
+            resolve({ exitCode: null, outputPreview, error: error.message });
+        });
+        child.on("exit", (code) => {
+            if (settled) return;
+            settled = true;
+            resolve({ exitCode: code, outputPreview, error: null });
+        });
+    });
+}
+
+async function runFeaturePackInstallSequence(input: {
+    definition: FeaturePackDefinition;
+    pythonExe: string;
+    targetDir: string;
+    requirementsFile: string;
+    logRef: string;
+    output: fs.WriteStream;
+}) {
+    const { definition, pythonExe, targetDir, requirementsFile, logRef, output } = input;
+    const attempts: PipAttemptSummary[] = [];
+    try {
+        for (const [index, source] of PIP_SOURCE_STRATEGY.entries()) {
+            const args = buildPipInstallArgs(targetDir, requirementsFile, source);
+            const commandSummary = formatCommandSummary(pythonExe, args);
+            output.write(`\n[Source] ${source.label}\n`);
+            output.write(`[Command] ${commandSummary}\n\n`);
+            const result = await runPipAttempt(pythonExe, args, output);
+            const ok = result.exitCode === 0;
+            const recoverable = ok ? false : isRecoverablePipFailure(result.outputPreview);
+            attempts.push({
+                sourceId: source.id,
+                sourceLabel: source.label,
+                exitCode: result.exitCode,
+                recoverable,
+                error: result.error,
+            });
+            output.write(`\n[Exit code] ${result.exitCode ?? "unknown"}\n`);
+            if (ok) {
+                output.end();
+                updateFeaturePackConfig(definition.id, {
+                    status: "installed",
+                    targetDir,
+                    logRef,
+                    lastError: null,
+                    restartRequired: true,
+                });
+                return;
+            }
+            if (!recoverable || index === PIP_SOURCE_STRATEGY.length - 1) {
+                break;
+            }
+            const nextSource = PIP_SOURCE_STRATEGY[index + 1];
+            output.write(`[Fallback] ${source.label} failed with a recoverable download error; retrying via ${nextSource.label}.\n`);
+        }
+        output.end();
+        updateFeaturePackConfig(definition.id, {
+            status: "failed",
+            targetDir,
+            logRef,
+            lastError: buildInstallFailureMessage(attempts),
+            restartRequired: true,
+        });
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.write(`\n[Install sequence error] ${message}\n`);
+        output.end();
+        updateFeaturePackConfig(definition.id, {
+            status: "failed",
+            targetDir,
+            logRef,
+            lastError: "Feature pack install failed unexpectedly. See logRef for details.",
+            restartRequired: true,
+        });
+    }
+}
+
 export async function triggerFeaturePackInstall(packId: string, dryRun = false) {
     const definition = FEATURE_PACK_BY_ID.get(String(packId || ""));
     if (!definition) {
@@ -275,24 +490,14 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
     }
     const targetDir = targetDirFor(definition.id);
     const pythonExe = resolvePythonExecutable(config);
-    const args = [
-        "-m",
-        "pip",
-        "install",
-        "--disable-pip-version-check",
-        "--no-input",
-        "--prefer-binary",
-        "--target",
-        targetDir,
-        "-r",
-        requirementsFile,
-    ];
-    const commandSummary = `${pythonExe} ${args.map((item) => (item.includes(" ") ? `"${item}"` : item)).join(" ")}`;
+    const firstAttemptArgs = buildPipInstallArgs(targetDir, requirementsFile, PIP_SOURCE_STRATEGY[0]);
+    const commandSummary = formatCommandSummary(pythonExe, firstAttemptArgs);
     if (dryRun) {
         return {
             status: "dry_run",
             packId: definition.id,
             commandSummary,
+            sourceStrategy: sourceStrategyForResponse(),
             targetDir,
             requirementsFile,
             restartRequired: true,
@@ -305,7 +510,7 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
     const logRef = path.join(featurePackLogRoot(), `${definition.id}-${timestamp}.log`);
     const output = fs.createWriteStream(logRef, { flags: "a", encoding: "utf-8" });
     output.write(`[V8OS Feature Pack] ${definition.productName}\n`);
-    output.write(`[Command] ${commandSummary}\n\n`);
+    output.write(`[Source strategy] ${PIP_SOURCE_STRATEGY.map((source) => source.label).join(" -> ")}\n`);
 
     updateFeaturePackConfig(definition.id, {
         status: "installing",
@@ -315,46 +520,20 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
         restartRequired: true,
     });
 
-    const child = spawn(pythonExe, args, {
-        cwd: resolveRepoRoot(),
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-            ...process.env,
-            PYTHONUTF8: "1",
-            PYTHONIOENCODING: "utf-8",
-        },
-    });
-    child.stdout?.pipe(output, { end: false });
-    child.stderr?.pipe(output, { end: false });
-    child.on("error", (error) => {
-        output.write(`\n[Install error] ${error.message}\n`);
-        output.end();
-        updateFeaturePackConfig(definition.id, {
-            status: "failed",
-            targetDir,
-            logRef,
-            lastError: error.message,
-            restartRequired: true,
-        });
-    });
-    child.on("exit", (code) => {
-        const ok = code === 0;
-        output.write(`\n[Exit code] ${code ?? "unknown"}\n`);
-        output.end();
-        updateFeaturePackConfig(definition.id, {
-            status: ok ? "installed" : "failed",
-            targetDir,
-            logRef,
-            lastError: ok ? null : `pip exited with code ${code ?? "unknown"}. See logRef for details.`,
-            restartRequired: true,
-        });
+    void runFeaturePackInstallSequence({
+        definition,
+        pythonExe,
+        targetDir,
+        requirementsFile,
+        logRef,
+        output,
     });
 
     return {
         status: "started",
         packId: definition.id,
         commandSummary,
+        sourceStrategy: sourceStrategyForResponse(),
         targetDir,
         requirementsFile,
         logRef,

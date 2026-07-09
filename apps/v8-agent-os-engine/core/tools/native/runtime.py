@@ -454,6 +454,11 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
                 "expectedOutput": output_file,
                 "acceptance": acceptance,
                 "proofRequired": _extract_task_field(excerpt, ("proofRequired", "proof required", "proof", "证明")),
+                "mvpSlice": _extract_task_field(excerpt, ("mvpSlice", "mvp slice", "MVP", "MVP 切片", "最小切片", "最小可验收切片")),
+                "independentAcceptance": _extract_task_field(
+                    excerpt,
+                    ("independentAcceptance", "independent acceptance", "独立验收", "独立验收方式", "独立可验收"),
+                ),
             }
         )
     return sections
@@ -533,6 +538,9 @@ def _approved_spec_execution_bundle(
         "specDir": spec_brief.get("specDir"),
         "approvedStages": list(spec_brief.get("approvedStages") or []),
         "pipelineControl": dict(spec_brief.get("pipelineControl") or {}),
+        "qualityEvidence": spec_brief.get("qualityEvidence") if isinstance(spec_brief.get("qualityEvidence"), dict) else {},
+        "annexDocuments": spec_brief.get("annexDocuments") if isinstance(spec_brief.get("annexDocuments"), dict) else {},
+        "linkedSections": list(spec_brief.get("linkedSections") or [])[:24],
         "documents": docs,
         "tasks": task_sections,
         "traceability": {
@@ -1091,6 +1099,8 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
         output = str(task.get("expectedOutput") or task.get("expectedOutputs") or "").strip()
         acceptance = str(task.get("acceptance") or task.get("acceptanceProof") or "").strip()
         proof = str(task.get("proofRequired") or task.get("proof") or "").strip()
+        mvp_slice = str(task.get("mvpSlice") or task.get("mvp") or "").strip()
+        independent_acceptance = str(task.get("independentAcceptance") or "").strip()
         requirement_refs = list(task.get("requirementRefs") or [])
         design_refs = list(task.get("designRefs") or [])
         explicit_spec_refs = list(task.get("specRefs") or [])
@@ -1224,6 +1234,11 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             ),
             "runtimeLane": lane,
             "specRefs": spec_refs,
+            "mvpSlice": mvp_slice,
+            "independentAcceptance": independent_acceptance,
+            "qualityEvidence": bundle.get("qualityEvidence") if isinstance(bundle.get("qualityEvidence"), dict) else {},
+            "annexDocuments": bundle.get("annexDocuments") if isinstance(bundle.get("annexDocuments"), dict) else {},
+            "linkedSections": list(bundle.get("linkedSections") or [])[:24],
             "engineeringExecutionContract": execution_contract,
             "handoffContract": handoff_contract,
             "stageRefs": {
@@ -1260,6 +1275,8 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                         *([f"Expected output: {output}"] if output else []),
                         *([f"Acceptance: {acceptance}"] if acceptance else []),
                         *([f"Proof required: {proof}"] if proof else []),
+                        *([f"MVP slice: {mvp_slice}"] if mvp_slice else []),
+                        *([f"Independent acceptance: {independent_acceptance}"] if independent_acceptance else []),
                     ],
                     "should": [
                         "Read exact detailRef sections when the compact excerpt is insufficient.",
@@ -1313,6 +1330,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                         "Report exact touched files/artifacts.",
                         "Reference approved specId and taskId.",
                         "Attach verification result or recoverable blocker.",
+                        *([f"Independent acceptance: {independent_acceptance}"] if independent_acceptance else []),
                     ],
                     "handoffRequired": list(handoff_contract.get("requiredFields") or []),
                 },

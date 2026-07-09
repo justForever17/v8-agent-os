@@ -395,6 +395,10 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         if (data?.specMode) {
             optimisticMetadata.specMode = true;
         }
+        if (data?.specCommand && typeof data.specCommand === 'object') {
+            optimisticMetadata.specMode = true;
+            optimisticMetadata.specCommand = data.specCommand;
+        }
         if (Array.isArray(data?.skillReferences) && data.skillReferences.length > 0) {
             optimisticMetadata.skillReferences = data.skillReferences
                 .filter((item: unknown) => item && typeof item === 'object')

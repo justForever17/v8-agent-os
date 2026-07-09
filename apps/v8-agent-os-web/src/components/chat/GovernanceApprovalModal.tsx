@@ -101,6 +101,34 @@ function readFirstFromRecord(record: Record<string, unknown>, ...keys: string[])
     return "";
 }
 
+function readArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
+}
+
+function summarizeChecklist(specBrief: Record<string, unknown>) {
+    const qualityEvidence = asRecord(specBrief.qualityEvidence);
+    const checklists = asRecord(qualityEvidence.checklists);
+    const requirements = asRecord(checklists.requirements);
+    const unresolved = Number(requirements.unresolvedCount ?? 0) || 0;
+    return {
+        title: readFirstFromRecord(requirements, "title") || "Requirements checklist",
+        status: readFirstFromRecord(requirements, "status"),
+        unresolved,
+        detailRef: readFirstFromRecord(requirements, "detailRef"),
+    };
+}
+
+function summarizeSpecAnalysis(analysis: Record<string, unknown>) {
+    return {
+        blockers: readArray(analysis.hardBlockers)
+            .map((item) => typeof item === "string" ? item : JSON.stringify(item))
+            .slice(0, 4),
+        warnings: readArray(analysis.warnings)
+            .map((item) => typeof item === "string" ? item : JSON.stringify(item))
+            .slice(0, 4),
+    };
+}
+
 function extractSpecApprovalDetails(approval: SessionApprovalView | null) {
     const request = approval?.request && typeof approval.request === "object"
         ? approval.request as Record<string, unknown>
@@ -114,13 +142,24 @@ function extractSpecApprovalDetails(approval: SessionApprovalView | null) {
     const pipeline = request.pipelineControl && typeof request.pipelineControl === "object"
         ? request.pipelineControl as Record<string, unknown>
         : {};
+    const specBrief = asRecord(request.specBrief);
+    const analysis = asRecord(request.analysis);
+    const clarification = asRecord(specBrief.clarificationSummary);
+    const checklist = summarizeChecklist(specBrief);
+    const analysisSummary = summarizeSpecAnalysis(analysis);
     return {
         isSpecApproval: kind === "spec_stage_approval",
+        featureName: readFirstFromRecord(specBrief, "featureName") || readFirstFromRecord(request, "featureName", "feature_name"),
         specId: readFirstFromRecord(request, "specId", "spec_id"),
         stage: readFirstFromRecord(request, "stage", "specStage", "spec_stage"),
         summary: readFirstFromRecord(request, "summary", "question", "prompt"),
         detailRef: readFirstFromRecord(request, "detailRef", "detail_ref"),
+        workspacePath: readFirstFromRecord(specBrief, "workspacePath") || readFirstFromRecord(request, "workspacePath", "workspace_path"),
         nextStage: readFirstFromRecord(pipeline, "nextStage"),
+        checklist,
+        analysisSummary,
+        clarificationCount: Number(clarification.count ?? 0) || 0,
+        latestClarification: readFirstString(clarification.latestSummary),
     };
 }
 
@@ -182,11 +221,23 @@ export function GovernanceApprovalModal({
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-violet-700 dark:text-violet-300">
                                 {t("web.generated.7e9f25f8c7")}
                             </div>
-                            <div className="grid gap-2 text-xs">
+                                <div className="grid gap-2 text-xs">
+                                {specDetails.featureName ? (
+                                    <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+                                        <span className="font-semibold text-muted-foreground">feature</span>
+                                        <span className="break-words text-foreground">{specDetails.featureName}</span>
+                                    </div>
+                                ) : null}
                                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
                                     <span className="font-semibold text-muted-foreground">stage</span>
                                     <span className="break-words text-foreground">{specDetails.stage || "-"}</span>
                                 </div>
+                                {specDetails.workspacePath ? (
+                                    <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+                                        <span className="font-semibold text-muted-foreground">workspace</span>
+                                        <span className="break-words text-foreground">{specDetails.workspacePath}</span>
+                                    </div>
+                                ) : null}
                                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
                                     <span className="font-semibold text-muted-foreground">specId</span>
                                     <span className="break-words text-foreground">{specDetails.specId || "-"}</span>
@@ -222,8 +273,26 @@ export function GovernanceApprovalModal({
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
                                 {t("web.generated.2448f8454e")}
                             </div>
-                            <div className="text-sm leading-6 text-foreground">
-                                {t("web.generated.40dea31371")}
+                            <div className="space-y-2 text-sm leading-6 text-foreground">
+                                <div>
+                                    {specDetails.checklist.title}: {specDetails.checklist.status || "pending"}
+                                    {specDetails.checklist.unresolved > 0 ? `，未完成 ${specDetails.checklist.unresolved} 项` : ""}
+                                </div>
+                                {specDetails.clarificationCount > 0 ? (
+                                    <div>澄清记录：{specDetails.clarificationCount} 条{specDetails.latestClarification ? `，最近：${specDetails.latestClarification}` : ""}</div>
+                                ) : (
+                                    <div>澄清记录：暂无。</div>
+                                )}
+                                {specDetails.analysisSummary.blockers.length > 0 ? (
+                                    <div className="text-red-600 dark:text-red-300">
+                                        阻断：{specDetails.analysisSummary.blockers.join("；")}
+                                    </div>
+                                ) : null}
+                                {specDetails.analysisSummary.warnings.length > 0 ? (
+                                    <div className="text-amber-700 dark:text-amber-300">
+                                        提醒：{specDetails.analysisSummary.warnings.join("；")}
+                                    </div>
+                                ) : null}
                             </div>
                         </div>
                     ) : details.riskSummary ? (

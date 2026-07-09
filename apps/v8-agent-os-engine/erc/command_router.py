@@ -143,9 +143,52 @@ class RuntimeCommandRouter:
         if topic == "ask_user.respond":
             result = erc_kernel.resolve_ask_user_interaction(interaction_id, response=command.response)
             if result:
-                self._resume_from_ask_user(result.get("interaction") or {}, command.response or {})
+                interaction = result.get("interaction") or {}
+                result["spec_clarification"] = self._record_spec_clarification_from_ask_user(
+                    interaction,
+                    command.response or {},
+                )
+                self._resume_from_ask_user(interaction, command.response or {})
             return result
         raise ValueError(f"Unsupported ask_user command topic: {topic}")
+
+    def _record_spec_clarification_from_ask_user(
+        self,
+        interaction: Dict[str, Any],
+        response: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        request = interaction.get("request") if isinstance(interaction.get("request"), dict) else {}
+        spec_context = request.get("specContext") if isinstance(request.get("specContext"), dict) else {}
+        if str(spec_context.get("kind") or spec_context.get("contextKind") or "").strip().lower() not in {"spec_clarification", "spec-clarification"}:
+            return {"recorded": False, "reason": "not_spec_clarification"}
+        spec_id = str(spec_context.get("specId") or spec_context.get("spec_id") or "").strip()
+        if not spec_id:
+            return {"recorded": False, "reason": "spec_id_pending"}
+        run_record = db.get_run_record(str(interaction.get("run_id") or ""))
+        scope_payload = self._scope_payload_for_session(str(interaction.get("session_id") or ""))
+        workspace_path = (
+            str(spec_context.get("workspacePath") or spec_context.get("workspace_path") or "").strip()
+            or self._workspace_path_for_run(run_record or {}, scope_payload)
+        )
+        if not workspace_path:
+            return {"recorded": False, "reason": "workspace_path_missing", "specId": spec_id}
+        stage = str(spec_context.get("stage") or spec_context.get("specStage") or "").strip().lower()
+        answer = str((response or {}).get("answer") or interaction.get("answer_text") or "").strip()
+        try:
+            recorded = spec_service.record_clarification(
+                workspace_path=workspace_path,
+                spec_id=spec_id,
+                stage=stage,
+                question=str(request.get("question") or request.get("prompt") or ""),
+                answer=answer,
+                source_run_id=str(interaction.get("run_id") or ""),
+                tool_call_id=str(interaction.get("tool_call_id") or ""),
+                interaction_id=str(interaction.get("id") or ""),
+                feature_name=str(spec_context.get("featureName") or ""),
+            )
+        except Exception as exc:
+            return {"recorded": False, "reason": f"{type(exc).__name__}: {exc}", "specId": spec_id, "stage": stage}
+        return {"recorded": True, "specId": recorded.get("specId"), "stage": recorded.get("stage")}
 
     def _scope_payload_for_session(self, session_id: str) -> Dict[str, Any]:
         binding = session_scope_binding_service.get_binding(session_id)

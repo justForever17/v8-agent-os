@@ -646,6 +646,55 @@ def test_finalize_success_marks_runtime_allowed_spec_delivered_after_handoff():
     assert emitted[0][1]["specId"] == "spec_ready"
 
 
+def test_finalize_success_blocks_spec_delivered_when_handoff_has_no_proof():
+    emitted = []
+    run_handle = SimpleNamespace(
+        complete=Mock(),
+        transition=Mock(),
+        fail=Mock(),
+    )
+    chat_run = SimpleNamespace(
+        prepared=SimpleNamespace(spec_mode=True, spec_id="spec_ready", spec_brief={}),
+        scope_result=SimpleNamespace(binding=SimpleNamespace(workspace_path="E:/Projects/test3")),
+        session_id="session-spec",
+        active_run_id="run-spec",
+        run_handle=run_handle,
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    completion_brief = {
+        "specId": "spec_ready",
+        "currentStage": "tasks",
+        "pipelineControl": {"runtimeExecutionAllowed": True},
+        "traceability": {
+            "tasks": [
+                {
+                    "taskId": "TASK-001",
+                    "proofRequired": "changed files and test output",
+                    "independentAcceptance": "reviewer can inspect proof",
+                }
+            ]
+        },
+    }
+    episode = {"episodeId": "episode_engineering", "kind": "engineering", "state": "completed"}
+    handoff = {"handoffRefId": "handoff_engineering", "status": "ready", "kind": "engineering_patch_bundle"}
+
+    with (
+        patch("runtimes.chat.runtime.db.list_runtime_episodes", return_value=[episode]),
+        patch("runtimes.chat.runtime.db.list_runtime_episode_handoffs", return_value=[handoff]),
+        patch.object(ChatRuntime, "_completion_final_text", return_value="交付完成。"),
+        patch.object(ChatRuntime, "_completion_spec_brief", return_value=completion_brief),
+        patch("runtimes.chat.runtime.spec_service.mark_delivered") as mark_delivered,
+    ):
+        result = ChatRuntime().finalize_success_run(chat_run)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "spec_runtime_execution_proof_missing"
+    mark_delivered.assert_not_called()
+    run_handle.fail.assert_called_once_with("spec_runtime_execution_proof_missing", node="completion_gate")
+    assert emitted[0][0] == "run.completion.blocked"
+    assert emitted[0][1]["taskIds"] == ["TASK-001"]
+
+
 def test_finalize_success_marks_spec_delivered_from_brief_workspace_path():
     emitted = []
     run_handle = SimpleNamespace(

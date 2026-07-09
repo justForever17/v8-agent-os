@@ -459,3 +459,99 @@ def test_spec_service_list_and_read_spec_for_client_approval(tmp_path: Path):
     assert "requirements" in detail["stages"]
     assert "REQ-001" in detail["stages"]["requirements"]["content"]
     assert detail["specBrief"]["documents"]["requirements"]["detailRef"] == f"spec://{spec_id}/requirements"
+
+
+def test_spec_service_generates_quality_checklist_and_complex_annex(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="对接第三方 HTTP API，并给出 quickstart smoke 验收。",
+        feature_name="Provider API Spec",
+        stage="requirements",
+    )
+    spec_dir = Path(created["specDir"])
+    created = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=created["specId"],
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: Integrate provider HTTP API and document smoke acceptance.\n",
+    )
+
+    assert created["ok"] is True
+    brief = created["specBrief"]
+    checklist = brief["qualityEvidence"]["checklists"]["requirements"]
+    assert checklist["kind"] == "checklist"
+    assert checklist["relativePath"].endswith("checklists/requirements.md")
+    assert any(item.get("kind") == "checklist" for item in brief["linkedSections"])
+    annex = brief["annexDocuments"]
+    assert {"contracts", "quickstart"}.issubset(set(annex))
+    assert any(item.get("kind") == "annex" and item.get("title") == "Contracts" for item in brief["linkedSections"])
+    assert (spec_dir / "checklists" / "requirements.md").exists()
+
+
+def test_spec_service_tasks_analysis_blocks_large_task_without_mvp_and_independent_acceptance(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个跨 runtime 的交付闭环。",
+        feature_name="Large Spec Task",
+        stage="requirements",
+    )
+    created = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=created["specId"],
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: Deliver the runtime workflow with proof.\n",
+    )
+    spec_id = created["specId"]
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个跨 runtime 的交付闭环。",
+        spec_id=spec_id,
+        stage="design",
+    )
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content="# Design\n\n- DES-001: Engineering coordinates subagent execution and proof reconciliation.\n",
+    )
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个跨 runtime 的交付闭环。",
+        spec_id=spec_id,
+        stage="tasks",
+    )
+    tasks = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# Tasks\n\n"
+            "### TASK-001: Implement parallel subagent delivery\n\n"
+            "- runtimeLane: Engineering + subagent worker\n"
+            "- dependsOn: []\n"
+            "- specRefs: REQ-001, DES-001\n"
+            "- expectedOutput: `src/runtime.ts`, `tests/runtime.test.ts`\n"
+            "- acceptance: typecheck and targeted pytest pass\n"
+            "- proofRequired: changed files and test output\n"
+        ),
+    )
+
+    assert tasks["tasksPipeline"]["valid"] is True
+    analysis = spec_service.analyze_spec(workspace_path=str(workspace), spec_id=spec_id)
+    codes = {item["code"] for item in analysis["hardBlockers"]}
+    assert {"large_task_missing_mvp_slice", "large_task_missing_independent_acceptance"}.issubset(codes)
+    approval = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    assert approval["ok"] is False
+    assert approval["kind"] == "spec_stage_analysis_blocked"

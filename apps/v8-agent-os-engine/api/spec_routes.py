@@ -51,6 +51,20 @@ async def read_spec(
         _raise_spec_error(error)
 
 
+@router.get("/{spec_id}/analysis")
+async def analyze_spec(
+    spec_id: str,
+    workspace_path: str = Query(..., alias="workspace_path"),
+):
+    try:
+        return spec_service.analyze_spec(
+            workspace_path=workspace_path,
+            spec_id=spec_id,
+        )
+    except Exception as error:
+        _raise_spec_error(error)
+
+
 @router.get("/{spec_id}/stages/{stage}")
 async def read_spec_stage(
     spec_id: str,

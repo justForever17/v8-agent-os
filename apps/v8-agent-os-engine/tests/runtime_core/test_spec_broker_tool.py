@@ -10,6 +10,29 @@ def _payload(raw: str) -> dict:
     return json.loads(raw)
 
 
+def _resolved_spec_clarification(*, workspace_path: str, feature_name: str, stage: str) -> list[dict]:
+    return [
+        {
+            "id": f"ask_spec_clarify_{stage}",
+            "tool_call_id": f"call_spec_clarify_{stage}",
+            "question": f"请确认 {feature_name} 的 {stage} 边界。",
+            "answer_text": "确认按当前边界继续。",
+            "status": "resolved",
+            "resolved_at": "2026-07-09T00:00:00Z",
+            "request": {
+                "interactionKind": "ask_user",
+                "question": f"请确认 {feature_name} 的 {stage} 边界。",
+                "specContext": {
+                    "kind": "spec_clarification",
+                    "featureName": feature_name,
+                    "stage": stage,
+                    "workspacePath": workspace_path,
+                },
+            },
+        }
+    ]
+
+
 def test_spec_broker_description_lists_write_edit_read_modes():
     description = str(getattr(spec_broker, "description", "") or "")
 
@@ -309,7 +332,8 @@ def test_spec_broker_approval_allows_loose_requirements_with_diagnostics(tmp_pat
 
     assert approved["ok"] is True
     diagnostics = approved["specBrief"]["documents"]["requirements"].get("formatDiagnostics") or {}
-    assert "requirementIds" in diagnostics.get("missingFields", [])
+    assert "requirementIds" not in diagnostics.get("missingFields", [])
+    assert started["idAllocation"]["allocatedIds"] == ["REQ-001"]
     assert diagnostics.get("approvalBlocking") == []
     assert "requirements" in set(
         spec_service.build_brief(workspace_path=str(workspace), spec_id=started["specId"]).get("approvedStages") or []
@@ -369,6 +393,27 @@ def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_
     monkeypatch.setattr("core.tools.native.spec.command_service.request_approval", fake_request_approval)
 
     with bind_runtime_context(session_id="session_spec", run_id="run_spec", workspace_path=str(workspace)):
+        blocked = _payload(spec_broker.func(
+            mode="write_stage",
+            stage="requirements",
+            feature_name="demo-spec",
+            user_request="生成一个 demo skill",
+            content="# Requirements\n\n- REQ-1: demo.\n",
+            tool_call_id="call_demo",
+        ))
+    assert blocked["ok"] is False
+    assert blocked["kind"] == "spec_clarification_required"
+    assert blocked["askUserTemplate"]["specContext"]["stage"] == "requirements"
+
+    monkeypatch.setattr(
+        "core.tools.native.spec.db.list_ask_user_interactions",
+        lambda **_kwargs: _resolved_spec_clarification(
+            workspace_path=str(workspace),
+            feature_name="demo-spec",
+            stage="requirements",
+        ),
+    )
+    with bind_runtime_context(session_id="session_spec", run_id="run_spec", workspace_path=str(workspace)):
         result = spec_broker.func(
             mode="write_stage",
             stage="requirements",
@@ -384,10 +429,12 @@ def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_
     assert approvals[0].session_id == "session_spec"
     assert approvals[0].run_id == "run_spec"
     assert approvals[0].request["specId"]
+    assert approvals[0].request["specBrief"]["featureName"] == "demo-spec"
     payload = _payload(result.update["messages"][0].content)
     assert payload["approvalId"] == "approval_spec_demo"
     assert payload["approvalKind"] == "spec_stage_approval"
     assert payload["approvalStatus"] == "pending"
+    assert payload["specBrief"]["clarificationSummary"]["count"] == 1
 
 
 def test_spec_broker_edit_alias_rewrites_stage_with_inferred_spec_id(tmp_path):
@@ -1311,6 +1358,14 @@ def test_spec_broker_write_stage_stops_live_turn_for_user_approval(monkeypatch, 
             "status": "pending",
         },
     )
+    monkeypatch.setattr(
+        "core.tools.native.spec.db.list_ask_user_interactions",
+        lambda **_kwargs: _resolved_spec_clarification(
+            workspace_path=str(workspace),
+            feature_name="zzz-ling-perspective",
+            stage="requirements",
+        ),
+    )
 
     with bind_runtime_context(
         runtime_kind="chat",
@@ -1352,6 +1407,14 @@ def test_spec_broker_tasks_stage_stops_live_turn_for_user_approval(monkeypatch, 
             "approval_kind": request.approval_kind,
             "status": "pending",
         },
+    )
+    monkeypatch.setattr(
+        "core.tools.native.spec.db.list_ask_user_interactions",
+        lambda **_kwargs: _resolved_spec_clarification(
+            workspace_path=str(workspace),
+            feature_name="zzz-ling-perspective",
+            stage="tasks",
+        ),
     )
 
     started = _payload(

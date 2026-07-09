@@ -507,9 +507,12 @@ def test_runtime_broker_hydrates_approved_spec_into_execution_bundle(tmp_path):
             "- expectedOutput: index.html and README.md\n"
             "- acceptance: index.html contains SPEC_DRY_RUN and a clickable increment button.\n"
             "- proofRequired: report touched files and smoke verification.\n"
+            "- mvpSlice: index.html counter works before README polish.\n"
+            "- independentAcceptance: reviewer can open index.html and inspect SPEC_DRY_RUN.\n"
         ),
     )
-    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    approved = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    assert approved["ok"] is True, (approved.get("analysis") or {}).get("hardBlockers")
 
     with bind_runtime_context(
         session_id="session-spec-distribution",
@@ -544,6 +547,8 @@ def test_runtime_broker_hydrates_approved_spec_into_execution_bundle(tmp_path):
     assert task["taskBriefId"] == "TASK-001"
     assert task["context"]["specId"] == spec_id
     assert task["context"]["taskDetailRef"] == f"spec://{spec_id}/tasks#TASK-001"
+    assert task["context"]["mvpSlice"] == "index.html counter works before README polish."
+    assert task["context"]["independentAcceptance"] == "reviewer can open index.html and inspect SPEC_DRY_RUN."
     assert "REQ-001" in task["context"]["stageContent"]["requirements"]
     assert "DES-001" in task["context"]["stageContent"]["design"]
     assert "SPEC_DRY_RUN" in task["context"]["taskExcerpt"]
@@ -613,6 +618,9 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
             "| **需求引用** | REQ-001 |\n"
             "| **设计引用** | DES-001 |\n\n"
             "**输出文件**：\n- `.agents/skills/ling-perspective/`\n\n"
+            "**证明材料**：目录列表和路径存在性检查。\n\n"
+            "**MVP 切片**：目录结构先可检查。\n\n"
+            "**独立验收**：Reviewer 可以列出目录确认路径存在。\n\n"
             "### T-03: 调研 Agent 1 — 著作与系统性设定\n\n"
             "| 属性 | 值 |\n|------|-----|\n"
             "| **Runtime** | `research` (via delegation_broker) |\n"
@@ -621,6 +629,9 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
             "| **设计引用** | DES-001 |\n\n"
             "**输出文件**：\n- `references/research/01-writings.md`\n\n"
             "**验收标准**：\n- [ ] 来源数 >= 5\n\n"
+            "**证明材料**：调研文档路径和来源数量。\n\n"
+            "**MVP 切片**：先交付可读证据包。\n\n"
+            "**独立验收**：Reviewer 可以打开 01-writings.md 抽查来源。\n\n"
             "### T-04: 调研 Agent 2 — 对话与剧情台词\n\n"
             "| 属性 | 值 |\n|------|-----|\n"
             "| **Runtime** | `research` (via delegation_broker) |\n"
@@ -628,6 +639,9 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
             "| **需求引用** | REQ-001 |\n"
             "| **设计引用** | DES-001 |\n\n"
             "**输出文件**：\n- `references/research/02-conversations.md`\n\n"
+            "**证明材料**：调研文档路径。\n\n"
+            "**MVP 切片**：先交付可读证据包。\n\n"
+            "**独立验收**：Reviewer 可以打开 02-conversations.md 抽查引用。\n\n"
             "### T-12: Skill 构建\n\n"
             "| 属性 | 值 |\n|------|-----|\n"
             "| **Runtime** | `engineering` |\n"
@@ -635,6 +649,9 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
             "| **需求引用** | REQ-001 |\n"
             "| **设计引用** | DES-001 |\n\n"
             "**输出文件**：\n- `SKILL.md`\n"
+            "**证明材料**：SKILL.md 路径和加载验证。\n\n"
+            "**MVP 切片**：SKILL.md 能被加载。\n\n"
+            "**独立验收**：Reviewer 可以检查 frontmatter 和入口说明。\n\n"
             "### T-13: 质量验证\n\n"
             "| 属性 | 值 |\n|------|-----|\n"
             "| **Runtime** | `engineering` (子 agent 执行测试) |\n"
@@ -642,9 +659,13 @@ def test_runtime_broker_parses_chinese_t_id_spec_tasks_into_lane_briefs(tmp_path
             "| **需求引用** | REQ-001 |\n"
             "| **设计引用** | DES-001 |\n\n"
             "**输出文件**：\n- `verification-report.md`\n"
+            "**证明材料**：验证报告路径。\n\n"
+            "**MVP 切片**：核心检查项先通过。\n\n"
+            "**独立验收**：Reviewer 可以阅读报告确认测试结果。\n"
         ),
     )
-    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    approved = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    assert approved["ok"] is True, (approved.get("analysis") or {}).get("hardBlockers")
 
     with bind_runtime_context(
         session_id="session-spec-tid",
@@ -761,21 +782,31 @@ def test_runtime_broker_parses_bold_markdown_task_fields_without_ref_noise(tmp_p
             "- **Refs:** Design §3 (Directory Structure), REQ-001\n"
             "- **Output:** `.agents/skills/ling-perspective/`\n"
             "- **Acceptance:** Directory listing confirms all paths exist.\n\n"
+            "- **Proof:** Directory listing output.\n"
+            "- **MVP Slice:** directory exists before content polish.\n"
+            "- **Independent Acceptance:** reviewer can list the directory.\n\n"
             "## TASK-002: Research — Agent 1\n\n"
             "- **Lane:** research\n"
             "- **Depends:** TASK-001\n"
-            "- **Refs:** Design §5 Agent 1, huashu-nuwa Phase 1\n"
+            "- **Refs:** REQ-001, Design §5 Agent 1, huashu-nuwa Phase 1\n"
             "- **Output:** `references/research/01-writings.md`\n"
             "- **Acceptance:** File exists with cited claims.\n\n"
+            "- **Proof:** file path and source count.\n"
+            "- **MVP Slice:** readable research note exists.\n"
+            "- **Independent Acceptance:** reviewer can open the markdown and inspect citations.\n\n"
             "## TASK-003: SKILL.md Construction\n\n"
             "- **Lane:** engineering\n"
             "- **Depends:** TASK-002\n"
-            "- **Refs:** Design §4, skill-template, skill-creator\n"
+            "- **Refs:** REQ-001, Design §4, skill-template, skill-creator\n"
             "- **Output:** `SKILL.md`\n"
             "- **Acceptance:** Valid YAML frontmatter.\n"
+            "- **Proof:** file path and frontmatter validation.\n"
+            "- **MVP Slice:** SKILL.md loads before optional examples.\n"
+            "- **Independent Acceptance:** reviewer can inspect YAML frontmatter.\n"
         ),
     )
-    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    approved = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    assert approved["ok"] is True, approved
     spec_brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=spec_id)
     pipeline = spec_brief["documents"]["tasks"]["pipelineDiagnostics"]
     assert pipeline["valid"] is True
@@ -850,8 +881,8 @@ def test_runtime_broker_parses_live_style_chinese_role_and_output_path(tmp_path)
             "| **任务名称** | 目录初始化与脚本复制 |\n"
             "| **执行角色** | Engineering Agent |\n"
             "| **依赖关系** | 无（首个任务） |\n"
-            "| **需求引用** | 需求文档 §2.1 输出规范 |\n"
-            "| **设计引用** | 设计文档 §2 目录结构设计 |\n\n"
+            "| **需求引用** | REQ-001 / 需求文档 §2.1 输出规范 |\n"
+            "| **设计引用** | DES-001 / 设计文档 §2 目录结构设计 |\n\n"
             "**任务描述**：\n"
             "创建完整的自包含目录结构，并从huashu-nuwa skill复制必要的工具脚本。\n\n"
             "**预期输出路径**：\n"
@@ -861,6 +892,9 @@ def test_runtime_broker_parses_live_style_chinese_role_and_output_path(tmp_path)
             "**验收标准**：\n"
             "1. 所有要求的目录都已创建\n"
             "2. `scripts/merge_research.py` 已复制\n\n"
+            "**证明材料**：目录列表和文件存在性检查。\n\n"
+            "**MVP 切片**：目录和脚本复制可独立验收。\n\n"
+            "**独立验收**：Reviewer 可以检查三个目录和脚本文件。\n\n"
             "---\n\n"
             "### TASK-002: 官方设定与角色档案调研\n\n"
             "| 字段 | 内容 |\n"
@@ -869,11 +903,18 @@ def test_runtime_broker_parses_live_style_chinese_role_and_output_path(tmp_path)
             "| **任务名称** | 官方设定与角色档案调研 |\n"
             "| **执行角色** | Research Agent 1 |\n"
             "| **依赖关系** | TASK-001 |\n\n"
+            "| **需求引用** | REQ-001 / 需求文档 §2.1 输出规范 |\n"
+            "| **设计引用** | DES-001 / 设计文档 §2 调研目录设计 |\n\n"
             "**预期输出路径**：\n"
             "- `.agents/skills/ling-perspective/references/research/01-writings.md`\n"
+            "**验收标准**：文档存在且包含来源摘要。\n"
+            "**证明材料**：调研文档路径和摘要。\n"
+            "**MVP 切片**：先交付可读角色档案。\n"
+            "**独立验收**：Reviewer 可以打开文档抽查来源。\n"
         ),
     )
-    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    approved = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+    assert approved["ok"] is True, (approved.get("analysis") or {}).get("hardBlockers")
 
     with bind_runtime_context(
         session_id="session-live-style-spec",

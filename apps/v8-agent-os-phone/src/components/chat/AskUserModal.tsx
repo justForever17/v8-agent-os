@@ -140,6 +140,23 @@ function mediaPlaybackUrl(item: AskUserMedia) {
     return artifactId ? `/api/client/artifacts/${encodeURIComponent(artifactId)}/content` : "";
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function specClarificationContext(request?: AskUserRequest | null) {
+    const context = asRecord(request?.specContext);
+    if (asText(context.kind) !== "spec_clarification") {
+        return null;
+    }
+    return {
+        featureName: asText(context.featureName) || asText(context.specTitle),
+        stage: asText(context.stage),
+    };
+}
+
 function AskUserMediaCard({
     item,
     index,
@@ -345,6 +362,7 @@ export const AskUserModal = memo(function AskUserModal({
     const canSubmit = Boolean(buildAnswer()) && questions.every(isQuestionAnswered);
     const title = asText(request?.question) || question || t("src.components.chat.askusermodal.one_quick_answer_before_we_continue");
     const details = asText(request?.details);
+    const specContext = specClarificationContext(request);
 
     return (
         <Modal visible={visible} transparent animationType="slide" onRequestClose={closePanel}>
@@ -355,6 +373,15 @@ export const AskUserModal = memo(function AskUserModal({
                         <View style={styles.headerText}>
                             <Text numberOfLines={1} style={[styles.title, { color: colors.text }]}>{title}</Text>
                             {details ? <Text numberOfLines={1} style={[styles.subtitle, { color: colors.textMuted }]}>{details}</Text> : null}
+                            {specContext ? (
+                                <View style={styles.specContextRow}>
+                                    <Text style={[styles.specContextPill, { color: colors.primary, backgroundColor: `${colors.primary}1A` }]}>
+                                        {t("src.components.chat.askusermodal.spec_clarification")}
+                                    </Text>
+                                    {specContext.featureName ? <Text numberOfLines={1} style={[styles.specContextPill, { color: colors.text, backgroundColor: colors.surface }]}>{specContext.featureName}</Text> : null}
+                                    {specContext.stage ? <Text style={[styles.specContextPill, { color: colors.textMuted, backgroundColor: colors.surface }]}>{specContext.stage}</Text> : null}
+                                </View>
+                            ) : null}
                         </View>
                         <View style={styles.headerActions}>
                             <Pressable onPress={() => goToPage(pageIndex - 1)} disabled={pageIndex <= 0} style={styles.iconButton}>
@@ -526,6 +553,19 @@ const styles = StyleSheet.create({
         marginTop: 1,
         fontSize: 11,
         lineHeight: 15,
+    },
+    specContextRow: {
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: 6,
+        marginTop: 6,
+    },
+    specContextPill: {
+        borderRadius: 999,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        fontSize: 10,
+        fontWeight: "800",
     },
     headerActions: {
         flexDirection: "row",

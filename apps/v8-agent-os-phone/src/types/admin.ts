@@ -176,6 +176,7 @@ export type CommandPresetSummary = {
     name: string;
     summary?: string;
     filename?: string;
+    specCommandAction?: "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex";
 };
 
 export type SkillReferenceSummary = {

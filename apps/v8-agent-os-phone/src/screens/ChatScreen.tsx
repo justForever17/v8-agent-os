@@ -395,6 +395,16 @@ function isUploadedVisualFile(file: UploadedWorkspaceFile) {
         || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|mov|m4v|webm|mkv|avi)$/i.test(name);
 }
 
+const SPEC_COMMAND_DEFS: Array<Pick<CommandPresetSummary, "name" | "specCommandAction"> & { summaryKey: string }> = [
+    { name: "spec new", summaryKey: "src.screens.chatscreen.spec_command_new_summary", specCommandAction: "new" },
+    { name: "spec continue", summaryKey: "src.screens.chatscreen.spec_command_continue_summary", specCommandAction: "continue" },
+    { name: "spec list", summaryKey: "src.screens.chatscreen.spec_command_list_summary", specCommandAction: "list" },
+    { name: "spec approve", summaryKey: "src.screens.chatscreen.spec_command_approve_summary", specCommandAction: "approve" },
+    { name: "spec clarify", summaryKey: "src.screens.chatscreen.spec_command_clarify_summary", specCommandAction: "clarify" },
+    { name: "spec analyze", summaryKey: "src.screens.chatscreen.spec_command_analyze_summary", specCommandAction: "analyze" },
+    { name: "spec annex", summaryKey: "src.screens.chatscreen.spec_command_annex_summary", specCommandAction: "annex" },
+];
+
 function buildUserMessage(
     text: string,
     options: {
@@ -412,7 +422,10 @@ function buildUserMessage(
     const attachmentOnlyAudio = attachments.length > 0
         && options.files.length > 0
         && options.files.every(isUploadedAudioFile);
-    if (options.command) {
+    if (options.command?.specCommandAction) {
+        metadata.specMode = true;
+        metadata.specCommand = { action: options.command.specCommandAction };
+    } else if (options.command) {
         metadata.commandPreset = { name: options.command.name };
     }
     if (options.skills.length > 0) {
@@ -2214,15 +2227,24 @@ export default function ChatScreen() {
             setReasoningEffort("auto");
         }
     }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
+    const specCommands = useMemo<CommandPresetSummary[]>(
+        () => SPEC_COMMAND_DEFS.map((item) => ({
+            name: item.name,
+            summary: t(item.summaryKey),
+            specCommandAction: item.specCommandAction,
+        })),
+        [t],
+    );
     const filteredCommands = useMemo(() => {
+        const allCommands = [...specCommands, ...commands];
         if (!queryTerm) {
-            return commands;
+            return allCommands;
         }
-        return commands.filter((item) =>
+        return allCommands.filter((item) =>
             item.name.toLowerCase().includes(queryTerm)
             || String(item.summary || "").toLowerCase().includes(queryTerm),
         );
-    }, [commands, queryTerm]);
+    }, [commands, queryTerm, specCommands]);
     const filteredMentionItems = useMemo<ComposerMentionItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}:${skill.path || ""}`));
         const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
@@ -5806,6 +5828,9 @@ export default function ChatScreen() {
         }
 
         const pendingCommand = selectedCommand;
+        const pendingSpecCommand = pendingCommand?.specCommandAction
+            ? { action: pendingCommand.specCommandAction }
+            : undefined;
         const pendingSkills = [...selectedSkills];
         const pendingSubagentFamilies = [...selectedSubagentFamilies];
         const pendingFiles = [...effectiveUploadedFiles];
@@ -5909,7 +5934,9 @@ export default function ChatScreen() {
                         projectId: scopeBinding?.projectId || null,
                         workspaceId: scopeBinding?.workspaceId || null,
                         workspacePath: scopeBinding?.workspacePath || null,
-                        commandPresetName: pendingCommand?.name || null,
+                        commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
+                        specCommand: pendingSpecCommand,
+                        specMode: Boolean(pendingSpecCommand),
                         skillReferences: pendingSkills,
                         contextMentions: [
                             ...pendingSkills.map((skill): ContextMentionSummary => ({
@@ -6077,7 +6104,9 @@ export default function ChatScreen() {
                     projectId: scopeBinding?.projectId || null,
                     workspaceId: scopeBinding?.workspaceId || null,
                     workspacePath: scopeBinding?.workspacePath || null,
-                    commandPresetName: pendingCommand?.name || null,
+                    commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
+                    specCommand: pendingSpecCommand,
+                    specMode: Boolean(pendingSpecCommand),
                     skillReferences: pendingSkills,
                     contextMentions: [
                         ...pendingSkills.map((skill): ContextMentionSummary => ({

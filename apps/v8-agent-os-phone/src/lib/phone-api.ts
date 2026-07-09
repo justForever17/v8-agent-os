@@ -956,10 +956,11 @@ export async function submitChatMessage(
                 workspaceId: options.workspaceId || undefined,
                 workspacePath: options.workspacePath || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
+                specCommand: options.specCommand || undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 plannerMode: options.taskPlanningMode ? "off" : undefined,
-                specMode: options.taskPlanningMode ? true : undefined,
+                specMode: (options.taskPlanningMode || options.specMode || options.specCommand) ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
@@ -1222,6 +1223,7 @@ type SendChatOptions = {
     attachments?: Array<Record<string, unknown>>;
     taskPlanningMode?: boolean;
     specMode?: boolean;
+    specCommand?: { action: "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex"; specId?: string; stage?: string };
     supervisorReasoningEffort?: string;
     safetyApprovalMode?: "manual" | "reduced" | "minimal";
 };
@@ -1251,10 +1253,11 @@ export async function sendChatMessageStream(
                 workspaceId: options.workspaceId || undefined,
                 workspacePath: options.workspacePath || undefined,
                 commandPreset: options.commandPresetName ? { name: options.commandPresetName } : undefined,
+                specCommand: options.specCommand || undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
                 plannerMode: options.taskPlanningMode ? "off" : undefined,
-                specMode: options.taskPlanningMode ? true : undefined,
+                specMode: (options.taskPlanningMode || options.specMode || options.specCommand) ? true : undefined,
                 taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
                 taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,

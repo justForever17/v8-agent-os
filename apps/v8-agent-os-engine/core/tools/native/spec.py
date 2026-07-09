@@ -10,6 +10,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.graph import END
 from langgraph.types import Command
 
+from core.database import db
 from core.spec_service import spec_service
 from erc.command_service import command_service
 from erc.models import ApprovalRequest
@@ -52,13 +53,15 @@ def _spec_tasks_stage_contract_hint() -> dict[str, Any]:
             "specRefs that cite requirement/design ids or explicit requirement/design sections",
             "expectedOutput paths or handoff/artifact names",
             "acceptance/proof checks",
+            "mvpSlice for large tasks",
+            "independentAcceptance for large tasks",
         ],
         "minimalMarkdown": (
             "## Task Pipeline\n\n"
-            "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |\n"
-            "| --- | --- | --- | --- | --- | --- | --- |\n"
-            "| TASK-001 | Research | Gather evidence for the required topic. | - | REQ-001, DES-001 | references/research/*.md + evidence pack | Sources and limits are recorded. |\n"
-            "| TASK-002 | Engineering | Create or update the requested artifact. | TASK-001 | REQ-001, DES-002 | target files/artifact paths | Files exist and match acceptance criteria. |\n\n"
+            "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof | MVP slice | Independent acceptance |\n"
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+            "| TASK-001 | Research | Gather evidence for the required topic. | - | REQ-001, DES-001 | references/research/*.md + evidence pack | Sources and limits are recorded. | evidence packet is independently readable | Reviewer can verify cited sources exist. |\n"
+            "| TASK-002 | Engineering | Create or update the requested artifact. | TASK-001 | REQ-001, DES-002 | target files/artifact paths | Files exist and match acceptance criteria. | smallest runnable change | Build/test output proves the slice. |\n\n"
             "## Task Details\n\n"
             "### TASK-001: <task title>\n\n"
             "- runtimeLane: Research\n"
@@ -68,6 +71,8 @@ def _spec_tasks_stage_contract_hint() -> dict[str, Any]:
             "- expectedOutput: <paths or handoff names>\n"
             "- acceptance: <how to verify>\n"
             "- proofRequired: <proof/handoff/artifact refs>\n"
+            "- mvpSlice: <smallest independently useful slice>\n"
+            "- independentAcceptance: <what a reviewer can verify without trusting the worker>\n"
         ),
     }
 
@@ -180,6 +185,8 @@ def _request_spec_stage_approval(
     summary: str,
     pipeline: dict[str, Any],
     workspace_path: str = "",
+    spec_brief: dict[str, Any] | None = None,
+    analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     fingerprint = f"spec_stage_approval:{spec_id}:{stage}"
     return command_service.request_approval(
@@ -196,6 +203,8 @@ def _request_spec_stage_approval(
                 "detailRef": f"spec://{spec_id}/{stage}" if spec_id and stage else "",
                 "workspacePath": workspace_path,
                 "pipelineControl": pipeline,
+                "specBrief": spec_brief or {},
+                "analysis": analysis or {},
                 "operationFingerprint": fingerprint,
                 "operationTargetFingerprint": fingerprint,
                 "recommendedNextAction": "Approve or request revision for this Spec stage.",
@@ -230,6 +239,8 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
         return None
     spec_id = str(result.get("specId") or "").strip()
     summary = str(result.get("summary") or f"Spec stage '{stage}' is ready for review.").strip()
+    spec_brief = result.get("specBrief") if isinstance(result.get("specBrief"), dict) else {}
+    analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
     approval = _request_spec_stage_approval(
         session_id=session_id,
         run_id=run_id,
@@ -238,6 +249,8 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
         summary=summary,
         pipeline=pipeline,
         workspace_path=workspace_path,
+        spec_brief=spec_brief,
+        analysis=analysis,
     )
     payload = _spec_broker_payload(
         ok=True,
@@ -250,6 +263,8 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
         approvalStatus=approval.get("status") or "pending",
         detailRef=f"spec://{spec_id}/{stage}" if spec_id and stage else "",
         pipelineControl=pipeline,
+        specBrief=spec_brief,
+        analysis=analysis,
         transitionHint=_spec_transition_hint(spec_id=spec_id, stage=stage, pipeline=pipeline),
         recommendedNextAction="Wait for the Spec approval gate before continuing to the next Spec stage.",
     )
@@ -395,6 +410,114 @@ def _spec_approve_blocked_for_supervisor() -> bool:
         or ""
     ).strip().lower()
     return approval_actor not in {"user", "client", "admin", "live_harness"}
+
+
+def _spec_runtime_ids() -> tuple[str, str]:
+    runtime_context = get_runtime_context() or {}
+    if not isinstance(runtime_context, dict):
+        return "", ""
+    return (
+        str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip(),
+        str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip(),
+    )
+
+
+def _spec_context_matches_stage(request: dict[str, Any], *, spec_id: str, stage: str, feature_name: str = "") -> bool:
+    context = request.get("specContext") if isinstance(request.get("specContext"), dict) else {}
+    if not context:
+        return False
+    kind = str(context.get("kind") or context.get("contextKind") or "").strip().lower()
+    if kind not in {"spec_clarification", "spec-clarification"}:
+        return False
+    requested_stage = str(context.get("stage") or context.get("specStage") or "").strip().lower()
+    if requested_stage and requested_stage != stage:
+        return False
+    requested_spec_id = str(context.get("specId") or context.get("spec_id") or "").strip()
+    if requested_spec_id and spec_id and requested_spec_id != spec_id:
+        return False
+    requested_feature = str(context.get("featureName") or "").strip().lower()
+    if requested_feature and feature_name and requested_feature not in str(feature_name).strip().lower():
+        return False
+    return True
+
+
+def _spec_resolved_clarification_interactions(*, spec_id: str, stage: str, feature_name: str = "") -> list[dict[str, Any]]:
+    session_id, run_id = _spec_runtime_ids()
+    if not session_id or not run_id:
+        return []
+    matches: list[dict[str, Any]] = []
+    for interaction in db.list_ask_user_interactions(session_id=session_id, run_id=run_id, status="resolved"):
+        request = interaction.get("request") if isinstance(interaction.get("request"), dict) else {}
+        if _spec_context_matches_stage(request, spec_id=spec_id, stage=stage, feature_name=feature_name):
+            matches.append(interaction)
+    return matches
+
+
+def _spec_record_resolved_clarifications(
+    *,
+    workspace: str,
+    spec_id: str,
+    stage: str,
+    feature_name: str = "",
+) -> None:
+    for interaction in _spec_resolved_clarification_interactions(spec_id=spec_id, stage=stage, feature_name=feature_name):
+        request = interaction.get("request") if isinstance(interaction.get("request"), dict) else {}
+        try:
+            spec_service.record_clarification(
+                workspace_path=workspace,
+                spec_id=spec_id,
+                stage=stage,
+                question=str(request.get("question") or request.get("prompt") or ""),
+                answer=str(interaction.get("answer_text") or ""),
+                source_run_id=str(interaction.get("run_id") or ""),
+                tool_call_id=str(interaction.get("tool_call_id") or ""),
+                interaction_id=str(interaction.get("id") or ""),
+                feature_name=feature_name,
+            )
+        except Exception:
+            continue
+
+
+def _spec_clarification_ready(*, workspace: str, spec_id: str, stage: str, feature_name: str = "") -> bool:
+    session_id, run_id = _spec_runtime_ids()
+    if not session_id or not run_id:
+        return True
+    normalized_stage = str(stage or "").strip().lower()
+    if normalized_stage not in _SPEC_STAGES:
+        return True
+    if spec_id and spec_service.has_stage_clarification(workspace_path=workspace, spec_id=spec_id, stage=normalized_stage):
+        return True
+    return bool(_spec_resolved_clarification_interactions(spec_id=spec_id, stage=normalized_stage, feature_name=feature_name))
+
+
+def _spec_clarification_required_payload(*, spec_id: str, stage: str, feature_name: str = "", workspace: str = "") -> str:
+    return _spec_broker_payload(
+        ok=False,
+        kind="spec_clarification_required",
+        specId=spec_id or None,
+        featureName=feature_name or None,
+        stage=stage,
+        summary=(
+            "Spec document writing is blocked until this stage records at least one human clarification "
+            "through ask_user."
+        ),
+        recommendedNextAction=(
+            "Call ask_user with one to three plain-language questions and include "
+            "specContext={kind:'spec_clarification', specId, featureName, stage, workspacePath}. "
+            "After the user answers, retry spec_broker with the complete Markdown stage."
+        ),
+        askUserTemplate={
+            "interactionKind": "ask_user",
+            "question": f"为了写好 {feature_name or '当前 Spec'} 的 {stage}，我需要确认几个关键点。",
+            "specContext": {
+                "kind": "spec_clarification",
+                **({"specId": spec_id} if spec_id else {}),
+                **({"featureName": feature_name} if feature_name else {}),
+                "stage": stage,
+                **({"workspacePath": workspace} if workspace else {}),
+            },
+        },
+    )
 
 
 def _spec_stage_mismatch_payload(*, attempted_stage: str, expected_stage: str, spec_id: str) -> str:
@@ -641,6 +764,10 @@ def spec_broker(
     Write flow:
     - `mode='write_stage'`, `stage='requirements'|'bugfix'|'design'|'tasks'`,
       `content='<complete markdown document>'`.
+    - In a live chat run, the first write of each main stage requires a
+      resolved `ask_user` clarification with
+      `specContext.kind='spec_clarification'`; if missing, this tool returns
+      `spec_clarification_required`.
     - `mode='edit'|'write'|'update'|'rewrite_stage'` rewrites an existing
       unapproved stage; `read`/`read_stage`/`read_section` read the current
       document or section.
@@ -659,9 +786,12 @@ def spec_broker(
     `tasks.md` must be pipeline-ready. Requirements/design can be loose, but
     tasks must be assignable and traceable: include `TASK-001` style IDs,
     runtime lane / `runtimeLane`, `dependsOn`, `specRefs` that cite
-    requirement/design ids or sections, expected output paths/handoffs, and acceptance/proof checks. A
-    natural-language task list without refs is only a draft and will not open
-    the approval gate.
+    requirement/design ids or sections, expected output paths/handoffs,
+    acceptance/proof checks, and for large tasks `mvpSlice` plus
+    `independentAcceptance`. A natural-language task list without refs is only
+    a draft and will not open the approval gate.
+    Approval payloads include checklist/analysis evidence; summarize that
+    evidence for users instead of dumping raw JSON.
     After tasks are approved, internally route execution with `runtime_broker`
     into the required specialist mode; when speaking to users say 编程模式,
     多媒体创作, 桌面操作, 自动流程, or 子代理协作 as appropriate. Do not
@@ -766,6 +896,20 @@ def spec_broker(
                 )
                 if inferred_spec_id:
                     spec_id = inferred_spec_id
+            clarification_stage = requested_stage or ("bugfix" if requested_kind == "bugfix" else "requirements")
+            clarification_feature = str(feature_name or user_request or "").strip()
+            if not _spec_clarification_ready(
+                workspace=workspace,
+                spec_id=str(spec_id or ""),
+                stage=clarification_stage,
+                feature_name=clarification_feature,
+            ):
+                return _spec_clarification_required_payload(
+                    spec_id=str(spec_id or ""),
+                    stage=clarification_stage,
+                    feature_name=clarification_feature,
+                    workspace=workspace,
+                )
             result = spec_service.create_stage(
                 workspace_path=workspace,
                 user_request=user_request,
@@ -784,6 +928,21 @@ def spec_broker(
                     content=str(content),
                     reason=comment or "initial_stage_markdown",
                 )
+            if result.get("ok"):
+                _spec_record_resolved_clarifications(
+                    workspace=workspace,
+                    spec_id=str(result.get("specId") or spec_id or ""),
+                    stage=str(result.get("stage") or clarification_stage),
+                    feature_name=clarification_feature,
+                )
+                try:
+                    result["specBrief"] = spec_service.build_brief(
+                        workspace_path=workspace,
+                        spec_id=str(result.get("specId") or spec_id or ""),
+                    )
+                    result["linkedSections"] = result["specBrief"].get("linkedSections")
+                except Exception:
+                    pass
             result.setdefault(
                 "transitionHint",
                 _spec_transition_hint(
@@ -890,6 +1049,19 @@ def spec_broker(
                     spec_id=str(resolved_spec_id or ""),
                     attempted_mode=normalized_mode,
                 )
+            clarification_stage = resolved_stage or _spec_context_next_stage()
+            if clarification_stage in _SPEC_STAGES and not _spec_clarification_ready(
+                workspace=workspace,
+                spec_id=str(resolved_spec_id or ""),
+                stage=clarification_stage,
+                feature_name=str(feature_name or user_request or "").strip(),
+            ):
+                return _spec_clarification_required_payload(
+                    spec_id=str(resolved_spec_id or ""),
+                    stage=clarification_stage,
+                    feature_name=str(feature_name or user_request or "").strip(),
+                    workspace=workspace,
+                )
             edit_content = content or user_request or comment
             if normalized_mode == "rewrite_stage" and resolved_stage:
                 created = spec_service.create_stage(
@@ -910,6 +1082,12 @@ def spec_broker(
                 content=edit_content,
                 section_ref=section_ref,
                 reason=comment or normalized_mode,
+            )
+            _spec_record_resolved_clarifications(
+                workspace=workspace,
+                spec_id=str(resolved_spec_id),
+                stage=str(result.get("stage") or clarification_stage or resolved_stage),
+                feature_name=str(feature_name or user_request or "").strip(),
             )
             result.setdefault(
                 "transitionHint",

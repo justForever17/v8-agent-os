@@ -63,6 +63,24 @@ function asText(value: unknown) {
     return typeof value === "string" ? value.trim() : "";
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : {};
+}
+
+function specClarificationContext(request?: AskUserRequest | null) {
+    const context = asRecord(request?.specContext);
+    if (asText(context.kind) !== "spec_clarification") {
+        return null;
+    }
+    return {
+        featureName: asText(context.featureName) || asText(context.specTitle),
+        stage: asText(context.stage),
+        workspace: asText(context.workspacePath) || asText(context.workspace),
+    };
+}
+
 function optionKey(option: AskUserOption, index: number) {
     return asText(option.id) || asText(option.value) || asText(option.title) || asText(option.label) || `option-${index}`;
 }
@@ -388,6 +406,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
 
     const title = asText(request?.question) || question || t("web.generated.96e02115f4");
     const details = asText(request?.details);
+    const specContext = specClarificationContext(request);
     const currentAnswered = currentQuestion ? isQuestionAnswered(currentQuestion, pageIndex) : true;
     const isLastPage = pageIndex >= questions.length - 1;
 
@@ -414,6 +433,13 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 </Tooltip>
                             </div>
                             {details ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{details}</p> : null}
+                            {specContext ? (
+                                <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-medium text-violet-700 dark:text-violet-200">
+                                    <span className="rounded-full bg-violet-500/10 px-2 py-0.5">Spec 澄清</span>
+                                    {specContext.featureName ? <span className="rounded-full bg-muted px-2 py-0.5">{specContext.featureName}</span> : null}
+                                    {specContext.stage ? <span className="rounded-full bg-muted px-2 py-0.5">{specContext.stage}</span> : null}
+                                </div>
+                            ) : null}
                         </div>
                         <div className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
                             <button

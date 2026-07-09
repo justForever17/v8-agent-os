@@ -83,6 +83,14 @@ class CommandPresetSelection(BaseModel):
     name: str = Field(description="Command preset display name / file stem")
 
 
+class SpecCommandSelection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    action: str = Field(description="Built-in Spec command action")
+    spec_id: Optional[str] = Field(default=None, alias="specId")
+    stage: Optional[str] = None
+
+
 class SkillReferenceSelection(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -139,6 +147,7 @@ class ChatRequestData(BaseModel):
     conversation_id: Optional[str] = Field(default=None, alias="conversationId")
     model_profile: Optional[str] = Field(default=None, alias="modelProfile")
     command_preset: Optional[CommandPresetSelection] = Field(default=None, alias="commandPreset")
+    spec_command: Optional[SpecCommandSelection] = Field(default=None, alias="specCommand")
     spec_mode: Optional[bool] = Field(default=None, alias="specMode")
     spec_id: Optional[str] = Field(default=None, alias="specId")
     task_planning_mode: Optional[bool] = Field(default=None, alias="taskPlanningMode")

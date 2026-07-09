@@ -110,6 +110,87 @@ def _required_runtime_degraded_handoffs(
     return degraded
 
 
+def _spec_tasks_need_proof(spec_brief: Mapping[str, Any]) -> list[dict[str, Any]]:
+    traceability = spec_brief.get("traceability") if isinstance(spec_brief.get("traceability"), Mapping) else {}
+    tasks = [dict(item) for item in list(traceability.get("tasks") or []) if isinstance(item, Mapping)]
+    return [
+        task
+        for task in tasks
+        if str(task.get("proofRequired") or task.get("independentAcceptance") or "").strip()
+    ]
+
+
+def _handoff_has_verifiable_proof(handoff: Mapping[str, Any]) -> bool:
+    payload = handoff.get("payload") if isinstance(handoff.get("payload"), Mapping) else {}
+    refs = handoff.get("refs") if isinstance(handoff.get("refs"), list) else payload.get("refs")
+    if isinstance(refs, list) and any(str(item or "").strip() for item in refs):
+        return True
+    if str(handoff.get("raw_ref") or handoff.get("rawRef") or "").strip():
+        return True
+    if str(handoff.get("detail_tool") or handoff.get("detailTool") or "").strip():
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            handoff.get("compact_summary"),
+            handoff.get("compactSummary"),
+            handoff.get("summary"),
+            payload.get("compactSummary"),
+            payload.get("summary"),
+            payload.get("proof"),
+            payload.get("acceptance"),
+            payload.get("verification"),
+        )
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "proof",
+            "verified",
+            "verification",
+            "acceptance",
+            "evidence",
+            "artifact",
+            "changed file",
+            "touched file",
+            "证明",
+            "验收",
+            "验证",
+            "证据",
+            "产物",
+            "文件",
+        )
+    )
+
+
+def _missing_spec_proof_handoffs(
+    spec_brief: Mapping[str, Any],
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> dict[str, Any] | None:
+    required_tasks = _spec_tasks_need_proof(spec_brief)
+    if not required_tasks:
+        return None
+    ready_handoffs: list[dict[str, Any]] = []
+    for episode in episodes:
+        if _is_optional_episode(episode):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if not episode_id:
+            continue
+        for handoff in list(handoffs_by_episode.get(episode_id, []) or []):
+            status = str(handoff.get("status") or "").strip().lower()
+            if status in RUNTIME_EXECUTION_HANDOFF_STATUSES:
+                ready_handoffs.append(dict(handoff))
+    if any(_handoff_has_verifiable_proof(handoff) for handoff in ready_handoffs):
+        return None
+    return {
+        "taskIds": [str(task.get("taskId") or "") for task in required_tasks[:8] if str(task.get("taskId") or "").strip()],
+        "handoffCount": len(ready_handoffs),
+        "message": "Approved Spec execution returned runtime handoff(s), but no verifiable proof/acceptance refs were found.",
+    }
+
+
 def evaluate_supervisor_completion(
     *,
     episodes: Iterable[Mapping[str, Any]] = (),
@@ -234,6 +315,17 @@ def evaluate_supervisor_completion(
                         "specId": brief.get("specId"),
                         "currentStage": brief.get("currentStage"),
                         "handoffs": degraded_handoffs[:8],
+                    },
+                )
+            missing_proof = _missing_spec_proof_handoffs(brief, normalized_episodes, normalized_handoffs)
+            if missing_proof:
+                return SupervisorCompletionDecision(
+                    action="fail",
+                    reason="spec_runtime_execution_proof_missing",
+                    details={
+                        "specId": brief.get("specId"),
+                        "currentStage": brief.get("currentStage"),
+                        **missing_proof,
                     },
                 )
         # A fast client-side approval can be applied before the turn that wrote

@@ -218,6 +218,7 @@ class ChatPreparedRequest:
     planner_intent_diagnostics: dict[str, Any] = field(default_factory=dict)
     task_planning_mode: bool = False
     spec_mode: bool = False
+    spec_command: dict[str, Any] = field(default_factory=dict)
     spec_id: str = ""
     spec_brief: dict[str, Any] = field(default_factory=dict)
     planner_deferred: bool = False
@@ -1536,6 +1537,22 @@ class ChatRuntime:
         )
         return any(marker in normalized for marker in markers)
 
+    def _normalize_spec_command(self, request: ChatRequest) -> dict[str, Any]:
+        request_data = request.data
+        selection = getattr(request_data, "spec_command", None) if request_data else None
+        if not selection:
+            return {}
+        action = str(getattr(selection, "action", "") or "").strip().lower()
+        if action not in {"new", "continue", "list", "approve", "clarify", "analyze", "annex"}:
+            return {}
+        spec_id = str(getattr(selection, "spec_id", "") or "").strip()
+        stage = str(getattr(selection, "stage", "") or "").strip().lower()
+        return {
+            "action": action,
+            **({"specId": spec_id} if spec_id else {}),
+            **({"stage": stage} if stage else {}),
+        }
+
     def _resolve_request_context(
         self,
         request: ChatRequest,
@@ -1543,6 +1560,9 @@ class ChatRuntime:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         spec_mode = bool(getattr(request_data, "spec_mode", False)) if request_data else False
+        spec_command = self._normalize_spec_command(request)
+        if spec_command:
+            spec_mode = True
         task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
         requested_planner_mode = getattr(request_data, "planner_mode", None) if request_data else None
         planner_dispatch_mode = self._normalize_planner_dispatch_mode(getattr(request_data, "planner_dispatch_mode", None) if request_data else None)
@@ -1622,6 +1642,7 @@ class ChatRuntime:
         command_preset: dict[str, Any] | None,
         task_planning_mode: bool,
         spec_mode: bool,
+        spec_command: dict[str, Any] | None,
         planner_mode: str,
         planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
@@ -1629,7 +1650,7 @@ class ChatRuntime:
         planner_dispatch_mode: str = "suggest",
         spec_continuation: dict[str, Any] | None = None,
     ) -> None:
-        if not command_preset and not skill_references and not context_mentions and not spec_mode:
+        if not command_preset and not skill_references and not context_mentions and not spec_mode and not spec_command:
             return
 
         for message in reversed(lc_messages):
@@ -1679,13 +1700,31 @@ class ChatRuntime:
                             "[SPEC MODE]",
                             "Spec Mode is enabled for this request. Use `spec_broker` as the controlled pipeline tool for requirements/bugfix, design, tasks, revisions, and section reads.",
                             "Spec approval is a blocking user/client governance event, not a Supervisor decision. Never self-approve a Spec stage.",
+                            "Before the first write of each main stage, ask at least one user-facing clarification with `ask_user` using `specContext.kind='spec_clarification'`; reuse same-stage clarification records only for simple revisions.",
                             "When drafting a Spec stage, pass the actual Markdown document in `spec_broker(content=...)`; a scaffold without content is not enough for approval-quality delivery.",
                             "Spec documents MUST be written by a real `spec_broker` tool call. Do not use `write_native_file`, `run_system_command`, shell commands, or textual pseudo tool syntax such as DSML/XML blocks for Spec documents.",
                             "If a real `spec_broker` tool call is unavailable or fails, report `recoverable_failed` with the exact reason instead of pretending a file was written.",
+                            "SpecBrief linkedSections may include checklist/annex evidence; summarize those for the user instead of dumping raw JSON.",
+                            "Before tasks approval, treat analyzer blockers as hard blockers and warnings/checklists as approval evidence.",
                             "Do not implement runtime work before the approved Spec stage allows it. Supervisor todos remain orchestration notes; durable delivery contracts live in `.v8/specs/<feature>/`.",
                             "Use compact SpecBrief/detail refs for runtime and subagent handoff instead of pasting full spec documents into every task.",
                             *continuation_lines,
                             "[/SPEC MODE]",
+                        ]
+                    )
+                )
+            if spec_command:
+                wrapped_sections.append(
+                    "\n".join(
+                        [
+                            "[SPEC COMMAND]",
+                            f"action: {spec_command.get('action')}",
+                            f"specId: {spec_command.get('specId') or '(active or newest)'}",
+                            f"stage: {spec_command.get('stage') or '(pipeline current/next)'}",
+                            "Use this as structured workflow intent. Do not treat it as a Markdown command preset.",
+                            "For analyze/list/continue, prefer spec_broker(mode='brief'/'list') and concise human-readable summaries.",
+                            "For clarify, call ask_user with specContext.kind='spec_clarification', featureName, stage, and workspacePath.",
+                            "[/SPEC COMMAND]",
                         ]
                     )
                 )
@@ -3902,6 +3941,7 @@ class ChatRuntime:
             explicit_subagent_families,
             spec_mode,
         ) = self._resolve_request_context(request)
+        spec_command = self._normalize_spec_command(request)
         live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
         explicit_runtime_episode_requested = self._detect_explicit_runtime_episode_request(self._latest_user_content(request))
         if live_audit_requested or explicit_runtime_episode_requested:
@@ -3915,6 +3955,7 @@ class ChatRuntime:
             command_preset=command_preset,
             task_planning_mode=task_planning_mode,
             spec_mode=spec_mode,
+            spec_command=spec_command,
             spec_continuation=(
                 request.resume_value.get("specContinuation")
                 if isinstance(request.resume_value, dict)
@@ -3942,6 +3983,8 @@ class ChatRuntime:
         if compat_latest_human:
             latest_user_content = compat_latest_human
         spec_id = str(getattr(request.data, "spec_id", "") or "").strip() if request.data else ""
+        if spec_mode and not spec_id and spec_command:
+            spec_id = str(spec_command.get("specId") or "").strip()
         if spec_mode and not spec_id and isinstance(request.resume_value, dict):
             spec_continuation = request.resume_value.get("specContinuation")
             if isinstance(spec_continuation, dict):
@@ -3964,6 +4007,7 @@ class ChatRuntime:
             planner_intent_diagnostics=planner_intent_diagnostics,
             task_planning_mode=task_planning_mode,
             spec_mode=spec_mode,
+            spec_command=spec_command,
             spec_id=spec_id,
             engineering_mode=engineering_mode,
             explicit_engineering_requested=explicit_engineering_requested,
@@ -4391,6 +4435,7 @@ class ChatRuntime:
                     "plannerDispatchMode": prepared.planner_dispatch_mode,
                     "taskPlanningMode": prepared.task_planning_mode,
                     "specMode": prepared.spec_mode,
+                    "specCommand": dict(prepared.spec_command or {}),
                     "specId": prepared.spec_id or None,
                     "specBrief": dict(prepared.spec_brief or {}),
                     "engineeringRequired": bool(engineering_required),
@@ -4577,6 +4622,8 @@ class ChatRuntime:
             prepared_spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
             if prepared_spec_id:
                 metadata["specId"] = prepared_spec_id
+        if isinstance(getattr(chat_run.prepared, "spec_command", None), dict) and chat_run.prepared.spec_command:
+            metadata["specCommand"] = dict(chat_run.prepared.spec_command)
         if isinstance(getattr(chat_run.prepared, "task_shape_hint", None), dict) and chat_run.prepared.task_shape_hint:
             metadata["taskShapeHint"] = dict(chat_run.prepared.task_shape_hint)
         engineering_mode = getattr(chat_run.prepared, "engineering_mode", "auto")
@@ -4627,6 +4674,7 @@ class ChatRuntime:
                 **({"plannerIntentDiagnostics": dict(metadata["plannerIntentDiagnostics"])} if isinstance(metadata.get("plannerIntentDiagnostics"), dict) else {}),
                 **({"taskPlanningMode": True} if metadata.get("taskPlanningMode") is True else {}),
                 **({"specMode": True} if metadata.get("specMode") is True else {}),
+                **({"specCommand": dict(metadata["specCommand"])} if isinstance(metadata.get("specCommand"), dict) else {}),
                 **({"taskShapeHint": dict(metadata["taskShapeHint"])} if isinstance(metadata.get("taskShapeHint"), dict) else {}),
                 **({"engineeringMode": metadata.get("engineeringMode")} if metadata.get("engineeringMode") else {}),
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),

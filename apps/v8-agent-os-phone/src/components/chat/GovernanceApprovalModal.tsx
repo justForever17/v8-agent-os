@@ -105,17 +105,51 @@ function readApprovalKind(approval: PendingApproval | null) {
     ).trim().toLowerCase();
 }
 
+function readArray(value: unknown): unknown[] {
+    return Array.isArray(value) ? value : [];
+}
+
+function summarizeChecklist(specBrief: Record<string, unknown>) {
+    const qualityEvidence = asRecord(specBrief.qualityEvidence);
+    const checklists = asRecord(qualityEvidence.checklists);
+    const requirements = asRecord(checklists.requirements);
+    return {
+        title: readFirstString(requirements.title) || "Requirements checklist",
+        status: readFirstString(requirements.status),
+        unresolved: Number(requirements.unresolvedCount ?? 0) || 0,
+    };
+}
+
+function summarizeSpecAnalysis(analysis: Record<string, unknown>) {
+    return {
+        blockers: readArray(analysis.hardBlockers)
+            .map((item) => typeof item === "string" ? item : JSON.stringify(item))
+            .slice(0, 3),
+        warnings: readArray(analysis.warnings)
+            .map((item) => typeof item === "string" ? item : JSON.stringify(item))
+            .slice(0, 3),
+    };
+}
+
 function extractSpecApprovalDetails(approval: PendingApproval | null) {
     const request = approval?.request || {};
+    const specBrief = asRecord(request.specBrief);
+    const analysis = asRecord(request.analysis);
+    const clarification = asRecord(specBrief.clarificationSummary);
     return {
         isSpecApproval: readApprovalKind(approval) === "spec_stage_approval",
+        featureName: readFirstString(specBrief.featureName, request.featureName, request.feature_name),
         specId: readFirstString(request.specId, request.spec_id),
         stage: readFirstString(request.stage, request.specStage, request.spec_stage),
         summary: readFirstString(request.summary, request.question, request.prompt),
         detailRef: readFirstString(request.detailRef, request.detail_ref),
-        workspacePath: readFirstString(request.workspacePath, request.workspace_path),
+        workspacePath: readFirstString(specBrief.workspacePath, request.workspacePath, request.workspace_path),
         nextStage: readFirstString((request.pipelineControl as Record<string, unknown> | undefined)?.nextStage),
         blockedByApproval: readFirstString((request.pipelineControl as Record<string, unknown> | undefined)?.blockedByApproval),
+        checklist: summarizeChecklist(specBrief),
+        analysisSummary: summarizeSpecAnalysis(analysis),
+        clarificationCount: Number(clarification.count ?? 0) || 0,
+        latestClarification: readFirstString(clarification.latestSummary),
     };
 }
 
@@ -200,10 +234,22 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                                     {t("src.components.chat.governanceapprovalmodal.spec_stage")}
                                 </Text>
                                 <View style={styles.summaryRows}>
+                                    {specDetails.featureName ? (
+                                        <View style={styles.summaryRow}>
+                                            <Text style={[styles.summaryKey, { color: colors.textSoft }]}>feature</Text>
+                                            <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.featureName}</Text>
+                                        </View>
+                                    ) : null}
                                     <View style={styles.summaryRow}>
                                         <Text style={[styles.summaryKey, { color: colors.textSoft }]}>stage</Text>
                                         <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.stage || "-"}</Text>
                                     </View>
+                                    {specDetails.workspacePath ? (
+                                        <View style={styles.summaryRow}>
+                                            <Text style={[styles.summaryKey, { color: colors.textSoft }]}>workspace</Text>
+                                            <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.workspacePath}</Text>
+                                        </View>
+                                    ) : null}
                                     <View style={styles.summaryRow}>
                                         <Text style={[styles.summaryKey, { color: colors.textSoft }]}>specId</Text>
                                         <Text style={[styles.summaryValue, { color: colors.text }]}>{specDetails.specId || "-"}</Text>
@@ -238,6 +284,36 @@ export const GovernanceApprovalModal = memo(function GovernanceApprovalModal({
                                     {t("src.components.chat.governanceapprovalmodal.risk_summary")}
                                 </Text>
                                 <Text style={[styles.detailText, { color: colors.text }]}>{resolvedReason}</Text>
+                                {specDetails.isSpecApproval ? (
+                                    <View style={styles.specEvidenceList}>
+                                        <Text style={[styles.detailText, { color: colors.text }]}>
+                                            {specDetails.checklist.title}: {specDetails.checklist.status || "pending"}
+                                            {specDetails.checklist.unresolved > 0
+                                                ? t("src.components.chat.governanceapprovalmodal.checklist_unresolved_suffix", { count: specDetails.checklist.unresolved })
+                                                : ""}
+                                        </Text>
+                                        <Text style={[styles.detailText, { color: colors.textMuted }]}>
+                                            {specDetails.latestClarification
+                                                ? t("src.components.chat.governanceapprovalmodal.clarification_records_with_latest", {
+                                                    count: specDetails.clarificationCount || 0,
+                                                    latest: specDetails.latestClarification,
+                                                })
+                                                : t("src.components.chat.governanceapprovalmodal.clarification_records", {
+                                                    count: specDetails.clarificationCount || 0,
+                                                })}
+                                        </Text>
+                                        {specDetails.analysisSummary.blockers.length > 0 ? (
+                                            <Text style={[styles.detailText, { color: colors.danger }]}>
+                                                {t("src.components.chat.governanceapprovalmodal.analysis_blockers", { value: specDetails.analysisSummary.blockers.join("; ") })}
+                                            </Text>
+                                        ) : null}
+                                        {specDetails.analysisSummary.warnings.length > 0 ? (
+                                            <Text style={[styles.detailText, { color: colors.warning }]}>
+                                                {t("src.components.chat.governanceapprovalmodal.analysis_warnings", { value: specDetails.analysisSummary.warnings.join("; ") })}
+                                            </Text>
+                                        ) : null}
+                                    </View>
+                                ) : null}
                             </View>
                         ) : null}
 
@@ -377,6 +453,10 @@ const styles = StyleSheet.create({
     detailText: {
         fontSize: 13,
         lineHeight: 20,
+    },
+    specEvidenceList: {
+        gap: 6,
+        marginTop: 10,
     },
     commandText: {
         fontSize: 12,

@@ -17,6 +17,14 @@ SPEC_DOCS = {
     "design": "design.md",
     "tasks": "tasks.md",
 }
+SPEC_CHECKLISTS = {
+    "requirements": "checklists/requirements.md",
+}
+SPEC_ANNEX_DOCS = {
+    "research": "annex/research.md",
+    "contracts": "annex/contracts.md",
+    "quickstart": "annex/quickstart.md",
+}
 SPEC_STAGE_ORDER = ("requirements", "bugfix", "design", "tasks")
 SPEC_LIFECYCLE_ACTIVE = "active"
 SPEC_LIFECYCLE_ARCHIVED = "archived"
@@ -118,6 +126,87 @@ def _normalize_stage_markdown(stage: str, content: str) -> str:
         return f"{canonical_prefix}-{raw_number:03d}"
 
     return re.sub(rf"\b({prefix_pattern})-(\d+)\b", replace, str(content or ""), flags=re.IGNORECASE)
+
+
+def _stage_ids_from_text(stage: str, content: str) -> list[str]:
+    normalized_stage = str(stage or "").strip().lower()
+    if normalized_stage == "tasks":
+        ids = _extract_ids(content, "TASK")
+        for item in _task_slices(content, {}, []):
+            _add_unique(ids, str(item.get("taskId") or ""))
+        return ids
+    if normalized_stage == "design":
+        ids = _extract_ids(content, "DES")
+        if ids:
+            return ids
+        return [str(item.get("id") or "") for item in _design_fragments(content)[0] if item.get("id")]
+    if normalized_stage == "bugfix":
+        ids = _extract_ids(content, "BFIX")
+        if ids:
+            return ids
+        return list(_requirement_fragments(content).keys())
+    ids = _extract_ids(content, "REQ")
+    for item in _requirement_fragments(content):
+        _add_unique(ids, item)
+    return ids
+
+
+def _assign_missing_stage_ids(stage: str, content: str) -> tuple[str, dict[str, Any]]:
+    """Allocate stable IDs when a draft is written without asking the agent to mint them."""
+
+    normalized_stage = str(stage or "").strip().lower()
+    normalized = _normalize_stage_markdown(normalized_stage, content)
+    before_ids = _stage_ids_from_text(normalized_stage, normalized)
+    if before_ids:
+        return normalized, {"allocatedIds": [], "existingIds": before_ids}
+
+    prefix = _stage_prefix(normalized_stage)
+    lines = normalized.splitlines()
+    allocated: list[str] = []
+    next_number = 1
+    next_lines: list[str] = []
+    changed = False
+
+    def alloc_id() -> str:
+        nonlocal next_number
+        item = f"{prefix}-{next_number:03d}"
+        next_number += 1
+        allocated.append(item)
+        return item
+
+    if normalized_stage == "tasks":
+        for line in lines:
+            heading = re.match(r"^(\s*#{2,6}\s+)(?!TASK-|TSK-|T-)(.+?)\s*$", line, re.IGNORECASE)
+            checkbox = re.match(r"^(\s*-\s+\[[ xX]\]\s+)(?!TASK-|TSK-|T-)(.+?)\s*$", line, re.IGNORECASE)
+            if heading:
+                next_lines.append(f"{heading.group(1)}{alloc_id()}: {heading.group(2).strip()}")
+                changed = True
+            elif checkbox:
+                next_lines.append(f"{checkbox.group(1)}{alloc_id()}: {checkbox.group(2).strip()}")
+                changed = True
+            else:
+                next_lines.append(line)
+        if not changed:
+            title = _compact_snippet(normalized.splitlines()[0] if normalized.splitlines() else "Execute approved work", limit=140)
+            next_lines.extend(["", "## Task Pipeline", "", f"### {alloc_id()}: {title}", "", "- runtimeLane: Engineering", "- dependsOn: []", "- specRefs: REQ-001, DES-001", "- expectedOutput: typed runtime handoff", "- acceptance: handoff cites this task and verification result", "- proofRequired: touched files/artifacts or degraded blocker"])
+            changed = True
+    else:
+        for line in lines:
+            bullet = re.match(r"^(\s*[-*]\s+)(?!REQ-|FR-|NFR-|BFIX-|DES-)(.+?)\s*$", line, re.IGNORECASE)
+            if bullet and bullet.group(2).strip():
+                next_lines.append(f"{bullet.group(1)}{alloc_id()}: {bullet.group(2).strip()}")
+                changed = True
+            else:
+                next_lines.append(line)
+        if not changed:
+            title = _compact_snippet(normalized.splitlines()[0] if normalized.splitlines() else "Spec item", limit=160)
+            heading = "## Traceability Items"
+            next_lines.extend(["", heading, "", f"- {alloc_id()}: {title}"])
+            changed = True
+
+    result = "\n".join(next_lines).rstrip() + "\n"
+    result = _normalize_stage_markdown(normalized_stage, result)
+    return result, {"allocatedIds": allocated, "existingIds": []}
 
 
 def _stage_dependency(stage: str, kind: str) -> str | None:
@@ -237,7 +326,7 @@ acceptance/proof expectations.
 | Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |
 | --- | --- | --- | --- | --- | --- | --- |
 | TASK-001 | Governance | Prepare runtime route with approved Spec refs. | - | REQ-001/BFIX-001, DES-001 | Runtime need payload with specId and detailRefs. | Route cites approved Spec refs. |
-| TASK-002 | Engineering/Research/Delegation | Execute the scoped change through the appropriate runtime. | TASK-001 | DES-002, DES-003 | Runtime handoff, artifact, or degraded handoff. | Handoff/proof links task and Spec IDs. |
+| TASK-002 | Engineering/Research/Delegation | Execute the scoped change through the appropriate runtime. | TASK-001 | REQ-001/BFIX-001, DES-002, DES-003 | Runtime handoff, artifact, or degraded handoff. | Handoff/proof links task and Spec IDs. |
 | TASK-003 | Governance | Verify proof and reconcile final delivery. | TASK-002 | AC-REQ-001/AC-BFIX-001, DES-004 | User-facing completion summary. | Verification result is linked to proof/artifact refs. |
 
 ## Task Details
@@ -256,7 +345,7 @@ acceptance/proof expectations.
 
 - runtimeLane: Engineering/Research/Delegation
 - dependsOn: [TASK-001]
-- specRefs: DES-002, DES-003
+- specRefs: REQ-001/BFIX-001, DES-002, DES-003
 - inputRefs: runtime need payload
 - expectedOutput: runtime handoff, artifact, or degraded handoff
 - acceptance: output links task ID and Spec IDs
@@ -341,6 +430,51 @@ def _tasks_pipeline_diagnostics(markdown: str) -> dict[str, Any]:
     }
 
 
+def _task_is_large(task: dict[str, Any]) -> bool:
+    excerpt = str(task.get("taskExcerpt") or "")
+    expected = str(task.get("expectedOutput") or "")
+    lane_blob = " ".join(
+        str(task.get(key) or "")
+        for key in ("runtimeLane", "title", "taskExcerpt")
+    ).lower()
+    output_count = len(re.findall(r"(?:^|\n)\s*[-*]\s+|`[^`]+`|[A-Za-z]:\\|/[\w.-]+", expected))
+    return (
+        len(excerpt) > 1100
+        or output_count >= 2
+        or any(token in lane_blob for token in ("subagent", "sub-agent", "worker", "parallel", "fanout", "子agent", "孙agent", "并行"))
+    )
+
+
+def _tasks_quality_diagnostics(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    blockers: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    large_count = 0
+    for task in tasks:
+        task_id = str(task.get("taskId") or "").strip()
+        large = _task_is_large(task)
+        if large:
+            large_count += 1
+        if not list(task.get("requirementRefs") or []):
+            blockers.append({"code": "task_missing_spec_refs", "taskId": task_id, "message": "Task has no requirement/spec refs."})
+        if not str(task.get("acceptance") or "").strip():
+            warnings.append({"code": "task_missing_acceptance", "taskId": task_id, "message": "Task acceptance is not explicit."})
+        if not str(task.get("proofRequired") or "").strip():
+            if large:
+                blockers.append({"code": "large_task_missing_proof", "taskId": task_id, "message": "Large task requires explicit proofRequired."})
+            else:
+                warnings.append({"code": "task_missing_proof", "taskId": task_id, "message": "Task proofRequired is not explicit."})
+        if large and not str(task.get("mvpSlice") or "").strip():
+            blockers.append({"code": "large_task_missing_mvp_slice", "taskId": task_id, "message": "Large task requires an MVP slice."})
+        if large and not str(task.get("independentAcceptance") or "").strip():
+            blockers.append({"code": "large_task_missing_independent_acceptance", "taskId": task_id, "message": "Large task requires independent acceptance."})
+    return {
+        "taskCount": len(tasks),
+        "largeTaskCount": large_count,
+        "hardBlockers": blockers,
+        "warnings": warnings,
+    }
+
+
 _REQUIREMENT_REF_RE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})(?![\d.])")
 _REQUIREMENT_RANGE_RE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})\s*[-~–—]\s*(?:(\d{1,2})\.)?(\d{1,2})(?![\d.])")
 _EXPLICIT_SPEC_REF_RE = re.compile(r"\b((?:REQ|FR|NFR|BFIX|DES|TASK|TSK|T|AC-REQ|AC-BFIX)-\d{2,})\b", re.IGNORECASE)
@@ -351,6 +485,51 @@ def _compact_snippet(value: str, *, limit: int = 520) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _extract_task_field(block: str, markers: tuple[str, ...]) -> str:
+    marker_pattern = "|".join(re.escape(item) for item in markers)
+    patterns = [
+        rf"(?im)^[ \t]*(?:[-*][ \t]*)?\*\*[ \t]*(?:{marker_pattern})[ \t]*[:：][ \t]*\*\*[ \t]*(.+?)[ \t]*$",
+        rf"(?im)^[ \t]*(?:[-*][ \t]*)?(?:\*\*)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*)?[ \t]*[:：][ \t]*(.+?)[ \t]*$",
+        rf"(?im)^\|[ \t]*(?:\*\*)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*)?[ \t]*\|[ \t]*(.+?)[ \t]*\|",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, block or "")
+        if match:
+            return _compact_snippet(re.sub(r"[*`]+", "", match.group(1)).strip(), limit=700)
+    label_only = re.compile(
+        rf"(?i)^[ \t]*(?:[-*][ \t]*)?(?:\*\*)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*)?[ \t]*[:：][ \t]*(?:\*\*)?[ \t]*$"
+    )
+    next_label = re.compile(
+        r"^\s*(?:[-*]\s*)?\*\*[^*\n:：]{1,80}(?:\*\*\s*[:：]|[:：]\s*\*\*)"
+    )
+    lines = str(block or "").splitlines()
+    for index, line in enumerate(lines):
+        if not label_only.match(line):
+            continue
+        collected: list[str] = []
+        for candidate in lines[index + 1 :]:
+            stripped = candidate.strip()
+            if not stripped:
+                if collected:
+                    break
+                continue
+            if stripped.startswith("---") or re.match(r"^#{2,6}\s+", stripped) or next_label.match(stripped):
+                break
+            collected.append(stripped)
+        if collected:
+            return _compact_snippet(re.sub(r"[*`]+", "", "\n".join(collected)).strip(), limit=700)
+    return ""
+
+
+def _split_task_refs(value: str) -> list[str]:
+    refs: list[str] = []
+    for raw in re.split(r"[,，、\s]+", str(value or "")):
+        cleaned = raw.strip().strip("[]()`")
+        if re.match(r"^(?:TASK|TSK|T)-\d+", cleaned, re.IGNORECASE):
+            _add_unique(refs, _canonical_id(cleaned, "TASK"))
+    return refs
 
 
 def _add_unique(items: list[str], value: str) -> None:
@@ -524,6 +703,22 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
             task_id = _canonical_id(raw_id, "TASK")
         else:
             task_id = f"TASK-{raw_id}"
+        runtime_lane = _extract_task_field(
+            block,
+            ("runtimeLane", "runtime lane", "lane", "Runtime", "执行通道", "执行泳道", "执行层级", "执行角色", "执行方"),
+        )
+        depends_on = _split_task_refs(_extract_task_field(block, ("dependsOn", "depends on", "depends", "依赖", "依赖关系")))
+        expected_output = _extract_task_field(
+            block,
+            ("expectedOutput", "expected output", "output", "输出", "输出文件", "预期输出", "预期输出路径", "产物"),
+        )
+        acceptance = _extract_task_field(block, ("acceptance", "acceptanceProof", "验收", "验收标准", "验收检查", "验收方式"))
+        proof_required = _extract_task_field(block, ("proofRequired", "proof required", "proof", "证明", "证明方式", "证明材料"))
+        mvp_slice = _extract_task_field(block, ("mvpSlice", "mvp slice", "MVP", "MVP 切片", "最小切片", "最小可验收切片"))
+        independent_acceptance = _extract_task_field(
+            block,
+            ("independentAcceptance", "independent acceptance", "独立验收", "独立验收方式", "独立可验收"),
+        )
         req_refs = [
             item
             for item in _extract_requirement_ref_ids(body_for_refs)
@@ -578,6 +773,13 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
                 ],
                 "taskExcerpt": _compact_snippet(block, limit=900),
                 "detailRef": f"spec://tasks#{task_id}",
+                "runtimeLane": runtime_lane,
+                "dependsOn": depends_on,
+                "expectedOutput": expected_output,
+                "acceptance": acceptance,
+                "proofRequired": proof_required,
+                "mvpSlice": mvp_slice,
+                "independentAcceptance": independent_acceptance,
             }
         )
     return slices[:30]
@@ -745,6 +947,9 @@ class SpecService:
             "updatedAt": manifest.get("updatedAt"),
             "pipelineControl": self._pipeline_control(manifest),
             "linkedSections": self._linked_sections(manifest),
+            "qualityEvidence": manifest.get("qualityEvidence") or {"checklists": {}},
+            "annexDocuments": manifest.get("annexDocuments") or {},
+            "clarificationSummary": self._clarification_summary(manifest),
             "documents": {
                 stage: {
                     "relativePath": value.get("relativePath"),
@@ -832,13 +1037,149 @@ class SpecService:
             "kind": "spec_detail",
             "spec": self._manifest_summary(paths, manifest),
             "stages": stages,
+            "analysis": self.analyze_spec(workspace_path=workspace_path, spec_id=spec_id),
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
         }
 
     def _write_manifest(self, paths: SpecPaths, manifest: dict[str, Any]) -> None:
         paths.spec_dir.mkdir(parents=True, exist_ok=True)
+        manifest["schemaVersion"] = max(2, int(manifest.get("schemaVersion") or 1))
         manifest["updatedAt"] = _now_iso()
         paths.manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _stage_quality_items(self, paths: SpecPaths, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+        docs = dict(manifest.get("documents") or {})
+        kind = str(manifest.get("kind") or "feature")
+        primary_stage = "bugfix" if kind == "bugfix" else "requirements"
+        primary_text = self._read_stage_content(paths, manifest, primary_stage)
+        design_text = self._read_stage_content(paths, manifest, "design")
+        tasks_text = self._read_stage_content(paths, manifest, "tasks")
+        primary_diag = _stage_format_diagnostics(primary_stage, primary_text) if primary_text else {}
+        design_diag = _stage_format_diagnostics("design", design_text) if design_text else {}
+        tasks_diag = _tasks_pipeline_diagnostics(tasks_text) if tasks_text else {}
+        clarifications = [
+            item
+            for item in list(manifest.get("clarifications") or [])
+            if isinstance(item, dict) and str(item.get("status") or "resolved") in {"resolved", "answered"}
+        ]
+        traceability = self._traceability_index(paths, manifest)
+        distribution = dict(traceability.get("distributionChecks") or {})
+
+        def item(code: str, label: str, done: bool, evidence: str = "") -> dict[str, Any]:
+            return {
+                "code": code,
+                "label": label,
+                "done": bool(done),
+                **({"evidence": _safe_text(evidence, limit=500)} if evidence else {}),
+            }
+
+        return [
+            item("source_request_captured", "Source request captured", bool(str(manifest.get("sourceRequest") or "").strip())),
+            item("human_clarification_recorded", "Spec clarification recorded via ask_user", bool(clarifications), f"{len(clarifications)} clarification(s)"),
+            item("primary_ids_present", f"{primary_stage} has stable IDs", bool(primary_diag.get("ids")), ", ".join(list(primary_diag.get("ids") or [])[:8])),
+            item("primary_acceptance_present", f"{primary_stage} has acceptance criteria", "acceptanceCriteria" not in set(primary_diag.get("missingFields") or [])),
+            item("design_trace_present", "Design has traceable sections", bool(design_diag.get("ids")) if design_text else "design" not in docs),
+            item("tasks_trace_present", "Tasks have assignable IDs and spec refs", bool(tasks_diag.get("valid")) if tasks_text else "tasks" not in docs),
+            item("tasks_requirements_linked", "Runtime tasks link requirement refs", bool(distribution.get("allTasksHaveRequirementRefs")) if tasks_text else "tasks" not in docs),
+            item("tasks_design_linked", "Runtime tasks carry design/framework context", bool(distribution.get("allTasksHaveDesignRefs")) if tasks_text else "tasks" not in docs),
+        ]
+
+    def _update_quality_checklist(self, paths: SpecPaths, manifest: dict[str, Any]) -> dict[str, Any]:
+        items = self._stage_quality_items(paths, manifest)
+        unresolved = [item for item in items if not bool(item.get("done"))]
+        rel_path = SPEC_CHECKLISTS["requirements"]
+        checklist_path = paths.spec_dir / rel_path
+        checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            f"# Spec Quality Checklist: {manifest.get('featureName') or manifest.get('specId') or paths.slug}",
+            "",
+            "This checklist is approval evidence only. It does not replace human Spec approval.",
+            "",
+        ]
+        for item in items:
+            marker = "x" if item.get("done") else " "
+            evidence = f" — {item.get('evidence')}" if item.get("evidence") else ""
+            lines.append(f"- [{marker}] {item.get('label')}{evidence}")
+        checklist_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        entry = {
+            "kind": "checklist",
+            "stage": "requirements",
+            "title": "Requirements Quality Checklist",
+            "relativePath": str(checklist_path.relative_to(paths.workspace)).replace("\\", "/"),
+            "status": "complete" if not unresolved else "open",
+            "unresolvedCount": len(unresolved),
+            "items": items,
+            "detailRef": f"spec://{manifest.get('specId')}/checklists/requirements",
+            "updatedAt": _now_iso(),
+        }
+        quality = manifest.setdefault("qualityEvidence", {})
+        quality.setdefault("checklists", {})["requirements"] = entry
+        return entry
+
+    def _detect_annex_needs(self, manifest: dict[str, Any], *texts: str) -> set[str]:
+        blob = "\n".join([str(manifest.get("sourceRequest") or ""), *(str(text or "") for text in texts)]).lower()
+        needs: set[str] = set()
+        if re.search(r"\b(api|http|sse|webhook|schema|contract|openapi|provider|sdk)\b|接口|契约|协议|供应商|模型", blob):
+            needs.add("contracts")
+        if re.search(r"\b(research|unknown|compare|benchmark|source|doc|docs)\b|调研|未知|资料|证据|参考文档|对比", blob):
+            needs.add("research")
+        if re.search(r"\b(quickstart|smoke|e2e|acceptance|setup|install|run)\b|验收|烟测|启动|安装|运行|复现", blob):
+            needs.add("quickstart")
+        if re.search(r"subagent|sub-agent|worker|fanout|parallel|跨\s*runtime|子\s*agent|孙\s*agent|并行", blob):
+            needs.update({"research", "quickstart"})
+        return needs
+
+    def _ensure_annex_documents(self, paths: SpecPaths, manifest: dict[str, Any]) -> dict[str, Any]:
+        docs = dict(manifest.get("documents") or {})
+        texts = [self._read_stage_content(paths, manifest, stage) for stage in ("requirements", "bugfix", "design", "tasks")]
+        needs = self._detect_annex_needs(manifest, *texts)
+        annex_root = manifest.setdefault("annexDocuments", {})
+        for annex_name in sorted(needs):
+            rel_path = SPEC_ANNEX_DOCS[annex_name]
+            annex_path = paths.spec_dir / rel_path
+            if not annex_path.exists():
+                annex_path.parent.mkdir(parents=True, exist_ok=True)
+                title = {
+                    "research": "Research Notes",
+                    "contracts": "Contracts",
+                    "quickstart": "Quickstart / Acceptance",
+                }.get(annex_name, annex_name.title())
+                annex_path.write_text(
+                    "\n".join(
+                        [
+                            f"# {title}: {manifest.get('featureName') or manifest.get('specId') or paths.slug}",
+                            "",
+                            "Status: draft evidence annex generated by Spec Mode.",
+                            "",
+                            "## Purpose",
+                            "",
+                            "- Capture supporting context that should travel with the approved Spec execution packet.",
+                            "",
+                            "## Notes",
+                            "",
+                            "- Supervisor should keep this concise and source-backed when the feature needs it.",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            annex_root[annex_name] = {
+                "kind": "annex",
+                "title": {
+                    "research": "Research Notes",
+                    "contracts": "Contracts",
+                    "quickstart": "Quickstart / Acceptance",
+                }.get(annex_name, annex_name.title()),
+                "relativePath": str(annex_path.relative_to(paths.workspace)).replace("\\", "/"),
+                "status": "draft",
+                "detailRef": f"spec://{manifest.get('specId')}/annex/{annex_name}",
+                "updatedAt": _now_iso(),
+            }
+        return annex_root
+
+    def _refresh_quality_artifacts(self, paths: SpecPaths, manifest: dict[str, Any]) -> None:
+        self._update_quality_checklist(paths, manifest)
+        self._ensure_annex_documents(paths, manifest)
 
     def _version_dir(self, paths: SpecPaths, stage: str) -> Path:
         return paths.spec_dir / ".versions" / stage
@@ -918,6 +1259,25 @@ class SpecService:
         approval = dict(manifest.get("approvals") or {}).get(stage)
         return isinstance(approval, dict) and bool(approval.get("approved"))
 
+    def _clarification_summary(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        rows = [item for item in list(manifest.get("clarifications") or []) if isinstance(item, dict)]
+        by_stage: dict[str, int] = {}
+        latest: list[dict[str, Any]] = []
+        for item in rows:
+            stage = str(item.get("stage") or "unknown").strip().lower() or "unknown"
+            by_stage[stage] = by_stage.get(stage, 0) + 1
+        for item in rows[-5:]:
+            latest.append(
+                {
+                    "stage": item.get("stage"),
+                    "question": _safe_text(item.get("question"), limit=240),
+                    "answer": _safe_text(item.get("answer"), limit=360),
+                    "createdAt": item.get("createdAt"),
+                    "sourceRunId": item.get("sourceRunId"),
+                }
+            )
+        return {"count": len(rows), "byStage": by_stage, "latest": latest}
+
     def _approved_stage_locked_payload(self, manifest: dict[str, Any], *, workspace_path: str, stage: str, action: str) -> dict[str, Any]:
         spec_id = str(manifest.get("specId") or "")
         next_stage = self.next_stage(manifest, stage)
@@ -944,7 +1304,7 @@ class SpecService:
         manifest = self._load_manifest(paths)
         if not manifest:
             manifest = {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "specId": f"spec_{uuid.uuid4().hex[:16]}",
                 "featureName": feature_name,
                 "slug": paths.slug,
@@ -956,6 +1316,9 @@ class SpecService:
                 "approvals": {},
                 "comments": [],
                 "documents": {},
+                "clarifications": [],
+                "qualityEvidence": {"checklists": {}},
+                "annexDocuments": {},
                 "versionHistory": [],
                 "staleStages": {},
                 "lifecycle": SPEC_LIFECYCLE_ACTIVE,
@@ -965,6 +1328,9 @@ class SpecService:
             manifest.setdefault("approvals", {})
             manifest.setdefault("comments", [])
             manifest.setdefault("documents", {})
+            manifest.setdefault("clarifications", [])
+            manifest.setdefault("qualityEvidence", {"checklists": {}})
+            manifest.setdefault("annexDocuments", {})
             manifest.setdefault("versionHistory", [])
             manifest.setdefault("staleStages", {})
             manifest.setdefault("lifecycle", SPEC_LIFECYCLE_ACTIVE)
@@ -1033,7 +1399,7 @@ class SpecService:
                 content = _template_design(title, kind_value, dependency or initial_stage)
             else:
                 content = _template_tasks(title)
-            content = _normalize_stage_markdown(normalized_stage, content)
+            content, id_allocation = _assign_missing_stage_ids(normalized_stage, content)
             paths.spec_dir.mkdir(parents=True, exist_ok=True)
             if previous_content:
                 self._record_version(
@@ -1052,6 +1418,26 @@ class SpecService:
                     reason="stage_rewritten",
                     revoke_current_approval=True,
                 )
+        if doc_path.exists() and not overwrite:
+            content, id_allocation = _assign_missing_stage_ids(normalized_stage, content)
+            if content != previous_content:
+                self._record_version(
+                    paths,
+                    manifest,
+                    stage=normalized_stage,
+                    previous_content=previous_content,
+                    action="normalize_stage_ids",
+                    reason="server_id_allocation",
+                )
+                doc_path.write_text(content, encoding="utf-8")
+                self._mark_stage_changed(
+                    manifest,
+                    stage=normalized_stage,
+                    reason="stage_ids_allocated",
+                    revoke_current_approval=True,
+                )
+        else:
+            id_allocation = locals().get("id_allocation", {"allocatedIds": [], "existingIds": self._document_ids(normalized_stage, content)})
         self._clear_stage_stale(manifest, normalized_stage)
         manifest["currentStage"] = normalized_stage
         format_diagnostics = _stage_format_diagnostics(normalized_stage, content)
@@ -1066,9 +1452,11 @@ class SpecService:
             "version": max(1, doc_version),
             "status": "draft",
             "formatDiagnostics": format_diagnostics,
+            "idAllocation": id_allocation,
         }
         if normalized_stage == "tasks":
             manifest["documents"][normalized_stage]["pipelineDiagnostics"] = _tasks_pipeline_diagnostics(content)
+        self._refresh_quality_artifacts(paths, manifest)
         self._write_manifest(paths, manifest)
         tasks_pipeline = (
             dict(manifest["documents"][normalized_stage].get("pipelineDiagnostics") or {})
@@ -1086,24 +1474,13 @@ class SpecService:
             "linkedSections": self._linked_sections(manifest),
             "summary": f"Spec stage '{normalized_stage}' is ready for review.",
             "formatDiagnostics": format_diagnostics,
+            "idAllocation": id_allocation,
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=str(manifest.get("specId") or "")),
             **({"tasksPipeline": tasks_pipeline} if tasks_pipeline is not None else {}),
         }
 
     def _document_ids(self, stage: str, content: str) -> list[str]:
-        if stage == "tasks":
-            ids = _extract_ids(content, "TASK")
-            for item in _task_slices(content, {}, []):
-                _add_unique(ids, str(item.get("taskId") or ""))
-            return ids
-        if stage == "design":
-            return _extract_ids(content, "DES")
-        if stage == "bugfix":
-            return _extract_ids(content, "BFIX")
-        ids = _extract_ids(content, "REQ")
-        for item in _requirement_fragments(content):
-            _add_unique(ids, item)
-        return ids
+        return _stage_ids_from_text(stage, content)
 
     def _read_stage_content(self, paths: SpecPaths, manifest: dict[str, Any], stage: str) -> str:
         doc_meta = dict((manifest.get("documents") or {}).get(stage) or {})
@@ -1190,6 +1567,34 @@ class SpecService:
                     "relativePath": value.get("relativePath"),
                 }
             )
+        checklists = dict((manifest.get("qualityEvidence") or {}).get("checklists") or {})
+        for name, value in checklists.items():
+            if not isinstance(value, dict):
+                continue
+            links.append(
+                {
+                    "kind": "checklist",
+                    "stage": str(value.get("stage") or name),
+                    "title": value.get("title") or "Quality Checklist",
+                    "detailRef": value.get("detailRef") or f"spec://{spec_id}/checklists/{name}",
+                    "relativePath": value.get("relativePath"),
+                    "status": value.get("status"),
+                    "unresolvedCount": value.get("unresolvedCount"),
+                }
+            )
+        for name, value in dict(manifest.get("annexDocuments") or {}).items():
+            if not isinstance(value, dict):
+                continue
+            links.append(
+                {
+                    "kind": "annex",
+                    "stage": str(name),
+                    "title": value.get("title") or str(name).title(),
+                    "detailRef": value.get("detailRef") or f"spec://{spec_id}/annex/{name}",
+                    "relativePath": value.get("relativePath"),
+                    "status": value.get("status"),
+                }
+            )
         return links
 
     def _pipeline_control(self, manifest: dict[str, Any]) -> dict[str, Any]:
@@ -1238,6 +1643,155 @@ class SpecService:
             "lifecycle": manifest.get("lifecycle") or SPEC_LIFECYCLE_ACTIVE,
         }
 
+    def has_stage_clarification(self, *, workspace_path: str, spec_id: str, stage: str) -> bool:
+        try:
+            paths = self.resolve_paths(workspace_path, spec_id=spec_id)
+            manifest = self._load_manifest(paths)
+        except Exception:
+            return False
+        normalized_stage = str(stage or "").strip().lower()
+        return any(
+            isinstance(item, dict)
+            and str(item.get("stage") or "").strip().lower() == normalized_stage
+            and str(item.get("status") or "resolved").strip().lower() in {"resolved", "answered"}
+            for item in list(manifest.get("clarifications") or [])
+        )
+
+    def record_clarification(
+        self,
+        *,
+        workspace_path: str,
+        spec_id: str,
+        stage: str,
+        question: str,
+        answer: str,
+        source_run_id: str = "",
+        tool_call_id: str = "",
+        interaction_id: str = "",
+        feature_name: str = "",
+    ) -> dict[str, Any]:
+        paths = self.resolve_paths(workspace_path, spec_id=spec_id)
+        manifest = self._load_manifest(paths)
+        if not manifest:
+            raise ValueError(f"spec_not_found:{spec_id}")
+        normalized_stage = str(stage or manifest.get("currentStage") or "").strip().lower()
+        if normalized_stage not in SPEC_DOCS:
+            raise ValueError(f"unsupported_spec_stage:{normalized_stage}")
+        existing = manifest.setdefault("clarifications", [])
+        dedupe = str(interaction_id or tool_call_id or "").strip()
+        if dedupe:
+            for item in existing:
+                if isinstance(item, dict) and dedupe in {str(item.get("interactionId") or ""), str(item.get("toolCallId") or "")}:
+                    item.update(
+                        {
+                            "answer": _safe_text(answer, limit=2000),
+                            "status": "resolved",
+                            "updatedAt": _now_iso(),
+                        }
+                    )
+                    self._refresh_quality_artifacts(paths, manifest)
+                    self._write_manifest(paths, manifest)
+                    return {"ok": True, "kind": "spec_clarification_recorded", "specId": spec_id, "stage": normalized_stage}
+        existing.append(
+            {
+                "id": f"clar_{uuid.uuid4().hex[:12]}",
+                "stage": normalized_stage,
+                "featureName": _safe_text(feature_name or manifest.get("featureName"), limit=160),
+                "question": _safe_text(question, limit=2000),
+                "answer": _safe_text(answer, limit=2000),
+                "sourceRunId": _safe_text(source_run_id, limit=160),
+                "toolCallId": _safe_text(tool_call_id, limit=160),
+                "interactionId": _safe_text(interaction_id, limit=160),
+                "status": "resolved",
+                "createdAt": _now_iso(),
+            }
+        )
+        self._refresh_quality_artifacts(paths, manifest)
+        self._write_manifest(paths, manifest)
+        return {"ok": True, "kind": "spec_clarification_recorded", "specId": spec_id, "stage": normalized_stage}
+
+    def analyze_spec(self, *, workspace_path: str, spec_id: str) -> dict[str, Any]:
+        paths = self.resolve_paths(workspace_path, spec_id=spec_id)
+        manifest = self._load_manifest(paths)
+        if not manifest:
+            raise ValueError(f"spec_not_found:{spec_id}")
+        traceability = self._traceability_index(paths, manifest)
+        tasks = [dict(item) for item in list(traceability.get("tasks") or []) if isinstance(item, dict)]
+        task_quality = _tasks_quality_diagnostics(tasks)
+        hard_blockers: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
+        for stage, filename in SPEC_DOCS.items():
+            doc_path = paths.spec_dir / filename
+            if not doc_path.exists():
+                continue
+            content = doc_path.read_text(encoding="utf-8", errors="ignore")
+            diagnostics = _stage_format_diagnostics(stage, content)
+            for code in list(diagnostics.get("approvalBlocking") or []):
+                hard_blockers.append({"code": f"{stage}_{code}", "stage": stage, "message": f"{stage} is missing {code}."})
+            for code in list(diagnostics.get("warnings") or []):
+                warnings.append({"code": f"{stage}_{code}", "stage": stage, "message": f"{stage} warning: {code}."})
+        hard_blockers.extend(task_quality.get("hardBlockers") or [])
+        warnings.extend(task_quality.get("warnings") or [])
+        distribution = dict(traceability.get("distributionChecks") or {})
+        if tasks and not bool(distribution.get("allTasksHaveRequirementRefs")):
+            hard_blockers.append({"code": "tasks_missing_requirement_refs", "stage": "tasks", "message": "At least one task lacks requirement refs."})
+        if tasks and not bool(distribution.get("allTasksHaveDesignRefs")):
+            warnings.append({"code": "tasks_missing_design_refs", "stage": "tasks", "message": "At least one task lacks design/framework refs."})
+        checklist = dict((manifest.get("qualityEvidence") or {}).get("checklists", {}).get("requirements") or {})
+        if checklist and int(checklist.get("unresolvedCount") or 0) > 0:
+            warnings.append(
+                {
+                    "code": "quality_checklist_open_items",
+                    "stage": "requirements",
+                    "message": f"Quality checklist has {int(checklist.get('unresolvedCount') or 0)} unfinished item(s).",
+                }
+            )
+        terms = self._terminology_drift_warnings(paths, manifest)
+        warnings.extend(terms)
+        return {
+            "ok": True,
+            "kind": "spec_analysis",
+            "specId": spec_id,
+            "featureName": manifest.get("featureName"),
+            "workspacePath": str(paths.workspace),
+            "summary": (
+                f"{len(hard_blockers)} blocker(s), {len(warnings)} warning(s)."
+                if hard_blockers or warnings
+                else "Spec analysis found no approval blockers."
+            ),
+            "hardBlockers": hard_blockers[:40],
+            "warnings": warnings[:60],
+            "taskQuality": task_quality,
+            "traceabilityChecks": distribution,
+            "checklist": checklist,
+            "annexDocuments": manifest.get("annexDocuments") or {},
+            "clarificationSummary": self._clarification_summary(manifest),
+        }
+
+    def _terminology_drift_warnings(self, paths: SpecPaths, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+        feature = str(manifest.get("featureName") or "").strip().lower()
+        if not feature:
+            return []
+        warnings: list[dict[str, Any]] = []
+        important_terms = [
+            token
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}|[\u4e00-\u9fff]{2,}", feature)
+            if token.lower() not in {"spec", "mode", "feature"}
+        ][:6]
+        if not important_terms:
+            return []
+        for stage in ("requirements", "bugfix", "design", "tasks"):
+            text = self._read_stage_content(paths, manifest, stage).lower()
+            if text and not any(term.lower() in text for term in important_terms):
+                warnings.append(
+                    {
+                        "code": "terminology_drift",
+                        "stage": stage,
+                        "message": f"{stage} does not mention the feature name or its key terms.",
+                    }
+                )
+        return warnings[:8]
+
     def approve_stage(self, *, workspace_path: str, spec_id: str, stage: str, approver: str = "user", comment: str = "") -> dict[str, Any]:
         paths = self.resolve_paths(workspace_path, spec_id=spec_id)
         manifest = self._load_manifest(paths)
@@ -1255,6 +1809,7 @@ class SpecService:
         doc_meta["formatDiagnostics"] = diagnostics
         manifest.setdefault("documents", {})[normalized_stage] = doc_meta
         if diagnostics.get("approvalBlocking"):
+            self._refresh_quality_artifacts(paths, manifest)
             self._write_manifest(paths, manifest)
             return {
                 "ok": False,
@@ -1269,6 +1824,24 @@ class SpecService:
                 ),
                 "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
             }
+        analysis: dict[str, Any] | None = None
+        if normalized_stage == "tasks":
+            self._refresh_quality_artifacts(paths, manifest)
+            self._write_manifest(paths, manifest)
+            analysis = self.analyze_spec(workspace_path=workspace_path, spec_id=spec_id)
+            if list(analysis.get("hardBlockers") or []):
+                return {
+                    "ok": False,
+                    "kind": "spec_stage_analysis_blocked",
+                    "stage": normalized_stage,
+                    "specId": spec_id,
+                    "summary": "Spec tasks cannot be approved until cross-stage blockers are resolved.",
+                    "analysis": analysis,
+                    "formatDiagnostics": diagnostics,
+                    "pipelineControl": self._pipeline_control(manifest),
+                    "recommendedNextAction": "Edit tasks.md so every executable task has readable refs, proof expectations, and large-task MVP/independent acceptance.",
+                    "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
+                }
         manifest.setdefault("approvals", {})[normalized_stage] = {
             "approved": True,
             "approver": _safe_text(approver, limit=80) or "user",
@@ -1280,6 +1853,13 @@ class SpecService:
         if isinstance(docs.get(normalized_stage), dict):
             docs[normalized_stage]["status"] = "approved"
             docs[normalized_stage]["approvedAt"] = _now_iso()
+            if analysis:
+                docs[normalized_stage]["analysis"] = {
+                    "summary": analysis.get("summary"),
+                    "hardBlockerCount": len(list(analysis.get("hardBlockers") or [])),
+                    "warningCount": len(list(analysis.get("warnings") or [])),
+                }
+        self._refresh_quality_artifacts(paths, manifest)
         self._write_manifest(paths, manifest)
         return {
             "ok": True,
@@ -1288,6 +1868,7 @@ class SpecService:
             "specId": spec_id,
             "nextStage": self.next_stage(manifest, normalized_stage),
             "pipelineControl": self._pipeline_control(manifest),
+            **({"analysis": analysis} if analysis else {}),
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
         }
 
@@ -1395,19 +1976,27 @@ class SpecService:
         new_text = _safe_text(content, limit=20000)
         if not new_text:
             raise ValueError("spec_edit_content_required")
-        new_text = _normalize_stage_markdown(normalized_stage, new_text)
         if edit_action == "rewrite_stage":
+            new_text, edit_id_allocation = _assign_missing_stage_ids(normalized_stage, new_text)
             next_content = new_text
-        elif edit_action == "append_section":
-            next_content = previous_content.rstrip() + "\n\n" + new_text.strip() + "\n"
         else:
+            new_text = _normalize_stage_markdown(normalized_stage, new_text)
+            edit_id_allocation = {"allocatedIds": [], "existingIds": []}
+        if edit_action == "append_section":
+            next_content = previous_content.rstrip() + "\n\n" + new_text.strip() + "\n"
+        elif edit_action == "replace_section":
             span = self._section_span(previous_content, section_ref)
             if not span:
                 raise ValueError(f"spec_section_not_found:{section_ref}")
             start, end = span
             replacement = new_text.strip()
             next_content = previous_content[:start].rstrip() + "\n" + replacement + "\n" + previous_content[end:].lstrip("\n")
-        next_content = _normalize_stage_markdown(normalized_stage, next_content)
+        next_content, final_id_allocation = _assign_missing_stage_ids(normalized_stage, next_content)
+        allocated_ids = list(dict.fromkeys(list(edit_id_allocation.get("allocatedIds") or []) + list(final_id_allocation.get("allocatedIds") or [])))
+        id_allocation = {
+            "allocatedIds": allocated_ids,
+            "existingIds": final_id_allocation.get("existingIds") or self._document_ids(normalized_stage, next_content),
+        }
         self._record_version(
             paths,
             manifest,
@@ -1438,11 +2027,13 @@ class SpecService:
                 "status": "draft",
                 "lastEditAction": edit_action,
                 "formatDiagnostics": format_diagnostics,
+                "idAllocation": id_allocation,
             }
         )
         if normalized_stage == "tasks":
             doc_meta["pipelineDiagnostics"] = _tasks_pipeline_diagnostics(next_content)
         manifest.setdefault("documents", {})[normalized_stage] = doc_meta
+        self._refresh_quality_artifacts(paths, manifest)
         self._write_manifest(paths, manifest)
         tasks_pipeline = dict(doc_meta.get("pipelineDiagnostics") or {}) if normalized_stage == "tasks" else None
         return {
@@ -1456,6 +2047,7 @@ class SpecService:
             "linkedSections": self._linked_sections(manifest),
             "summary": f"Spec stage '{normalized_stage}' edited with {edit_action}; approval is required again.",
             "formatDiagnostics": format_diagnostics,
+            "idAllocation": id_allocation,
             "specBrief": self.build_brief(workspace_path=workspace_path, spec_id=spec_id),
             **({"tasksPipeline": tasks_pipeline} if tasks_pipeline is not None else {}),
         }
@@ -1579,6 +2171,9 @@ class SpecService:
             "workspacePath": manifest.get("workspacePath"),
             "specDir": str(paths.spec_dir),
             "linkedSections": self._linked_sections(manifest),
+            "qualityEvidence": manifest.get("qualityEvidence") or {"checklists": {}},
+            "annexDocuments": manifest.get("annexDocuments") or {},
+            "clarificationSummary": self._clarification_summary(manifest),
             "documents": {
                 stage: {
                     "relativePath": value.get("relativePath"),

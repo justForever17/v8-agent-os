@@ -166,6 +166,7 @@ interface InputAreaProps {
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
 type SafetyApprovalMode = "manual" | "reduced" | "minimal";
+type SpecCommandAction = "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex";
 const SAFETY_APPROVAL_MODE_STORAGE_KEY = "v8-web-safety-approval-mode";
 
 interface ReasoningEffortControl {
@@ -202,6 +203,7 @@ interface CommandPresetSummary {
     summary?: string;
     path?: string;
     contentHash?: string;
+    specCommandAction?: SpecCommandAction;
 }
 
 interface SkillReferenceSummary {
@@ -334,6 +336,15 @@ export function InputArea({
         };
         return labels[reasoningEffort] || labels.auto;
     }, [reasoningEffort, t]);
+    const specCommandPresets = React.useMemo<CommandPresetSummary[]>(() => ([
+        { name: "spec new", summary: "新建一套 Spec，并从澄清问题开始。", specCommandAction: "new" },
+        { name: "spec continue", summary: "继续当前或最近的 Spec。", specCommandAction: "continue" },
+        { name: "spec list", summary: "列出当前工作区的 Spec。", specCommandAction: "list" },
+        { name: "spec approve", summary: "打开当前 Spec 阶段审批上下文。", specCommandAction: "approve" },
+        { name: "spec clarify", summary: "补充 Spec 澄清问题和记录。", specCommandAction: "clarify" },
+        { name: "spec analyze", summary: "只读分析需求、设计和任务的闭环质量。", specCommandAction: "analyze" },
+        { name: "spec annex", summary: "为复杂 Spec 生成或查看 research/contracts/quickstart 附录。", specCommandAction: "annex" },
+    ]), []);
 
     const slashQuery = React.useMemo(() => {
         if (selectedCommandPreset) return "";
@@ -349,16 +360,17 @@ export function InputArea({
     const isCommandPickerOpen = !selectedCommandPreset && input.trimStart().startsWith("/");
     const isSkillPickerOpen = input.trimStart().startsWith("@");
     const filteredCommandPresets = React.useMemo(() => {
+        const allCommands = [...specCommandPresets, ...commandPresets];
         if (!slashQuery) {
-            return commandPresets;
+            return allCommands;
         }
         const keyword = slashQuery.toLowerCase();
-        return commandPresets.filter((preset) =>
+        return allCommands.filter((preset) =>
             preset.name.toLowerCase().includes(keyword)
             || String(preset.summary || "").toLowerCase().includes(keyword)
             || String(preset.filename || "").toLowerCase().includes(keyword)
         );
-    }, [commandPresets, slashQuery]);
+    }, [commandPresets, slashQuery, specCommandPresets]);
     const filteredMentionItems = React.useMemo<MentionPickerItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}::${skill.path || ""}`));
         const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
@@ -858,7 +870,13 @@ export function InputArea({
                     }));
                 }
                 if (selectedCommandPreset?.name) {
-                    nextData.commandPreset = { name: selectedCommandPreset.name };
+                    if (selectedCommandPreset.specCommandAction) {
+                        nextData.specMode = true;
+                        nextData.plannerMode = "off";
+                        nextData.specCommand = { action: selectedCommandPreset.specCommandAction };
+                    } else {
+                        nextData.commandPreset = { name: selectedCommandPreset.name };
+                    }
                 }
                 if (selectedSkills.length > 0) {
                     nextData.skillReferences = selectedSkills.map((skill) => ({

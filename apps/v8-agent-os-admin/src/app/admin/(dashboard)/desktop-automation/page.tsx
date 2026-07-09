@@ -113,21 +113,26 @@ export default function DesktopAutomationPage() {
     const [runtimeSaving, setRuntimeSaving] = useState(false);
     const [agentBrowserOpening, setAgentBrowserOpening] = useState(false);
     const [agentBrowserResult, setAgentBrowserResult] = useState<Record<string, unknown> | null>(null);
+    const [featurePackMissing, setFeaturePackMissing] = useState(false);
 
     const loadData = async () => {
         setLoading(true);
         try {
-            const [config, modelsResponse, capabilitySnapshot, computerAvailability] = await Promise.all([
+            const [config, modelsResponse, capabilitySnapshot, computerAvailability, featurePacks] = await Promise.all([
                 fetchConfigDomain<ComputerUseData>("computer-use"),
                 fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
                 fetch("/api/runtime-capabilities", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
                 fetch("/api/computer-use/availability", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
+                fetch("/api/runtime-feature-packs", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
             ]);
             setEnvelope(config);
             setModels(Array.isArray(modelsResponse) ? modelsResponse : []);
             setAvailability(computerAvailability || null);
             const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
             setRuntimeCapability(runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "computer_use") || null);
+            const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
+            const computerPack = packs.find((item: { id?: string; status?: string }) => item.id === "computer_use_desktop");
+            setFeaturePackMissing(computerPack?.status !== "installed");
         } finally {
             setLoading(false);
         }
@@ -200,6 +205,10 @@ export default function DesktopAutomationPage() {
     };
 
     const setRuntimeEnabled = async (enabled: boolean) => {
+        if (enabled && featurePackMissing) {
+            window.dispatchEvent(new Event("v8os:open-feature-packs"));
+            return;
+        }
         setRuntimeSaving(true);
         try {
             await fetch("/api/runtime-capabilities/computer_use/policy", {
@@ -268,6 +277,14 @@ export default function DesktopAutomationPage() {
                 title={"app.admin.dashboard.desktop.automation.page.k528406eb"}
                 tone="info"
             />
+
+            {featurePackMissing ? (
+                <StatusNotice
+                    title={"app.admin.dashboard.desktop.automation.featurePackMissingTitle"}
+                    description={"app.admin.dashboard.desktop.automation.featurePackMissingDescription"}
+                    tone="warning"
+                />
+            ) : null}
 
             <ConfigCard title={"app.admin.dashboard.desktop.automation.page.kb6443896"} description={"app.admin.dashboard.desktop.automation.page.kc064340e"}>
                 <div className="space-y-3">

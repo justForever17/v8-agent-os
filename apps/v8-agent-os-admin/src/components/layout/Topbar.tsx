@@ -7,7 +7,7 @@ import {
     ProductTopbar,
     TopbarGlowActionButton,
 } from "@v8/product-ui";
-import { Bell, Loader2, Monitor, Search, Server, Wrench } from "lucide-react";
+import { Bell, Loader2, Monitor, Search, Wrench } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -34,15 +34,31 @@ type InboxItem = {
     source: string;
 };
 
-type RuntimeInstallState = {
-    installProfile: "minimal" | "desktop";
-    installPlatform: "windows" | "macos" | "linux";
-    installedRuntimeFamilies: string[];
-    bootstrapManaged: boolean;
-    lastUpgradeAt: string | null;
+type RuntimeFeaturePack = {
+    id: string;
+    productName: string;
+    shortName: string;
+    description: string;
+    hover: string;
+    recommendedOrder: number;
+    runtimeFamilies: string[];
+    status: "installed" | "not_installed" | "installing" | "failed";
+    installed: boolean;
+    restartRequired: boolean;
+    logRef: string | null;
+    lastError: string | null;
+};
+
+type RuntimeFeaturePackState = {
     engineAvailable: boolean;
-    canInstallDesktop: boolean;
-    canAutoRestart: boolean;
+    packs: RuntimeFeaturePack[];
+    summary: {
+        total: number;
+        installed: number;
+        missing: number;
+        installing: number;
+        failed: number;
+    };
 };
 
 const WEB_CHAT_SURFACE_URL = "http://localhost:9527/chat";
@@ -73,9 +89,9 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const [seenInboxIds, setSeenInboxIds] = useState<Set<string>>(new Set());
     const [inboxLoading, setInboxLoading] = useState(false);
     const [inboxError, setInboxError] = useState<string | null>(null);
-    const [installState, setInstallState] = useState<RuntimeInstallState | null>(null);
+    const [installState, setInstallState] = useState<RuntimeFeaturePackState | null>(null);
     const [installLoading, setInstallLoading] = useState(false);
-    const [installSubmitting, setInstallSubmitting] = useState(false);
+    const [installSubmittingPackId, setInstallSubmittingPackId] = useState<string | null>(null);
     const [isShell, setIsShell] = useState(false);
     const searchContainerRef = useRef<HTMLDivElement | null>(null);
     const inboxContainerRef = useRef<HTMLDivElement | null>(null);
@@ -114,24 +130,24 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const loadInstallState = useCallback(async () => {
         setInstallLoading(true);
         try {
-            const response = await fetch("/api/runtime-install", { cache: "no-store" });
+            const response = await fetch("/api/runtime-feature-packs", { cache: "no-store" });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
                 const message = typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`;
-                console.warn("Failed to load runtime install state:", message);
+                console.warn("Failed to load runtime feature pack state:", message);
                 toast({
-                    title: t("components.layout.Topbar.kc9b3a73e"),
-                    description: t("components.layout.Topbar.k7d9781c3"),
+                    title: t("components.layout.Topbar.featurePacksLoadFailedTitle"),
+                    description: t("components.layout.Topbar.featurePacksLoadFailedDescription"),
                     variant: "destructive",
                 });
                 return;
             }
-            setInstallState(payload as RuntimeInstallState);
+            setInstallState(payload as RuntimeFeaturePackState);
         } catch (error) {
-            console.error("Failed to load runtime install state:", error);
+            console.error("Failed to load runtime feature pack state:", error);
             toast({
-                title: t("components.layout.Topbar.kc9b3a73e"),
-                description: t("components.layout.Topbar.k7d9781c3"),
+                title: t("components.layout.Topbar.featurePacksLoadFailedTitle"),
+                description: t("components.layout.Topbar.featurePacksLoadFailedDescription"),
                 variant: "destructive",
             });
         } finally {
@@ -295,40 +311,48 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         });
     }, [loadInstallState]);
 
-    const handleInstallDesktop = useCallback(async () => {
-        setInstallSubmitting(true);
+    useEffect(() => {
+        const openFeaturePacks = () => {
+            setActivePanel("install");
+            void loadInstallState();
+        };
+        window.addEventListener("v8os:open-feature-packs", openFeaturePacks);
+        return () => window.removeEventListener("v8os:open-feature-packs", openFeaturePacks);
+    }, [loadInstallState]);
+
+    const handleInstallFeaturePack = useCallback(async (packId: string) => {
+        setInstallSubmittingPackId(packId);
         try {
-            const response = await fetch("/api/runtime-install", {
+            const response = await fetch("/api/runtime-feature-packs", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ platform: installState?.installPlatform || "auto" }),
+                body: JSON.stringify({ packId }),
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
                 throw new Error(typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`);
             }
             toast({
-                title: t("components.layout.Topbar.k6ff2c8c3"),
-                description: String(payload.message || ""),
+                title: t("components.layout.Topbar.featurePackInstallStartedTitle"),
+                description: String(payload.message || t("components.layout.Topbar.featurePackInstallStartedDescription")),
             });
             void loadInstallState();
-            closePanels();
         } catch (error) {
-            console.error("Failed to start desktop install:", error);
+            console.error("Failed to start feature pack install:", error);
             toast({
-                title: t("components.layout.Topbar.k1a77eba9"),
-                description: error instanceof Error ? error.message : t("components.layout.Topbar.kca0ab74d"),
+                title: t("components.layout.Topbar.featurePackInstallFailedTitle"),
+                description: error instanceof Error ? error.message : t("components.layout.Topbar.featurePackInstallFailedDescription"),
                 variant: "destructive",
             });
         } finally {
-            setInstallSubmitting(false);
+            setInstallSubmittingPackId(null);
         }
-    }, [closePanels, installState?.installPlatform, loadInstallState, t, toast]);
+    }, [loadInstallState, t, toast]);
 
-    const installProfileLabel = installState?.installProfile === "desktop"
-        ? t("components.layout.Topbar.kac0ecd7e")
-        : t("components.layout.Topbar.k9163f343");
-    const InstallIcon = installState?.installProfile === "desktop" ? Monitor : Server;
+    const featurePackLabel = t("components.layout.Topbar.featurePacksLabel");
+    const featurePackButtonTitle = installState?.summary?.missing
+        ? t("components.layout.Topbar.featurePacksMissingCount", { count: String(installState.summary.missing) })
+        : featurePackLabel;
 
     return (
         <TopbarComponent
@@ -372,14 +396,14 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                         <TopbarGlowActionButton
                             tone="emerald"
                             onClick={toggleInstallPanel}
-                            aria-label={installProfileLabel}
-                            title={installProfileLabel}
+                            aria-label={featurePackButtonTitle}
+                            title={featurePackButtonTitle}
                             aria-expanded={activePanel === "install"}
                         >
-                            <InstallIcon />
+                            <Monitor />
                         </TopbarGlowActionButton>
                         {activePanel === "install" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 {installLoading ? (
                                     <div className="flex h-28 items-center justify-center">
                                         <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
@@ -387,45 +411,74 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                 ) : (
                                     <div className="space-y-4 text-sm text-slate-600 dark:text-slate-300">
                                         <div className="space-y-1">
-                                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{installProfileLabel}</div>
-                                            <div>{t("components.layout.Topbar.k0769c431")}: {installState?.installPlatform || "-"}</div>
-                                            <div>{t("components.layout.Topbar.kff0c33d3")}: {installState?.bootstrapManaged ? t("components.layout.Topbar.k2ae24b34") : t("components.layout.Topbar.k8d9f05ae")}</div>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400 dark:text-slate-500">
-                                                {t("components.layout.Topbar.k7a89604c")}
-                                            </div>
-                                            <div className="flex flex-wrap gap-1.5">
-                                                {(installState?.installedRuntimeFamilies || []).map((family) => (
-                                                    <span key={family} className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-200">
-                                                        {family}
-                                                    </span>
-                                                ))}
+                                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{featurePackLabel}</div>
+                                            <div className="text-xs text-slate-500 dark:text-slate-400">
+                                                {t("components.layout.Topbar.featurePacksDescription")}
                                             </div>
                                         </div>
-                                        {installState?.canInstallDesktop ? (
-                                            <div className="space-y-2">
-                                                <div className="text-xs text-slate-500 dark:text-slate-400">
-                                                    {installState?.canAutoRestart
-                                                        ? t("components.layout.Topbar.k3f17614c")
-                                                        : t("components.layout.Topbar.k7e24dc73")}
-                                                </div>
-                                                <Button
-                                                    className="w-full rounded-2xl"
-                                                    onClick={() => void handleInstallDesktop()}
-                                                    disabled={installSubmitting}
-                                                >
-                                                    {installSubmitting ? (
-                                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                    ) : null}
-                                                    {t("components.layout.Topbar.k81c75821")}
-                                                </Button>
-                                            </div>
-                                        ) : (
-                                            <div className="rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200">
-                                                {t("components.layout.Topbar.ka167fbd8")}
-                                            </div>
-                                        )}
+                                        <div className="space-y-2">
+                                            {(installState?.packs || []).map((pack) => {
+                                                const isInstalled = pack.status === "installed";
+                                                const isInstalling = pack.status === "installing" || installSubmittingPackId === pack.id;
+                                                const canInstall = !isInstalled && !isInstalling;
+                                                return (
+                                                    <div key={pack.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={pack.hover}>
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="min-w-0">
+                                                                <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{pack.productName}</div>
+                                                                <div className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{pack.description}</div>
+                                                                {pack.runtimeFamilies.length ? (
+                                                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                                                        {pack.runtimeFamilies.map((family) => (
+                                                                            <span key={family} className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-300">
+                                                                                {family}
+                                                                            </span>
+                                                                        ))}
+                                                                    </div>
+                                                                ) : null}
+                                                            </div>
+                                                            <span className={cn(
+                                                                "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                                                                pack.status === "installed"
+                                                                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"
+                                                                    : pack.status === "failed"
+                                                                        ? "bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200"
+                                                                        : pack.status === "installing"
+                                                                            ? "bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-200"
+                                                                            : "bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200",
+                                                            )}>
+                                                                {t(`components.layout.Topbar.featurePackStatus.${pack.status}`)}
+                                                            </span>
+                                                        </div>
+                                                        {pack.lastError ? (
+                                                            <div className="mt-2 rounded-xl bg-rose-50 px-2.5 py-1.5 text-xs leading-5 text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">
+                                                                {pack.lastError}
+                                                            </div>
+                                                        ) : null}
+                                                        {pack.logRef ? (
+                                                            <div className="mt-2 truncate text-[11px] text-slate-400" title={pack.logRef}>
+                                                                {t("components.layout.Topbar.featurePackLogRef")}: {pack.logRef}
+                                                            </div>
+                                                        ) : null}
+                                                        <div className="mt-3 flex items-center justify-between gap-3">
+                                                            <div className="text-[11px] text-slate-400">
+                                                                {pack.restartRequired ? t("components.layout.Topbar.featurePackRestartRequired") : t("components.layout.Topbar.featurePackNoRestart")}
+                                                            </div>
+                                                            {canInstall ? (
+                                                                <Button size="sm" className="rounded-xl" onClick={() => void handleInstallFeaturePack(pack.id)}>
+                                                                    {t("components.layout.Topbar.featurePackInstall")}
+                                                                </Button>
+                                                            ) : isInstalling ? (
+                                                                <span className="inline-flex items-center text-xs text-sky-600 dark:text-sky-200">
+                                                                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                                                    {t("components.layout.Topbar.featurePackInstalling")}
+                                                                </span>
+                                                            ) : null}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 )}
                             </Card>

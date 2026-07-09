@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
-import { getRuntimeInstallState, triggerDesktopInstall } from "@/lib/server/runtime-install";
+import { getRuntimeFeaturePackState, triggerFeaturePackInstall } from "@/lib/server/runtime-feature-packs";
 import { verifyServiceAuth } from "@/lib/service-auth";
 
 async function resolveUserEmail(req: NextRequest) {
@@ -20,9 +20,9 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        return NextResponse.json(await getRuntimeInstallState());
+        return NextResponse.json(await getRuntimeFeaturePackState());
     } catch (error) {
-        console.error("[Admin Runtime Install] Failed to read state:", error);
+        console.error("[Admin Runtime Feature Packs] Failed to read state:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
@@ -34,13 +34,13 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-        await req.json().catch(() => ({}));
-        const result = await triggerDesktopInstall();
+        const payload = await req.json().catch(() => ({}));
+        const result = await triggerFeaturePackInstall(String(payload?.packId || ""), Boolean(payload?.dryRun));
         return NextResponse.json(result);
     } catch (error) {
-        console.error("[Admin Runtime Install] Failed to start desktop install:", error);
+        console.error("[Admin Runtime Feature Packs] Failed to start install:", error);
         return NextResponse.json(
-            { error: error instanceof Error ? error.message : "Failed to start desktop install" },
+            { error: error instanceof Error ? error.message : "Failed to start feature pack install" },
             { status: 500 },
         );
     }

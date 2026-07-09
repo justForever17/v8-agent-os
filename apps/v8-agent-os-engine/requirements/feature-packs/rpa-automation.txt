@@ -1,0 +1,5 @@
+robotframework
+robotframework-seleniumlibrary
+rpaframework
+rpaframework-recognition
+rpaframework-windows; sys_platform == "win32"

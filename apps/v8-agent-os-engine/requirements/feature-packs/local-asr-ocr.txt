@@ -1,0 +1,2 @@
+# Local ASR/OCR is an optional enhancement pack.
+# Do not add heavyweight dependencies here until a local recognizer path is implemented.

@@ -149,6 +149,7 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
 RAW_WEB_INTERNAL_TOOL_NAMES = {"web_fetch", "web_read", "web_extract", "web_search"}
 
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_")
+FEATURE_PACK_GATED_RUNTIME_KINDS = {"computer_use", "desktop_live", "rpa"}
 SUBAGENT_RUNTIME_BINDING_KINDS = {"research", "engineering", "creative_media"}
 SUBAGENT_RUNTIME_BINDING_DEFAULT_GROUPS: dict[str, list[str]] = {
     "research": ["research.core"],
@@ -185,7 +186,41 @@ def is_runtime_managed_tool_name(tool_name: str) -> bool:
     return any(normalized.startswith(prefix) for prefix in RUNTIME_MANAGED_TOOL_PREFIXES)
 
 
-def runtime_tool_groups_catalog() -> list[dict[str, Any]]:
+def runtime_kind_available(runtime_kind: Any) -> bool:
+    normalized = str(runtime_kind or "").strip()
+    if not normalized or normalized not in FEATURE_PACK_GATED_RUNTIME_KINDS:
+        return True
+    try:
+        from core.runtime.startup_profile import runtime_family_installed
+
+        return bool(runtime_family_installed(normalized))
+    except Exception:
+        return False
+
+
+def runtime_tool_group_available(group_name: Any) -> bool:
+    normalized = str(group_name or "").strip()
+    group = RUNTIME_TOOL_GROUPS.get(normalized)
+    if not group:
+        return False
+    return runtime_kind_available(group.get("runtimeKind"))
+
+
+def runtime_kind_for_tool_name(tool_name: Any) -> str:
+    normalized = str(tool_name or "").strip()
+    if normalized.startswith("computer_use_"):
+        return "computer_use"
+    if normalized.startswith("rpa_"):
+        return "rpa"
+    return ""
+
+
+def runtime_tool_available(tool_name: Any) -> bool:
+    runtime_kind = runtime_kind_for_tool_name(tool_name)
+    return runtime_kind_available(runtime_kind)
+
+
+def runtime_tool_groups_catalog(*, include_unavailable: bool = False) -> list[dict[str, Any]]:
     return [
         {
             "group": group_name,
@@ -195,6 +230,7 @@ def runtime_tool_groups_catalog() -> list[dict[str, Any]]:
             "toolNames": list(group.get("toolNames") or []),
         }
         for group_name, group in RUNTIME_TOOL_GROUPS.items()
+        if include_unavailable or runtime_tool_group_available(group_name)
     ]
 
 
@@ -233,7 +269,12 @@ def normalize_runtime_access(values: Any, *, runtime_kind: str | None = None) ->
             )
         else:
             group_name = _normalize_group_name(value, runtime_kind=runtime_kind)
-        if not group_name or group_name not in RUNTIME_TOOL_GROUPS or group_name in seen:
+        if (
+            not group_name
+            or group_name not in RUNTIME_TOOL_GROUPS
+            or not runtime_tool_group_available(group_name)
+            or group_name in seen
+        ):
             continue
         seen.add(group_name)
         groups.append(group_name)
@@ -377,7 +418,10 @@ def grant_runtime_tool_groups(
     rejected: list[str] = []
     for item in list(groups or []):
         group_name = _normalize_group_name(item)
-        if group_name and group_name not in RUNTIME_TOOL_GROUPS:
+        if group_name and (
+            group_name not in RUNTIME_TOOL_GROUPS
+            or not runtime_tool_group_available(group_name)
+        ):
             rejected.append(group_name)
     for group_name in requested:
         current[group_name] = {

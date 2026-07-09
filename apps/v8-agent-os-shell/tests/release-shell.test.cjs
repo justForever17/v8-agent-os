@@ -79,6 +79,8 @@ test('desktop preview uses a slim portable Python release profile', () => {
     'rpaframework',
     'rpaframework-windows',
     'robotframework',
+    'mss',
+    'pywinauto',
     'aiortc',
     'av',
     'soundcard',

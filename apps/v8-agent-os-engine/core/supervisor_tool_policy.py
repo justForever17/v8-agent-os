@@ -7,6 +7,7 @@ from core.computer_use_tool_surface import (
     DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES,
     select_supervisor_native_tools,
 )
+from core.runtime_tool_access import runtime_kind_available, runtime_tool_available
 
 FALLBACK_NATIVE_TOOL_NAMES = {
     "run_system_command",
@@ -105,6 +106,8 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
             tool_name = str(getattr(tool_ref, "name", getattr(tool_ref, "__name__", "")) or "").strip()
             if not tool_name:
                 continue
+            if not runtime_tool_available(tool_name):
+                continue
             if _matches_runtime_managed_tool(tool_name, runtime_defs):
                 continue
             definitions.append(
@@ -130,6 +133,8 @@ def _native_tool_definitions() -> list[SupervisorToolDefinition]:
             normalized = str(getattr(tool_ref, "name", tool_ref) or "").strip()
             if not normalized:
                 continue
+            if not runtime_tool_available(normalized):
+                continue
             if _matches_runtime_managed_tool(normalized, runtime_defs):
                 continue
             definitions.append(
@@ -154,8 +159,10 @@ def _ensure_runtime_managed_descriptors_loaded() -> None:
         from runtimes.automation.runtime import automation_runtime  # noqa: F401
         from runtimes.network_supervisor.runtime import network_supervisor_runtime  # noqa: F401
         from runtimes.plugin_host.runtime import plugin_host_runtime  # noqa: F401
-        from runtimes.computer_use.runtime import computer_use_runtime  # noqa: F401
-        from runtimes.rpa.runtime import rpa_runtime  # noqa: F401
+        if runtime_kind_available("computer_use"):
+            from runtimes.computer_use.runtime import computer_use_runtime  # noqa: F401
+        if runtime_kind_available("rpa"):
+            from runtimes.rpa.runtime import rpa_runtime  # noqa: F401
     except Exception:
         return
 
@@ -166,6 +173,8 @@ def _runtime_managed_definitions() -> list[SupervisorToolDefinition]:
     _ensure_runtime_managed_descriptors_loaded()
     definitions: list[SupervisorToolDefinition] = []
     for descriptor in capability_registry.list():
+        if not runtime_kind_available(descriptor.kind):
+            continue
         metadata = descriptor.metadata or {}
         exact_names = [str(item).strip() for item in list(metadata.get("managedToolNames") or []) if str(item).strip()]
         prefixes = [str(item).strip() for item in list(metadata.get("managedToolPrefixes") or []) if str(item).strip()]

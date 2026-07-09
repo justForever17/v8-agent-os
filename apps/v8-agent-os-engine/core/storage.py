@@ -896,6 +896,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "installProfile": "minimal",
         "installPlatform": "",
         "installedRuntimeFamilies": [],
+        "featurePacks": {},
         "bootstrapManaged": False,
         "lastUpgradeAt": "",
         "startupProfile": "minimal",
@@ -2920,6 +2921,7 @@ class StorageManager:
                 "installProfile": "minimal",
                 "installPlatform": "",
                 "installedRuntimeFamilies": [],
+                "featurePacks": {},
                 "bootstrapManaged": False,
                 "lastUpgradeAt": "",
                 "startupProfile": "minimal",
@@ -2943,6 +2945,9 @@ class StorageManager:
             if normalized and normalized not in families:
                 families.append(normalized)
         data["installedRuntimeFamilies"] = families
+        from core.runtime.feature_packs import normalize_feature_pack_config
+
+        data["featurePacks"] = normalize_feature_pack_config(data.get("featurePacks"))
         data["bootstrapManaged"] = bool(data.get("bootstrapManaged", False))
         data["lastUpgradeAt"] = str(data.get("lastUpgradeAt") or "").strip()
         data.setdefault("policies", {})
@@ -2968,6 +2973,9 @@ class StorageManager:
             if normalized and normalized not in families:
                 families.append(normalized)
         payload["installedRuntimeFamilies"] = families
+        from core.runtime.feature_packs import normalize_feature_pack_config
+
+        payload["featurePacks"] = normalize_feature_pack_config(payload.get("featurePacks"))
         payload["bootstrapManaged"] = bool(payload.get("bootstrapManaged", False))
         payload["lastUpgradeAt"] = str(payload.get("lastUpgradeAt") or "").strip()
         payload.setdefault("policies", {})

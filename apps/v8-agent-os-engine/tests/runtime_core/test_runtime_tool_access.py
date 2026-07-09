@@ -33,6 +33,15 @@ from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capabilit
 from graph.agent_factories import _select_contextual_subagent_native_tools
 
 
+def _set_pack_runtime_installed(monkeypatch, installed: bool) -> None:
+    def _runtime_family_installed(kind: str, *, profile: str | None = None) -> bool:
+        if kind in {"computer_use", "desktop_live", "rpa"}:
+            return installed
+        return True
+
+    monkeypatch.setattr("core.runtime.startup_profile.runtime_family_installed", _runtime_family_installed)
+
+
 def _tool(name: str):
     return SimpleNamespace(name=name)
 
@@ -118,7 +127,8 @@ def test_network_supervisor_delegate_requires_explicit_runtime_grant():
     assert "delegate_network_task" in {tool.name for tool in visible_after_grant}
 
 
-def test_runtime_broker_grant_makes_group_visible_for_same_run_next_step():
+def test_runtime_broker_grant_makes_group_visible_for_same_run_next_step(monkeypatch):
+    _set_pack_runtime_installed(monkeypatch, True)
     assert RUNTIME_TOOL_GROUPS["computer_use.control"]["toolNames"] == [
         "computer_use_desktop_capabilities",
         "computer_use_observe_scene",
@@ -147,6 +157,48 @@ def test_runtime_broker_grant_makes_group_visible_for_same_run_next_step():
 
     assert {"computer_use_desktop_capabilities", "computer_use_observe_scene", "computer_use_execute_task"}.issubset(names)
     assert "computer_use_click" not in names
+
+
+def test_feature_pack_gated_runtime_groups_hide_when_not_installed(monkeypatch):
+    _set_pack_runtime_installed(monkeypatch, False)
+
+    catalog = runtime_broker.func(
+        mode="list",
+        detail_level="catalog",
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-broker-catalog",
+    )
+    catalog_payload = _tool_message_payload(catalog)
+    catalog_groups = {item.get("group") for item in catalog_payload["availableGroups"]}
+    assert "computer_use.control" not in catalog_groups
+    assert "rpa.run" not in catalog_groups
+
+    grant = runtime_broker.func(
+        mode="grant",
+        tool_group="computer_use.control",
+        reason="need screen inspection",
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-broker-missing-pack-grant",
+    )
+    grant_payload = _tool_message_payload(grant)
+    assert grant_payload["activeGrants"] == []
+    assert grant_payload["rejected"] == ["computer_use.control"]
+
+    route = runtime_broker.func(
+        mode="route",
+        need={"kind": "computer_use", "source": "supervisor", "reason": "need real desktop"},
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-broker-missing-pack-route",
+    )
+    route_payload = _tool_message_payload(route)
+    assert route_payload["ok"] is False
+    assert route_payload["error"] == "runtime_feature_pack_required"
+    assert route_payload["detailRef"] == "runtimeRegistry.featurePacks.computer_use_desktop"
+    assert route.update["planner_dispatch_status"]["blocked"] is True
+
+    summary = capability_registry.build_supervisor_summary(user_query="操作真实桌面窗口")
+    assert "kind=computer_use" not in summary
+    assert "computer_use.control" not in summary
 
 
 def _tool_message_payload(command):
@@ -1319,7 +1371,8 @@ def test_research_runtime_appears_in_capability_registry_summary():
     assert "research.core" in summary
 
 
-def test_internal_orchestration_runtime_cards_explain_flow_boundary_and_handoff():
+def test_internal_orchestration_runtime_cards_explain_flow_boundary_and_handoff(monkeypatch):
+    _set_pack_runtime_installed(monkeypatch, True)
     summary = capability_registry.build_supervisor_summary(
         user_query="先调研官方文档，再用 Seedance 做视频，最后观察真实桌面窗口。"
     )

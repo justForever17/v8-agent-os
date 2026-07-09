@@ -71,19 +71,24 @@ export default function RpaRuntimePage() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [runtimeSaving, setRuntimeSaving] = useState(false);
+    const [featurePackMissing, setFeaturePackMissing] = useState(false);
 
     const loadData = async () => {
         setLoading(true);
         try {
-            const [config, modelList, capabilitySnapshot] = await Promise.all([
+            const [config, modelList, capabilitySnapshot, featurePacks] = await Promise.all([
                 fetchConfigDomain<RpaData>("rpa"),
                 fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
                 fetch("/api/runtime-capabilities", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
+                fetch("/api/runtime-feature-packs", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
             ]);
             setEnvelope(config);
             setModels(Array.isArray(modelList) ? modelList : []);
             const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
             setRuntimeCapability(runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "rpa") || null);
+            const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
+            const rpaPack = packs.find((item: { id?: string; status?: string }) => item.id === "rpa_automation");
+            setFeaturePackMissing(rpaPack?.status !== "installed");
         } finally {
             setLoading(false);
         }
@@ -112,6 +117,10 @@ export default function RpaRuntimePage() {
     };
 
     const setRuntimeEnabled = async (enabled: boolean) => {
+        if (enabled && featurePackMissing) {
+            window.dispatchEvent(new Event("v8os:open-feature-packs"));
+            return;
+        }
         setRuntimeSaving(true);
         try {
             await fetch("/api/runtime-capabilities/rpa/policy", {
@@ -189,6 +198,14 @@ export default function RpaRuntimePage() {
             </ConfigCard>
 
             <StatusNotice title={"app.admin.dashboard.rpa.page.ka1059631"} tone="info" />
+
+            {featurePackMissing ? (
+                <StatusNotice
+                    title={"app.admin.dashboard.rpa.featurePackMissingTitle"}
+                    description={"app.admin.dashboard.rpa.featurePackMissingDescription"}
+                    tone="warning"
+                />
+            ) : null}
 
             <ConfigCard title={"app.admin.dashboard.rpa.page.kb6443896"} description={"app.admin.dashboard.rpa.page.kb0b0faae"}>
                 <div className="space-y-3">

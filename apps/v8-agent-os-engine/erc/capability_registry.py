@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, Optional
 
 from core.system_tools.baseline import is_baseline_system_tool_name
+from core.runtime_tool_access import runtime_kind_available, runtime_tool_available
 
 _SNAPSHOT_RUNTIME_ORDER = (
     "chat",
@@ -408,6 +409,8 @@ class CapabilityRegistry:
             if not tool_name:
                 filtered.append(tool_ref)
                 continue
+            if not runtime_tool_available(tool_name):
+                continue
             if is_baseline_system_tool_name(tool_name):
                 filtered.append(tool_ref)
                 continue
@@ -427,6 +430,8 @@ class CapabilityRegistry:
         query = str(user_query or "").strip().lower()
         suggestions: list[CapabilityRouteSuggestion] = []
         for descriptor in self.list():
+            if not runtime_kind_available(descriptor.kind):
+                continue
             policy = self.get_policy(descriptor.kind)
             if not policy.enabled or not policy.auto_route:
                 continue
@@ -544,20 +549,20 @@ class CapabilityRegistry:
         recommended = {
             item.kind: item
             for item in self.recommend(user_query, limit=6)
-            if _config_enabled(item.kind)
+            if _config_enabled(item.kind) and runtime_kind_available(item.kind)
         }
         for kind in prioritized_kinds or []:
             descriptor = self.get(kind)
             if descriptor is None:
                 continue
-            if not _config_enabled(kind):
+            if not _config_enabled(kind) or not runtime_kind_available(kind):
                 continue
             ordered.append(descriptor)
             seen.add(kind)
         for descriptor, _registered in self._snapshot_descriptors():
             if descriptor.kind in seen:
                 continue
-            if not _config_enabled(descriptor.kind):
+            if not _config_enabled(descriptor.kind) or not runtime_kind_available(descriptor.kind):
                 continue
             ordered.append(descriptor)
 

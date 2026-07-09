@@ -21,6 +21,14 @@ export type CanonicalConfig = {
         installProfile?: string;
         installPlatform?: string;
         installedRuntimeFamilies?: string[];
+        featurePacks?: Record<string, {
+            status?: string;
+            targetDir?: string;
+            logRef?: string | null;
+            lastError?: string | null;
+            updatedAt?: string | null;
+            restartRequired?: boolean;
+        }>;
         bootstrapManaged?: boolean;
         lastUpgradeAt?: string;
         startupProfile?: string;
@@ -111,6 +119,10 @@ export function invalidateCanonicalConfigCache(configPath = CANONICAL_CONFIG_PAT
     jsonConfigCache.delete(path.resolve(configPath));
 }
 
+export function canonicalConfigPath() {
+    return CANONICAL_CONFIG_PATH;
+}
+
 function cloneConfig(data: CanonicalConfig): CanonicalConfig {
     return JSON.parse(JSON.stringify(data)) as CanonicalConfig;
 }
@@ -158,6 +170,13 @@ export function readCanonicalConfig(): CanonicalConfig {
         return {};
     }
     return readJsonConfig(CANONICAL_CONFIG_PATH);
+}
+
+export function writeCanonicalConfig(config: CanonicalConfig) {
+    const targetPath = CANONICAL_CONFIG_PATH;
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, `${JSON.stringify(config || {}, null, 2)}\n`, "utf-8");
+    invalidateCanonicalConfigCache(targetPath);
 }
 
 export function readCanonicalConfigDiagnostics(): CanonicalConfigDiagnostics {

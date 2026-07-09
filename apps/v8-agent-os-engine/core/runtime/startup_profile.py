@@ -8,6 +8,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.storage import storage
+from core.runtime.feature_packs import (
+    PACKED_RUNTIME_FAMILIES,
+    apply_feature_pack_python_paths,
+    build_feature_pack_statuses,
+    feature_pack_summary,
+    installed_runtime_families_from_feature_packs,
+)
 
 
 INSTALL_PROFILES = ("minimal", "desktop")
@@ -279,8 +286,21 @@ def get_runtime_registry_state() -> dict[str, Any]:
     install_platform = normalize_install_platform(
         os.getenv("ENGINE_INSTALL_PLATFORM") or payload.get("installPlatform")
     )
+    apply_feature_pack_python_paths(payload)
+    feature_pack_statuses = build_feature_pack_statuses(payload, install_platform=install_platform)
     configured_families = _normalize_runtime_families(payload.get("installedRuntimeFamilies"))
-    if configured_families:
+    has_feature_pack_truth = isinstance(payload.get("featurePacks"), dict) and bool(payload.get("featurePacks"))
+    if has_feature_pack_truth:
+        installed_runtime_families = _default_runtime_families_for_profile("minimal")
+        for family in configured_families:
+            if family in PACKED_RUNTIME_FAMILIES:
+                continue
+            if family not in installed_runtime_families:
+                installed_runtime_families.append(family)
+        for family in installed_runtime_families_from_feature_packs(feature_pack_statuses):
+            if family not in installed_runtime_families:
+                installed_runtime_families.append(family)
+    elif configured_families:
         installed_runtime_families = configured_families
     else:
         legacy_startup_profile = str(payload.get("startupProfile") or "").strip().lower()
@@ -300,6 +320,8 @@ def get_runtime_registry_state() -> dict[str, Any]:
         "lastUpgradeAt": str(payload.get("lastUpgradeAt") or "").strip() or None,
         "startupProfile": normalize_install_profile(payload.get("startupProfile") or install_profile),
         "policies": dict(payload.get("policies") or {}),
+        "featurePacks": feature_pack_statuses,
+        "featurePackSummary": feature_pack_summary(feature_pack_statuses),
     }
 
 
@@ -467,6 +489,8 @@ def build_installation_snapshot() -> dict[str, Any]:
         "installProfile": state["installProfile"],
         "installPlatform": state["installPlatform"],
         "installedRuntimeFamilies": list(state["installedRuntimeFamilies"]),
+        "featurePacks": list(state.get("featurePacks") or []),
+        "featurePackSummary": dict(state.get("featurePackSummary") or {}),
         "bootstrapManaged": bool(state["bootstrapManaged"]),
         "lastUpgradeAt": state["lastUpgradeAt"],
     }

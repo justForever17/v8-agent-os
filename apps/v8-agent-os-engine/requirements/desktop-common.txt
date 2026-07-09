@@ -1,13 +1,5 @@
 -r minimal.txt
 soundcard>=0.4.3
-
-robotframework
-robotframework-seleniumlibrary
-rpaframework
-rpaframework-recognition
 pyperclip
-mss
 Pillow
 psd-tools[composite]>=1.10.0
-av
-aiortc

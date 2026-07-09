@@ -24,6 +24,7 @@ from core.runtime_tool_access import (
     normalize_runtime_access,
     revoke_runtime_tool_groups,
     runtime_access_from_route_context,
+    runtime_kind_available,
     runtime_tool_groups_catalog,
 )
 from core.spec_service import spec_service
@@ -44,6 +45,7 @@ def _runtime_broker_payload(
     episode: dict[str, Any] | None = None,
     next_action: str | None = None,
     route_brief_quality: dict[str, Any] | None = None,
+    detail_ref: str | None = None,
 ) -> str:
     normalized_detail = str(detail_level or "summary").strip().lower()
     group_items = list(groups or [])
@@ -89,6 +91,8 @@ def _runtime_broker_payload(
         payload["nextAction"] = "wait_episode"
     if next_action:
         payload["recommendedNextAction"] = next_action
+    if detail_ref:
+        payload["detailRef"] = detail_ref
     if route_brief_quality:
         payload["routeBriefQuality"] = dict(route_brief_quality)
     if normalized_detail not in {"catalog", "detail", "full"} and groups:
@@ -1923,6 +1927,51 @@ def runtime_broker(
                     "current_route_context": route_context,
                 },
             )
+        if not runtime_kind_available(route_kind):
+            pack_id = ""
+            pack_name = ""
+            try:
+                from core.runtime.feature_packs import FEATURE_PACK_BY_ID, RUNTIME_FAMILY_TO_FEATURE_PACK
+
+                pack_id = RUNTIME_FAMILY_TO_FEATURE_PACK.get(route_kind, "")
+                pack_name = FEATURE_PACK_BY_ID[pack_id].product_name if pack_id else ""
+            except Exception:
+                pass
+            summary = (
+                f"{route_kind} runtime requires feature pack {pack_name or pack_id} before routing."
+                if pack_id
+                else f"{route_kind} runtime is not installed."
+            )
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary=summary,
+                                error="runtime_feature_pack_required",
+                                detail_level=detail_level,
+                                detail_ref=f"runtimeRegistry.featurePacks.{pack_id}" if pack_id else "runtimeRegistry.featurePacks",
+                                next_action="Open Admin feature packs, install the required pack, then restart Engine if prompted.",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                    "planner_dispatch_status": {
+                        "mode": "runtime_broker_route",
+                        "dispatched": False,
+                        "blocked": True,
+                        "reason": "runtime_feature_pack_required",
+                        "episodeKind": route_kind,
+                        "episodeCount": 0,
+                        "requiredFeaturePackId": pack_id or None,
+                        "nextAction": "install_feature_pack",
+                    },
+                },
+            )
         need_payload = _enrich_route_need_for_episode(need_payload, kind=route_kind, state=state)
         route_inputs = dict(need_payload.get("inputs") or {}) if isinstance(need_payload.get("inputs"), dict) else {}
         route_brief_quality = route_inputs.get("routeBriefQuality") if isinstance(route_inputs.get("routeBriefQuality"), dict) else {}
@@ -2034,10 +2083,10 @@ def runtime_broker(
             },
         )
 
-    requested_groups = list(tool_groups or [])
+    raw_requested_groups = list(tool_groups or [])
     if tool_group:
-        requested_groups.append(tool_group)
-    requested_groups = normalize_runtime_access(requested_groups, runtime_kind=runtime_kind)
+        raw_requested_groups.append(tool_group)
+    requested_groups = normalize_runtime_access(raw_requested_groups, runtime_kind=runtime_kind)
 
     if normalized_mode == "status":
         active_groups = runtime_access_from_route_context(route_context)
@@ -2066,7 +2115,7 @@ def runtime_broker(
         )
 
     if normalized_mode == "grant":
-        if not requested_groups:
+        if not raw_requested_groups:
             return Command(
                 goto="supervisor",
                 update={
@@ -2087,7 +2136,7 @@ def runtime_broker(
             )
         updated_context, grants, rejected = grant_runtime_tool_groups(
             route_context,
-            requested_groups,
+            raw_requested_groups,
             reason=str(reason or "").strip(),
         )
         return Command(

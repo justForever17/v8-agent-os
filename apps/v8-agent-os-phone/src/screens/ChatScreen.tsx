@@ -6328,7 +6328,7 @@ export default function ChatScreen() {
             }}
         >
             {activeConversationId && visibleQueuedMessages.length > 0 ? (
-                <GlassCard style={[styles.queuedMessageStrip, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
+                <View style={[styles.queuedMessageStrip, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
                     <Pressable
                         style={styles.queuedMessageStripHeader}
                         onPress={() => setQueuedMessagesCollapsed((current) => !current)}
@@ -6355,8 +6355,8 @@ export default function ChatScreen() {
                     </Pressable>
                     {!queuedMessagesCollapsed ? (
                         <ScrollView
-                            horizontal
-                            showsHorizontalScrollIndicator={false}
+                            style={styles.queuedMessageListViewport}
+                            showsVerticalScrollIndicator={false}
                             contentContainerStyle={styles.queuedMessageList}
                             keyboardShouldPersistTaps="handled"
                         >
@@ -6364,46 +6364,53 @@ export default function ChatScreen() {
                                 const state = String(item.state || "pending").trim().toLowerCase();
                                 const promoted = state === "promoted";
                                 return (
-                                    <View key={item.id} style={[styles.queuedMessageChip, { backgroundColor: palette.surface, borderColor: promoted ? palette.primary : palette.border }]}>
-                                        <View style={styles.queuedMessageChipHeader}>
-                                            <Text style={[styles.queuedMessageState, { color: promoted ? palette.primary : palette.textMuted }]}>
+                                    <View key={item.id} style={[styles.queuedMessageRow, { backgroundColor: palette.surface, borderColor: promoted ? palette.primary : palette.border }]}>
+                                        <View style={[styles.queuedMessageOrdinalBadge, { backgroundColor: promoted ? palette.primary : palette.surfaceStrong }]}>
+                                            <MaterialCommunityIcons
+                                                name={promoted ? "comment-arrow-right-outline" : "subdirectory-arrow-right"}
+                                                size={13}
+                                                color={promoted ? "#FFFFFF" : palette.textSoft}
+                                            />
+                                            <Text style={[styles.queuedMessageOrdinal, { color: promoted ? "#FFFFFF" : palette.textSoft }]}>
+                                                {Number(item.ordinal || 1)}
+                                            </Text>
+                                        </View>
+                                        <View style={styles.queuedMessageBody}>
+                                            <Text style={[styles.queuedMessagePreview, { color: palette.text }]} numberOfLines={1}>
+                                                {item.content || t("src.screens.chatscreen.empty_queued_message")}
+                                            </Text>
+                                            <Text style={[styles.queuedMessageState, { color: promoted ? palette.primary : palette.textMuted }]} numberOfLines={1}>
                                                 {promoted
                                                     ? t("src.screens.chatscreen.queued_message_promoted")
                                                     : t("src.screens.chatscreen.queued_message_pending")}
                                             </Text>
-                                            <Text style={[styles.queuedMessageOrdinal, { color: palette.textSoft }]}>
-                                                #{Number(item.ordinal || 1)}
-                                            </Text>
                                         </View>
-                                        <Text style={[styles.queuedMessagePreview, { color: palette.text }]} numberOfLines={2}>
-                                            {item.content || t("src.screens.chatscreen.empty_queued_message")}
-                                        </Text>
                                         <View style={styles.queuedMessageActions}>
                                             <Pressable
-                                                style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
+                                                accessibilityRole="button"
+                                                accessibilityLabel={t("src.screens.chatscreen.edit")}
+                                                style={[styles.queuedMessageActionButton, { opacity: promoted ? 0.42 : 1 }]}
                                                 disabled={promoted}
                                                 onPress={() => handleOpenQueuedMessageEditor(item)}
                                             >
-                                                <Text style={[styles.queuedMessageActionText, { color: palette.textMuted }]}>
-                                                    {t("src.screens.chatscreen.edit")}
-                                                </Text>
+                                                <MaterialCommunityIcons name="pencil-outline" size={16} color={palette.textMuted} />
                                             </Pressable>
                                             <Pressable
-                                                style={[styles.queuedMessageActionButton, { borderColor: palette.border, opacity: promoted ? 0.48 : 1 }]}
+                                                accessibilityRole="button"
+                                                accessibilityLabel={t("src.screens.chatscreen.promote_guidance")}
+                                                style={[styles.queuedMessageActionButton, { opacity: promoted ? 0.42 : 1 }]}
                                                 disabled={promoted}
                                                 onPress={() => void handlePromoteQueuedMessage(item)}
                                             >
-                                                <Text style={[styles.queuedMessageActionText, { color: palette.primary }]}>
-                                                    {t("src.screens.chatscreen.promote_guidance")}
-                                                </Text>
+                                                <MaterialCommunityIcons name="comment-arrow-right-outline" size={16} color={palette.primary} />
                                             </Pressable>
                                             <Pressable
-                                                style={[styles.queuedMessageActionButton, { borderColor: palette.border }]}
+                                                accessibilityRole="button"
+                                                accessibilityLabel={t("src.screens.chatscreen.cancel")}
+                                                style={styles.queuedMessageActionButton}
                                                 onPress={() => void handleCancelQueuedMessage(item)}
                                             >
-                                                <Text style={[styles.queuedMessageActionText, { color: palette.danger }]}>
-                                                    {t("src.screens.chatscreen.cancel")}
-                                                </Text>
+                                                <MaterialCommunityIcons name="trash-can-outline" size={16} color={palette.danger} />
                                             </Pressable>
                                         </View>
                                     </View>
@@ -6411,7 +6418,7 @@ export default function ChatScreen() {
                             })}
                         </ScrollView>
                     ) : null}
-                </GlassCard>
+                </View>
             ) : null}
             {activeConversationId ? (
                 <Composer
@@ -7193,37 +7200,38 @@ const styles = StyleSheet.create({
     },
     queuedMessageStrip: {
         borderWidth: 1,
-        borderRadius: 18,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        marginBottom: 8,
-        gap: 8,
+        borderRadius: 16,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        marginBottom: 6,
+        gap: 5,
     },
     queuedMessageStripHeader: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        gap: 10,
+        minHeight: 24,
+        gap: 8,
     },
     queuedMessageStripTitleRow: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 8,
+        gap: 6,
         flexShrink: 0,
     },
     queuedMessageStripTitle: {
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: "900",
     },
     queuedMessageStripCount: {
-        minWidth: 24,
-        height: 22,
+        minWidth: 20,
+        height: 18,
         borderRadius: 999,
-        paddingHorizontal: 8,
+        paddingHorizontal: 6,
         textAlign: "center",
         textAlignVertical: "center",
         overflow: "hidden",
-        fontSize: 11,
+        fontSize: 10,
         fontWeight: "900",
     },
     queuedMessageStripHeaderRight: {
@@ -7231,7 +7239,7 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "flex-end",
-        gap: 6,
+        gap: 4,
         minWidth: 0,
     },
     queuedMessageStripHint: {
@@ -7240,55 +7248,62 @@ const styles = StyleSheet.create({
         fontSize: 10,
         fontWeight: "700",
     },
+    queuedMessageListViewport: {
+        maxHeight: 126,
+    },
     queuedMessageList: {
-        gap: 8,
-        paddingRight: 4,
+        gap: 4,
     },
-    queuedMessageChip: {
-        width: 236,
-        borderWidth: 1,
-        borderRadius: 14,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        gap: 6,
-    },
-    queuedMessageChipHeader: {
+    queuedMessageRow: {
+        minHeight: 38,
         flexDirection: "row",
         alignItems: "center",
-        justifyContent: "space-between",
+        borderWidth: 1,
+        borderRadius: 12,
+        paddingHorizontal: 7,
+        paddingVertical: 5,
         gap: 8,
     },
+    queuedMessageOrdinalBadge: {
+        minWidth: 34,
+        height: 26,
+        borderRadius: 10,
+        paddingHorizontal: 5,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 2,
+    },
+    queuedMessageBody: {
+        flex: 1,
+        minWidth: 0,
+        gap: 1,
+    },
     queuedMessageState: {
-        fontSize: 10,
-        fontWeight: "900",
-        textTransform: "uppercase",
-        letterSpacing: 0.6,
+        fontSize: 9,
+        fontWeight: "800",
+        letterSpacing: 0.2,
     },
     queuedMessageOrdinal: {
         fontSize: 10,
-        fontWeight: "800",
+        fontWeight: "900",
     },
     queuedMessagePreview: {
         fontSize: 12,
-        lineHeight: 17,
-        fontWeight: "700",
+        lineHeight: 16,
+        fontWeight: "800",
     },
     queuedMessageActions: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
+        gap: 2,
     },
     queuedMessageActionButton: {
-        minHeight: 28,
+        width: 28,
+        height: 28,
         borderRadius: 999,
-        borderWidth: 1,
-        paddingHorizontal: 9,
         alignItems: "center",
         justifyContent: "center",
-    },
-    queuedMessageActionText: {
-        fontSize: 10,
-        fontWeight: "900",
     },
     queuedEditCard: {
         width: "90%",

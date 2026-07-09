@@ -9,6 +9,7 @@ const localApiNamespaces = [
   "artifacts",
   "auth",
   "chat",
+  "chat-queue",
   "conversations",
   "projects",
   "realtime",

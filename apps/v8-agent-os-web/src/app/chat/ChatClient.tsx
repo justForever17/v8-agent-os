@@ -32,7 +32,21 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { CreateConversationPayload, useConversationContext } from "@/context/ConversationContext";
 import { signIn, useSession } from "next-auth/react";
-import { AlertCircle, FolderTree, PlugZap, TerminalSquare, PanelRight, X } from "lucide-react";
+import {
+    AlertCircle,
+    ChevronDown,
+    CornerDownRight,
+    Edit3,
+    FolderTree,
+    GripVertical,
+    Loader2,
+    MoreHorizontal,
+    PanelRight,
+    PlugZap,
+    TerminalSquare,
+    Trash2,
+    X,
+} from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { Button } from "@/components/ui/button";
 import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPanel";
@@ -123,6 +137,32 @@ type SessionProjectionView = AuthoritativeSessionView & {
     contextGovernanceHistory?: Record<string, unknown>[];
 };
 
+type QueuedChatMessage = {
+    id: string;
+    sessionId?: string;
+    runId?: string;
+    clientMessageId?: string;
+    content: string;
+    state?: "pending" | "promoted" | "injected" | "consumed" | "cancelled" | string;
+    ordinal?: number;
+    createdAt?: string;
+    updatedAt?: string;
+    promotedAt?: string;
+    injectedAt?: string;
+    consumedAt?: string;
+    cancelledAt?: string;
+};
+
+type ChatQueueSubmitResponse = {
+    accepted?: boolean;
+    queued?: boolean;
+    queuedMessage?: QueuedChatMessage | null;
+    clientMessageId?: string;
+    run_id?: string;
+    runId?: string;
+    error?: string;
+};
+
 function isLegacyChatUnsupportedPayload(value: unknown) {
     const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
     const snapshot = root.snapshot && typeof root.snapshot === "object" ? root.snapshot as Record<string, unknown> : {};
@@ -137,6 +177,65 @@ function asPlainRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string {
     return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeQueuedMessage(value: unknown): QueuedChatMessage | null {
+    const record = asPlainRecord(value);
+    const id =
+        readString(record.id)
+        || readString(record.queueMessageId)
+        || readString(record.guidanceQueueMessageId);
+    if (!id) {
+        return null;
+    }
+
+    const ordinalValue = Number(record.ordinal);
+    return {
+        id,
+        sessionId: readString(record.sessionId) || readString(record.session_id) || undefined,
+        runId: readString(record.runId) || readString(record.run_id) || undefined,
+        clientMessageId: readString(record.clientMessageId) || readString(record.client_message_id) || undefined,
+        content: readString(record.content) || readString(record.text) || readString(record.message),
+        state: readString(record.state) || readString(record.status) || "pending",
+        ordinal: Number.isFinite(ordinalValue) ? ordinalValue : undefined,
+        createdAt: readString(record.createdAt) || readString(record.created_at) || undefined,
+        updatedAt: readString(record.updatedAt) || readString(record.updated_at) || undefined,
+        promotedAt: readString(record.promotedAt) || readString(record.promoted_at) || undefined,
+        injectedAt: readString(record.injectedAt) || readString(record.injected_at) || undefined,
+        consumedAt: readString(record.consumedAt) || readString(record.consumed_at) || undefined,
+        cancelledAt: readString(record.cancelledAt) || readString(record.cancelled_at) || undefined,
+    };
+}
+
+function extractQueuedMessages(value: unknown): QueuedChatMessage[] | null {
+    const root = asPlainRecord(value);
+    const snapshot = asPlainRecord(root.snapshot);
+    const candidates = [root.queuedMessages, snapshot.queuedMessages];
+    for (const candidate of candidates) {
+        if (!Array.isArray(candidate)) {
+            continue;
+        }
+        return candidate
+            .map(normalizeQueuedMessage)
+            .filter((item): item is QueuedChatMessage => Boolean(item));
+    }
+    return null;
+}
+
+function isVisibleQueuedMessage(item: QueuedChatMessage) {
+    const state = String(item.state || "pending").trim().toLowerCase();
+    return !["cancelled", "consumed", "injected"].includes(state);
+}
+
+function sortQueuedMessages(items: QueuedChatMessage[]) {
+    return [...items].sort((left, right) => {
+        const leftOrdinal = Number(left.ordinal);
+        const rightOrdinal = Number(right.ordinal);
+        if (Number.isFinite(leftOrdinal) && Number.isFinite(rightOrdinal) && leftOrdinal !== rightOrdinal) {
+            return leftOrdinal - rightOrdinal;
+        }
+        return String(left.createdAt || left.updatedAt || left.id).localeCompare(String(right.createdAt || right.updatedAt || right.id));
+    });
 }
 
 function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
@@ -245,6 +344,221 @@ function findPendingAskUserToolCall(messages: Message[]) {
         }
     }
     return null;
+}
+
+type QueueUiLabels = {
+    title: string;
+    hint: string;
+    pending: string;
+    promoted: string;
+    empty: string;
+    guide: string;
+    edit: string;
+    closeQueue: string;
+    collapse: string;
+    expand: string;
+    editTitle: string;
+    editHint: string;
+    editPlaceholder: string;
+    cancel: string;
+    save: string;
+};
+
+function QueuedMessagesStrip({
+    messages,
+    collapsed,
+    menuOpenId,
+    busyId,
+    labels,
+    onToggleCollapsed,
+    onOpenMenu,
+    onPromote,
+    onCancel,
+    onEdit,
+}: {
+    messages: QueuedChatMessage[];
+    collapsed: boolean;
+    menuOpenId: string | null;
+    busyId: string;
+    labels: QueueUiLabels;
+    onToggleCollapsed: () => void;
+    onOpenMenu: (id: string | null) => void;
+    onPromote: (item: QueuedChatMessage) => void;
+    onCancel: (item: QueuedChatMessage) => void;
+    onEdit: (item: QueuedChatMessage) => void;
+}) {
+    if (messages.length === 0) {
+        return null;
+    }
+
+    return (
+        <section className="mx-auto w-full max-w-4xl overflow-hidden rounded-[1.15rem] border border-border/60 bg-background/82 shadow-[0_12px_32px_rgba(15,23,42,0.08)] backdrop-blur-xl dark:bg-zinc-900/72 dark:shadow-[0_18px_48px_rgba(0,0,0,0.26)]">
+            <button
+                type="button"
+                className="flex h-9 w-full items-center gap-2 border-b border-border/45 px-3 text-left text-xs text-muted-foreground transition hover:bg-muted/35"
+                onClick={onToggleCollapsed}
+                aria-expanded={!collapsed}
+            >
+                <CornerDownRight className="h-3.5 w-3.5 shrink-0" />
+                <span className="font-medium text-foreground">{labels.title}</span>
+                <span className="rounded-full border border-border/60 bg-muted/45 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+                    {messages.length}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{labels.hint}</span>
+                <ChevronDown
+                    className={cn(
+                        "h-3.5 w-3.5 shrink-0 transition-transform",
+                        collapsed && "-rotate-90",
+                    )}
+                    aria-label={collapsed ? labels.expand : labels.collapse}
+                />
+            </button>
+            {!collapsed ? (
+                <div className="max-h-36 overflow-y-auto px-2 py-1.5">
+                    {messages.map((item, index) => {
+                        const state = String(item.state || "pending").trim().toLowerCase();
+                        const promoted = state === "promoted";
+                        const itemBusy = busyId === item.id;
+                        return (
+                            <div
+                                key={item.id}
+                                className={cn(
+                                    "group relative flex min-h-9 items-center gap-2 rounded-xl px-2 py-1.5 text-sm transition",
+                                    "hover:bg-muted/40",
+                                    promoted && "border border-primary/25 bg-primary/5",
+                                )}
+                            >
+                                <GripVertical className="h-3.5 w-3.5 shrink-0 text-muted-foreground/45" />
+                                <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+                                <span className="w-5 shrink-0 text-xs font-semibold tabular-nums text-muted-foreground">
+                                    {item.ordinal || index + 1}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                    <div className="truncate font-medium text-foreground">
+                                        {item.content || labels.empty}
+                                    </div>
+                                    <div className={cn("text-[11px] leading-4", promoted ? "text-primary" : "text-muted-foreground")}>
+                                        {promoted ? labels.promoted : labels.pending}
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    className={cn(
+                                        "inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground",
+                                        promoted && "pointer-events-none opacity-45",
+                                    )}
+                                    disabled={promoted || itemBusy}
+                                    onClick={() => onPromote(item)}
+                                >
+                                    {itemBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CornerDownRight className="h-3.5 w-3.5" />}
+                                    <span>{labels.guide}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive"
+                                    disabled={itemBusy}
+                                    onClick={() => onCancel(item)}
+                                    aria-label={labels.closeQueue}
+                                    title={labels.closeQueue}
+                                >
+                                    {itemBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                                </button>
+                                <div className="relative">
+                                    <button
+                                        type="button"
+                                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                        onClick={() => onOpenMenu(menuOpenId === item.id ? null : item.id)}
+                                        aria-label={labels.edit}
+                                        title={labels.edit}
+                                    >
+                                        <MoreHorizontal className="h-3.5 w-3.5" />
+                                    </button>
+                                    {menuOpenId === item.id ? (
+                                        <div className="absolute bottom-full right-0 z-[90] mb-1 w-36 overflow-hidden rounded-xl border border-border/65 bg-popover/98 p-1 text-popover-foreground shadow-[0_18px_48px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:shadow-[0_18px_48px_rgba(0,0,0,0.34)]">
+                                            <button
+                                                type="button"
+                                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition hover:bg-muted"
+                                                onClick={() => onEdit(item)}
+                                                disabled={promoted}
+                                            >
+                                                <Edit3 className="h-3.5 w-3.5" />
+                                                <span>{labels.edit}</span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-destructive transition hover:bg-destructive/10"
+                                                onClick={() => onCancel(item)}
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                                <span>{labels.closeQueue}</span>
+                                            </button>
+                                        </div>
+                                    ) : null}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            ) : null}
+        </section>
+    );
+}
+
+function QueuedMessageEditDialog({
+    item,
+    value,
+    busy,
+    labels,
+    onChange,
+    onCancel,
+    onSave,
+}: {
+    item: QueuedChatMessage | null;
+    value: string;
+    busy: boolean;
+    labels: QueueUiLabels;
+    onChange: (value: string) => void;
+    onCancel: () => void;
+    onSave: () => void;
+}) {
+    if (!item) {
+        return null;
+    }
+
+    return (
+        <div className="fixed inset-0 z-[120] flex items-end justify-center bg-black/30 px-4 pb-6 backdrop-blur-sm sm:items-center sm:pb-0">
+            <div className="w-full max-w-lg rounded-2xl border border-border/70 bg-background p-4 shadow-[0_24px_80px_rgba(15,23,42,0.24)] dark:shadow-[0_24px_80px_rgba(0,0,0,0.42)]">
+                <div className="mb-3">
+                    <h2 className="text-base font-semibold text-foreground">{labels.editTitle}</h2>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{labels.editHint}</p>
+                </div>
+                <textarea
+                    value={value}
+                    onChange={(event) => onChange(event.target.value)}
+                    placeholder={labels.editPlaceholder}
+                    className="min-h-28 w-full resize-none rounded-xl border border-border/70 bg-muted/25 px-3 py-2 text-sm text-foreground outline-none transition placeholder:text-muted-foreground/55 focus:border-primary/45 focus:ring-2 focus:ring-primary/15"
+                />
+                <div className="mt-4 flex justify-end gap-2">
+                    <button
+                        type="button"
+                        className="rounded-xl border border-border/70 bg-background px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                        onClick={onCancel}
+                    >
+                        {labels.cancel}
+                    </button>
+                    <button
+                        type="button"
+                        className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-55"
+                        disabled={busy || !value.trim()}
+                        onClick={onSave}
+                    >
+                        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                        {labels.save}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
 }
 
 function buildWebMessageComparisonKeys(message: Message) {
@@ -489,6 +803,23 @@ export default function ChatClient() {
     const router = useRouter();
     const [localConnectError, setLocalConnectError] = useState<string | null>(null);
     const localConnectAttemptedRef = useRef(false);
+    const queueLabels = useMemo<QueueUiLabels>(() => ({
+        title: t("web.generated.8d4c2b7a1f"),
+        hint: t("web.generated.7a91e0c3b6"),
+        pending: t("web.generated.0f6b2c9a73"),
+        promoted: t("web.generated.4e8f12b6a0"),
+        empty: t("web.generated.1b7fd0e9aa"),
+        guide: t("web.generated.a34c51d8f2"),
+        edit: t("web.generated.c72a903e1b"),
+        closeQueue: t("web.generated.f94b0a2d67"),
+        collapse: t("web.generated.918a0d3c57"),
+        expand: t("web.generated.2e76f8a904"),
+        editTitle: t("web.generated.93d7a85c10"),
+        editHint: t("web.generated.e1bf640a52"),
+        editPlaceholder: t("web.generated.d06b4c35e9"),
+        cancel: t("web.generated.b8a761d42c"),
+        save: t("web.generated.52ae091fdd"),
+    }), [t]);
 
     // Use a true React state to track the active conversation ID.
     // This is crucial because window.history.replaceState does not trigger Next.js router updates,
@@ -543,6 +874,14 @@ export default function ChatClient() {
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [hasOlderTurns, setHasOlderTurns] = useState(false);
     const [isLoadingOlderTurns, setIsLoadingOlderTurns] = useState(false);
+    const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
+    const [queuedMessagesCollapsed, setQueuedMessagesCollapsed] = useState(false);
+    const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string | null>(null);
+    const [queuedMessageBusyId, setQueuedMessageBusyId] = useState("");
+    const [editingQueuedMessage, setEditingQueuedMessage] = useState<QueuedChatMessage | null>(null);
+    const [queuedMessageEditText, setQueuedMessageEditText] = useState("");
+    const [queuedMessageEditBusy, setQueuedMessageEditBusy] = useState(false);
+    const [queuedMessageError, setQueuedMessageError] = useState("");
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
     const lastSessionProcessSurfaceAtRef = useRef(0);
     const [isTimelineOpen, setIsTimelineOpen] = useState(false);
@@ -624,6 +963,29 @@ export default function ChatClient() {
     );
     const terminalWorkspacePath = scopeBinding?.workspacePath || mainWorkspacePath || "";
     const hasActiveWorkbenchSession = Boolean(activeConversationId);
+
+    const upsertQueuedMessage = useCallback((incoming: unknown) => {
+        const normalized = normalizeQueuedMessage(incoming);
+        if (!normalized) {
+            return;
+        }
+        setQueuedMessages((current) => {
+            const next = current.filter((item) => item.id !== normalized.id);
+            return sortQueuedMessages([...next, normalized]);
+        });
+    }, []);
+
+    const applyQueuedMessagesSnapshot = useCallback((incoming: QueuedChatMessage[] | null) => {
+        if (!incoming) {
+            return;
+        }
+        setQueuedMessages(sortQueuedMessages(incoming));
+    }, []);
+
+    const visibleQueuedMessages = useMemo(
+        () => sortQueuedMessages(queuedMessages.filter(isVisibleQueuedMessage)),
+        [queuedMessages],
+    );
 
     const upsertManualTerminalSession = useCallback((payload: ManualTerminalSessionView, makeActive = false) => {
         const sessionId = String(payload?.sessionId || "").trim();
@@ -876,6 +1238,13 @@ export default function ChatClient() {
                 const conversationId = activeConversationIdRef.current;
                 if (conversationId) {
                     void loadRuns(conversationId);
+                }
+            }
+            if (event.name === "human_guidance" || String(event.topic || "").startsWith("human_guidance.")) {
+                const eventData = asPlainRecord(event.data);
+                const queueMessage = normalizeQueuedMessage(eventData.queueMessage);
+                if (queueMessage) {
+                    upsertQueuedMessage(queueMessage);
                 }
             }
             if (event.name === "run_controlled") {
@@ -1444,6 +1813,7 @@ export default function ChatClient() {
             ? detailPayload.projection
             : detailPayload;
         setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detailPayload) || isLegacyChatUnsupportedPayload(projectionPayload));
+        applyQueuedMessagesSnapshot(extractQueuedMessages(projectionPayload) ?? extractQueuedMessages(detailPayload));
         const projection = deriveAuthoritativeSessionView(projectionPayload).view as SessionProjectionView | null;
         setSessionProjection(projection);
         if (projection?.askUserInteractions?.length) {
@@ -1473,7 +1843,7 @@ export default function ChatClient() {
         if (detailProcesses.length > 0) {
             applySessionProcessSurface(detailProcesses);
         }
-    }, [applyAskUserPendingApproval, applySessionProcessSurface, askUserApprovalId, loadConversationTurnPage, router, setMessages]);
+    }, [applyAskUserPendingApproval, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnPage, router, setMessages]);
 
     const loadOlderConversationTurn = useCallback(async () => {
         const conversationId = activeConversationIdRef.current;
@@ -1600,6 +1970,163 @@ export default function ChatClient() {
         scopeHint: scopeBinding?.resolvedScope || undefined,
         scopeMode: "explicit",
     }), [scopeBinding?.projectId, scopeBinding?.resolvedScope, scopeBinding?.workspaceId, scopeBinding?.workspacePath]);
+
+    const submitQueuedMessage = useCallback(async (
+        content: string,
+        data?: Record<string, unknown>,
+    ) => {
+        const conversationId = activeConversationIdRef.current;
+        if (!conversationId) {
+            return;
+        }
+
+        const requestData: Record<string, unknown> = {
+            agentId: undefined,
+            userId: session?.user?.id,
+            ...buildScopePayload(conversationId),
+            ...(data || {}),
+        };
+        const dataAttachments: Record<string, unknown>[] = Array.isArray(requestData.attachments)
+            ? requestData.attachments.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+            : [];
+        const allFileUrls = Array.isArray(requestData.fileUrls)
+            ? requestData.fileUrls.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+            : [];
+        const requestMessages = [
+            ...messagesRef.current.map((message) => ({ role: message.role, content: message.content })),
+            { role: "user", content },
+        ];
+        const requestBody: Record<string, unknown> = {
+            messages: requestMessages,
+            data: requestData,
+            fileUrls: allFileUrls,
+            attachments: dataAttachments,
+            session_id: conversationId,
+            conversationId,
+            project_id: requestData.projectId ?? requestData.project_id,
+            workspace_id: requestData.workspaceId ?? requestData.workspace_id,
+            workspace_path: requestData.workspacePath ?? requestData.workspace_path,
+            thread_id: requestData.threadId ?? requestData.thread_id,
+            scope_hint: requestData.scopeHint ?? requestData.scope_hint,
+            scope_mode: requestData.scopeMode ?? requestData.scope_mode ?? "explicit",
+        };
+
+        const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody),
+        });
+        const responseText = await response.text();
+        let payload: ChatQueueSubmitResponse = {};
+        if (responseText.trim()) {
+            try {
+                payload = JSON.parse(responseText) as ChatQueueSubmitResponse;
+            } catch {
+                payload = {};
+            }
+        }
+        if (!response.ok) {
+            throw new Error(readString(payload.error) || `Queue request failed: ${response.status}`);
+        }
+        if (payload.queued && payload.queuedMessage) {
+            upsertQueuedMessage(payload.queuedMessage);
+            setQueuedMessagesCollapsed(false);
+            setQueuedMessageError("");
+            return;
+        }
+        if (payload.queued) {
+            setQueuedMessagesCollapsed(false);
+            setQueuedMessageError("");
+            return;
+        }
+        throw new Error(t("web.generated.0bf47da6e3"));
+    }, [buildScopePayload, session?.user?.id, t, upsertQueuedMessage]);
+
+    const handlePromoteQueuedMessage = useCallback(async (item: QueuedChatMessage) => {
+        const id = String(item.id || "").trim();
+        if (!id || queuedMessageBusyId) {
+            return;
+        }
+        setQueuedMessageBusyId(id);
+        setQueuedMessageError("");
+        setQueuedMessageMenuId(null);
+        try {
+            const response = await fetch(`/api/chat-queue/${encodeURIComponent(id)}/promote`, { method: "POST" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.ok === false) {
+                throw new Error(readString(payload?.error) || readString(payload?.detail));
+            }
+            upsertQueuedMessage(payload?.queuedMessage || { ...item, state: "promoted" });
+        } catch (error) {
+            console.error("[ChatClient] Failed to promote queued message:", error);
+            setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.8f1e4072ac"));
+        } finally {
+            setQueuedMessageBusyId("");
+        }
+    }, [queuedMessageBusyId, t, upsertQueuedMessage]);
+
+    const handleCancelQueuedMessage = useCallback(async (item: QueuedChatMessage) => {
+        const id = String(item.id || "").trim();
+        if (!id || queuedMessageBusyId) {
+            return;
+        }
+        setQueuedMessageBusyId(id);
+        setQueuedMessageError("");
+        setQueuedMessageMenuId(null);
+        try {
+            const response = await fetch(`/api/chat-queue/${encodeURIComponent(id)}`, { method: "DELETE" });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.ok === false) {
+                throw new Error(readString(payload?.error) || readString(payload?.detail));
+            }
+            upsertQueuedMessage(payload?.queuedMessage || { ...item, state: "cancelled" });
+        } catch (error) {
+            console.error("[ChatClient] Failed to cancel queued message:", error);
+            setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.5c2e41d9a8"));
+        } finally {
+            setQueuedMessageBusyId("");
+        }
+    }, [queuedMessageBusyId, t, upsertQueuedMessage]);
+
+    const handleOpenQueuedMessageEditor = useCallback((item: QueuedChatMessage) => {
+        const state = String(item.state || "pending").trim().toLowerCase();
+        if (state !== "pending") {
+            return;
+        }
+        setQueuedMessageMenuId(null);
+        setEditingQueuedMessage(item);
+        setQueuedMessageEditText(String(item.content || ""));
+    }, []);
+
+    const handleSaveQueuedMessageEdit = useCallback(async () => {
+        const item = editingQueuedMessage;
+        const id = String(item?.id || "").trim();
+        const nextContent = queuedMessageEditText.trim();
+        if (!id || !item || !nextContent || queuedMessageEditBusy) {
+            return;
+        }
+        setQueuedMessageEditBusy(true);
+        setQueuedMessageError("");
+        try {
+            const response = await fetch(`/api/chat-queue/${encodeURIComponent(id)}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ content: nextContent }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.ok === false) {
+                throw new Error(readString(payload?.error) || readString(payload?.detail));
+            }
+            upsertQueuedMessage(payload?.queuedMessage || { ...item, content: nextContent, state: "pending" });
+            setEditingQueuedMessage(null);
+            setQueuedMessageEditText("");
+        } catch (error) {
+            console.error("[ChatClient] Failed to edit queued message:", error);
+            setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.76ac182bf4"));
+        } finally {
+            setQueuedMessageEditBusy(false);
+        }
+    }, [editingQueuedMessage, queuedMessageEditBusy, queuedMessageEditText, t, upsertQueuedMessage]);
 
     const clearNewConversationIntent = useCallback(() => {
         if (typeof window === "undefined") {
@@ -1794,12 +2321,16 @@ export default function ChatClient() {
         if (!normalizedEvent) {
             return;
         }
+        const isHumanGuidanceEvent =
+            normalizedEvent.name === "human_guidance"
+            || String(normalizedEvent.topic || "").startsWith("human_guidance.");
 
         const localStreamActive = isLocalStreamActive(conversationId);
         if (
             localStreamActive
             && !runtimeTimelineEntry
             && !(normalizedEvent.type === "custom_event" && normalizedEvent.name === "artifact_recorded")
+            && !isHumanGuidanceEvent
         ) {
             return;
         }
@@ -1826,6 +2357,24 @@ export default function ChatClient() {
                     interactionKind: "ask_user",
                 },
             });
+        }
+
+        if (isHumanGuidanceEvent) {
+            const eventData = asPlainRecord(normalizedEvent.data);
+            const queueMessage = normalizeQueuedMessage(eventData.queueMessage);
+            const queueId =
+                readString(eventData.queueMessageId)
+                || readString(eventData.guidanceQueueMessageId)
+                || queueMessage?.id
+                || "";
+            const queueState = readString(eventData.state).toLowerCase();
+            const terminalEvent = ["human_guidance.injected", "human_guidance.consumed", "human_guidance.cancelled"].includes(String(normalizedEvent.topic || ""))
+                || ["injected", "consumed", "cancelled"].includes(queueState);
+            if (queueId && terminalEvent) {
+                setQueuedMessages((current) => current.filter((item) => item.id !== queueId));
+            } else if (queueMessage) {
+                upsertQueuedMessage(queueMessage);
+            }
         }
 
         if (
@@ -1938,7 +2487,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyAskUserPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, setMessages]);
+    }, [applyAskUserPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, setMessages, upsertQueuedMessage]);
 
     useEffect(() => {
         const streamLatencyStats = streamLatencyStatsRef.current;
@@ -2041,7 +2590,7 @@ export default function ChatClient() {
         const hasCommandPreset = Boolean(options?.data?.commandPreset?.name);
         const hasSkillReferences = Array.isArray(options?.data?.skillReferences) && options.data.skillReferences.length > 0;
         const hasFiles = Array.isArray(options?.data?.fileUrls) && options.data.fileUrls.length > 0;
-        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasSkillReferences && !hasFiles) || isLoading) return;
+        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasSkillReferences && !hasFiles)) return;
         if (!activeConversationIdRef.current) {
             setWorkspaceChooserVisible(true);
             if (!newConversationIntent) {
@@ -2052,6 +2601,17 @@ export default function ChatClient() {
 
         const currentInput = input;
         setInput(""); // Clear immediately (Optimistic)
+        if (isLoading) {
+            try {
+                await submitQueuedMessage(currentInput, options?.data || {});
+            } catch (error) {
+                console.error("[ChatClient] Failed to queue message:", error);
+                setInput(currentInput);
+                setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f"));
+            }
+            return;
+        }
+
         historyPagingModeRef.current = false;
         turnBeforeCursorRef.current = null;
         isLoadingOlderTurnsRef.current = false;
@@ -2076,12 +2636,19 @@ export default function ChatClient() {
 
     const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>> }) => {
         const hasFiles = Array.isArray(data.fileUrls) && data.fileUrls.length > 0;
-        if (status !== 'authenticated' || !hasFiles || isLoading) return;
+        if (status !== 'authenticated' || !hasFiles) return;
         if (!activeConversationIdRef.current) {
             setWorkspaceChooserVisible(true);
             if (!newConversationIntent) {
                 clearNewConversationIntent();
             }
+            return;
+        }
+        if (isLoading) {
+            void submitQueuedMessage("", data).catch((error) => {
+                console.error("[ChatClient] Failed to queue voice audio message:", error);
+                setQueuedMessageError(error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f"));
+            });
             return;
         }
 
@@ -2127,6 +2694,11 @@ export default function ChatClient() {
             setLegacyChatUnsupported(false);
             clearApprovalState();
             setRunEntries([]);
+            setQueuedMessages([]);
+            setQueuedMessageMenuId(null);
+            setEditingQueuedMessage(null);
+            setQueuedMessageEditText("");
+            setQueuedMessageError("");
             historyPagingModeRef.current = false;
             turnBeforeCursorRef.current = null;
             isLoadingOlderTurnsRef.current = false;
@@ -2157,6 +2729,7 @@ export default function ChatClient() {
                 if (isLegacyChatUnsupportedPayload(snapshotPayload)) {
                     setLegacyChatUnsupported(true);
                 }
+                applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload));
                 const localStreamActive = isLocalStreamActive(activeConversationId);
                 const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
                 setSessionProjection((current) => {
@@ -2216,7 +2789,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory]);
+    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -2553,6 +3126,27 @@ export default function ChatClient() {
                                     </button>
                                 </div>
                             ) : null}
+                            {activeConversationId && visibleQueuedMessages.length > 0 ? (
+                                <div className="mb-2">
+                                    <QueuedMessagesStrip
+                                        messages={visibleQueuedMessages}
+                                        collapsed={queuedMessagesCollapsed}
+                                        menuOpenId={queuedMessageMenuId}
+                                        busyId={queuedMessageBusyId}
+                                        labels={queueLabels}
+                                        onToggleCollapsed={() => setQueuedMessagesCollapsed((current) => !current)}
+                                        onOpenMenu={setQueuedMessageMenuId}
+                                        onPromote={handlePromoteQueuedMessage}
+                                        onCancel={handleCancelQueuedMessage}
+                                        onEdit={handleOpenQueuedMessageEditor}
+                                    />
+                                    {queuedMessageError ? (
+                                        <div className="mx-auto mt-1 max-w-4xl rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                            {queuedMessageError}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            ) : null}
                             {activeConversationId ? (
                                 <InputArea
                                     key={activeConversationId || "new-session"}
@@ -2639,6 +3233,19 @@ export default function ChatClient() {
                 </div>
             </aside>
         )}
+
+        <QueuedMessageEditDialog
+            item={editingQueuedMessage}
+            value={queuedMessageEditText}
+            busy={queuedMessageEditBusy}
+            labels={queueLabels}
+            onChange={setQueuedMessageEditText}
+            onCancel={() => {
+                setEditingQueuedMessage(null);
+                setQueuedMessageEditText("");
+            }}
+            onSave={handleSaveQueuedMessageEdit}
+        />
 
         <GovernanceApprovalModal
             isOpen={governanceApprovalOpen}

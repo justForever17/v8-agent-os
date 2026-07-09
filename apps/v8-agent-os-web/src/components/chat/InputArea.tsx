@@ -5,7 +5,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -783,6 +783,7 @@ export function InputArea({
         || Boolean(selectedCommandPreset)
         || selectedSkills.length > 0
         || selectedSubagentFamilies.length > 0;
+    const canQueueWhileRunning = isLoading && canSubmit;
 
     // Convert attached files to MediaItems for Lightbox
     const mediaItems: MediaItem[] = files.map((f) => {
@@ -1232,11 +1233,11 @@ export function InputArea({
                     </div>
 
                     <Button
-                        type={isLoading ? "button" : "submit"}
+                        type={isLoading && !canQueueWhileRunning ? "button" : "submit"}
                         size="icon"
                         className={cn(
                             "h-[32px] w-[32px] rounded-xl shadow-sm transition-all duration-300",
-                            isLoading
+                            isLoading && !canQueueWhileRunning
                                 ? "bg-stone-200 text-stone-400 dark:bg-stone-800 dark:text-stone-500"
                                 : (canSubmit
                                     ? "bg-gradient-to-br from-orange-400 to-amber-600 dark:from-orange-500 dark:to-amber-700 text-white shadow-[0_0_12px_rgba(249,115,22,0.4)] hover:shadow-[0_0_16px_rgba(249,115,22,0.6)] hover:scale-105 border border-orange-300/50 dark:border-amber-500/50"
@@ -1244,19 +1245,21 @@ export function InputArea({
                         )}
                         disabled={uploading || (!isLoading && !canSubmit)}
                         onClick={(e) => {
-                            if (isLoading && onStop) {
+                            if (isLoading && !canQueueWhileRunning && onStop) {
                                 e.preventDefault();
                                 onStop();
                             }
                         }}
                     >
-                        {isLoading ? (
+                        {isLoading && !canQueueWhileRunning ? (
                             <div className="relative flex items-center justify-center w-full h-full group">
                                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
                                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-zinc-100 dark:bg-zinc-800 rounded-xl">
                                     <Square className="h-3 w-3 fill-destructive text-destructive" />
                                 </div>
                             </div>
+                        ) : canQueueWhileRunning ? (
+                            <CornerDownRight className="h-4 w-4" />
                         ) : (
                             <Send className="ml-0.5 h-4 w-4" />
                         )}

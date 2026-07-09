@@ -66,6 +66,8 @@ class RuntimeEpisodeRunner:
         self._poll_seconds = 0.8
         self._max_concurrent = max(1, int(os.getenv("V8_RUNTIME_EPISODE_CONCURRENCY", "4") or 4))
         self._agent_nodes_map_cache: dict[str, Any] | None = None
+        self._agent_nodes_map_snapshot_hash: str = ""
+        self._agent_nodes_map_snapshot_version: str = ""
 
     async def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -2587,8 +2589,8 @@ class RuntimeEpisodeRunner:
                 extra={"errorCode": "delegation_dispatch_failed", "errorMessage": str(exc)},
             )
 
-    def _build_agent_nodes_map(self) -> dict[str, Any]:
-        if self._agent_nodes_map_cache is not None:
+    def _build_agent_nodes_map(self, *, force_refresh: bool = False) -> dict[str, Any]:
+        if self._agent_nodes_map_cache is not None and not force_refresh:
             return self._agent_nodes_map_cache
         from api.models import EngineConfig
         from graph.compat import sanitize_message_chain as compat_sanitize_message_chain
@@ -2613,6 +2615,9 @@ class RuntimeEpisodeRunner:
             sanitize_response_tool_calls=compat_sanitize_response_tool_calls,
         )
         self._agent_nodes_map_cache = dict(bundle.agent_nodes_map or {})
+        snapshot = getattr(bundle, "subagent_registry_snapshot", {}) or {}
+        self._agent_nodes_map_snapshot_hash = str(snapshot.get("hash") or "").strip()
+        self._agent_nodes_map_snapshot_version = str(snapshot.get("version") or "").strip()
         return self._agent_nodes_map_cache
 
     async def _execute_local_delegation_sends(self, command: Any, episode: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -2643,6 +2648,7 @@ class RuntimeEpisodeRunner:
         completed_by_task_id: dict[str, dict[str, Any]] = {}
 
         async def _run_ready_send(item: Send) -> None:
+            nonlocal agent_nodes_map
             task_id = self._delegation_send_task_id(item)
             deps = self._delegation_send_dependencies(item)
             node = str(getattr(item, "node", "") or "")
@@ -2677,6 +2683,13 @@ class RuntimeEpisodeRunner:
             branch = dict(arg.get("parallel_branch") or {})
             agent_id = str(branch.get("agentId") or "").strip()
             agent_data = agent_nodes_map.get(agent_id)
+            refresh_attempted = False
+            previous_registry_hash = self._agent_nodes_map_snapshot_hash
+            previous_registry_version = self._agent_nodes_map_snapshot_version
+            if not agent_data:
+                refresh_attempted = True
+                agent_nodes_map = self._build_agent_nodes_map(force_refresh=True)
+                agent_data = agent_nodes_map.get(agent_id)
             if not agent_data:
                 summary = {
                     "invocationId": branch.get("invocationId"),
@@ -2691,7 +2704,15 @@ class RuntimeEpisodeRunner:
                     "targetLabel": branch.get("agentName") or agent_id,
                     "branchIndex": branch.get("branchIndex"),
                     "status": "error",
-                    "error": f"未找到子 Agent '{agent_id}'。",
+                    "error": "subagent_target_missing",
+                    "summary": f"未找到子 Agent '{agent_id}'，已停止该分支并回交 Supervisor。",
+                    "registryVersion": branch.get("registryVersion"),
+                    "registryHash": branch.get("registryHash"),
+                    "nodeMapRefreshAttempted": refresh_attempted,
+                    "nodeMapRegistryVersionBeforeRefresh": previous_registry_version,
+                    "nodeMapRegistryHashBeforeRefresh": previous_registry_hash,
+                    "nodeMapRegistryVersionAfterRefresh": self._agent_nodes_map_snapshot_version,
+                    "nodeMapRegistryHashAfterRefresh": self._agent_nodes_map_snapshot_hash,
                     "completedAt": utc_now_iso(),
                 }
                 results.append(summary)

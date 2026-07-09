@@ -1,9 +1,14 @@
+import hashlib
+import json
 import re
 import yaml
 from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
+from core.time_truth import utc_now_iso
+
 DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-06-30-runtime-bindings"
+FREELANCERS_SPECIALIST_FAMILY_ID = "freelancers"
 DEFAULT_SUBAGENT_IDS = {
     "project-planner",
     "implementation-engineer",
@@ -27,6 +32,12 @@ DEPRECATED_DEFAULT_SUBAGENT_IDS = {
     "life-ops-coach",
 }
 DEFAULT_SPECIALIST_FAMILIES = [
+    {
+        "familyId": FREELANCERS_SPECIALIST_FAMILY_ID,
+        "displayName": "Freelancers",
+        "aliases": ["通用协作", "general", "generalist", "freelance"],
+        "description": "General-purpose collaborators that are not bound to a specialist family yet.",
+    },
     {
         "familyId": "engineering",
         "displayName": "Engineering",
@@ -52,14 +63,21 @@ DEFAULT_SPECIALIST_FAMILIES = [
         "description": "Web research planning, source ranking, evidence bundles, confidence, and citation synthesis.",
     },
 ]
+_SPECIALIST_FAMILY_SORT_ORDER = {
+    "engineering": 0,
+    "research": 1,
+    "creative_media": 2,
+    "writing": 3,
+    FREELANCERS_SPECIALIST_FAMILY_ID: 4,
+}
 
 
-def normalize_specialist_family_id(value: Any) -> str:
+def normalize_specialist_family_id(value: Any, *, default: str = FREELANCERS_SPECIALIST_FAMILY_ID) -> str:
     normalized = str(value or "").strip().lower()
     normalized = re.sub(r"\s+", "_", normalized)
     normalized = re.sub(r"[^\w.+-]+", "_", normalized, flags=re.UNICODE)
     normalized = re.sub(r"_+", "_", normalized).strip("._-")
-    return normalized or "engineering"
+    return normalized or default
 
 
 def normalize_specialist_family_entry(value: Any) -> Dict[str, Any] | None:
@@ -125,7 +143,12 @@ def build_specialist_family_registry(agents: List[Dict[str, Any]] | None, specia
         if not isinstance(agent, dict):
             continue
         snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
-        family_id = normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family") or "engineering")
+        family_id = normalize_specialist_family_id(
+            snapshot.get("specialistFamily")
+            or snapshot.get("family")
+            or agent.get("specialistFamily")
+            or agent.get("family")
+        )
         member_counts[family_id] = member_counts.get(family_id, 0) + 1
         by_id.setdefault(
             family_id,
@@ -137,7 +160,7 @@ def build_specialist_family_registry(agents: List[Dict[str, Any]] | None, specia
             },
         )
     result = []
-    for family_id in sorted(by_id, key=lambda key: (0 if key in {"engineering", "creative_media", "writing", "research"} else 1, key)):
+    for family_id in sorted(by_id, key=lambda key: (_SPECIALIST_FAMILY_SORT_ORDER.get(key, 99), key)):
         entry = dict(by_id[family_id])
         entry["memberCount"] = member_counts.get(family_id, 0)
         result.append(entry)
@@ -146,34 +169,104 @@ def build_specialist_family_registry(agents: List[Dict[str, Any]] | None, specia
 def ensure_specialist_family(snapshot: Dict[str, Any] | None) -> Dict[str, Any]:
     """Backfill compact supervisor routing metadata for legacy agent files."""
     normalized = dict(snapshot or {})
-    if str(normalized.get("specialistFamily") or "").strip():
-        return normalized
-    domains = " ".join(str(item).lower() for item in list(normalized.get("domainTags") or []))
-    agent_class = str(normalized.get("agentClass") or "").lower()
-    if (
-        any(
-            token in domains
-            for token in (
-                "media",
-                "creative",
-                "image",
-                "video",
-                "audio",
-                "storyboard",
-                "keyframe",
-                "character",
-                "subtitle",
-                "editing",
-            )
-        )
-        or agent_class in {"creative_director", "visual_recipe_engineer", "character_continuity", "motion_director", "audio_post"}
-    ):
-        normalized["specialistFamily"] = "creative_media"
-    elif any(token in domains for token in ("writing", "docs", "document", "research", "handoff")) or agent_class in {"documentation", "researcher"}:
-        normalized["specialistFamily"] = "writing"
-    else:
-        normalized["specialistFamily"] = "engineering"
+    family_value = normalized.get("specialistFamily") or normalized.get("family")
+    normalized["specialistFamily"] = normalize_specialist_family_id(family_value)
     return normalized
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _snapshot_list(value: Any, *, limit: int = 12) -> list[str]:
+    result: list[str] = []
+    for item in list(value or []):
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _compact_registry_member(agent: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not isinstance(agent, dict):
+        return None
+    agent_id = str(agent.get("id") or "").strip()
+    if not agent_id or agent_id == "supervisor":
+        return None
+    snapshot = ensure_specialist_family(
+        agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+    )
+    family_id = normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family"))
+    member = {
+        "id": agent_id,
+        "agentId": agent_id,
+        "name": str(agent.get("name") or agent_id).strip() or agent_id,
+        "description": str(agent.get("description") or "").strip()[:240],
+        "family": family_id,
+        "globalExposure": bool(agent.get("globalExposure")),
+        "isEnabled": agent.get("isEnabled") is not False,
+        "model": str(agent.get("model") or agent.get("modelId") or "").strip(),
+        "tool_mode": str(agent.get("tool_mode") or agent.get("toolMode") or "").strip(),
+        "capabilitySnapshot": {
+            "specialistFamily": family_id,
+            "agentClass": str(snapshot.get("agentClass") or "").strip(),
+            "domainTags": _snapshot_list(snapshot.get("domainTags")),
+            "artifactCapabilities": _snapshot_list(snapshot.get("artifactCapabilities")),
+            "operationCapabilities": _snapshot_list(snapshot.get("operationCapabilities")),
+            "runtimeAffinities": _snapshot_list(snapshot.get("runtimeAffinities")),
+            "runtimeBindings": list(snapshot.get("runtimeBindings") or [])[:8] if isinstance(snapshot.get("runtimeBindings"), list) else [],
+            "plannerSuitability": snapshot.get("plannerSuitability"),
+        },
+    }
+    tools = _snapshot_list(agent.get("tools"), limit=24)
+    if tools:
+        member["toolsHash"] = hashlib.sha256(_stable_json(tools).encode("utf-8")).hexdigest()[:16]
+    system_prompt = str(agent.get("system_prompt") or agent.get("systemPrompt") or "")
+    if system_prompt:
+        member["systemPromptHash"] = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()[:16]
+    return member
+
+
+def build_subagent_registry_snapshot(
+    agents: List[Dict[str, Any]] | None,
+    specialist_registry: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    members = [
+        member
+        for member in (_compact_registry_member(agent) for agent in list(agents or []))
+        if member and member.get("isEnabled") is not False
+    ]
+    members.sort(key=lambda item: str(item.get("id") or ""))
+    families = build_specialist_family_registry(members, specialist_registry)
+    stable_payload = {
+        "schemaVersion": "v8.subagent_registry_snapshot.v1",
+        "agentIds": [str(member.get("id") or "") for member in members],
+        "families": [
+            {
+                "familyId": item.get("familyId"),
+                "displayName": item.get("displayName"),
+                "memberCount": item.get("memberCount"),
+            }
+            for item in families
+        ],
+        "members": members,
+    }
+    digest = hashlib.sha256(_stable_json(stable_payload).encode("utf-8")).hexdigest()
+    return {
+        **stable_payload,
+        "version": f"subagents:{digest[:12]}",
+        "hash": digest,
+        "generatedAt": utc_now_iso(),
+    }
+
+
+def agents_from_subagent_registry_snapshot(snapshot: Dict[str, Any] | None) -> List[Dict[str, Any]]:
+    if not isinstance(snapshot, dict):
+        return []
+    members = snapshot.get("members") if isinstance(snapshot.get("members"), list) else []
+    return [dict(item) for item in members if isinstance(item, dict) and str(item.get("id") or item.get("agentId") or "").strip()]
 
 def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):

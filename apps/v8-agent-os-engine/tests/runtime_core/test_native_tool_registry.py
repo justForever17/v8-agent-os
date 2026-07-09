@@ -24,11 +24,12 @@ def test_registry_builds_current_native_tools_in_order() -> None:
 
     assert exported_names == list(NATIVE_TOOL_NAMES)
     assert exported_names == native_tool_names()
-    assert exported_names[:6] == [
+    assert exported_names[:7] == [
         "run_system_command",
         "command_session_broker",
         "runtime_broker",
         "delegation_broker",
+        "request_peer_help",
         "mcp_server_config",
         "spec_broker",
     ]

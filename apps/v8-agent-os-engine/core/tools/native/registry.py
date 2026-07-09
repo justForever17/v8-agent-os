@@ -23,6 +23,7 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "runtime_broker",
             "delegation_broker",
+            "request_peer_help",
         ),
     ),
     ("extensions", ("mcp_server_config",)),

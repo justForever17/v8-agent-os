@@ -253,6 +253,25 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         self.assertNotIn("eng-impl | class=", rendered)
         self.assertNotIn("writer-docs | class=", rendered)
 
+    def test_no_family_subagent_reveals_under_freelancers_not_engineering(self):
+        no_family = _agent("free-helper", "engineering", ops=["help"])
+        no_family["capabilitySnapshot"].pop("specialistFamily", None)
+        agents = [
+            _agent("eng-impl", "engineering", ops=["implement", "code"]),
+            no_family,
+        ]
+
+        rendered = _build_context(
+            specialist_registry={"familyModeEnabled": True, "exposureMode": "family_cards"},
+            query="@freelancers 帮我找通用协作子代理",
+            agents=agents,
+            state={"explicit_subagent_families": ["freelancers"]},
+        )
+
+        self.assertIn("[freelancers] revealSource=user_explicit_mention", rendered)
+        self.assertIn("free-helper | class=", rendered)
+        self.assertNotIn("eng-impl | class=", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

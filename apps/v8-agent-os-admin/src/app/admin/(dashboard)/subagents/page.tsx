@@ -232,6 +232,7 @@ type ExternalWorkerFormState = {
   capabilitySnapshotJson: string;
 };
 type ToolPanelKey = "baseline" | "skills" | "mcp" | "plugin_host";
+const FREELANCERS_FAMILY_ID = "freelancers";
 const DEFAULT_FORM_STATE: AgentFormState = {
   name: "",
   description: "",
@@ -242,7 +243,7 @@ const DEFAULT_FORM_STATE: AgentFormState = {
   systemPrompt: "",
   tools: [],
   toolMode: "contextual_auto",
-  specialistFamily: "engineering",
+  specialistFamily: FREELANCERS_FAMILY_ID,
   runtimeBindingKinds: [],
   globalExposure: false,
   agentClass: "specialist",
@@ -314,6 +315,11 @@ const clampInt = (value: unknown, fallback: number, min: number, max: number) =>
   return Math.max(min, Math.min(max, parsed));
 };
 const DEFAULT_SPECIALIST_FAMILIES: SubagentFamilySummary[] = [{
+  familyId: FREELANCERS_FAMILY_ID,
+  displayName: "Freelancers",
+  aliases: ["general_collaboration", "general", "generalist", "freelance"],
+  description: "General-purpose collaborators that are not bound to a specialist family yet."
+}, {
   familyId: "engineering",
   displayName: "Engineering",
   aliases: [ir("ke42503f328"), "coding", "project_coding"],
@@ -369,7 +375,7 @@ const FAMILY_AVATAR_COLORS = [{
 }];
 function normalizeFamilyId(value: unknown) {
   const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^\p{L}\p{N}_.+-]+/gu, "_").replace(/_+/g, "_").replace(/^[._-]+|[._-]+$/g, "");
-  return normalized || "engineering";
+  return normalized || FREELANCERS_FAMILY_ID;
 }
 function normalizeFamilyEntry(value: unknown): SubagentFamilySummary | null {
   if (typeof value === "string") {
@@ -708,7 +714,7 @@ export default function SubagentsPage() {
     (supervisorDomainData?.data?.specialistRegistry?.families || []).forEach(family => addFamily(family));
     agents.forEach(agent => {
       const snapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot) ? agent.capabilitySnapshot : {};
-      const familyId = normalizeFamilyId(snapshot.specialistFamily || "engineering");
+      const familyId = normalizeFamilyId(snapshot.specialistFamily || FREELANCERS_FAMILY_ID);
       addFamily({
         familyId,
         displayName: String(snapshot.specialistFamily || familyId)
@@ -717,7 +723,7 @@ export default function SubagentsPage() {
     return Array.from(merged.values()).sort((left, right) => String(left.displayName || left.familyId).localeCompare(String(right.displayName || right.familyId)));
   }, [agents, supervisorDomainData]);
   const familyColorMap = useMemo(() => {
-    const families = familyOptions.map(family => normalizeFamilyId(family.familyId || family.displayName || "engineering"));
+    const families = familyOptions.map(family => normalizeFamilyId(family.familyId || family.displayName || FREELANCERS_FAMILY_ID));
     return families.reduce<Record<string, CSSProperties>>((acc, family, index) => {
       const base = FAMILY_AVATAR_COLORS[index % FAMILY_AVATAR_COLORS.length];
       const cycle = Math.floor(index / FAMILY_AVATAR_COLORS.length);
@@ -805,7 +811,7 @@ export default function SubagentsPage() {
       systemPrompt: agent.systemPrompt || "",
       tools: Array.isArray(agent.tools) ? agent.tools : [],
       toolMode: agent.tool_mode === "explicit" ? "explicit" : "contextual_auto",
-      specialistFamily: typeof capabilitySnapshot.specialistFamily === "string" && capabilitySnapshot.specialistFamily.trim() ? capabilitySnapshot.specialistFamily.trim() : "engineering",
+      specialistFamily: typeof capabilitySnapshot.specialistFamily === "string" && capabilitySnapshot.specialistFamily.trim() ? capabilitySnapshot.specialistFamily.trim() : FREELANCERS_FAMILY_ID,
       runtimeBindingKinds: runtimeBindingKindsFromSnapshot(capabilitySnapshot),
       globalExposure: Boolean(agent.globalExposure),
       agentClass: typeof capabilitySnapshot.agentClass === "string" && capabilitySnapshot.agentClass.trim() ? capabilitySnapshot.agentClass.trim() : "specialist",
@@ -988,7 +994,7 @@ export default function SubagentsPage() {
       });
       return;
     }
-    const specialistFamilyLabel = form.specialistFamily.trim() || "engineering";
+    const specialistFamilyLabel = form.specialistFamily.trim() || FREELANCERS_FAMILY_ID;
     const specialistFamily = normalizeFamilyId(specialistFamilyLabel);
     capabilitySnapshot = {
       ...capabilitySnapshot,
@@ -1032,7 +1038,8 @@ export default function SubagentsPage() {
       if (!response.ok) {
         throw new Error(String(data?.detail || data?.error || response.status));
       }
-      await ensureSpecialistFamilyRegistered(specialistFamily, specialistFamilyLabel);
+      const specialistFamilyDisplayName = familyOptions.find(family => normalizeFamilyId(family.familyId || family.displayName) === specialistFamily)?.displayName || specialistFamilyLabel;
+      await ensureSpecialistFamilyRegistered(specialistFamily, specialistFamilyDisplayName);
       toast({
         title: editingAgent ? t("app.admin.dashboard.subagents.page.kfeb7fab7") : t("app.admin.dashboard.subagents.page.kbd2c49ab"),
         description: form.toolMode === "contextual_auto" ? t("app.admin.dashboard.subagents.page.k6693a150") : t("app.admin.dashboard.subagents.page.kd4ec2786")
@@ -1050,7 +1057,7 @@ export default function SubagentsPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [editingAgent, ensureSpecialistFamilyRegistered, fetchData, form, t, toast]);
+  }, [editingAgent, ensureSpecialistFamilyRegistered, familyOptions, fetchData, form, t, toast]);
   const handleSelectExternalWorker = useCallback((workerId: string) => {
     const worker = externalWorkers.find(item => item.id === workerId);
     if (!worker) return;
@@ -1558,9 +1565,9 @@ export default function SubagentsPage() {
                             const agentClass = typeof capabilitySnapshot.agentClass === "string" ? capabilitySnapshot.agentClass : "";
                             const specialistFamily = typeof capabilitySnapshot.specialistFamily === "string" ? capabilitySnapshot.specialistFamily : "";
                             const domainTags = Array.isArray(capabilitySnapshot.domainTags) ? capabilitySnapshot.domainTags.filter((item): item is string => typeof item === "string").slice(0, 3) : [];
-                            const familyKey = normalizeFamilyId(specialistFamily || "engineering");
+                            const familyKey = normalizeFamilyId(specialistFamily || FREELANCERS_FAMILY_ID);
                             const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
-                            const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "engineering", "E");
+                            const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "Freelancers", "F");
                             const isBuiltin = isBuiltinAgent(agent);
                             return <Card key={agent.id} className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
                                         <CardHeader className="p-4 pb-2">
@@ -1603,7 +1610,7 @@ export default function SubagentsPage() {
                                                 <AdminHoverInfo
                                                     content={
                                                         <div className="space-y-2 text-xs leading-relaxed text-slate-200 p-1 max-w-[280px]">
-                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailFamily")}:</strong> {specialistFamily || t("app.admin.dashboard.subagents.page.noneValue")}</div>
+                                                            <div><strong>{t("app.admin.dashboard.subagents.page.detailFamily")}:</strong> {specialistFamily || "Freelancers"}</div>
                                                             <div><strong>{t("app.admin.dashboard.subagents.page.detailRuntimeBinding")}:</strong> {runtimeBindingLabel(t, capabilitySnapshot)}</div>
                                                             {isBuiltin && <div className="text-amber-400 font-medium">{t("app.admin.dashboard.subagents.page.builtinLockedHint")}</div>}
                                                             <div><strong>{t("app.admin.dashboard.subagents.page.detailClass")}:</strong> {agentClass || t("app.admin.dashboard.subagents.page.noneValue")}</div>

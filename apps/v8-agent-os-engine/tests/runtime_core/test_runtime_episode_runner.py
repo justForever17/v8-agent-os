@@ -195,6 +195,43 @@ def test_local_delegation_passes_dependency_results_to_dependent_task(monkeypatc
     assert "TASK-001 finished" in dependency_results[0]["summary"]
 
 
+def test_local_delegation_refreshes_stale_node_map_before_missing(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    calls: list[bool] = []
+
+    def _build_map(self, *, force_refresh: bool = False):  # noqa: ANN001
+        calls.append(force_refresh)
+        self._agent_nodes_map_snapshot_hash = "hash-new" if force_refresh else "hash-old"
+        self._agent_nodes_map_snapshot_version = "subagents:new" if force_refresh else "subagents:old"
+        return {"worker": {"id": "worker"}} if force_refresh else {}
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", _build_map)
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+
+    async def _fake_branch(arg, _agent_data):
+        return [], [], {"taskBriefId": arg["parallel_branch"]["taskBriefId"], "status": "ok"}, []
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(
+                goto=[
+                    _delegation_send("TASK-001", agent_id="worker"),
+                ]
+            ),
+            {"episodeId": "episode_test", "inputs": {}, "need": {}},
+        )
+    )
+
+    assert calls == [False, True]
+    assert results[0]["status"] == "ok"
+
+
 def test_local_delegation_blocks_dependent_task_when_research_artifact_is_placeholder(monkeypatch, tmp_path):
     runner = RuntimeEpisodeRunner()
     executed: list[str] = []

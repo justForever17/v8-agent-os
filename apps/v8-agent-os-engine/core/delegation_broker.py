@@ -10,6 +10,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
+from core.agents import normalize_specialist_family_id
+
 from core.runtime_tool_access import normalize_subagent_runtime_bindings
 
 
@@ -431,7 +433,8 @@ def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
     behavior_scope = [str(item).strip() for item in list(task_brief.get("behaviorScope") or []) if str(item).strip()]
     if behavior_scope:
         parts.append(f"Behavior scope: {', '.join(behavior_scope)}")
-    family_hint = str(task_brief.get("familyHint") or "").strip()
+    raw_family_hint = str(task_brief.get("familyHint") or "").strip()
+    family_hint = normalize_specialist_family_id(raw_family_hint) if raw_family_hint else ""
     if family_hint:
         parts.append(f"Family hint: {family_hint}")
     research_refs = [str(item).strip() for item in list(task_brief.get("researchRefs") or []) if str(item).strip()]
@@ -1104,17 +1107,16 @@ def _candidate_specialist_family(agent: dict[str, Any] | None) -> str:
     if not isinstance(agent, dict):
         return ""
     snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
-    return str(
+    return normalize_specialist_family_id(
         snapshot.get("specialistFamily")
         or snapshot.get("family")
         or agent.get("specialistFamily")
         or agent.get("family")
-        or ""
-    ).strip()
+    )
 
 
 def reveal_subagent_family(family: str, agents: Iterable[dict[str, Any]], *, limit: int = 50) -> dict[str, Any]:
-    target_family = str(family or "").strip()
+    target_family = normalize_specialist_family_id(family) if str(family or "").strip() else ""
     normalized_agents = [
         agent for agent in list(agents or [])
         if isinstance(agent, dict)

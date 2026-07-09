@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from core.context_policy import DEFAULT_CONTEXT_POLICY, normalize_context_policy
 from core.delegation_broker import default_external_worker_descriptors, normalize_external_worker_descriptors
-from core.agents import DEFAULT_SPECIALIST_FAMILIES, normalize_specialist_families_config
+from core.agents import DEFAULT_SPECIALIST_FAMILIES, ensure_specialist_family, normalize_specialist_families_config
 from core.runtime.supervisor_tool_policy import sanitize_supervisor_allowed_tools
 from core.source_provider_registry import get_source_provider_config_defaults, get_source_router_defaults
 from core.v8_agent_os_identity import default_system_identity, normalize_system_identity
@@ -3126,33 +3126,7 @@ class StorageManager:
         from core.runtime.agents import dump_agent_md, AgentConfig
         payload = dict(agent_config_dict or {})
         snapshot = payload.get("capabilitySnapshot") if isinstance(payload.get("capabilitySnapshot"), dict) else {}
-        if not str(snapshot.get("specialistFamily") or "").strip():
-            domains = " ".join(str(item).lower() for item in list(snapshot.get("domainTags") or []))
-            agent_class = str(snapshot.get("agentClass") or "").lower()
-            if (
-                any(
-                    token in domains
-                    for token in (
-                        "media",
-                        "creative",
-                        "image",
-                        "video",
-                        "audio",
-                        "storyboard",
-                        "keyframe",
-                        "character",
-                        "subtitle",
-                        "editing",
-                    )
-                )
-                or agent_class in {"creative_director", "visual_recipe_engineer", "character_continuity", "motion_director", "audio_post"}
-            ):
-                snapshot = {**snapshot, "specialistFamily": "creative_media"}
-            elif any(token in domains for token in ("writing", "docs", "document", "research", "handoff")) or agent_class in {"documentation", "researcher"}:
-                snapshot = {**snapshot, "specialistFamily": "writing"}
-            else:
-                snapshot = {**snapshot, "specialistFamily": "engineering"}
-            payload["capabilitySnapshot"] = snapshot
+        payload["capabilitySnapshot"] = ensure_specialist_family(snapshot)
         payload.setdefault("globalExposure", False)
         agent_config = AgentConfig(**payload)
         agent_path = self.base_dir / "agents" / f"{agent_config.id}.md"

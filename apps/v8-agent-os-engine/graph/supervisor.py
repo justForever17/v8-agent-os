@@ -36,6 +36,7 @@ class AgentState(TypedDict):
     engineering_context: NotRequired[dict]
     task_shape_hint: NotRequired[dict]
     explicit_subagent_families: NotRequired[list]
+    subagent_registry_snapshot: NotRequired[dict]
     context_mentions: NotRequired[list]
     session_id: NotRequired[str]
     sessionId: NotRequired[str]

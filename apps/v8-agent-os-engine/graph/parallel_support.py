@@ -906,8 +906,53 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
         if not isinstance(result, Command):
             raise RuntimeError(f"{agent_id} 并发分支返回了非 Command 结果。")
 
-        local_state = _merge_state_update(local_state, getattr(result, "update", None) or {})
+        result_update = getattr(result, "update", None) or {}
+        local_state = _merge_state_update(local_state, result_update)
         delta_messages_for_guard = list(local_state.get("messages") or [])[initial_message_count:]
+        if isinstance(result_update, dict) and result_update.get("pending_child_delegations"):
+            delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
+            child_requests = _extract_child_delegation_requests(
+                {"pending_child_delegations": result_update.get("pending_child_delegations")},
+                source_branch=branch,
+                source_agent_id=agent_id,
+            )
+            if child_requests:
+                block_reason = _child_delegation_block_reason(branch, child_requests)
+                if block_reason:
+                    return delta_messages_for_guard, delta_todos, _child_delegation_block_summary(
+                        branch=branch,
+                        agent_id=agent_id,
+                        child_requests=child_requests,
+                        reason=block_reason,
+                        delta_messages=delta_messages_for_guard,
+                        delta_todos=delta_todos,
+                        tool_mode=agent_data.get("tool_mode"),
+                    ), []
+                return delta_messages_for_guard, delta_todos, {
+                    "invocationId": branch.get("invocationId"),
+                    "taskBriefId": branch.get("taskBriefId"),
+                    "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                    "taskGoal": branch.get("reason"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                    "delegationId": branch.get("delegationId"),
+                    "lane": branch.get("lane") or "subagent",
+                    "targetId": agent_id,
+                    "targetLabel": branch.get("agentName") or agent_id,
+                    "branchIndex": branch.get("branchIndex"),
+                    "status": "waiting_child_delegation",
+                    "error": "delegation_child_requested",
+                    "childDelegationRequestIds": [item.get("requestId") for item in child_requests],
+                    "childDelegationCount": len(child_requests),
+                    "completedAt": _now_iso(),
+                    "messageCount": len(delta_messages_for_guard),
+                    "todoDeltaCount": len(delta_todos),
+                    "toolMode": agent_data.get("tool_mode"),
+                    "toolsUsed": _extract_tool_names(delta_messages_for_guard),
+                    "compactTranscript": _compact_transcript(delta_messages_for_guard),
+                    "localSelfCheck": "Subagent requested peer help through request_peer_help. The broker must choose the target; the subagent did not select a peer directly.",
+                    "acceptanceHint": "Wait for the brokered child delegation result before merging or judging this branch.",
+                }, child_requests
         for message in delta_messages_for_guard:
             for call in _tool_call_dicts_from_message(message):
                 signature = _repeat_sensitive_tool_call_signature(call)
@@ -1066,7 +1111,10 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
                             "targetLabel": branch.get("agentName") or agent_id,
                             "branchIndex": branch.get("branchIndex"),
                             "status": "error",
-                            "error": f"未找到子 Agent '{agent_id}'。",
+                            "error": "subagent_target_missing",
+                            "summary": f"未找到子 Agent '{agent_id}'，该分支已回交 Supervisor。",
+                            "registryVersion": branch.get("registryVersion"),
+                            "registryHash": branch.get("registryHash"),
                             "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
                             "completedAt": _now_iso(),
                         }

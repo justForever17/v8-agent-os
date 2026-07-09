@@ -768,47 +768,7 @@ def build_supervisor_system_content(
 
     def _agent_family(agent: dict) -> str:
         snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
-        family = str(snapshot.get("specialistFamily") or snapshot.get("family") or "").strip().lower()
-        if family:
-            return family
-        agent_class = str(snapshot.get("agentClass") or "").strip().lower()
-        domains = " ".join(str(item).strip().lower() for item in list(snapshot.get("domainTags") or []) if str(item).strip())
-        if (
-            agent_class in {
-                "creative_director",
-                "visual_recipe_engineer",
-                "psd_layer_compositor",
-                "character_continuity",
-                "motion_director",
-                "audio_post",
-            }
-            or any(
-                token in domains
-                for token in (
-                    "media",
-                    "creative",
-                    "image",
-                    "video",
-                    "audio",
-                    "psd",
-                    "layered",
-                    "alpha",
-                    "cutout",
-                    "mask",
-                    "storyboard",
-                    "keyframe",
-                    "character",
-                    "subtitle",
-                    "editing",
-                )
-            )
-        ):
-            return "creative_media"
-        if agent_class in {"documentation", "researcher"} or any(token in domains for token in ("writing", "docs", "document", "research", "handoff")):
-            return "writing"
-        if any(token in domains for token in ("software", "frontend", "backend", "runtime", "testing", "code", "skills")):
-            return "engineering"
-        return "engineering"
+        return normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family"))
 
     def _agent_class(agent: dict) -> str:
         snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}

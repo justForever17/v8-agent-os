@@ -72,9 +72,9 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
     "delegation.recursive": {
         "runtimeKind": "subagent",
         "label": "Recursive delegation",
-        "summary": "允许 brokered subagent 在预算内继续拆分原子子任务；只能通过 delegation_broker 受控派发。",
+        "summary": "允许 brokered subagent 在预算内请求同伴协助；目标仍由 Supervisor/broker 选择。",
         "toolNames": [
-            "delegation_broker",
+            "request_peer_help",
         ],
     },
     "network_supervisor.delegate": {
@@ -477,7 +477,9 @@ def filter_visible_tools_for_actor(
             visible.append(tool_ref)
             continue
         if normalized_actor != "supervisor" and name == "delegation_broker":
-            if name in granted_runtime_tools:
+            continue
+        if name == "request_peer_help":
+            if normalized_actor != "supervisor" and name in granted_runtime_tools:
                 visible.append(tool_ref)
             continue
         if normalized_actor != "supervisor" and name in SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES:

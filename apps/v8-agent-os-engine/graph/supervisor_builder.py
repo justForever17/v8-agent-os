@@ -3,12 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from langgraph.types import Command
+
 from api.models import EngineConfig
 from core.engine_config_resolver import resolve_engine_config_for_role
 from core.models.factory import llm_factory
 from core.models.control_plane import model_control_plane
 from core.model_failover_service import model_failover_service
 from core.system_tools.native import NATIVE_TOOLS
+from core.agents import build_subagent_registry_snapshot
 from core.model_thinking_control import normalize_reasoning_effort
 from core.plugin_host.tool_registry import plugin_host_tool_registry
 from core.runtime.extensions_runtime import extensions_runtime_service
@@ -31,6 +34,7 @@ class SupervisorRuntimeBundle:
     robust_invoke: Callable
     supervisor_tools: list[Any]
     agent_nodes_map: dict[str, Callable]
+    subagent_registry_snapshot: dict[str, Any]
     supervisor_reasoning_effort: str = "auto"
 
 
@@ -95,6 +99,10 @@ def build_supervisor_runtime_bundle(
     plugin_host_tools = plugin_host_tool_registry.build_supervisor_tools()
     external_tools = build_external_langchain_tools(config.external_tools)
     loaded_agents = storage.get_all_agents()
+    subagent_registry_snapshot = build_subagent_registry_snapshot(
+        loaded_agents,
+        (sup_config.get("specialistRegistry") if isinstance(sup_config.get("specialistRegistry"), dict) else None),
+    )
     filtered_native_tools = capability_registry.filter_direct_tools(NATIVE_TOOLS)
 
     robust_invoke = create_robust_invoke(
@@ -139,6 +147,7 @@ def build_supervisor_runtime_bundle(
         robust_invoke=robust_invoke,
         supervisor_tools=supervisor_tools,
         agent_nodes_map=agent_nodes_map,
+        subagent_registry_snapshot=subagent_registry_snapshot,
         supervisor_reasoning_effort=supervisor_reasoning_effort,
     )
 
@@ -157,10 +166,14 @@ def build_supervisor_node(
     from core.automation.hooks import hooks_manager
 
     def supervisor_node(state):
-        messages = list(state["messages"])
+        state_with_registry = {
+            **dict(state),
+            "subagent_registry_snapshot": dict(bundle.subagent_registry_snapshot or {}),
+        }
+        messages = list(state_with_registry["messages"])
         hooks_manager.execute_hook("on_supervisor_start")
         response = execute_supervisor_turn(
-            state=state,
+            state=state_with_registry,
             config=config,
             messages=messages,
             loaded_agents=bundle.loaded_agents,
@@ -179,9 +192,18 @@ def build_supervisor_node(
             sanitize_response_tool_calls=sanitize_response_tool_calls,
         )
         hooks_manager.execute_hook("on_supervisor_end")
-        return route_supervisor_response(
+        routed = route_supervisor_response(
             response,
             existing_route_context=dict(state.get("current_route_context") or {}),
+        )
+        return Command(
+            graph=routed.graph,
+            goto=routed.goto,
+            resume=routed.resume,
+            update={
+                **(dict(routed.update or {}) if isinstance(routed.update, dict) else {}),
+                "subagent_registry_snapshot": dict(bundle.subagent_registry_snapshot or {}),
+            },
         )
 
     return supervisor_node

@@ -343,18 +343,19 @@ def test_engineering_project_creation_workspace_activates_without_git(tmp_path, 
     assert decision["reason"] == "project_creation_workspace"
 
 
-def test_subagent_delegation_broker_requires_recursive_grant() -> None:
-    tool = SimpleNamespace(name="delegation_broker")
+def test_subagent_peer_help_requires_recursive_grant_and_hides_broker() -> None:
+    broker = SimpleNamespace(name="delegation_broker")
+    peer_help = SimpleNamespace(name="request_peer_help")
 
-    hidden = filter_visible_tools_for_actor([tool], actor="subagent")
+    hidden = filter_visible_tools_for_actor([broker, peer_help], actor="subagent")
     granted = filter_visible_tools_for_actor(
-        [tool],
+        [broker, peer_help],
         actor="subagent",
         runtime_access=["delegation.recursive"],
     )
 
     assert hidden == []
-    assert [item.name for item in granted] == ["delegation_broker"]
+    assert [item.name for item in granted] == ["request_peer_help"]
 
 
 def test_planner_auto_dispatch_blocks_when_explicit_engineering_is_disabled() -> None:

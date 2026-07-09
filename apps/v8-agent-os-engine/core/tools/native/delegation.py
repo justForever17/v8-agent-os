@@ -11,6 +11,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, Send
 
+from core.agents import agents_from_subagent_registry_snapshot, build_subagent_registry_snapshot
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_broker import (
     build_workset_dispatch_decisions,
@@ -53,6 +54,27 @@ def _delegation_storage() -> Any:
 
 def _delegation_command_session_broker() -> Any:
     return _compat_native_attr("command_session_broker", command_session_broker)
+
+
+def _registry_snapshot_from_state_or_agents(
+    base_state: dict[str, Any],
+    loaded_agents: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    state_snapshot = base_state.get("subagent_registry_snapshot")
+    if isinstance(state_snapshot, dict) and str(state_snapshot.get("schemaVersion") or "") == "v8.subagent_registry_snapshot.v1":
+        snapshot_agents = agents_from_subagent_registry_snapshot(state_snapshot)
+        if snapshot_agents:
+            return dict(state_snapshot), snapshot_agents
+    snapshot = build_subagent_registry_snapshot(loaded_agents)
+    return snapshot, agents_from_subagent_registry_snapshot(snapshot)
+
+
+def _registry_version(snapshot: dict[str, Any]) -> str:
+    return str(snapshot.get("version") or "").strip()
+
+
+def _registry_hash(snapshot: dict[str, Any]) -> str:
+    return str(snapshot.get("hash") or "").strip()
 
 
 # --- Background Command Manager ---
@@ -350,6 +372,8 @@ def _delegation_compact_item(
     engineering_capsule_attached: bool | None = None,
     dispatch_blocked_reason: str | None = None,
     repair_suggestion: str | None = None,
+    registry_version: str | None = None,
+    registry_hash: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
@@ -380,6 +404,8 @@ def _delegation_compact_item(
         "autoDispatchSource": auto_dispatch_source,
         "invocationId": invocation_id,
         "branchIndex": branch_index,
+        "registryVersion": registry_version,
+        "registryHash": registry_hash,
     }
     if workset_dispatch_decision:
         decision = dict(workset_dispatch_decision)
@@ -543,6 +569,134 @@ def _filter_meaningful_delegation_tasks(values: list[Any]) -> list[Any]:
     return [item for item in values if _delegation_task_has_meaningful_content(item)]
 
 
+def _coerce_peer_help_capabilities(value: Any) -> list[str]:
+    parsed = _coerce_delegation_json_value(value)
+    if isinstance(parsed, str):
+        raw_items = parsed.split(",")
+    elif isinstance(parsed, list):
+        raw_items = parsed
+    else:
+        raw_items = []
+    result: list[str] = []
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+        if len(result) >= 12:
+            break
+    return result
+
+
+@tool
+def request_peer_help(
+    needed_capabilities: Annotated[Any, "Required capabilities, as a list or comma-separated text. Do not include a target subagent id."] = None,
+    reason: Annotated[str, "Why the current subagent cannot complete this alone."] = "",
+    context: Annotated[str, "Brief task context and constraints to pass back to the broker."] = "",
+    preferred_family: Annotated[str, "Optional family hint such as research, engineering, creative_media, writing, or freelancers."] = "",
+    state: Annotated[dict, InjectedState] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "request_peer_help",
+):
+    """Subagent-only handoff request. It reports capability needs; Supervisor/broker chooses the peer."""
+
+    base_state = dict(state or {})
+    branch = dict(base_state.get("parallel_branch") or {})
+    capabilities = _coerce_peer_help_capabilities(needed_capabilities)
+    reason_text = str(reason or "").strip() or "The current subagent needs brokered peer help."
+    context_text = str(context or "").strip()
+    family_hint = str(preferred_family or "").strip()
+    if not bool(branch.get("allowChildDelegation")):
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_delegation_broker_payload(
+                            mode="request_peer_help",
+                            ok=False,
+                            summary="Peer help request was blocked because this delegation did not grant child handoff.",
+                            recommended_next_action="report_blocker_to_supervisor",
+                            error="child_delegation_not_allowed",
+                            neededCapabilities=capabilities,
+                            reason=reason_text,
+                            context=context_text,
+                            preferredFamily=family_hint,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    request_id = f"peer_help_{uuid.uuid4().hex[:12]}"
+    child_task_brief = normalize_task_brief(
+        {
+            "taskBriefId": request_id,
+            "title": reason_text[:96],
+            "goal": reason_text,
+            "brief": context_text or reason_text,
+            "requiredCapabilities": capabilities,
+            **({"familyHint": family_hint} if family_hint else {}),
+            "context": {
+                "requestKind": "handoff_request",
+                "sourceAgentId": branch.get("agentId"),
+                "sourceDelegationId": branch.get("delegationId"),
+                "sourceTaskBriefId": branch.get("taskBriefId"),
+                "reason": reason_text,
+                "notes": context_text,
+            },
+        }
+    )
+    child_branch = {
+        "invocationId": f"{branch.get('invocationId') or 'peer'}:help:{request_id}",
+        "delegationId": f"{branch.get('delegationId') or 'delegation'}:help:{request_id}",
+        "taskBriefId": request_id,
+        "taskBrief": child_task_brief,
+        "reason": reason_text,
+        "delegationDepth": _safe_int_range(branch.get("delegationDepth"), 0, 0, 100) + 1,
+        "allowChildDelegation": False,
+        "childDelegationBudget": {},
+        "runtimeAccess": ["delegation.recursive"],
+    }
+    pending = {
+        "requestId": request_id,
+        "requestKind": "handoff_request",
+        "createdAt": utc_now_iso(),
+        "sourceInvocationId": branch.get("invocationId"),
+        "sourceDelegationId": branch.get("delegationId"),
+        "sourceAgentId": branch.get("agentId"),
+        "sourceAgentName": branch.get("agentName"),
+        "neededCapabilities": capabilities,
+        "preferredFamily": family_hint,
+        "reason": reason_text,
+        "context": context_text,
+        "childTaskBriefId": request_id,
+        "childTaskGoal": reason_text,
+        "childTaskBrief": child_task_brief,
+        "childBranch": child_branch,
+    }
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode="request_peer_help",
+                        ok=True,
+                        summary="Peer help request captured. Supervisor/broker must choose the target subagent.",
+                        recommended_next_action="broker_child_delegation",
+                        items=[{
+                            "requestId": request_id,
+                            "neededCapabilities": capabilities,
+                            "preferredFamily": family_hint,
+                            "reason": reason_text,
+                        }],
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            "pending_child_delegations": [pending],
+        }
+    )
+
+
 def _delegation_has_ready_spec_execution_context(context: dict[str, Any]) -> bool:
     for episode in list((context or {}).get("capabilityEpisodes") or []):
         if not isinstance(episode, dict):
@@ -665,7 +819,8 @@ def delegation_broker(
 
     if normalized_mode == "reveal":
         loaded_agents = _delegation_storage().get_all_agents()
-        reveal_payload = reveal_subagent_family(family, loaded_agents)
+        registry_snapshot, registry_agents = _registry_snapshot_from_state_or_agents(base_state, loaded_agents)
+        reveal_payload = reveal_subagent_family(family, registry_agents)
         return Command(
             goto="supervisor",
             update={
@@ -682,6 +837,8 @@ def delegation_broker(
                             items=list(reveal_payload.get("members") or []),
                             recommended_next_action="dispatch" if reveal_payload.get("found") else "none",
                             family=str(reveal_payload.get("family") or "").strip(),
+                            registryVersion=_registry_version(registry_snapshot),
+                            registryHash=_registry_hash(registry_snapshot),
                             suggestedRequiredCapabilities=list(reveal_payload.get("suggestedRequiredCapabilities") or []),
                             selectionRule=str(reveal_payload.get("selectionRule") or ""),
                         ),
@@ -829,6 +986,9 @@ def delegation_broker(
 
         invocation_id = f"delegation_{uuid.uuid4().hex[:12]}"
         loaded_agents = _delegation_storage().get_all_agents()
+        registry_snapshot, registry_agents = _registry_snapshot_from_state_or_agents(base_state, loaded_agents)
+        registry_version = _registry_version(registry_snapshot)
+        registry_hash = _registry_hash(registry_snapshot)
         external_descriptors = _delegation_external_worker_descriptors()
         dispatch_source = str(base_state.get("delegationDispatchSource") or inherited_context.get("delegationDispatchSource") or "").strip()
         compat_source = str(base_state.get("delegationCompatSource") or inherited_context.get("delegationCompatSource") or "").strip()
@@ -864,6 +1024,8 @@ def delegation_broker(
                         engineering_capsule_attached=bool(decision.get("engineeringCapsuleAttached")),
                         dispatch_blocked_reason=str(decision.get("reason") or "workset_dispatch_blocked").strip(),
                         repair_suggestion=str(decision.get("repairSuggestion") or "Repair planner writeSet before automatic dispatch.").strip(),
+                        registry_version=registry_version,
+                        registry_hash=registry_hash,
                         error="workset_dispatch_blocked",
                     )
                 )
@@ -880,6 +1042,8 @@ def delegation_broker(
                                     "work-set governance found missing or conflicting write sets."
                                 ),
                                 items=blocked_items,
+                                registryVersion=registry_version,
+                                registryHash=registry_hash,
                                 recommended_next_action="repair_plan",
                                 error="workset_dispatch_blocked",
                             ),
@@ -901,7 +1065,7 @@ def delegation_broker(
             local_diagnostics: dict[str, Any] = {}
             external_diagnostics: dict[str, Any] = {}
             if lane_hint in {"subagent", "auto"}:
-                local_agent, local_diagnostics = choose_best_local_agent_with_diagnostics(task_brief, loaded_agents)
+                local_agent, local_diagnostics = choose_best_local_agent_with_diagnostics(task_brief, registry_agents)
             external_worker = None
             if lane_hint == "external_worker":
                 external_worker, external_diagnostics = choose_best_external_worker_with_diagnostics(task_brief, external_descriptors)
@@ -943,6 +1107,8 @@ def delegation_broker(
                         "delegationDepth": current_depth + 1,
                         "delegationNodeCount": used_node_count + requested_count,
                         "delegationBudget": dict(recursive_policy),
+                        "registryVersion": registry_version,
+                        "registryHash": registry_hash,
                     }
                 )
                 branch_state = dict(base_state)
@@ -969,6 +1135,8 @@ def delegation_broker(
                     "allowChildDelegation": bool(delegation_policy.get("allowChildDelegation")),
                     "childDelegationBudget": dict(delegation_policy.get("childDelegationBudget") or {}),
                     "writeSetPartitions": list(delegation_policy.get("writeSetPartitions") or []),
+                    "registryVersion": registry_version,
+                    "registryHash": registry_hash,
                     "initialMessageCount": len(base_messages) + 1,
                     "initialTodoCount": len(base_todos),
                 }
@@ -993,6 +1161,8 @@ def delegation_broker(
                         workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
                         engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
                         repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
+                        registry_version=registry_version,
+                        registry_hash=registry_hash,
                     )
                 )
                 continue
@@ -1028,6 +1198,8 @@ def delegation_broker(
                         workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
                         engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
                         repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
+                        registry_version=registry_version,
+                        registry_hash=registry_hash,
                         error="missing_command_template",
                     )
                     items.append(item)
@@ -1097,6 +1269,8 @@ def delegation_broker(
                     workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
                     engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
                     repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
+                    registry_version=registry_version,
+                    registry_hash=registry_hash,
                     error=None if bool(start_payload.get("ok", True)) else str(start_payload.get("error") or "external_worker_start_failed"),
                 )
                 items.append(worker_item)
@@ -1123,6 +1297,8 @@ def delegation_broker(
                 workset_conflict_group=list(workset_decision.get("worksetConflictGroup") or []),
                 engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
                 repair_suggestion=str(workset_decision.get("repairSuggestion") or "").strip() or None,
+                registry_version=registry_version,
+                registry_hash=registry_hash,
                 error="no_matching_target",
             )
             items.append(item)
@@ -1146,6 +1322,8 @@ def delegation_broker(
                         items=items,
                         macroTaskCount=macro_task_count,
                         requestedTaskCount=requested_count,
+                        registryVersion=registry_version,
+                        registryHash=registry_hash,
                         recommended_next_action="observe" if any(item.get("lane") == "external_worker" for item in items) else "review",
                     ),
                     tool_call_id=tool_call_id,
@@ -1182,6 +1360,8 @@ def delegation_broker(
                     "targetLabel": item.get("targetLabel"),
                     "lane": item.get("lane"),
                     "branchIndex": item.get("branchIndex"),
+                    "registryVersion": item.get("registryVersion") or registry_version,
+                    "registryHash": item.get("registryHash") or registry_hash,
                     "error": item.get("error"),
                 },
             )
@@ -1344,5 +1524,5 @@ def delegation_broker(
     )
 
 
-__all__ = [name for name in globals() if name.startswith("_delegation") or name in {"delegation_broker", "_with_recursive_delegation_access", "_normalize_external_worker_result_paths", "_external_worker_status_from_result", "_coerce_delegation_json_value", "_coerce_delegation_list", "_coerce_delegation_dict", "_delegation_task_has_meaningful_content", "_filter_meaningful_delegation_tasks", "_safe_int_range"}]
+__all__ = [name for name in globals() if name.startswith("_delegation") or name in {"delegation_broker", "request_peer_help", "_with_recursive_delegation_access", "_normalize_external_worker_result_paths", "_external_worker_status_from_result", "_coerce_delegation_json_value", "_coerce_delegation_list", "_coerce_delegation_dict", "_delegation_task_has_meaningful_content", "_filter_meaningful_delegation_tasks", "_safe_int_range"}]
 

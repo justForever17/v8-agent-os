@@ -26,6 +26,24 @@ function pushCheck(checks, name, ok, details = {}) {
   });
 }
 
+function pushOptionalCheck(checks, degraded, name, available, details = {}) {
+  const payload = {
+    name,
+    ok: true,
+    available: Boolean(available),
+    degraded: !available,
+    ...details,
+  };
+  if (!available) {
+    degraded.push({
+      name,
+      reason: details.reason || "optional capability is not bundled in this preview release",
+      ...details,
+    });
+  }
+  checks.push(payload);
+}
+
 function walkFor(dir, predicate, maxDepth = 6) {
   if (!exists(dir) || maxDepth < 0) return "";
   const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -158,21 +176,29 @@ if (exists(pythonExe)) {
 
   const requiredModules = {
     playwright: "playwright",
-    patchright: "patchright",
     ytDlp: "yt_dlp",
     psdTools: "psd_tools",
     pillow: "PIL",
+    pywinauto: "pywinauto",
+    pywin32: "win32api",
+  };
+  const optionalModules = {
+    patchright: "patchright",
     av: "av",
     soundcard: "soundcard",
     robotframework: "robot",
     rpaFramework: "RPA",
-    pywinauto: "pywinauto",
-    pywin32: "win32api",
   };
-  const moduleResult = pythonModuleCheck(pythonExe, requiredModules);
+  const moduleResult = pythonModuleCheck(pythonExe, { ...requiredModules, ...optionalModules });
   if (moduleResult.ok) {
     for (const [name, ok] of Object.entries(moduleResult.modules)) {
-      pushCheck(checks, `pythonModule.${name}`, ok);
+      if (Object.hasOwn(requiredModules, name)) {
+        pushCheck(checks, `pythonModule.${name}`, ok);
+      } else {
+        pushOptionalCheck(checks, degraded, `pythonModule.${name}`, ok, {
+          reason: `${name} is an optional heavy capability in the unsigned desktop preview package`,
+        });
+      }
     }
   } else {
     pushCheck(checks, "pythonModule.scan", false, { error: moduleResult.error });
@@ -183,8 +209,9 @@ const chromium = walkFor(browserRoot, (_fullPath, name) => {
   const normalized = name.toLowerCase();
   return normalized === "chrome.exe" || normalized === "headless_shell.exe" || normalized === "chrome";
 });
-pushCheck(checks, "playwright.chromiumBrowser", Boolean(chromium), {
+pushOptionalCheck(checks, degraded, "playwright.chromiumBrowser", Boolean(chromium), {
   path: chromium ? rel(chromium) : rel(browserRoot),
+  reason: "Chromium is intentionally omitted from the slim desktop preview package unless a full browser-automation build profile is used",
 });
 
 for (const [name, command] of [
@@ -210,7 +237,8 @@ const payload = {
   checks,
   notes: [
     "Git/ffmpeg are treated as degraded external capabilities until bundled by the installer.",
-    "Hard checks cover portable Engine Python, production bundles, desktop pet bundle, Python media/automation modules, and Playwright Chromium.",
+    "Hard checks cover portable Engine Python, production bundles, desktop pet bundle, and the slim preview Python runtime.",
+    "Browser automation, full RPA, realtime media, and heavy optional modules may be reported as degraded in unsigned preview builds.",
   ],
 };
 

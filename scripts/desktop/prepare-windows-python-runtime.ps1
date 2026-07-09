@@ -2,7 +2,9 @@ param(
   [string]$PythonVersion = "3.11.9",
   [string]$Architecture = "amd64",
   [string]$EngineDir = "",
-  [string]$BrowserDir = ""
+  [string]$BrowserDir = "",
+  [string]$RequirementsPath = "",
+  [switch]$SkipPlaywrightBrowsers
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,12 +35,24 @@ function Invoke-Checked {
   foreach ($entry in $Environment.GetEnumerator()) {
     $psi.Environment[$entry.Key] = [string]$entry.Value
   }
-  $process = [System.Diagnostics.Process]::Start($psi)
-  $stdout = $process.StandardOutput.ReadToEnd()
-  $stderr = $process.StandardError.ReadToEnd()
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $psi
+  $process.add_OutputDataReceived({
+    param($sender, $eventArgs)
+    if ($eventArgs.Data) {
+      Write-Host $eventArgs.Data
+    }
+  })
+  $process.add_ErrorDataReceived({
+    param($sender, $eventArgs)
+    if ($eventArgs.Data) {
+      Write-Host $eventArgs.Data
+    }
+  })
+  [void]$process.Start()
+  $process.BeginOutputReadLine()
+  $process.BeginErrorReadLine()
   $process.WaitForExit()
-  if ($stdout.Trim()) { Write-Host $stdout.Trim() }
-  if ($stderr.Trim()) { Write-Host $stderr.Trim() }
   if ($process.ExitCode -ne 0) {
     throw "Command failed with exit code $($process.ExitCode): $FilePath $($Arguments -join ' ')"
   }
@@ -51,6 +65,15 @@ if (-not $EngineDir) {
 $EngineDir = (Resolve-Path $EngineDir).Path
 if (-not (Test-Path (Join-Path $EngineDir "main.py"))) {
   throw "EngineDir does not look like apps/v8-agent-os-engine: $EngineDir"
+}
+
+if ($RequirementsPath) {
+  $requirementsFile = (Resolve-Path $RequirementsPath).Path
+} else {
+  $requirementsFile = Join-Path $EngineDir "requirements.txt"
+}
+if (-not (Test-Path $requirementsFile)) {
+  throw "Requirements file was not found: $requirementsFile"
 }
 
 $runtimeDir = Join-Path $EngineDir ".python"
@@ -67,6 +90,7 @@ $zipUrl = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersio
 Write-Host "Preparing portable Python $PythonVersion ($Architecture)"
 Write-Host "EngineDir: $EngineDir"
 Write-Host "RuntimeDir: $runtimeDir"
+Write-Host "Requirements: $requirementsFile"
 
 if (Test-Path $workDir) {
   Remove-Item -LiteralPath $workDir -Recurse -Force
@@ -124,12 +148,18 @@ Set-Content -LiteralPath $pthFile.FullName -Value $updatedLines -Encoding ascii
 
 Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPipPath
 Invoke-Checked -FilePath $pythonExe -Arguments @($getPipPath, "--no-warn-script-location")
-Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "pip", "install", "-r", (Join-Path $EngineDir "requirements.txt"))
+Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade", "pip", "setuptools", "wheel")
+Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--prefer-binary", "-r", $requirementsFile)
 
 New-Item -ItemType Directory -Force -Path $BrowserDir | Out-Null
-Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "playwright", "install", "chromium") -Environment @{
-  PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
+if ($SkipPlaywrightBrowsers) {
+  $markerPath = Join-Path $BrowserDir "DEGRADED.txt"
+  Set-Content -LiteralPath $markerPath -Value "Playwright browsers were intentionally skipped for the desktop preview build." -Encoding utf8
+  Write-Host "Skipping Playwright Chromium install for this release profile. Browser automation will be reported as degraded."
+} else {
+  Invoke-Checked -FilePath $pythonExe -Arguments @("-m", "playwright", "install", "chromium") -Environment @{
+    PLAYWRIGHT_BROWSERS_PATH = $BrowserDir
+  }
 }
 
 Invoke-Checked -FilePath $pythonExe -Arguments @("-V")

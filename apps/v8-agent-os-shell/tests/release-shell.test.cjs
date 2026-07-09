@@ -55,6 +55,39 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /SHA256/);
 });
 
+test('desktop preview uses a slim portable Python release profile', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml'), 'utf8');
+  assert.match(workflow, /-RequirementsPath apps\/v8-agent-os-engine\/requirements\/desktop-preview\.txt/);
+  assert.match(workflow, /-SkipPlaywrightBrowsers/);
+
+  const runtimeScript = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'prepare-windows-python-runtime.ps1'),
+    'utf8',
+  );
+  assert.match(runtimeScript, /\[string\]\$RequirementsPath/);
+  assert.match(runtimeScript, /\[switch\]\$SkipPlaywrightBrowsers/);
+  assert.match(runtimeScript, /BeginOutputReadLine/);
+  assert.match(runtimeScript, /BeginErrorReadLine/);
+  assert.match(runtimeScript, /--prefer-binary/);
+  assert.match(runtimeScript, /DEGRADED\.txt/);
+
+  const releaseRequirements = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'desktop-preview.txt'),
+    'utf8',
+  );
+  for (const heavyPackage of [
+    'rpaframework',
+    'rpaframework-windows',
+    'robotframework',
+    'aiortc',
+    'av',
+    'soundcard',
+    'patchright',
+  ]) {
+    assert.doesNotMatch(releaseRequirements, new RegExp(`^${heavyPackage}(?:[<=>\\[]|\\s|$)`, 'im'));
+  }
+});
+
 test('Admin and Web release builds use Next standalone servers', () => {
   for (const app of ['admin', 'web']) {
     const config = fs.readFileSync(

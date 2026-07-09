@@ -1,0 +1,19 @@
+-r base.txt
+
+edge_tts
+beautifulsoup4
+playwright
+msgspec
+yt-dlp
+jieba
+chromadb
+langchain
+langchain-text-splitters
+pyperclip
+mss
+Pillow
+psd-tools[composite]>=1.10.0
+
+pywin32; sys_platform == "win32"
+pywinpty; sys_platform == "win32"
+pywinauto; sys_platform == "win32"

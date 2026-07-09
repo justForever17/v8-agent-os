@@ -96,6 +96,18 @@ function createMockAdmin() {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/client/conversations") {
+      sendJson(res, 200, {
+        id: "session-cli-chat",
+        title: body?.title || "CLI Chat",
+        status: "active",
+        projectId: body?.projectId || "daily",
+        workspaceId: body?.workspaceId || "daily",
+        workspacePath: body?.workspacePath || workspacePath,
+      });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === `/api/client/conversations/${session.id}`) {
       sendJson(res, 200, session);
       return;
@@ -108,6 +120,11 @@ function createMockAdmin() {
           { role: "assistant", content: "world" },
         ],
       });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/client/conversations/session-cli-chat/turns") {
+      sendJson(res, 200, { messages: [] });
       return;
     }
 
@@ -128,6 +145,23 @@ function createMockAdmin() {
 
     if (req.method === "POST" && url.pathname === "/api/client/ask-user/ask-1/respond") {
       sendJson(res, 200, { ok: true, id: "ask-1", answer: body?.answer || "" });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/client/projects") {
+      sendJson(res, 200, {
+        id: body?.id || "daily",
+        name: body?.name || "daily",
+        workspaceId: body?.workspaceId || "daily",
+        workspacePath: body?.workspacePath || workspacePath,
+        workspaceTrustState: body?.workspaceTrustState || "trusted",
+        workspaceTrustSource: body?.workspaceTrustSource || "cli_user_confirmed",
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/client/chat-submit") {
+      sendJson(res, 200, { runId: "run-cli-chat" });
       return;
     }
 
@@ -251,10 +285,18 @@ async function main() {
     assert.equal(path.resolve(workspaceDoctor.path), path.resolve(workspacePath));
     assert.ok(workspaceDoctor.checks.some((check) => check.id === "agents_rules" && check.status === "ok"));
 
+    await runCli(["chat", "hello from cli", "--workspace", workspacePath, "--safety-approval", "minimal", "--no-wait"], env, steps);
+
     assert.ok(requests.some((item) => item.pathname === "/api/client/auth/local-session"));
     assert.ok(requests.some((item) => item.pathname === "/api/client/conversations"));
     assert.ok(requests.some((item) => item.pathname === "/api/client/approvals"));
     assert.ok(requests.some((item) => item.pathname === "/api/client/ask-user/ask-1/respond"));
+    assert.ok(requests.some((item) => item.pathname === "/api/client/projects" && item.body?.workspaceTrustState === "trusted"));
+    const chatSubmit = requests.find((item) => item.pathname === "/api/client/chat-submit");
+    assert.equal(chatSubmit?.body?.data?.workspacePath, workspacePath);
+    assert.equal(chatSubmit?.body?.data?.projectId, "daily");
+    assert.equal(chatSubmit?.body?.data?.workspaceId, "daily");
+    assert.equal(chatSubmit?.body?.data?.safetyApprovalMode, "minimal");
 
     report.result = { ok: true };
   } catch (error) {

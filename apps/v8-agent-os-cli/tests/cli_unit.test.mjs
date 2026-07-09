@@ -8,14 +8,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ALL_COMPONENTS, COMPONENTS, DEFAULT_START_COMPONENTS, parseComponentSelection } from "../src/components.mjs";
-import { buildChatSubmitPayload, extractMessageText } from "../src/chat_commands.mjs";
+import { buildChatSubmitPayload, extractMessageText, normalizeSafetyApprovalMode } from "../src/chat_commands.mjs";
+import { requireOk } from "../src/client_api.mjs";
 import { buildMcpInstallPayload, extractModelRoles } from "../src/config_commands.mjs";
 import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
 import { isNextBuildPresent, nextBuildIdPath, previewBuildLogPaths } from "../src/preview_commands.mjs";
-import { currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
+import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
 const cliRoot = path.resolve(path.dirname(currentFile), "..");
@@ -247,15 +248,41 @@ test("chat payload preserves session, workspace, project, and spec mode", () => 
     sessionId: "session-a",
     message: "你好",
     workspacePath: "E:/Projects/demo",
+    workspaceId: "demo-workspace",
     projectId: "demo",
     specMode: true,
+    safetyApprovalMode: "minimal",
   });
   assert.equal(payload.session_id, "session-a");
   assert.equal(payload.conversationId, "session-a");
   assert.equal(payload.messages[0].content, "你好");
   assert.equal(payload.data.workspacePath, "E:/Projects/demo");
+  assert.equal(payload.data.workspaceId, "demo-workspace");
   assert.equal(payload.data.projectId, "demo");
   assert.equal(payload.data.specMode, true);
+  assert.equal(payload.data.safetyApprovalMode, "minimal");
+});
+
+test("chat safety approval mode defaults to reduced for local trusted clients", () => {
+  assert.equal(normalizeSafetyApprovalMode("manual"), "manual");
+  assert.equal(normalizeSafetyApprovalMode("reduced"), "reduced");
+  assert.equal(normalizeSafetyApprovalMode("minimal"), "minimal");
+  assert.equal(normalizeSafetyApprovalMode("unknown"), "reduced");
+  assert.equal(buildChatSubmitPayload({
+    sessionId: "session-a",
+    message: "你好",
+  }).data.safetyApprovalMode, "reduced");
+});
+
+test("client API errors surface workspace trust guidance", () => {
+  assert.throws(
+    () => requireOk({
+      ok: false,
+      status: 400,
+      data: { detail: { error: "workspace_side_effect_blocked", summary: "先选择并信任项目工作区" } },
+    }, "提交消息"),
+    /v8os workspace create <path> --select/,
+  );
 });
 
 test("chat text extractor handles string and rich parts", () => {
@@ -279,6 +306,21 @@ test("workspace helpers resolve and inspect local directories without touching c
   fs.writeFileSync(path.join(dir, ".agents", "rules", "AGENTS.md"), "# Rules\n", "utf8");
   assert.equal(resolveWorkspacePath(dir), path.resolve(dir));
   assert.equal(currentWorkspacePath({ workspace: { agent_workspace_path: dir } }), path.resolve(dir));
+  assert.deepEqual(currentWorkspaceBinding({
+    workspace: {
+      agent_workspace_path: dir,
+      projectId: "project-demo",
+      workspaceId: "workspace-demo",
+      workspaceTrustState: "trusted",
+      workspaceTrustSource: "cli_user_confirmed",
+    },
+  }), {
+    path: path.resolve(dir),
+    projectId: "project-demo",
+    workspaceId: "workspace-demo",
+    workspaceTrustState: "trusted",
+    workspaceTrustSource: "cli_user_confirmed",
+  });
   const report = inspectWorkspace(dir);
   assert.equal(report.path, path.resolve(dir));
   assert.ok(report.checks.some((check) => check.id === "agents_rules" && check.status === "ok"));

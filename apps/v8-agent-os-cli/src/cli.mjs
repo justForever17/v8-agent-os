@@ -53,7 +53,7 @@ Usage:
   v8os stop [--only engine,admin]
   v8os restart [--only engine,admin]
   v8os status [--json]
-  v8os chat "message" [--session id] [--workspace path] [--interactive]
+  v8os chat "message" [--session id] [--workspace path] [--safety-approval manual|reduced|minimal] [--interactive]
   v8os sessions list|show|turns|open|resume [--json]
   v8os inbox list|approve|reject|answer [--json]
   v8os workspace show|doctor|create|select|open [--json]

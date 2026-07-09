@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
+from core.tools.native import tool_governance
 from erc.safety_guardian import SafetyDecision
+from erc.runtime_context import bind_runtime_context
 from core.tools.native.tool_governance import (
     normalize_safety_approval_mode,
     should_auto_approve_safety_review,
@@ -61,3 +66,47 @@ def test_reduced_and_minimal_do_not_bypass_hard_protections() -> None:
 def test_minimal_mode_can_auto_approve_non_hard_reviews() -> None:
     assert should_auto_approve_safety_review(_review("review_command_pattern"), mode="minimal") is True
     assert should_auto_approve_safety_review(_review("external_mutating_http"), mode="minimal") is True
+
+
+def _silence_safety_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tool_governance.safety_guardian, "log_decision_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tool_governance.safety_guardian, "is_allowlisted", lambda decision: None)
+    monkeypatch.setattr(tool_governance.safety_guardian, "build_allowlist_candidate", lambda decision: {})
+
+
+def test_native_tool_safety_enforcement_manual_still_interrupts_low_risk_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    _silence_safety_ledger(monkeypatch)
+
+    with bind_runtime_context(safety_approval_mode="manual"):
+        with pytest.raises(ModelGovernanceInterventionRequired):
+            tool_governance._enforce_safety_decision(
+                _review("external_mutating_http"),
+                tool_call_id="tool_call_manual",
+                question="POST https://example.test/api",
+            )
+
+
+def test_native_tool_safety_enforcement_reduced_auto_approves_low_risk_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    _silence_safety_ledger(monkeypatch)
+
+    with bind_runtime_context(safety_approval_mode="reduced"):
+        allowed, reason = tool_governance._enforce_safety_decision(
+            _review("external_mutating_http"),
+            tool_call_id="tool_call_reduced",
+            question="POST https://example.test/api",
+        )
+
+    assert allowed is True
+    assert reason is None
+
+
+def test_native_tool_safety_enforcement_minimal_keeps_hard_review_interactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    _silence_safety_ledger(monkeypatch)
+
+    with bind_runtime_context(safety_approval_mode="minimal"):
+        with pytest.raises(ModelGovernanceInterventionRequired):
+            tool_governance._enforce_safety_decision(
+                _review("protected_config_write", governance_target="v8_integrity"),
+                tool_call_id="tool_call_minimal_hard",
+                question="write ~/.v8-agent-os/config.json",
+            )

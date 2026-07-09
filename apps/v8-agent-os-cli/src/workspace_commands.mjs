@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONFIG_PATH, STATE_ROOT } from "./paths.mjs";
+import { adminJson, requireOk } from "./client_api.mjs";
 import { backupFile, ensureDir, readJsonFile, writeJsonFile } from "./json_file.mjs";
 
 function hasFlag(args, flag) {
@@ -32,6 +33,17 @@ export function currentWorkspacePath(config = readJsonFile(CONFIG_PATH, {})) {
   );
 }
 
+export function currentWorkspaceBinding(config = readJsonFile(CONFIG_PATH, {})) {
+  const workspace = config?.workspace || {};
+  return {
+    path: currentWorkspacePath(config),
+    projectId: String(workspace.project_id || workspace.projectId || config?.projectId || "").trim(),
+    workspaceId: String(workspace.workspace_id || workspace.workspaceId || "").trim(),
+    workspaceTrustState: String(workspace.workspace_trust_state || workspace.workspaceTrustState || "").trim(),
+    workspaceTrustSource: String(workspace.workspace_trust_source || workspace.workspaceTrustSource || "").trim(),
+  };
+}
+
 export function inspectWorkspace(workspacePath) {
   const target = resolveWorkspacePath(workspacePath);
   const exists = fs.existsSync(target);
@@ -48,6 +60,53 @@ export function inspectWorkspace(workspacePath) {
     { id: "git", status: fs.existsSync(gitDir) ? "ok" : "info", summary: fs.existsSync(gitDir) ? "Git 仓库" : "非 Git 仓库或未初始化" },
   ];
   return { path: target, checks };
+}
+
+function workspaceProjectName(workspacePath) {
+  const base = path.basename(resolveWorkspacePath(workspacePath)).trim();
+  return base || "V8OS Workspace";
+}
+
+export async function registerTrustedWorkspaceProject(workspacePath, { projectId = "", workspaceId = "", required = false } = {}) {
+  const target = resolveWorkspacePath(workspacePath);
+  try {
+    const project = requireOk(await adminJson("/api/client/projects", {
+      method: "POST",
+      body: {
+        ...(projectId ? { id: projectId } : {}),
+        name: workspaceProjectName(target),
+        ...(workspaceId ? { workspaceId } : {}),
+        workspacePath: target,
+        workspaceTrustState: "trusted",
+        workspaceTrustSource: "cli_user_confirmed",
+      },
+      timeoutMs: 10_000,
+    }), "确认工作区信任");
+    return {
+      registered: true,
+      path: String(project.workspacePath || target),
+      projectId: String(project.id || project.projectId || projectId || "").trim(),
+      workspaceId: String(project.workspaceId || workspaceId || "").trim(),
+      workspaceTrustState: String(project.workspaceTrustState || "trusted"),
+      workspaceTrustSource: String(project.workspaceTrustSource || "cli_user_confirmed"),
+    };
+  } catch (error) {
+    if (required) {
+      throw new Error(
+        `无法确认工作区信任：${error instanceof Error ? error.message : String(error)}。` +
+        "请确认 v8os preview/start 已启动，或先在 Admin/Web 中选择并信任项目工作区。",
+      );
+    }
+    return {
+      registered: false,
+      path: target,
+      projectId,
+      workspaceId,
+      workspaceTrustState: "",
+      workspaceTrustSource: "",
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function renderWorkspaceInspection(result) {
@@ -74,7 +133,7 @@ export function createWorkspace(targetPath, { select = false } = {}) {
   return result;
 }
 
-export function selectWorkspace(targetPath) {
+export function selectWorkspace(targetPath, binding = {}) {
   const target = resolveWorkspacePath(targetPath);
   if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
     throw new Error(`工作区不存在或不是目录：${target}`);
@@ -84,6 +143,11 @@ export function selectWorkspace(targetPath) {
   config.workspace = {
     ...(config.workspace || {}),
     agent_workspace_path: target,
+    path: target,
+    ...(binding.projectId ? { projectId: binding.projectId, project_id: binding.projectId } : {}),
+    ...(binding.workspaceId ? { workspaceId: binding.workspaceId, workspace_id: binding.workspaceId } : {}),
+    ...(binding.workspaceTrustState ? { workspaceTrustState: binding.workspaceTrustState, workspace_trust_state: binding.workspaceTrustState } : {}),
+    ...(binding.workspaceTrustSource ? { workspaceTrustSource: binding.workspaceTrustSource, workspace_trust_source: binding.workspaceTrustSource } : {}),
   };
   writeJsonFile(CONFIG_PATH, config);
   return { path: target, configPath: CONFIG_PATH };
@@ -114,14 +178,23 @@ export async function commandWorkspace(args) {
   if (sub === "create") {
     const target = args[1];
     if (!target) throw new Error("workspace create requires <path>");
-    const result = createWorkspace(target, { select: hasFlag(args, "--select") });
+    const result = createWorkspace(target, { select: false });
+    const trust = await registerTrustedWorkspaceProject(result.path, { required: false });
+    if (hasFlag(args, "--select")) {
+      selectWorkspace(result.path, trust.registered ? trust : {});
+      result.selected = true;
+    }
+    result.trust = trust;
     json ? console.log(JSON.stringify(result, null, 2)) : console.log(`已创建工作区：${result.path}${result.selected ? "（已选择）" : ""}`);
     return result;
   }
   if (sub === "select") {
     const target = args[1];
     if (!target) throw new Error("workspace select requires <path>");
-    const result = selectWorkspace(target);
+    const resolved = resolveWorkspacePath(target);
+    const trust = await registerTrustedWorkspaceProject(resolved, { required: false });
+    const result = selectWorkspace(resolved, trust.registered ? trust : {});
+    result.trust = trust;
     json ? console.log(JSON.stringify(result, null, 2)) : console.log(`已选择工作区：${result.path}`);
     return result;
   }

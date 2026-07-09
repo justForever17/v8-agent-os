@@ -1,23 +1,40 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { adminJson, requireOk } from "./client_api.mjs";
+import { currentWorkspaceBinding, registerTrustedWorkspaceProject } from "./workspace_commands.mjs";
 
 function optionValue(args, name, fallback = "") {
   const index = args.indexOf(name);
   return index >= 0 ? String(args[index + 1] || fallback) : fallback;
 }
 
+function optionValueAny(args, names, fallback = "") {
+  for (const name of names) {
+    const value = optionValue(args, name, "");
+    if (value) return value;
+  }
+  return fallback;
+}
+
 function hasFlag(args, flag) {
   return args.includes(flag);
+}
+
+export function normalizeSafetyApprovalMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return ["manual", "reduced", "minimal"].includes(mode) ? mode : "reduced";
 }
 
 function remainingText(args) {
   const skipped = new Set([
     "--session",
     "--workspace",
+    "--workspace-id",
     "--project",
     "--timeout",
     "--message",
+    "--safety-approval",
+    "--safety-approval-mode",
   ]);
   const pieces = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -32,7 +49,16 @@ function remainingText(args) {
   return pieces.join(" ").trim();
 }
 
-export function buildChatSubmitPayload({ sessionId, message, workspacePath = "", projectId = "", specMode = false }) {
+export function buildChatSubmitPayload({
+  sessionId,
+  message,
+  workspacePath = "",
+  workspaceId = "",
+  projectId = "",
+  specMode = false,
+  safetyApprovalMode = "reduced",
+}) {
+  const normalizedSafetyApprovalMode = normalizeSafetyApprovalMode(safetyApprovalMode);
   return {
     session_id: sessionId,
     conversationId: sessionId,
@@ -45,20 +71,23 @@ export function buildChatSubmitPayload({ sessionId, message, workspacePath = "",
     data: {
       conversationId: sessionId,
       workspacePath: workspacePath || undefined,
+      workspaceId: workspaceId || undefined,
       projectId: projectId || undefined,
       specMode,
+      safetyApprovalMode: normalizedSafetyApprovalMode,
       taskPlanningMode: false,
     },
   };
 }
 
-async function ensureSession({ sessionId, message, workspacePath, projectId }) {
+async function ensureSession({ sessionId, message, workspacePath, workspaceId, projectId }) {
   if (sessionId) return sessionId;
   const response = await adminJson("/api/client/conversations", {
     method: "POST",
     body: {
       title: message.slice(0, 40) || "CLI Chat",
       workspacePath: workspacePath || undefined,
+      workspaceId: workspaceId || undefined,
       projectId: projectId || undefined,
       source: "v8os_cli",
       externalSurface: "cli",
@@ -122,12 +151,34 @@ export async function sendChatMessage(args, { print = true } = {}) {
   if (!message) {
     throw new Error("chat 需要消息内容，例如：v8os chat \"你好\"");
   }
-  const workspacePath = optionValue(args, "--workspace", "");
-  const projectId = optionValue(args, "--project", "");
+  const requestedSessionId = optionValue(args, "--session", "");
+  const storedBinding = currentWorkspaceBinding();
+  let workspacePath = optionValue(args, "--workspace", "");
+  let workspaceId = optionValue(args, "--workspace-id", "");
+  let projectId = optionValue(args, "--project", "");
+  if (!requestedSessionId) {
+    workspacePath = workspacePath || storedBinding.path;
+    workspaceId = workspaceId || storedBinding.workspaceId;
+    projectId = projectId || storedBinding.projectId;
+  }
+  if (workspacePath) {
+    const trusted = await registerTrustedWorkspaceProject(workspacePath, {
+      projectId,
+      workspaceId,
+      required: true,
+    });
+    workspacePath = trusted.path || workspacePath;
+    workspaceId = trusted.workspaceId || workspaceId;
+    projectId = trusted.projectId || projectId;
+  }
+  const safetyApprovalMode = normalizeSafetyApprovalMode(
+    optionValueAny(args, ["--safety-approval", "--safety-approval-mode"], "reduced"),
+  );
   const sessionId = await ensureSession({
-    sessionId: optionValue(args, "--session", ""),
+    sessionId: requestedSessionId,
     message,
     workspacePath,
+    workspaceId,
     projectId,
   });
   if (!sessionId) throw new Error("无法创建或定位会话");
@@ -136,8 +187,10 @@ export async function sendChatMessage(args, { print = true } = {}) {
     sessionId,
     message,
     workspacePath,
+    workspaceId,
     projectId,
     specMode: hasFlag(args, "--spec"),
+    safetyApprovalMode,
   });
   const submit = requireOk(await adminJson("/api/client/chat-submit", {
     method: "POST",
@@ -167,7 +220,11 @@ export async function sendChatMessage(args, { print = true } = {}) {
 export async function interactiveChat(args) {
   let sessionId = optionValue(args, "--session", "");
   const workspacePath = optionValue(args, "--workspace", "");
+  const workspaceId = optionValue(args, "--workspace-id", "");
   const projectId = optionValue(args, "--project", "");
+  const safetyApprovalMode = normalizeSafetyApprovalMode(
+    optionValueAny(args, ["--safety-approval", "--safety-approval-mode"], "reduced"),
+  );
   const rl = readline.createInterface({ input, output });
   console.log("V8OS 本机终端对话。输入 /exit 结束。");
   try {
@@ -178,7 +235,10 @@ export async function interactiveChat(args) {
       const result = await sendChatMessage([
         ...(sessionId ? ["--session", sessionId] : []),
         ...(workspacePath ? ["--workspace", workspacePath] : []),
+        ...(workspaceId ? ["--workspace-id", workspaceId] : []),
         ...(projectId ? ["--project", projectId] : []),
+        "--safety-approval",
+        safetyApprovalMode,
         text,
       ], { print: false });
       sessionId = result.sessionId;

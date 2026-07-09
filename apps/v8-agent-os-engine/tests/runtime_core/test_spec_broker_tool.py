@@ -295,6 +295,8 @@ def test_spec_broker_normalizes_short_ids_and_reports_format_diagnostics(tmp_pat
     )
 
     assert started["ok"] is True
+    assert started["stageContract"]["stage"] == "requirements"
+    assert "REQ-001" in started["stageContract"]["minimalMarkdown"]
     assert "REQ-001" in started["document"]["ids"]
     assert "AC-REQ-001" in _payload(
         spec_broker.func(
@@ -338,6 +340,62 @@ def test_spec_broker_approval_allows_loose_requirements_with_diagnostics(tmp_pat
     assert "requirements" in set(
         spec_service.build_brief(workspace_path=str(workspace), spec_id=started["specId"]).get("approvedStages") or []
     )
+
+
+def test_spec_broker_tasks_approval_blocker_returns_repair_contract(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Deliver a cross-runtime workflow.",
+            feature_name="repair-contract-demo",
+            content="# Requirements\n\n- REQ-001: Deliver the workflow with proof.\n",
+        )
+    )
+    spec_id = started["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content="# Design\n\n- DES-001: Engineering coordinates subagent execution and proof reconciliation.\n",
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+    written = _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="tasks",
+            content=(
+                "# Tasks\n\n"
+                "### TASK-001: Implement parallel subagent delivery\n\n"
+                "- runtimeLane: Engineering + subagent worker\n"
+                "- dependsOn: []\n"
+                "- specRefs: REQ-001, DES-001\n"
+                "- expectedOutput: `src/runtime.ts`, `tests/runtime.test.ts`\n"
+                "- acceptance: typecheck and targeted pytest pass\n"
+                "- proofRequired: changed files and test output\n"
+            ),
+        )
+    )
+    assert written["ok"] is True
+    assert written["stageContract"]["stage"] == "tasks"
+
+    approval = _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="tasks"))
+
+    assert approval["ok"] is False
+    assert approval["kind"] == "spec_stage_analysis_blocked"
+    assert approval["stageContract"]["stage"] == "tasks"
+    assert "mvpSlice" in approval["stageContract"]["minimalMarkdown"]
+    codes = {item["code"] for item in approval["hardBlockers"]}
+    assert {"large_task_missing_mvp_slice", "large_task_missing_independent_acceptance"}.issubset(codes)
 
 
 def test_spec_broker_rejects_supervisor_self_approval(tmp_path):
@@ -404,6 +462,7 @@ def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_
     assert blocked["ok"] is False
     assert blocked["kind"] == "spec_clarification_required"
     assert blocked["askUserTemplate"]["specContext"]["stage"] == "requirements"
+    assert blocked["stageContract"]["stage"] == "requirements"
 
     monkeypatch.setattr(
         "core.tools.native.spec.db.list_ask_user_interactions",
@@ -566,6 +625,8 @@ def test_spec_broker_read_missing_next_stage_returns_write_guidance(tmp_path):
     assert missing["nextStage"] == "tasks"
     assert missing["pipelineControl"]["nextStage"] == "tasks"
     assert missing["transitionHint"]["state"] == "stage_ready_to_write"
+    assert missing["stageContract"]["stage"] == "tasks"
+    assert missing["transitionHint"]["requiredStageContract"]["stage"] == "tasks"
     assert "mode='write_stage'" in missing["recommendedNextAction"]
     assert "stage='tasks'" in missing["recommendedNextAction"]
 
@@ -1389,6 +1450,7 @@ def test_spec_broker_write_stage_stops_live_turn_for_user_approval(monkeypatch, 
     payload = _payload(messages[0].content)
     assert payload["kind"] == "spec_stage_waiting_user_approval"
     assert payload["stage"] == "requirements"
+    assert payload["stageContract"]["stage"] == "requirements"
     assert payload["specId"].startswith("spec_")
     assert payload["approvalKind"] == "spec_stage_approval"
     assert payload["recommendedNextAction"].startswith("Wait for the Spec approval gate")
@@ -1495,6 +1557,8 @@ def test_spec_broker_tasks_stage_stops_live_turn_for_user_approval(monkeypatch, 
     assert payload["approvalId"] == "approval_tasks"
     assert payload["pipelineControl"]["blockedByApproval"] == "tasks"
     assert payload["pipelineControl"]["runtimeExecutionAllowed"] is False
+    assert payload["stageContract"]["stage"] == "tasks"
+    assert "mvpSlice" in payload["stageContract"]["minimalMarkdown"]
     assert payload["transitionHint"]["state"] == "waiting_user_approval"
     assert payload["transitionHint"]["nextStageAfterApproval"] == "runtime_execution"
     assert "runtime_broker" in payload["transitionHint"]["ifApproved"]

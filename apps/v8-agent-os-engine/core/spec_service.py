@@ -188,7 +188,23 @@ def _assign_missing_stage_ids(stage: str, content: str) -> tuple[str, dict[str, 
                 next_lines.append(line)
         if not changed:
             title = _compact_snippet(normalized.splitlines()[0] if normalized.splitlines() else "Execute approved work", limit=140)
-            next_lines.extend(["", "## Task Pipeline", "", f"### {alloc_id()}: {title}", "", "- runtimeLane: Engineering", "- dependsOn: []", "- specRefs: REQ-001, DES-001", "- expectedOutput: typed runtime handoff", "- acceptance: handoff cites this task and verification result", "- proofRequired: touched files/artifacts or degraded blocker"])
+            next_lines.extend(
+                [
+                    "",
+                    "## Task Pipeline",
+                    "",
+                    f"### {alloc_id()}: {title}",
+                    "",
+                    "- runtimeLane: Engineering",
+                    "- dependsOn: []",
+                    "- specRefs: REQ-001, DES-001",
+                    "- expectedOutput: typed runtime handoff",
+                    "- acceptance: handoff cites this task and verification result",
+                    "- proofRequired: touched files/artifacts or degraded blocker",
+                    "- mvpSlice: smallest independently useful slice named by this task",
+                    "- independentAcceptance: reviewer can verify the proof without trusting the worker summary",
+                ]
+            )
             changed = True
     else:
         for line in lines:
@@ -323,11 +339,11 @@ acceptance/proof expectations.
 
 ## Task Pipeline
 
-| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |
-| --- | --- | --- | --- | --- | --- | --- |
-| TASK-001 | Governance | Prepare runtime route with approved Spec refs. | - | REQ-001/BFIX-001, DES-001 | Runtime need payload with specId and detailRefs. | Route cites approved Spec refs. |
-| TASK-002 | Engineering/Research/Delegation | Execute the scoped change through the appropriate runtime. | TASK-001 | REQ-001/BFIX-001, DES-002, DES-003 | Runtime handoff, artifact, or degraded handoff. | Handoff/proof links task and Spec IDs. |
-| TASK-003 | Governance | Verify proof and reconcile final delivery. | TASK-002 | AC-REQ-001/AC-BFIX-001, DES-004 | User-facing completion summary. | Verification result is linked to proof/artifact refs. |
+| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof | MVP slice | Independent acceptance |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TASK-001 | Governance | Prepare runtime route with approved Spec refs. | - | REQ-001/BFIX-001, DES-001 | Runtime need payload with specId and detailRefs. | Route cites approved Spec refs. | route payload can be inspected before execution | Reviewer can confirm the route cites approved detailRefs. |
+| TASK-002 | Engineering/Research/Delegation | Execute the scoped change through the appropriate runtime. | TASK-001 | REQ-001/BFIX-001, DES-002, DES-003 | Runtime handoff, artifact, or degraded handoff. | Handoff/proof links task and Spec IDs. | smallest runnable or readable change slice | Reviewer can verify touched artifacts/proof without trusting the worker summary. |
+| TASK-003 | Governance | Verify proof and reconcile final delivery. | TASK-002 | AC-REQ-001/AC-BFIX-001, DES-004 | User-facing completion summary. | Verification result is linked to proof/artifact refs. | proof review can be completed before final wording polish | Reviewer can inspect proof/artifact refs and reproduce the pass/degraded/fail claim. |
 
 ## Task Details
 
@@ -340,6 +356,8 @@ acceptance/proof expectations.
 - expectedOutput: runtime need payload
 - acceptance: runtime route contains specId and approved detailRefs
 - proofRequired: route/episode ledger entry
+- mvpSlice: route payload can be inspected before execution
+- independentAcceptance: Reviewer can confirm the route cites approved detailRefs.
 
 ### TASK-002: Execute scoped change
 
@@ -350,6 +368,8 @@ acceptance/proof expectations.
 - expectedOutput: runtime handoff, artifact, or degraded handoff
 - acceptance: output links task ID and Spec IDs
 - proofRequired: runtime handoff/proof/artifact refs
+- mvpSlice: smallest runnable or readable change slice
+- independentAcceptance: Reviewer can verify touched artifacts/proof without trusting the worker summary.
 
 ### TASK-003: Verify and reconcile
 
@@ -360,6 +380,8 @@ acceptance/proof expectations.
 - expectedOutput: final delivery summary
 - acceptance: verification result explains pass/degraded/fail
 - proofRequired: proof ledger or explicit degraded reason
+- mvpSlice: proof review can be completed before final wording polish
+- independentAcceptance: Reviewer can inspect proof/artifact refs and reproduce the pass/degraded/fail claim.
 """
 
 
@@ -809,6 +831,7 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
             "missingFields": missing,
             "warnings": warnings,
             "approvalBlocking": approval_blocking,
+            "recommendedContractRef": "stageContract",
             "recommendedFormat": (
                 "Prefer stable REQ-001/BFIX-001 or Kiro-style numbered requirements with acceptance criteria. "
                 "Loose requirements may still be approved, but tasks.md must later provide traceable task IDs and refs."
@@ -831,6 +854,7 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
             "missingFields": missing,
             "warnings": warnings,
             "approvalBlocking": approval_blocking,
+            "recommendedContractRef": "stageContract",
             "recommendedFormat": (
                 "Prefer DES-001 style design sections or clear architecture/framework headings. "
                 "Loose design may still be approved, but tasks.md must later bind executable work to requirement/design refs."
@@ -856,6 +880,7 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
             "warnings": warnings,
             "approvalBlocking": list(dict.fromkeys(approval_blocking)),
             "pipelineDiagnostics": pipeline,
+            "recommendedContractRef": "stageContract",
             "recommendedFormat": pipeline.get("recommendedFormat"),
         }
     return {
@@ -866,6 +891,7 @@ def _stage_format_diagnostics(stage: str, content: str) -> dict[str, Any]:
         "missingFields": [],
         "warnings": [],
         "approvalBlocking": [],
+        "recommendedContractRef": "stageContract",
     }
 
 

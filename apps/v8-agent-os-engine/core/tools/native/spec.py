@@ -43,38 +43,145 @@ def _spec_broker_payload(**payload: Any) -> str:
     return json.dumps(_spec_compact_dict(payload), ensure_ascii=False, indent=2)
 
 
+def _spec_stage_contract_hint(stage: str) -> dict[str, Any]:
+    normalized = str(stage or "").strip().lower()
+    if normalized == "requirements":
+        return {
+            "stage": "requirements",
+            "purpose": "requirements.md captures user-visible outcomes, acceptance criteria, and boundaries before design.",
+            "mustInclude": [
+                "Stable requirement IDs, e.g. REQ-001",
+                "User-visible outcomes and delivery format",
+                "Acceptance criteria using clear WHEN/THEN, SHALL, or explicit 验收标准 wording",
+                "Out-of-scope boundaries when relevant",
+            ],
+            "minimalMarkdown": (
+                "# Requirements: <feature name>\n\n"
+                "## Goals\n\n"
+                "- REQ-001: <user-visible outcome and delivery format>\n\n"
+                "## Acceptance Criteria\n\n"
+                "- AC-REQ-001: WHEN <condition>, THEN <observable result> SHALL <verification expectation>.\n\n"
+                "## Boundaries\n\n"
+                "- <what is intentionally out of scope or must not change>\n"
+            ),
+            "commonFailures": [
+                "Only prose is provided and no REQ/AC-REQ traceability exists.",
+                "Acceptance criteria describe implementation activity instead of observable user outcomes.",
+                "Scope boundaries are omitted for risky or ambiguous requests.",
+            ],
+            "repairHint": "Rewrite requirements with REQ ids, observable acceptance criteria, and explicit boundaries; do not invent missing product intent.",
+        }
+    if normalized == "bugfix":
+        return {
+            "stage": "bugfix",
+            "purpose": "bugfix.md captures observed failure, expected behavior, unchanged behavior, root-cause evidence, and acceptance.",
+            "mustInclude": [
+                "Stable bugfix IDs, e.g. BFIX-001",
+                "Current behavior and expected behavior",
+                "Unchanged behavior that must remain stable",
+                "Root-cause evidence or pending-evidence marker",
+                "Acceptance criteria tied to BFIX IDs",
+            ],
+            "minimalMarkdown": (
+                "# Bugfix Spec: <feature or defect>\n\n"
+                "## Current Behavior\n\n"
+                "- BFIX-001: <observed failure or regression>\n\n"
+                "## Expected Behavior\n\n"
+                "- BFIX-002: <expected behavior after the fix>\n\n"
+                "## Unchanged Behavior\n\n"
+                "- BFIX-003: <behavior that must not change>\n\n"
+                "## Root Cause Analysis\n\n"
+                "- BFIX-004: <confirmed cause or `pending evidence`>\n\n"
+                "## Acceptance Criteria\n\n"
+                "- AC-BFIX-001: WHEN <fix is verified>, THEN <failing behavior> SHALL <pass condition>.\n"
+            ),
+            "commonFailures": [
+                "The failure is described without reproducible evidence.",
+                "Expected behavior is missing or mixed with implementation steps.",
+                "No unchanged behavior is listed, increasing regression risk.",
+            ],
+            "repairHint": "Separate current/expected/unchanged behavior and only record root cause once evidence exists.",
+        }
+    if normalized == "design":
+        return {
+            "stage": "design",
+            "purpose": "design.md explains the smallest technical path that satisfies approved requirements or bugfix items.",
+            "mustInclude": [
+                "Stable design IDs, e.g. DES-001",
+                "Architecture or approach summary",
+                "Runtime/subagent needs and why they are required",
+                "Files, interfaces, config, or public contracts that may change",
+                "Verification strategy and risks",
+            ],
+            "minimalMarkdown": (
+                "# Design: <feature name>\n\n"
+                "## Architecture\n\n"
+                "- DES-001: <smallest viable technical path tied to approved requirements>\n\n"
+                "## Runtime Plan\n\n"
+                "- DES-002: <which runtime/subagent lanes are needed and why>\n\n"
+                "## Files and Interfaces\n\n"
+                "- DES-003: <expected files, interfaces, config, or contracts>\n\n"
+                "## Verification Strategy\n\n"
+                "- DES-004: <tests, dry-run, rollback, and proof expectations>\n\n"
+                "## Risks\n\n"
+                "- DES-005: <security, side-effect, compatibility, or recovery risks>\n"
+            ),
+            "commonFailures": [
+                "Design restates requirements without a technical path.",
+                "Runtime or subagent delegation is implied but not justified.",
+                "Verification strategy is absent, so tasks cannot produce proof.",
+            ],
+            "repairHint": "Add DES sections for architecture, runtime plan, interfaces, verification, and risks; avoid implementation beyond the approved scope.",
+        }
+    if normalized == "tasks":
+        return {
+            "stage": "tasks",
+            "purpose": "tasks.md is the runtime dispatch contract. Requirements/design may be loose, but tasks must be assignable and traceable.",
+            "mustInclude": [
+                "TASK ids, e.g. TASK-001",
+                "runtimeLane for each task, e.g. Research, Engineering, Delegation/Subagent, Creative Media, Governance",
+                "dependsOn for ordering, use [] or '-' when independent",
+                "specRefs that cite requirement/design ids or explicit requirement/design sections",
+                "expectedOutput paths or handoff/artifact names",
+                "acceptance/proof checks",
+                "mvpSlice for large tasks",
+                "independentAcceptance for large tasks",
+            ],
+            "minimalMarkdown": (
+                "## Task Pipeline\n\n"
+                "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof | MVP slice | Independent acceptance |\n"
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                "| TASK-001 | Research | Gather evidence for the required topic. | - | REQ-001, DES-001 | references/research/*.md + evidence pack | Sources and limits are recorded. | evidence packet is independently readable | Reviewer can verify cited sources exist. |\n"
+                "| TASK-002 | Engineering | Create or update the requested artifact. | TASK-001 | REQ-001, DES-002 | target files/artifact paths | Files exist and match acceptance criteria. | smallest runnable change | Build/test output proves the slice. |\n\n"
+                "## Task Details\n\n"
+                "### TASK-001: <task title>\n\n"
+                "- runtimeLane: Research\n"
+                "- dependsOn: []\n"
+                "- specRefs: REQ-001, DES-001\n"
+                "- inputRefs: approved requirements/design sections\n"
+                "- expectedOutput: <paths or handoff names>\n"
+                "- acceptance: <how to verify>\n"
+                "- proofRequired: <proof/handoff/artifact refs>\n"
+                "- mvpSlice: <smallest independently useful slice>\n"
+                "- independentAcceptance: <what a reviewer can verify without trusting the worker>\n"
+            ),
+            "commonFailures": [
+                "Tasks only contain natural-language todos and no runtime lane.",
+                "Tasks do not cite requirement/design refs, leaving workers to guess context.",
+                "Large or delegated tasks omit proof, MVP slice, or independent acceptance.",
+            ],
+            "repairHint": "Rewrite tasks as an execution contract with one assignable task per runtime handoff and proof expectations for every executable task.",
+        }
+    return {}
+
+
 def _spec_tasks_stage_contract_hint() -> dict[str, Any]:
-    return {
-        "purpose": "tasks.md is the runtime dispatch contract. Requirements/design may be loose, but tasks must be assignable and traceable.",
-        "mustInclude": [
-            "TASK ids, e.g. TASK-001",
-            "runtimeLane for each task, e.g. Research, Engineering, Delegation/Subagent, Creative Media, Governance",
-            "dependsOn for ordering, use [] or '-' when independent",
-            "specRefs that cite requirement/design ids or explicit requirement/design sections",
-            "expectedOutput paths or handoff/artifact names",
-            "acceptance/proof checks",
-            "mvpSlice for large tasks",
-            "independentAcceptance for large tasks",
-        ],
-        "minimalMarkdown": (
-            "## Task Pipeline\n\n"
-            "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof | MVP slice | Independent acceptance |\n"
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
-            "| TASK-001 | Research | Gather evidence for the required topic. | - | REQ-001, DES-001 | references/research/*.md + evidence pack | Sources and limits are recorded. | evidence packet is independently readable | Reviewer can verify cited sources exist. |\n"
-            "| TASK-002 | Engineering | Create or update the requested artifact. | TASK-001 | REQ-001, DES-002 | target files/artifact paths | Files exist and match acceptance criteria. | smallest runnable change | Build/test output proves the slice. |\n\n"
-            "## Task Details\n\n"
-            "### TASK-001: <task title>\n\n"
-            "- runtimeLane: Research\n"
-            "- dependsOn: []\n"
-            "- specRefs: REQ-001, DES-001\n"
-            "- inputRefs: approved requirements/design sections\n"
-            "- expectedOutput: <paths or handoff names>\n"
-            "- acceptance: <how to verify>\n"
-            "- proofRequired: <proof/handoff/artifact refs>\n"
-            "- mvpSlice: <smallest independently useful slice>\n"
-            "- independentAcceptance: <what a reviewer can verify without trusting the worker>\n"
-        ),
-    }
+    return _spec_stage_contract_hint("tasks")
+
+
+def _spec_contract_payload_for_stage(stage: str) -> dict[str, Any]:
+    contract = _spec_stage_contract_hint(stage)
+    return {"stageContract": contract} if contract else {}
 
 
 def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -100,7 +207,7 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
                 "Do not wait for user approval; no approval gate is open until this stage passes format checks.",
                 "Do not move downstream before this stage is valid and then approved by the user/client.",
             ],
-            **({"requiredStageContract": _spec_tasks_stage_contract_hint()} if (current or next_stage) == "tasks" else {}),
+            **({"requiredStageContract": _spec_stage_contract_hint(current or next_stage)} if (current or next_stage) in _SPEC_STAGES else {}),
         }
     if blocked:
         downstream = {
@@ -131,7 +238,7 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
                 "Do not move downstream before the user/client approval event.",
                 "Do not self-approve this stage.",
             ],
-            **({"requiredNextStageContract": _spec_tasks_stage_contract_hint()} if downstream == "tasks" else {}),
+            **({"requiredNextStageContract": _spec_stage_contract_hint(downstream)} if downstream in _SPEC_STAGES else {}),
         }
     if bool(control.get("runtimeExecutionAllowed")) or next_stage == _SPEC_RUNTIME_EXECUTION:
         return {
@@ -164,8 +271,8 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
                 f"stage='{next_stage}', content='<complete markdown>')."
             ),
         }
-        if next_stage == "tasks":
-            result["requiredStageContract"] = _spec_tasks_stage_contract_hint()
+        if next_stage in _SPEC_STAGES:
+            result["requiredStageContract"] = _spec_stage_contract_hint(next_stage)
         return result
     return {
         "state": "inspect_spec_brief",
@@ -265,6 +372,7 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
         pipelineControl=pipeline,
         specBrief=spec_brief,
         analysis=analysis,
+        stageContract=_spec_stage_contract_hint(stage),
         transitionHint=_spec_transition_hint(spec_id=spec_id, stage=stage, pipeline=pipeline),
         recommendedNextAction="Wait for the Spec approval gate before continuing to the next Spec stage.",
     )
@@ -497,6 +605,7 @@ def _spec_clarification_required_payload(*, spec_id: str, stage: str, feature_na
         specId=spec_id or None,
         featureName=feature_name or None,
         stage=stage,
+        stageContract=_spec_stage_contract_hint(stage),
         summary=(
             "Spec document writing is blocked until this stage records at least one human clarification "
             "through ask_user."
@@ -533,6 +642,7 @@ def _spec_stage_mismatch_payload(*, attempted_stage: str, expected_stage: str, s
         specId=spec_id,
         attemptedStage=attempted_stage,
         expectedStage=expected_stage,
+        requiredStageContract=_spec_stage_contract_hint(expected_stage),
         recommendedNextAction=(
             "Call spec_broker with mode='write_stage', the current specId, "
             f"stage='{expected_stage}', and the full Markdown draft for that stage."
@@ -720,6 +830,7 @@ def _spec_missing_stage_payload(
         nextStage=next_stage or None,
         pipelineControl=pipeline,
         transitionHint=transition,
+        **({"stageContract": _spec_stage_contract_hint(next_stage or requested)} if (next_stage or requested) in _SPEC_STAGES else {}),
         specBrief=brief,
         recommendedNextAction=(
             f"Call spec_broker(mode='write_stage', spec_id='{spec_id}', stage='{next_stage or requested}', "
@@ -951,6 +1062,10 @@ def spec_broker(
                     pipeline=result.get("pipelineControl") if isinstance(result.get("pipelineControl"), dict) else {},
                 ),
             )
+            result.setdefault(
+                "stageContract",
+                _spec_stage_contract_hint(str(result.get("stage") or requested_stage or stage or clarification_stage)),
+            )
             result.setdefault("recommendedNextAction", "Show the current stage to the user for approval before moving downstream.")
             stop_command = _maybe_stop_for_spec_stage_approval(result, tool_call_id=tool_call_id)
             if stop_command is not None:
@@ -1014,6 +1129,9 @@ def spec_broker(
                     pipeline=result.get("pipelineControl") if isinstance(result.get("pipelineControl"), dict) else {},
                 ),
             )
+            result.setdefault("stageContract", _spec_stage_contract_hint(str(result.get("stage") or _spec_stage_from_inputs(stage, kind) or "")))
+            if isinstance(result.get("analysis"), dict) and list(result["analysis"].get("hardBlockers") or []):
+                result.setdefault("hardBlockers", result["analysis"].get("hardBlockers"))
             result.setdefault("recommendedNextAction", "Create the next Spec stage, or wait for runtime execution if tasks are approved.")
             return _spec_broker_payload(**result)
         if normalized_mode in {"revise", "request_revision", "comment"}:
@@ -1096,6 +1214,10 @@ def spec_broker(
                     stage=str(result.get("stage") or resolved_stage or ""),
                     pipeline=result.get("pipelineControl") if isinstance(result.get("pipelineControl"), dict) else {},
                 ),
+            )
+            result.setdefault(
+                "stageContract",
+                _spec_stage_contract_hint(str(result.get("stage") or resolved_stage or clarification_stage or "")),
             )
             result.setdefault("recommendedNextAction", "Show the edited stage to the user for approval before moving downstream.")
             stop_command = _maybe_stop_for_spec_stage_approval(result, tool_call_id=tool_call_id)

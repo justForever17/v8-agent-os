@@ -140,8 +140,46 @@ def test_spec_service_tasks_template_is_pipeline_ready(tmp_path: Path):
     assert not tasks["tasksPipeline"]["missingFields"]
     assert tasks["specBrief"]["documents"]["tasks"]["pipelineDiagnostics"]["valid"] is True
     content = (workspace / ".v8" / "specs" / Path(tasks["specDir"]).name / "tasks.md").read_text(encoding="utf-8")
-    assert "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof |" in content
+    assert "| Task ID | Runtime lane | Goal | Depends on | Spec refs | Expected output | Acceptance / proof | MVP slice | Independent acceptance |" in content
     assert "runtimeLane:" in content
+    assert "mvpSlice:" in content
+    assert "independentAcceptance:" in content
+    analysis = spec_service.analyze_spec(workspace_path=str(workspace), spec_id=spec_id)
+    assert analysis["hardBlockers"] == []
+
+
+def test_spec_service_tasks_fallback_scaffold_includes_mvp_and_independent_acceptance(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request="实现一个计数器。",
+        feature_name="Counter Fallback",
+        stage="requirements",
+    )
+    spec_id = created["specId"]
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="实现一个计数器。", spec_id=spec_id, stage="design")
+    spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")
+    spec_service.create_stage(workspace_path=str(workspace), user_request="实现一个计数器。", spec_id=spec_id, stage="tasks")
+
+    edited = spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content="Implement the approved counter work.",
+    )
+
+    assert edited["ok"] is True
+    assert edited["tasksPipeline"]["valid"] is True
+    content = spec_service.read_section(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")["content"]
+    assert "TASK-001" in content
+    assert "mvpSlice:" in content
+    assert "independentAcceptance:" in content
+    analysis = spec_service.analyze_spec(workspace_path=str(workspace), spec_id=spec_id)
+    assert analysis["hardBlockers"] == []
 
 
 def test_spec_service_delivered_spec_exits_active_list_but_remains_readable(tmp_path: Path):

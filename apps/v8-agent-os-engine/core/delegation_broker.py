@@ -1186,7 +1186,8 @@ def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents:
             "targetId": preferred_id,
         }
 
-    family_hint = str(task_brief.get("familyHint") or "").strip()
+    raw_family_hint = str(task_brief.get("familyHint") or "").strip()
+    family_hint = normalize_specialist_family_id(raw_family_hint, default="") if raw_family_hint else ""
     if family_hint:
         filtered_agents = [
             agent for agent in normalized_agents

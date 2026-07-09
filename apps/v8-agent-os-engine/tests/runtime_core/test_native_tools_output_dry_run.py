@@ -24,6 +24,7 @@ def test_native_tools_dry_run_export_covers_registered_tools() -> None:
 
     assert "ask_user" in native_tools_dry_run.EXCLUDED_TOOLS
     assert "ask_user" not in exported_names
+    assert "request_peer_help" in exported_names
     assert native_tools_dry_run.missing_invocation_names() == []
     assert native_tools_dry_run.missing_high_risk_replay_names() == []
     assert "dry-run-missing" not in json.dumps(native_tools_dry_run.BASE_SAFE_INVOCATIONS)
@@ -77,6 +78,7 @@ def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
     assert (tmp_path / "_index.json").exists()
     assert (tmp_path / "_top10_giant_tool_outputs.md").exists()
     assert (tmp_path / "run_system_command.md").exists()
+    assert (tmp_path / "request_peer_help.md").exists()
     assert not (tmp_path / "ask_user.md").exists()
 
     loaded_index = json.loads((tmp_path / "_index.json").read_text(encoding="utf-8"))
@@ -90,6 +92,27 @@ def test_native_tools_dry_run_export_writes_per_tool_markdown(tmp_path) -> None:
     by_name = {item["name"]: item for item in loaded_index["tools"]}
     assert by_name["runtime_broker"]["toolFamily"] == "runtime"
     assert by_name["runtime_broker"]["clientSurface"]["title"] == "runtime_broker"
+    assert by_name["request_peer_help"]["toolFamily"] == "runtime"
+    assert by_name["request_peer_help"]["registeredGroups"] == ["delegation.recursive"]
+
+
+def test_request_peer_help_dry_run_output_is_agent_readable() -> None:
+    tool_ref = next(
+        tool
+        for tool in native_tools_dry_run._all_export_tools()
+        if getattr(tool, "name", "") == "request_peer_help"
+    )
+
+    output = asyncio.run(
+        native_tools_dry_run._invoke_agent_visible(
+            tool_ref,
+            native_tools_dry_run.BASE_SAFE_INVOCATIONS["request_peer_help"],
+        )
+    )
+
+    assert "Status: failed" in output
+    assert "Peer help request was blocked" in output
+    assert not output.lstrip().startswith("{")
 
 
 def test_native_tools_dry_run_detail_scenario_is_representative(tmp_path, monkeypatch) -> None:

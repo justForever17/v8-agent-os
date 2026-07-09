@@ -236,6 +236,13 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
         "maxRounds": 1,
         "deliverable": "evidence_bundle",
     },
+    "request_peer_help": {
+        "needed_capabilities": ["research", "source_check"],
+        "reason": "Need brokered peer verification for a cited claim.",
+        "context": "Calibration-only request; no child delegation grant is present.",
+        "preferred_family": "research",
+    },
+    "network_neighbor_broker": {"mode": "list_devices", "limit": 5},
     "fetch_skill_instructions": {"skill_name": "__v8_calibration_missing_skill__", "detail_level": "summary"},
     "memory_broker": {"mode": "explain_injection", "limit": 3},
     "memory_recall": {"query": "native-tool-output-calibration", "limit": 1},

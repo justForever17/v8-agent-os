@@ -272,6 +272,26 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         self.assertIn("free-helper | class=", rendered)
         self.assertNotIn("eng-impl | class=", rendered)
 
+    def test_legacy_top_level_family_does_not_fall_back_to_freelancers(self):
+        legacy = _agent("legacy-docs", "engineering", ops=["document"])
+        legacy["capabilitySnapshot"].pop("specialistFamily", None)
+        legacy["specialistFamily"] = "writing"
+        agents = [
+            legacy,
+            _agent("free-helper", "freelancers", ops=["help"]),
+        ]
+
+        rendered = _build_context(
+            specialist_registry={"familyModeEnabled": True, "exposureMode": "family_cards"},
+            query="@writing 找写作协作",
+            agents=agents,
+            state={"explicit_subagent_families": ["writing"]},
+        )
+
+        self.assertIn("[writing] revealSource=user_explicit_mention", rendered)
+        self.assertIn("legacy-docs | class=", rendered)
+        self.assertNotIn("free-helper | class=", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

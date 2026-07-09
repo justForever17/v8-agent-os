@@ -768,7 +768,12 @@ def build_supervisor_system_content(
 
     def _agent_family(agent: dict) -> str:
         snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
-        return normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family"))
+        return normalize_specialist_family_id(
+            snapshot.get("specialistFamily")
+            or snapshot.get("family")
+            or agent.get("specialistFamily")
+            or agent.get("family")
+        )
 
     def _agent_class(agent: dict) -> str:
         snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}

@@ -195,9 +195,13 @@ def _compact_registry_member(agent: Dict[str, Any]) -> Dict[str, Any] | None:
     agent_id = str(agent.get("id") or "").strip()
     if not agent_id or agent_id == "supervisor":
         return None
-    snapshot = ensure_specialist_family(
-        agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
-    )
+    raw_snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+    snapshot = dict(raw_snapshot)
+    if not (snapshot.get("specialistFamily") or snapshot.get("family")):
+        legacy_family = agent.get("specialistFamily") or agent.get("family")
+        if legacy_family:
+            snapshot["specialistFamily"] = legacy_family
+    snapshot = ensure_specialist_family(snapshot)
     family_id = normalize_specialist_family_id(snapshot.get("specialistFamily") or snapshot.get("family"))
     member = {
         "id": agent_id,

@@ -31,6 +31,8 @@ type Agent = {
   skills: string[] | null;
   roleLabel: string | null;
   capabilitySnapshot?: Record<string, unknown> | null;
+  specialistFamily?: string | null;
+  family?: string | null;
   createdBy?: string;
   isEnabled: boolean;
   globalExposure?: boolean;
@@ -377,6 +379,11 @@ function normalizeFamilyId(value: unknown) {
   const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^\p{L}\p{N}_.+-]+/gu, "_").replace(/_+/g, "_").replace(/^[._-]+|[._-]+$/g, "");
   return normalized || FREELANCERS_FAMILY_ID;
 }
+function agentFamilyValue(agent: Agent, snapshot?: Record<string, unknown>) {
+  const source = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot : agent.capabilitySnapshot;
+  const snapshotFamily = source && typeof source === "object" && !Array.isArray(source) ? source.specialistFamily || source.family : "";
+  return snapshotFamily || agent.specialistFamily || agent.family || FREELANCERS_FAMILY_ID;
+}
 function normalizeFamilyEntry(value: unknown): SubagentFamilySummary | null {
   if (typeof value === "string") {
     const familyId = normalizeFamilyId(value);
@@ -714,10 +721,11 @@ export default function SubagentsPage() {
     (supervisorDomainData?.data?.specialistRegistry?.families || []).forEach(family => addFamily(family));
     agents.forEach(agent => {
       const snapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot) ? agent.capabilitySnapshot : {};
-      const familyId = normalizeFamilyId(snapshot.specialistFamily || FREELANCERS_FAMILY_ID);
+      const familyValue = agentFamilyValue(agent, snapshot);
+      const familyId = normalizeFamilyId(familyValue);
       addFamily({
         familyId,
-        displayName: String(snapshot.specialistFamily || familyId)
+        displayName: String(familyValue || familyId)
       }, 1);
     });
     return Array.from(merged.values()).sort((left, right) => String(left.displayName || left.familyId).localeCompare(String(right.displayName || right.familyId)));
@@ -811,7 +819,7 @@ export default function SubagentsPage() {
       systemPrompt: agent.systemPrompt || "",
       tools: Array.isArray(agent.tools) ? agent.tools : [],
       toolMode: agent.tool_mode === "explicit" ? "explicit" : "contextual_auto",
-      specialistFamily: typeof capabilitySnapshot.specialistFamily === "string" && capabilitySnapshot.specialistFamily.trim() ? capabilitySnapshot.specialistFamily.trim() : FREELANCERS_FAMILY_ID,
+      specialistFamily: String(agentFamilyValue(agent, capabilitySnapshot) || FREELANCERS_FAMILY_ID).trim() || FREELANCERS_FAMILY_ID,
       runtimeBindingKinds: runtimeBindingKindsFromSnapshot(capabilitySnapshot),
       globalExposure: Boolean(agent.globalExposure),
       agentClass: typeof capabilitySnapshot.agentClass === "string" && capabilitySnapshot.agentClass.trim() ? capabilitySnapshot.agentClass.trim() : "specialist",
@@ -1563,7 +1571,7 @@ export default function SubagentsPage() {
                             const toolMode = agent.tool_mode === "explicit" ? "explicit" : "contextual_auto";
                             const capabilitySnapshot = agent.capabilitySnapshot && typeof agent.capabilitySnapshot === "object" && !Array.isArray(agent.capabilitySnapshot) ? agent.capabilitySnapshot : {};
                             const agentClass = typeof capabilitySnapshot.agentClass === "string" ? capabilitySnapshot.agentClass : "";
-                            const specialistFamily = typeof capabilitySnapshot.specialistFamily === "string" ? capabilitySnapshot.specialistFamily : "";
+                            const specialistFamily = String(agentFamilyValue(agent, capabilitySnapshot) || "");
                             const domainTags = Array.isArray(capabilitySnapshot.domainTags) ? capabilitySnapshot.domainTags.filter((item): item is string => typeof item === "string").slice(0, 3) : [];
                             const familyKey = normalizeFamilyId(specialistFamily || FREELANCERS_FAMILY_ID);
                             const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];

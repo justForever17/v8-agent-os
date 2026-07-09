@@ -53,6 +53,20 @@ def test_missing_family_defaults_to_freelancers_not_engineering() -> None:
     assert counts["engineering"] == 1
 
 
+def test_legacy_top_level_family_is_preserved_in_registry_snapshot() -> None:
+    legacy_agent = _agent("legacy-writer", None, ops=["draft"])
+    legacy_agent["specialistFamily"] = "writing"
+
+    snapshot = build_subagent_registry_snapshot([legacy_agent])
+    member = snapshot["members"][0]
+
+    assert member["family"] == "writing"
+    assert member["capabilitySnapshot"]["specialistFamily"] == "writing"
+    counts = {item["familyId"]: item["memberCount"] for item in snapshot["families"]}
+    assert counts["writing"] == 1
+    assert counts["freelancers"] == 0
+
+
 def test_registry_snapshot_hash_changes_when_agent_is_added() -> None:
     first = build_subagent_registry_snapshot([_agent("eng-1", "engineering")])
     second = build_subagent_registry_snapshot([_agent("eng-1", "engineering"), _agent("free-1", None)])
@@ -134,6 +148,18 @@ def test_choose_best_agent_accepts_snapshot_members() -> None:
     assert selected is not None
     assert selected["id"] == "research-1"
     assert diagnostics["targetFamily"] == "research"
+
+
+def test_choose_best_agent_normalizes_freelancers_family_hint() -> None:
+    selected, diagnostics = choose_best_local_agent_with_diagnostics(
+        {"goal": "Need general coordination", "familyHint": "Freelancers", "requiredCapabilities": ["help"]},
+        [_agent("eng-1", "engineering", ops=["implement"]), _agent("free-1", None, ops=["help"])],
+    )
+
+    assert selected is not None
+    assert selected["id"] == "free-1"
+    assert diagnostics["targetFamily"] == "freelancers"
+    assert "familyHint:freelancers" in diagnostics["matchSignals"]
 
 
 def test_request_peer_help_only_records_capability_handoff() -> None:

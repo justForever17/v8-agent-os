@@ -49,6 +49,33 @@ test('desktop traffic lights use centered softened vector glyphs', () => {
   assert.match(styles, /place-items:\s*center/);
 });
 
+test('desktop traffic lights follow Windows action order and reflect maximize state', () => {
+  const controlsSource = fs.readFileSync(
+    path.join(repoRoot, 'packages', 'product-ui', 'src', 'ProductTrafficLightWindowControls.tsx'),
+    'utf8',
+  );
+  const styles = fs.readFileSync(
+    path.join(repoRoot, 'packages', 'product-ui', 'src', 'styles.css'),
+    'utf8',
+  );
+  const minimizeIndex = controlsSource.indexOf('v8-product-traffic-light--minimize');
+  const maximizeIndex = controlsSource.indexOf('v8-product-traffic-light--maximize');
+  const closeIndex = controlsSource.indexOf('v8-product-traffic-light--close');
+
+  assert.ok(minimizeIndex >= 0 && minimizeIndex < maximizeIndex && maximizeIndex < closeIndex);
+  assert.match(controlsSource, /kind=\{isMaximized \? "restore" : "maximize"\}/);
+  assert.match(styles, /traffic-light--minimize \{ background: #28c840; \}/);
+  assert.match(styles, /traffic-light--maximize \{ background: #febc2e; \}/);
+  assert.match(styles, /traffic-light--close \{ background: #ff5f57; \}/);
+
+  const preloadSource = fs.readFileSync(path.join(shellRoot, 'electron', 'preload.cjs'), 'utf8');
+  const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
+  assert.match(preloadSource, /getWindowState/);
+  assert.match(preloadSource, /onWindowStateChange/);
+  assert.match(mainSource, /v8os-shell:get-window-state/);
+  assert.match(mainSource, /mainWindow\.on\('maximize', emitWindowState\)/);
+});
+
 test('electron launcher strips ELECTRON_RUN_AS_NODE before starting child Electron apps', () => {
   const launcherSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'electron-launcher.mjs'), 'utf8');
   assert.match(launcherSource, /delete env\.ELECTRON_RUN_AS_NODE/);

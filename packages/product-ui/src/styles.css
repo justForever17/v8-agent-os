@@ -242,9 +242,9 @@
 
 .v8-product-traffic-light:hover { filter: brightness(0.94) saturate(1.08); }
 .v8-product-traffic-light:focus-visible { outline: none; box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring)); }
+.v8-product-traffic-light--minimize { background: #28c840; }
+.v8-product-traffic-light--maximize { background: #febc2e; }
 .v8-product-traffic-light--close { background: #ff5f57; }
-.v8-product-traffic-light--minimize { background: #febc2e; }
-.v8-product-traffic-light--maximize { background: #28c840; }
 
 .dark .v8-product-traffic-light {
   border-color: rgb(255 255 255 / 0.16);

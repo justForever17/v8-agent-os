@@ -381,7 +381,8 @@
   "web.theme.syncDegraded": "Theme only applies to this page and has not synchronized to this device",
   "web.windowControls.close": "Hide to tray",
   "web.windowControls.minimize": "Minimize",
-  "web.windowControls.maximize": "Maximize or restore",
+  "web.windowControls.maximize": "Maximize",
+  "web.windowControls.restore": "Restore window",
   "web.chat.contextSessionRef": "Previous conversation",
   "web.chat.removeContextSessionRef": "Remove previous conversation reference"
 }

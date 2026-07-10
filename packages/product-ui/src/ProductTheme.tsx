@@ -51,8 +51,13 @@ function ProductThemeSync({
   const [syncState, setSyncState] = useState<ProductThemeSyncState>(initialSyncState);
   const requestSequence = useRef(0);
   const refreshInFlight = useRef<Promise<void> | null>(null);
+  const writeInFlightCount = useRef(0);
+  const setNextThemeRef = useRef(setNextTheme);
+  const refreshThemeRef = useRef<() => Promise<void>>(async () => undefined);
+  setNextThemeRef.current = setNextTheme;
 
   const refreshTheme = useCallback(() => {
+    if (writeInFlightCount.current > 0) return Promise.resolve();
     if (refreshInFlight.current) return refreshInFlight.current;
     const requestId = ++requestSequence.current;
     setSyncState("syncing");
@@ -66,7 +71,7 @@ function ProductThemeSync({
         }
         if (!response.ok) throw new Error(String(payload?.error || `HTTP ${response.status}`));
         if (requestId !== requestSequence.current) return;
-        setNextTheme(normalizeProductTheme(payload?.theme));
+        setNextThemeRef.current(normalizeProductTheme(payload?.theme));
         setSyncState("synced");
       } catch (error) {
         if (requestId !== requestSequence.current) return;
@@ -78,12 +83,14 @@ function ProductThemeSync({
     });
     refreshInFlight.current = request;
     return request;
-  }, [endpoint, setNextTheme]);
+  }, [endpoint]);
+  refreshThemeRef.current = refreshTheme;
 
   const setTheme = useCallback(async (nextTheme: UiTheme) => {
     const normalized = normalizeProductTheme(nextTheme);
     const requestId = ++requestSequence.current;
-    setNextTheme(normalized);
+    writeInFlightCount.current += 1;
+    setNextThemeRef.current(normalized);
     setSyncState("syncing");
     try {
       const response = await fetch(endpoint, {
@@ -94,21 +101,23 @@ function ProductThemeSync({
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(String(payload?.error || `HTTP ${response.status}`));
       if (requestId !== requestSequence.current) return;
-      setNextTheme(normalizeProductTheme(payload?.theme));
+      setNextThemeRef.current(normalizeProductTheme(payload?.theme ?? normalized));
       setSyncState("synced");
     } catch (error) {
       if (requestId !== requestSequence.current) return;
       console.warn("[ProductTheme] Canonical theme write failed", error);
       setSyncState("degraded");
+    } finally {
+      writeInFlightCount.current = Math.max(0, writeInFlightCount.current - 1);
     }
-  }, [endpoint, setNextTheme]);
+  }, [endpoint]);
 
   useEffect(() => {
-    setNextTheme(initialTheme);
-    if (initialSyncState !== "synced") void refreshTheme();
-    const handleFocus = () => void refreshTheme();
+    setNextThemeRef.current(initialTheme);
+    if (initialSyncState !== "synced") void refreshThemeRef.current();
+    const handleFocus = () => void refreshThemeRef.current();
     const handleVisibility = () => {
-      if (document.visibilityState === "visible") void refreshTheme();
+      if (document.visibilityState === "visible") void refreshThemeRef.current();
     };
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibility);
@@ -117,7 +126,10 @@ function ProductThemeSync({
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [initialSyncState, initialTheme, refreshTheme, setNextTheme]);
+    // Initial canonical theme must be applied exactly once. Subsequent updates are
+    // owned by setTheme/refreshTheme and must never be reset to initialTheme.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const value = useMemo<ProductThemeContextValue>(() => ({
     theme: normalizeProductTheme(currentTheme),

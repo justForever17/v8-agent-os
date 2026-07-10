@@ -45,6 +45,15 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
+function currentWindowState() {
+  return { isMaximized: Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()) };
+}
+
+function emitWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('v8os-shell:window-state', currentWindowState());
+}
+
 function loadInMainWindow(url) {
   if (!mainWindow) {
     createMainWindow();
@@ -312,6 +321,9 @@ function createMainWindow() {
     event.preventDefault();
     mainWindow.hide();
   });
+  mainWindow.on('maximize', emitWindowState);
+  mainWindow.on('unmaximize', emitWindowState);
+  mainWindow.on('restore', emitWindowState);
   loadInitialSurface();
 }
 
@@ -326,7 +338,10 @@ ipcMain.on('v8os-shell:toggle-maximize', () => {
   } else {
     mainWindow.maximize();
   }
+  emitWindowState();
 });
+
+ipcMain.handle('v8os-shell:get-window-state', () => currentWindowState());
 
 ipcMain.on('v8os-shell:close', () => {
   mainWindow?.hide();

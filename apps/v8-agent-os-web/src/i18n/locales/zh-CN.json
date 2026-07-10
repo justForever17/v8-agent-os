@@ -381,7 +381,8 @@
   "web.theme.syncDegraded": "主题仅在当前页面生效，尚未同步到本机",
   "web.windowControls.close": "隐藏到托盘",
   "web.windowControls.minimize": "最小化",
-  "web.windowControls.maximize": "最大化或还原",
+  "web.windowControls.maximize": "最大化",
+  "web.windowControls.restore": "还原窗口",
   "web.chat.contextSessionRef": "旧会话引用",
   "web.chat.removeContextSessionRef": "移除旧会话引用"
 }

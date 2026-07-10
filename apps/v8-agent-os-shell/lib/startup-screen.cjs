@@ -41,7 +41,7 @@ function buildStartupHtml(options = {}) {
     .brand-stage {
       display: grid;
       justify-items: center;
-      gap: 42px;
+      gap: 32px;
       padding: 48px;
       -webkit-app-region: drag;
     }
@@ -59,25 +59,26 @@ function buildStartupHtml(options = {}) {
       position: relative;
       display: inline-block;
       white-space: nowrap;
-      font-size: clamp(56px, 10vw, 128px);
+      font-size: clamp(28px, 5vw, 64px);
       line-height: 1.18;
       font-weight: 900;
       letter-spacing: 0;
       background:
-        linear-gradient(180deg, #f8fafc 0%, var(--text-base) 35%, var(--text-mid) 68%, var(--text-dark) 100%),
-        linear-gradient(105deg, transparent 38%, var(--text-shine) 48%, transparent 58%);
-      background-size: 100% 100%, 300% 100%;
-      background-position: 0 0, -170% 0;
+        linear-gradient(105deg, transparent 38%, var(--text-shine) 48%, transparent 58%),
+        linear-gradient(180deg, #f8fafc 0%, var(--text-base) 35%, var(--text-mid) 68%, var(--text-dark) 100%);
+      background-size: 300% 100%, 100% 100%;
+      background-position: -190% 0, 0 0;
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
-      animation: text-shine 2.9s ease-in-out infinite;
+      animation: text-shine 3.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
       text-shadow: 0 22px 58px var(--text-shadow);
       user-select: none;
+      will-change: background-position;
     }
     @keyframes text-shine {
-      0%, 20% { background-position: 0 0, -190% 0; }
-      72%, 100% { background-position: 0 0, 190% 0; }
+      0%, 28% { background-position: -190% 0, 0 0; }
+      72%, 100% { background-position: 190% 0, 0 0; }
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -90,6 +91,13 @@ function buildStartupHtml(options = {}) {
         color: #f8fafc;
       }
       .product-mark { filter: drop-shadow(0 28px 64px rgba(255, 255, 255, 0.12)); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .brand-text {
+        animation: none;
+        background-position: -190% 0, 0 0;
+        will-change: auto;
+      }
     }
   </style>
 </head>

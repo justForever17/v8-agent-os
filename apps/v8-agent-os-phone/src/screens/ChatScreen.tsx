@@ -6920,7 +6920,7 @@ export default function ChatScreen() {
                                     onPress={() => setHistoryOpen(true)}
                                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                 >
-                                    <MaterialCommunityIcons name="history" size={18} color={palette.text} />
+                                    <MaterialCommunityIcons name="folder-multiple-outline" size={18} color={palette.text} />
                                 </Pressable>
                             </Animated.View>
 

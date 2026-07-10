@@ -36,7 +36,6 @@ export default function LoginScreen() {
     const [pairingUri, setPairingUri] = useState("");
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
-    const [manualOpen, setManualOpen] = useState(Platform.OS === "web");
     const [scannerOpen, setScannerOpen] = useState(false);
     const [scanLocked, setScanLocked] = useState(false);
     const attemptedPairingUriRef = useRef("");
@@ -48,7 +47,6 @@ export default function LoginScreen() {
         const nextPairingUri = String(rawPairingUri || "").trim();
         if (!nextPairingUri.includes("://pair?")) {
             attemptedPairingUriRef.current = "";
-            if (options?.revealManualOnError) setManualOpen(true);
             setError(t("app.login.invalid_pairing_link"));
             return;
         }
@@ -62,8 +60,7 @@ export default function LoginScreen() {
             await pairDevice({ pairingUri: nextPairingUri });
         } catch (nextError) {
             attemptedPairingUriRef.current = "";
-            if (options?.revealManualOnError) {
-                setManualOpen(true);
+            if (options?.revealManualOnError && Platform.OS === "web") {
                 setPairingUri(nextPairingUri);
             }
             setError(
@@ -81,7 +78,7 @@ export default function LoginScreen() {
         if (!nextPairingUri.includes("://pair?")) {
             return;
         }
-        void connectWithPairingUri(nextPairingUri, { revealManualOnError: true });
+        void connectWithPairingUri(nextPairingUri, { revealManualOnError: Platform.OS === "web" });
     }, [connectWithPairingUri, incomingUrl, pairingUriParam]);
 
     if (status === "authenticated") {
@@ -132,7 +129,7 @@ export default function LoginScreen() {
             setError(t("app.login.invalid_pairing_link"));
             return;
         }
-        void connectWithPairingUri(nextPairingUri, { revealManualOnError: true });
+        void connectWithPairingUri(nextPairingUri, { revealManualOnError: Platform.OS === "web" });
     };
 
     return (
@@ -158,29 +155,24 @@ export default function LoginScreen() {
                             <LocaleMenu variant="default" />
                         </View>
                         <Text style={styles.title}>{pageTitle}</Text>
-                        <Text style={styles.subtitle}>{pageSubtitle}</Text>
+                        {Platform.OS === "web" ? <Text style={styles.subtitle}>{pageSubtitle}</Text> : null}
                     </View>
 
                     <GlassCard>
                         <View style={styles.form}>
-                            <View style={styles.quickActions}>
-                                {Platform.OS === "web" ? null : (
-                                    <Pressable disabled={busy} style={[styles.scanPrimary, busy && styles.disabled]} onPress={() => void openScanner()}>
-                                        <MaterialCommunityIcons name="qrcode-scan" size={18} color="#FFFFFF" />
-                                        <Text style={styles.scanPrimaryText}>{t("app.login.scan_pairing_qr")}</Text>
-                                    </Pressable>
-                                )}
-                                <Pressable disabled={busy} style={styles.manualToggle} onPress={() => setManualOpen((value) => !value)}>
-                                    <Text style={styles.manualToggleText}>{t("app.login.manual_pairing_link")}</Text>
+                            {Platform.OS === "web" ? null : (
+                                <Pressable disabled={busy} style={[styles.scanPrimary, busy && styles.disabled]} onPress={() => void openScanner()}>
+                                    <MaterialCommunityIcons name="qrcode-scan" size={20} color="#FFFFFF" />
+                                    <Text style={styles.scanPrimaryText}>{t("app.login.scan_pairing_qr")}</Text>
                                 </Pressable>
-                            </View>
+                            )}
                             {busy ? (
                                 <View style={styles.statusRow}>
                                     <ActivityIndicator color={colors.primaryDeep} />
                                     <Text style={styles.statusText}>{t("app.login.connecting")}</Text>
                                 </View>
                             ) : null}
-                            {manualOpen ? (
+                            {Platform.OS === "web" ? (
                                 <View style={styles.field}>
                                     <Text style={styles.label}>{t("app.login.pairing_link")}</Text>
                                     <TextInput
@@ -207,7 +199,7 @@ export default function LoginScreen() {
                                 </View>
                             ) : null}
 
-                            {manualOpen ? (
+                            {Platform.OS === "web" ? (
                                 <Pressable disabled={busy} onPress={() => void submit()} style={[styles.submit, busy && styles.disabled]}>
                                     <LinearGradient
                                         colors={[colors.primary, colors.primaryDeep]}
@@ -239,8 +231,6 @@ export default function LoginScreen() {
                         />
                         <View style={styles.scannerShade}>
                             <View style={styles.scannerFrame} />
-                            <Text style={styles.scannerTitle}>{t("app.login.scan_pairing_qr_title")}</Text>
-                            <Text style={styles.scannerHint}>{t("app.login.point_camera_at_pairing_qr")}</Text>
                             <Pressable style={styles.scannerCancel} onPress={() => setScannerOpen(false)}>
                                 <Text style={styles.scannerCancelText}>{t("app.login.cancel_scan")}</Text>
                             </Pressable>
@@ -307,14 +297,8 @@ const styles = StyleSheet.create({
     form: {
         gap: spacing.lg,
     },
-    quickActions: {
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 10,
-        flexWrap: "wrap",
-    },
     scanPrimary: {
-        minHeight: 44,
+        minHeight: 56,
         borderRadius: radii.pill,
         paddingHorizontal: 18,
         backgroundColor: colors.primaryDeep,
@@ -327,21 +311,6 @@ const styles = StyleSheet.create({
     scanPrimaryText: {
         color: "#FFFFFF",
         fontSize: 14,
-        fontWeight: "900",
-    },
-    manualToggle: {
-        minHeight: 44,
-        borderRadius: radii.pill,
-        borderWidth: 1,
-        borderColor: "rgba(124,58,237,0.18)",
-        backgroundColor: "rgba(255,255,255,0.7)",
-        paddingHorizontal: 16,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    manualToggleText: {
-        color: colors.primaryDeep,
-        fontSize: 13,
         fontWeight: "900",
     },
     statusRow: {
@@ -479,19 +448,6 @@ const styles = StyleSheet.create({
         borderWidth: 3,
         borderColor: "rgba(255,255,255,0.92)",
         backgroundColor: "rgba(255,255,255,0.02)",
-    },
-    scannerTitle: {
-        marginTop: spacing.xl,
-        color: "#FFFFFF",
-        fontSize: 20,
-        fontWeight: "900",
-    },
-    scannerHint: {
-        marginTop: 8,
-        color: "rgba(255,255,255,0.78)",
-        fontSize: 13,
-        textAlign: "center",
-        lineHeight: 20,
     },
     scannerCancel: {
         marginTop: spacing.xl,

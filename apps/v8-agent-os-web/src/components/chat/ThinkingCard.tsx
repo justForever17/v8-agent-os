@@ -1,7 +1,8 @@
-import { ChevronDown, Atom } from "lucide-react";
+import { ChevronDown, Atom, CircleAlert } from "lucide-react";
 import { useState, memo, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
+import { useT } from "@/components/providers/LocaleProvider";
 
 interface ThinkingCardProps {
     content: string;
@@ -23,6 +24,7 @@ export const ThinkingCard = memo(({
     reasoningSurface,
     data
 }: ThinkingCardProps) => {
+    const t = useT();
     const [isExpanded, setIsExpanded] = useState(false);
     const [currentElapsedTime, setCurrentElapsedTime] = useState(elapsedTime || 0);
     const hasAutoExpanded = useRef(false);
@@ -83,7 +85,9 @@ export const ThinkingCard = memo(({
         return `${(ms / 1000).toFixed(1)}s`;
     };
     const normalizedReasoningKind = String(reasoningKind || "").trim().toLowerCase();
-    const title = normalizedReasoningKind.includes("summary") ? "推理摘要" : "reasoning";
+    const title = normalizedReasoningKind.includes("summary")
+        ? t("web.thinkingCard.reasoningSummary")
+        : t("web.thinkingCard.reasoning");
     const isUnverified = Boolean(reasoningSurface?.unverified)
         || String(reasoningSurface?.trust || "").trim().toLowerCase() === "unverified";
     const shouldFadeContent = content.length > 900;
@@ -122,15 +126,17 @@ export const ThinkingCard = memo(({
 
                         {/* Title and Time */}
                         <span className={cn(
-                            "text-[11px] font-semibold tracking-wide transition-colors truncate",
-                            isExpanded
-                                ? "text-foreground"
-                                : isUnverified
-                                    ? "text-rose-600/70 dark:text-rose-300/70"
-                                    : "text-muted-foreground group-hover:text-foreground"
+                            "truncate text-[11px] font-semibold tracking-wide text-foreground transition-colors"
                         )}>
                             {title}
                         </span>
+
+                        {isUnverified ? (
+                            <CircleAlert
+                                className="h-3 w-3 shrink-0 text-muted-foreground"
+                                aria-label={t("web.thinkingCard.unverified")}
+                            />
+                        ) : null}
 
                         {isStreaming ? (
                             <span className="text-violet-500 dark:text-violet-400 font-mono text-[10px] tabular-nums opacity-90">

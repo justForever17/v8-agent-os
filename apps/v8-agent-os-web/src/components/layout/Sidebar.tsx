@@ -32,7 +32,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/lib/conversation-groups";
 
 export function Sidebar() {
-    const { conversations, deleteConversation, clearConversations } = useConversationContext();
+    const { conversations, createConversation, deleteConversation } = useConversationContext();
     const router = useRouter();
     const searchParams = useSearchParams();
     const currentId = searchParams.get("id");
@@ -41,7 +41,8 @@ export function Sidebar() {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [isMobileOpen, setIsMobileOpen] = useState(false);
     const [deleteId, setDeleteId] = useState<string | null>(null);
-    const [isClearing, setIsClearing] = useState(false);
+    const [creatingGroupKey, setCreatingGroupKey] = useState<string | null>(null);
+    const [createError, setCreateError] = useState("");
     const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
     const [copiedSessionId, setCopiedSessionId] = useState<string | null>(null);
 
@@ -127,10 +128,20 @@ export function Sidebar() {
         setDeleteId(null);
     };
 
-    const confirmClear = async () => {
-        await clearConversations();
-        router.push("/chat");
-        setIsClearing(false);
+    const createConversationInGroup = async (event: MouseEvent<HTMLButtonElement>, group: ConversationWorkspaceGroup) => {
+        event.stopPropagation();
+        if (!group.creationBinding || creatingGroupKey) return;
+        setCreatingGroupKey(group.key);
+        setCreateError("");
+        const created = await createConversation(group.creationBinding);
+        setCreatingGroupKey(null);
+        if (!created) {
+            setCreateError(t("web.sidebar.createConversationFailed"));
+            return;
+        }
+        const sessionId = created.sessionId || created.id;
+        setIsMobileOpen(false);
+        router.push(`/chat?id=${encodeURIComponent(sessionId)}`);
     };
 
     const renderGroup = (group: ConversationWorkspaceGroup, collapsed: boolean, index: number) => {
@@ -151,7 +162,18 @@ export function Sidebar() {
                             <ChevronRight className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
                         )}
                         <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</span>
-                        <span className="ml-auto rounded-full bg-accent/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">{items.length}</span>
+                        {group.creationBinding ? (
+                            <button
+                                type="button"
+                                className="ml-auto inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60"
+                                onClick={(event) => void createConversationInGroup(event, group)}
+                                disabled={Boolean(creatingGroupKey)}
+                                aria-label={t("web.sidebar.createInWorkspace", { value0: group.label })}
+                                title={t("web.sidebar.createInWorkspace", { value0: group.label })}
+                            >
+                                {creatingGroupKey === group.key ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                            </button>
+                        ) : null}
                     </div>
                 )}
 
@@ -252,21 +274,16 @@ export function Sidebar() {
             <ScrollArea className="flex-1 w-full px-3 [&>[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-scrollbar]]:hidden">
                 <div className="w-full max-w-full space-y-1 py-2">
                     {!collapsed && (
-                        <div className="animate-in fade-in mb-3 flex items-center justify-between px-3 duration-500">
+                        <div className="animate-in fade-in mb-3 flex items-center px-3 duration-500">
                             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">{t("web.generated.59a644a102")}</p>
-                            {conversations.length > 0 && (
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-5 w-5 text-muted-foreground transition-colors hover:text-destructive"
-                                    onClick={() => setIsClearing(true)}
-                                    title={t("web.generated.2d356aee49")}
-                                >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
-                            )}
                         </div>
                     )}
+
+                    {!collapsed && createError ? (
+                        <div role="alert" className="mx-3 mb-2 rounded-lg border border-destructive/25 bg-destructive/8 px-2.5 py-2 text-xs text-destructive">
+                            {createError}
+                        </div>
+                    ) : null}
 
                     {conversations.length === 0 ? (
                         !collapsed && (
@@ -384,18 +401,6 @@ export function Sidebar() {
                 </DialogContent>
             </Dialog>
 
-            <Dialog open={isClearing} onOpenChange={setIsClearing}>
-                <DialogContent className="glass-card border-none sm:max-w-[425px]">
-                    <DialogHeader>
-                        <DialogTitle>{t("web.generated.cb547f1f49")}</DialogTitle>
-                        <DialogDescription>{t("web.generated.5b99063251")}</DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
-                        <Button variant="ghost" onClick={() => setIsClearing(false)}>{t("web.generated.d94a8eaf28")}</Button>
-                        <Button variant="destructive" onClick={confirmClear}>{t("web.generated.22fdb44dd7")}</Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
         </>
     );
 }

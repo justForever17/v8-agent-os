@@ -372,6 +372,16 @@
   "web.sidebar.copiedSessionId": "已复制会话 ID",
   "web.sidebar.deleteConversation": "删除会话",
   "web.sidebar.continueInNewSession": "在新会话中继续",
+  "web.sidebar.createInWorkspace": "在 {value0} 中新建会话",
+  "web.sidebar.createConversationFailed": "无法在该工作区新建会话，请稍后重试。",
+  "web.thinkingCard.reasoning": "reasoning",
+  "web.thinkingCard.reasoningSummary": "推理摘要",
+  "web.thinkingCard.unverified": "未验证推理",
+  "web.theme.toggle": "切换明暗主题",
+  "web.theme.syncDegraded": "主题仅在当前页面生效，尚未同步到本机",
+  "web.windowControls.close": "隐藏到托盘",
+  "web.windowControls.minimize": "最小化",
+  "web.windowControls.maximize": "最大化或还原",
   "web.chat.contextSessionRef": "旧会话引用",
   "web.chat.removeContextSessionRef": "移除旧会话引用"
 }

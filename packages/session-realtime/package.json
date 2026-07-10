@@ -1,7 +1,7 @@
 {
   "name": "@v8/session-realtime",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,6 +16,7 @@
     "verify:episode-graph": "npm run build && node scripts/verify-runtime-episode-graph.mjs",
     "verify:micro-stage": "npm run build && node scripts/verify-collaboration-micro-stage.mjs",
     "verify:message-bound-execution": "npm run build && node scripts/verify-message-bound-execution-node.mjs",
+    "verify:history": "npm run build && node scripts/verify-history-grouping.mjs",
     "verify:resources": "npm run build && node scripts/verify-admin-resource-url.mjs"
   },
   "exports": {

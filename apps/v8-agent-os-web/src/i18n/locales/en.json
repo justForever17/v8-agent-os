@@ -372,6 +372,16 @@
   "web.sidebar.copiedSessionId": "Session ID copied",
   "web.sidebar.deleteConversation": "Delete conversation",
   "web.sidebar.continueInNewSession": "Continue in new conversation",
+  "web.sidebar.createInWorkspace": "Create a conversation in {value0}",
+  "web.sidebar.createConversationFailed": "Unable to create a conversation in this workspace. Please try again.",
+  "web.thinkingCard.reasoning": "reasoning",
+  "web.thinkingCard.reasoningSummary": "Reasoning summary",
+  "web.thinkingCard.unverified": "Unverified reasoning",
+  "web.theme.toggle": "Toggle light or dark theme",
+  "web.theme.syncDegraded": "Theme only applies to this page and has not synchronized to this device",
+  "web.windowControls.close": "Hide to tray",
+  "web.windowControls.minimize": "Minimize",
+  "web.windowControls.maximize": "Maximize or restore",
   "web.chat.contextSessionRef": "Previous conversation",
   "web.chat.removeContextSessionRef": "Remove previous conversation reference"
 }

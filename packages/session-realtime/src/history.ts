@@ -34,6 +34,12 @@ export type AuthoritativeSessionHistoryRecord = {
   id: string;
   sessionId?: string;
   title: string;
+  projectId?: string;
+  workspaceId?: string;
+  workspacePath?: string;
+  scopeHint?: string;
+  scopeMode?: string;
+  resolvedScope?: string;
   source?: string;
   sourceGroup: SessionHistorySourceGroup;
   runtimeOwner?: string;
@@ -73,6 +79,29 @@ export type AuthoritativeSessionHistoryRecord = {
   accountId?: string;
   chatType?: string;
   defaultAccount?: string;
+};
+
+export type SessionHistoryCreationBinding = {
+  projectId?: string;
+  workspaceId?: string;
+  workspacePath?: string;
+  scopeHint?: string;
+  scopeMode: "explicit";
+};
+
+export type SessionHistoryWorkspaceGroupLabels = {
+  mainWorkspace: string;
+  externalWorkspace: string;
+  unbound: string;
+  workspace: string;
+};
+
+export type SessionHistoryWorkspaceGroup<T extends AuthoritativeSessionHistoryRecord = AuthoritativeSessionHistoryRecord> = {
+  key: string;
+  label: string;
+  kind: "project" | "workspace" | "unbound";
+  items: T[];
+  creationBinding: SessionHistoryCreationBinding | null;
 };
 
 export type SessionHistoryLedgerEntry = {
@@ -213,6 +242,14 @@ function sortHistoryItems(items: AuthoritativeSessionHistoryRecord[]) {
   });
 }
 
+function readBindingString(record: Record<string, unknown>, parsedMetadata: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const normalized = coerceString(record[key]) || coerceString(parsedMetadata[key]);
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
 function shouldHideHistoryRecord(item: AuthoritativeSessionHistoryRecord): boolean {
   const metadata = item.parsedMetadata || {};
   if (
@@ -260,6 +297,12 @@ export function normalizeAuthoritativeSessionHistoryRecord(raw: unknown): Author
     id: canonicalSessionId,
     sessionId: canonicalSessionId,
     title: coerceString(record.title) || "新对话",
+    projectId: readBindingString(record, parsedMetadata, "projectId", "project_id"),
+    workspaceId: readBindingString(record, parsedMetadata, "workspaceId", "workspace_id"),
+    workspacePath: readBindingString(record, parsedMetadata, "workspacePath", "workspace_path"),
+    scopeHint: readBindingString(record, parsedMetadata, "scopeHint", "scope_hint"),
+    scopeMode: readBindingString(record, parsedMetadata, "scopeMode", "scope_mode"),
+    resolvedScope: readBindingString(record, parsedMetadata, "resolvedScope", "resolved_scope"),
     source: coerceString(record.source),
     sourceGroup,
     runtimeOwner: coerceString(record.runtimeOwner) || coerceString(record.ownerRuntime),
@@ -338,4 +381,103 @@ export function sortAuthoritativeSessionHistory(
   items: AuthoritativeSessionHistoryRecord[],
 ): AuthoritativeSessionHistoryRecord[] {
   return sortHistoryItems(items);
+}
+
+function normalizePathKey(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+}
+
+function basenameFromPath(value: string): string {
+  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.split("/").filter(Boolean).pop() || normalized;
+}
+
+function labelFromProjectId(value: string): string {
+  return value.replace(/^project:/i, "").trim() || value;
+}
+
+function explicitCreationBinding(item: AuthoritativeSessionHistoryRecord): SessionHistoryCreationBinding | null {
+  if (!item.projectId && !item.workspaceId && !item.workspacePath) {
+    return null;
+  }
+  return {
+    ...(item.projectId ? { projectId: item.projectId } : {}),
+    ...(item.workspaceId ? { workspaceId: item.workspaceId } : {}),
+    ...(item.workspacePath ? { workspacePath: item.workspacePath } : {}),
+    ...(item.scopeHint ? { scopeHint: item.scopeHint } : {}),
+    scopeMode: "explicit",
+  };
+}
+
+function workspaceGroupIdentity(
+  item: AuthoritativeSessionHistoryRecord,
+  labels: SessionHistoryWorkspaceGroupLabels,
+): Omit<SessionHistoryWorkspaceGroup, "items"> {
+  const scopeTag = item.scopeTags
+    .map((tag) => String(tag || "").trim())
+    .find((tag) => tag.startsWith("project:") || tag.startsWith("workspace:")) || "";
+  const scope = item.resolvedScope || scopeTag;
+  const creationBinding = explicitCreationBinding(item);
+
+  if (item.projectId || scope.startsWith("project:")) {
+    const id = item.projectId || scope;
+    return {
+      key: `project:${id}`,
+      label: labelFromProjectId(id),
+      kind: "project",
+      creationBinding: item.projectId ? creationBinding : null,
+    };
+  }
+
+  if (item.workspacePath) {
+    const key = normalizePathKey(item.workspacePath);
+    const fallback = scope.startsWith("workspace:external:") ? labels.externalWorkspace : labels.workspace;
+    return {
+      key: `workspace:path:${key}`,
+      label: scope === "workspace:main" ? labels.mainWorkspace : basenameFromPath(item.workspacePath) || fallback,
+      kind: "workspace",
+      creationBinding,
+    };
+  }
+
+  if (item.workspaceId || scope.startsWith("workspace:")) {
+    const id = item.workspaceId || scope.replace(/^workspace:/i, "");
+    return {
+      key: `workspace:${id || scope}`,
+      label: id === "main" || scope === "workspace:main" ? labels.mainWorkspace : id || labels.workspace,
+      kind: "workspace",
+      creationBinding: item.workspaceId ? creationBinding : null,
+    };
+  }
+
+  return {
+    key: "unbound",
+    label: labels.unbound,
+    kind: "unbound",
+    creationBinding: null,
+  };
+}
+
+export function groupSessionHistoryByWorkspace<T extends AuthoritativeSessionHistoryRecord>(
+  items: T[],
+  labels: SessionHistoryWorkspaceGroupLabels,
+): SessionHistoryWorkspaceGroup<T>[] {
+  const groups = new Map<string, SessionHistoryWorkspaceGroup<T>>();
+  for (const item of items) {
+    const identity = workspaceGroupIdentity(item, labels);
+    const existing = groups.get(identity.key);
+    if (existing) {
+      existing.items.push(item);
+      if (!existing.creationBinding && identity.creationBinding) {
+        existing.creationBinding = identity.creationBinding;
+      }
+    } else {
+      groups.set(identity.key, { ...identity, items: [item] });
+    }
+  }
+  return Array.from(groups.values()).sort((left, right) => {
+    const leftTime = left.items[0]?.historySortAt || left.items[0]?.createdAt || "";
+    const rightTime = right.items[0]?.historySortAt || right.items[0]?.createdAt || "";
+    return rightTime.localeCompare(leftTime);
+  });
 }

@@ -123,11 +123,7 @@ export const ThinkingCard = memo(function ThinkingCard({
     const isUnverified = Boolean(reasoningSurface?.unverified)
         || String(reasoningSurface?.trust || "").trim().toLowerCase() === "unverified";
     const shouldFadeContent = content.length > 420;
-    const titleColor = isExpanded
-        ? colors.text
-        : isUnverified
-            ? (themeMode === "dark" ? "rgba(248,113,113,0.72)" : "rgba(185,28,28,0.68)")
-            : colors.textMuted;
+    const titleColor = colors.text;
 
     const wrapperBackground = isExpanded
         ? (themeMode === "dark" ? "rgba(15,23,42,0.38)" : "rgba(255,255,255,0.50)")
@@ -178,6 +174,15 @@ export const ThinkingCard = memo(function ThinkingCard({
                         >
                             {title}
                         </Text>
+
+                        {isUnverified ? (
+                            <MaterialCommunityIcons
+                                name="alert-circle-outline"
+                                size={13}
+                                color={colors.textSoft}
+                                accessibilityLabel={t("src.components.chat.thinkingcard.unverified")}
+                            />
+                        ) : null}
 
                         {isStreaming ? (
                             <Text style={[styles.time, { color: colors.primary }]}>

@@ -191,16 +191,6 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                     </Animated.View>
                 </Pressable>
 
-                {toolInvocation.clientSurface?.summary && !toolInvocation.clientSurface.summary.startsWith("{") && !toolInvocation.clientSurface.summary.startsWith("[") ? (
-                    <Text
-                        style={[styles.summary, { color: colors.textMuted }]}
-                        numberOfLines={2}
-                        ellipsizeMode="tail"
-                    >
-                        {toolInvocation.clientSurface.summary}
-                    </Text>
-                ) : null}
-
                 {isExpanded ? (
                     <Animated.View
                         style={[
@@ -211,6 +201,11 @@ export const ToolCard = memo(function ToolCard({ toolInvocation, hideResult }: T
                             },
                         ]}
                     >
+                        {toolInvocation.clientSurface?.summary && !toolInvocation.clientSurface.summary.startsWith("{") && !toolInvocation.clientSurface.summary.startsWith("[") ? (
+                            <Text style={[styles.summary, { color: colors.textMuted }]}>
+                                {toolInvocation.clientSurface.summary}
+                            </Text>
+                        ) : null}
                         <View style={styles.section}>
                             <Text style={[styles.sectionLabel, { color: colors.textSoft }]}>
                                 {t("src.components.chat.toolcard.input")}

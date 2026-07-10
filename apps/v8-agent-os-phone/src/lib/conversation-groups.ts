@@ -1,15 +1,14 @@
 import type { ConversationSummary } from "@/src/types/admin";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import { createTranslator, type TranslationKey } from "@/src/lib/locale";
+import {
+    groupSessionHistoryByWorkspace,
+    type SessionHistoryWorkspaceGroup,
+} from "@v8/session-realtime";
 
 export type ConversationGroupKey = "channels" | "cron" | "hooks" | "web";
 export type ConversationActivityState = "active" | "failed" | null;
-export type ConversationWorkspaceGroup = {
-    key: string;
-    label: string;
-    kind: "project" | "workspace" | "unbound";
-    items: ConversationSummary[];
-};
+export type ConversationWorkspaceGroup = SessionHistoryWorkspaceGroup<ConversationSummary>;
 
 export const conversationGroupOrder: ConversationGroupKey[] = [
     "channels",
@@ -49,99 +48,13 @@ export function groupConversations(items: ConversationSummary[]) {
     return grouped;
 }
 
-function readMetadata(item: ConversationSummary): Record<string, unknown> {
-    if (item.parsedMetadata && typeof item.parsedMetadata === "object" && !Array.isArray(item.parsedMetadata)) {
-        return item.parsedMetadata as Record<string, unknown>;
-    }
-    if (item.metadata && typeof item.metadata === "object" && !Array.isArray(item.metadata)) {
-        return item.metadata as Record<string, unknown>;
-    }
-    if (typeof item.metadata === "string") {
-        try {
-            const parsed = JSON.parse(item.metadata);
-            return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-        } catch {
-            return {};
-        }
-    }
-    return {};
-}
-
-function readString(item: ConversationSummary, keys: string[]): string {
-    const record = item as unknown as Record<string, unknown>;
-    const metadata = readMetadata(item);
-    for (const key of keys) {
-        const value = record[key] ?? metadata[key];
-        const normalized = String(value || "").trim();
-        if (normalized) return normalized;
-    }
-    return "";
-}
-
-function normalizePathKey(value: string): string {
-    return value.trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
-}
-
-function basenameFromPath(value: string): string {
-    const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/g, "");
-    return normalized.split("/").filter(Boolean).pop() || normalized;
-}
-
-function labelFromProjectId(value: string): string {
-    return value.replace(/^project:/i, "").trim() || value;
-}
-
-function workspaceGroupIdentity(item: ConversationSummary, locale: LocaleCode): Omit<ConversationWorkspaceGroup, "items"> {
-    const t = createTranslator(locale);
-    const projectId = readString(item, ["projectId", "project_id"]);
-    const workspacePath = readString(item, ["workspacePath", "workspace_path"]);
-    const workspaceId = readString(item, ["workspaceId", "workspace_id"]);
-    const resolvedScope = readString(item, ["resolvedScope", "resolved_scope"]);
-    const scopeTag = (Array.isArray(item.scopeTags) ? item.scopeTags : [])
-        .map((tag) => String(tag || "").trim())
-        .find((tag) => tag.startsWith("project:") || tag.startsWith("workspace:")) || "";
-    const scope = resolvedScope || scopeTag;
-
-    if (projectId || scope.startsWith("project:")) {
-        const id = projectId || scope;
-        return { key: `project:${id}`, label: labelFromProjectId(id), kind: "project" };
-    }
-
-    if (workspacePath) {
-        const key = normalizePathKey(workspacePath);
-        if (scope === "workspace:main") {
-            return { key: `workspace:path:${key}`, label: t("shared.history.workspace.main"), kind: "workspace" };
-        }
-        const fallback = scope.startsWith("workspace:external:")
-            ? t("shared.history.workspace.external")
-            : t("shared.history.workspace.generic");
-        return { key: `workspace:path:${key}`, label: basenameFromPath(workspacePath) || fallback, kind: "workspace" };
-    }
-
-    if (workspaceId || scope.startsWith("workspace:")) {
-        const id = workspaceId || scope.replace(/^workspace:/i, "");
-        const label = id === "main" || scope === "workspace:main" ? t("shared.history.workspace.main") : id || t("shared.history.workspace.generic");
-        return { key: `workspace:${id || scope}`, label, kind: "workspace" };
-    }
-
-    return { key: "unbound", label: t("shared.history.workspace.unbound"), kind: "unbound" };
-}
-
 export function groupConversationsByWorkspace(items: ConversationSummary[], locale: LocaleCode = "zh-CN"): ConversationWorkspaceGroup[] {
-    const groups = new Map<string, ConversationWorkspaceGroup>();
-    for (const item of items) {
-        const identity = workspaceGroupIdentity(item, locale);
-        const existing = groups.get(identity.key);
-        if (existing) {
-            existing.items.push(item);
-        } else {
-            groups.set(identity.key, { ...identity, items: [item] });
-        }
-    }
-    return Array.from(groups.values()).sort((left, right) => {
-        const leftTime = left.items[0]?.historySortAt || left.items[0]?.createdAt || "";
-        const rightTime = right.items[0]?.historySortAt || right.items[0]?.createdAt || "";
-        return rightTime.localeCompare(leftTime);
+    const t = createTranslator(locale);
+    return groupSessionHistoryByWorkspace(items, {
+        mainWorkspace: t("shared.history.workspace.main"),
+        externalWorkspace: t("shared.history.workspace.external"),
+        unbound: t("shared.history.workspace.unbound"),
+        workspace: t("shared.history.workspace.generic"),
     });
 }
 

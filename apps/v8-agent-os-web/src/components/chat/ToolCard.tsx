@@ -129,12 +129,6 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                     </motion.div>
                 </div>
 
-                {toolInvocation.clientSurface?.summary ? (
-                    <div className="px-2.5 pb-1 text-[11px] leading-4 text-muted-foreground">
-                        {toolInvocation.clientSurface.summary}
-                    </div>
-                ) : null}
-
                 {/* Expanded Content with Framer Motion AnimatePresence */}
                 <AnimatePresence initial={false}>
                     {isExpanded && (
@@ -146,6 +140,11 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                             className="overflow-hidden"
                         >
                             <div className="space-y-2 px-2.5 pb-2.5 pt-0.5">
+                                {toolInvocation.clientSurface?.summary ? (
+                                    <div className="rounded border border-border/60 bg-muted/40 px-2 py-1.5 text-[11px] leading-4 text-muted-foreground">
+                                        {toolInvocation.clientSurface.summary}
+                                    </div>
+                                ) : null}
                                 {/* Arguments */}
                                 <div>
                                     <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">输入</div>

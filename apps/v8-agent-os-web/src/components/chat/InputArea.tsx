@@ -9,6 +9,12 @@ import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, Chec
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // --- Helper Component: VideoThumbnail ---
 function VideoThumbnail({ url, uploading, onRemove, onClick }: { url: string, uploading: boolean, onRemove: () => void, onClick: () => void }) {
@@ -1245,55 +1251,56 @@ export function InputArea({
                         >
                             <Orbit className={cn("h-4 w-4", taskPlanningMode && "animate-[spin_1.6s_linear_infinite]")} />
                         </Button>
-                        <div className="relative">
-                            <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => setSafetyApprovalModeOpen((current) => !current)}
-                                aria-label={activeSafetyApprovalOption.title}
-                                title={activeSafetyApprovalOption.title}
-                                className={cn(
-                                    "h-[28px] w-[28px] rounded-lg transition-colors",
-                                    safetyApprovalMode === "manual"
-                                        ? "text-rose-500 hover:bg-rose-500/10"
-                                        : safetyApprovalMode === "minimal"
-                                            ? "text-emerald-500 hover:bg-emerald-500/10"
-                                            : "text-amber-500 hover:bg-amber-500/10"
-                                )}
+                        <DropdownMenu open={safetyApprovalModeOpen} onOpenChange={setSafetyApprovalModeOpen}>
+                            <DropdownMenuTrigger asChild>
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label={activeSafetyApprovalOption.title}
+                                    title={activeSafetyApprovalOption.title}
+                                    className={cn(
+                                        "h-[28px] w-[28px] rounded-lg transition-colors",
+                                        safetyApprovalMode === "manual"
+                                            ? "text-rose-500 hover:bg-rose-500/10"
+                                            : safetyApprovalMode === "minimal"
+                                                ? "text-emerald-500 hover:bg-emerald-500/10"
+                                                : "text-amber-500 hover:bg-amber-500/10"
+                                    )}
+                                >
+                                    <SafetyApprovalIcon className="h-4 w-4" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                                side="top"
+                                align="start"
+                                sideOffset={8}
+                                collisionPadding={12}
+                                className="z-[90] max-h-[min(50vh,360px)] w-72 overflow-y-auto rounded-2xl border-zinc-200/70 bg-white/95 p-1.5 shadow-[0_14px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-zinc-700/70 dark:bg-zinc-950/95"
                             >
-                                <SafetyApprovalIcon className="h-4 w-4" />
-                            </Button>
-                            {safetyApprovalModeOpen ? (
-                                <div className="absolute bottom-full left-0 z-30 mb-2 w-72 overflow-hidden rounded-2xl border border-zinc-200/70 bg-white/95 p-1.5 shadow-[0_14px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-zinc-700/70 dark:bg-zinc-950/95">
-                                    {safetyApprovalOptions.map((option) => {
-                                        const active = option.mode === safetyApprovalMode;
-                                        return (
-                                            <button
-                                                key={option.mode}
-                                                type="button"
-                                                onClick={() => {
-                                                    setSafetyApprovalMode(option.mode);
-                                                    setSafetyApprovalModeOpen(false);
-                                                }}
-                                                className={cn(
-                                                    "flex w-full items-start gap-2 rounded-xl px-2.5 py-2 text-left transition",
-                                                    active
-                                                        ? "bg-amber-500/10 text-amber-800 dark:bg-amber-400/12 dark:text-amber-100"
-                                                        : "text-zinc-600 hover:bg-zinc-100/80 dark:text-zinc-300 dark:hover:bg-zinc-800/80"
-                                                )}
-                                            >
-                                                <Shield className={cn("mt-0.5 h-4 w-4 shrink-0", active ? "text-amber-500" : "text-muted-foreground")} />
-                                                <span className="min-w-0 flex-1">
-                                                    <span className="block text-[12px] font-semibold">{option.title}</span>
-                                                    <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{option.description}</span>
-                                                </span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            ) : null}
-                        </div>
+                                {safetyApprovalOptions.map((option) => {
+                                    const active = option.mode === safetyApprovalMode;
+                                    return (
+                                        <DropdownMenuItem
+                                            key={option.mode}
+                                            onSelect={() => setSafetyApprovalMode(option.mode)}
+                                            className={cn(
+                                                "cursor-pointer items-start gap-2 rounded-xl px-2.5 py-2 text-left",
+                                                active
+                                                    ? "bg-amber-500/10 text-amber-800 focus:bg-amber-500/15 dark:bg-amber-400/12 dark:text-amber-100"
+                                                    : "text-zinc-600 focus:bg-zinc-100/80 dark:text-zinc-300 dark:focus:bg-zinc-800/80"
+                                            )}
+                                        >
+                                            <Shield className={cn("mt-0.5 h-4 w-4 shrink-0", active ? "text-amber-500" : "text-muted-foreground")} />
+                                            <span className="min-w-0 flex-1">
+                                                <span className="block text-[12px] font-semibold">{option.title}</span>
+                                                <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">{option.description}</span>
+                                            </span>
+                                        </DropdownMenuItem>
+                                    );
+                                })}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
                         {reasoningEffortVisible ? (
                             <div className="relative">
                                 <button

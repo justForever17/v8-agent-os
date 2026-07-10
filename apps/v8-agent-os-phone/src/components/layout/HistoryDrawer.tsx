@@ -22,6 +22,8 @@ export function HistoryDrawer({
     onSelectConversation,
     onContinueConversation,
     onNewConversation,
+    onCreateConversationInGroup,
+    creatingGroupKey,
     onDeleteConversation,
 }: {
     visible: boolean;
@@ -33,6 +35,8 @@ export function HistoryDrawer({
     onSelectConversation: (item: ConversationSummary) => void;
     onContinueConversation: (item: ConversationSummary) => void;
     onNewConversation: () => void;
+    onCreateConversationInGroup: (group: ConversationWorkspaceGroup) => void;
+    creatingGroupKey?: string | null;
     onDeleteConversation: (item: ConversationSummary) => void;
 }) {
     const insets = useSafeAreaInsets();
@@ -134,20 +138,37 @@ export function HistoryDrawer({
                                     const isOpen = openGroups[group.key];
                                     return (
                                         <View key={group.key} style={styles.groupWrap}>
-                                            <Pressable
-                                                style={styles.groupHeader}
-                                                onPress={() => toggleGroup(group.key)}
-                                            >
-                                                <MaterialCommunityIcons
-                                                    name={isOpen ? "chevron-down" : "chevron-right"}
-                                                    size={16}
-                                                    color={colors.textMuted}
-                                                />
-                                                <Text style={[styles.groupTitle, { color: colors.textMuted }]} numberOfLines={1}>{group.label}</Text>
-                                                <View style={[styles.groupCountPill, { backgroundColor: `${colors.primary}14` }]}>
-                                                    <Text style={[styles.groupCount, { color: colors.textSoft }]}>{entries.length}</Text>
-                                                </View>
-                                            </Pressable>
+                                            <View style={styles.groupHeader}>
+                                                <Pressable
+                                                    style={styles.groupToggle}
+                                                    onPress={() => toggleGroup(group.key)}
+                                                    accessibilityRole="button"
+                                                    accessibilityState={{ expanded: Boolean(isOpen) }}
+                                                >
+                                                    <MaterialCommunityIcons
+                                                        name={isOpen ? "chevron-down" : "chevron-right"}
+                                                        size={16}
+                                                        color={colors.textMuted}
+                                                    />
+                                                    <Text style={[styles.groupTitle, { color: colors.textMuted }]} numberOfLines={1}>{group.label}</Text>
+                                                </Pressable>
+                                                {group.creationBinding ? (
+                                                    <Pressable
+                                                        style={styles.groupCreateButton}
+                                                        onPress={() => onCreateConversationInGroup(group)}
+                                                        disabled={Boolean(creatingGroupKey)}
+                                                        accessibilityRole="button"
+                                                        accessibilityLabel={t("src.components.layout.historydrawer.create_in_workspace", { value0: group.label })}
+                                                        hitSlop={4}
+                                                    >
+                                                        {creatingGroupKey === group.key ? (
+                                                            <ActivityIndicator size="small" color={colors.primary} />
+                                                        ) : (
+                                                            <MaterialCommunityIcons name="plus" size={19} color={colors.textMuted} />
+                                                        )}
+                                                    </Pressable>
+                                                ) : null}
+                                            </View>
 
                                             {isOpen ? (
                                                 <View style={styles.items}>
@@ -307,27 +328,29 @@ const styles = StyleSheet.create({
     groupHeader: {
         flexDirection: "row",
         alignItems: "center",
-        gap: 6,
         borderRadius: 12,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
+        paddingLeft: 10,
+        minHeight: 44,
+    },
+    groupToggle: {
+        minHeight: 44,
+        flex: 1,
+        minWidth: 0,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
     },
     groupTitle: {
         fontSize: 12,
         fontWeight: "800",
         flex: 1,
     },
-    groupCountPill: {
-        minWidth: 24,
-        height: 18,
-        borderRadius: 999,
+    groupCreateButton: {
+        width: 44,
+        height: 44,
         alignItems: "center",
         justifyContent: "center",
-        paddingHorizontal: 6,
-    },
-    groupCount: {
-        fontSize: 10,
-        fontWeight: "800",
+        borderRadius: 14,
     },
     items: {
         gap: 4,

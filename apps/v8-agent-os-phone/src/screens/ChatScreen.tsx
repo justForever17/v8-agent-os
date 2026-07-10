@@ -80,6 +80,7 @@ import {
     postPhonePerfAuditSamples,
 } from "@/src/lib/phone-perf-audit";
 import { getDayGreeting } from "@/src/lib/time";
+import type { ConversationWorkspaceGroup } from "@/src/lib/conversation-groups";
 import {
     approvePendingItem,
     createDesktopLiveOffer,
@@ -2098,6 +2099,7 @@ export default function ChatScreen() {
     const [transcribing, setTranscribing] = useState(false);
     const [speakingId, setSpeakingId] = useState("");
     const [historyOpen, setHistoryOpen] = useState(false);
+    const [historyCreatingGroupKey, setHistoryCreatingGroupKey] = useState<string | null>(null);
     const [rpaMenuVisible, setRpaMenuVisible] = useState(false);
     const [profileMenuVisible, setProfileMenuVisible] = useState(false);
 
@@ -3132,6 +3134,37 @@ export default function ChatScreen() {
         }
     }, [authorizedFetch]);
 
+    const activateCreatedConversation = useCallback(async (created: ConversationSummary) => {
+        const createdSessionId = created.sessionId || created.id;
+        stopRealtime();
+        optimisticSeedConversationIdRef.current = createdSessionId;
+        activeConversationIdRef.current = createdSessionId;
+        hydratedConversationIdRef.current = null;
+        loadingConversationIdRef.current = null;
+        setHistoryOpen(false);
+        setInput("");
+        setActiveQueryMode(null);
+        setActiveQueryText("");
+        clearActiveConversationViewState();
+        setUploadedFiles([]);
+        setSelectedCommand(null);
+        setSelectedSkills([]);
+        setSelectedSubagentFamilies([]);
+        setTaskPlanningMode(false);
+        setWorkspaceChooserVisible(false);
+        setWorkspaceInfoOpen(false);
+        setNewProjectPath("");
+        setScopeBinding(null);
+        setRuntimePanelOpen(false);
+        setSelectedRuntimeId("chat");
+        setPendingContextSessionRefs([]);
+        clearNewConversationIntent();
+        setConversations((current) => [created, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
+        await setActiveConversationId(createdSessionId);
+        router.replace(`/chat?id=${encodeURIComponent(createdSessionId)}` as Href);
+        await loadSessionScope(createdSessionId);
+    }, [clearActiveConversationViewState, clearNewConversationIntent, loadSessionScope, setActiveConversationId, stopRealtime]);
+
     const createBoundConversation = useCallback(async (draft: WorkspaceBindingDraft) => {
         if (workspaceChooserBusy) {
             return;
@@ -3165,16 +3198,7 @@ export default function ChatScreen() {
             }
 
             const created = await createConversation(authorizedFetch, creationPayload);
-            const createdSessionId = created.sessionId || created.id;
-            optimisticSeedConversationIdRef.current = createdSessionId;
-            activeConversationIdRef.current = createdSessionId;
-            setConversations((current) => [created, ...current.filter((item) => (item.sessionId || item.id) !== createdSessionId)]);
-            setWorkspaceChooserVisible(false);
-            setWorkspaceInfoOpen(false);
-            setNewProjectPath("");
-            clearNewConversationIntent();
-            await setActiveConversationId(createdSessionId);
-            await loadSessionScope(createdSessionId);
+            await activateCreatedConversation(created);
         } catch (error) {
             Alert.alert(
                 t("src.screens.chatscreen.create_conversation_failed"),
@@ -3183,7 +3207,27 @@ export default function ChatScreen() {
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [authorizedFetch, availableProjects, clearNewConversationIntent, loadSessionScope, mainWorkspacePath, setActiveConversationId, t, workspaceChooserBusy]);
+    }, [activateCreatedConversation, authorizedFetch, availableProjects, mainWorkspacePath, t, workspaceChooserBusy]);
+
+    const createConversationInHistoryGroup = useCallback(async (group: ConversationWorkspaceGroup) => {
+        if (!group.creationBinding || historyCreatingGroupKey) {
+            return;
+        }
+        setHistoryCreatingGroupKey(group.key);
+        try {
+            const created = await createConversation(authorizedFetch, group.creationBinding);
+            await activateCreatedConversation(created);
+        } catch (error) {
+            Alert.alert(
+                t("src.screens.chatscreen.create_conversation_failed"),
+                error instanceof Error
+                    ? error.message
+                    : t("src.screens.chatscreen.unable_to_create_a_conversation_with_the_selected_workspace_binding"),
+            );
+        } finally {
+            setHistoryCreatingGroupKey(null);
+        }
+    }, [activateCreatedConversation, authorizedFetch, historyCreatingGroupKey, t]);
 
     const confirmWorkspaceTrust = useCallback((workspacePath: string) => new Promise<boolean>((resolve) => {
         Alert.alert(
@@ -7147,6 +7191,8 @@ export default function ChatScreen() {
                     onSelectConversation={(item) => void handleSelectConversation(item)}
                     onContinueConversation={(item) => void handleContinueConversation(item)}
                     onNewConversation={() => void handleNewConversation()}
+                    onCreateConversationInGroup={(group) => void createConversationInHistoryGroup(group)}
+                    creatingGroupKey={historyCreatingGroupKey}
                     onDeleteConversation={(item) => handleDeleteConversation(item)}
                 />
             </SafeAreaView>

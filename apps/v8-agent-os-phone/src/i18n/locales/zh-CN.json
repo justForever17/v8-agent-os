@@ -295,6 +295,7 @@
   "src.components.common.loadingscreen.system_booting": "系统启动中",
   "src.components.layout.historydrawer.approval": "审批",
   "src.components.layout.historydrawer.history": "历史记录",
+  "src.components.layout.historydrawer.create_in_workspace": "在 {value0} 中新建会话",
   "src.components.layout.historydrawer.new_chat": "新对话",
   "src.components.layout.historydrawer.no_history_yet": "暂无历史会话",
   "src.components.layout.historydrawer.recoverable": "可恢复",

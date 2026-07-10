@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import {
+    Modal,
     Platform,
     Image,
     Pressable,
@@ -19,6 +20,7 @@ import Animated, {
     withRepeat,
     withTiming,
 } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -309,6 +311,7 @@ export const Composer = memo(function Composer({
     transcribing?: boolean;
 }) {
     const { colors, t, themeMode } = useUiPrefs();
+    const safeAreaInsets = useSafeAreaInsets();
     const [isFocused, setIsFocused] = useState(false);
     const [safetyApprovalOpen, setSafetyApprovalOpen] = useState(false);
     const bodyInputRef = useRef<TextInput | null>(null);
@@ -404,6 +407,7 @@ export const Composer = memo(function Composer({
     };
 
     return (
+        <>
         <View style={styles.shell}>
             <View style={styles.inputStage}>
                 <View
@@ -629,53 +633,6 @@ export const Composer = memo(function Composer({
                                         color={activeSafetyApproval.color}
                                     />
                                 </Pressable>
-                                {safetyApprovalOpen ? (
-                                    <View
-                                        style={[
-                                            styles.safetyMenu,
-                                            {
-                                                backgroundColor: themeMode === "dark" ? "rgba(28,25,23,0.98)" : "rgba(255,255,255,0.98)",
-                                                borderColor: colors.border,
-                                                shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
-                                            },
-                                        ]}
-                                    >
-                                        {safetyApprovalOptions.map((option) => {
-                                            const active = option.mode === safetyApprovalMode;
-                                            return (
-                                                <Pressable
-                                                    key={option.mode}
-                                                    accessibilityRole="button"
-                                                    accessibilityLabel={option.title}
-                                                    style={[
-                                                        styles.safetyMenuItem,
-                                                        {
-                                                            backgroundColor: active ? `${option.color}1A` : "transparent",
-                                                        },
-                                                    ]}
-                                                    onPress={() => {
-                                                        onChangeSafetyApprovalMode(option.mode);
-                                                        setSafetyApprovalOpen(false);
-                                                    }}
-                                                >
-                                                    <MaterialCommunityIcons
-                                                        name={option.icon}
-                                                        size={17}
-                                                        color={active ? option.color : colors.textMuted}
-                                                    />
-                                                    <View style={styles.safetyMenuText}>
-                                                        <Text style={[styles.safetyMenuTitle, { color: colors.text }]} numberOfLines={1}>
-                                                            {option.title}
-                                                        </Text>
-                                                        <Text style={[styles.safetyMenuDescription, { color: colors.textMuted }]} numberOfLines={2}>
-                                                            {option.description}
-                                                        </Text>
-                                                    </View>
-                                                </Pressable>
-                                            );
-                                        })}
-                                    </View>
-                                ) : null}
                             </View>
 
                             {reasoningEffortVisible ? (
@@ -806,6 +763,77 @@ export const Composer = memo(function Composer({
                 </View>
             </View>
         </View>
+        <Modal
+            visible={safetyApprovalOpen}
+            transparent
+            animationType="fade"
+            statusBarTranslucent
+            onRequestClose={() => setSafetyApprovalOpen(false)}
+        >
+            <View style={styles.safetyOverlay}>
+                <Pressable
+                    style={StyleSheet.absoluteFill}
+                    onPress={() => setSafetyApprovalOpen(false)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("src.components.chat.mediaviewerlightbox.cancel")}
+                />
+                <View
+                    style={[
+                        styles.safetySheet,
+                        {
+                            paddingBottom: Math.max(safeAreaInsets.bottom, 16),
+                            backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.99)" : "rgba(255,255,255,0.99)",
+                            borderColor: colors.border,
+                            shadowColor: themeMode === "dark" ? "#000000" : "#0F172A",
+                        },
+                    ]}
+                >
+                    <View style={[styles.safetySheetHandle, { backgroundColor: colors.border }]} />
+                    <ScrollView
+                        style={styles.safetySheetScroll}
+                        contentContainerStyle={styles.safetySheetContent}
+                        showsVerticalScrollIndicator={false}
+                    >
+                        {safetyApprovalOptions.map((option) => {
+                            const active = option.mode === safetyApprovalMode;
+                            return (
+                                <Pressable
+                                    key={option.mode}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={option.title}
+                                    accessibilityState={{ selected: active }}
+                                    style={({ pressed }) => [
+                                        styles.safetyMenuItem,
+                                        {
+                                            backgroundColor: active ? `${option.color}1A` : pressed ? colors.surfaceStrong : "transparent",
+                                        },
+                                    ]}
+                                    onPress={() => {
+                                        onChangeSafetyApprovalMode(option.mode);
+                                        setSafetyApprovalOpen(false);
+                                    }}
+                                >
+                                    <MaterialCommunityIcons
+                                        name={option.icon}
+                                        size={19}
+                                        color={active ? option.color : colors.textMuted}
+                                    />
+                                    <View style={styles.safetyMenuText}>
+                                        <Text style={[styles.safetyMenuTitle, { color: colors.text }]} numberOfLines={1}>
+                                            {option.title}
+                                        </Text>
+                                        <Text style={[styles.safetyMenuDescription, { color: colors.textMuted }]} numberOfLines={3}>
+                                            {option.description}
+                                        </Text>
+                                    </View>
+                                </Pressable>
+                            );
+                        })}
+                    </ScrollView>
+                </View>
+            </View>
+        </Modal>
+        </>
     );
 });
 
@@ -954,7 +982,6 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     safetyControl: {
-        position: "relative",
         zIndex: 20,
     },
     safetyModeButton: {
@@ -965,21 +992,38 @@ const styles = StyleSheet.create({
         borderRadius: 12,
         borderWidth: 1,
     },
-    safetyMenu: {
-        position: "absolute",
-        left: 0,
-        bottom: 38,
-        width: 272,
-        borderRadius: 18,
+    safetyOverlay: {
+        flex: 1,
+        justifyContent: "flex-end",
+        backgroundColor: "rgba(2,6,23,0.42)",
+    },
+    safetySheet: {
+        maxHeight: "58%",
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
         borderWidth: 1,
-        padding: 6,
-        gap: 3,
-        shadowOpacity: 0.18,
+        paddingHorizontal: 12,
+        paddingTop: 8,
+        shadowOpacity: 0.2,
         shadowRadius: 24,
-        shadowOffset: { width: 0, height: 14 },
-        elevation: 8,
+        shadowOffset: { width: 0, height: -8 },
+        elevation: 24,
+    },
+    safetySheetHandle: {
+        width: 38,
+        height: 4,
+        borderRadius: 999,
+        alignSelf: "center",
+        marginBottom: 8,
+    },
+    safetySheetScroll: {
+        flexGrow: 0,
+    },
+    safetySheetContent: {
+        gap: 4,
     },
     safetyMenuItem: {
+        minHeight: 52,
         flexDirection: "row",
         alignItems: "flex-start",
         gap: 8,

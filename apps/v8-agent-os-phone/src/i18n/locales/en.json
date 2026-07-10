@@ -295,6 +295,7 @@
   "src.components.common.loadingscreen.system_booting": "System booting",
   "src.components.layout.historydrawer.approval": "Approval",
   "src.components.layout.historydrawer.history": "History",
+  "src.components.layout.historydrawer.create_in_workspace": "Create a conversation in {value0}",
   "src.components.layout.historydrawer.new_chat": "New chat",
   "src.components.layout.historydrawer.no_history_yet": "No history yet",
   "src.components.layout.historydrawer.recoverable": "Recoverable",

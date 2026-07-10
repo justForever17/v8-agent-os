@@ -130,6 +130,26 @@ test("desktop pet managed mode suppresses its own tray", () => {
   assert.match(main, /if \(!MANAGED_BY_SHELL\) createTray\(\)/);
 });
 
+test("desktop pet survives Shell process-tree shutdown through detached handoff and PID reconciliation", () => {
+  const launcher = fs.readFileSync(
+    path.join(repoRoot, "apps", "v8-agent-os-shell", "scripts", "launch-desktop-pet.mjs"),
+    "utf8",
+  );
+  const interposer = fs.readFileSync(
+    path.join(repoRoot, "apps", "v8-agent-os-shell", "scripts", "spawn-detached-electron.mjs"),
+    "utf8",
+  );
+  const processManager = fs.readFileSync(
+    path.join(repoRoot, "apps", "v8-agent-os-cli", "src", "process_manager.mjs"),
+    "utf8",
+  );
+  assert.match(launcher, /launchDetachedElectron/);
+  assert.match(interposer, /detached:\s*true/);
+  assert.match(interposer, /child\.unref\(\)/);
+  assert.match(processManager, /desktop-pet\.json/);
+  assert.match(processManager, /effectiveManagedPid/);
+});
+
 test("preview build check is based on Next BUILD_ID", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-preview-build-"));
   assert.equal(isNextBuildPresent(dir), false);

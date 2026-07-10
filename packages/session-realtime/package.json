@@ -1,7 +1,7 @@
 {
   "name": "@v8/session-realtime",
   "private": true,
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "clean": "if exist dist rmdir /s /q dist",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "prepare": "npm run build",
     "verify:timeline": "npm run build && node scripts/verify-message-timeline.mjs && node scripts/verify-runtime-timeline-dedupe.mjs",
     "verify:episode-graph": "npm run build && node scripts/verify-runtime-episode-graph.mjs",
@@ -87,6 +88,10 @@
     "./message-bound-execution-node": {
       "types": "./dist/message-bound-execution-node.d.ts",
       "default": "./dist/message-bound-execution-node.js"
+    },
+    "./desktop-pet-events": {
+      "types": "./dist/desktop-pet-events.d.ts",
+      "default": "./dist/desktop-pet-events.js"
     }
   },
   "devDependencies": {

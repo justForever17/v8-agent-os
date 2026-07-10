@@ -95,6 +95,7 @@ apps/v8-agent-os-admin/scripts/*
 !apps/v8-agent-os-admin/scripts/validate-i18n.mjs
 !apps/v8-agent-os-admin/scripts/verify-instance-pairing.mjs
 !apps/v8-agent-os-admin/scripts/verify-device-connect-ui.mjs
+!apps/v8-agent-os-admin/scripts/verify-desktop-pet-settings.mjs
 apps/v8-agent-os-engine/scripts/computer_use_primitive_live_matrix.*
 apps/v8-agent-os-engine/scripts/offline_visual_*
 apps/v8-agent-os-engine/scripts/SCRIPT_MIGRATION_MAP.md

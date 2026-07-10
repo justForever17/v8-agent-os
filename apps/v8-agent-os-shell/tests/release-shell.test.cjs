@@ -189,12 +189,16 @@ test('Admin and Web release builds use Next standalone servers', () => {
 });
 
 test('desktop pet consumes packaged realtime contract instead of rebuilding workspace package', () => {
+  const realtimePkg = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'packages', 'session-realtime', 'package.json'), 'utf8'),
+  );
+  const packagedDependency = `file:../../packages/session-realtime/v8-session-realtime-${realtimePkg.version}.tgz`;
   const pkg = JSON.parse(
     fs.readFileSync(path.join(repoRoot, 'apps', 'v8-agent-os-desktop-pet', 'package.json'), 'utf8'),
   );
   assert.equal(
     pkg.dependencies['@v8/session-realtime'],
-    'file:../../packages/session-realtime/v8-session-realtime-0.0.2.tgz',
+    packagedDependency,
   );
 
   const lock = JSON.parse(
@@ -202,8 +206,9 @@ test('desktop pet consumes packaged realtime contract instead of rebuilding work
   );
   assert.equal(
     lock.packages['']?.dependencies?.['@v8/session-realtime'],
-    'file:../../packages/session-realtime/v8-session-realtime-0.0.2.tgz',
+    packagedDependency,
   );
+  assert.equal(fs.existsSync(path.join(repoRoot, 'packages', 'session-realtime', `v8-session-realtime-${realtimePkg.version}.tgz`)), true);
   assert.equal(lock.packages['../../packages/session-realtime'], undefined);
 });
 

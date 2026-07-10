@@ -2,6 +2,8 @@ const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, sh
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { createShellControlClient } = require('../lib/shell-control-client.cjs');
 
 let mainWindow = null;
 let tray = null;
@@ -11,15 +13,51 @@ let panelOpen = false;
 let companionClosedSize = { width: 380, height: 380 };
 let shuttingDown = false;
 let preExpansionBounds = null;
+let shellControlClient = null;
+let lastShellActiveSessionId = '';
+let lastPetStatus = { state: 'waiting_v8os', activeSessionId: null };
+let shutdownTimer = null;
+let shutdownRequestId = '';
 
 const LOCAL_SERVER_URL = 'http://127.0.0.1:3000';
-const V8_ADMIN_URL = process.env.V8_ADMIN_BASE_URL || 'http://127.0.0.1:9528';
 const V8_WEB_URL = process.env.V8_WEB_BASE_URL || 'http://127.0.0.1:9527';
 const MANAGED_BY_SHELL = process.env.V8_DESKTOP_PET_MANAGED_BY_SHELL === '1';
+const SHELL_SETTINGS_DEEP_LINK = 'v8os://open/admin/desktop-pet';
 const CLOSED_WIDTH = 380;
 const CLOSED_HEIGHT = 380;
 const PANEL_WIDTH = 940;
 const PANEL_HEIGHT = 720;
+
+function desktopPetProcessPath() {
+  const stateRoot = process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), '.v8-agent-os');
+  return path.join(stateRoot, 'runtime', 'desktop-pet.json');
+}
+
+function writeDesktopPetProcessDescriptor() {
+  const filePath = desktopPetProcessPath();
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporaryPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify({
+    version: 1,
+    pid: process.pid,
+    managedByShell: MANAGED_BY_SHELL,
+    startedAt: new Date().toISOString(),
+  }, null, 2), 'utf8');
+  try {
+    fs.renameSync(temporaryPath, filePath);
+  } catch {
+    fs.rmSync(filePath, { force: true });
+    fs.renameSync(temporaryPath, filePath);
+  }
+}
+
+function removeOwnedDesktopPetProcessDescriptor() {
+  const filePath = desktopPetProcessPath();
+  try {
+    const current = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (current?.pid === process.pid) fs.rmSync(filePath, { force: true });
+  } catch {}
+}
 
 function getLocalConfigPath() {
   return path.join(app.getPath('userData'), 'cybercore-local-config.json');
@@ -117,10 +155,10 @@ function killBundledServerTree() {
   }
 }
 
-function sendPrepareShutdown() {
+function sendPrepareShutdown(requestId) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   try {
-    mainWindow.webContents.send('v8-desktop:prepare-shutdown');
+    mainWindow.webContents.send('v8-desktop:prepare-shutdown', { requestId });
   } catch {
     // renderer may already be gone
   }
@@ -154,29 +192,88 @@ function openLocalProduct(baseUrl, targetPath = '') {
   void shell.openExternal(`${base}${pathPart}`);
 }
 
-function safeShutdown() {
+function sendToRenderer(channel, payload) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return false;
+  try {
+    mainWindow.webContents.send(channel, payload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function reportPetStatus(state, activeSessionId = lastPetStatus.activeSessionId) {
+  lastPetStatus = {
+    state,
+    activeSessionId: activeSessionId || null,
+  };
+  return shellControlClient?.send('pet-status', lastPetStatus) || false;
+}
+
+function startShellControlClient() {
+  if (shellControlClient) return;
+  shellControlClient = createShellControlClient({
+    onConnected() {
+      reportPetStatus(lastPetStatus.state, lastPetStatus.activeSessionId);
+      sendToRenderer('v8-desktop:shell-active-session', { sessionId: lastShellActiveSessionId || null });
+    },
+    onMessage(message) {
+      if (message.type === 'active-session') {
+        lastShellActiveSessionId = String(message.sessionId || '');
+        sendToRenderer('v8-desktop:shell-active-session', { sessionId: lastShellActiveSessionId || null });
+        return;
+      }
+      if (message.type === 'shutdown') {
+        safeShutdown({ source: 'shell', requestId: message.requestId });
+      }
+    },
+  });
+  shellControlClient.start();
+}
+
+function requestDesktopPetSettings() {
+  if (shellControlClient?.send('open-settings')) return true;
+  void shell.openExternal(SHELL_SETTINGS_DEEP_LINK);
+  return true;
+}
+
+function requestOpenSession(sessionId) {
+  return shellControlClient?.send('open-session', { sessionId: String(sessionId || '').trim() }) || false;
+}
+
+function finalizeShutdown(reason = 'renderer_ready') {
+  if (!shuttingDown) return false;
+  if (shutdownTimer) clearTimeout(shutdownTimer);
+  shutdownTimer = null;
+  killBundledServerTree();
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.hide();
+      mainWindow.destroy();
+    }
+  } catch {}
+  mainWindow = null;
+  try {
+    tray?.destroy();
+  } catch {}
+  tray = null;
+  shellControlClient?.stop();
+  shellControlClient = null;
+  app.exit(0);
+  return true;
+}
+
+function safeShutdown(options = {}) {
   if (shuttingDown) return true;
   shuttingDown = true;
-  sendPrepareShutdown();
+  shutdownRequestId = String(options.requestId || `pet-${Date.now()}`);
+  reportPetStatus('stopping');
+  sendPrepareShutdown(shutdownRequestId);
   neutralizeDesktopOverlay();
   try {
     globalShortcut.unregisterAll();
   } catch {}
-  killBundledServerTree();
-  setTimeout(() => {
-    try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.hide();
-        mainWindow.destroy();
-      }
-    } catch {}
-    mainWindow = null;
-    try {
-      tray?.destroy();
-    } catch {}
-    tray = null;
-    app.exit(0);
-  }, 600);
+  shutdownTimer = setTimeout(() => finalizeShutdown('renderer_timeout'), 1500);
   return true;
 }
 
@@ -347,6 +444,7 @@ async function createMainWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow?.show();
+    sendToRenderer('v8-desktop:shell-active-session', { sessionId: lastShellActiveSessionId || null });
   });
 
   mainWindow.once('ready-to-show', () => {
@@ -356,8 +454,10 @@ async function createMainWindow() {
     updateTrayMenu();
   });
 
-  mainWindow.on('close', () => {
-    sendPrepareShutdown();
+  mainWindow.on('close', (event) => {
+    if (shuttingDown) return;
+    event.preventDefault();
+    safeShutdown({ source: 'window' });
   });
 
   mainWindow.on('closed', () => {
@@ -393,7 +493,7 @@ function updateTrayMenu() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: '打开 V8OS', click: () => openLocalProduct(V8_WEB_URL, '/chat') },
-      { label: '打开桌宠设置', click: () => openLocalProduct(V8_ADMIN_URL, '/admin/desktop-pet') },
+      { label: '打开桌宠设置', click: requestDesktopPetSettings },
       { type: 'separator' },
       {
         label: '点击穿透',
@@ -444,9 +544,28 @@ ipcMain.handle('v8-desktop:move-window-by', (_event, dx, dy) => {
   return false;
 });
 
-ipcMain.handle('v8-desktop:open-admin', async (_event, url) => {
-  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false;
-  await shell.openExternal(url);
+ipcMain.handle('v8-desktop:open-admin', () => {
+  return requestDesktopPetSettings();
+});
+
+ipcMain.handle('v8-desktop:report-status', (_event, payload) => {
+  const state = String(payload?.state || 'waiting_v8os');
+  if (!new Set(['waiting_v8os', 'connected', 'stopping', 'error']).has(state)) return false;
+  return reportPetStatus(state, payload?.activeSessionId);
+});
+
+ipcMain.handle('v8-desktop:open-session', (_event, sessionId) => {
+  return requestOpenSession(sessionId);
+});
+
+ipcMain.handle('v8-desktop:get-active-session', () => {
+  return { sessionId: lastShellActiveSessionId || null };
+});
+
+ipcMain.handle('v8-desktop:shutdown-ready', (_event, requestId) => {
+  if (!shuttingDown || String(requestId || '') !== shutdownRequestId) return false;
+  shellControlClient?.send('shutdown-ready', { requestId: shutdownRequestId, reason: 'renderer_ready' });
+  setTimeout(() => finalizeShutdown('renderer_ready'), 40);
   return true;
 });
 
@@ -494,20 +613,31 @@ ipcMain.handle('v8-desktop:quit', () => {
   return safeShutdown();
 });
 
-app.whenReady().then(() => {
-  app.setAppUserModelId('V8OS.CyberCoreDesktop');
-  setupPermissionHandlers();
-  void createMainWindow();
-  if (!MANAGED_BY_SHELL) createTray();
-  globalShortcut.register('Control+Alt+V', showOrFocusWindow);
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', showOrFocusWindow);
+  app.whenReady().then(() => {
+    app.setAppUserModelId('V8OS.CyberCoreDesktop');
+    writeDesktopPetProcessDescriptor();
+    setupPermissionHandlers();
+    startShellControlClient();
+    void createMainWindow();
+    if (!MANAGED_BY_SHELL) createTray();
+    globalShortcut.register('Control+Alt+V', showOrFocusWindow);
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    });
   });
-});
+}
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  shellControlClient?.stop();
+  shellControlClient = null;
+  removeOwnedDesktopPetProcessDescriptor();
   killBundledServerTree();
 });
 

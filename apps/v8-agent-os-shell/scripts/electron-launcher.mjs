@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,6 +51,31 @@ export function launchElectron(target, extraEnv = {}) {
     if (signal) process.kill(process.pid, signal);
     process.exit(code ?? 0);
   });
+}
+
+export async function launchDetachedElectron(target, extraEnv = {}) {
+  ensureElectron();
+  const handoffPath = path.join(os.tmpdir(), `v8os-desktop-pet-${process.pid}-${Date.now()}.json`);
+  const interposer = path.join(shellDir, "scripts", "spawn-detached-electron.mjs");
+  const env = { ...process.env, ...extraEnv };
+  if (process.versions?.electron) env.ELECTRON_RUN_AS_NODE = "1";
+  const launcher = spawn(process.execPath, [interposer, target, handoffPath], {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env,
+    windowsHide: true,
+  });
+  const exitCode = await new Promise((resolve) => launcher.on("exit", (code) => resolve(code ?? 1)));
+  if (exitCode !== 0 || !fs.existsSync(handoffPath)) {
+    fs.rmSync(handoffPath, { force: true });
+    throw new Error("Detached Electron launcher failed before reporting the desktop pet PID.");
+  }
+  const handoff = JSON.parse(fs.readFileSync(handoffPath, "utf8"));
+  fs.rmSync(handoffPath, { force: true });
+  if (!Number.isInteger(handoff?.pid) || handoff.pid <= 0) {
+    throw new Error("Detached Electron launcher returned an invalid desktop pet PID.");
+  }
+  return handoff.pid;
 }
 
 export const paths = {

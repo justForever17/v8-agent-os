@@ -10,6 +10,7 @@
     "verify:instance-pairing": "node scripts/verify-instance-pairing.mjs",
     "smoke:owner-pairing": "node scripts/verify-instance-pairing.mjs",
     "verify:device-connect-ui": "node scripts/verify-device-connect-ui.mjs",
+    "verify:desktop-pet-settings": "node scripts/verify-desktop-pet-settings.mjs",
     "verify:extensions-skills-noninteractive": "node scripts/verify-extensions-skills-noninteractive.mjs",
     "sync:lobe-icons": "node scripts/sync-lobe-icons.mjs"
   },
@@ -34,7 +35,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
     "@v8/product-ui": "file:../../packages/product-ui/v8-product-ui-0.0.6.tgz",
-    "@v8/session-realtime": "file:../../packages/session-realtime/v8-session-realtime-0.0.2.tgz",
+    "@v8/session-realtime": "file:../../packages/session-realtime/v8-session-realtime-0.0.4.tgz",
     "bcryptjs": "^3.0.3",
     "caniuse-lite": "^1.0.30001793",
     "cheerio": "^1.1.2",

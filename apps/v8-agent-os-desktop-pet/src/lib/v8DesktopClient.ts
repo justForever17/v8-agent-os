@@ -59,7 +59,15 @@ export type V8DesktopPetConfig = {
     customRules?: unknown[];
     [key: string]: unknown;
   };
-  actionTable?: unknown[];
+  actionTable?: Array<{
+    id?: string;
+    event?: string;
+    /** @deprecated Read-only compatibility for configurations created before structured events. */
+    match?: string;
+    emotion?: string;
+    spectrum?: string;
+    [key: string]: unknown;
+  }>;
   effectSpectrum?: {
     preset?: string;
     intensity?: number;
@@ -138,9 +146,13 @@ export class V8DesktopClientAdapter {
     }
   }
 
-  clearSession() {
+  private clearAuthSession() {
     this.session = null;
     localStorage.removeItem(SESSION_STORAGE_KEY);
+  }
+
+  clearSession() {
+    this.clearAuthSession();
     localStorage.removeItem(ACTIVE_CONVERSATION_KEY);
   }
 
@@ -177,6 +189,43 @@ export class V8DesktopClientAdapter {
     return session;
   }
 
+  private async validateSession(session: V8AuthSession) {
+    const response = await fetch(localProxyPath("/api/client/auth/me"), {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Authorization: `Bearer ${session.accessToken}`,
+        "x-v8-admin-base": session.adminBaseUrl,
+      },
+    });
+    if (response.status === 401 || response.status === 403) return false;
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error || `V8OS 会话校验失败：${response.status}`);
+    }
+    return true;
+  }
+
+  async ensureLocalSession(input?: { adminBaseUrl?: string; deviceName?: string }) {
+    const requestedAdminBaseUrl = normalizeAdminBaseUrl(input?.adminBaseUrl || "");
+    if (this.session && this.session.adminBaseUrl !== requestedAdminBaseUrl) {
+      this.clearSession();
+    }
+    if (this.session) {
+      if (await this.validateSession(this.session)) return this.session;
+      try {
+        const refreshed = await this.refreshSession();
+        if (refreshed && await this.validateSession(refreshed)) return refreshed;
+      } catch {
+        this.clearAuthSession();
+      }
+    }
+    return this.signInLocal({
+      adminBaseUrl: requestedAdminBaseUrl,
+      deviceName: input?.deviceName || "v8-desktop-pet",
+    });
+  }
+
   async refreshSession() {
     const current = this.session;
     if (!current?.refreshToken) return null;
@@ -192,9 +241,12 @@ export class V8DesktopClientAdapter {
       }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload?.accessToken) {
-      this.clearSession();
+    if (response.status === 401 || response.status === 403) {
+      this.clearAuthSession();
       return null;
+    }
+    if (!response.ok || !payload?.accessToken) {
+      throw new Error(payload?.error || `V8OS 会话刷新失败：${response.status}`);
     }
     const session = {
       adminBaseUrl: current.adminBaseUrl,

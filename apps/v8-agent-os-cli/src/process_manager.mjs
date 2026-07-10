@@ -1,13 +1,35 @@
 import fs from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
+import path from "node:path";
 import { ensureDir } from "./json_file.mjs";
 import { COMPONENTS, logPathsFor } from "./components.mjs";
-import { LOG_DIR } from "./paths.mjs";
+import { LOG_DIR, STATE_ROOT } from "./paths.mjs";
 import { isPortOpen } from "./ports.mjs";
 import { isPidAlive, readProcessState, writeProcessState } from "./process_state.mjs";
 
 function componentHasPort(component) {
   return Number.isInteger(component?.port) && component.port > 0;
+}
+
+const DESKTOP_PET_PROCESS_PATH = path.join(STATE_ROOT, "runtime", "desktop-pet.json");
+
+function readDesktopPetProcessDescriptor() {
+  try {
+    const descriptor = JSON.parse(fs.readFileSync(DESKTOP_PET_PROCESS_PATH, "utf8"));
+    const pid = Number(descriptor?.pid);
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    return { ...descriptor, pid };
+  } catch {
+    return null;
+  }
+}
+
+function effectiveManagedPid(componentId, record) {
+  if (componentId === "desktop-pet") {
+    const descriptor = readDesktopPetProcessDescriptor();
+    if (descriptor?.pid && isPidAlive(descriptor.pid)) return descriptor.pid;
+  }
+  return record?.pid || null;
 }
 
 export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
@@ -17,19 +39,22 @@ export async function statusComponents(componentIds = Object.keys(COMPONENTS)) {
     const component = COMPONENTS[id];
     if (!component) continue;
     const record = state.processes[id] || null;
-    const pidAlive = record?.pid ? isPidAlive(record.pid) : false;
+    const effectivePid = effectiveManagedPid(id, record);
+    const pidAlive = effectivePid ? isPidAlive(effectivePid) : false;
     const hasPort = componentHasPort(component);
     const portOpen = hasPort ? await isPortOpen(component.port) : false;
     statuses.push({
       id,
       label: component.label,
       port: component.port,
-      managed: Boolean(record && record.managed),
-      pid: record?.pid || null,
+      managed: Boolean((record && record.managed) || (id === "desktop-pet" && effectivePid)),
+      pid: effectivePid,
       pidAlive,
       portOpen,
       state: pidAlive ? "managed_running" : hasPort && portOpen ? "external_port_in_use" : "stopped",
-      startedAt: record?.startedAt || null,
+      startedAt: id === "desktop-pet"
+        ? (readDesktopPetProcessDescriptor()?.startedAt || record?.startedAt || null)
+        : (record?.startedAt || null),
       logOut: record?.logOut || null,
       logErr: record?.logErr || null,
     });
@@ -45,8 +70,9 @@ export async function startComponents(componentIds, options = {}) {
     const component = COMPONENTS[id];
     if (!component) continue;
     const record = state.processes[id] || null;
-    if (record?.pid && isPidAlive(record.pid)) {
-      results.push({ id, status: "already_running", pid: record.pid });
+    const effectivePid = effectiveManagedPid(id, record);
+    if (effectivePid && isPidAlive(effectivePid)) {
+      results.push({ id, status: "already_running", pid: effectivePid });
       continue;
     }
     if (componentHasPort(component) && await isPortOpen(component.port)) {
@@ -111,15 +137,27 @@ export function stopComponents(componentIds = Object.keys(COMPONENTS)) {
   const results = [];
   for (const id of componentIds) {
     const record = state.processes[id];
-    if (!record) {
+    const desktopPetDescriptor = id === "desktop-pet" ? readDesktopPetProcessDescriptor() : null;
+    if (!record && !desktopPetDescriptor) {
       results.push({ id, status: "not_managed" });
       continue;
     }
-    const killed = killPid(record.pid);
-    if (killed.ok) {
+    const targetPids = [...new Set([
+      desktopPetDescriptor?.pid,
+      record?.pid,
+    ].filter(Boolean))];
+    const killResults = targetPids.map((pid) => ({ pid, ...killPid(pid) }));
+    const failed = killResults.find((item) => !item.ok);
+    if (!failed) {
       delete state.processes[id];
+      if (id === "desktop-pet") fs.rmSync(DESKTOP_PET_PROCESS_PATH, { force: true });
     }
-    results.push({ id, status: killed.ok ? "stopped" : "stop_failed", reason: killed.reason, pid: record.pid });
+    results.push({
+      id,
+      status: failed ? "stop_failed" : "stopped",
+      reason: failed?.reason || killResults.map((item) => item.reason).join(",") || "already_stopped",
+      pid: desktopPetDescriptor?.pid || record?.pid || null,
+    });
   }
   writeProcessState(state);
   return results;

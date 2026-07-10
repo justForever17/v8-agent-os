@@ -29,28 +29,6 @@ import {
   Sparkle
 } from 'lucide-react';
 
-declare global {
-  interface Window {
-    v8CyberCore?: {
-      platform?: string;
-      openAdmin?: (url?: string) => Promise<void>;
-      quit?: () => Promise<void>;
-      setAlwaysOnTop?: (enabled: boolean) => Promise<boolean>;
-      setPanelOpen?: (enabled: boolean) => Promise<any>;
-      setClickThrough?: (enabled: boolean) => Promise<boolean>;
-      setCompanionScale?: (scale: number) => Promise<boolean | { width: number; height: number }>;
-      moveWindowBy?: (dx: number, dy: number) => Promise<boolean>;
-      readLocalConfig?: (key: string) => Promise<Record<string, unknown> | null>;
-      writeLocalConfig?: (key: string, value: Record<string, unknown>) => Promise<boolean>;
-      getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
-      requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
-      openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
-      onPrepareShutdown?: (callback: () => void) => () => void;
-      onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
-    };
-  }
-}
-
 interface CyberPetProps {
   isExiting?: boolean;
   emotion: PetEmotion;
@@ -79,6 +57,7 @@ interface CyberPetProps {
   metrics: any[];
   v8Connection?: {
     connected: boolean;
+    loading?: boolean;
     status: string;
     error?: string;
     conversations: Array<{ id: string; title?: string; projectName?: string | null; workspacePath?: string | null; running?: boolean; status?: string | null }>;
@@ -241,60 +220,6 @@ const translations = {
     webcamActiveImage: 'Visor optical capture frame synchronized'
   }
 };
-
-type V8EventRule = {
-  match: string;
-  phrase: string;
-  emotion: PetEmotion;
-  speak: boolean;
-};
-
-const V8_EVENT_TYPES = [
-  { match: 'thinking', label: '思考' },
-  { match: 'tool_calling', label: '工具调用' },
-  { match: 'runtime_active', label: '运行时活动' },
-  { match: 'subagent_active', label: '子代理活动' },
-  { match: 'artifact_ready', label: '产物完成' },
-  { match: 'approval_needed', label: '需要确认' },
-  { match: 'error', label: '异常/失败' },
-];
-
-const V8_ACTIONS: Array<{ value: PetEmotion; label: string }> = [
-  { value: 'idle', label: '保持待机' },
-  { value: 'thinking', label: '进入思考动效' },
-  { value: 'tool_calling', label: '工具调用动效' },
-  { value: 'curious', label: '好奇观察' },
-  { value: 'scanning', label: '扫描动效' },
-  { value: 'happy', label: '完成/开心' },
-  { value: 'worried', label: '警告/担忧' },
-  { value: 'talking', label: '说话动效' },
-];
-
-function parseV8Rules(value: string | undefined): V8EventRule[] {
-  try {
-    const parsed = JSON.parse(value || '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item) => {
-        const record = item && typeof item === 'object' ? item as Partial<V8EventRule> : {};
-        const match = String(record.match || '').trim();
-        if (!match) return null;
-        return {
-          match,
-          phrase: String(record.phrase || '').trim(),
-          emotion: (record.emotion || 'idle') as PetEmotion,
-          speak: Boolean(record.speak),
-        };
-      })
-      .filter(Boolean) as V8EventRule[];
-  } catch {
-    return [];
-  }
-}
-
-function stringifyV8Rules(rules: V8EventRule[]) {
-  return JSON.stringify(rules, null, 2);
-}
 
 function readReusableAudioPhrases() {
   try {
@@ -902,28 +827,6 @@ export default function CyberPet({
     v8Connection?.onSelectConversation(conversation.id);
   };
 
-  const v8Rules = parseV8Rules(settings.v8EventRulesJson);
-  const updateV8Rule = (match: string, patch: Partial<V8EventRule>) => {
-    const existing = v8Rules.find((rule) => rule.match === match);
-    const nextRule: V8EventRule = {
-      match,
-      phrase: '',
-      emotion: 'idle',
-      speak: false,
-      ...existing,
-      ...patch,
-    };
-    const nextRules = [
-      ...v8Rules.filter((rule) => rule.match !== match),
-      nextRule,
-    ].sort((left, right) => {
-      const leftIndex = V8_EVENT_TYPES.findIndex((item) => item.match === left.match);
-      const rightIndex = V8_EVENT_TYPES.findIndex((item) => item.match === right.match);
-      return (leftIndex < 0 ? 999 : leftIndex) - (rightIndex < 0 ? 999 : rightIndex);
-    });
-    onUpdateSettings({ ...settings, v8EventRulesJson: stringifyV8Rules(nextRules) });
-  };
-
   // Preset personality templates loader
   const triggerPresetPrompt = (preset: 'jarvis' | 'glitch' | 'cat' | 'standard') => {
     let customPrompt = "";
@@ -1358,7 +1261,11 @@ Always output your response as valid JSON matching the following schema structur
                   <span className="truncate">Fairy 桌宠</span>
                 </div>
                 <div className="mt-0.5 truncate text-[10px] text-slate-400">
-                  {v8Connection?.connected ? 'V8OS 已连接' : (v8Connection?.status || '等待 V8OS')}
+                  {v8Connection?.loading
+                    ? (v8Connection.status || '正在读取 V8OS 任务')
+                    : v8Connection?.connected
+                      ? 'V8OS 已连接'
+                      : (v8Connection?.status || '等待 V8OS')}
                 </div>
               </div>
               <button
@@ -1403,7 +1310,12 @@ Always output your response as valid JSON matching the following schema structur
 
               <div>
                 <div className="px-2 pb-1 text-[10px] font-medium text-slate-500">项目会话</div>
-                {v8ProjectConversationGroups.length ? (
+                {v8Connection?.loading ? (
+                  <div className="flex items-center gap-2 rounded-xl border border-dashed border-white/10 px-3 py-3 text-[12px] text-slate-400">
+                    <RefreshCw size={12} className="animate-spin text-violet-300" />
+                    正在读取 V8OS 任务…
+                  </div>
+                ) : v8ProjectConversationGroups.length ? (
                   <div className="space-y-1">
                     {v8ProjectConversationGroups.map(([projectName, conversations]) => (
                       <div key={projectName} className="rounded-xl bg-white/[0.025] p-1">

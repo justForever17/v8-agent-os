@@ -2,7 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('v8CyberCore', {
   platform: process.platform,
-  openAdmin: (url) => ipcRenderer.invoke('v8-desktop:open-admin', url),
+  openAdmin: () => ipcRenderer.invoke('v8-desktop:open-admin'),
+  reportStatus: (payload) => ipcRenderer.invoke('v8-desktop:report-status', payload),
+  openSession: (sessionId) => ipcRenderer.invoke('v8-desktop:open-session', sessionId),
+  getActiveSession: () => ipcRenderer.invoke('v8-desktop:get-active-session'),
+  shutdownReady: (requestId) => ipcRenderer.invoke('v8-desktop:shutdown-ready', requestId),
   setAlwaysOnTop: (enabled) => ipcRenderer.invoke('v8-desktop:set-always-on-top', Boolean(enabled)),
   setClickThrough: (enabled) => ipcRenderer.invoke('v8-desktop:set-click-through', Boolean(enabled)),
   setPanelOpen: (enabled) => ipcRenderer.invoke('v8-desktop:set-panel-open', Boolean(enabled)),
@@ -14,15 +18,24 @@ contextBridge.exposeInMainWorld('v8CyberCore', {
   requestMediaAccess: (kind) => ipcRenderer.invoke('v8-desktop:request-media-access', kind),
   openMediaPrivacySettings: (kind) => ipcRenderer.invoke('v8-desktop:open-media-privacy-settings', kind),
   onPrepareShutdown: (callback) => {
-    const listener = () => {
+    const listener = (_event, data) => {
       try {
-        callback?.();
+        callback?.(data);
       } catch {
         // renderer cleanup is best effort
       }
     };
     ipcRenderer.on('v8-desktop:prepare-shutdown', listener);
     return () => ipcRenderer.off('v8-desktop:prepare-shutdown', listener);
+  },
+  onActiveSession: (callback) => {
+    const listener = (_event, data) => {
+      try {
+        callback?.(data);
+      } catch {}
+    };
+    ipcRenderer.on('v8-desktop:shell-active-session', listener);
+    return () => ipcRenderer.off('v8-desktop:shell-active-session', listener);
   },
   onPanelExpandDirection: (callback) => {
     const listener = (_event, data) => {

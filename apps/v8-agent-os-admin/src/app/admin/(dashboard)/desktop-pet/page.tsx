@@ -2,26 +2,38 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, Plus, Save, Trash2 } from "lucide-react";
+import {
+  DESKTOP_PET_EVENT_CATALOG,
+  desktopPetEventLabel,
+  expandLegacyDesktopPetEvents,
+  normalizeDesktopPetEventId,
+  type DesktopPetEventId,
+} from "@v8/session-realtime";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
+import type { ShellDesktopPetState } from "@/components/layout/ShellWindowControls";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { useLocale } from "@/components/providers/LocaleProvider";
 
 type DesktopPetActionRule = {
   id?: string;
+  event?: DesktopPetEventId | string;
+  /** @deprecated Read-only compatibility for pre-event-catalog configurations. */
   match?: string;
   emotion?: string;
   spectrum?: string;
 };
 
 type DesktopPetVoiceRule = {
+  event?: DesktopPetEventId | string;
+  /** @deprecated Read-only compatibility for pre-event-catalog configurations. */
   match?: string;
   phrase?: string;
   emotion?: string;
@@ -67,21 +79,10 @@ type ConfigEnvelope = {
   exists?: boolean;
 };
 
-type EventPreset = {
-  key: string;
-  labelKey: string;
-  match: string;
-  emotion: string;
-  spectrum: string;
-  speak: boolean;
-  phraseKey?: string;
-};
-
 type EventRuleRow = {
   key: string;
   id?: string;
-  label: string;
-  match: string;
+  event: DesktopPetEventId;
   phrase: string;
   emotion: string;
   spectrum: string;
@@ -89,7 +90,7 @@ type EventRuleRow = {
   custom?: boolean;
 };
 
-const API_PATH = "/api/admin/config/desktop-pet";
+const API_PATH = "/api/config-registry/desktop-pet";
 
 const DEFAULT_ENVELOPE: ConfigEnvelope = {
   data: {
@@ -120,76 +121,28 @@ const DEFAULT_ENVELOPE: ConfigEnvelope = {
   },
 };
 
-const EVENT_PRESETS: EventPreset[] = [
-  {
-    key: "idle",
-    labelKey: "app.admin.dashboard.desktopPet.events.idle",
-    match: "idle|settled|\u9759\u9ed8|\u7a7a\u95f2",
-    emotion: "idle",
-    spectrum: "cyan",
-    speak: false,
-  },
-  {
-    key: "thinking",
-    labelKey: "app.admin.dashboard.desktopPet.events.thinking",
-    match: "reasoning|thinking|\u601d\u8003",
-    emotion: "thinking",
-    spectrum: "violet",
-    speak: false,
-  },
-  {
-    key: "tool",
-    labelKey: "app.admin.dashboard.desktopPet.events.tool",
-    match: "tool_start|tool_result|\u5de5\u5177",
-    emotion: "tool_calling",
-    spectrum: "blue",
-    speak: false,
-  },
-  {
-    key: "waiting",
-    labelKey: "app.admin.dashboard.desktopPet.events.waiting",
-    match: "ask_user|approval|\u7b49\u5f85\u7528\u6237|\u786e\u8ba4",
-    emotion: "curious",
-    spectrum: "golden_amber",
-    speak: true,
-    phraseKey: "app.admin.dashboard.desktopPet.defaultPhrases.waiting",
-  },
-  {
-    key: "done",
-    labelKey: "app.admin.dashboard.desktopPet.events.done",
-    match: "complete|completed|done|\u5b8c\u6210|artifact_ready",
-    emotion: "happy",
-    spectrum: "emerald_green",
-    speak: true,
-    phraseKey: "app.admin.dashboard.desktopPet.defaultPhrases.done",
-  },
-  {
-    key: "failed",
-    labelKey: "app.admin.dashboard.desktopPet.events.failed",
-    match: "error|failed|\u5931\u8d25|\u5f02\u5e38",
-    emotion: "worried",
-    spectrum: "crimson_red",
-    speak: true,
-    phraseKey: "app.admin.dashboard.desktopPet.defaultPhrases.failed",
-  },
-  {
-    key: "audio",
-    labelKey: "app.admin.dashboard.desktopPet.events.audio",
-    match: "audio|voice|\u8bed\u97f3",
-    emotion: "listening",
-    spectrum: "cyan",
-    speak: false,
-  },
-  {
-    key: "artifact",
-    labelKey: "app.admin.dashboard.desktopPet.events.artifact",
-    match: "artifact|\u4ea7\u7269",
-    emotion: "happy",
-    spectrum: "emerald_green",
-    speak: true,
-    phraseKey: "app.admin.dashboard.desktopPet.defaultPhrases.artifact",
-  },
+const DEFAULT_EVENT_IDS: DesktopPetEventId[] = [
+  "run.reasoning.delta",
+  "tool.started",
+  "tool.finished",
+  "ask_user.requested",
+  "approval.requested",
+  "artifact.recorded",
+  "run.completed",
+  "run.failed",
 ];
+
+function defaultPhraseForEvent(eventId: DesktopPetEventId, t: (key: string) => string) {
+  if (eventId === "ask_user.requested" || eventId === "approval.requested") {
+    return t("app.admin.dashboard.desktopPet.defaultPhrases.waiting");
+  }
+  if (eventId === "artifact.recorded") return t("app.admin.dashboard.desktopPet.defaultPhrases.artifact");
+  if (eventId === "run.completed") return t("app.admin.dashboard.desktopPet.defaultPhrases.done");
+  if (eventId === "run.failed" || eventId === "agent.failed" || eventId === "subagent.task.failed") {
+    return t("app.admin.dashboard.desktopPet.defaultPhrases.failed");
+  }
+  return "";
+}
 
 const ACTION_OPTIONS = [
   { value: "idle", labelKey: "app.admin.dashboard.desktopPet.actions.idle" },
@@ -227,107 +180,102 @@ function normalizeAdminVoiceMode(value: unknown): string {
   return "system_tts";
 }
 
+function eventIdsForRule(rule: DesktopPetActionRule | DesktopPetVoiceRule): DesktopPetEventId[] {
+  const exact = normalizeDesktopPetEventId(rule.event);
+  return exact ? [exact] : expandLegacyDesktopPetEvents(rule.match || ("id" in rule ? rule.id : ""));
+}
+
 function buildEventRows(config: DesktopPetConfig, t: (key: string) => string): EventRuleRow[] {
   const actions = Array.isArray(config.actionTable) ? config.actionTable : [];
   const voices = Array.isArray(config.eventVoice?.customRules) ? config.eventVoice?.customRules ?? [] : [];
-  const usedActions = new Set<number>();
-  const usedVoices = new Set<number>();
+  const actionByEvent = new Map<DesktopPetEventId, DesktopPetActionRule>();
+  const voiceByEvent = new Map<DesktopPetEventId, DesktopPetVoiceRule>();
+  actions.forEach((action) => {
+    eventIdsForRule(action).forEach((eventId) => {
+      if (!actionByEvent.has(eventId)) actionByEvent.set(eventId, action);
+    });
+  });
+  voices.forEach((voice) => {
+    eventIdsForRule(voice).forEach((eventId) => {
+      if (!voiceByEvent.has(eventId)) voiceByEvent.set(eventId, voice);
+    });
+  });
 
-  const rows: EventRuleRow[] = EVENT_PRESETS.map((preset) => {
-    const actionIndex = actions.findIndex((rule) => rule.id === preset.key || normalizeText(rule.match) === preset.match);
-    const voiceIndex = voices.findIndex((rule) => normalizeText(rule.match) === preset.match);
-    const action = actionIndex >= 0 ? actions[actionIndex] : undefined;
-    const voice = voiceIndex >= 0 ? voices[voiceIndex] : undefined;
-    if (actionIndex >= 0) usedActions.add(actionIndex);
-    if (voiceIndex >= 0) usedVoices.add(voiceIndex);
+  const hasStructuredEvents = actions.some((rule) => Boolean(normalizeDesktopPetEventId(rule.event)))
+    || voices.some((rule) => Boolean(normalizeDesktopPetEventId(rule.event)));
+  const eventIds = [...new Set([
+    ...(hasStructuredEvents ? [] : DEFAULT_EVENT_IDS),
+    ...actionByEvent.keys(),
+    ...voiceByEvent.keys(),
+  ])];
+
+  return eventIds.map((eventId) => {
+    const action = actionByEvent.get(eventId);
+    const voice = voiceByEvent.get(eventId);
+    const catalog = DESKTOP_PET_EVENT_CATALOG.find((candidate) => candidate.id === eventId)!;
     return {
-      key: preset.key,
-      id: preset.key,
-      label: t(preset.labelKey),
-      match: normalizeText(voice?.match || action?.match || preset.match),
-      phrase: normalizeText(voice?.phrase || (preset.phraseKey ? t(preset.phraseKey) : "")),
-      emotion: normalizeText(voice?.emotion || action?.emotion || preset.emotion),
-      spectrum: normalizeText(action?.spectrum || preset.spectrum),
-      speak: voice ? voice.speak !== false : preset.speak,
+      key: `event:${eventId}`,
+      id: normalizeText(action?.id).trim() || eventId.replace(/[^a-zA-Z0-9_-]/g, "_"),
+      event: eventId,
+      phrase: normalizeText(voice?.phrase) || defaultPhraseForEvent(eventId, t),
+      emotion: normalizeText(voice?.emotion || action?.emotion || catalog.defaultEmotion),
+      spectrum: normalizeText(action?.spectrum || catalog.defaultSpectrum),
+      speak: voice ? voice.speak !== false : catalog.defaultSpeak,
+      custom: true,
     };
   });
-
-  const customByMatch = new Map<string, EventRuleRow>();
-  actions.forEach((action, index) => {
-    if (usedActions.has(index)) return;
-    const match = normalizeText(action.match).trim();
-    const id = normalizeText(action.id).trim() || `custom_action_${index + 1}`;
-    const key = `custom:${id}:${match || index}`;
-    customByMatch.set(key, {
-      key,
-      id,
-      label: t("app.admin.dashboard.desktopPet.customEvent"),
-      match,
-      phrase: "",
-      emotion: normalizeText(action.emotion || "idle"),
-      spectrum: normalizeText(action.spectrum || "cyan"),
-      speak: false,
-      custom: true,
-    });
-  });
-  voices.forEach((voice, index) => {
-    if (usedVoices.has(index)) return;
-    const match = normalizeText(voice.match).trim();
-    const existingKey = Array.from(customByMatch.keys()).find((key) => customByMatch.get(key)?.match === match);
-    const key = existingKey || `custom:voice:${match || index}`;
-    const current = customByMatch.get(key);
-    customByMatch.set(key, {
-      key,
-      id: current?.id || key.replace(/^custom:/, "").replace(/[^a-zA-Z0-9_-]/g, "_"),
-      label: t("app.admin.dashboard.desktopPet.customEvent"),
-      match,
-      phrase: normalizeText(voice.phrase),
-      emotion: normalizeText(voice.emotion || current?.emotion || "idle"),
-      spectrum: normalizeText(current?.spectrum || "cyan"),
-      speak: voice.speak !== false,
-      custom: true,
-    });
-  });
-
-  return rows.concat(Array.from(customByMatch.values()));
 }
 
 function rowsToConfig(rows: EventRuleRow[], config: DesktopPetConfig): DesktopPetConfig {
-  const normalized = rows
-    .map((row) => ({
+  const normalizedByEvent = new Map<DesktopPetEventId, EventRuleRow>();
+  rows.forEach((row) => {
+    const event = normalizeDesktopPetEventId(row.event);
+    if (!event) return;
+    normalizedByEvent.set(event, {
       ...row,
-      match: row.match.trim(),
+      event,
       phrase: row.phrase.trim(),
       emotion: row.emotion.trim() || "idle",
       spectrum: row.spectrum.trim() || "cyan",
-    }))
-    .filter((row) => row.match.length > 0);
+    });
+  });
+  const normalized = [...normalizedByEvent.values()];
+  const legacyActions = (config.actionTable || []).filter((rule) => eventIdsForRule(rule).length === 0);
+  const legacyVoices = (config.eventVoice?.customRules || []).filter((rule) => eventIdsForRule(rule).length === 0);
 
   return {
     ...config,
-    actionTable: normalized.map((row) => ({
-      id: row.id || row.key,
-      match: row.match,
-      emotion: row.emotion,
-      spectrum: row.spectrum,
-    })),
+    actionTable: [
+      ...normalized.map((row): DesktopPetActionRule => ({
+        id: row.id || row.event.replace(/[^a-zA-Z0-9_-]/g, "_"),
+        event: row.event,
+        emotion: row.emotion,
+        spectrum: row.spectrum,
+      })),
+      ...legacyActions,
+    ],
     eventVoice: {
       ...(config.eventVoice || {}),
-      customRules: normalized.map((row) => ({
-        match: row.match,
-        phrase: row.phrase,
-        emotion: row.emotion,
-        speak: row.speak,
-      })),
+      customRules: [
+        ...normalized.map((row): DesktopPetVoiceRule => ({
+          event: row.event,
+          phrase: row.phrase,
+          emotion: row.emotion,
+          speak: row.speak,
+        })),
+        ...legacyVoices,
+      ],
     },
   };
 }
 
 export default function DesktopPetSettingsPage() {
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
   const [envelope, setEnvelope] = useState<ConfigEnvelope>(DEFAULT_ENVELOPE);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [runtimeState, setRuntimeState] = useState<ShellDesktopPetState | null>(null);
+  const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -382,6 +330,24 @@ export default function DesktopPetSettingsPage() {
   useEffect(() => {
     void loadConfig();
   }, [loadConfig]);
+
+  useEffect(() => {
+    const shell = window.v8osShell;
+    if (!shell?.isShell) return;
+    let mounted = true;
+    void shell.getDesktopPetState().then((state) => {
+      if (mounted) setRuntimeState(state);
+    }).catch((runtimeError) => {
+      if (mounted) setError(runtimeError instanceof Error ? runtimeError.message : String(runtimeError));
+    });
+    const unsubscribe = shell.onDesktopPetStateChange((state) => {
+      setRuntimeState(state);
+    });
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
+  }, []);
 
   const updateData = useCallback((patch: (current: DesktopPetConfig) => DesktopPetConfig) => {
     setEnvelope((current) => ({
@@ -456,17 +422,19 @@ export default function DesktopPetSettingsPage() {
   const addCustomEventRow = useCallback(() => {
     updateData((current) => {
       const rows = buildEventRows(current, t);
+      const usedEvents = new Set(rows.map((row) => row.event));
+      const catalog = DESKTOP_PET_EVENT_CATALOG.find((event) => !usedEvents.has(event.id));
+      if (!catalog) return current;
       const key = `custom_${Date.now()}`;
       return rowsToConfig(
         rows.concat({
           key: `custom:${key}`,
           id: key,
-          label: t("app.admin.dashboard.desktopPet.customEvent"),
-          match: "",
-          phrase: "",
-          emotion: "idle",
-          spectrum: "cyan",
-          speak: false,
+          event: catalog.id,
+          phrase: defaultPhraseForEvent(catalog.id, t),
+          emotion: catalog.defaultEmotion,
+          spectrum: catalog.defaultSpectrum,
+          speak: catalog.defaultSpeak,
           custom: true,
         }),
         current,
@@ -487,7 +455,7 @@ export default function DesktopPetSettingsPage() {
     setMessage(null);
     try {
       const response = await fetch(API_PATH, {
-        method: "PUT",
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: envelope.data || {} }),
       });
@@ -503,6 +471,20 @@ export default function DesktopPetSettingsPage() {
       setSaving(false);
     }
   }, [envelope.data, loadConfig, t]);
+
+  const setDesktopPetRuntimeEnabled = useCallback(async (enabled: boolean) => {
+    const shell = window.v8osShell;
+    if (!shell?.isShell) return;
+    setRuntimeBusy(true);
+    setError(null);
+    try {
+      setRuntimeState(await shell.setDesktopPetEnabled(enabled));
+    } catch (runtimeError) {
+      setError(runtimeError instanceof Error ? runtimeError.message : String(runtimeError));
+    } finally {
+      setRuntimeBusy(false);
+    }
+  }, []);
 
   const petScale = clampNumber(data.appearance?.petScale, 1, 0.6, 1.8);
   const floatAmplitude = clampNumber(data.appearance?.floatAmplitude, 14, 0, 40);
@@ -522,8 +504,27 @@ export default function DesktopPetSettingsPage() {
         }
       />
 
-      {error ? <Card className="border-red-200 bg-red-50 text-sm text-red-700"><CardContent className="py-3">{error}</CardContent></Card> : null}
-      {message ? <Card className="border-emerald-200 bg-emerald-50 text-sm text-emerald-700"><CardContent className="py-3">{message}</CardContent></Card> : null}
+      {error ? <Card className="border-destructive/30 bg-destructive/10 text-sm text-destructive"><CardContent className="py-3">{error}</CardContent></Card> : null}
+      {message ? <Card className="border-emerald-500/30 bg-emerald-500/10 text-sm text-emerald-700 dark:text-emerald-300"><CardContent className="py-3">{message}</CardContent></Card> : null}
+
+      <ConfigCard title={t("app.admin.dashboard.desktopPet.runtimeTitle")} description={t("app.admin.dashboard.desktopPet.runtimeDescription")}>
+        <div className="flex items-center justify-between gap-4 rounded-xl border bg-muted/20 px-4 py-3">
+          <div className="min-w-0">
+            <div className="font-medium">{t("app.admin.dashboard.desktopPet.runtimeToggle")}</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              {runtimeState
+                ? t(`app.admin.dashboard.desktopPet.runtimeStates.${runtimeState.state}`)
+                : t("app.admin.dashboard.desktopPet.runtimeUnavailable")}
+            </div>
+          </div>
+          <Switch
+            checked={Boolean(runtimeState?.enabled)}
+            disabled={!runtimeState || runtimeBusy || runtimeState.state === "starting" || runtimeState.state === "stopping"}
+            onCheckedChange={(checked) => { void setDesktopPetRuntimeEnabled(checked); }}
+            aria-label={t("app.admin.dashboard.desktopPet.runtimeToggle")}
+          />
+        </div>
+      </ConfigCard>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <ConfigCard title={t("app.admin.dashboard.desktopPet.appearance")} description={t("app.admin.dashboard.desktopPet.appearanceDescription")}>
@@ -585,7 +586,7 @@ export default function DesktopPetSettingsPage() {
                 <span className="block font-medium">{t("app.admin.dashboard.desktopPet.enableVoice")}</span>
                 <span className="text-muted-foreground">{t("app.admin.dashboard.desktopPet.enableVoiceHint")}</span>
               </span>
-              <Checkbox checked={data.eventVoice?.enabled !== false} onCheckedChange={(checked) => updateEventVoice({ enabled: checked === true })} />
+              <Switch checked={data.eventVoice?.enabled !== false} onCheckedChange={(checked) => updateEventVoice({ enabled: checked })} />
             </label>
             <div className="space-y-2">
               <label className="text-sm font-medium">{t("app.admin.dashboard.desktopPet.voiceMode")}</label>
@@ -606,11 +607,11 @@ export default function DesktopPetSettingsPage() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="flex items-center gap-2 rounded-xl border px-3 py-2 text-sm">
-                <Checkbox checked={data.eventVoice?.speakVoiceTags !== false} onCheckedChange={(checked) => updateEventVoice({ speakVoiceTags: checked === true })} />
+                <Switch checked={data.eventVoice?.speakVoiceTags !== false} onCheckedChange={(checked) => updateEventVoice({ speakVoiceTags: checked })} />
                 {t("app.admin.dashboard.desktopPet.speakVoiceTags")}
               </label>
               <label className="flex items-center gap-2 rounded-xl border px-3 py-2 text-sm">
-                <Checkbox checked={data.eventVoice?.speakSupervisorReplies !== false} onCheckedChange={(checked) => updateEventVoice({ speakSupervisorReplies: checked === true })} />
+                <Switch checked={data.eventVoice?.speakSupervisorReplies !== false} onCheckedChange={(checked) => updateEventVoice({ speakSupervisorReplies: checked })} />
                 {t("app.admin.dashboard.desktopPet.speakSupervisorReplies")}
               </label>
             </div>
@@ -620,16 +621,15 @@ export default function DesktopPetSettingsPage() {
 
       <ConfigCard title={t("app.admin.dashboard.desktopPet.eventResponse")} description={t("app.admin.dashboard.desktopPet.eventResponseDescription")}>
         <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={addCustomEventRow}>
+          <Button variant="outline" size="sm" onClick={addCustomEventRow} disabled={eventRows.length >= DESKTOP_PET_EVENT_CATALOG.length}>
             <Plus className="mr-2 h-4 w-4" />
             {t("app.admin.dashboard.desktopPet.addCustomEvent")}
           </Button>
         </div>
         <div className="overflow-x-auto">
           <div className="min-w-[980px] space-y-2">
-            <div className="grid grid-cols-[130px_1.1fr_1.2fr_150px_150px_90px_44px] gap-2 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              <span>{t("app.admin.dashboard.desktopPet.eventName")}</span>
-              <span>{t("app.admin.dashboard.desktopPet.triggerWords")}</span>
+            <div className="grid grid-cols-[minmax(220px,1.25fr)_minmax(220px,1.2fr)_150px_150px_90px_44px] gap-2 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <span>{t("app.admin.dashboard.desktopPet.listenEvent")}</span>
               <span>{t("app.admin.dashboard.desktopPet.spokenPhrase")}</span>
               <span>{t("app.admin.dashboard.desktopPet.action")}</span>
               <span>{t("app.admin.dashboard.desktopPet.spectrumName")}</span>
@@ -637,11 +637,23 @@ export default function DesktopPetSettingsPage() {
               <span />
             </div>
             {eventRows.map((row) => (
-              <div key={row.key} className="grid grid-cols-[130px_1.1fr_1.2fr_150px_150px_90px_44px] items-center gap-2 rounded-xl border bg-background px-2 py-2">
-                <div className="truncate text-sm font-medium" title={row.label}>
-                  {row.label}
-                </div>
-                <Input value={row.match} onChange={(event) => updateEventRow(row.key, { match: event.target.value })} placeholder={t("app.admin.dashboard.desktopPet.triggerWordsPlaceholder")} />
+              <div key={row.key} className="grid grid-cols-[minmax(220px,1.25fr)_minmax(220px,1.2fr)_150px_150px_90px_44px] items-center gap-2 rounded-xl border bg-background px-2 py-2">
+                <Select value={row.event} onValueChange={(value) => updateEventRow(row.key, { event: value as DesktopPetEventId })}>
+                  <SelectTrigger aria-label={t("app.admin.dashboard.desktopPet.listenEvent")}>
+                    <SelectValue>{desktopPetEventLabel(row.event, locale)}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DESKTOP_PET_EVENT_CATALOG.map((eventOption) => (
+                      <SelectItem
+                        key={eventOption.id}
+                        value={eventOption.id}
+                        disabled={eventOption.id !== row.event && eventRows.some((candidate) => candidate.event === eventOption.id)}
+                      >
+                        {desktopPetEventLabel(eventOption.id, locale)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <Input value={row.phrase} onChange={(event) => updateEventRow(row.key, { phrase: event.target.value })} placeholder={t("app.admin.dashboard.desktopPet.spokenPhrasePlaceholder")} />
                 <Select value={row.emotion || "idle"} onValueChange={(value) => updateEventRow(row.key, { emotion: value })}>
                   <SelectTrigger>
@@ -668,17 +680,18 @@ export default function DesktopPetSettingsPage() {
                   </SelectContent>
                 </Select>
                 <label className="flex items-center justify-center">
-                  <Checkbox checked={row.speak} onCheckedChange={(checked) => updateEventRow(row.key, { speak: checked === true })} />
+                  <Switch checked={row.speak} onCheckedChange={(checked) => updateEventRow(row.key, { speak: checked })} />
                 </label>
-                {row.custom ? (
-                  <Button variant="ghost" size="icon" onClick={() => deleteEventRow(row.key)} aria-label={t("app.admin.dashboard.desktopPet.deleteEvent")}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                ) : (
-                  <span />
-                )}
+                <Button variant="ghost" size="icon" onClick={() => deleteEventRow(row.key)} aria-label={t("app.admin.dashboard.desktopPet.deleteEvent")}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
               </div>
             ))}
+            {!eventRows.length ? (
+              <div className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                {t("app.admin.dashboard.desktopPet.noEventRules")}
+              </div>
+            ) : null}
           </div>
         </div>
       </ConfigCard>
@@ -690,12 +703,12 @@ export default function DesktopPetSettingsPage() {
               <span className="block font-medium">{t("app.admin.dashboard.desktopPet.cameraAttachment")}</span>
               <span className="text-muted-foreground">{t("app.admin.dashboard.desktopPet.cameraAttachmentHint")}</span>
             </span>
-            <Checkbox
+            <Switch
               checked={attachmentCapture.cameraEnabled}
               onCheckedChange={(checked) =>
                 updateAttachmentCapture({
-                  cameraEnabled: checked === true,
-                  includeDesktopScreenshot: checked === true ? attachmentCapture.includeDesktopScreenshot : false,
+                  cameraEnabled: checked,
+                  includeDesktopScreenshot: checked ? attachmentCapture.includeDesktopScreenshot : false,
                 })
               }
             />
@@ -706,11 +719,11 @@ export default function DesktopPetSettingsPage() {
                 <span className="block font-medium">{t("app.admin.dashboard.desktopPet.desktopSnapshot")}</span>
                 <span className="text-muted-foreground">{t("app.admin.dashboard.desktopPet.desktopSnapshotHint")}</span>
               </span>
-              <Checkbox
+              <Switch
                 checked={attachmentCapture.includeDesktopScreenshot}
                 onCheckedChange={(checked) =>
                   updateAttachmentCapture({
-                    includeDesktopScreenshot: checked === true,
+                    includeDesktopScreenshot: checked,
                     layout: "desktop_pip_camera",
                   })
                 }

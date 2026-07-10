@@ -1,4 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
+import {
+  expandLegacyDesktopPetEvents,
+  normalizeDesktopPetEventId,
+  type DesktopPetEventId,
+} from '@v8/session-realtime';
 import { 
   Terminal, 
   Send, 
@@ -31,43 +36,22 @@ import {
   latestAssistantText,
 } from './lib/desktopActivity';
 
-declare global {
-  interface Window {
-    v8CyberCore?: {
-      platform?: string;
-      openAdmin?: (url?: string) => Promise<void>;
-      quit?: () => Promise<void>;
-      setAlwaysOnTop?: (enabled: boolean) => Promise<boolean>;
-      setPanelOpen?: (enabled: boolean) => Promise<any>;
-      setCompanionScale?: (scale: number) => Promise<boolean | { width: number; height: number }>;
-      setClickThrough?: (enabled: boolean) => Promise<boolean>;
-      moveWindowBy?: (dx: number, dy: number) => Promise<boolean>;
-      readLocalConfig?: (key: string) => Promise<Record<string, unknown> | null>;
-      writeLocalConfig?: (key: string, value: Record<string, unknown>) => Promise<boolean>;
-      getMediaPermissionStatus?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
-      requestMediaAccess?: (kind: 'microphone' | 'camera') => Promise<Record<string, unknown>>;
-      openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
-      onPrepareShutdown?: (callback: () => void) => () => void;
-      onPanelExpandDirection?: (callback: (data: { isLeft: boolean; isTop: boolean; offsetX?: number; offsetY?: number; closedWidth?: number; closedHeight?: number }) => void) => () => void;
-    };
-  }
-}
-
 type V8EventRule = {
-  match: string;
+  event: DesktopPetEventId;
   phrase: string;
   emotion: PetEmotion;
   speak: boolean;
 };
 
 const DEFAULT_V8_EVENT_RULES: V8EventRule[] = [
-  { match: 'thinking', phrase: '我正在梳理任务上下文。', emotion: 'thinking', speak: false },
-  { match: 'tool_calling', phrase: '正在调用工具。', emotion: 'tool_calling', speak: false },
-  { match: 'runtime_active', phrase: '运行时开始处理任务。', emotion: 'thinking', speak: false },
-  { match: 'subagent_active', phrase: '子代理正在协同处理。', emotion: 'curious', speak: false },
-  { match: 'artifact_ready', phrase: '产物已经准备好。', emotion: 'happy', speak: true },
-  { match: 'approval_needed', phrase: '需要你的确认。', emotion: 'worried', speak: true },
-  { match: 'error', phrase: '链路出现异常，我会保持可恢复状态。', emotion: 'worried', speak: true },
+  { event: 'run.reasoning.delta', phrase: '我正在梳理任务上下文。', emotion: 'thinking', speak: false },
+  { event: 'tool.started', phrase: '正在调用工具。', emotion: 'tool_calling', speak: false },
+  { event: 'subagent.task.started', phrase: '子代理正在协同处理。', emotion: 'curious', speak: false },
+  { event: 'artifact.recorded', phrase: '产物已经准备好。', emotion: 'happy', speak: true },
+  { event: 'approval.requested', phrase: '需要你的确认。', emotion: 'curious', speak: true },
+  { event: 'ask_user.requested', phrase: '需要你的回答。', emotion: 'curious', speak: true },
+  { event: 'run.completed', phrase: '任务完成了。', emotion: 'happy', speak: true },
+  { event: 'run.failed', phrase: '链路出现异常，我会保持可恢复状态。', emotion: 'worried', speak: true },
 ];
 
 function defaultV8EventRulesJson() {
@@ -189,16 +173,17 @@ function parseV8EventRules(value: string | undefined): V8EventRule[] {
     const parsed = JSON.parse(value || '');
     if (!Array.isArray(parsed)) return DEFAULT_V8_EVENT_RULES;
     const normalized = parsed
-      .map((item) => {
+      .flatMap((item) => {
         const record = item && typeof item === 'object' ? item as Partial<V8EventRule> : {};
-        const match = String(record.match || '').trim();
-        if (!match) return null;
-        return {
-          match,
+        const legacyRecord = record as Partial<V8EventRule> & { match?: string };
+        const exact = normalizeDesktopPetEventId(record.event);
+        const events = exact ? [exact] : expandLegacyDesktopPetEvents(legacyRecord.match);
+        return events.map((event) => ({
+          event,
           phrase: String(record.phrase || '').trim(),
           emotion: (record.emotion || 'idle') as PetEmotion,
           speak: Boolean(record.speak),
-        } satisfies V8EventRule;
+        } satisfies V8EventRule));
       })
       .filter(Boolean) as V8EventRule[];
     return normalized.length ? normalized : DEFAULT_V8_EVENT_RULES;
@@ -222,16 +207,16 @@ function normalizePetEmotion(value: unknown): PetEmotion {
 function normalizeDesktopPetVoiceRules(config: V8DesktopPetConfig, voiceEnabled: boolean) {
   const rules = Array.isArray(config.eventVoice?.customRules) ? config.eventVoice.customRules : [];
   const normalized = rules
-    .map((item) => {
+    .flatMap((item) => {
       const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-      const match = String(record.match || '').trim();
-      if (!match) return null;
-      return {
-        match,
+      const exact = normalizeDesktopPetEventId(record.event);
+      const events = exact ? [exact] : expandLegacyDesktopPetEvents(record.match);
+      return events.map((event) => ({
+        event,
         phrase: String(record.phrase || '').trim(),
         emotion: normalizePetEmotion(record.emotion),
         speak: voiceEnabled && record.speak !== false,
-      } satisfies V8EventRule;
+      } satisfies V8EventRule));
     })
     .filter(Boolean) as V8EventRule[];
   return normalized.length ? normalized : null;
@@ -507,6 +492,7 @@ If the user uploaded an image representation (which represents what you 'see' th
   const [v8Session, setV8Session] = useState<V8AuthSession | null>(() => v8ClientRef.current?.getSession() || null);
   const [v8Conversations, setV8Conversations] = useState<V8Conversation[]>([]);
   const [v8Projects, setV8Projects] = useState<V8Project[]>([]);
+  const [v8ListsLoading, setV8ListsLoading] = useState(Boolean(v8Session));
   const [v8ActiveConversationId, setV8ActiveConversationId] = useState(() => v8ClientRef.current?.getActiveConversationId() || '');
   const [v8Status, setV8Status] = useState(v8Session ? 'V8OS 已连接' : '等待连接 V8OS');
   const [v8Error, setV8Error] = useState('');
@@ -538,6 +524,12 @@ If the user uploaded an image representation (which represents what you 'see' th
   const recordingAudioChunksRef = useRef<Blob[]>([]);
   const recordingStopResolverRef = useRef<((blob: Blob) => void) | null>(null);
   const autoAttachedConversationRef = useRef(false);
+  const v8ConversationsRef = useRef<V8Conversation[]>([]);
+  const v8ActiveConversationIdRef = useRef(v8ActiveConversationId);
+  const shellActiveConversationIdRef = useRef('');
+  const v8ConnectInFlightRef = useRef<Promise<boolean> | null>(null);
+  const v8ReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shutdownReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const petSessionStateRef = useRef<DesktopPetSessionState>(petSessionState);
   const v8SeenActivityIdsRef = useRef<Set<string>>(new Set());
   const v8LastAudioUrlRef = useRef('');
@@ -551,6 +543,14 @@ If the user uploaded an image representation (which represents what you 'see' th
   useEffect(() => {
     petSessionStateRef.current = petSessionState;
   }, [petSessionState]);
+
+  useEffect(() => {
+    v8ConversationsRef.current = v8Conversations;
+  }, [v8Conversations]);
+
+  useEffect(() => {
+    v8ActiveConversationIdRef.current = v8ActiveConversationId;
+  }, [v8ActiveConversationId]);
 
   // Scroll to bottom of chat
   useEffect(() => {
@@ -576,14 +576,6 @@ If the user uploaded an image representation (which represents what you 'see' th
   }, []);
 
 
-
-  useEffect(() => {
-    if (v8Session) {
-      void refreshDesktopPetConfig();
-      refreshV8Lists();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v8Session?.accessToken]);
 
   useEffect(() => {
     localStorage.setItem('v8.cybercore.eventRulesJson', settings.v8EventRulesJson || defaultV8EventRulesJson());
@@ -707,8 +699,8 @@ If the user uploaded an image representation (which represents what you 'see' th
     for (const activity of activities) {
       if (v8SeenActivityIdsRef.current.has(activity.id)) continue;
       v8SeenActivityIdsRef.current.add(activity.id);
-      const haystack = `${activity.kind} ${activity.title} ${activity.summary} ${activity.status} ${activity.runtimeId || ''}`.toLowerCase();
-      const rule = rules.find((candidate) => haystack.includes(candidate.match.toLowerCase()));
+      if (!activity.event) continue;
+      const rule = rules.find((candidate) => candidate.event === activity.event);
       if (!rule) continue;
       setEmotion(rule.emotion);
       if (rule.phrase) {
@@ -788,26 +780,37 @@ If the user uploaded an image representation (which represents what you 'see' th
     return '';
   };
 
-  const refreshV8Lists = async () => {
+  const refreshV8Lists = async (preferredConversationId = shellActiveConversationIdRef.current) => {
     const client = v8ClientRef.current;
-    if (!client?.getSession()) return;
+    if (!client?.getSession()) {
+      setV8ListsLoading(false);
+      return [] as V8Conversation[];
+    }
+    setV8ListsLoading(true);
     try {
       const [conversations, projectPayload] = await Promise.all([
         client.listConversations(),
         client.listProjects().catch(() => ({ projects: [] as V8Project[] })),
       ]);
       const conversationList = Array.isArray(conversations) ? conversations : [];
+      v8ConversationsRef.current = conversationList;
       setV8Conversations(conversationList);
       setV8Projects(Array.isArray(projectPayload.projects) ? projectPayload.projects : []);
 
       const runningConversation = latestRunningConversation(conversationList);
       const storedConversationId = client.getActiveConversationId();
-      let nextConversationId = v8ActiveConversationId || storedConversationId;
+      const requestedConversationId = String(preferredConversationId || '').trim();
+      let nextConversationId = requestedConversationId || v8ActiveConversationId || storedConversationId;
       const storedStillExists = nextConversationId
         ? conversationList.some((item) => String(item.id) === String(nextConversationId))
         : false;
 
-      if (runningConversation && (!autoAttachedConversationRef.current || !storedStillExists)) {
+      if (requestedConversationId && storedStillExists) {
+        nextConversationId = requestedConversationId;
+      } else if (requestedConversationId && !storedStillExists) {
+        nextConversationId = '';
+        setV8Error('桌面当前任务已不存在，已清除桌宠选择');
+      } else if (runningConversation && (!autoAttachedConversationRef.current || !storedStillExists)) {
         nextConversationId = String(runningConversation.id || '');
       } else if (!storedStillExists) {
         nextConversationId = '';
@@ -818,10 +821,15 @@ If the user uploaded an image representation (which represents what you 'see' th
       } else {
         client.setActiveConversationId('');
       }
+      v8ActiveConversationIdRef.current = nextConversationId;
       setV8ActiveConversationId(nextConversationId);
       updatePetStateForConversationId(nextConversationId, conversationList);
+      return conversationList;
     } catch (error: any) {
       setV8Error(error?.message || 'V8OS 列表刷新失败');
+      return [] as V8Conversation[];
+    } finally {
+      setV8ListsLoading(false);
     }
   };
 
@@ -857,41 +865,59 @@ If the user uploaded an image representation (which represents what you 'see' th
   };
 
   const connectV8 = async () => {
+    if (v8ConnectInFlightRef.current) return v8ConnectInFlightRef.current;
     const client = v8ClientRef.current;
-    if (!client) return;
-    setV8Error('');
-    setV8Status('连接 V8OS Admin 中...');
-    try {
-      const url = settingsRef.current.v8AdminBaseUrl || '';
-      const session = await client.signInLocal({ adminBaseUrl: url });
-      
-      localStorage.setItem('v8.cybercore.workspacePath', settingsRef.current.v8WorkspacePath || '');
-      if (session?.adminBaseUrl) {
-        localStorage.setItem('v8.cybercore.v8AdminBaseUrl', session.adminBaseUrl);
-        setSettings((current) => ({ ...current, v8AdminBaseUrl: session.adminBaseUrl }));
+    if (!client) return false;
+    const request = (async () => {
+      setV8Error('');
+      setV8Status('连接 V8OS Admin 中...');
+      void window.v8CyberCore?.reportStatus?.({ state: 'waiting_v8os', activeSessionId: v8ActiveConversationId || null });
+      try {
+        const url = settingsRef.current.v8AdminBaseUrl || '';
+        const session = await client.ensureLocalSession({ adminBaseUrl: url });
+
+        localStorage.setItem('v8.cybercore.workspacePath', settingsRef.current.v8WorkspacePath || '');
+        if (session?.adminBaseUrl) {
+          localStorage.setItem('v8.cybercore.v8AdminBaseUrl', session.adminBaseUrl);
+          setSettings((current) => ({ ...current, v8AdminBaseUrl: session.adminBaseUrl }));
+        }
+        setV8Session(session);
+        setPetSessionState('idle_no_conversation');
+        await refreshDesktopPetConfig();
+        await refreshV8Lists(shellActiveConversationIdRef.current);
+        setV8Status('V8OS 已连接');
+        void window.v8CyberCore?.reportStatus?.({
+          state: 'connected',
+          activeSessionId: shellActiveConversationIdRef.current || client.getActiveConversationId() || null,
+        });
+        return true;
+      } catch (error: any) {
+        setV8Session(null);
+        setV8Error(error?.message || 'V8OS 本机自动连接失败');
+        setV8Status('V8OS 连接失败，正在重试');
+        setPetSessionState('disconnected');
+        setEmotion('worried');
+        void window.v8CyberCore?.reportStatus?.({ state: 'waiting_v8os', activeSessionId: null });
+        return false;
       }
-      setV8Session(session);
-      setV8Status('V8OS 已连接');
-      setPetSessionState('idle_no_conversation');
-      await refreshDesktopPetConfig();
-      await refreshV8Lists();
-    } catch (error: any) {
-      setV8Session(null);
-      setV8Error(error?.message || 'V8OS 本机自动连接失败');
-      setV8Status('V8OS 连接失败');
-      setPetSessionState('disconnected');
-      setEmotion('worried');
-    }
+    })().finally(() => {
+      if (v8ConnectInFlightRef.current === request) v8ConnectInFlightRef.current = null;
+    });
+    v8ConnectInFlightRef.current = request;
+    return request;
   };
 
   const disconnectV8 = () => {
     v8ClientRef.current?.clearSession();
+    v8ActiveConversationIdRef.current = '';
     setV8Session(null);
     setV8ActiveConversationId('');
     setV8Conversations([]);
+    setV8ListsLoading(false);
     setV8Status('等待连接 V8OS');
     setPetSessionState('disconnected');
     setVoiceStatus('等待连接 V8OS');
+    void window.v8CyberCore?.reportStatus?.({ state: 'waiting_v8os', activeSessionId: null });
   };
 
   const requireActiveConversation = async () => {
@@ -912,19 +938,88 @@ If the user uploaded an image representation (which represents what you 'see' th
     return conversationId;
   };
 
-  const selectV8Conversation = async (conversationId: string, options?: { listen?: boolean }) => {
+  const selectV8Conversation = async (
+    conversationId: string,
+    options?: { listen?: boolean; source?: 'pet' | 'shell' },
+  ) => {
     const id = String(conversationId || '').trim();
     if (!id) return;
     autoAttachedConversationRef.current = true;
     v8ClientRef.current?.setActiveConversationId(id);
+    v8ActiveConversationIdRef.current = id;
     setV8ActiveConversationId(id);
-    updatePetStateForConversationId(id);
+    updatePetStateForConversationId(id, v8ConversationsRef.current);
     if (options?.listen) {
       setPetSessionState('listening_running');
       setVoiceStatus('当前会话运行中，正在监听事件');
     }
+    void window.v8CyberCore?.reportStatus?.({ state: 'connected', activeSessionId: id });
+    if (options?.source !== 'shell') {
+      void window.v8CyberCore?.openSession?.(id);
+    }
     await syncV8Snapshot(id).catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const retryDelays = [500, 1000, 2000, 4000, 5000];
+    let retryIndex = 0;
+    const attempt = async () => {
+      const connected = await connectV8();
+      if (connected || cancelled) return;
+      const delay = retryDelays[Math.min(retryIndex, retryDelays.length - 1)];
+      retryIndex += 1;
+      v8ReconnectTimerRef.current = setTimeout(() => { void attempt(); }, delay);
+    };
+    void attempt();
+    return () => {
+      cancelled = true;
+      if (v8ReconnectTimerRef.current) clearTimeout(v8ReconnectTimerRef.current);
+      v8ReconnectTimerRef.current = null;
+    };
+    // Connection bootstrapping is intentionally mount-owned; mutable inputs are read from refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const applyActiveSession = (data?: { sessionId?: string | null }) => {
+      const sessionId = String(data?.sessionId || '').trim();
+      shellActiveConversationIdRef.current = sessionId;
+      void (async () => {
+        if (!sessionId) {
+          v8ClientRef.current?.setActiveConversationId('');
+          v8ActiveConversationIdRef.current = '';
+          setV8ActiveConversationId('');
+          updatePetStateForConversationId('', v8ConversationsRef.current);
+          void window.v8CyberCore?.reportStatus?.({ state: 'connected', activeSessionId: null });
+          return;
+        }
+        const connected = await connectV8();
+        if (!connected || cancelled) return;
+        const conversations = v8ConversationsRef.current;
+        if (cancelled) return;
+        const exists = conversations.some((item) => String(item.id) === sessionId);
+        if (!exists) {
+          v8ClientRef.current?.setActiveConversationId('');
+          v8ActiveConversationIdRef.current = '';
+          setV8ActiveConversationId('');
+          updatePetStateForConversationId('', conversations);
+          void window.v8CyberCore?.reportStatus?.({ state: 'connected', activeSessionId: null });
+          return;
+        }
+        await selectV8Conversation(sessionId, { source: 'shell' });
+      })();
+    };
+    const unsubscribe = window.v8CyberCore?.onActiveSession?.(applyActiveSession);
+    void window.v8CyberCore?.getActiveSession?.().then(applyActiveSession);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+    // Shell session events are registered once; handlers use refs for current state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Synthesize custom futuristic dual-sine beep tone programmatically
   const playAudioBlob = (blob: Blob) => {
@@ -1633,9 +1728,14 @@ If the user uploaded an image representation (which represents what you 'see' th
 
   // Triggered when clicking webcam stream to shut it down on unmount
   useEffect(() => {
-    const handleShutdown = () => {
+    const handleShutdown = (data?: { requestId?: string }) => {
       setIsExiting(true);
       cleanupLocalMedia();
+      void window.v8CyberCore?.reportStatus?.({ state: 'stopping', activeSessionId: v8ActiveConversationIdRef.current || null });
+      if (shutdownReadyTimerRef.current) clearTimeout(shutdownReadyTimerRef.current);
+      shutdownReadyTimerRef.current = setTimeout(() => {
+        if (data?.requestId) void window.v8CyberCore?.shutdownReady?.(data.requestId);
+      }, 520);
     };
     const removePrepareShutdown = window.v8CyberCore?.onPrepareShutdown?.(handleShutdown);
     const handleBeforeUnload = () => cleanupLocalMedia();
@@ -1643,6 +1743,8 @@ If the user uploaded an image representation (which represents what you 'see' th
     return () => {
       removePrepareShutdown?.();
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (shutdownReadyTimerRef.current) clearTimeout(shutdownReadyTimerRef.current);
+      shutdownReadyTimerRef.current = null;
       cleanupLocalMedia();
     };
   }, []);
@@ -1911,6 +2013,7 @@ If the user uploaded an image representation (which represents what you 'see' th
           metrics={metrics}
           v8Connection={{
             connected: Boolean(v8Session),
+            loading: v8ListsLoading,
             status: v8Status,
             error: v8Error,
             conversations: v8Conversations.map((conversation) => ({
@@ -1939,8 +2042,8 @@ If the user uploaded an image representation (which represents what you 'see' th
             },
             onConnect: connectV8,
             onDisconnect: disconnectV8,
-            onRefresh: refreshV8Lists,
-            onOpenAdmin: () => window.v8CyberCore?.openAdmin(settingsRef.current.v8AdminBaseUrl),
+            onRefresh: connectV8,
+            onOpenAdmin: () => window.v8CyberCore?.openAdmin(),
             onQuit: () => window.v8CyberCore?.quit(),
           }}
         />

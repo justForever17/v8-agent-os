@@ -4,6 +4,14 @@ import { useEffect, useState } from "react";
 import { ProductTrafficLightWindowControls } from "@v8/product-ui";
 import { useT } from "@/components/providers/LocaleProvider";
 
+export type ShellDesktopPetState = {
+    state: "stopped" | "starting" | "waiting_v8os" | "connected" | "stopping" | "error";
+    processRunning: boolean;
+    controlConnected: boolean;
+    activeSessionId?: string | null;
+    enabled: boolean;
+};
+
 type ShellWindowApi = {
     isShell: true;
     minimize: () => void;
@@ -13,6 +21,9 @@ type ShellWindowApi = {
     close: () => void;
     openWeb: () => void;
     openAdmin: () => void;
+    getDesktopPetState: () => Promise<ShellDesktopPetState>;
+    setDesktopPetEnabled: (enabled: boolean) => Promise<ShellDesktopPetState>;
+    onDesktopPetStateChange: (callback: (state: ShellDesktopPetState) => void) => () => void;
 };
 
 declare global {

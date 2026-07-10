@@ -13,6 +13,7 @@ type ShellWindowApi = {
     close: () => void;
     openWeb: () => void;
     openAdmin: () => void;
+    reportActiveSession: (sessionId: string | null) => void;
 };
 
 declare global {

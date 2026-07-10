@@ -1,4 +1,8 @@
-import { buildSessionStreamUiEvent } from "@v8/session-realtime";
+import {
+  buildSessionStreamUiEvent,
+  normalizeDesktopPetEventId,
+  type DesktopPetEventId,
+} from "@v8/session-realtime";
 
 export type DesktopActivityKind =
   | "thinking"
@@ -18,6 +22,7 @@ export type DesktopActivity = {
   status: "running" | "completed" | "warning" | "failed" | "queued" | "waiting";
   at: number;
   runtimeId?: string;
+  event: DesktopPetEventId | null;
 };
 
 export type DesktopMessage = {
@@ -156,6 +161,7 @@ export function buildActivityFromRuntimeEntry(input: unknown, index = 0): Deskto
     status,
     at: readTimestamp(record.timestamp, record.ts, metadata.timestamp),
     runtimeId,
+    event: normalizeDesktopPetEventId(topic),
   };
 }
 
@@ -176,6 +182,7 @@ export function buildActivityFromRealtimeEvent(raw: unknown): DesktopActivity | 
     status: normalizeStatus(readString(record.status, data.status, topic, summary)),
     at: readTimestamp(record.ts, record.timestamp, data.timestamp),
     runtimeId,
+    event: normalizeDesktopPetEventId(topic),
   };
 }
 

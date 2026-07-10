@@ -876,6 +876,10 @@ export default function ChatClient() {
     }, [urlId]);
 
     useEffect(() => {
+        window.v8osShell?.reportActiveSession(activeConversationId);
+    }, [activeConversationId]);
+
+    useEffect(() => {
         if (newConversationIntent && CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)) {
             contextTakeoverConversationIdRef.current = null;
             setPendingContextSessionRefs([{ sessionId: contextSessionIdParam, source: "history_menu" }]);

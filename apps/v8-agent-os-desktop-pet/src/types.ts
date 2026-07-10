@@ -10,6 +10,15 @@ export type PetEmotion =
   | 'thinking'
   | 'tool_calling';
 
+export type PetGlowColor =
+  | 'default'
+  | 'neon_blue'
+  | 'emerald_green'
+  | 'crimson_red'
+  | 'cyber_purple'
+  | 'golden_amber'
+  | `#${string}`;
+
 export interface ChatMessage {
   id: string;
   sender: 'user' | 'pet';
@@ -41,10 +50,11 @@ export interface PetSettings {
   rate: number; // 0.5 to 2.0
   voiceURI: string;
   customSystemPrompt: string;
-  floatAmplitude: number; // 0 to 20
-  floatSpeed: number; // 0.1 to 3
+  floatAmplitude: number; // 0 to 40
+  floatSpeed: number; // 0.1 to 8
   petScale: number; // 0.4 to 3.0, 0.7 keeps the current default size
-  customGlowColor: 'default' | 'neon_blue' | 'emerald_green' | 'crimson_red' | 'cyber_purple' | 'golden_amber';
+  customGlowColor: PetGlowColor;
+  glowIntensity: number; // 0 to 1
   gazeTracking: boolean;
   
   captureMode?: 'camera' | 'desktop_camera';

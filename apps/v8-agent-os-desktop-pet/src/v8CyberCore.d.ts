@@ -25,6 +25,7 @@ declare global {
       openMediaPrivacySettings?: (kind: 'microphone' | 'camera') => Promise<boolean>;
       onPrepareShutdown?: (callback: (data?: { requestId?: string }) => void) => () => void;
       onActiveSession?: (callback: (data?: { sessionId?: string | null }) => void) => () => void;
+      onDesktopPetConfigChanged?: (callback: (data?: { domain?: string; changedAt?: number }) => void) => () => void;
       onPanelExpandDirection?: (callback: (data: {
         isLeft: boolean;
         isTop: boolean;

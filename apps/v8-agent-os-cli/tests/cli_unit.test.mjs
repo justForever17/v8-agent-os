@@ -15,7 +15,14 @@ import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
-import { isNextBuildPresent, nextBuildIdPath, previewBuildLogPaths, previewRebuildStopComponentIds } from "../src/preview_commands.mjs";
+import {
+  createShellRestartLease,
+  isNextBuildPresent,
+  nextBuildIdPath,
+  previewBuildLogPaths,
+  previewRebuildStopComponentIds,
+  removeOwnedShellRestartLease,
+} from "../src/preview_commands.mjs";
 import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
@@ -170,6 +177,24 @@ test("preview build logs are written to CLI logs", () => {
 test("preview rebuild stops shell and Next servers before replacing standalone files", () => {
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web"]);
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
+});
+
+test("preview rebuild lease is atomic, bounded, and removable only by its owner", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-shell-restart-lease-"));
+  const filePath = path.join(root, "shell-restart.json");
+  try {
+    const lease = createShellRestartLease({ filePath, now: 1_000, ttlMs: 30_000 });
+    const persisted = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    assert.equal(persisted.id, lease.id);
+    assert.equal(persisted.reason, "preview_rebuild");
+    assert.equal(persisted.expiresAt, 31_000);
+    assert.equal(removeOwnedShellRestartLease({ ...lease, id: "not-owner" }), false);
+    assert.equal(fs.existsSync(filePath), true);
+    assert.equal(removeOwnedShellRestartLease(lease), true);
+    assert.equal(fs.existsSync(filePath), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("Windows root wrappers reach the CLI help without entering the app directory", { skip: process.platform !== "win32" }, () => {

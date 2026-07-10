@@ -3,7 +3,9 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { createCanonicalConfigWatcher } = require('../lib/canonical-config-watcher.cjs');
 const { createShellControlClient } = require('../lib/shell-control-client.cjs');
+const { createShellLifecycleWatchdog } = require('../lib/shell-lifecycle-watchdog.cjs');
 
 let mainWindow = null;
 let tray = null;
@@ -14,6 +16,8 @@ let companionClosedSize = { width: 380, height: 380 };
 let shuttingDown = false;
 let preExpansionBounds = null;
 let shellControlClient = null;
+let shellLifecycleWatchdog = null;
+let canonicalConfigWatcher = null;
 let lastShellActiveSessionId = '';
 let lastPetStatus = { state: 'waiting_v8os', activeSessionId: null };
 let shutdownTimer = null;
@@ -212,10 +216,24 @@ function reportPetStatus(state, activeSessionId = lastPetStatus.activeSessionId)
 
 function startShellControlClient() {
   if (shellControlClient) return;
+  if (MANAGED_BY_SHELL && !shellLifecycleWatchdog) {
+    shellLifecycleWatchdog = createShellLifecycleWatchdog({
+      isControlConnected: () => Boolean(shellControlClient?.isConnected()),
+      onShellUnavailable(event) {
+        if (shuttingDown) return;
+        console.warn('[CyberCore Desktop] Shell process unavailable; closing managed desktop pet', event);
+        safeShutdown({ source: event.reason });
+      },
+    });
+  }
   shellControlClient = createShellControlClient({
     onConnected() {
+      shellLifecycleWatchdog?.markConnected();
       reportPetStatus(lastPetStatus.state, lastPetStatus.activeSessionId);
       sendToRenderer('v8-desktop:shell-active-session', { sessionId: lastShellActiveSessionId || null });
+    },
+    onDisconnected() {
+      shellLifecycleWatchdog?.markDisconnected();
     },
     onMessage(message) {
       if (message.type === 'active-session') {
@@ -229,6 +247,17 @@ function startShellControlClient() {
     },
   });
   shellControlClient.start();
+  shellLifecycleWatchdog?.markDisconnected();
+}
+
+function startCanonicalConfigWatcher() {
+  if (canonicalConfigWatcher) return;
+  canonicalConfigWatcher = createCanonicalConfigWatcher({
+    onChange(payload) {
+      sendToRenderer('v8-desktop:config-changed', payload);
+    },
+  });
+  canonicalConfigWatcher.start();
 }
 
 function requestDesktopPetSettings() {
@@ -259,6 +288,7 @@ function finalizeShutdown(reason = 'renderer_ready') {
   tray = null;
   shellControlClient?.stop();
   shellControlClient = null;
+  removeOwnedDesktopPetProcessDescriptor();
   app.exit(0);
   return true;
 }
@@ -266,6 +296,8 @@ function finalizeShutdown(reason = 'renderer_ready') {
 function safeShutdown(options = {}) {
   if (shuttingDown) return true;
   shuttingDown = true;
+  shellLifecycleWatchdog?.stop();
+  shellLifecycleWatchdog = null;
   shutdownRequestId = String(options.requestId || `pet-${Date.now()}`);
   reportPetStatus('stopping');
   sendPrepareShutdown(shutdownRequestId);
@@ -623,6 +655,7 @@ if (!hasSingleInstanceLock) {
     writeDesktopPetProcessDescriptor();
     setupPermissionHandlers();
     startShellControlClient();
+    startCanonicalConfigWatcher();
     void createMainWindow();
     if (!MANAGED_BY_SHELL) createTray();
     globalShortcut.register('Control+Alt+V', showOrFocusWindow);
@@ -635,6 +668,10 @@ if (!hasSingleInstanceLock) {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  canonicalConfigWatcher?.stop();
+  canonicalConfigWatcher = null;
+  shellLifecycleWatchdog?.stop();
+  shellLifecycleWatchdog = null;
   shellControlClient?.stop();
   shellControlClient = null;
   removeOwnedDesktopPetProcessDescriptor();

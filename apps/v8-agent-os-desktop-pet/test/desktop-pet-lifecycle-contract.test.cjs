@@ -15,6 +15,18 @@ test('desktop pet auto-connects with bounded retries and loopback-only local ser
   assert.doesNotMatch(serverSource, /httpServer\.listen\(PORT, "0\.0\.0\.0"/);
 });
 
+test('managed desktop pet follows unexpected Shell process loss but tolerates preview restart leases', () => {
+  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
+  const watchdogSource = fs.readFileSync(path.join(petRoot, 'lib', 'shell-lifecycle-watchdog.cjs'), 'utf8');
+
+  assert.match(mainSource, /createShellLifecycleWatchdog/);
+  assert.match(mainSource, /safeShutdown\(\{ source: event\.reason \}\)/);
+  assert.match(mainSource, /function finalizeShutdown[\s\S]*removeOwnedDesktopPetProcessDescriptor\(\)[\s\S]*app\.exit\(0\)/);
+  assert.match(watchdogSource, /shell-restart\.json/);
+  assert.match(watchdogSource, /preview_rebuild/);
+  assert.match(watchdogSource, /shell_process_exited/);
+});
+
 test('desktop pet settings and shutdown use the Shell control contract', () => {
   const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
   const preloadSource = fs.readFileSync(path.join(petRoot, 'electron', 'preload.cjs'), 'utf8');
@@ -24,6 +36,25 @@ test('desktop pet settings and shutdown use the Shell control contract', () => {
   assert.doesNotMatch(mainSource, /v8-desktop:open-admin'[\s\S]{0,180}shell\.openExternal\(url\)/);
   assert.match(preloadSource, /shutdownReady/);
   assert.match(preloadSource, /onActiveSession/);
+});
+
+test('desktop pet hot-applies canonical config changes through the Admin BFF', () => {
+  const mainSource = fs.readFileSync(path.join(petRoot, 'electron', 'main.cjs'), 'utf8');
+  const preloadSource = fs.readFileSync(path.join(petRoot, 'electron', 'preload.cjs'), 'utf8');
+  const appSource = fs.readFileSync(path.join(petRoot, 'src', 'App.tsx'), 'utf8');
+  const petSource = fs.readFileSync(path.join(petRoot, 'src', 'components', 'CyberPet.tsx'), 'utf8');
+
+  assert.match(mainSource, /createCanonicalConfigWatcher/);
+  assert.match(mainSource, /v8-desktop:config-changed/);
+  assert.match(preloadSource, /onDesktopPetConfigChanged/);
+  assert.match(appSource, /onDesktopPetConfigChanged/);
+  assert.match(appSource, /getDesktopPetConfig/);
+  assert.match(appSource, /glowIntensity/);
+  assert.match(appSource, /preset === 'energy'/);
+  assert.match(appSource, /voiceRules !== null/);
+  assert.doesNotMatch(appSource, /return normalized\.length \? normalized : DEFAULT_V8_EVENT_RULES/);
+  assert.match(petSource, /colorWithAlpha/);
+  assert.match(petSource, /settings\.glowIntensity/);
 });
 
 test('desktop pet event rules use structured event ids and keep legacy text read-only', () => {

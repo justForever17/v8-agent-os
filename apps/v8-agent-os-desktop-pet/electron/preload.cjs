@@ -37,6 +37,15 @@ contextBridge.exposeInMainWorld('v8CyberCore', {
     ipcRenderer.on('v8-desktop:shell-active-session', listener);
     return () => ipcRenderer.off('v8-desktop:shell-active-session', listener);
   },
+  onDesktopPetConfigChanged: (callback) => {
+    const listener = (_event, data) => {
+      try {
+        callback?.(data);
+      } catch {}
+    };
+    ipcRenderer.on('v8-desktop:config-changed', listener);
+    return () => ipcRenderer.off('v8-desktop:config-changed', listener);
+  },
   onPanelExpandDirection: (callback) => {
     const listener = (_event, data) => {
       try {

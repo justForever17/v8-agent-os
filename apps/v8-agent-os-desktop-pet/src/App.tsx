@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   expandLegacyDesktopPetEvents,
   normalizeDesktopPetEventId,
@@ -24,7 +24,7 @@ import {
   AlertTriangle 
 } from 'lucide-react';
 import CyberPet from './components/CyberPet';
-import { ChatMessage, PetEmotion, SystemMetric, PetSettings } from './types';
+import { ChatMessage, PetEmotion, SystemMetric, PetSettings, type PetGlowColor } from './types';
 import { V8DesktopClientAdapter, V8AuthSession, V8Conversation, V8Project } from './lib/v8DesktopClient';
 import type { V8DesktopPetConfig } from './lib/v8DesktopClient';
 import { isEventVoiceEnabled, normalizeAttachmentCapture, normalizeEventVoiceMode } from './lib/desktopPetConfigContract';
@@ -186,7 +186,7 @@ function parseV8EventRules(value: string | undefined): V8EventRule[] {
         } satisfies V8EventRule));
       })
       .filter(Boolean) as V8EventRule[];
-    return normalized.length ? normalized : DEFAULT_V8_EVENT_RULES;
+    return normalized;
   } catch {
     return DEFAULT_V8_EVENT_RULES;
   }
@@ -205,7 +205,8 @@ function normalizePetEmotion(value: unknown): PetEmotion {
 }
 
 function normalizeDesktopPetVoiceRules(config: V8DesktopPetConfig, voiceEnabled: boolean) {
-  const rules = Array.isArray(config.eventVoice?.customRules) ? config.eventVoice.customRules : [];
+  if (!Array.isArray(config.eventVoice?.customRules)) return null;
+  const rules = config.eventVoice.customRules;
   const normalized = rules
     .flatMap((item) => {
       const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
@@ -219,27 +220,27 @@ function normalizeDesktopPetVoiceRules(config: V8DesktopPetConfig, voiceEnabled:
       } satisfies V8EventRule));
     })
     .filter(Boolean) as V8EventRule[];
-  return normalized.length ? normalized : null;
+  return normalized;
 }
 
-function normalizeGlowColor(value: unknown, fallback: PetSettings['customGlowColor']) {
+function normalizeGlowColor(value: unknown, fallback: PetGlowColor): PetGlowColor {
   const normalized = String(value || '').trim();
-  const allowed: PetSettings['customGlowColor'][] = ['default', 'neon_blue', 'emerald_green', 'crimson_red', 'cyber_purple', 'golden_amber'];
-  if (allowed.includes(normalized as PetSettings['customGlowColor'])) {
-    return normalized as PetSettings['customGlowColor'];
+  const allowed: PetGlowColor[] = ['default', 'neon_blue', 'emerald_green', 'crimson_red', 'cyber_purple', 'golden_amber'];
+  if (allowed.includes(normalized as PetGlowColor)) {
+    return normalized as PetGlowColor;
   }
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(normalized)) return normalized as PetGlowColor;
   return fallback;
 }
 
-function mapEffectSpectrumToGlowColor(config: V8DesktopPetConfig, fallback: PetSettings['customGlowColor']) {
-  const explicit = config.effectSpectrum?.customGlowColor
-    ? normalizeGlowColor(config.effectSpectrum.customGlowColor, fallback)
-    : fallback;
-  if (config.effectSpectrum?.customGlowColor) return explicit;
-  const preset = String(config.effectSpectrum?.preset || '').trim();
+function mapEffectSpectrumToGlowColor(config: V8DesktopPetConfig, fallback: PetGlowColor) {
+  if (!config.effectSpectrum) return fallback;
+  const customGlowColor = String(config.effectSpectrum.customGlowColor || '').trim();
+  if (customGlowColor) return normalizeGlowColor(customGlowColor, fallback);
+  const preset = String(config.effectSpectrum.preset || '').trim();
   if (preset === 'focus') return 'cyber_purple';
-  if (preset === 'vivid') return 'neon_blue';
-  return fallback;
+  if (preset === 'energy' || preset === 'vivid') return 'neon_blue';
+  return 'default';
 }
 
 function unpackDesktopPetConfig(payload: { data?: V8DesktopPetConfig } | V8DesktopPetConfig): V8DesktopPetConfig {
@@ -443,7 +444,8 @@ If the user uploaded an image representation (which represents what you 'see' th
     floatAmplitude: Number(localStorage.getItem('v8.cybercore.floatAmplitude') || '8'),
     floatSpeed: Number(localStorage.getItem('v8.cybercore.floatSpeed') || '1.0'),
     petScale: Number(localStorage.getItem('v8.cybercore.petScale') || '0.7'),
-    customGlowColor: (localStorage.getItem('v8.cybercore.customGlowColor') as PetSettings['customGlowColor']) || 'default',
+    customGlowColor: (localStorage.getItem('v8.cybercore.customGlowColor') as PetGlowColor) || 'default',
+    glowIntensity: Number(localStorage.getItem('v8.cybercore.glowIntensity') || '0.75'),
     gazeTracking: localStorage.getItem('v8.cybercore.gazeTracking') !== 'false',
     captureMode: (localStorage.getItem('v8.cybercore.captureMode') as PetSettings['captureMode']) || 'desktop_camera',
     attachmentCapture: {
@@ -529,6 +531,7 @@ If the user uploaded an image representation (which represents what you 'see' th
   const shellActiveConversationIdRef = useRef('');
   const v8ConnectInFlightRef = useRef<Promise<boolean> | null>(null);
   const v8ReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const desktopPetConfigRequestRef = useRef(0);
   const shutdownReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const petSessionStateRef = useRef<DesktopPetSessionState>(petSessionState);
   const v8SeenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -595,6 +598,7 @@ If the user uploaded an image representation (which represents what you 'see' th
     localStorage.setItem('v8.cybercore.floatAmplitude', String(settings.floatAmplitude));
     localStorage.setItem('v8.cybercore.floatSpeed', String(settings.floatSpeed));
     localStorage.setItem('v8.cybercore.customGlowColor', settings.customGlowColor || 'default');
+    localStorage.setItem('v8.cybercore.glowIntensity', String(settings.glowIntensity ?? 0.75));
     localStorage.setItem('v8.cybercore.gazeTracking', String(settings.gazeTracking));
     localStorage.setItem('v8.cybercore.edgeTtsVoice', settings.edgeTtsVoice || '');
     localStorage.setItem('v8.cybercore.v8AdminBaseUrl', settings.v8AdminBaseUrl || '');
@@ -617,6 +621,7 @@ If the user uploaded an image representation (which represents what you 'see' th
     settings.floatAmplitude,
     settings.floatSpeed,
     settings.customGlowColor,
+    settings.glowIntensity,
     settings.gazeTracking,
     settings.edgeTtsVoice,
     settings.v8AdminBaseUrl,
@@ -833,11 +838,13 @@ If the user uploaded an image representation (which represents what you 'see' th
     }
   };
 
-  const refreshDesktopPetConfig = async () => {
+  const refreshDesktopPetConfig = useCallback(async (source = 'runtime_sync') => {
     const client = v8ClientRef.current;
     if (!client?.getSession()) return;
+    const requestId = ++desktopPetConfigRequestRef.current;
     try {
       const payload = await client.getDesktopPetConfig();
+      if (requestId !== desktopPetConfigRequestRef.current) return;
       const config = unpackDesktopPetConfig(payload);
       const appearance = config.appearance || {};
       const eventVoice = config.eventVoice || {};
@@ -845,24 +852,36 @@ If the user uploaded an image representation (which represents what you 'see' th
       const eventVoiceMode = voiceEnabled ? normalizeEventVoiceMode(eventVoice.mode) : 'muted';
       const voiceRules = normalizeDesktopPetVoiceRules(config, voiceEnabled);
       const attachmentCapture = normalizeAttachmentCapture(config.attachmentCapture);
+      const nextAppearance = {
+        petScale: clampFiniteNumber(appearance.petScale, settingsRef.current.petScale || 0.7, 0.4, 3),
+        floatAmplitude: clampFiniteNumber(appearance.floatAmplitude, settingsRef.current.floatAmplitude ?? 8, 0, 40),
+        floatSpeed: clampFiniteNumber(appearance.floatSpeed, settingsRef.current.floatSpeed || 1, 0.1, 8),
+        customGlowColor: mapEffectSpectrumToGlowColor(config, settingsRef.current.customGlowColor || 'default'),
+        glowIntensity: clampFiniteNumber(config.effectSpectrum?.intensity, settingsRef.current.glowIntensity ?? 0.75, 0, 1),
+      };
       setSettings((current) => ({
         ...current,
-        petScale: clampFiniteNumber(appearance.petScale, current.petScale || 0.7, 0.4, 3),
-        floatAmplitude: clampFiniteNumber(appearance.floatAmplitude, current.floatAmplitude ?? 8, 0, 24),
-        floatSpeed: clampFiniteNumber(appearance.floatSpeed, current.floatSpeed || 1, 0.1, 3),
-        customGlowColor: mapEffectSpectrumToGlowColor(config, current.customGlowColor || 'default'),
+        ...nextAppearance,
         eventVoiceMode,
         eventVoiceVoiceRef: typeof eventVoice.voiceRef === 'string' ? eventVoice.voiceRef : current.eventVoiceVoiceRef,
         speakVoiceTags: eventVoice.speakVoiceTags !== false,
         speakSupervisorReplies: eventVoice.speakSupervisorReplies !== false,
-        v8EventRulesJson: voiceRules ? JSON.stringify(voiceRules, null, 2) : current.v8EventRulesJson,
+        v8EventRulesJson: voiceRules !== null ? JSON.stringify(voiceRules, null, 2) : current.v8EventRulesJson,
         captureMode: attachmentCapture.includeDesktopScreenshot ? 'desktop_camera' : 'camera',
         attachmentCapture,
       }));
+      console.info(`[V8OS Desktop Pet] canonical config applied (${source})`, nextAppearance);
     } catch (error) {
       console.warn('Desktop pet config sync failed:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    return window.v8CyberCore?.onDesktopPetConfigChanged?.((event) => {
+      if (event?.domain && event.domain !== 'desktop-pet') return;
+      void refreshDesktopPetConfig('canonical_change');
+    });
+  }, [refreshDesktopPetConfig]);
 
   const connectV8 = async () => {
     if (v8ConnectInFlightRef.current) return v8ConnectInFlightRef.current;

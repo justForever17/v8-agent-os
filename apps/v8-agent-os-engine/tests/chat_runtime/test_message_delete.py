@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
+from unittest.mock import patch
 
+from api import session_workflow_routes
 from core.database import DatabaseManager
+from erc import chat_canonical_transcript
 
 
 def test_delete_canonical_message_by_node_alias_removes_durable_transcript(tmp_path: Path) -> None:
@@ -117,3 +122,50 @@ def test_projection_tombstone_blocks_future_incremental_resurrection(tmp_path: P
     assert result["deleted"] is True
     assert test_db.get_chat_canonical_messages_since(session_id, since) == []
     assert "assistant-local-placeholder" in test_db.get_chat_message_deletions_since(session_id, since)
+
+
+def test_timeline_sync_reprojects_historical_inline_think_without_rewriting_row(tmp_path: Path) -> None:
+    test_db = DatabaseManager(tmp_path / "message-sync-inline-think.sqlite3")
+    session_id = "session-sync-inline-think"
+    since = "1970-01-01T00:00:00+00:00"
+    test_db.create_or_update_session(session_id, "Inline think sync")
+    test_db.create_run_record(run_id="run_1", session_id=session_id, run_type="chat", status="completed")
+    test_db.create_chat_canonical_message(
+        message_id="canon_msg_1",
+        session_id=session_id,
+        run_id="run_1",
+        ordinal=1,
+        role="assistant",
+        state="completed",
+        nodes=[
+            {
+                "id": "canon_msg_1:text",
+                "kind": "narrative",
+                "role": "assistant",
+                "content": "<think>private chain</think>Visible answer",
+            }
+        ],
+        content_text="<think>private chain</think>Visible answer",
+    )
+    stored_before = test_db.get_chat_canonical_message("canon_msg_1")
+
+    with (
+        patch.object(session_workflow_routes, "db", test_db),
+        patch.object(chat_canonical_transcript, "db", test_db),
+    ):
+        payload = asyncio.run(session_workflow_routes.get_session_timeline_sync(session_id, since))
+
+    assistant = payload["messages"][0]
+    narrative_nodes = [node for node in assistant["nodes"] if node.get("kind") == "narrative"]
+    reasoning_nodes = [node for node in assistant["nodes"] if node.get("executionType") == "reasoning"]
+    assert assistant["content"] == "Visible answer"
+    assert assistant["reasoningContent"] == "private chain"
+    assert narrative_nodes[0]["content"] == "Visible answer"
+    assert reasoning_nodes[0]["content"] == "private chain"
+    assert "<think" not in json.dumps(narrative_nodes, ensure_ascii=False).lower()
+
+    stored_after = test_db.get_chat_canonical_message("canon_msg_1")
+    assert stored_after["version"] == stored_before["version"] == 1
+    assert stored_after["created_at"] == stored_before["created_at"]
+    assert stored_after["updated_at"] == stored_before["updated_at"]
+    assert stored_after["nodes"] == stored_before["nodes"]

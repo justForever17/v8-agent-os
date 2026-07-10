@@ -120,6 +120,7 @@ _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "fetch_skill_instructions",
     "delegation_broker",
     "memory_broker",
+    "session_context_broker",
     "research_broker",
     "runtime_broker",
     "spec_broker",
@@ -229,6 +230,7 @@ class ChatPreparedRequest:
     task_shape_hint: dict[str, Any] = field(default_factory=dict)
     skill_references: list[dict[str, str]] = field(default_factory=list)
     context_mentions: list[dict[str, str]] = field(default_factory=list)
+    context_session_refs: list[dict[str, str]] = field(default_factory=list)
     explicit_subagent_families: list[str] = field(default_factory=list)
     planner_plan: dict[str, Any] | None = None
     live_audit_context: dict[str, Any] = field(default_factory=dict)
@@ -1401,6 +1403,23 @@ class ChatRuntime:
             )
         return normalized
 
+    @staticmethod
+    def _normalize_context_session_refs(request: ChatRequest) -> list[dict[str, str]]:
+        request_data = request.data
+        selected = getattr(request_data, "context_session_refs", None) if request_data else None
+        normalized: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in list(selected or []):
+            session_id = str(getattr(item, "session_id", "") or "").strip()
+            source = str(getattr(item, "source", "") or "").strip()
+            if not session_id or source != "history_menu" or session_id in seen:
+                continue
+            seen.add(session_id)
+            normalized.append({"sessionId": session_id, "source": source})
+            if len(normalized) >= 3:
+                break
+        return normalized
+
     def _normalize_context_mentions(self, request: ChatRequest, *, skill_references: list[dict[str, str]]) -> list[dict[str, str]]:
         request_data = request.data
         selected = getattr(request_data, "context_mentions", None) if request_data else None
@@ -1647,10 +1666,18 @@ class ChatRuntime:
         planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
         context_mentions: list[dict[str, str]],
+        context_session_refs: list[dict[str, str]],
         planner_dispatch_mode: str = "suggest",
         spec_continuation: dict[str, Any] | None = None,
     ) -> None:
-        if not command_preset and not skill_references and not context_mentions and not spec_mode and not spec_command:
+        if (
+            not command_preset
+            and not skill_references
+            and not context_mentions
+            and not context_session_refs
+            and not spec_mode
+            and not spec_command
+        ):
             return
 
         for message in reversed(lc_messages):
@@ -1660,6 +1687,20 @@ class ChatRuntime:
                 continue
 
             wrapped_sections: list[str] = []
+            if context_session_refs:
+                reference_lines = [
+                    "[SESSION CONTEXT REFERENCES]",
+                    "These IDs point to historical V8OS evidence only. The current user request has highest priority.",
+                    "Your first tool call MUST be session_context_broker for the first unread sourceSessionId, then read the remaining references in order.",
+                    "Do not inherit workspace, permission, checkpoint, run, approval, or runtime episode state from an old session.",
+                    "If any read fails, surface that failure and do not claim that the session was taken over.",
+                ]
+                for reference in context_session_refs:
+                    reference_lines.append(
+                        f"- sourceSessionId: {reference.get('sessionId')} | source: {reference.get('source')}"
+                    )
+                reference_lines.append("[/SESSION CONTEXT REFERENCES]")
+                wrapped_sections.append("\n".join(reference_lines))
             if spec_mode:
                 continuation = spec_continuation if isinstance(spec_continuation, dict) else {}
                 continuation_spec_id = str(continuation.get("specId") or continuation.get("spec_id") or "").strip()
@@ -3944,6 +3985,7 @@ class ChatRuntime:
         spec_command = self._normalize_spec_command(request)
         live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
         explicit_runtime_episode_requested = self._detect_explicit_runtime_episode_request(self._latest_user_content(request))
+        context_session_refs = self._normalize_context_session_refs(request)
         if live_audit_requested or explicit_runtime_episode_requested:
             task_planning_mode = True
             planner_mode = "force"
@@ -3967,6 +4009,7 @@ class ChatRuntime:
             planner_intent_diagnostics=planner_intent_diagnostics,
             skill_references=skill_references,
             context_mentions=context_mentions,
+            context_session_refs=context_session_refs,
         )
 
         request.session_id = session_id
@@ -4013,6 +4056,7 @@ class ChatRuntime:
             explicit_engineering_requested=explicit_engineering_requested,
             skill_references=skill_references,
             context_mentions=context_mentions,
+            context_session_refs=context_session_refs,
             explicit_subagent_families=explicit_subagent_families,
             live_audit_context={
                 "runtimeSubagentClosureLiveAudit": bool(
@@ -4639,6 +4683,9 @@ class ChatRuntime:
         context_mentions = getattr(chat_run.prepared, "context_mentions", None) or []
         if context_mentions:
             metadata["contextMentions"] = list(context_mentions)
+        context_session_refs = list(getattr(chat_run.prepared, "context_session_refs", None) or [])
+        if context_session_refs:
+            metadata["contextSessionRefs"] = context_session_refs
         explicit_subagent_families = getattr(chat_run.prepared, "explicit_subagent_families", None) or []
         if explicit_subagent_families:
             metadata["explicitSubagentFamilies"] = list(explicit_subagent_families)
@@ -4680,6 +4727,7 @@ class ChatRuntime:
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
                 **({"contextMentions": list(metadata.get("contextMentions") or [])} if isinstance(metadata.get("contextMentions"), list) and metadata.get("contextMentions") else {}),
+                **({"contextSessionRefs": list(metadata.get("contextSessionRefs") or [])} if isinstance(metadata.get("contextSessionRefs"), list) and metadata.get("contextSessionRefs") else {}),
                 **({"explicitSubagentFamilies": list(metadata.get("explicitSubagentFamilies") or [])} if isinstance(metadata.get("explicitSubagentFamilies"), list) and metadata.get("explicitSubagentFamilies") else {}),
                 **({"attachments": attachments} if attachments else {}),
             }
@@ -4811,6 +4859,17 @@ class ChatRuntime:
                     agent_id=None,
                     node="input_recorder",
                 )
+            if context_session_refs:
+                chat_run.emit_runtime_event(
+                    "chat.context_session_refs.applied",
+                    {
+                        "messageId": user_message_id,
+                        "references": context_session_refs,
+                        "authority": "historical_evidence_only",
+                    },
+                    agent_id=None,
+                    node="input_recorder",
+                )
             workflow_ledger_service.record_step_inputs(
                 chat_run.active_run_id,
                 inputs={
@@ -4828,6 +4887,7 @@ class ChatRuntime:
                     "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
                     "skill_references": list(chat_run.prepared.skill_references),
                     "context_mentions": list(context_mentions),
+                    "context_session_refs": context_session_refs,
                     "explicit_subagent_families": list(explicit_subagent_families),
                 },
             )
@@ -4939,6 +4999,8 @@ class ChatRuntime:
             "task_planning_mode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
             "specMode": bool(getattr(chat_run.prepared, "spec_mode", False)),
             "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
+            "contextSessionRefs": list(chat_run.prepared.context_session_refs),
+            "context_session_refs": list(chat_run.prepared.context_session_refs),
         }
         prepared_spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
         prepared_spec_brief = (
@@ -5190,6 +5252,7 @@ class ChatRuntime:
             task_shape_hint=chat_run.prepared.task_shape_hint,
             explicit_subagent_families=chat_run.prepared.explicit_subagent_families,
             context_mentions=chat_run.prepared.context_mentions,
+            context_session_refs=chat_run.prepared.context_session_refs,
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
@@ -5254,6 +5317,7 @@ class ChatRuntime:
             task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
             context_mentions=snapshot.get("context_mentions") if isinstance(snapshot.get("context_mentions"), list) else chat_run.prepared.context_mentions,
+            context_session_refs=snapshot.get("context_session_refs") if isinstance(snapshot.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
@@ -5360,6 +5424,7 @@ class ChatRuntime:
             task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
             context_mentions=snapshot.get("context_mentions") if isinstance(snapshot.get("context_mentions"), list) else chat_run.prepared.context_mentions,
+            context_session_refs=snapshot.get("context_session_refs") if isinstance(snapshot.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
@@ -5434,6 +5499,7 @@ class ChatRuntime:
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
             context_mentions=snapshot_dict.get("context_mentions") if isinstance(snapshot_dict.get("context_mentions"), list) else chat_run.prepared.context_mentions,
+            context_session_refs=snapshot_dict.get("context_session_refs") if isinstance(snapshot_dict.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
             recursion_limit=self._recursion_limit(),
             transport=chat_run.transport,
         )
@@ -7873,6 +7939,88 @@ class ChatRuntime:
         return {key: val for key, val in compact.items() if val not in (None, "", [], {})}
 
     @classmethod
+    def _compact_runtime_broker_result(cls, value: Any) -> Any:
+        candidate = cls._coerce_json_like_value(value)
+        if not isinstance(candidate, dict):
+            return value
+        update = candidate.get("update") if isinstance(candidate.get("update"), dict) else {}
+        route_context = (
+            update.get("current_route_context")
+            if isinstance(update.get("current_route_context"), dict)
+            else {}
+        )
+        route_keys = (
+            "runtimeId",
+            "runtimeKind",
+            "runId",
+            "episodeId",
+            "episodeIds",
+            "state",
+            "status",
+            "nextAction",
+            "reason",
+            "failureReason",
+            "recoverable",
+            "resultRef",
+            "artifactRefs",
+            "proofRefs",
+            "handoffRefs",
+            "taskBriefId",
+            "delegationId",
+            "specId",
+            "phase",
+        )
+        compact_route_context: dict[str, Any] = {}
+        for key in route_keys:
+            item = route_context.get(key)
+            if item in (None, "", [], {}):
+                continue
+            if isinstance(item, str):
+                item = cls._trim_preview_text(item, limit=2400)[0]
+            elif isinstance(item, list):
+                item = [
+                    {
+                        field: entry.get(field)
+                        for field in (
+                            "id",
+                            "kind",
+                            "status",
+                            "state",
+                            "summary",
+                            "compactSummary",
+                            "resultRef",
+                            "artifactRefs",
+                            "proofRefs",
+                            "failureReason",
+                            "error",
+                        )
+                        if entry.get(field) not in (None, "", [], {})
+                    }
+                    if isinstance(entry, dict)
+                    else cls._trim_preview_text(str(entry), limit=600)[0]
+                    for entry in item[:12]
+                ]
+            compact_route_context[key] = item
+
+        message_previews: list[str] = []
+        for message in list(update.get("messages") or [])[-3:]:
+            content = getattr(message, "content", None)
+            if content is None and isinstance(message, dict):
+                content = message.get("content")
+            preview = cls._trim_preview_text(str(content or ""), limit=2400)[0]
+            if preview:
+                message_previews.append(preview)
+
+        compact = {
+            "goto": candidate.get("goto"),
+            "summary": message_previews[-1] if message_previews else None,
+            "messages": message_previews,
+            "plannerDispatchStatus": update.get("planner_dispatch_status"),
+            "routeContext": compact_route_context,
+        }
+        return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
+
+    @classmethod
     def _compact_tool_result_value(cls, tool_name: str, value: Any) -> Any:
         normalized_tool_name = str(tool_name or "").strip().lower()
         raw_value = getattr(value, "content", value)
@@ -7890,6 +8038,8 @@ class ChatRuntime:
             return cls._compact_command_session_broker_result(jsonable)
         if normalized_tool_name == "delegation_broker":
             return cls._compact_delegation_broker_result(jsonable)
+        if normalized_tool_name == "runtime_broker":
+            return cls._compact_runtime_broker_result(jsonable)
         if normalized_tool_name == "web_broker":
             return cls._compact_web_broker_result(jsonable)
         if normalized_tool_name == "s3_broker":

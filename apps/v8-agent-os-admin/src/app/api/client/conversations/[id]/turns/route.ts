@@ -27,6 +27,9 @@ export async function GET(
         searchParams.set("before", before);
     }
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
+    const compactSurface = req.nextUrl.searchParams.get("compact") === "1"
+        || req.nextUrl.searchParams.get("surface") === "phone"
+        || req.nextUrl.searchParams.get("surface") === "web";
 
     try {
         const turnsResponse = await fetch(`${ENGINE_URL}/sessions/${id}/turns?${searchParams.toString()}`, {
@@ -42,7 +45,7 @@ export async function GET(
 
         const data = asRecord(await turnsResponse.json().catch(() => ({})));
         const rawMessages = Array.isArray(data.messages) ? data.messages : [];
-        const messages = rawMessages.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl }));
+        const messages = rawMessages.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl, compactSurface }));
 
         return NextResponse.json({
             sessionId: id,

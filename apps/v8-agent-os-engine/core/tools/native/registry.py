@@ -26,6 +26,7 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "request_peer_help",
         ),
     ),
+    ("conversation_history", ("session_context_broker",)),
     ("extensions", ("mcp_server_config",)),
     ("spec", ("spec_broker",)),
     (

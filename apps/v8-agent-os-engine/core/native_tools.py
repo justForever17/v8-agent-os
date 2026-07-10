@@ -100,6 +100,7 @@ from core.tools.native.creative_media import *  # creative media tool family com
 from core.tools.native.creative_media_psd import *  # creative media PSD tool family compatibility exports
 from core.tools.native.delegation import *  # delegation broker tool family compatibility exports
 from core.tools.native.runtime import *  # runtime broker tool family compatibility exports
+from core.tools.native.session_context import *  # V8OS session context broker compatibility exports
 from core.tools.native.mcp import *  # MCP config tool family compatibility exports
 from core.tools.native.computer_use import *  # computer use tool family compatibility exports
 from core.tools.native.memory import *  # memory broker tool family compatibility exports

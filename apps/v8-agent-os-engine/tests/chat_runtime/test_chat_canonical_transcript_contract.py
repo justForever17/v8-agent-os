@@ -709,6 +709,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
                 command_preset_hash="hash-123",
                 task_planning_mode=True,
                 skill_references=[{"name": "algorithmic-art", "path": "C:/Users/sunny/.agents/skills/algorithmic-art"}],
+                context_session_refs=[{"sessionId": "session-source-1", "source": "history_menu"}],
             ),
             is_resume_request=False,
             existing_binding=None,
@@ -725,6 +726,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual((metadata.get("commandPreset") or {}).get("name"), "test4")
         self.assertTrue(metadata.get("taskPlanningMode"))
         self.assertEqual((metadata.get("skillReferences") or [{}])[0].get("name"), "algorithmic-art")
+        self.assertEqual((metadata.get("contextSessionRefs") or [{}])[0].get("sessionId"), "session-source-1")
         self.assertEqual((metadata.get("attachments") or [{}])[0].get("name"), "demo.txt")
 
     def test_builder_preserves_stable_node_timeline_and_derived_exports(self):

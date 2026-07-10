@@ -409,6 +409,15 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 }))
                 .filter((item: { name: string; description: string; path: string }) => item.name || item.path);
         }
+        if (Array.isArray(data?.contextSessionRefs) && data.contextSessionRefs.length > 0) {
+            optimisticMetadata.contextSessionRefs = data.contextSessionRefs
+                .filter((item: unknown) => item && typeof item === "object")
+                .map((item: Record<string, unknown>) => ({
+                    sessionId: typeof item.sessionId === "string" ? item.sessionId.trim() : "",
+                    source: item.source === "history_menu" ? "history_menu" : "",
+                }))
+                .filter((item: { sessionId: string; source: string }) => item.sessionId && item.source);
+        }
         const dataAttachments: Record<string, unknown>[] = Array.isArray(data?.attachments)
             ? data.attachments.filter((item: unknown): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
             : [];
@@ -462,11 +471,13 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
             const finalMessages = await streamNdjson(requestBody, newHistory);
 
             if (handlersRef.current.onFinish) handlersRef.current.onFinish(finalMessages);
+            return true;
 
         } catch (error) {
             console.error("Stream failed:", error);
             const recovered = await tryResyncConversation(data?.conversationId, "HTTP stream");
             if (!recovered && handlersRef.current.onError) handlersRef.current.onError(error as Error);
+            return false;
         } finally {
             flushPendingMessages();
             setIsLoading(false);

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
@@ -10,6 +12,8 @@ from unittest import mock
 from langchain_core.messages import AIMessage
 
 import runtimes.chat.runtime as chat_runtime_module
+import erc.chat_canonical_transcript as transcript_module
+from core.database import DatabaseManager
 from erc.runtime_context import bind_runtime_context
 from runtimes.chat.runtime import ChatRuntime, ChatStreamState
 
@@ -39,6 +43,15 @@ class FakeChatRun:
 
 class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.test_db = DatabaseManager(Path(self.temp_dir.name) / "state.db")
+        self.runtime_db_patch = mock.patch.object(chat_runtime_module, "db", self.test_db)
+        self.runtime_db_patch.start()
+        self.addCleanup(self.runtime_db_patch.stop)
+        self.transcript_db_patch = mock.patch.object(transcript_module, "db", self.test_db)
+        self.transcript_db_patch.start()
+        self.addCleanup(self.transcript_db_patch.stop)
         self.runtime = ChatRuntime()
         self.runtime._get_agent_profile = lambda _node: {"name": "智能主管", "avatar": "", "roleLabel": "主理人"}
         self.chat_run = FakeChatRun()
@@ -54,6 +67,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             new=lambda **_kwargs: None,
         )
         self.workflow_patch.start()
+        self.addCleanup(self.workflow_patch.stop)
 
     def test_final_state_extractor_never_promotes_think_only_content(self):
         think_only = {"messages": [AIMessage(content="<think>private reasoning</think>")]}
@@ -61,10 +75,6 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.runtime._extract_final_assistant_text_from_state(think_only), "")
         self.assertEqual(self.runtime._extract_final_assistant_text_from_state(mixed), "Visible answer")
-
-    def tearDown(self) -> None:
-        self.workflow_patch.stop()
-        chat_runtime_module.db.delete_session(self.chat_run.session_id)
 
     async def test_non_monotonic_stream_text_is_not_hard_appended_and_terminal_text_stays_clean(self):
         prefix = "已在工作区中找到3张JPEG格式的图片，本地路径如下：\n"
@@ -825,6 +835,37 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("line 1", compacted)
         self.assertIn("[stdout truncated", compacted)
         self.assertNotIn('"status"', compacted)
+
+    def test_runtime_broker_result_does_not_persist_full_route_context(self):
+        compacted = self.runtime._compact_tool_result_value(
+            "runtime_broker",
+            {
+                "goto": "resume_supervisor",
+                "update": {
+                    "planner_dispatch_status": {"state": "degraded_handoff_ready"},
+                    "messages": [{"content": "Engineering Runtime 已返回降级证据。"}],
+                    "current_route_context": {
+                        "runtimeId": "engineering",
+                        "episodeId": "episode-test",
+                        "handoffRefs": [
+                            {
+                                "id": "handoff-test",
+                                "status": "degraded",
+                                "compactSummary": "缺少写入证据。",
+                                "inputs": {"messages": ["x" * 800_000]},
+                            }
+                        ],
+                        "capabilityEpisodes": [{"inputs": {"messages": ["y" * 800_000]}}],
+                    },
+                },
+            },
+        )
+
+        serialized = json.dumps(compacted, ensure_ascii=False)
+        self.assertLess(len(serialized), 10_000)
+        self.assertIn("缺少写入证据", serialized)
+        self.assertNotIn('"inputs"', serialized)
+        self.assertNotIn("capabilityEpisodes", serialized)
 
     async def test_command_tool_result_agent_visible_uses_terminal_surface(self):
         await self.runtime.handle_stream_event(

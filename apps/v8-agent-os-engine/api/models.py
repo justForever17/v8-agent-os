@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -125,6 +125,18 @@ class ContextMentionSelection(BaseModel):
     source_type: Optional[str] = Field(default=None, alias="sourceType")
 
 
+class ContextSessionReference(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    session_id: str = Field(
+        alias="sessionId",
+        min_length=6,
+        max_length=181,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$",
+    )
+    source: Literal["history_menu"]
+
+
 class ChatAttachment(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -160,6 +172,11 @@ class ChatRequestData(BaseModel):
     safety_approval_mode: Optional[str] = Field(default=None, alias="safetyApprovalMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
     context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
+    context_session_refs: Optional[List[ContextSessionReference]] = Field(
+        default=None,
+        alias="contextSessionRefs",
+        max_length=3,
+    )
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
     disable_extensions_prefilter: Optional[bool] = Field(default=None, alias="disableExtensionsPrefilter")

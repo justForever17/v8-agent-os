@@ -175,7 +175,7 @@
   "web.generated.7f1bc76123": "Workspace",
   "web.generated.8095bb5671": "Copy message",
   "web.generated.80961bbc88": "Engineering runtime",
-  "web.generated.81d22a4b01": "History stays higher priority; this chooser is only for explicitly starting a new conversation.",
+  "web.generated.81d22a4b01": "Choose a workspace for the new conversation. The referenced session is historical evidence and does not transfer permissions or workspace scope.",
   "web.generated.83334919ce": "Switch to English",
   "web.generated.833b7329b7": "Ready",
   "web.generated.8467e7e315": "This browser does not support Web Audio, so voice capture is unavailable.",
@@ -367,5 +367,11 @@
   "layout.locale.label.zhCN": "简体中文",
   "layout.locale.switcher": "Language switcher",
   "layout.locale.switchToChinese": "Switch to Chinese",
-  "layout.locale.switchToEnglish": "Switch to English"
+  "layout.locale.switchToEnglish": "Switch to English",
+  "web.sidebar.copySessionId": "Copy session ID",
+  "web.sidebar.copiedSessionId": "Session ID copied",
+  "web.sidebar.deleteConversation": "Delete conversation",
+  "web.sidebar.continueInNewSession": "Continue in new conversation",
+  "web.chat.contextSessionRef": "Previous conversation",
+  "web.chat.removeContextSessionRef": "Remove previous conversation reference"
 }

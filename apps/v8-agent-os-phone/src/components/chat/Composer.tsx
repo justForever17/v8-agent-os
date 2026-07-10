@@ -27,6 +27,7 @@ import type { CommandPresetSummary, SkillReferenceSummary, SubagentFamilySummary
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
 type SafetyApprovalMode = "manual" | "reduced" | "minimal";
+type ContextSessionReference = { sessionId: string; source: "history_menu" };
 
 function fileExtension(name?: string) {
     const ext = String(name || "").split(".").pop()?.trim();
@@ -253,6 +254,8 @@ export const Composer = memo(function Composer({
     selectedCommand,
     selectedSkills,
     selectedSubagentFamilies,
+    contextSessionRefs,
+    onRemoveContextSessionRef,
     taskPlanningMode,
     onToggleTaskPlanningMode,
     safetyApprovalMode,
@@ -286,6 +289,8 @@ export const Composer = memo(function Composer({
     selectedCommand: CommandPresetSummary | null;
     selectedSkills: SkillReferenceSummary[];
     selectedSubagentFamilies: SubagentFamilySummary[];
+    contextSessionRefs: ContextSessionReference[];
+    onRemoveContextSessionRef: (sessionId: string) => void;
     taskPlanningMode: boolean;
     onToggleTaskPlanningMode: () => void;
     safetyApprovalMode: SafetyApprovalMode;
@@ -313,7 +318,7 @@ export const Composer = memo(function Composer({
     const canQueue = Boolean(hasPayload && !busy && isRunning && allowQueueWhileRunning);
     const canSend = hasPayload && !busy && (!isRunning || allowQueueWhileRunning);
     const canAct = canSend || (stopAvailable && !hasPayload);
-    const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || activeQueryMode);
+    const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || contextSessionRefs.length > 0 || activeQueryMode);
     const reasoningEffortLabelMap: Record<ReasoningEffortLevel, string> = {
         auto: t("src.components.chat.composer.reasoning_effort_auto_short"),
         low: t("src.components.chat.composer.reasoning_effort_low_short"),
@@ -421,6 +426,31 @@ export const Composer = memo(function Composer({
                         ]}
                     >
                         <View style={styles.editorFlow}>
+                            {contextSessionRefs.map((reference) => (
+                                <View
+                                    key={reference.sessionId}
+                                    style={[
+                                        styles.tokenChip,
+                                        {
+                                            backgroundColor: themeMode === "dark" ? "rgba(6,182,212,0.16)" : "rgba(6,182,212,0.12)",
+                                            borderColor: themeMode === "dark" ? "rgba(6,182,212,0.26)" : "rgba(6,182,212,0.22)",
+                                        },
+                                    ]}
+                                >
+                                    <MaterialCommunityIcons name="message-arrow-right-outline" size={11} color={colors.accent} />
+                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                        {t("shared.conversation.context_session_ref")} · {reference.sessionId.slice(0, 10)}
+                                    </Text>
+                                    <Pressable
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t("shared.conversation.remove_context_session_ref")}
+                                        onPress={() => onRemoveContextSessionRef(reference.sessionId)}
+                                        hitSlop={8}
+                                    >
+                                        <MaterialCommunityIcons name="close" size={12} color={colors.textMuted} />
+                                    </Pressable>
+                                </View>
+                            ))}
                             {selectedCommand ? (
                                 <View
                                     style={[

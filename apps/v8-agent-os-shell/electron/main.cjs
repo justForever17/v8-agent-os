@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, net, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('node:url');
 const { buildTrayMenuModel } = require('../lib/tray-menu.cjs');
 const { buildStartupHtml } = require('../lib/startup-screen.cjs');
 

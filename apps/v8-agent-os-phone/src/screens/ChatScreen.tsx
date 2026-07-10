@@ -176,6 +176,8 @@ type SendComposerOptions = {
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
 type SafetyApprovalMode = "manual" | "reduced" | "minimal";
+type ContextSessionReference = { sessionId: string; source: "history_menu" };
+const CONTEXT_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$/;
 
 type ComposerMentionItem =
     | { kind: "skill"; key: string; skill: SkillReferenceSummary }
@@ -413,6 +415,7 @@ function buildUserMessage(
         subagentFamilies: SubagentFamilySummary[];
         taskPlanningMode: boolean;
         files: UploadedWorkspaceFile[];
+        contextSessionRefs: ContextSessionReference[];
     },
     nowMs: number,
 ): ChatMessage {
@@ -458,6 +461,9 @@ function buildUserMessage(
         metadata.specMode = true;
         metadata.taskPlanningSource = "composer";
         metadata.taskPlanningRequestedByComposer = true;
+    }
+    if (options.contextSessionRefs.length > 0) {
+        metadata.contextSessionRefs = options.contextSessionRefs.map((reference) => ({ ...reference }));
     }
     if (attachments.length > 0) {
         metadata.attachments = attachments;
@@ -1279,6 +1285,7 @@ function hasRenderableMessagePayload(message: ChatMessage) {
         || composerTaskPlanning
         || (metadata.commandPreset && typeof metadata.commandPreset === "object")
         || (Array.isArray(metadata.skillReferences) && metadata.skillReferences.length > 0)
+        || (Array.isArray(metadata.contextSessionRefs) && metadata.contextSessionRefs.length > 0)
         || (Array.isArray(metadata.attachments) && metadata.attachments.length > 0)
         || countDefinedAssistantTaskProgressFields(readAssistantTaskProgress(message)) > 0,
     );
@@ -1324,6 +1331,7 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
         + (metadata.commandPreset ? 40 : 0)
         + (Array.isArray(metadata.skillReferences) ? metadata.skillReferences.length * 40 : 0)
         + (Array.isArray(metadata.contextMentions) ? metadata.contextMentions.length * 40 : 0)
+        + (Array.isArray(metadata.contextSessionRefs) ? metadata.contextSessionRefs.length * 50 : 0)
         + (Array.isArray(metadata.attachments) ? metadata.attachments.length * 80 : 0)
         + (composerTaskPlanning ? 30 : 0)
     );
@@ -1366,6 +1374,13 @@ function mergeUserStructuredMetadata(
         && localMetadata.contextMentions.length > 0
     ) {
         preservedMetadata.contextMentions = localMetadata.contextMentions;
+    }
+    if (
+        (!Array.isArray(snapshotMetadata.contextSessionRefs) || snapshotMetadata.contextSessionRefs.length === 0)
+        && Array.isArray(localMetadata.contextSessionRefs)
+        && localMetadata.contextSessionRefs.length > 0
+    ) {
+        preservedMetadata.contextSessionRefs = localMetadata.contextSessionRefs;
     }
     if (
         (!Array.isArray(snapshotMetadata.explicitSubagentFamilies) || snapshotMetadata.explicitSubagentFamilies.length === 0)
@@ -1990,8 +2005,11 @@ async function retryWithDelay<T>(fn: () => Promise<T>, retries: number, delayMs:
 }
 
 export default function ChatScreen() {
-    const params = useLocalSearchParams<{ new?: string | string[] }>();
+    const params = useLocalSearchParams<{ new?: string | string[]; contextSessionId?: string | string[] }>();
     const newConversationIntent = Array.isArray(params.new) ? params.new[0] === "1" : params.new === "1";
+    const contextSessionIdParam = String(
+        Array.isArray(params.contextSessionId) ? params.contextSessionId[0] || "" : params.contextSessionId || "",
+    ).trim();
     const {
         status,
         user,
@@ -2099,6 +2117,11 @@ export default function ChatScreen() {
     }, [status]);
 
     const [input, setInput] = useState("");
+    const [pendingContextSessionRefs, setPendingContextSessionRefs] = useState<ContextSessionReference[]>(() => (
+        newConversationIntent && CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)
+            ? [{ sessionId: contextSessionIdParam, source: "history_menu" }]
+            : []
+    ));
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -2285,9 +2308,18 @@ export default function ChatScreen() {
 
     const clearNewConversationIntent = useCallback(() => {
         if (newConversationIntent) {
-            router.replace("/chat" as Href);
+            const pendingSessionId = pendingContextSessionRefs[0]?.sessionId;
+            router.replace((pendingSessionId
+                ? `/chat?contextSessionId=${encodeURIComponent(pendingSessionId)}`
+                : "/chat") as Href);
         }
-    }, [newConversationIntent]);
+    }, [newConversationIntent, pendingContextSessionRefs]);
+
+    useEffect(() => {
+        if (CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)) {
+            setPendingContextSessionRefs([{ sessionId: contextSessionIdParam, source: "history_menu" }]);
+        }
+    }, [contextSessionIdParam]);
 
     useEffect(() => {
         runtimeRef.current = runtime;
@@ -4945,6 +4977,7 @@ export default function ChatScreen() {
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
+        setPendingContextSessionRefs([]);
         clearNewConversationIntent();
         if (canonicalSessionId === activeConversationIdRef.current) {
             return;
@@ -4978,9 +5011,20 @@ export default function ChatScreen() {
         setScopeBinding(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
+        setPendingContextSessionRefs([]);
         await setActiveConversationId(null);
         router.replace("/chat?new=1" as Href);
     }, [clearActiveConversationViewState, setActiveConversationId, stopRealtime]);
+
+    const handleContinueConversation = useCallback(async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        if (!canonicalSessionId || !CONTEXT_SESSION_ID_PATTERN.test(canonicalSessionId)) {
+            return;
+        }
+        await handleNewConversation();
+        setPendingContextSessionRefs([{ sessionId: canonicalSessionId, source: "history_menu" }]);
+        router.replace(`/chat?new=1&contextSessionId=${encodeURIComponent(canonicalSessionId)}` as Href);
+    }, [handleNewConversation]);
 
     const handleBrandPress = useCallback(async () => {
         stopRealtime();
@@ -5002,6 +5046,7 @@ export default function ChatScreen() {
         setScopeBinding(null);
         setRuntimePanelOpen(false);
         setSelectedRuntimeId("chat");
+        setPendingContextSessionRefs([]);
         await setActiveConversationId(null);
         clearNewConversationIntent();
         router.replace("/chat" as Href);
@@ -5834,6 +5879,7 @@ export default function ChatScreen() {
         const pendingSkills = [...selectedSkills];
         const pendingSubagentFamilies = [...selectedSubagentFamilies];
         const pendingFiles = [...effectiveUploadedFiles];
+        const pendingSessionRefs = [...pendingContextSessionRefs];
         const pendingTaskPlanningMode = taskPlanningMode;
         const pendingSafetyApprovalMode = safetyApprovalMode;
         if (pendingTaskPlanningMode) {
@@ -5873,6 +5919,7 @@ export default function ChatScreen() {
                 subagentFamilies: pendingSubagentFamilies,
                 taskPlanningMode: pendingTaskPlanningMode,
                 files: pendingFiles,
+                contextSessionRefs: pendingSessionRefs,
             }, engineNowMs);
             const clientMessageId = userMessage.id;
             submittedClientMessageId = clientMessageId;
@@ -5957,6 +6004,7 @@ export default function ChatScreen() {
                                 sourceType: "explicit_mention",
                             })),
                         ],
+                        contextSessionRefs: pendingSessionRefs,
                         fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                         attachments: buildUploadedFileAttachments(pendingFiles),
                         taskPlanningMode: pendingTaskPlanningMode,
@@ -5968,6 +6016,8 @@ export default function ChatScreen() {
                     throw new Error(t("src.screens.chatscreen.unable_to_submit_message"));
                 }
                 submissionAccepted = true;
+                setPendingContextSessionRefs([]);
+                router.replace("/chat" as Href);
                 setQueuedMessages((current) => current.filter((item) => item.id !== localQueueId));
                 if (submitResult.queued && submitResult.queuedMessage) {
                     upsertQueuedMessage(submitResult.queuedMessage);
@@ -6127,6 +6177,7 @@ export default function ChatScreen() {
                             sourceType: "explicit_mention",
                         })),
                     ],
+                    contextSessionRefs: pendingSessionRefs,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
                     taskPlanningMode: pendingTaskPlanningMode,
@@ -6138,6 +6189,8 @@ export default function ChatScreen() {
                 throw new Error(t("src.screens.chatscreen.unable_to_submit_message"));
             }
             submissionAccepted = true;
+            setPendingContextSessionRefs([]);
+            router.replace("/chat" as Href);
             if (submitResult.queued && submitResult.queuedMessage) {
                 upsertQueuedMessage(submitResult.queuedMessage);
                 setMessages((current) => {
@@ -6265,6 +6318,7 @@ export default function ChatScreen() {
         input,
         projection.runControlState.runId,
         projection.runControlState.status,
+        pendingContextSessionRefs,
         queuedMessages.length,
         reasoningEffort,
         reasoningEffortVisible,
@@ -6560,6 +6614,10 @@ export default function ChatScreen() {
                     selectedCommand={selectedCommand}
                     selectedSkills={selectedSkills}
                     selectedSubagentFamilies={selectedSubagentFamilies}
+                    contextSessionRefs={pendingContextSessionRefs}
+                    onRemoveContextSessionRef={(sessionId) => {
+                        setPendingContextSessionRefs((current) => current.filter((item) => item.sessionId !== sessionId));
+                    }}
                     taskPlanningMode={taskPlanningMode}
                     onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
                     safetyApprovalMode={safetyApprovalMode}
@@ -6625,7 +6683,8 @@ export default function ChatScreen() {
                                                 style={[styles.workspaceChooserCloseButton, { backgroundColor: palette.surface, borderColor: palette.border }]}
                                                 onPress={() => {
                                                     setWorkspaceChooserVisible(false);
-                                                    clearNewConversationIntent();
+                                                    setPendingContextSessionRefs([]);
+                                                    router.replace("/chat" as Href);
                                                 }}
                                             >
                                                 <MaterialCommunityIcons name="close" size={18} color={palette.textMuted} />
@@ -7086,6 +7145,7 @@ export default function ChatScreen() {
                     loading={loading}
                     onClose={() => setHistoryOpen(false)}
                     onSelectConversation={(item) => void handleSelectConversation(item)}
+                    onContinueConversation={(item) => void handleContinueConversation(item)}
                     onNewConversation={() => void handleNewConversation()}
                     onDeleteConversation={(item) => handleDeleteConversation(item)}
                 />

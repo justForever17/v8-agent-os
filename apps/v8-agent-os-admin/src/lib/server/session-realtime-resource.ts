@@ -10,16 +10,86 @@ type JsonRecord = Record<string, unknown>;
 type SurfaceNormalizationOptions = {
     publicBaseUrl?: string;
     compactPhone?: boolean;
+    compactSurface?: boolean;
     runtimeTimelineLimit?: number;
 };
 
 const DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT = 160;
+const COMPACT_SURFACE_VALUE_LIMIT = 12_000;
+const COMPACT_SURFACE_STRING_LIMIT = 8_000;
+const COMPACT_SURFACE_KEYS = [
+    "ok", "status", "state", "kind", "mode", "summary", "message", "error", "errorCode",
+    "detailRef", "resultRef", "artifactRefs", "proofRefs", "sessionId", "runId", "episodeId",
+    "taskId", "specId", "workspacePath", "path", "command", "returnCode", "finalPreview",
+    "stdoutPreview", "stderrPreview", "count", "items", "params", "target", "action",
+];
 
 const SURFACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/[^\s"'<>\\]+/gi;
 const SURFACE_RELATIVE_URL_PATTERN = /(?:^|[\s("'=])((?:\/)?(?:workspace\/[^\s"'<>\\]+|api\/workspace\/files\/[^\s"'<>\\]+|api\/client\/workspace\/files\/[^\s"'<>\\]+|api\/workspace\/resource\?[^\s"'<>\\]+|api\/client\/workspace\/resource\?[^\s"'<>\\]+|(?:v1|api(?:\/client)?)\/artifacts\/[^/\s"'<>\\]+\/content(?:\?[^\s"'<>\\]+)?))/gi;
 
 function asRecord(value: unknown): JsonRecord {
     return value && typeof value === "object" ? value as JsonRecord : {};
+}
+
+function isCompactSurface(options?: SurfaceNormalizationOptions) {
+    return Boolean(options?.compactPhone || options?.compactSurface);
+}
+
+function compactSurfaceValue(value: unknown, depth = 0): unknown {
+    if (typeof value === "string") {
+        return value.length > COMPACT_SURFACE_STRING_LIMIT
+            ? `${value.slice(0, COMPACT_SURFACE_STRING_LIMIT)}\n...[surface truncated ${value.length - COMPACT_SURFACE_STRING_LIMIT} chars]`
+            : value;
+    }
+    if (value === null || value === undefined || typeof value !== "object") {
+        return value;
+    }
+    if (depth >= 3) {
+        return Array.isArray(value)
+            ? { surfaceCompacted: true, itemCount: value.length }
+            : { surfaceCompacted: true, availableKeys: Object.keys(asRecord(value)).slice(0, 20) };
+    }
+    let serialized = "";
+    try {
+        serialized = JSON.stringify(value);
+    } catch {
+        return { surfaceCompacted: true, summary: "Structured value could not be serialized." };
+    }
+    if (serialized.length <= COMPACT_SURFACE_VALUE_LIMIT) {
+        if (Array.isArray(value)) {
+            return value.map((item) => compactSurfaceValue(item, depth + 1));
+        }
+        return Object.fromEntries(
+            Object.entries(asRecord(value)).map(([key, item]) => [key, compactSurfaceValue(item, depth + 1)]),
+        );
+    }
+    if (Array.isArray(value)) {
+        return {
+            surfaceCompacted: true,
+            itemCount: value.length,
+            items: value.slice(0, 8).map((item) => compactSurfaceValue(item, depth + 1)),
+        };
+    }
+    const record = asRecord(value);
+    const compact: JsonRecord = { surfaceCompacted: true };
+    for (const key of COMPACT_SURFACE_KEYS) {
+        if (record[key] !== undefined) {
+            compact[key] = compactSurfaceValue(record[key], depth + 1);
+        }
+    }
+    compact.availableKeys = Object.keys(record).slice(0, 40);
+    return compact;
+}
+
+function normalizeRunForRealtimeSurface(raw: unknown, options?: SurfaceNormalizationOptions) {
+    const record = asRecord(raw);
+    if (!Object.keys(record).length || !isCompactSurface(options)) {
+        return raw;
+    }
+    return {
+        ...record,
+        metadata: compactSurfaceValue(record.metadata),
+    };
 }
 
 function materializeSurfaceUrl(resourceRef: AdminResourceRef | null) {
@@ -136,12 +206,29 @@ function normalizeNodeForRealtimeSurface(raw: unknown, options?: SurfaceNormaliz
         nextNode.result = normalizeSurfaceContent(record.result, options);
     }
 
+    if (isCompactSurface(options)) {
+        const executionType = String(record.executionType || record.execution_type || "").trim();
+        const toolName = String(record.toolName || record.tool_name || "").trim();
+        if (executionType === "tool_result") {
+            const visibleResult = record.agentVisibleResult ?? record.agent_visible_result;
+            const preserveCommandResult = /(?:command|terminal|system_command)/i.test(toolName);
+            nextNode.result = preserveCommandResult
+                ? compactSurfaceValue(record.result)
+                : compactSurfaceValue(visibleResult ?? record.result);
+            if (visibleResult !== undefined) {
+                nextNode.agentVisibleResult = normalizeSurfaceContent(visibleResult, options);
+            }
+        } else if (executionType === "tool_call" && record.args !== undefined) {
+            nextNode.args = compactSurfaceValue(record.args);
+        }
+    }
+
     if (record.kind === "artifact" && record.artifact) {
         nextNode.artifact = normalizeArtifactForRealtimeSurface(record.artifact, options);
     }
 
     if (Object.keys(data).length) {
-        nextNode.data = {
+        const normalizedData = {
             ...data,
             content: normalizeSurfaceContent(data.content, options),
             message: normalizeSurfaceContent(data.message, options),
@@ -152,6 +239,9 @@ function normalizeNodeForRealtimeSurface(raw: unknown, options?: SurfaceNormaliz
             previewUrl: normalizeSurfaceUrl(data.previewUrl, options),
             externalUrl: normalizeSurfaceUrl(data.externalUrl, options),
         };
+        nextNode.data = isCompactSurface(options)
+            ? compactSurfaceValue(normalizedData)
+            : normalizedData;
     }
 
     return nextNode;
@@ -309,7 +399,7 @@ export function normalizeMessageForRealtimeSurface(raw: unknown, options?: Surfa
         ? record.parts.map((part) => normalizeMessagePartForRealtimeSurface(part, options))
         : record.parts;
 
-    const normalizedContent = normalizeSurfaceContent(record.content, options);
+    const normalizedContent = normalizeSurfaceContent(record.content ?? record.content_text, options);
     const artifacts = Array.isArray(record.artifacts)
         ? record.artifacts.map((artifact) => normalizeArtifactForRealtimeSurface(artifact, options))
         : record.artifacts;
@@ -318,15 +408,43 @@ export function normalizeMessageForRealtimeSurface(raw: unknown, options?: Surfa
             .map((entry) => normalizeSurfaceUrl(entry, options) || String(entry || "").trim())
             .filter(Boolean)
         : record.images;
+    const hasStructuredNodes = Array.isArray(nodes) && nodes.length > 0;
+    const toolInvocations = Array.isArray(record.toolInvocations)
+        ? (
+            isCompactSurface(options) && hasStructuredNodes
+                ? undefined
+                : record.toolInvocations.map((item) => {
+                    const invocation = asRecord(item);
+                    return {
+                        ...invocation,
+                        args: isCompactSurface(options) ? compactSurfaceValue(invocation.args) : invocation.args,
+                        result: isCompactSurface(options) ? compactSurfaceValue(invocation.result) : invocation.result,
+                    };
+                })
+        )
+        : record.toolInvocations;
 
-    return {
+    const normalizedMessage: JsonRecord = {
         ...record,
         content: normalizedContent,
+        reasoningContent: record.reasoningContent ?? record.reasoning_text,
+        runId: record.runId ?? record.run_id,
+        createdAt: record.createdAt ?? record.created_at,
+        updatedAt: record.updatedAt ?? record.updated_at,
         nodes,
         parts,
         artifacts,
         images,
+        toolInvocations,
     };
+    if (isCompactSurface(options)) {
+        delete normalizedMessage.nodes_json;
+        delete normalizedMessage.artifacts_json;
+        delete normalizedMessage.metadata_json;
+        delete normalizedMessage.content_text;
+        delete normalizedMessage.reasoning_text;
+    }
+    return normalizedMessage;
 }
 
 function normalizeRuntimeTimelineEntry(raw: unknown, options?: SurfaceNormalizationOptions) {
@@ -349,7 +467,7 @@ function normalizeRuntimeTimelineEntry(raw: unknown, options?: SurfaceNormalizat
 
     return {
         ...record,
-        metadata: normalizedMetadata,
+        metadata: isCompactSurface(options) ? compactSurfaceValue(normalizedMetadata) : normalizedMetadata,
     };
 }
 
@@ -368,10 +486,10 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
             return value;
         }
         const normalized = value.map((entry) => normalizeRuntimeTimelineEntry(entry, options));
-        if (!options?.compactPhone) {
+        if (!isCompactSurface(options)) {
             return normalized;
         }
-        const limit = Math.max(1, Number(options.runtimeTimelineLimit || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT) || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT);
+        const limit = Math.max(1, Number(options?.runtimeTimelineLimit || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT) || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT);
         return normalized
             .slice()
             .sort((left, right) => {
@@ -405,15 +523,16 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
 
     const normalizedProjection = Object.keys(projection).length ? {
         ...projection,
-        messages: options?.compactPhone ? undefined : normalizeMessages(projection.messages),
+        messages: isCompactSurface(options) ? undefined : normalizeMessages(projection.messages),
         artifacts: normalizeArtifacts(projection.artifacts),
-        runtimeTimeline: options?.compactPhone ? undefined : normalizeRuntimeTimeline(projection.runtimeTimeline),
-        processes: options?.compactPhone ? undefined : normalizeProcesses(projection.processes),
+        runtimeTimeline: isCompactSurface(options) ? undefined : normalizeRuntimeTimeline(projection.runtimeTimeline),
+        processes: isCompactSurface(options) ? undefined : normalizeProcesses(projection.processes),
         contextReferences: normalizeContextReferences(projection.contextReferences),
     } : record.projection;
 
     const normalizedWorkflowProjection = Object.keys(workflowProjection).length ? {
         ...workflowProjection,
+        currentRun: normalizeRunForRealtimeSurface(workflowProjection.currentRun, options),
         artifacts: normalizeArtifacts(workflowProjection.artifacts),
         runtimeTimeline: normalizeRuntimeTimeline(workflowProjection.runtimeTimeline),
     } : record.workflowProjection;
@@ -429,18 +548,19 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
 
     const normalized: JsonRecord = {
         ...record,
-        messages: options?.compactPhone ? undefined : normalizeMessages(record.messages),
+        messages: isCompactSurface(options) ? undefined : normalizeMessages(record.messages),
         artifacts: normalizeArtifacts(record.artifacts),
-        runtimeTimeline: options?.compactPhone ? undefined : normalizeRuntimeTimeline(record.runtimeTimeline),
-        processes: options?.compactPhone ? undefined : normalizeProcesses(record.processes),
+        runtimeTimeline: isCompactSurface(options) ? undefined : normalizeRuntimeTimeline(record.runtimeTimeline),
+        processes: isCompactSurface(options) ? undefined : normalizeProcesses(record.processes),
+        currentRun: normalizeRunForRealtimeSurface(record.currentRun, options),
         contextReferences: normalizeContextReferences(record.contextReferences),
         projection: normalizedProjection,
         workflowProjection: normalizedWorkflowProjection,
         snapshot: normalizedSnapshot,
     };
-    if (options?.compactPhone) {
+    if (isCompactSurface(options)) {
         normalized.runtimeTimelineWindow = {
-            limit: Math.max(1, Number(options.runtimeTimelineLimit || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT) || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT),
+            limit: Math.max(1, Number(options?.runtimeTimelineLimit || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT) || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT),
             sourceCount: Array.isArray(snapshot.runtimeTimeline)
                 ? snapshot.runtimeTimeline.length
                 : Array.isArray(record.runtimeTimeline)

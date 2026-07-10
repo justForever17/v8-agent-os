@@ -21,6 +21,7 @@ from graph.supervisor_turn import (
     _runtime_recoverable_failure_final_response,
     _runtime_recoverable_failure_final_text,
     _runtime_recoverable_failure_message,
+    _session_context_broker_first_response,
     _should_hide_todo_tools_for_direct_writing,
     execute_supervisor_turn,
 )
@@ -62,6 +63,38 @@ def test_runtime_episode_handoff_ready_requires_resume_terminal_state():
         }
     )
 
+
+def test_session_context_refs_force_broker_calls_in_order_and_stop_after_failures():
+    tools = [SimpleNamespace(name="session_context_broker"), SimpleNamespace(name="runtime_broker")]
+    refs = [
+        {"sessionId": "session-source-1", "source": "history_menu"},
+        {"sessionId": "session-source-2", "source": "history_menu"},
+    ]
+    first_state = {
+        "messages": [HumanMessage(content="continue with these sessions")],
+        "contextSessionRefs": refs,
+    }
+
+    first = _session_context_broker_first_response(first_state, tools)
+
+    assert first is not None
+    assert first.tool_calls[0]["name"] == "session_context_broker"
+    assert first.tool_calls[0]["args"]["sourceSessionId"] == "session-source-1"
+
+    failed_result_state = {
+        "messages": [
+            HumanMessage(content="continue with these sessions"),
+            first,
+            {"role": "tool", "name": "session_context_broker", "content": '{"ok":false}'},
+        ],
+        "contextSessionRefs": refs,
+    }
+    second = _session_context_broker_first_response(failed_result_state, tools)
+
+    assert second is not None
+    assert second.tool_calls[0]["args"]["sourceSessionId"] == "session-source-2"
+    completed_state = {"messages": [*failed_result_state["messages"], second], "contextSessionRefs": refs}
+    assert _session_context_broker_first_response(completed_state, tools) is None
 
 def test_runtime_episode_degraded_handoff_ready_is_terminal():
     assert _runtime_episode_handoff_ready(

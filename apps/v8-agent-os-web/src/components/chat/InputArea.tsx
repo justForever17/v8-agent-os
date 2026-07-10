@@ -162,6 +162,13 @@ interface InputAreaProps {
     selectedAgentName?: string;
     shellClassName?: string;
     reasoningEffortControl?: ReasoningEffortControl | null;
+    contextSessionRefs?: ContextSessionReference[];
+    onRemoveContextSessionRef?: (sessionId: string) => void;
+}
+
+interface ContextSessionReference {
+    sessionId: string;
+    source: "history_menu";
 }
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
@@ -243,6 +250,8 @@ export function InputArea({
     selectedAgentName,
     shellClassName,
     reasoningEffortControl,
+    contextSessionRefs = [],
+    onRemoveContextSessionRef,
 }: InputAreaProps) {
     const t = useT();
     const [commandPresets, setCommandPresets] = React.useState<CommandPresetSummary[]>([]);
@@ -858,6 +867,9 @@ export function InputArea({
                 const nextData: Record<string, unknown> = {};
                 const pendingTaskPlanningMode = taskPlanningMode;
                 nextData.safetyApprovalMode = safetyApprovalMode;
+                if (contextSessionRefs.length > 0) {
+                    nextData.contextSessionRefs = contextSessionRefs;
+                }
                 if (uploadedUrls.length > 0) {
                     nextData.fileUrls = uploadedUrls;
                     nextData.attachments = uploadedUrls.map((url, index) => ({
@@ -999,8 +1011,26 @@ export function InputArea({
             )}
 
             <div className="flex flex-col relative">
-                {(selectedCommandPreset || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0) && (
+                {(selectedCommandPreset || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || contextSessionRefs.length > 0) && (
                     <div className="flex min-h-[28px] flex-wrap items-center gap-1 px-2.5 pt-1.5">
+                        {contextSessionRefs.map((reference) => (
+                            <div
+                                key={reference.sessionId}
+                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-2 py-0.5 text-[10px] font-medium text-cyan-700 dark:border-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-200 sm:text-[11px]"
+                                title={reference.sessionId}
+                            >
+                                <CornerDownRight className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
+                                <span className="truncate">{t("web.chat.contextSessionRef")} · {reference.sessionId.slice(0, 12)}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => onRemoveContextSessionRef?.(reference.sessionId)}
+                                    className="rounded-full text-current/70 transition hover:text-current"
+                                    aria-label={t("web.chat.removeContextSessionRef")}
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        ))}
                         {selectedCommandPreset && (
                             <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200 sm:text-[11px]">
                                 <Command className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />

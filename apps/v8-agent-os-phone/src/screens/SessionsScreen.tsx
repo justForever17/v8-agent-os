@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Alert,
     Pressable,
@@ -12,6 +12,7 @@ import { Redirect, router, type Href } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
@@ -36,6 +37,7 @@ export default function SessionsScreen() {
     const [busy, setBusy] = useState(false);
     const grouped = groupConversationsByWorkspace(conversations, locale);
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+    const suppressNextPressRef = useRef<string | null>(null);
 
     const actions: PhoneTopbarAction[] = [
         { key: "chat", icon: "chat-processing-outline", onPress: () => router.push("/chat" as Href) },
@@ -96,6 +98,40 @@ export default function SessionsScreen() {
         ]);
     };
 
+    const copySessionId = async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        if (!canonicalSessionId) return;
+        await Clipboard.setStringAsync(canonicalSessionId);
+        Alert.alert(t("shared.conversation.session_id_copied"), canonicalSessionId);
+    };
+
+    const continueInNewConversation = async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        if (!canonicalSessionId) return;
+        await setActiveConversationId(null);
+        router.push(`/chat?new=1&contextSessionId=${encodeURIComponent(canonicalSessionId)}` as Href);
+    };
+
+    const openConversationActions = (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        suppressNextPressRef.current = canonicalSessionId;
+        setTimeout(() => {
+            if (suppressNextPressRef.current === canonicalSessionId) {
+                suppressNextPressRef.current = null;
+            }
+        }, 900);
+        Alert.alert(
+            item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) }),
+            t("shared.conversation.history_actions"),
+            [
+                { text: t("shared.conversation.continue_in_new_session"), onPress: () => void continueInNewConversation(item) },
+                { text: t("shared.conversation.copy_session_id"), onPress: () => void copySessionId(item) },
+                { text: t("src.screens.chatscreen.delete_conversation"), style: "destructive", onPress: () => void remove(item) },
+                { text: t("src.screens.chatscreen.cancel"), style: "cancel" },
+            ],
+        );
+    };
+
     if (status === "booting") {
         return <LoadingScreen label={t("src.screens.sessionsscreen.syncing_conversations")} />;
     }
@@ -150,9 +186,14 @@ export default function SessionsScreen() {
                                         <Pressable
                                             key={canonicalSessionId}
                                             onPress={async () => {
+                                                if (suppressNextPressRef.current === canonicalSessionId) {
+                                                    suppressNextPressRef.current = null;
+                                                    return;
+                                                }
                                                 await setActiveConversationId(canonicalSessionId);
                                                 router.push("/chat" as Href);
                                             }}
+                                            onLongPress={() => openConversationActions(item)}
                                         >
                                             <GlassCard>
                                                 <View style={styles.itemHeader}>

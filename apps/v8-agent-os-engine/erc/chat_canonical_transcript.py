@@ -272,10 +272,10 @@ def build_canonical_chat_messages(session_id: str) -> list[dict[str, Any]]:
     rows = db.get_chat_canonical_messages(session_id)
     if not rows:
         return []
-    return _format_canonical_rows(session_id, rows)
+    return format_canonical_chat_rows(session_id, rows)
 
 
-def _format_canonical_rows(session_id: str, rows: list[CanonicalMessage]) -> list[dict[str, Any]]:
+def format_canonical_chat_rows(session_id: str, rows: list[CanonicalMessage]) -> list[dict[str, Any]]:
     artifacts = db.list_runtime_artifacts(session_id=session_id, limit=1000)
     artifacts_by_message: dict[str, list[dict[str, Any]]] = {}
     artifacts_by_run: dict[str, list[dict[str, Any]]] = {}
@@ -377,7 +377,7 @@ def build_canonical_chat_turn_window(
 
     min_ordinal = min(_row_ordinal(row) for row in selected_rows)
     return {
-        "messages": _format_canonical_rows(session_id, selected_rows),
+        "messages": format_canonical_chat_rows(session_id, selected_rows),
         "pageInfo": {
             "hasMore": db.has_chat_canonical_message_before_ordinal(session_id, min_ordinal),
             "beforeCursor": str(min_ordinal),

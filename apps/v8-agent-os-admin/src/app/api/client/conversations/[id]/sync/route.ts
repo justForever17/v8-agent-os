@@ -21,6 +21,9 @@ export async function GET(
 
     const { id } = await params;
     const since = req.nextUrl.searchParams.get("since") || "";
+    const compactSurface = req.nextUrl.searchParams.get("compact") === "1"
+        || req.nextUrl.searchParams.get("surface") === "phone"
+        || req.nextUrl.searchParams.get("surface") === "web";
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
 
     try {
@@ -37,7 +40,7 @@ export async function GET(
 
         const syncData = asRecord(await syncResponse.json().catch(() => ({})));
         const rawMessages = Array.isArray(syncData.messages) ? syncData.messages : [];
-        const messages = rawMessages.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl }));
+        const messages = rawMessages.map((message: unknown) => normalizeMessageForRealtimeSurface(message, { publicBaseUrl, compactSurface }));
             
         // We do not apply canonical source group here because these are sparse updates.
         // The mobile client doesn't heavily depend on the proxy grouping anyway, it just renders flat or handles groups itself.

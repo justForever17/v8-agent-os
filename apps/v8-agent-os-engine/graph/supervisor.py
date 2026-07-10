@@ -38,6 +38,8 @@ class AgentState(TypedDict):
     explicit_subagent_families: NotRequired[list]
     subagent_registry_snapshot: NotRequired[dict]
     context_mentions: NotRequired[list]
+    context_session_refs: NotRequired[list]
+    contextSessionRefs: NotRequired[list]
     session_id: NotRequired[str]
     sessionId: NotRequired[str]
     run_id: NotRequired[str]

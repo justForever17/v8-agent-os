@@ -44,3 +44,18 @@ def test_supervisor_initial_state_promotes_identity_to_top_level_fields():
     assert state["workspaceId"] == "workspace:test7"
     assert state["resolved_scope"] == "workspace:test7"
     assert state["resolvedScope"] == "workspace:test7"
+
+
+def test_supervisor_initial_state_preserves_context_session_refs():
+    runner = SupervisorAgentRunner()
+    refs = [{"sessionId": "session-source-1", "source": "history_menu"}]
+
+    state = runner.create_state(
+        [HumanMessage(content="continue")],
+        current_route_context={"contextSessionRefs": refs},
+        context_session_refs=refs,
+    )
+
+    assert state["context_session_refs"] == refs
+    assert state["contextSessionRefs"] == refs
+    assert state["current_route_context"]["contextSessionRefs"] == refs

@@ -6895,6 +6895,151 @@ class DatabaseManager:
             row = cursor.fetchone()
             return dict(row) if row else None
 
+    def get_session_context_evidence_snapshot(self, session_id: str) -> Dict[str, Any]:
+        """Read bounded cross-session takeover evidence through one SQLite snapshot."""
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return {}
+
+        def _json_value(value: Any, default: Any) -> Any:
+            if not value:
+                return default
+            try:
+                return json.loads(value)
+            except Exception:
+                return default
+
+        with self.get_connection() as conn:
+            scope_row = conn.execute(
+                "SELECT * FROM session_scope_bindings WHERE session_id = ?",
+                (normalized_session_id,),
+            ).fetchone()
+            workflow_row = conn.execute(
+                """
+                SELECT * FROM workflow_ledgers
+                WHERE session_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (normalized_session_id,),
+            ).fetchone()
+            run_rows = conn.execute(
+                """
+                SELECT id, run_type, status, started_at, finished_at, error_message
+                FROM run_records
+                WHERE session_id = ?
+                ORDER BY started_at DESC
+                LIMIT 4
+                """,
+                (normalized_session_id,),
+            ).fetchall()
+            episode_rows = conn.execute(
+                """
+                SELECT id, parent_episode_id, kind, state, source, reason, updated_at
+                FROM runtime_episodes
+                WHERE session_id = ?
+                ORDER BY updated_at DESC
+                LIMIT 12
+                """,
+                (normalized_session_id,),
+            ).fetchall()
+            episodes: list[dict[str, Any]] = []
+            episode_ids: list[str] = []
+            for row in episode_rows:
+                item = dict(row)
+                item["episodeId"] = item.get("id")
+                item["parentEpisodeId"] = item.get("parent_episode_id")
+                episodes.append(item)
+                if item.get("id"):
+                    episode_ids.append(str(item["id"]))
+
+            handoffs: list[dict[str, Any]] = []
+            if episode_ids:
+                placeholders = ",".join("?" for _ in episode_ids)
+                handoff_rows = conn.execute(
+                    f"""
+                    SELECT id, episode_id, status, payload_json, created_at
+                    FROM runtime_episode_handoffs
+                    WHERE episode_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    episode_ids,
+                ).fetchall()
+                for row in handoff_rows:
+                    item = dict(row)
+                    item["payload"] = _json_value(item.pop("payload_json", None), {})
+                    handoffs.append(item)
+
+            approval_rows = []
+            for row in conn.execute(
+                """
+                SELECT id, approval_kind, status, request_json, response_json, updated_at
+                FROM pending_approvals
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                """,
+                (normalized_session_id,),
+            ).fetchall():
+                item = dict(row)
+                item["request"] = _json_value(item.pop("request_json", None), {})
+                item["response"] = _json_value(item.pop("response_json", None), None)
+                approval_rows.append(item)
+
+            if not approval_rows and episode_ids:
+                input_rows = conn.execute(
+                    """
+                    SELECT id, inputs_json
+                    FROM runtime_episodes
+                    WHERE id IN ({})
+                    """.format(",".join("?" for _ in episode_ids)),
+                    episode_ids,
+                ).fetchall()
+                inputs_by_episode = {
+                    str(row["id"]): _json_value(row["inputs_json"], {})
+                    for row in input_rows
+                }
+                for episode in episodes:
+                    episode["inputs"] = inputs_by_episode.get(str(episode.get("id") or ""), {})
+
+            ask_rows = []
+            for row in conn.execute(
+                """
+                SELECT id, question, prompt, request_json, answer_text, status, resolved_at
+                FROM ask_user_interactions
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                """,
+                (normalized_session_id,),
+            ).fetchall():
+                item = dict(row)
+                item["request"] = _json_value(item.pop("request_json", None), {})
+                ask_rows.append(item)
+
+            artifact_rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT id, artifact_kind, title, workspace_path, source_path, run_id, created_at
+                    FROM runtime_artifacts
+                    WHERE session_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 16
+                    """,
+                    (normalized_session_id,),
+                ).fetchall()
+            ]
+
+        return {
+            "scopeBinding": dict(scope_row) if scope_row else None,
+            "latestWorkflow": dict(workflow_row) if workflow_row else None,
+            "runs": [dict(row) for row in run_rows],
+            "episodes": episodes,
+            "handoffs": handoffs,
+            "approvals": approval_rows,
+            "askUser": ask_rows,
+            "artifacts": artifact_rows,
+        }
+
     def close_session_scope_binding(self, session_id: str, status: str = "inactive"):
         with self.get_connection() as conn:
             conn.execute(

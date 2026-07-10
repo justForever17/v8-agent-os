@@ -251,6 +251,7 @@ const SAFETY_LABEL_KEYS = {
     active_defense: "app.admin.dashboard.safety.control.page.label.risk.activeDefense",
     binary_payload: "app.admin.dashboard.safety.control.page.label.risk.binaryPayload",
     browser_profile_access: "app.admin.dashboard.safety.control.page.label.risk.browserProfileAccess",
+    conversation_history_read: "app.admin.dashboard.safety.control.page.label.risk.conversationHistoryRead",
     credential_exfiltration: "app.admin.dashboard.safety.control.page.label.risk.credentialExfiltration",
     destructive_command: "app.admin.dashboard.safety.control.page.label.risk.destructiveCommand",
     external_mutation: "app.admin.dashboard.safety.control.page.label.risk.externalMutation",

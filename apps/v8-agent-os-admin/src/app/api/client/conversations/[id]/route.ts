@@ -43,7 +43,7 @@ export async function GET(
 
     try {
         const [snapshotResponse, historyResponse] = await Promise.all([
-            fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
+            fetch(`${ENGINE_URL}/sessions/${id}/snapshot${omitMessages ? "?compact=1" : ""}`, {
                 method: "GET",
                 headers: { "Content-Type": "application/json" },
                 cache: "no-store",
@@ -62,7 +62,7 @@ export async function GET(
 
         const snapshotData = normalizeSnapshotForRealtimeSurface(
             await snapshotResponse.json().catch(() => ({})),
-            { publicBaseUrl },
+            { publicBaseUrl, compactSurface: omitMessages },
         ) as Record<string, unknown>;
         const projectionData = omitMessages ? stripMessagesForProjection(snapshotData) : snapshotData;
         const historyData = historyResponse && historyResponse.ok

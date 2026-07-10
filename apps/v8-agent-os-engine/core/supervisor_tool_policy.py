@@ -12,6 +12,7 @@ from core.runtime_tool_access import runtime_kind_available, runtime_tool_availa
 FALLBACK_NATIVE_TOOL_NAMES = {
     "run_system_command",
     "command_session_broker",
+    "session_context_broker",
     "rpa_list_robot_scripts",
     "rpa_run_draft",
     "rpa_run_existing_flow",

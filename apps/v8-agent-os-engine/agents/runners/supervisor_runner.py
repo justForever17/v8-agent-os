@@ -76,6 +76,7 @@ class SupervisorAgentRunner:
         task_shape_hint: dict[str, Any] | None = None,
         explicit_subagent_families: list[str] | None = None,
         context_mentions: list[dict[str, Any]] | None = None,
+        context_session_refs: list[dict[str, Any]] | None = None,
         transport: str | None = None,
     ):
         state = AgentState(messages=messages)
@@ -111,6 +112,9 @@ class SupervisorAgentRunner:
             state["explicit_subagent_families"] = list(explicit_subagent_families)
         if context_mentions:
             state["context_mentions"] = list(context_mentions)
+        if context_session_refs:
+            state["context_session_refs"] = list(context_session_refs)
+            state["contextSessionRefs"] = list(context_session_refs)
         return state
 
     def build_graph_config(self, session_id: str, *, recursion_limit: int) -> dict:
@@ -129,6 +133,7 @@ class SupervisorAgentRunner:
         task_shape_hint: dict[str, Any] | None = None,
         explicit_subagent_families: list[str] | None = None,
         context_mentions: list[dict[str, Any]] | None = None,
+        context_session_refs: list[dict[str, Any]] | None = None,
         recursion_limit: int,
         transport: str | None = None,
     ):
@@ -144,6 +149,7 @@ class SupervisorAgentRunner:
                 task_shape_hint=task_shape_hint,
                 explicit_subagent_families=explicit_subagent_families,
                 context_mentions=context_mentions,
+                context_session_refs=context_session_refs,
                 transport=transport,
             ),
             graph_config=self.build_graph_config(session_id, recursion_limit=recursion_limit),

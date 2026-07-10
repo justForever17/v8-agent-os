@@ -11,6 +11,7 @@ test('shell main uses embedded CLI API instead of source-tree v8os wrappers', ()
   assert.doesNotMatch(mainSource, /v8os\.cmd/);
   assert.doesNotMatch(mainSource, /spawnSync\(['"]cmd['"]/);
   assert.doesNotMatch(mainSource, /spawn\(['"]cmd['"]/);
+  assert.match(mainSource, /require\(['"]node:url['"]\)/);
   assert.match(mainSource, /shell_api\.mjs/);
 });
 
@@ -121,6 +122,10 @@ test('Admin and Web release builds use Next standalone servers', () => {
   const runner = fs.readFileSync(path.join(repoRoot, 'scripts', 'run-next-with-managed-auth.mjs'), 'utf8');
   assert.match(runner, /findStandaloneServer/);
   assert.match(runner, /\.next["'], "standalone"/);
+  assert.match(runner, /\.next["'], "static"/);
+  assert.match(runner, /path\.join\(appDir, "public"\)/);
+  assert.match(runner, /fs\.cpSync\(source, target, \{ recursive: true \}\)/);
+  assert.match(runner, /windowsHide:\s*true/);
   assert.match(runner, /mode === "build"/);
   assert.match(runner, /"--webpack"/);
   assert.match(runner, /HOSTNAME:\s*"127\.0\.0\.1"/);

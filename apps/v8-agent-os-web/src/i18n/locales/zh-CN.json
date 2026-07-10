@@ -175,7 +175,7 @@
   "web.generated.7f1bc76123": "工作区",
   "web.generated.8095bb5671": "复制消息",
   "web.generated.80961bbc88": "工程运行时",
-  "web.generated.81d22a4b01": "历史会话始终优先；这里只用于明确开始新对话。",
+  "web.generated.81d22a4b01": "为新对话重新选择工作区；旧会话只作为历史参考，不继承权限或工作区。",
   "web.generated.83334919ce": "切换到英文",
   "web.generated.833b7329b7": "可运行",
   "web.generated.8467e7e315": "当前浏览器不支持 Web Audio，无法进行语音采集。",
@@ -367,5 +367,11 @@
   "layout.locale.label.zhCN": "简体中文",
   "layout.locale.switcher": "语言切换",
   "layout.locale.switchToChinese": "切换到中文",
-  "layout.locale.switchToEnglish": "切换到英文"
+  "layout.locale.switchToEnglish": "切换到英文",
+  "web.sidebar.copySessionId": "复制会话 ID",
+  "web.sidebar.copiedSessionId": "已复制会话 ID",
+  "web.sidebar.deleteConversation": "删除会话",
+  "web.sidebar.continueInNewSession": "在新会话中继续",
+  "web.chat.contextSessionRef": "旧会话引用",
+  "web.chat.removeContextSessionRef": "移除旧会话引用"
 }

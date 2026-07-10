@@ -3,6 +3,8 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import {
+    Copy,
+    MessagesSquare,
     Plus,
     Trash2,
     PanelLeftClose,
@@ -13,7 +15,7 @@ import {
     Loader2,
     AlertCircle,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { cn } from "@/lib/utils";
 import {
     Dialog,
@@ -40,8 +42,34 @@ export function Sidebar() {
     const [isMobileOpen, setIsMobileOpen] = useState(false);
     const [deleteId, setDeleteId] = useState<string | null>(null);
     const [isClearing, setIsClearing] = useState(false);
+    const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
+    const [copiedSessionId, setCopiedSessionId] = useState<string | null>(null);
 
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+
+    useEffect(() => {
+        if (!contextMenu) return;
+        const close = () => setContextMenu(null);
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") {
+                close();
+            }
+        };
+        window.addEventListener("click", close);
+        window.addEventListener("scroll", close, true);
+        window.addEventListener("keydown", handleKeyDown);
+        return () => {
+            window.removeEventListener("click", close);
+            window.removeEventListener("scroll", close, true);
+            window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [contextMenu]);
+
+    useEffect(() => {
+        if (!copiedSessionId) return;
+        const timer = window.setTimeout(() => setCopiedSessionId(null), 1600);
+        return () => window.clearTimeout(timer);
+    }, [copiedSessionId]);
 
     const toggleGroup = (key: string) => {
         setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -60,8 +88,34 @@ export function Sidebar() {
     };
 
     const handleNavigation = (id: string) => {
+        setContextMenu(null);
         setIsMobileOpen(false);
         router.push(`/chat?id=${id}`);
+    };
+
+    const openConversationMenu = (event: MouseEvent<HTMLDivElement>, sessionId: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const width = 184;
+        const height = 132;
+        const x = Math.min(event.clientX, Math.max(8, window.innerWidth - width - 8));
+        const y = Math.min(event.clientY, Math.max(8, window.innerHeight - height - 8));
+        setContextMenu({ sessionId, x, y });
+    };
+
+    const copySessionId = async (sessionId: string) => {
+        if (!sessionId) return;
+        await navigator.clipboard?.writeText(sessionId);
+        setCopiedSessionId(sessionId);
+        window.setTimeout(() => {
+            setContextMenu((current) => (current?.sessionId === sessionId ? null : current));
+        }, 700);
+    };
+
+    const continueInNewConversation = (sessionId: string) => {
+        setContextMenu(null);
+        setIsMobileOpen(false);
+        router.push(`/chat?new=1&contextSessionId=${encodeURIComponent(sessionId)}`);
     };
 
     const confirmDelete = async () => {
@@ -118,6 +172,7 @@ export function Sidebar() {
                                             : "text-muted-foreground hover:text-foreground",
                                     )}
                                     onClick={() => handleNavigation(canonicalSessionId)}
+                                    onContextMenu={(event) => openConversationMenu(event, canonicalSessionId)}
                                     title={conv.title || t("web.generated.fca06b0605")}
                                 >
                                     <div className="flex w-full items-center">
@@ -147,6 +202,7 @@ export function Sidebar() {
                                                     className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 scale-90 text-muted-foreground opacity-0 transition-all duration-200 hover:bg-destructive/10 hover:text-destructive group-hover:scale-100 group-hover:opacity-100"
                                                     onClick={(event) => {
                                                         event.stopPropagation();
+                                                        setContextMenu(null);
                                                         setDeleteId(canonicalSessionId);
                                                     }}
                                                 >
@@ -277,6 +333,42 @@ export function Sidebar() {
                         {renderSidebarBody(false, true)}
                     </div>
                 </>
+            )}
+
+            {contextMenu && (
+                <div
+                    className="fixed z-[80] w-[184px] overflow-hidden rounded-xl border border-border/70 bg-background/95 p-1 text-sm shadow-2xl backdrop-blur-xl"
+                    style={{ left: contextMenu.x, top: contextMenu.y }}
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
+                        onClick={() => void copySessionId(contextMenu.sessionId)}
+                    >
+                        <Copy className="h-4 w-4 text-muted-foreground" />
+                        <span>{copiedSessionId === contextMenu.sessionId ? t("web.sidebar.copiedSessionId") : t("web.sidebar.copySessionId")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
+                        onClick={() => continueInNewConversation(contextMenu.sessionId)}
+                    >
+                        <MessagesSquare className="h-4 w-4 text-muted-foreground" />
+                        <span>{t("web.sidebar.continueInNewSession")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-destructive transition hover:bg-destructive/10"
+                        onClick={() => {
+                            setDeleteId(contextMenu.sessionId);
+                            setContextMenu(null);
+                        }}
+                    >
+                        <Trash2 className="h-4 w-4" />
+                        <span>{t("web.sidebar.deleteConversation")}</span>
+                    </button>
+                </div>
             )}
 
             <Dialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>

@@ -38,6 +38,7 @@ test-results/
 # Node / Next artifacts
 **/node_modules/
 **/.next/
+.next-v8os-home/
 **/dist/
 **/build/
 **/.turbo/

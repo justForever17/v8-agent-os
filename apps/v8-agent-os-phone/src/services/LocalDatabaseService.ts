@@ -1,6 +1,8 @@
 import * as SQLite from 'expo-sqlite';
 
 const MESSAGE_DELETIONS_CURSOR_RESET_MIGRATION = 'message_deletions_cursor_reset_v1';
+const COMPACT_MESSAGE_SURFACE_MIGRATION = 'compact_message_surface_v1';
+const MAX_LOCAL_MESSAGE_JSON_CHARS = 1_000_000;
 
 export type LocalMessage = {
     id: string;
@@ -54,6 +56,29 @@ class LocalDatabaseService {
                 await this.db.runAsync(
                     'INSERT OR REPLACE INTO local_schema_migrations (key, applied_at) VALUES (?, ?)',
                     [MESSAGE_DELETIONS_CURSOR_RESET_MIGRATION, new Date().toISOString()],
+                );
+            }
+            const compactSurfaceMigration = await this.db.getFirstAsync<{ key: string }>(
+                'SELECT key FROM local_schema_migrations WHERE key = ?',
+                [COMPACT_MESSAGE_SURFACE_MIGRATION],
+            );
+            if (!compactSurfaceMigration) {
+                await this.db.runAsync(
+                    `DELETE FROM local_sync_cursors
+                     WHERE session_id IN (
+                         SELECT DISTINCT session_id
+                         FROM local_messages
+                         WHERE LENGTH(raw_json) > ?
+                     )`,
+                    [MAX_LOCAL_MESSAGE_JSON_CHARS],
+                );
+                await this.db.runAsync(
+                    'DELETE FROM local_messages WHERE LENGTH(raw_json) > ?',
+                    [MAX_LOCAL_MESSAGE_JSON_CHARS],
+                );
+                await this.db.runAsync(
+                    'INSERT OR REPLACE INTO local_schema_migrations (key, applied_at) VALUES (?, ?)',
+                    [COMPACT_MESSAGE_SURFACE_MIGRATION, new Date().toISOString()],
                 );
             }
             this.initialized = true;

@@ -553,7 +553,7 @@ export async function getConversationTimelineSync(authorizedFetch: AuthorizedFet
         sessionId: string;
     }>(
         authorizedFetch,
-        `/api/client/conversations/${encodeURIComponent(id)}/sync?since=${encodeURIComponent(since)}`,
+        `/api/client/conversations/${encodeURIComponent(id)}/sync?since=${encodeURIComponent(since)}&surface=phone&compact=1`,
         translateCurrent("src.lib.phone_api.text_16"),
         { cache: "no-store" },
     );
@@ -975,6 +975,9 @@ export async function submitChatMessage(
                 contextMentions: Array.isArray(options.contextMentions) && options.contextMentions.length > 0
                     ? options.contextMentions
                     : undefined,
+                contextSessionRefs: Array.isArray(options.contextSessionRefs) && options.contextSessionRefs.length > 0
+                    ? options.contextSessionRefs
+                    : undefined,
             },
         }),
     });
@@ -1219,6 +1222,7 @@ type SendChatOptions = {
     commandPresetName?: string | null;
     skillReferences?: SkillReferenceSummary[];
     contextMentions?: ContextMentionSummary[];
+    contextSessionRefs?: Array<{ sessionId: string; source: "history_menu" }>;
     fileUrls?: string[];
     attachments?: Array<Record<string, unknown>>;
     taskPlanningMode?: boolean;
@@ -1271,6 +1275,9 @@ export async function sendChatMessageStream(
                     : undefined,
                 contextMentions: Array.isArray(options.contextMentions) && options.contextMentions.length > 0
                     ? options.contextMentions
+                    : undefined,
+                contextSessionRefs: Array.isArray(options.contextSessionRefs) && options.contextSessionRefs.length > 0
+                    ? options.contextSessionRefs
                     : undefined,
             },
         }),

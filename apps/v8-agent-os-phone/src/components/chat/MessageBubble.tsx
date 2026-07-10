@@ -614,6 +614,17 @@ function extractSkillReferences(message: ChatMessage): SkillReferenceSummary[] {
         .filter((item) => item.name || item.path);
 }
 
+function extractContextSessionRefs(message: ChatMessage): string[] {
+    const raw = message.metadata?.contextSessionRefs;
+    if (!Array.isArray(raw)) return [];
+    return Array.from(new Set(
+        raw
+            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+            .map((item) => typeof item.sessionId === "string" ? item.sessionId.trim() : "")
+            .filter(Boolean),
+    )).slice(0, 3);
+}
+
 type UserAttachmentItem = {
     key: string;
     name: string;
@@ -812,6 +823,7 @@ export const MessageBubble = memo(function MessageBubble({
     );
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
+    const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
     const userAttachments = useMemo(
         () => extractUserAttachments(message, adminBaseUrl),
         [adminBaseUrl, message],
@@ -1107,6 +1119,7 @@ export const MessageBubble = memo(function MessageBubble({
         const metadataLines = [
             commandPresetName ? `/${commandPresetName}` : "",
             ...skillReferences.map((skill) => `@${skill.name || skill.path}`),
+            ...contextSessionRefs.map((sessionId) => `${t("shared.conversation.context_session_ref")}: ${sessionId}`),
             taskPlanningMode ? "Spec" : "",
             ...userAttachments.map((attachment) => attachment.name),
         ].filter(Boolean);
@@ -1114,7 +1127,7 @@ export const MessageBubble = memo(function MessageBubble({
             return metadataLines.join("\n");
         }
         return "";
-    }, [commandPresetName, isUser, renderableNodes, skillReferences, taskPlanningMode, t, userAttachments, userContentText]);
+    }, [commandPresetName, contextSessionRefs, isUser, renderableNodes, skillReferences, taskPlanningMode, t, userAttachments, userContentText]);
 
     useEffect(() => {
         if (!copied) {
@@ -1129,6 +1142,7 @@ export const MessageBubble = memo(function MessageBubble({
     const hasUserVisualPayload = Boolean(
         commandPresetName
         || skillReferences.length > 0
+        || contextSessionRefs.length > 0
         || taskPlanningMode
         || userAttachments.length > 0,
     );
@@ -1148,7 +1162,7 @@ export const MessageBubble = memo(function MessageBubble({
                                 end={{ x: 1, y: 1 }}
                                 style={[styles.userBubble, { shadowColor: palette.primaryDeep }]}
                             >
-                                {(commandPresetName || skillReferences.length > 0 || taskPlanningMode) && (
+                                {(commandPresetName || skillReferences.length > 0 || contextSessionRefs.length > 0 || taskPlanningMode) && (
                                     <View style={styles.userMetaRow}>
                                         {commandPresetName ? (
                                             <View style={styles.userChip}>
@@ -1160,6 +1174,14 @@ export const MessageBubble = memo(function MessageBubble({
                                             <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
                                                 <MaterialCommunityIcons name="at" size={12} color="#FFFFFF" />
                                                 <Text style={styles.userChipText}>{skill.name}</Text>
+                                            </View>
+                                        ))}
+                                        {contextSessionRefs.map((sessionId) => (
+                                            <View key={sessionId} style={styles.userChip}>
+                                                <MaterialCommunityIcons name="message-arrow-right-outline" size={12} color="#FFFFFF" />
+                                                <Text style={styles.userChipText} numberOfLines={1}>
+                                                    {t("shared.conversation.context_session_ref")} · {sessionId.slice(0, 10)}
+                                                </Text>
                                             </View>
                                         ))}
                                         {taskPlanningMode ? (

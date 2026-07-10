@@ -2100,6 +2100,7 @@
   "app.admin.dashboard.safety.control.page.label.risk.activeDefense": "Active defense event",
   "app.admin.dashboard.safety.control.page.label.risk.binaryPayload": "Binary payload",
   "app.admin.dashboard.safety.control.page.label.risk.browserProfileAccess": "Browser profile access",
+  "app.admin.dashboard.safety.control.page.label.risk.conversationHistoryRead": "Conversation history read",
   "app.admin.dashboard.safety.control.page.label.risk.credentialExfiltration": "Credential exfiltration",
   "app.admin.dashboard.safety.control.page.label.risk.destructiveCommand": "Destructive command",
   "app.admin.dashboard.safety.control.page.label.risk.externalMutation": "External mutation",

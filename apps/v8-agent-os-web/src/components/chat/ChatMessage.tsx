@@ -197,6 +197,19 @@ function extractSkillReferences(message: Message): SkillReferenceMetadata[] {
     return normalized;
 }
 
+function extractContextSessionRefs(message: Message): string[] {
+    const raw = message.metadata?.contextSessionRefs;
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+    return Array.from(new Set(
+        raw
+            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+            .map((item) => typeof item.sessionId === "string" ? item.sessionId.trim() : "")
+            .filter(Boolean),
+    )).slice(0, 3);
+}
+
 const LOOPBACK_WORKSPACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::9530)?\/workspace\/([^\s)]+)/gi;
 
 function normalizeWorkspaceLinks(content: string): string {
@@ -293,7 +306,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const taskPlanningModeEnabled = useMemo(() => hasTaskPlanningMode(message), [message]);
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
-    const shouldRenderUserMetadata = Boolean(commandPresetName || taskPlanningModeEnabled || skillReferences.length > 0);
+    const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
+    const shouldRenderUserMetadata = Boolean(commandPresetName || taskPlanningModeEnabled || skillReferences.length > 0 || contextSessionRefs.length > 0);
     const normalizedContent = useMemo(() => normalizeWorkspaceLinks(message.content || ""), [message.content]);
     const copyLabel = t("web.generated.8095bb5671");
     const deleteLabel = t("web.generated.2f98d36496");
@@ -503,6 +517,15 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                         title={skill.path || skill.description || skill.name}
                                     >
                                         @{skill.name}
+                                    </span>
+                                ))}
+                                {contextSessionRefs.map((sessionId) => (
+                                    <span
+                                        key={sessionId}
+                                        className="inline-flex items-center rounded-full border border-cyan-200/60 bg-cyan-500/20 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white backdrop-blur-sm"
+                                        title={sessionId}
+                                    >
+                                        {t("web.chat.contextSessionRef")} · {sessionId.slice(0, 12)}
                                     </span>
                                 ))}
                                 {taskPlanningModeEnabled && (

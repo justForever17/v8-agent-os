@@ -2100,6 +2100,7 @@
   "app.admin.dashboard.safety.control.page.label.risk.activeDefense": "主动防御事件",
   "app.admin.dashboard.safety.control.page.label.risk.binaryPayload": "二进制载荷",
   "app.admin.dashboard.safety.control.page.label.risk.browserProfileAccess": "浏览器资料访问",
+  "app.admin.dashboard.safety.control.page.label.risk.conversationHistoryRead": "读取会话历史",
   "app.admin.dashboard.safety.control.page.label.risk.credentialExfiltration": "凭据外发",
   "app.admin.dashboard.safety.control.page.label.risk.destructiveCommand": "破坏性命令",
   "app.admin.dashboard.safety.control.page.label.risk.externalMutation": "外部变更",

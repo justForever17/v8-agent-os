@@ -41,7 +41,23 @@ function findStandaloneServer() {
   return candidates.find((candidate) => fs.existsSync(candidate)) || "";
 }
 
+function stageStandaloneAssets(serverPath) {
+  if (!serverPath) return;
+  const standaloneAppRoot = path.dirname(serverPath);
+  const assets = [
+    [path.join(appDir, ".next", "static"), path.join(standaloneAppRoot, ".next", "static")],
+    [path.join(appDir, "public"), path.join(standaloneAppRoot, "public")],
+  ];
+  for (const [source, target] of assets) {
+    if (!fs.existsSync(source)) continue;
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.cpSync(source, target, { recursive: true });
+  }
+}
+
 const standaloneServer = mode === "start" ? findStandaloneServer() : "";
+stageStandaloneAssets(standaloneServer);
 const nextBin = path.join(appDir, "node_modules", "next", "dist", "bin", "next");
 if (!standaloneServer && !fs.existsSync(nextBin)) {
   throw new Error(`Next.js is not installed in ${appDir}, and no standalone server was found. Run npm install or build standalone first.`);
@@ -85,6 +101,7 @@ const child = spawn(process.execPath, args, {
     NEXT_TELEMETRY_DISABLED: "1",
   },
   stdio: "inherit",
+  windowsHide: true,
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

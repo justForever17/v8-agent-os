@@ -173,6 +173,13 @@ type ChatQueueSubmitResponse = {
     error?: string;
 };
 
+type ContextSessionReference = {
+    sessionId: string;
+    source: "history_menu";
+};
+
+const CONTEXT_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$/;
+
 function isLegacyChatUnsupportedPayload(value: unknown) {
     const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
     const snapshot = root.snapshot && typeof root.snapshot === "object" ? root.snapshot as Record<string, unknown> : {};
@@ -826,6 +833,7 @@ export default function ChatClient() {
     const searchParams = useSearchParams();
     const urlId = searchParams.get("id");
     const newConversationIntent = searchParams.get("new") === "1";
+    const contextSessionIdParam = String(searchParams.get("contextSessionId") || "").trim();
     const router = useRouter();
     const [localConnectError, setLocalConnectError] = useState<string | null>(null);
     const localConnectAttemptedRef = useRef(false);
@@ -852,10 +860,31 @@ export default function ChatClient() {
     // which would cause `sendMessage` to send `conversationId: null` on subsequent messages 
     // and spawn duplicate history entries.
     const [activeConversationId, setActiveConversationId] = useState<string | null>(urlId);
+    const [pendingContextSessionRefs, setPendingContextSessionRefs] = useState<ContextSessionReference[]>(() => (
+        newConversationIntent && CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)
+            ? [{ sessionId: contextSessionIdParam, source: "history_menu" }]
+            : []
+    ));
+    const contextTakeoverConversationIdRef = useRef<string | null>(null);
+    const clearPendingContextSessionRefs = useCallback(() => {
+        contextTakeoverConversationIdRef.current = null;
+        setPendingContextSessionRefs([]);
+    }, []);
 
     useEffect(() => {
         setActiveConversationId(urlId);
     }, [urlId]);
+
+    useEffect(() => {
+        if (newConversationIntent && CONTEXT_SESSION_ID_PATTERN.test(contextSessionIdParam)) {
+            contextTakeoverConversationIdRef.current = null;
+            setPendingContextSessionRefs([{ sessionId: contextSessionIdParam, source: "history_menu" }]);
+            return;
+        }
+        if (!newConversationIntent && urlId !== contextTakeoverConversationIdRef.current) {
+            clearPendingContextSessionRefs();
+        }
+    }, [clearPendingContextSessionRefs, contextSessionIdParam, newConversationIntent, urlId]);
 
     // Track which conversation is currently streaming to prevent overwriting state
     const streamingConversationIdRef = useRef<string | null>(null);
@@ -1772,6 +1801,8 @@ export default function ChatClient() {
         options?: { before?: string | null },
     ) => {
         const params = new URLSearchParams({ limit: "1" });
+        params.set("surface", "web");
+        params.set("compact", "1");
         const before = String(options?.before || "").trim();
         if (before) {
             params.set("before", before);
@@ -2204,6 +2235,9 @@ export default function ChatClient() {
             if (!newConversation?.id) {
                 throw new Error("Conversation creation failed");
             }
+            contextTakeoverConversationIdRef.current = pendingContextSessionRefs.length > 0
+                ? newConversation.id
+                : null;
             activeConversationIdRef.current = newConversation.id;
             setActiveConversationId(newConversation.id);
             setWorkspaceChooserVisible(false);
@@ -2214,7 +2248,7 @@ export default function ChatClient() {
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [createConversation, loadSessionScope, mainWorkspacePath, projects, refreshConversations, workspaceChooserBusy]);
+    }, [createConversation, loadSessionScope, mainWorkspacePath, pendingContextSessionRefs.length, projects, refreshConversations, workspaceChooserBusy]);
 
     const handleCreateProjectConversation = useCallback(async () => {
         const trimmedPath = newProjectPath.trim();
@@ -2267,6 +2301,9 @@ export default function ChatClient() {
             if (!newConversation?.id) {
                 throw new Error("Conversation creation failed");
             }
+            contextTakeoverConversationIdRef.current = pendingContextSessionRefs.length > 0
+                ? newConversation.id
+                : null;
             activeConversationIdRef.current = newConversation.id;
             setActiveConversationId(newConversation.id);
             setWorkspaceChooserVisible(false);
@@ -2277,7 +2314,7 @@ export default function ChatClient() {
         } finally {
             setWorkspaceChooserBusy(false);
         }
-    }, [createConversation, loadProjects, loadSessionScope, newProjectPath, refreshConversations, t, workspaceChooserBusy]);
+    }, [createConversation, loadProjects, loadSessionScope, newProjectPath, pendingContextSessionRefs.length, refreshConversations, t, workspaceChooserBusy]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -2658,10 +2695,15 @@ export default function ChatClient() {
         }
 
         const currentInput = input;
+        const submissionData = {
+            ...(options?.data || {}),
+            ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
+        };
         setInput(""); // Clear immediately (Optimistic)
         if (isLoading) {
             try {
-                await submitQueuedMessage(currentInput, options?.data || {});
+                await submitQueuedMessage(currentInput, submissionData);
+                clearPendingContextSessionRefs();
             } catch (error) {
                 console.error("[ChatClient] Failed to queue message:", error);
                 const errorMessage = error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f");
@@ -2684,12 +2726,17 @@ export default function ChatClient() {
         // This prevents the "Flicker" caused by state conflicts (Client vs Hook)
 
         try {
-            await sendMessage(currentInput, {
+            const accepted = await sendMessage(currentInput, {
                 agentId: undefined, // selectedAgent?.id,
                 userId: session?.user?.id,
                 ...buildScopePayload(activeConversationIdRef.current),
-                ...options?.data // Pass data (fileUrls) to sendMessage
+                ...submissionData,
             });
+            if (accepted) {
+                clearPendingContextSessionRefs();
+            } else {
+                setInput(currentInput);
+            }
         } catch (error) {
             console.error("[ChatClient] Failed to send initial message:", error);
             const errorMessage = error instanceof Error && error.message ? error.message : "";
@@ -2711,8 +2758,14 @@ export default function ChatClient() {
             }
             return;
         }
+        const submissionData = {
+            ...data,
+            ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
+        };
         if (isLoading) {
-            void submitQueuedMessage("", data).catch((error) => {
+            void submitQueuedMessage("", submissionData).then(() => {
+                clearPendingContextSessionRefs();
+            }).catch((error) => {
                 console.error("[ChatClient] Failed to queue voice audio message:", error);
                 const errorMessage = error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f");
                 if (isWorkspaceBindingErrorMessage(errorMessage)) {
@@ -2733,13 +2786,10 @@ export default function ChatClient() {
             agentId: undefined,
             userId: session?.user?.id,
             ...buildScopePayload(activeConversationIdRef.current),
-            ...data,
-        }).catch((error) => {
-            console.error("[ChatClient] Failed to send voice audio message:", error);
-            const errorMessage = error instanceof Error && error.message ? error.message : "";
-            if (isWorkspaceBindingErrorMessage(errorMessage)) {
-                setWorkspaceChooserVisible(true);
-                setQueuedMessageError(errorMessage);
+            ...submissionData,
+        }).then((accepted) => {
+            if (accepted) {
+                clearPendingContextSessionRefs();
             }
         });
     };
@@ -3048,6 +3098,7 @@ export default function ChatClient() {
                                                 size="sm"
                                                 onClick={() => {
                                                     setWorkspaceChooserVisible(false);
+                                                    clearPendingContextSessionRefs();
                                                     clearNewConversationIntent();
                                                 }}
                                             >
@@ -3241,6 +3292,16 @@ export default function ChatClient() {
                                     selectedAgentName={t("web.generated.675df2e7c7")}
                                     shellClassName="w-full"
                                     reasoningEffortControl={supervisorReasoningEffortControl}
+                                    contextSessionRefs={pendingContextSessionRefs}
+                                    onRemoveContextSessionRef={(sessionId) => {
+                                        setPendingContextSessionRefs((current) => {
+                                            const next = current.filter((item) => item.sessionId !== sessionId);
+                                            if (next.length === 0) {
+                                                contextTakeoverConversationIdRef.current = null;
+                                            }
+                                            return next;
+                                        });
+                                    }}
                                 />
                             ) : (
                                 <div className="rounded-2xl border border-dashed border-border/60 bg-background/70 px-4 py-3 text-center text-sm text-muted-foreground">

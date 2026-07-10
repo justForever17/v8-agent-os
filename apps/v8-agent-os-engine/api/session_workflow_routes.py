@@ -27,7 +27,11 @@ from core.runtime_projection import (
     project_pending_approvals,
 )
 from erc.capability_registry import capability_registry
-from erc.chat_canonical_transcript import build_canonical_chat_messages, build_canonical_chat_turn_window
+from erc.chat_canonical_transcript import (
+    build_canonical_chat_messages,
+    build_canonical_chat_turn_window,
+    format_canonical_chat_rows,
+)
 from erc.command_router import runtime_command_router
 from erc.liveness_projection import build_liveness_view
 from erc.recovery_policy import derive_recovery_class
@@ -810,6 +814,22 @@ async def get_session_snapshot(session_id: str, compact: int = 0):
     try:
         payload = runtime_command_router.get_snapshot(session_id)
         if isinstance(payload, dict):
+            runtime_timeline = payload.get("runtimeTimeline")
+            runtime_timeline_count = len(runtime_timeline) if isinstance(runtime_timeline, list) else 0
+            if compact == 1:
+                payload = {
+                    **payload,
+                    "runtimeTimeline": [],
+                    "runtimeTimelineWindow": {
+                        **(
+                            payload.get("runtimeTimelineWindow")
+                            if isinstance(payload.get("runtimeTimelineWindow"), dict)
+                            else {}
+                        ),
+                        "sourceCount": runtime_timeline_count,
+                        "compacted": True,
+                    },
+                }
             snapshot = payload.get("snapshot")
             if isinstance(snapshot, dict):
                 payload = {
@@ -821,13 +841,20 @@ async def get_session_snapshot(session_id: str, compact: int = 0):
                     },
                 }
         runtime_timeline = payload.get("runtimeTimeline") if isinstance(payload, dict) else []
+        compacted_source_count = (
+            int((payload.get("runtimeTimelineWindow") or {}).get("sourceCount") or 0)
+            if isinstance(payload, dict) and isinstance(payload.get("runtimeTimelineWindow"), dict)
+            else 0
+        )
         return _attach_profile(
             payload,
             route="engine.sessions.snapshot",
             started_at_ms=started_at_ms,
             extra={
                 "latestSeq": int(payload.get("latestSeq") or 0) if isinstance(payload, dict) else 0,
-                "runtimeTimelineCount": len(runtime_timeline) if isinstance(runtime_timeline, list) else 0,
+                "runtimeTimelineCount": compacted_source_count
+                if compact == 1
+                else (len(runtime_timeline) if isinstance(runtime_timeline, list) else 0),
             },
         )
     except Exception as e:
@@ -958,7 +985,8 @@ async def get_session_turns(
 async def get_session_timeline_sync(session_id: str, since: str):
     try:
         sync_cursor = datetime.now(timezone.utc).isoformat()
-        messages = db.get_chat_canonical_messages_since(session_id, since)
+        rows = db.get_chat_canonical_messages_since(session_id, since)
+        messages = format_canonical_chat_rows(session_id, rows)
         deletions = db.get_chat_message_deletions_since(session_id, since)
         return {
             "messages": messages,

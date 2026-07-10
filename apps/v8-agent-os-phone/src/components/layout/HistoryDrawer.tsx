@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -19,6 +20,7 @@ export function HistoryDrawer({
     loading,
     onClose,
     onSelectConversation,
+    onContinueConversation,
     onNewConversation,
     onDeleteConversation,
 }: {
@@ -29,6 +31,7 @@ export function HistoryDrawer({
     loading?: boolean;
     onClose: () => void;
     onSelectConversation: (item: ConversationSummary) => void;
+    onContinueConversation: (item: ConversationSummary) => void;
     onNewConversation: () => void;
     onDeleteConversation: (item: ConversationSummary) => void;
 }) {
@@ -39,6 +42,7 @@ export function HistoryDrawer({
     const panelWidth = Math.min(width * 0.86, 352);
     const groups = useMemo(() => groupedItems || groupConversationsByWorkspace(items, locale), [groupedItems, items, locale]);
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+    const suppressNextPressRef = useRef<string | null>(null);
 
     useEffect(() => {
         if (!visible) {
@@ -55,6 +59,33 @@ export function HistoryDrawer({
 
     const toggleGroup = (key: string) => {
         setOpenGroups((current) => ({ ...current, [key]: !current[key] }));
+    };
+
+    const copySessionId = async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        if (!canonicalSessionId) return;
+        await Clipboard.setStringAsync(canonicalSessionId);
+        Alert.alert(t("shared.conversation.session_id_copied"), canonicalSessionId);
+    };
+
+    const openConversationActions = (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        suppressNextPressRef.current = canonicalSessionId;
+        setTimeout(() => {
+            if (suppressNextPressRef.current === canonicalSessionId) {
+                suppressNextPressRef.current = null;
+            }
+        }, 900);
+        Alert.alert(
+            item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) }),
+            t("shared.conversation.history_actions"),
+            [
+                { text: t("shared.conversation.continue_in_new_session"), onPress: () => onContinueConversation(item) },
+                { text: t("shared.conversation.copy_session_id"), onPress: () => void copySessionId(item) },
+                { text: t("src.screens.chatscreen.delete_conversation"), style: "destructive", onPress: () => onDeleteConversation(item) },
+                { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
+            ],
+        );
     };
 
     return (
@@ -131,7 +162,14 @@ export function HistoryDrawer({
                                                                 styles.item,
                                                                 { backgroundColor: active ? colors.primarySoft : "transparent" },
                                                             ]}
-                                                            onPress={() => onSelectConversation(item)}
+                                                            onPress={() => {
+                                                                if (suppressNextPressRef.current === canonicalSessionId) {
+                                                                    suppressNextPressRef.current = null;
+                                                                    return;
+                                                                }
+                                                                onSelectConversation(item);
+                                                            }}
+                                                            onLongPress={() => openConversationActions(item)}
                                                         >
                                                             <MaterialCommunityIcons
                                                                 name="message-outline"

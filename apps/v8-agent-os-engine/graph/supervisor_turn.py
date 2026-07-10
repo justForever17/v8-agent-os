@@ -1,3 +1,5 @@
+import json
+import re
 import time
 from types import SimpleNamespace
 
@@ -255,6 +257,7 @@ _SPEC_MODE_INITIAL_ALLOWED_TOOL_NAMES = {
     "fetch_skill_instructions",
     "memory_broker",
     "research_broker",
+    "session_context_broker",
     "spec_broker",
     "tool_observation_detail",
     "web_broker",
@@ -264,6 +267,7 @@ _SPEC_MODE_ALLOWED_TOOL_NAMES = {
     "fetch_skill_instructions",
     "memory_broker",
     "research_broker",
+    "session_context_broker",
     "spec_broker",
     "tool_observation_detail",
     "web_broker",
@@ -271,9 +275,97 @@ _SPEC_MODE_ALLOWED_TOOL_NAMES = {
 _SPEC_MODE_EXECUTION_TOOL_NAMES = {
     "ask_user",
     "runtime_broker",
+    "session_context_broker",
     "spec_broker",
     "tool_observation_detail",
 }
+
+_SESSION_CONTEXT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$")
+
+
+def _context_session_refs_from_state(state) -> list[dict[str, str]]:
+    if not isinstance(state, dict):
+        return []
+    route_context = state.get("current_route_context") if isinstance(state.get("current_route_context"), dict) else {}
+    candidates = (
+        state.get("context_session_refs")
+        or state.get("contextSessionRefs")
+        or route_context.get("context_session_refs")
+        or route_context.get("contextSessionRefs")
+        or []
+    )
+    refs: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in list(candidates or []):
+        if not isinstance(item, dict):
+            continue
+        session_id = str(item.get("sessionId") or item.get("session_id") or "").strip()
+        source = str(item.get("source") or "").strip()
+        if source != "history_menu" or not _SESSION_CONTEXT_ID_RE.fullmatch(session_id) or session_id in seen:
+            continue
+        seen.add(session_id)
+        refs.append({"sessionId": session_id, "source": source})
+        if len(refs) >= 3:
+            break
+    return refs
+
+
+def _session_context_call_ids_since_latest_human(state) -> set[str]:
+    called: set[str] = set()
+    if not isinstance(state, dict):
+        return called
+    for message in reversed(list(state.get("messages") or [])):
+        if isinstance(message, HumanMessage):
+            break
+        if isinstance(message, dict):
+            role = str(message.get("role") or message.get("type") or "").strip().lower()
+            if role in {"human", "user"}:
+                break
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls is None and isinstance(message, dict):
+            tool_calls = message.get("tool_calls") or message.get("toolCalls")
+        for call in list(tool_calls or []):
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+            call_name = str(call.get("name") or function.get("name") or "").strip()
+            if call_name != "session_context_broker":
+                continue
+            args = call.get("args") if isinstance(call.get("args"), dict) else function.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            if isinstance(args, dict):
+                session_id = str(args.get("sourceSessionId") or "").strip()
+                if session_id:
+                    called.add(session_id)
+    return called
+
+
+def _session_context_broker_first_response(state, visible_tools) -> AIMessage | None:
+    if not _has_tool(visible_tools, "session_context_broker"):
+        return None
+    called = _session_context_call_ids_since_latest_human(state)
+    pending = next(
+        (item for item in _context_session_refs_from_state(state) if item["sessionId"] not in called),
+        None,
+    )
+    if pending is None:
+        return None
+    session_id = pending["sessionId"]
+    call_suffix = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)[-48:]
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": f"call_v8_session_context_{call_suffix}",
+                "name": "session_context_broker",
+                "args": {"sourceSessionId": session_id, "mode": "summary", "limitTurns": 6},
+            }
+        ],
+    )
 
 
 def _tool_ref_name(tool_ref) -> str:
@@ -976,6 +1068,10 @@ def execute_supervisor_turn(
             route_context=dict(state.get("current_route_context") or {}),
         )
         visible_supervisor_tools = _filter_spec_tools_for_mode(visible_supervisor_tools, state)
+        session_context_response = _session_context_broker_first_response(state, visible_supervisor_tools)
+        if session_context_response is not None:
+            extensions_runtime_service.emit_response_tool_calls(session_context_response)
+            return session_context_response
         runtime_handoff_ready = _runtime_episode_handoff_ready(state)
         runtime_handoff_needs_continuation = runtime_handoff_ready and _runtime_handoff_requires_continuation(state)
         if _is_network_supervisor_compat_transport(state) and not _compat_v8_main_chain_mode(state):

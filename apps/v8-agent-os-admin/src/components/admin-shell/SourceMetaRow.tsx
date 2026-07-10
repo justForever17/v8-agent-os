@@ -23,19 +23,19 @@ export function SourceMetaRow({
     const t = useT();
 
     return (
-        <AdminSurfaceCard className="bg-slate-50/80 p-4 dark:bg-card">
+        <AdminSurfaceCard className="bg-muted/45 p-4">
             <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline" className="border-slate-200 bg-white text-slate-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+                <Badge variant="outline" className="border-border bg-card text-muted-foreground">
                     {t("components.admin.shell.SourceMetaRow.k155ede7a")}
                 </Badge>
-                <span className="text-sm text-slate-700 dark:text-slate-300">{source}</span>
+                <span className="text-sm text-foreground">{source}</span>
                 <Badge variant={reloadRequired ? "secondary" : "outline"} className="ml-auto">
                     {reloadRequired ? t("components.admin.shell.SourceMetaRow.kc33ab52a") : t("components.admin.shell.SourceMetaRow.k0df8cfdd")}
                 </Badge>
             </div>
             <div className="mt-3 space-y-1">
                 {paths.map((path) => (
-                    <div key={path} className="font-mono text-xs text-slate-500 dark:text-slate-400">
+                    <div key={path} className="font-mono text-xs text-muted-foreground">
                         {path}
                     </div>
                 ))}

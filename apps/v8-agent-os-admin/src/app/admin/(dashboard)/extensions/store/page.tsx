@@ -134,10 +134,10 @@ function targetLabel(target: string) {
 function StoreIcon({ item }: { item: McpStoreItem }) {
     const title = item.title || item.name || "M";
     if (item.avatarUrl) {
-        return <Image src={item.avatarUrl} alt="" width={44} height={44} className="h-11 w-11 rounded-xl border border-slate-200 bg-white object-cover p-1 dark:border-white/10 dark:bg-white" unoptimized />;
+        return <Image src={item.avatarUrl} alt="" width={44} height={44} className="h-11 w-11 rounded-xl border border-border bg-card object-cover p-1 dark:border-white/10 dark:bg-card" unoptimized />;
     }
     return (
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 dark:border-white/10 dark:bg-white dark:text-slate-900">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-border bg-card text-sm font-semibold text-foreground dark:border-white/10 dark:bg-card dark:text-foreground">
             {title.charAt(0).toUpperCase()}
         </div>
     );
@@ -358,19 +358,19 @@ export default function ExtensionsStorePage() {
 
                 <div className="mx-auto w-full max-w-xl">
                     <div className="relative">
-                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/80" />
                         <Input
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
                             placeholder={activeTab === "skills" ? t("app.admin.dashboard.extensions.store.page.searchSkills") : t("app.admin.dashboard.extensions.store.page.searchMcp")}
-                            className="h-12 rounded-lg border-slate-300 bg-white pl-11 text-base shadow-sm dark:border-white/10 dark:bg-slate-950"
+                            className="h-12 rounded-lg border-input bg-card pl-11 text-base shadow-sm dark:border-white/10 dark:bg-slate-950"
                         />
                     </div>
                 </div>
 
                 <main className="space-y-6">
                     <div className="flex flex-wrap items-center gap-3">
-                        <h2 className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-slate-100">
+                        <h2 className="text-2xl font-semibold tracking-tight text-foreground dark:text-slate-100">
                             {activeTab === "skills" ? t("app.admin.dashboard.extensions.store.page.allSkills") : t("app.admin.dashboard.extensions.store.page.allMcp")}
                         </h2>
                         <Badge variant="secondary" className="rounded-full">{itemsCount}</Badge>
@@ -381,7 +381,7 @@ export default function ExtensionsStorePage() {
 
                     <div className="grid gap-5 md:grid-cols-2 2xl:grid-cols-3">
                         {loading ? Array.from({ length: 9 }).map((_, index) => (
-                            <div key={index} className="h-48 animate-pulse rounded-2xl border border-slate-200 bg-white/70 dark:border-white/10 dark:bg-white/10" />
+                            <div key={index} className="h-48 animate-pulse rounded-2xl border border-border bg-card/70 dark:border-white/10 dark:bg-card/10" />
                         )) : null}
 
                         {!loading && itemsCount === 0 ? (
@@ -393,23 +393,23 @@ export default function ExtensionsStorePage() {
                         {!loading && activeTab === "skills" ? (skills?.items || []).map((item) => (
                             <article
                                 key={item.id}
-                                className="flex min-h-48 flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md dark:border-white/10 dark:bg-slate-950 dark:hover:border-white/20"
+                                className="flex min-h-48 flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-input hover:shadow-md dark:border-white/10 dark:bg-slate-950 dark:hover:border-white/20"
                             >
                                 <div className="space-y-4">
                                     <div className="flex items-start justify-between gap-4">
                                         <div className="min-w-0">
-                                            <h3 className="truncate text-xl font-semibold text-slate-950 dark:text-slate-100">{item.name}</h3>
+                                            <h3 className="truncate text-xl font-semibold text-foreground dark:text-slate-100">{item.name}</h3>
                                         </div>
                                         <Button size="sm" onClick={() => void installSkill(item)} disabled={installingSkillId === item.id}>
                                             {installingSkillId === item.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                                             {item.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}
                                         </Button>
                                     </div>
-                                    <p className="line-clamp-3 text-base leading-7 text-slate-700 dark:text-slate-300">{item.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</p>
+                                    <p className="line-clamp-3 text-base leading-7 text-foreground dark:text-slate-300">{item.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</p>
                                 </div>
-                                <div className="mt-6 flex items-center justify-between gap-3 text-sm text-slate-500 dark:text-slate-400">
+                                <div className="mt-6 flex items-center justify-between gap-3 text-sm text-muted-foreground dark:text-muted-foreground/80">
                                     <span>{t("app.admin.dashboard.extensions.store.page.installs", { count: formatCompactNumber(item.installs) })}</span>
-                                    <button type="button" onClick={() => void openSkillDetail(item)} className="font-medium text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white">
+                                    <button type="button" onClick={() => void openSkillDetail(item)} className="font-medium text-foreground hover:text-foreground dark:text-slate-300 dark:hover:text-white">
                                         {t("app.admin.dashboard.extensions.store.page.openDetail")}
                                     </button>
                                 </div>
@@ -419,24 +419,24 @@ export default function ExtensionsStorePage() {
                         {!loading && activeTab === "mcp" ? (mcp?.items || []).map((item) => (
                             <article
                                 key={item.id}
-                                className="flex min-h-48 flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md dark:border-white/10 dark:bg-slate-950 dark:hover:border-white/20"
+                                className="flex min-h-48 flex-col justify-between rounded-2xl border border-border bg-card p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-input hover:shadow-md dark:border-white/10 dark:bg-slate-950 dark:hover:border-white/20"
                             >
                                 <div className="space-y-4">
                                     <div className="flex items-start justify-between gap-4">
                                         <div className="flex min-w-0 items-center gap-4">
                                             <StoreIcon item={item} />
                                             <div className="min-w-0">
-                                                <h3 className="truncate text-xl font-semibold text-slate-950 dark:text-slate-100">{item.title || item.name}</h3>
-                                                <div className="mt-1 text-sm font-medium text-slate-500 dark:text-slate-400">{t("app.admin.dashboard.extensions.store.page.byOwner", { owner: ownerFromName(item.name) })}</div>
+                                                <h3 className="truncate text-xl font-semibold text-foreground dark:text-slate-100">{item.title || item.name}</h3>
+                                                <div className="mt-1 text-sm font-medium text-muted-foreground dark:text-muted-foreground/80">{t("app.admin.dashboard.extensions.store.page.byOwner", { owner: ownerFromName(item.name) })}</div>
                                             </div>
                                         </div>
                                         <Button size="sm" onClick={() => void openMcpDetail(item)}>
                                             {item.installed ? t("app.admin.dashboard.extensions.store.page.reinstall") : t("app.admin.dashboard.extensions.store.page.install")}
                                         </Button>
                                     </div>
-                                    <p className="line-clamp-3 text-base leading-7 text-slate-700 dark:text-slate-300">{item.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</p>
+                                    <p className="line-clamp-3 text-base leading-7 text-foreground dark:text-slate-300">{item.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</p>
                                 </div>
-                                <div className="mt-6 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                                <div className="mt-6 flex items-center gap-2 text-sm text-muted-foreground dark:text-muted-foreground/80">
                                     <Star className="h-4 w-4" />
                                     <span>{formatCompactNumber(item.stars)}</span>
                                 </div>
@@ -452,9 +452,9 @@ export default function ExtensionsStorePage() {
                     isSwitcherVisible ? "translate-y-0 scale-100 opacity-100" : "pointer-events-none translate-y-20 scale-95 opacity-0",
                 )}
             >
-                <div className="relative flex items-center rounded-full border border-slate-200/80 bg-white/75 p-1 shadow-[0_8px_30px_rgba(0,0,0,0.12)] backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-900/75">
+                <div className="relative flex items-center rounded-full border border-border/80 bg-card/75 p-1 shadow-[0_8px_30px_rgba(0,0,0,0.12)] backdrop-blur-md dark:border-slate-800/80 dark:bg-slate-900/75">
                     <div
-                        className="absolute bottom-1 top-1 rounded-full bg-slate-950 shadow-sm transition-all duration-300 ease-out dark:bg-slate-100"
+                        className="absolute bottom-1 top-1 rounded-full bg-slate-950 shadow-sm transition-all duration-300 ease-out dark:bg-muted"
                         style={{
                             left: activeTab === "skills" ? "4px" : "calc(50% + 2px)",
                             width: "calc(50% - 6px)",
@@ -465,7 +465,7 @@ export default function ExtensionsStorePage() {
                         onClick={() => setActiveTab("skills")}
                         className={cn(
                             "relative z-10 flex items-center gap-1.5 rounded-full px-5 py-2 text-xs font-semibold transition-colors duration-300",
-                            activeTab === "skills" ? "text-white dark:text-slate-950" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200",
+                            activeTab === "skills" ? "text-white dark:text-slate-950" : "text-muted-foreground hover:text-foreground dark:text-muted-foreground/80 dark:hover:text-slate-200",
                         )}
                     >
                         <Sparkles className="h-3.5 w-3.5" />
@@ -476,7 +476,7 @@ export default function ExtensionsStorePage() {
                         onClick={() => setActiveTab("mcp")}
                         className={cn(
                             "relative z-10 flex items-center gap-1.5 rounded-full px-5 py-2 text-xs font-semibold transition-colors duration-300",
-                            activeTab === "mcp" ? "text-white dark:text-slate-950" : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200",
+                            activeTab === "mcp" ? "text-white dark:text-slate-950" : "text-muted-foreground hover:text-foreground dark:text-muted-foreground/80 dark:hover:text-slate-200",
                         )}
                     >
                         <Bot className="h-3.5 w-3.5" />
@@ -499,10 +499,10 @@ export default function ExtensionsStorePage() {
                                 <DialogTitle>{skillDetail?.name || selectedSkill.name}</DialogTitle>
                                 <DialogDescription>{skillDetail?.description || selectedSkill.description || t("app.admin.dashboard.extensions.store.page.noDescription")}</DialogDescription>
                             </DialogHeader>
-                            {skillDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
+                            {skillDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/50 p-4 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
                             {skillDetailError ? <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{skillDetailError}</div> : null}
                             {skillDetail?.markdown ? (
-                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm leading-7 text-slate-800 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
+                                <div className="rounded-xl border border-border bg-muted/50 p-5 text-sm leading-7 text-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
                                     <ReactMarkdown>{skillDetail.markdown}</ReactMarkdown>
                                 </div>
                             ) : null}
@@ -532,17 +532,17 @@ export default function ExtensionsStorePage() {
                                 <DialogTitle>{selectedMcp.title || selectedMcp.name}</DialogTitle>
                                 <DialogDescription>{mcpDetail?.description || selectedMcp.description || selectedMcp.name}</DialogDescription>
                             </DialogHeader>
-                            {mcpDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
+                            {mcpDetailLoading ? <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/50 p-4 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300"><Loader2 className="h-4 w-4 animate-spin" />{t("app.admin.dashboard.extensions.store.page.loadingDetail")}</div> : null}
                             {mcpDetailError ? <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200">{mcpDetailError}</div> : null}
                             {mcpDetail?.warnings?.map((warning) => <div key={warning} className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">{warning}</div>)}
                             {mcpDetail?.markdown ? (
-                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm leading-7 text-slate-800 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
+                                <div className="rounded-xl border border-border bg-muted/50 p-5 text-sm leading-7 text-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
                                     <ReactMarkdown>{mcpDetail.markdown}</ReactMarkdown>
                                 </div>
                             ) : null}
 
                             {mcpDetail && mcpDetail.candidates.length > 0 ? (
-                                <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                                <div className="space-y-4 rounded-xl border border-border bg-card p-4 dark:border-white/10 dark:bg-white/[0.03]">
                                     <div className="space-y-2">
                                         <Label>{t("app.admin.dashboard.extensions.store.page.installMethod")}</Label>
                                         <Select value={selectedCandidate?.id || ""} onValueChange={(value) => {
@@ -564,7 +564,7 @@ export default function ExtensionsStorePage() {
 
                                     {selectedCandidate ? (
                                         <>
-                                            <div className="grid gap-2 rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">
+                                            <div className="grid gap-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground dark:bg-white/[0.04] dark:text-slate-300">
                                                 <div><span className="font-medium">{t("app.admin.dashboard.extensions.store.page.serverName")}</span> {selectedCandidate.serverName}</div>
                                                 <div><span className="font-medium">{t("app.admin.dashboard.extensions.store.page.transport")}</span> {selectedCandidate.transport}</div>
                                             </div>
@@ -589,7 +589,7 @@ export default function ExtensionsStorePage() {
                                                     ))}
                                                 </div>
                                             ) : (
-                                                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
+                                                <div className="rounded-lg border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
                                                     {t("app.admin.dashboard.extensions.store.page.noRequirements")}
                                                 </div>
                                             )}

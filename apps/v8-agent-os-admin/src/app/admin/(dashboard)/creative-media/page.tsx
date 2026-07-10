@@ -14,6 +14,7 @@ import { ModelSelect, type AdminModelSelectOption } from "@/components/models/Mo
 import { useT } from "@/components/providers/LocaleProvider";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 import { useDebugMode } from "@/lib/useDebugMode";
 
 type CreativeMediaData = {
@@ -327,16 +328,16 @@ export default function CreativeMediaPage() {
     const [modelPreferencesOpen, setModelPreferencesOpen] = useState(false);
     const [workingWorkOrderId, setWorkingWorkOrderId] = useState("");
 
-    const fetchDiagnostics = useCallback(async () => {
+    const fetchDiagnostics = useCallback(async (force = false) => {
         try {
             const [characterBibles, keyframes, editPlans, renders, qualityJobs, costLedger, safetyEvents] = await Promise.all([
-                fetch("/api/creative-media/character-bibles", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/keyframes", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/edit-plans", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/renders", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/quality-jobs", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/cost-ledger", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
-                fetch("/api/creative-media/safety-events", { cache: "no-store" }).then((res) => res.json().catch(() => ({}))),
+                fetchAdminJson("/api/creative-media/character-bibles", { force, ttlMs: 10_000 }),
+                fetchAdminJson("/api/creative-media/keyframes", { force, ttlMs: 10_000 }),
+                fetchAdminJson("/api/creative-media/edit-plans", { force, ttlMs: 10_000 }),
+                fetchAdminJson("/api/creative-media/renders", { force, ttlMs: 10_000 }),
+                fetchAdminJson("/api/creative-media/quality-jobs", { force, ttlMs: 10_000 }),
+                fetchAdminJson("/api/creative-media/cost-ledger", { force, ttlMs: 10_000 }),
+                fetchAdminJson("/api/creative-media/safety-events", { force, ttlMs: 10_000 }),
             ]);
             const diagnostics = normalizeCreativeDiagnostics({ characterBibles, keyframes, editPlans, renders, qualityJobs, costLedger, safetyEvents });
             setData((current) => ({ ...current, ...diagnostics }));
@@ -345,14 +346,13 @@ export default function CreativeMediaPage() {
         }
     }, []);
 
-    const fetchData = useCallback(async () => {
+    const fetchData = useCallback(async (force = false) => {
         setLoading(true);
         setError("");
         try {
-            const response = await fetch("/api/creative-media/bootstrap", { cache: "no-store" });
-            const payload = response.ok ? await response.json().catch(() => ({})) : {};
+            const payload = await fetchAdminJson<Record<string, unknown>>("/api/creative-media/bootstrap", { force });
             setData(normalizeCreativeBootstrap(payload));
-            void fetchDiagnostics();
+            void fetchDiagnostics(force);
         } catch (err) {
             setError(String(err));
         } finally {
@@ -452,7 +452,7 @@ export default function CreativeMediaPage() {
             if (!response.ok) {
                 throw new Error(String(payload.detail || payload.error || response.statusText));
             }
-            await fetchData();
+            await fetchData(true);
         } catch (err) {
             setError(`${t("app.admin.dashboard.creativeMedia.workOrderActionFailed")}: ${String(err)}`);
         } finally {
@@ -466,7 +466,7 @@ export default function CreativeMediaPage() {
                 title="app.admin.dashboard.creativeMedia.title"
                 description="app.admin.dashboard.creativeMedia.description"
                 actions={(
-                    <Button variant="outline" onClick={() => void fetchData()} disabled={loading}>
+                    <Button variant="outline" onClick={() => void fetchData(true)} disabled={loading}>
                         <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                         {t("app.admin.dashboard.creativeMedia.refresh")}
                     </Button>
@@ -488,7 +488,7 @@ export default function CreativeMediaPage() {
                     { key: "keyframes", label: t("app.admin.dashboard.creativeMedia.statKeyframesJobs"), value: `${data.keyframes.length} / ${data.jobs.length}`, icon: Clapperboard },
                     { key: "qualityCost", label: t("app.admin.dashboard.creativeMedia.statQualityCost"), value: `${data.qualityJobs.length} / ${data.costEntries.length}`, icon: Clapperboard },
                 ].map((item) => (
-                    <Card key={item.key} className="border-slate-200 bg-white/90 shadow-sm">
+                    <Card key={item.key} className="border-border bg-card/90 shadow-sm">
                         <CardContent className="flex items-center gap-3 p-4">
                             <item.icon className="h-5 w-5 text-muted-foreground" />
                             <div>
@@ -500,7 +500,7 @@ export default function CreativeMediaPage() {
                 ))}
             </div>
 
-            <Card className="border-slate-200 bg-white/95 shadow-sm">
+            <Card className="border-border bg-card/95 shadow-sm">
                 <CardHeader>
                     <CardTitle>
                         <AdminHoverInfo
@@ -606,7 +606,7 @@ export default function CreativeMediaPage() {
                 </CardContent>
             </Card>
 
-            <Card className="border-slate-200 bg-white/95 shadow-sm">
+            <Card className="border-border bg-card/95 shadow-sm">
                 <CardHeader>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>

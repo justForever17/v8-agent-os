@@ -17,13 +17,14 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 
 const RPAWorkbench = dynamic(
     () => import("@/components/rpa/RPAWorkbench").then((mod) => mod.RPAWorkbench),
     {
         loading: () => (
-            <div className="flex min-h-[280px] items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+            <div className="flex min-h-[280px] items-center justify-center rounded-2xl border border-border bg-card shadow-sm">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         ),
     }
@@ -73,14 +74,14 @@ export default function RpaRuntimePage() {
     const [runtimeSaving, setRuntimeSaving] = useState(false);
     const [featurePackMissing, setFeaturePackMissing] = useState(false);
 
-    const loadData = async () => {
+    const loadData = async (force = false) => {
         setLoading(true);
         try {
             const [config, modelList, capabilitySnapshot, featurePacks] = await Promise.all([
-                fetchConfigDomain<RpaData>("rpa"),
-                fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
-                fetch("/api/runtime-capabilities", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
-                fetch("/api/runtime-feature-packs", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
+                fetchConfigDomain<RpaData>("rpa", { force }),
+                fetchAdminJson<ModelOption[]>("/api/models", { force }),
+                fetchAdminJson<Record<string, unknown>>("/api/runtime-capabilities", { force }),
+                fetchAdminJson<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs", { force }),
             ]);
             setEnvelope(config);
             setModels(Array.isArray(modelList) ? modelList : []);
@@ -133,7 +134,7 @@ export default function RpaRuntimePage() {
                     notes: enabled ? "Admin rpa enabled" : "Admin rpa disabled",
                 }),
             });
-            await loadData();
+            await loadData(true);
         } finally {
             setRuntimeSaving(false);
         }
@@ -142,7 +143,7 @@ export default function RpaRuntimePage() {
     if (loading || !envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         );
     }
@@ -209,17 +210,17 @@ export default function RpaRuntimePage() {
 
             <ConfigCard title={"app.admin.dashboard.rpa.page.kb6443896"} description={"app.admin.dashboard.rpa.page.kb0b0faae"}>
                 <div className="space-y-3">
-                    <div className="grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.rpa.page.k73b0e79c")}</div>
-                            <div className="mt-1 text-base font-semibold text-slate-900">
+                    <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
+                        <div className="rounded-2xl border border-border bg-muted/80 p-4">
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.rpa.page.k73b0e79c")}</div>
+                            <div className="mt-1 text-base font-semibold text-foreground">
                                 {runtimeCapability?.policy?.enabled === false ? t("app.admin.dashboard.rpa.page.kc6ff9900") : t("app.admin.dashboard.rpa.page.kdb6c0cc1")}
                             </div>
-                            <div className="mt-2 text-xs text-slate-500">
+                            <div className="mt-2 text-xs text-muted-foreground">
                             {runtimeCapability?.displayName || "RPA Runtime"} · {runtimeCapability?.summary || t("app.admin.dashboard.rpa.page.k846fddf9")}
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-xs leading-6 text-slate-600">
+                        <div className="rounded-2xl border border-border bg-muted/80 p-4 text-xs leading-6 text-muted-foreground">
                             <div>{t("app.admin.dashboard.rpa.page.k660c8c15")}{runtimeCapability?.policy?.autoRoute === false ? t("app.admin.dashboard.rpa.page.k574ff3b2") : t("app.admin.dashboard.rpa.page.k85549844")}</div>
                             <div>{t("app.admin.dashboard.rpa.page.k320d306e")}{runtimeCapability?.policy?.exposeDirectTools === false ? t("app.admin.dashboard.rpa.page.k574ff3b2") : t("app.admin.dashboard.rpa.page.k85549844")}</div>
                             <div>{t("app.admin.dashboard.rpa.page.kb135dd5b")}</div>

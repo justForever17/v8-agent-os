@@ -376,6 +376,9 @@ def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
 
 
 STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
+    "ui": {
+        "theme": "system",
+    },
     "models": {
         "version": 2,
         "providers": {},
@@ -3073,6 +3076,21 @@ class StorageManager:
             dict(data or {}),
         )
         payload["music"].setdefault("tracks", [])
+        self._write_config_payload(payload)
+
+    def get_ui_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("ui") or {}
+        theme = str((data if isinstance(data, dict) else {}).get("theme") or "system").strip().lower()
+        if theme not in {"light", "dark", "system"}:
+            theme = "system"
+        return {"theme": theme}
+
+    def save_ui_config(self, data: Dict[str, Any]):
+        theme = str((data or {}).get("theme") or "system").strip().lower()
+        if theme not in {"light", "dark", "system"}:
+            theme = "system"
+        payload = self._read_config_payload()
+        payload["ui"] = {"theme": theme}
         self._write_config_payload(payload)
 
     # --- Project Registry Accessors ---

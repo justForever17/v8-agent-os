@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from "recharts";
 import { Activity, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 import { formatLocalDateTime } from "@/lib/time";
 import { useT } from "@/components/providers/LocaleProvider";
 import { RuntimeDashboardCards } from "@/components/runtime/RuntimeDashboardCards";
@@ -217,12 +218,11 @@ export default function DashboardPage() {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        fetch(`/api/stats?days=${DASHBOARD_WINDOW_DAYS}`, { cache: "no-store" })
-            .then(async (res) => {
-                const payload = await res.json().catch(() => ({}));
+        fetchAdminJson(`/api/stats?days=${DASHBOARD_WINDOW_DAYS}`, { ttlMs: 10_000 })
+            .then((payload) => {
                 const normalized = normalizeDashboardData(payload);
                 setData(normalized.data);
-                setTelemetryError(!res.ok || normalized.error ? String(normalized.error || res.statusText || res.status) : "");
+                setTelemetryError(normalized.error ? String(normalized.error) : "");
                 setLoading(false);
             })
             .catch(err => {

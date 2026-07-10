@@ -317,7 +317,7 @@ export default function SupervisorPage() {
                             {t("app.admin.dashboard.supervisor.page.k48284369")}
                             {debugMode && (
                                 <AdminHoverInfo content={t("app.admin.dashboard.supervisor.page.configSourceHint")}>
-                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200">{t("app.admin.dashboard.supervisor.page.configSourceTrigger")}</span>
+                                    <span className="cursor-help rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted">{t("app.admin.dashboard.supervisor.page.configSourceTrigger")}</span>
                                 </AdminHoverInfo>
                             )}
                         </p>
@@ -358,7 +358,7 @@ export default function SupervisorPage() {
                                                     <button type="button" className="absolute right-2 top-2 rounded-full bg-black/60 p-1 text-white transition-colors hover:bg-black/75" onClick={() => setAvatar("")}>
                                                         <X className="h-5 w-5" />
                                                     </button>
-                                                </> : <Crown className="h-10 w-10 text-slate-400" />}
+                                                </> : <Crown className="h-10 w-10 text-muted-foreground/80" />}
                                         </div>
                                         <div className="flex-1 space-y-3">
                                             <div className="flex flex-wrap gap-2">
@@ -420,7 +420,7 @@ export default function SupervisorPage() {
 
                             </div>
 
-                            <div className="grid gap-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 p-4 md:grid-cols-2">
+                            <div className="grid gap-4 rounded-2xl border border-dashed border-border bg-muted/70 p-4 md:grid-cols-2">
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between gap-3">
                                         <AdminHoverInfo

@@ -860,27 +860,35 @@ class ComputerUseRuntime:
             app_adapter=self._app_adapter_summary(),
         )
 
-    def _capability_truth_payload(self, *, capability_matrix: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def _capability_truth_payload(
+        self,
+        *,
+        capability_matrix: Dict[str, Any] | None = None,
+        browser_lane: Dict[str, Any] | None = None,
+        app_catalog_summary: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         matrix = dict(capability_matrix or self._runtime_capability_matrix())
-        app_catalog_summary = {}
+        resolved_app_catalog_summary = dict(app_catalog_summary or {})
         selector_stats = {}
-        try:
-            app_catalog_summary = self.app_catalog.summary(include_running=True)
-        except Exception:
-            app_catalog_summary = {}
+        if app_catalog_summary is None:
+            try:
+                resolved_app_catalog_summary = self.app_catalog.summary(include_running=True)
+            except Exception:
+                resolved_app_catalog_summary = {}
         try:
             selector_stats = self.driver.selector_metrics()
         except Exception:
             selector_stats = {}
+        resolved_browser_lane = dict(browser_lane or self.browser_automation.availability_summary() or {})
         truth = build_capability_truth(
             capability_matrix=matrix,
-            browser_lane=self.browser_automation.availability_summary(),
-            app_catalog_summary=app_catalog_summary,
+            browser_lane=resolved_browser_lane,
+            app_catalog_summary=resolved_app_catalog_summary,
             app_adapter_summary=self._app_adapter_summary(),
         )
         truth["experienceAssets"] = experience_asset_inventory(
             app_profiles=self.app_profiles.list_profiles(),
-            app_catalog_summary=app_catalog_summary,
+            app_catalog_summary=resolved_app_catalog_summary,
             selector_stats=selector_stats,
         )
         truth["builtInPlaybookSeeds"] = built_in_playbook_seeds()
@@ -12265,10 +12273,18 @@ class ComputerUseRuntime:
         vision_state = self._vision_fallback_state()
         self.browser_automation.configure(self._computer_use_config())
         capability_matrix = self._runtime_capability_matrix()
-        capability_truth = dict(capability_matrix.get("truth") or {})
-        capability_truth_payload = self._capability_truth_payload(capability_matrix=capability_matrix)
-        resolution_payload = self._resolution_policy_payload()
         browser_lane = self.browser_automation.availability_summary()
+        try:
+            app_catalog_summary = self.app_catalog.summary(include_running=True)
+        except Exception:
+            app_catalog_summary = {}
+        capability_truth = dict(capability_matrix.get("truth") or {})
+        capability_truth_payload = self._capability_truth_payload(
+            capability_matrix=capability_matrix,
+            browser_lane=browser_lane,
+            app_catalog_summary=app_catalog_summary,
+        )
+        resolution_payload = self._resolution_policy_payload()
         current_matrix = dict(capability_matrix.get("current") or {})
         capabilities = dict(current_matrix.get("facets") or {})
         capabilities["execution"] = {
@@ -12311,7 +12327,7 @@ class ComputerUseRuntime:
                 "browserLane": browser_lane,
                 "appAdapter": self._app_adapter_summary(),
                 "selectorStats": self.driver.selector_metrics(),
-                "appCatalog": self.app_catalog.summary(include_running=True),
+                "appCatalog": app_catalog_summary,
             },
         }
 

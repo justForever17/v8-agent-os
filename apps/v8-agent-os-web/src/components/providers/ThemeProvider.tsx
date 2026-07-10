@@ -1,11 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { ThemeProvider as NextThemesProvider } from "next-themes";
+import { ProductThemeProvider } from "@v8/product-ui";
 
 export function ThemeProvider({
     children,
     ...props
-}: React.ComponentProps<typeof NextThemesProvider>) {
-    return <NextThemesProvider {...props}>{children}</NextThemesProvider>;
+}: React.ComponentProps<typeof ProductThemeProvider>) {
+    return <ProductThemeProvider {...props}>{children}</ProductThemeProvider>;
 }

@@ -17,7 +17,7 @@ export function InlineSaveState({
     const localizedLabel = resolveText(label);
 
     return (
-        <div className="flex items-center gap-2 text-xs text-slate-500">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {!saving && saved ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : null}
             <span>

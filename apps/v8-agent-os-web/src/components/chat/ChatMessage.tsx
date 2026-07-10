@@ -501,7 +501,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         "relative min-w-[60px] px-4 py-3.5 text-[14px] shadow-lg transition-all duration-300 sm:px-5 sm:py-4 sm:text-[15px]",
                         isTool
                             ? "bg-zinc-900/90 text-zinc-300 rounded-2xl border border-white/5 font-mono text-xs overflow-x-auto backdrop-blur-md"
-                            : "bg-gradient-to-br from-violet-600 to-indigo-600 text-white rounded-3xl rounded-tr-sm shadow-violet-500/20 backdrop-blur-md border border-white/10"
+                            : "bg-gradient-to-br from-violet-600 to-indigo-600 text-white selection:bg-slate-950/45 selection:text-white rounded-3xl rounded-tr-sm shadow-violet-500/20 backdrop-blur-md border border-white/10"
                     )}>
                         {!isTool && shouldRenderUserMetadata && (
                             <div className="mb-3 flex flex-wrap gap-2">

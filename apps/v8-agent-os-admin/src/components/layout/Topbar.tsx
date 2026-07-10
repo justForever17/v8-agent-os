@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
     ProductShellTopbar,
     ProductSurfaceSwitcher,
@@ -20,6 +20,7 @@ import { DeviceConnectDialog } from "@/components/admin/DeviceConnectDialog";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { getAdminNavItem } from "@/lib/admin-navigation";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { useDebugMode } from "@/lib/useDebugMode";
@@ -63,6 +64,10 @@ type RuntimeFeaturePackState = {
 
 const WEB_CHAT_SURFACE_URL = "http://localhost:9527/chat";
 
+const subscribeToShellSurface = () => () => {};
+const readShellSurface = () => Boolean(window.v8osShell?.isShell);
+const readServerShellSurface = () => false;
+
 function SeverityDot({ severity }: { severity: InboxItem["severity"] }) {
     return (
         <span
@@ -92,15 +97,11 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     const [installState, setInstallState] = useState<RuntimeFeaturePackState | null>(null);
     const [installLoading, setInstallLoading] = useState(false);
     const [installSubmittingPackId, setInstallSubmittingPackId] = useState<string | null>(null);
-    const [isShell, setIsShell] = useState(false);
+    const isShell = useSyncExternalStore(subscribeToShellSurface, readShellSurface, readServerShellSurface);
     const searchContainerRef = useRef<HTMLDivElement | null>(null);
     const inboxContainerRef = useRef<HTMLDivElement | null>(null);
     const installContainerRef = useRef<HTMLDivElement | null>(null);
     const searchInputRef = useRef<HTMLInputElement | null>(null);
-
-    useEffect(() => {
-        setIsShell(Boolean(window.v8osShell?.isShell));
-    }, []);
 
     const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
     const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);
@@ -127,22 +128,11 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         [inboxItems, seenInboxIds],
     );
 
-    const loadInstallState = useCallback(async () => {
+    const loadInstallState = useCallback(async (force = false) => {
         setInstallLoading(true);
         try {
-            const response = await fetch("/api/runtime-feature-packs", { cache: "no-store" });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                const message = typeof payload.error === "string" ? payload.error : `Request failed (${response.status})`;
-                console.warn("Failed to load runtime feature pack state:", message);
-                toast({
-                    title: t("components.layout.Topbar.featurePacksLoadFailedTitle"),
-                    description: t("components.layout.Topbar.featurePacksLoadFailedDescription"),
-                    variant: "destructive",
-                });
-                return;
-            }
-            setInstallState(payload as RuntimeFeaturePackState);
+            const payload = await fetchAdminJson<RuntimeFeaturePackState>("/api/runtime-feature-packs", { force });
+            setInstallState(payload);
         } catch (error) {
             console.error("Failed to load runtime feature pack state:", error);
             toast({
@@ -314,7 +304,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     useEffect(() => {
         const openFeaturePacks = () => {
             setActivePanel("install");
-            void loadInstallState();
+            void loadInstallState(true);
         };
         window.addEventListener("v8os:open-feature-packs", openFeaturePacks);
         return () => window.removeEventListener("v8os:open-feature-packs", openFeaturePacks);
@@ -336,7 +326,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                 title: t("components.layout.Topbar.featurePackInstallStartedTitle"),
                 description: String(payload.message || t("components.layout.Topbar.featurePackInstallStartedDescription")),
             });
-            void loadInstallState();
+            void loadInstallState(true);
         } catch (error) {
             console.error("Failed to start feature pack install:", error);
             toast({
@@ -403,16 +393,16 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                             <Monitor />
                         </TopbarGlowActionButton>
                         {activePanel === "install" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-border bg-card/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 {installLoading ? (
                                     <div className="flex h-28 items-center justify-center">
-                                        <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+                                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                                     </div>
                                 ) : (
-                                    <div className="space-y-4 text-sm text-slate-600 dark:text-slate-300">
+                                    <div className="space-y-4 text-sm text-muted-foreground dark:text-slate-300">
                                         <div className="space-y-1">
-                                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{featurePackLabel}</div>
-                                            <div className="text-xs text-slate-500 dark:text-slate-400">
+                                            <div className="text-sm font-semibold text-foreground dark:text-slate-100">{featurePackLabel}</div>
+                                            <div className="text-xs text-muted-foreground dark:text-muted-foreground">
                                                 {t("components.layout.Topbar.featurePacksDescription")}
                                             </div>
                                         </div>
@@ -422,15 +412,15 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                 const isInstalling = pack.status === "installing" || installSubmittingPackId === pack.id;
                                                 const canInstall = !isInstalled && !isInstalling;
                                                 return (
-                                                    <div key={pack.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={pack.hover}>
+                                                    <div key={pack.id} className="rounded-2xl border border-border bg-muted/80 p-3 dark:border-white/10 dark:bg-white/[0.04]" title={pack.hover}>
                                                         <div className="flex items-start justify-between gap-3">
                                                             <div className="min-w-0">
-                                                                <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{pack.productName}</div>
-                                                                <div className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{pack.description}</div>
+                                                                <div className="truncate text-sm font-semibold text-foreground dark:text-slate-100">{pack.productName}</div>
+                                                                <div className="mt-1 text-xs leading-5 text-muted-foreground dark:text-muted-foreground">{pack.description}</div>
                                                                 {pack.runtimeFamilies.length ? (
                                                                     <div className="mt-2 flex flex-wrap gap-1.5">
                                                                         {pack.runtimeFamilies.map((family) => (
-                                                                            <span key={family} className="rounded-full bg-white px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-300">
+                                                                            <span key={family} className="rounded-full bg-card px-2 py-0.5 text-[10px] font-medium text-muted-foreground dark:bg-card/10 dark:text-slate-300">
                                                                                 {family}
                                                                             </span>
                                                                         ))}
@@ -456,12 +446,12 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                             </div>
                                                         ) : null}
                                                         {pack.logRef ? (
-                                                            <div className="mt-2 truncate text-[11px] text-slate-400" title={pack.logRef}>
+                                                            <div className="mt-2 truncate text-[11px] text-muted-foreground" title={pack.logRef}>
                                                                 {t("components.layout.Topbar.featurePackLogRef")}: {pack.logRef}
                                                             </div>
                                                         ) : null}
                                                         <div className="mt-3 flex items-center justify-between gap-3">
-                                                            <div className="text-[11px] text-slate-400">
+                                                            <div className="text-[11px] text-muted-foreground">
                                                                 {pack.restartRequired ? t("components.layout.Topbar.featurePackRestartRequired") : t("components.layout.Topbar.featurePackNoRestart")}
                                                             </div>
                                                             {canInstall ? (
@@ -495,7 +485,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                             <Search />
                         </TopbarGlowActionButton>
                         {activePanel === "search" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[26rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[26rem] max-w-[calc(100vw-2rem)] rounded-3xl border-border bg-card/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 <div className="space-y-3">
                                     <Input
                                         ref={searchInputRef}
@@ -504,7 +494,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                         onKeyDown={handleSearchKeyDown}
                                         placeholder={t("components.layout.Topbar.k6c2190ce")}
                                         aria-label={t("components.layout.Topbar.k8cef7920")}
-                                        className="rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/[0.04]"
+                                        className="rounded-2xl border-border dark:border-white/10 dark:bg-white/[0.04]"
                                     />
                                     <div className="max-h-80 overflow-y-auto">
                                         {searchResults.length ? (
@@ -516,14 +506,14 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                         onClick={() => navigateTo(item.href)}
                                                         className={cn(
                                                             "flex w-full items-start justify-between gap-3 rounded-2xl border border-transparent px-3 py-2 text-left transition",
-                                                            index === activeSearchIndex ? "border-sky-200 bg-sky-50 dark:border-sky-500/25 dark:bg-sky-500/10" : "hover:border-slate-200 hover:bg-slate-50 dark:hover:border-white/10 dark:hover:bg-white/[0.05]",
+                                                            index === activeSearchIndex ? "border-sky-200 bg-sky-50 dark:border-sky-500/25 dark:bg-sky-500/10" : "hover:border-border hover:bg-muted/50 dark:hover:border-white/10 dark:hover:bg-white/[0.05]",
                                                         )}
                                                         role="option"
                                                         aria-selected={index === activeSearchIndex}
                                                     >
                                                         <div className="min-w-0">
-                                                            <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{t(item.title)}</div>
-                                                            <div className="truncate text-xs text-slate-500 dark:text-slate-400">
+                                                            <div className="truncate text-sm font-semibold text-foreground dark:text-slate-100">{t(item.title)}</div>
+                                                            <div className="truncate text-xs text-muted-foreground dark:text-muted-foreground">
                                                                 {item.subtitle ? `${t(item.subtitle)} · ` : ""}{item.href}
                                                             </div>
                                                         </div>
@@ -532,7 +522,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                             item.matchMode === "exact"
                                                                 ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-200"
                                                                 : item.matchMode === "fuzzy"
-                                                                    ? "bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-200"
+                                                                    ? "bg-muted text-muted-foreground dark:bg-card/10 dark:text-slate-200"
                                                                     : "bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-200",
                                                         )}>
                                                             {item.matchMode === "exact" ? t("components.layout.Topbar.k9d9dbbea") : item.matchMode === "fuzzy" ? t("components.layout.Topbar.k97b260d0") : t("components.layout.Topbar.kff332614")}
@@ -541,7 +531,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                 ))}
                                             </div>
                                         ) : (
-                                            <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
+                                            <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground dark:border-white/10 dark:text-muted-foreground">
                                                 {t("components.layout.Topbar.k4808f001")}
                                             </div>
                                         )}
@@ -567,11 +557,11 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                             ) : null}
                         </TopbarGlowActionButton>
                         {activePanel === "inbox" ? (
-                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-slate-200 bg-white/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
+                            <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-border bg-card/95 p-3 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
-                                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{t("components.layout.Topbar.k3957f4b0")}</div>
-                                        {inboxLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                                        <div className="text-sm font-semibold text-foreground dark:text-slate-100">{t("components.layout.Topbar.k3957f4b0")}</div>
+                                        {inboxLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
                                     </div>
                                     {inboxError ? (
                                         <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
@@ -585,18 +575,18 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                                                     key={item.id}
                                                     type="button"
                                                     onClick={() => navigateTo(item.href)}
-                                                    className="flex w-full items-start gap-3 rounded-2xl border border-transparent px-3 py-2 text-left transition hover:border-slate-200 hover:bg-slate-50 dark:hover:border-white/10 dark:hover:bg-white/[0.05]"
+                                                    className="flex w-full items-start gap-3 rounded-2xl border border-transparent px-3 py-2 text-left transition hover:border-border hover:bg-muted/50 dark:hover:border-white/10 dark:hover:bg-white/[0.05]"
                                                 >
                                                     <SeverityDot severity={item.severity} />
                                                     <div className="min-w-0">
-                                                        <div className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{item.title}</div>
-                                                        <div className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{item.summary}</div>
+                                                        <div className="truncate text-sm font-semibold text-foreground dark:text-slate-100">{item.title}</div>
+                                                        <div className="mt-0.5 text-xs leading-5 text-muted-foreground dark:text-muted-foreground">{item.summary}</div>
                                                     </div>
                                                 </button>
                                             ))}
                                         </div>
                                     ) : (
-                                        <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
+                                        <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground dark:border-white/10 dark:text-muted-foreground">
                                             {t("components.layout.Topbar.k105fef86")}
                                         </div>
                                     )}

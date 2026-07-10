@@ -66,7 +66,7 @@ export function DeviceConnectDialog() {
                     <QrCode />
                 </TopbarGlowActionButton>
             </DialogTrigger>
-            <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto rounded-lg border-slate-200 bg-white p-5">
+            <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto rounded-lg border-border bg-card p-5">
                 <DialogHeader>
                     <DialogTitle>
                         <AdminHoverInfo content={t("components.admin.DeviceConnectDialog.description")} panelClassName="text-xs leading-5">
@@ -76,12 +76,12 @@ export function DeviceConnectDialog() {
                     <DialogDescription className="sr-only">{t("components.admin.DeviceConnectDialog.description")}</DialogDescription>
                 </DialogHeader>
 
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                    <div className="text-xs font-medium text-slate-500">
+                <div className="rounded-lg border border-border bg-muted/50 p-3">
+                    <div className="text-xs font-medium text-muted-foreground">
                         {t("components.admin.DeviceConnectDialog.adminUrl")}
                     </div>
                     <div className="mt-2 flex items-center gap-2">
-                        <div className="min-w-0 flex-1 break-all font-mono text-sm text-slate-800">
+                        <div className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">
                             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : manifest?.admin?.baseUrl || browserOrigin || "-"}
                         </div>
                         <Button type="button" variant="outline" size="sm" onClick={() => void copyAdminUrl()}>
@@ -90,7 +90,7 @@ export function DeviceConnectDialog() {
                         </Button>
                     </div>
                     {manifest?.instanceId ? (
-                        <div className="mt-2 text-xs text-slate-500">
+                        <div className="mt-2 text-xs text-muted-foreground">
                             {t("components.admin.DeviceConnectDialog.instance")}: {manifest.instanceId}
                         </div>
                     ) : null}

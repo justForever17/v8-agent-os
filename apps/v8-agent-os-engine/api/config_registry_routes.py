@@ -1040,6 +1040,26 @@ def _save_music_domain(payload: dict[str, Any]) -> dict[str, Any]:
     return _build_music_domain()
 
 
+def _build_ui_domain() -> dict[str, Any]:
+    return {
+        "domain": "ui",
+        "title": "界面偏好",
+        "summary": "管理本机 Web、Admin 与桌面 Shell 共用的界面主题。",
+        "data": storage.get_ui_config(),
+        "source": _config_source("ui"),
+        "savePath": _config_save_path("ui"),
+        "reloadRequired": False,
+        "warnings": [],
+        "advancedFields": [],
+    }
+
+
+def _save_ui_domain(payload: dict[str, Any]) -> dict[str, Any]:
+    data = dict(payload.get("data") or payload or {})
+    storage.save_ui_config(data)
+    return _build_ui_domain()
+
+
 def _build_system_base_domain() -> dict[str, Any]:
     system_base = storage.get_system_base_config()
     desktop_readiness = detect_desktop_tools_readiness()
@@ -1167,6 +1187,7 @@ DOMAIN_REGISTRY: dict[str, tuple[ConfigBuilder, ConfigSaver]] = {
     "projects": (_build_projects_domain, _save_projects_domain),
     "desktop-pet": (_build_desktop_pet_domain, _save_desktop_pet_domain),
     "music": (_build_music_domain, _save_music_domain),
+    "ui": (_build_ui_domain, _save_ui_domain),
     "network-supervisor-runtime": (_build_network_supervisor_runtime_domain, _save_network_supervisor_runtime_domain),
     "system-base": (_build_system_base_domain, _save_system_base_domain),
     "system-misc": (_build_system_base_domain, _save_system_base_domain),

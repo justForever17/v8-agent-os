@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { tg } from "@/i18n/admin-legacy";
 
@@ -290,7 +291,7 @@ function StatusPill({ value }: {value?: string;}) {
   "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-200" :
   normalized === "unverified" || normalized === "warning" ?
   "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-200" :
-  "bg-slate-100 text-slate-600 dark:bg-muted dark:text-muted-foreground";
+  "bg-muted text-muted-foreground dark:bg-muted dark:text-muted-foreground";
   return <span className={`rounded-full px-3 py-1 text-xs font-medium ${palette}`}>{getStatusLabel(normalized, t)}</span>;
 }
 
@@ -308,12 +309,12 @@ function MatrixStatusPill({ value }: {value?: string;}) {
 
 function FieldList({ items, empty }: {items?: string[];empty: string;}) {
   if (!items?.length) {
-    return <p className="text-sm text-slate-500 dark:text-muted-foreground">{empty}</p>;
+    return <p className="text-sm text-muted-foreground dark:text-muted-foreground">{empty}</p>;
   }
   return (
     <div className="flex flex-wrap gap-2">
             {items.slice(0, 24).map((item) =>
-      <span key={item} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 dark:bg-muted dark:text-muted-foreground">
+      <span key={item} className="rounded-full bg-muted px-3 py-1 text-xs text-foreground dark:bg-muted dark:text-muted-foreground">
                     {item}
                 </span>
       )}
@@ -329,27 +330,27 @@ function SummaryCard({ label, value, hint, tone = "slate" }: {label: string;valu
   "border-amber-200 bg-amber-50/70 text-amber-900 dark:border-amber-500/30 dark:bg-card dark:text-amber-200" :
   tone === "rose" ?
   "border-rose-200 bg-rose-50/70 text-rose-900 dark:border-rose-500/30 dark:bg-card dark:text-rose-200" :
-  "border-slate-200 bg-white text-slate-900 dark:border-border dark:bg-card dark:text-slate-100";
+  "border-border bg-card text-foreground dark:border-border dark:bg-card dark:text-slate-100";
   return (
     <div className={`rounded-2xl border p-4 ${toneClass}`}>
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-muted-foreground">{label}</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground dark:text-muted-foreground">{label}</div>
             <div className="mt-2 text-2xl font-semibold">{value}</div>
-            {hint ? <p className="mt-2 text-sm text-slate-600 dark:text-muted-foreground">{hint}</p> : null}
+            {hint ? <p className="mt-2 text-sm text-muted-foreground dark:text-muted-foreground">{hint}</p> : null}
         </div>);
 
 }
 
 function AdvancedPanel({ title, children, defaultOpen = false }: {title: string;children: ReactNode;defaultOpen?: boolean;}) {
   return (
-    <details open={defaultOpen} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-border dark:bg-card">
+    <details open={defaultOpen} className="rounded-2xl border border-border bg-card p-4 shadow-sm dark:border-border dark:bg-card">
             <summary className="cursor-pointer list-none">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                        <h3 className="text-base font-semibold text-slate-950 dark:text-slate-100">{title}</h3>
+                        <h3 className="text-base font-semibold text-foreground dark:text-slate-100">{title}</h3>
                     </div>
                 </div>
             </summary>
-            <div className="mt-4 border-t border-slate-100 pt-4 dark:border-border">{children}</div>
+            <div className="mt-4 border-t border-border/60 pt-4 dark:border-border">{children}</div>
         </details>);
 
 }
@@ -453,17 +454,17 @@ export default function EngineeringLanePage() {
     return true;
   }), [worksetObservations, proofSessionFilter, proofRunFilter, proofTaskBriefFilter, decisionSourceFilter, observationStateFilter, outsideFilter, worksetRiskFilter]);
 
-  const load = async () => {
+  const load = async (force = false) => {
     setLoading(true);
     try {
-      const next = await fetchConfigDomain<EngineeringLaneConfig>("engineering-lane");
+      const next = await fetchConfigDomain<EngineeringLaneConfig>("engineering-lane", { force });
       setEnvelope({ ...next, data: asConfig(next.data) });
     } finally {
       setLoading(false);
     }
   };
 
-  const loadProof = async () => {
+  const loadProof = async (force = false) => {
     setProofLoading(true);
     try {
       const params = new URLSearchParams();
@@ -471,8 +472,7 @@ export default function EngineeringLanePage() {
       if (proofStatusFilter !== "all") params.set("status", proofStatusFilter);
       if (proofSessionFilter.trim()) params.set("sessionId", proofSessionFilter.trim());
       if (proofRunFilter.trim()) params.set("runId", proofRunFilter.trim());
-      const response = await fetch(`/api/engineering-lane/proof-ledger?${params.toString()}`, { cache: "no-store" });
-      const data = await response.json().catch(() => ({}));
+      const data = await fetchAdminJson<{ items?: ProofEntry[] }>(`/api/engineering-lane/proof-ledger?${params.toString()}`, { force, ttlMs: 10_000 });
       const items = Array.isArray(data.items) ? data.items : [];
       setProofEntries(items);
       setSelectedProofId((current) => items.some((item: ProofEntry) => item.id === current) ? current : items[0]?.id || "");
@@ -481,32 +481,28 @@ export default function EngineeringLanePage() {
     }
   };
 
-  const loadWorksetObservations = async () => {
+  const loadWorksetObservations = async (force = false) => {
     const params = new URLSearchParams();
     params.set("limit", "40");
     if (proofSessionFilter.trim()) params.set("sessionId", proofSessionFilter.trim());
     if (proofRunFilter.trim()) params.set("runId", proofRunFilter.trim());
     if (proofTaskBriefFilter.trim()) params.set("taskBriefId", proofTaskBriefFilter.trim());
     if (decisionSourceFilter !== "all") params.set("decisionSource", decisionSourceFilter);
-    const response = await fetch(`/api/engineering-lane/workset-observations?${params.toString()}`, { cache: "no-store" });
-    const data = await response.json().catch(() => ({}));
+    const data = await fetchAdminJson<{ items?: WorksetObservationEntry[] }>(`/api/engineering-lane/workset-observations?${params.toString()}`, { force, ttlMs: 10_000 });
     setWorksetObservations(Array.isArray(data.items) ? data.items : []);
   };
 
-  const loadEngineeringWorkflowCandidates = async () => {
+  const loadEngineeringWorkflowCandidates = async (force = false) => {
     const params = new URLSearchParams({ class: "engineering", limit: "8" });
-    const response = await fetch(`/api/memory/workflows?${params.toString()}`, { cache: "no-store" });
-    const data = await response.json().catch(() => ({}));
+    const data = await fetchAdminJson<{ items?: EngineeringWorkflowCandidate[] }>(`/api/memory/workflows?${params.toString()}`, { force, ttlMs: 10_000 });
     setEngineeringWorkflowCandidates(Array.isArray(data.items) ? data.items : []);
   };
 
-  const loadModelsAndCache = async () => {
-    const [modelResponse, cacheResponse] = await Promise.all([
-      fetch("/api/models", { cache: "no-store" }),
-      fetch("/api/model-cache/stats?days=7&limit=80", { cache: "no-store" }),
+  const loadModelsAndCache = async (force = false) => {
+    const [modelData, cacheData] = await Promise.all([
+      fetchAdminJson<AdminModelSelectOption[]>("/api/models", { force }),
+      fetchAdminJson<Record<string, unknown>>("/api/model-cache/stats?days=7&limit=80", { force, ttlMs: 10_000 }),
     ]);
-    const modelData = await modelResponse.json().catch(() => []);
-    const cacheData = await cacheResponse.json().catch(() => ({}));
     setModels(Array.isArray(modelData) ? modelData : []);
     setPromptCacheStats(cacheData && typeof cacheData === "object" ? cacheData : null);
   };
@@ -555,7 +551,7 @@ export default function EngineeringLanePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: selectedProof.sessionId, runId: selectedProof.runId })
       });
-      await Promise.all([loadProof(), loadWorksetObservations()]);
+      await Promise.all([loadProof(true), loadWorksetObservations(true)]);
     } finally {
       setRefreshingProof(false);
     }
@@ -646,25 +642,25 @@ export default function EngineeringLanePage() {
             footer={envelope ? <SourceMetaRow source={envelope.source} savePath={envelope.savePath} reloadRequired={Boolean(envelope.reloadRequired)} /> : null}>
 
                         {loading ?
-            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-muted-foreground">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground dark:text-muted-foreground">
                                 <Loader2 className="h-4 w-4 animate-spin" />
                                 {t("app.admin.dashboard.engineeringLane.loading")}
                             </div> :
 
             <div className="space-y-4">
-                                <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-border dark:bg-card">
+                                <div className="rounded-2xl border border-border bg-card p-4 dark:border-border dark:bg-card">
                                     <div className="flex flex-wrap items-start justify-between gap-3">
                                         <div>
                                             <AdminHoverInfo
                                                 content={t("app.admin.dashboard.engineeringLane.plannerModelHover")}
                                                 panelClassName="max-w-[28rem] text-sm leading-6"
                                             >
-                                                <Label className="cursor-help text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                <Label className="cursor-help text-sm font-semibold text-foreground dark:text-slate-100">
                                                     {t("app.admin.dashboard.engineeringLane.plannerModel")}
                                                 </Label>
                                             </AdminHoverInfo>
                                         </div>
-                                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 dark:bg-muted dark:text-muted-foreground">
+                                        <span className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground dark:bg-muted dark:text-muted-foreground">
                                             {config.modelBindings?.plannerModel ? t("app.admin.dashboard.engineeringLane.plannerModelBound") : t("app.admin.dashboard.engineeringLane.plannerModelFallback")}
                                         </span>
                                         <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
@@ -688,14 +684,14 @@ export default function EngineeringLanePage() {
                                             })}
                                         />
                                     </div>
-                                    <div className="mt-3 grid gap-2 text-xs text-slate-500 dark:text-muted-foreground sm:grid-cols-3">
-                                        <span className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-muted/60">
+                                    <div className="mt-3 grid gap-2 text-xs text-muted-foreground dark:text-muted-foreground sm:grid-cols-3">
+                                        <span className="rounded-xl bg-muted/50 px-3 py-2 dark:bg-muted/60">
                                             {t("app.admin.dashboard.engineeringLane.plannerCacheEvents", { count: plannerCacheSummary.events })}
                                         </span>
-                                        <span className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-muted/60">
+                                        <span className="rounded-xl bg-muted/50 px-3 py-2 dark:bg-muted/60">
                                             {t("app.admin.dashboard.engineeringLane.plannerCachePrefixes", { count: plannerCacheSummary.reusedPrefixes })}
                                         </span>
-                                        <span className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-muted/60">
+                                        <span className="rounded-xl bg-muted/50 px-3 py-2 dark:bg-muted/60">
                                             {plannerCacheSummary.lastProfile || t("app.admin.dashboard.engineeringLane.plannerCacheNoProfile")}
                                         </span>
                                     </div>
@@ -705,7 +701,7 @@ export default function EngineeringLanePage() {
                                         </p>
                                     ) : null}
                                     {config.plannerReadiness?.reason ? (
-                                        <p className="mt-2 text-xs text-slate-500 dark:text-muted-foreground">
+                                        <p className="mt-2 text-xs text-muted-foreground dark:text-muted-foreground">
                                             {t("app.admin.dashboard.engineeringLane.plannerReadinessReason", { reason: config.plannerReadiness.reason })}
                                         </p>
                                     ) : null}
@@ -715,7 +711,7 @@ export default function EngineeringLanePage() {
                                     description={t("app.admin.dashboard.engineeringLane.enabledHint")}
                                     checked={config.enabled}
                                     onCheckedChange={(enabled) => patchConfig({ enabled })}
-                                    className="border-slate-200 p-4 rounded-2xl"
+                                    className="border-border p-4 rounded-2xl"
                                 />
                                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
                                     <div className="space-y-2">
@@ -734,11 +730,11 @@ export default function EngineeringLanePage() {
                                         description={t("app.admin.dashboard.engineeringLane.autoProofCollectionHint")}
                                         checked={config.autoProofCollectionEnabled}
                                         onCheckedChange={(autoProofCollectionEnabled) => patchConfig({ autoProofCollectionEnabled })}
-                                        className="border-slate-200 p-4 rounded-2xl"
+                                        className="border-border p-4 rounded-2xl"
                                     />
                                 </div>
-                                <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-border dark:bg-card">
-                                    <summary className="cursor-pointer text-sm font-semibold text-slate-800 dark:text-slate-100">
+                                <details className="rounded-2xl border border-border bg-muted/50 p-4 dark:border-border dark:bg-card">
+                                    <summary className="cursor-pointer text-sm font-semibold text-foreground dark:text-slate-100">
                                         {t("app.admin.dashboard.engineeringLane.advancedConfigTitle")}
                                     </summary>
                                     <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -780,7 +776,7 @@ export default function EngineeringLanePage() {
                       description={t(`app.admin.dashboard.engineeringLane.${label}Hint`)}
                       checked={Boolean(config[key])}
                       onCheckedChange={(value) => patchConfig({ [key]: value } as Partial<EngineeringLaneConfig>)}
-                      className="border-slate-200 bg-white p-3 rounded-xl dark:border-border dark:bg-muted/40"
+                      className="border-border bg-card p-3 rounded-xl dark:border-border dark:bg-muted/40"
                   />
                   )}
                                     </div>
@@ -828,30 +824,30 @@ export default function EngineeringLanePage() {
                                         <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryLearning")} value={learningEligibility.eligible === true ? t("app.admin.dashboard.engineeringLane.valueYes") : learningEligibility.eligible === false ? t("app.admin.dashboard.engineeringLane.valueNo") : t("app.admin.dashboard.engineeringLane.valueRouteTestOnly")} hint={String(learningEligibility.reason || t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote"))} />
                                     </div> :
 
-                <div className="rounded-2xl border border-dashed border-slate-200 p-6 text-sm text-slate-500 dark:border-border dark:text-muted-foreground">
+                <div className="rounded-2xl border border-dashed border-border p-6 text-sm text-muted-foreground dark:border-border dark:text-muted-foreground">
                                         <Code2 className="mb-3 h-5 w-5" />
                                         {t("app.admin.dashboard.engineeringLane.noDryRun")}
                                     </div>
                 }
                                 {dryRunResult && (matrixTotal > 0 || topMatrixIssues.length > 0) ?
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-border dark:bg-card">
+                <div className="rounded-2xl border border-border bg-muted/50 p-4 dark:border-border dark:bg-card">
                                         <div className="flex flex-wrap items-start justify-between gap-3">
                                             <div>
-                                                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixTitle")}</h3>
-                                                <p className="mt-1 text-xs text-slate-500 dark:text-muted-foreground">{t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote")}</p>
+                                                <h3 className="text-sm font-semibold text-foreground dark:text-slate-100">{t("app.admin.dashboard.engineeringLane.crossLinkMatrixTitle")}</h3>
+                                                <p className="mt-1 text-xs text-muted-foreground dark:text-muted-foreground">{t("app.admin.dashboard.engineeringLane.matrixDiagnosticNote")}</p>
                                             </div>
                                             <MatrixStatusPill value={matrixFail > 0 ? "fail" : matrixWarning > 0 ? "warning" : "pass"} />
                                         </div>
                                         <div className="mt-3 grid gap-2 sm:grid-cols-4">
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-slate-700 dark:bg-muted dark:text-slate-100">{t("app.admin.dashboard.engineeringLane.matrixTotal", { count: String(matrixTotal) })}</span>
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-emerald-700 dark:bg-muted dark:text-emerald-200">{t("app.admin.dashboard.engineeringLane.matrixPass", { count: String(matrixPass) })}</span>
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-amber-700 dark:bg-muted dark:text-amber-200">{t("app.admin.dashboard.engineeringLane.matrixWarning", { count: String(matrixWarning) })}</span>
-                                            <span className="rounded-xl bg-white px-3 py-2 text-sm text-rose-700 dark:bg-muted dark:text-rose-200">{t("app.admin.dashboard.engineeringLane.matrixFail", { count: String(matrixFail) })}</span>
+                                            <span className="rounded-xl bg-card px-3 py-2 text-sm text-foreground dark:bg-muted dark:text-slate-100">{t("app.admin.dashboard.engineeringLane.matrixTotal", { count: String(matrixTotal) })}</span>
+                                            <span className="rounded-xl bg-card px-3 py-2 text-sm text-emerald-700 dark:bg-muted dark:text-emerald-200">{t("app.admin.dashboard.engineeringLane.matrixPass", { count: String(matrixPass) })}</span>
+                                            <span className="rounded-xl bg-card px-3 py-2 text-sm text-amber-700 dark:bg-muted dark:text-amber-200">{t("app.admin.dashboard.engineeringLane.matrixWarning", { count: String(matrixWarning) })}</span>
+                                            <span className="rounded-xl bg-card px-3 py-2 text-sm text-rose-700 dark:bg-muted dark:text-rose-200">{t("app.admin.dashboard.engineeringLane.matrixFail", { count: String(matrixFail) })}</span>
                                         </div>
                                         {topMatrixIssues.length ?
                   <div className="mt-3 space-y-2">
                                                 {topMatrixIssues.map((issue) =>
-                    <div key={issue} className="rounded-xl border border-amber-100 bg-white px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                    <div key={issue} className="rounded-xl border border-amber-100 bg-card px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
                                                         {issue}
                                                     </div>
                     )}
@@ -931,7 +927,7 @@ export default function EngineeringLanePage() {
                                             <SelectItem value="clean_only">{t("app.admin.dashboard.engineeringLane.filterCleanOnly")}</SelectItem>
                                         </SelectContent>
                                     </Select>
-                                    <Button variant="outline" onClick={() => void Promise.all([loadProof(), loadWorksetObservations()])} disabled={proofLoading}>
+                                    <Button variant="outline" onClick={() => void Promise.all([loadProof(true), loadWorksetObservations(true)])} disabled={proofLoading}>
                                         {proofLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
                                         {t("app.admin.dashboard.engineeringLane.refreshList")}
                                     </Button>
@@ -943,21 +939,21 @@ export default function EngineeringLanePage() {
                       key={entry.id}
                       type="button"
                       onClick={() => setSelectedProofId(entry.id)}
-                      className={`rounded-xl border p-4 text-left transition ${selectedProof?.id === entry.id ? "border-slate-900 bg-slate-50" : "border-slate-200 hover:border-slate-300"}`}>
+                      className={`rounded-xl border p-4 text-left transition ${selectedProof?.id === entry.id ? "border-slate-900 bg-muted/50" : "border-border hover:border-input"}`}>
 
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div className="min-w-0">
-                                                        <div className="truncate text-sm font-medium text-slate-900">{entry.patchIntent || entry.id}</div>
-                                                        <div className="mt-1 truncate text-xs text-slate-500">{entry.runId || entry.createdAt || ""}</div>
+                                                        <div className="truncate text-sm font-medium text-foreground">{entry.patchIntent || entry.id}</div>
+                                                        <div className="mt-1 truncate text-xs text-muted-foreground">{entry.runId || entry.createdAt || ""}</div>
                                                     </div>
                                                     <StatusPill value={entry.verificationStatus} />
                                                 </div>
-                                                {entry.changedFiles?.length ? <p className="mt-2 truncate text-xs text-slate-500">{entry.changedFiles.slice(0, 4).join(", ")}</p> : null}
+                                                {entry.changedFiles?.length ? <p className="mt-2 truncate text-xs text-muted-foreground">{entry.changedFiles.slice(0, 4).join(", ")}</p> : null}
                                             </button>
                     )}
                                     </div> :
 
-                  <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                  <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
                                         {t("app.admin.dashboard.engineeringLane.noProof")}
                                     </div>
                   }
@@ -970,8 +966,8 @@ export default function EngineeringLanePage() {
                   <div className="space-y-4">
                                         <div className="flex flex-wrap items-center justify-between gap-3">
                                             <div>
-                                                <h3 className="text-base font-semibold text-slate-900">{selectedProof.patchIntent || selectedProof.id}</h3>
-                                                <p className="mt-1 text-xs text-slate-500">{selectedProof.sessionId || "-"} · {selectedProof.runId || "-"}</p>
+                                                <h3 className="text-base font-semibold text-foreground">{selectedProof.patchIntent || selectedProof.id}</h3>
+                                                <p className="mt-1 text-xs text-muted-foreground">{selectedProof.sessionId || "-"} · {selectedProof.runId || "-"}</p>
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <StatusPill value={selectedProof.verificationStatus} />
@@ -983,11 +979,11 @@ export default function EngineeringLanePage() {
                                         </div>
                                         <div className="grid gap-4">
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.changedFiles")}</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.changedFiles")}</h4>
                                                 <FieldList items={selectedProof.changedFiles} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.residualRisks")}</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.residualRisks")}</h4>
                                                 {selectedProof.residualRisks?.length ?
                         <div className="space-y-2">
                                                         {selectedProof.residualRisks.map((risk) =>
@@ -998,13 +994,13 @@ export default function EngineeringLanePage() {
                           )}
                                                     </div> :
 
-                        <p className="text-sm text-slate-500">{t("app.admin.dashboard.engineeringLane.none")}</p>
+                        <p className="text-sm text-muted-foreground">{t("app.admin.dashboard.engineeringLane.none")}</p>
                         }
                                             </div>
                                         </div>
                                     </div> :
 
-                  <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">{t("app.admin.dashboard.engineeringLane.noProof")}</div>
+                  <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">{t("app.admin.dashboard.engineeringLane.noProof")}</div>
                   }
                             </ConfigCard>
 
@@ -1014,23 +1010,23 @@ export default function EngineeringLanePage() {
                                         {visibleWorksetObservations.slice(0, 16).map((entry) => {
                       const risk = resolveObservationRisk(entry);
                       return (
-                        <div key={entry.id} className="rounded-xl border border-slate-200 p-3">
+                        <div key={entry.id} className="rounded-xl border border-border p-3">
                                                     <div className="flex flex-wrap items-center justify-between gap-2">
                                                         <div className="min-w-0">
-                                                            <div className="truncate text-sm font-medium text-slate-900">{entry.taskBriefId || entry.delegationId || entry.id}</div>
+                                                            <div className="truncate text-sm font-medium text-foreground">{entry.taskBriefId || entry.delegationId || entry.id}</div>
                                                         </div>
-                                                        <div className="text-right text-xs text-slate-500">
+                                                        <div className="text-right text-xs text-muted-foreground">
                                                             <div>{t("app.admin.dashboard.engineeringLane.labelRisk")}: {getRiskLabel(risk, t)}</div>
                                                             <div>{t("app.admin.dashboard.engineeringLane.labelOutside")}: {(entry.outsideWriteSetFiles || []).length}</div>
                                                         </div>
                                                     </div>
-                                                    {entry.warningOrBlockReason ? <p className="mt-2 text-xs text-slate-600">{entry.warningOrBlockReason}</p> : null}
+                                                    {entry.warningOrBlockReason ? <p className="mt-2 text-xs text-muted-foreground">{entry.warningOrBlockReason}</p> : null}
                                                 </div>);
 
                     })}
                                     </div> :
 
-                  <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                  <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
                                         {tg(t, "06796e5a")}
                                     </div>
                   }
@@ -1041,16 +1037,16 @@ export default function EngineeringLanePage() {
                                     {diagnostics.length ?
                     <div className="space-y-3">
                                             {diagnostics.map((item, index) =>
-                      <div key={`${item.source}-${item.kind}-${index}`} className="rounded-xl border border-slate-200 p-3">
+                      <div key={`${item.source}-${item.kind}-${index}`} className="rounded-xl border border-border p-3">
                                                     <div className="flex flex-wrap items-center justify-between gap-2">
-                                                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{item.source} · {item.kind}</span>
+                                                        <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">{item.source} · {item.kind}</span>
                                                     </div>
-                                                    <p className="mt-2 text-sm text-slate-700">{item.summary}</p>
+                                                    <p className="mt-2 text-sm text-foreground">{item.summary}</p>
                                                 </div>
                       )}
                                         </div> :
 
-                    <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">{t("app.admin.dashboard.engineeringLane.noDiagnostics")}</div>
+                    <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">{t("app.admin.dashboard.engineeringLane.noDiagnostics")}</div>
                     }
                                 </ConfigCard>
 
@@ -1058,46 +1054,46 @@ export default function EngineeringLanePage() {
                                     {selectedProof ?
                     <div className="space-y-4">
                                             <div className="grid gap-3">
-                                                <div className="rounded-xl border border-slate-200 p-4">
-                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.labelModifyRisk")}</div>
-                                                    <div className="mt-1 text-lg font-semibold text-slate-900">{getRiskLabel(resolveWorksetRisk(selectedProof), t)}</div>
-                                                    {worksetRisk.note ? <p className="mt-1 text-xs text-slate-500">{String(worksetRisk.note)}</p> : null}
+                                                <div className="rounded-xl border border-border p-4">
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.labelModifyRisk")}</div>
+                                                    <div className="mt-1 text-lg font-semibold text-foreground">{getRiskLabel(resolveWorksetRisk(selectedProof), t)}</div>
+                                                    {worksetRisk.note ? <p className="mt-1 text-xs text-muted-foreground">{String(worksetRisk.note)}</p> : null}
                                                 </div>
-                                                <div className="rounded-xl border border-slate-200 p-4">
-                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.labelObservations")}</div>
-                                                    <div className="mt-1 text-lg font-semibold text-slate-900">{String(worksetObservation.observationCount ?? 0)}</div>
-                                                    <p className="mt-1 text-xs text-slate-500">{t("app.admin.dashboard.engineeringLane.labelWarnings")} {String(worksetCorrelation.warningCount ?? 0)}</p>
+                                                <div className="rounded-xl border border-border p-4">
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.labelObservations")}</div>
+                                                    <div className="mt-1 text-lg font-semibold text-foreground">{String(worksetObservation.observationCount ?? 0)}</div>
+                                                    <p className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.engineeringLane.labelWarnings")} {String(worksetCorrelation.warningCount ?? 0)}</p>
                                                 </div>
-                                                <div className="rounded-xl border border-slate-200 p-4">
-                                                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.labelOutsideFiles")}</div>
-                                                    <div className="mt-1 text-lg font-semibold text-slate-900">{String((selectedProof.outsideWriteSetFiles || []).length)}</div>
+                                                <div className="rounded-xl border border-border p-4">
+                                                    <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.labelOutsideFiles")}</div>
+                                                    <div className="mt-1 text-lg font-semibold text-foreground">{String((selectedProof.outsideWriteSetFiles || []).length)}</div>
                                                 </div>
                                             </div>
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.outsideFilesTitle")}</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.outsideFilesTitle")}</h4>
                                                 <FieldList items={selectedProof.outsideWriteSetFiles || []} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.readSetTitle")}</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.readSetTitle")}</h4>
                                                 <FieldList items={selectedProof.readSet} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                             <div>
-                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.engineeringLane.writeSetTitle")}</h4>
+                                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.writeSetTitle")}</h4>
                                                 <FieldList items={selectedProof.writeSet} empty={t("app.admin.dashboard.engineeringLane.none")} />
                                             </div>
                                 </div> :
 
-                    <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">{t("app.admin.dashboard.engineeringLane.noProof")}</div>
+                    <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">{t("app.admin.dashboard.engineeringLane.noProof")}</div>
                     }
                         </ConfigCard>
 
                         <ConfigCard title="app.admin.dashboard.engineeringLane.workflowMemoryTitle" description="app.admin.dashboard.engineeringLane.workflowMemoryDescription" bodyScroll="auto" bodyHeight={360}>
                             <div className="space-y-3">
                                 <div className="flex items-center justify-between gap-2">
-                                    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">
                                         {t("app.admin.dashboard.engineeringLane.workflowMemoryReadOnly")}
                                     </span>
-                                    <a className="text-xs font-medium text-slate-900 underline-offset-4 hover:underline" href="/admin/memory?tab=workflows">
+                                    <a className="text-xs font-medium text-foreground underline-offset-4 hover:underline" href="/admin/memory?tab=workflows">
                                         {t("app.admin.dashboard.engineeringLane.openMemoryWorkflows")}
                                     </a>
                                 </div>
@@ -1105,10 +1101,10 @@ export default function EngineeringLanePage() {
                       <div className="space-y-2">
                                         {engineeringWorkflowCandidates.map((item) => {
                           return (
-                            <div key={item.id} className="rounded-xl border border-slate-200 p-3">
+                            <div key={item.id} className="rounded-xl border border-border p-3">
                                                     <div className="flex flex-wrap items-start justify-between gap-2">
                                                         <div className="min-w-0">
-                                                            <div className="truncate text-sm font-medium text-slate-900">{item.task_family || item.taskFamily || item.id}</div>
+                                                            <div className="truncate text-sm font-medium text-foreground">{item.task_family || item.taskFamily || item.id}</div>
                                                         </div>
                                                         <StatusPill value={item.lastVerificationStatus || item.status} />
                                                     </div>
@@ -1117,7 +1113,7 @@ export default function EngineeringLanePage() {
                         })}
                                     </div> :
 
-                      <div className="rounded-xl border border-dashed border-slate-200 p-6 text-sm text-slate-500">
+                      <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
                                         {t("app.admin.dashboard.engineeringLane.noEngineeringWorkflows")}
                                     </div>
                       }

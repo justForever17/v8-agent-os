@@ -52,7 +52,7 @@ export function ConfigCard({
     return (
         <AdminSurfaceCard className={cn("min-h-0", allowOverflow ? "overflow-visible" : "", className)}>
             <CardHeader className="space-y-2">
-                <CardTitle className="text-lg text-slate-900 dark:text-slate-100">
+                <CardTitle className="text-lg text-foreground">
                     <AdminHoverTitle title={resolveText(title)} description={description ? resolveText(description) : undefined} />
                 </CardTitle>
             </CardHeader>

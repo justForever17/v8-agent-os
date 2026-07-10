@@ -639,7 +639,7 @@ export default function ProviderConfigPage({ params
                                 {t("app.admin.dashboard.models.providers.id.page.retrievalInputWindowHelp")}
                             </p>
                         </div> : null}
-                        {modelType === "MEDIA" ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3 text-sm text-muted-foreground">
+                        {modelType === "MEDIA" ? <div className="rounded-xl border border-dashed border-border bg-muted/50 p-3 text-sm text-muted-foreground">
                             {tg(t, "b0ee49ef")}
                         </div> : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.models.providers.id.page.kb7dfaded")}</Button>

@@ -76,7 +76,7 @@ export default function StabilityStrategyPage() {
     if (loading || !envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         );
     }
@@ -115,7 +115,7 @@ export default function StabilityStrategyPage() {
                             "rounded-2xl border px-5 py-5 text-left shadow-sm transition-colors",
                             mode === item.key
                                 ? "border-sky-200 bg-sky-50 text-sky-900"
-                                : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+                                : "border-border bg-card text-foreground hover:border-input"
                         )}
                         onClick={() => setMode(item.key)}
                     >
@@ -124,10 +124,10 @@ export default function StabilityStrategyPage() {
                 ))}
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
                 <div className="flex items-center justify-between gap-3">
                     <div>
-                        <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.stability.strategy.page.kb33db226")}</div>
+                        <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.stability.strategy.page.kb33db226")}</div>
                     </div>
                     <Button
                         variant={durability ? "default" : "outline"}

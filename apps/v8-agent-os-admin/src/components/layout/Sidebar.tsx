@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { signOut } from "next-auth/react";
 
 import { ADMIN_NAV_GROUPS } from "@/lib/admin-navigation";
+import { prefetchAdminRouteData } from "@/lib/admin-client-cache";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -26,6 +27,7 @@ function badgeClasses(tone: "beta" | "dev") {
 
 export function Sidebar() {
     const pathname = usePathname() || "/admin";
+    const router = useRouter();
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
     const t = useT();
 
@@ -47,19 +49,19 @@ export function Sidebar() {
     return (
         <aside 
             className={cn(
-                "hidden h-full min-h-0 shrink-0 overflow-hidden border-r border-slate-200 bg-[#f7fafc] transition-all duration-300 ease-in-out dark:border-white/10 dark:bg-zinc-950 lg:flex lg:flex-col",
+                "hidden h-full min-h-0 shrink-0 overflow-hidden border-r border-border bg-[#f7fafc] transition-all duration-300 ease-in-out dark:border-white/10 dark:bg-zinc-950 lg:flex lg:flex-col",
                 isCollapsed ? "w-[76px]" : "w-80"
             )}
         >
 
             <div className={cn(
-                "flex h-9 shrink-0 items-center border-b border-slate-200 dark:border-white/10",
+                "flex h-9 shrink-0 items-center border-b border-border dark:border-white/10",
                 isCollapsed ? "justify-center px-0" : "px-3"
             )}>
                 <a
                     href={WEB_CHAT_URL}
                     className={cn(
-                        "flex h-7 w-7 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/[0.06] dark:hover:text-slate-100",
+                        "flex h-7 w-7 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-card hover:text-foreground dark:text-muted-foreground dark:hover:bg-white/[0.06] dark:hover:text-slate-100",
                     )}
                     title={t("components.layout.Sidebar.backToChat")}
                 >
@@ -81,11 +83,11 @@ export function Sidebar() {
                                 {!isCollapsed && (
                                     <button
                                         type="button"
-                                        className="flex w-full min-w-0 items-center justify-between overflow-hidden rounded-2xl px-3 py-2 text-left transition-colors hover:bg-white/70 dark:hover:bg-white/[0.06]"
+                                        className="flex w-full min-w-0 items-center justify-between overflow-hidden rounded-2xl px-3 py-2 text-left transition-colors hover:bg-card/70 dark:hover:bg-white/[0.06]"
                                         onClick={() => setOpenGroups((current) => ({ ...current, [group.id]: !open }))}
                                     >
-                                        <span className="truncate text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">{t(group.title)}</span>
-                                        {open ? <PanelLeftClose className="h-4 w-4 text-slate-400" /> : <PanelLeftOpen className="h-4 w-4 text-slate-400" />}
+                                        <span className="truncate text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">{t(group.title)}</span>
+                                        {open ? <PanelLeftClose className="h-4 w-4 text-muted-foreground" /> : <PanelLeftOpen className="h-4 w-4 text-muted-foreground" />}
                                     </button>
                                 )}
                                 
@@ -97,6 +99,15 @@ export function Sidebar() {
                                                 <Link 
                                                     key={item.href} 
                                                     href={item.href} 
+                                                    prefetch={false}
+                                                    onPointerEnter={() => {
+                                                        router.prefetch(item.href);
+                                                        void prefetchAdminRouteData(item.href);
+                                                    }}
+                                                    onFocus={() => {
+                                                        router.prefetch(item.href);
+                                                        void prefetchAdminRouteData(item.href);
+                                                    }}
                                                     className="block min-w-0" 
                                                     title={isCollapsed ? t(item.title) : undefined}
                                                 >
@@ -107,13 +118,13 @@ export function Sidebar() {
                                                                 ? "h-11 w-11 rounded-2xl justify-center" 
                                                                 : "w-full items-start gap-3 rounded-2xl px-3 py-3",
                                                             selected
-                                                                ? "bg-white text-slate-900 shadow-sm ring-1 ring-sky-100 dark:bg-white/[0.08] dark:text-slate-100 dark:ring-sky-500/20"
-                                                                : "text-slate-600 hover:bg-white/80 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/[0.06] dark:hover:text-slate-100"
+                                                                ? "bg-card text-foreground shadow-sm ring-1 ring-sky-100 dark:bg-white/[0.08] dark:text-slate-100 dark:ring-sky-500/20"
+                                                                : "text-muted-foreground hover:bg-card/80 hover:text-foreground dark:text-slate-300 dark:hover:bg-white/[0.06] dark:hover:text-slate-100"
                                                         )}
                                                     >
                                                         {/* 图标与微型徽标 */}
                                                         <div className="relative flex items-center justify-center shrink-0">
-                                                            <item.icon className={cn("h-4 w-4", isCollapsed ? "" : "mt-0.5", selected ? "text-sky-600 dark:text-sky-300" : "text-slate-400")} />
+                                                            <item.icon className={cn("h-4 w-4", isCollapsed ? "" : "mt-0.5", selected ? "text-sky-600 dark:text-sky-300" : "text-muted-foreground")} />
                                                             {isCollapsed && item.badge ? (
                                                                 <span 
                                                                     className={cn(
@@ -137,7 +148,7 @@ export function Sidebar() {
                                                                         </span>
                                                                     ) : null}
                                                                 </div>
-                                                                <div className="min-w-0 truncate text-xs leading-5 text-slate-500 dark:text-slate-500">
+                                                                <div className="min-w-0 truncate text-xs leading-5 text-muted-foreground dark:text-muted-foreground">
                                                                     {t(item.description)}
                                                                 </div>
                                                             </div>
@@ -155,12 +166,12 @@ export function Sidebar() {
             </div>
 
             {/* 底部控制面板 */}
-            <div className={cn("shrink-0 border-t border-slate-200 dark:border-white/10", isCollapsed ? "p-2" : "p-4")}>
+            <div className={cn("shrink-0 border-t border-border dark:border-white/10", isCollapsed ? "p-2" : "p-4")}>
                 {isCollapsed ? (
                     <button
                         type="button"
                         onClick={toggleCollapse}
-                        className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl text-slate-400 transition-colors hover:bg-white hover:text-slate-600 dark:hover:bg-white/[0.06] dark:hover:text-slate-100"
+                        className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl text-muted-foreground transition-colors hover:bg-card hover:text-muted-foreground dark:hover:bg-white/[0.06] dark:hover:text-slate-100"
                         title={t("components.layout.Sidebar.expandSidebar")}
                     >
                         <PanelLeftOpen className="h-4.5 w-4.5" />
@@ -169,7 +180,7 @@ export function Sidebar() {
                     <div className="flex items-center gap-2">
                         <Button
                             variant="outline"
-                            className="h-11 flex-1 justify-start rounded-2xl border-slate-200 bg-white text-slate-600 transition-all duration-300 hover:text-rose-600 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.1] dark:hover:text-rose-300"
+                            className="h-11 flex-1 justify-start rounded-2xl border-border bg-card text-muted-foreground transition-all duration-300 hover:text-rose-600 dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300 dark:hover:bg-white/[0.1] dark:hover:text-rose-300"
                             onClick={() => signOut()}
                         >
                             <LogOut className="mr-2 h-4 w-4" />
@@ -178,7 +189,7 @@ export function Sidebar() {
                         <button
                             type="button"
                             onClick={toggleCollapse}
-                            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-slate-400 transition-colors hover:bg-white hover:text-slate-600 dark:hover:bg-white/[0.06] dark:hover:text-slate-100"
+                            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-muted-foreground transition-colors hover:bg-card hover:text-muted-foreground dark:hover:bg-white/[0.06] dark:hover:text-slate-100"
                             title={t("components.layout.Sidebar.collapseSidebar")}
                         >
                             <PanelLeftClose className="h-4.5 w-4.5" />

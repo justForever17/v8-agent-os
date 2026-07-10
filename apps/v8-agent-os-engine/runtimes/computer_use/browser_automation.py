@@ -37,6 +37,8 @@ _WEBVIEW_HINTS = ("webview2", "webview", "msedgewebview2")
 _DEFAULT_TARGET_PORT = 9222
 _DEFAULT_PROXY_PORT = 3456
 _DEFAULT_WINDOW_SIZE = "1600,1000"
+_AVAILABILITY_HEALTH_TIMEOUT_SECONDS = 0.25
+_AVAILABILITY_HEALTH_TTL_SECONDS = 2.0
 _GENERIC_BROWSER_APP_IDS = {"browser_checkout", "browser", "chromium"}
 _CHROME_APP_IDS = {"chrome", "google_chrome", "google-chrome"}
 _EDGE_APP_IDS = {"edge", "msedge", "microsoft_edge", "microsoft-edge"}
@@ -134,11 +136,14 @@ class BrowserAutomationProvider:
         self._managed_launches: Dict[str, Dict[str, Any]] = {}
         self._node_path: str | None = shutil.which("node")
         self._playwright_probe_cache: Dict[str, Any] | None = None
+        self._availability_health_cache: Dict[str, Any] | None = None
+        self._availability_health_checked_at: float = 0.0
         atexit.register(self.shutdown)
 
     def configure(self, config: Dict[str, Any] | None) -> None:
         payload = dict(config or {})
         lane = dict(payload.get("browserLane") or {})
+        previous_probe_identity = (self._enabled, self._proxy_port, self._connect_timeout_ms)
         self._enabled = bool(lane.get("enabled", False))
         self._mode = str(lane.get("mode") or "auto_if_available").strip().lower() or "auto_if_available"
         self._provider_id = str(lane.get("provider") or "engine_managed_cdp").strip() or "engine_managed_cdp"
@@ -161,15 +166,12 @@ class BrowserAutomationProvider:
             if str(item).strip()
         ]
         self._target_port = max(_DEFAULT_TARGET_PORT, self._proxy_port + 100)
+        if previous_probe_identity != (self._enabled, self._proxy_port, self._connect_timeout_ms):
+            self._invalidate_availability_health_cache()
 
     def availability_summary(self) -> Dict[str, Any]:
-        connected = False
-        health: Dict[str, Any] = {}
-        try:
-            health = dict(self._health() or {})
-            connected = bool(health.get("connected"))
-        except Exception:
-            connected = False
+        health = self._availability_health()
+        connected = bool(health.get("connected"))
         helper_script = self._helper_script_path()
         helper_exists = helper_script.exists()
         playwright_probe = self._probe_playwright_dependency()
@@ -193,6 +195,48 @@ class BrowserAutomationProvider:
             "connected": connected,
             "managedLaunchCount": len(self._managed_launches),
         }
+
+    def _invalidate_availability_health_cache(self) -> None:
+        with self._lock:
+            self._availability_health_cache = None
+            self._availability_health_checked_at = 0.0
+
+    def _availability_health(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            if (
+                self._availability_health_cache is not None
+                and (now - self._availability_health_checked_at) <= _AVAILABILITY_HEALTH_TTL_SECONDS
+            ):
+                return dict(self._availability_health_cache)
+
+        if not self._enabled:
+            health: Dict[str, Any] = {
+                "connected": False,
+                "status": "disabled",
+            }
+        else:
+            try:
+                health = dict(
+                    self._health(
+                        timeout_seconds=min(
+                            _AVAILABILITY_HEALTH_TIMEOUT_SECONDS,
+                            max(0.05, self._connect_timeout_ms / 1000.0),
+                        )
+                    )
+                    or {}
+                )
+            except Exception as exc:
+                health = {
+                    "connected": False,
+                    "status": "unreachable",
+                    "errorClass": exc.__class__.__name__,
+                }
+
+        with self._lock:
+            self._availability_health_cache = dict(health)
+            self._availability_health_checked_at = now
+        return health
 
     def lane_capabilities(self) -> Dict[str, Any]:
         helper_script = self._helper_script_path()
@@ -982,6 +1026,7 @@ class BrowserAutomationProvider:
                 proc.kill()
             except Exception:
                 pass
+        self._invalidate_availability_health_cache()
 
     def _helper_script_path(self) -> Path:
         return Path(__file__).resolve().parents[2] / "scripts" / "browser_cdp_proxy.mjs"
@@ -989,8 +1034,9 @@ class BrowserAutomationProvider:
     def _proxy_base_url(self) -> str:
         return f"http://127.0.0.1:{self._proxy_port}"
 
-    def _health(self) -> Dict[str, Any]:
-        response = requests.get(f"{self._proxy_base_url()}/health", timeout=max(1.0, self._connect_timeout_ms / 1000.0))
+    def _health(self, *, timeout_seconds: float | None = None) -> Dict[str, Any]:
+        timeout = timeout_seconds if timeout_seconds is not None else max(1.0, self._connect_timeout_ms / 1000.0)
+        response = requests.get(f"{self._proxy_base_url()}/health", timeout=timeout)
         response.raise_for_status()
         return dict(response.json() or {})
 

@@ -21,13 +21,13 @@ export function DomainSummaryStrip({
             {items.map((item, index) => (
                 <AdminSurfaceCard key={`${item.label}-${index}`} className="h-full min-w-0 overflow-visible">
                     <CardContent className="flex h-full min-w-0 flex-col space-y-2 overflow-visible p-5">
-                        <div className="text-xs font-medium uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">
+                        <div className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
                             <AdminHoverInfo content={item.description ? resolveText(item.description) : undefined} panelClassName="normal-case tracking-normal">
                                 <span>{resolveText(item.label)}</span>
                             </AdminHoverInfo>
                         </div>
                         <div
-                            className="min-h-[3.5rem] min-w-0 break-all text-lg font-semibold leading-tight text-slate-900 line-clamp-2 dark:text-slate-50 sm:text-xl"
+                            className="min-h-[3.5rem] min-w-0 break-all text-lg font-semibold leading-tight text-foreground line-clamp-2 sm:text-xl"
                             title={typeof item.value === "string" ? item.value : undefined}
                         >
                             {item.value}

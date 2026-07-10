@@ -43,33 +43,33 @@ export function SettingToggleCard({
     const titleElement = href ? (
         <Link
             href={href}
-            className={cn("block truncate text-sm font-semibold text-slate-900 transition hover:text-sky-700 dark:text-slate-100 dark:hover:text-sky-300", titleClassName)}
+            className={cn("block truncate text-sm font-semibold text-foreground transition hover:text-primary", titleClassName)}
         >
             {title}
         </Link>
     ) : (
         <Label
             htmlFor={switchId}
-            className={cn("block text-sm font-semibold text-slate-900 cursor-pointer dark:text-slate-100", titleClassName)}
+            className={cn("block cursor-pointer text-sm font-semibold text-foreground", titleClassName)}
         >
             {title}
         </Label>
     );
 
     return (
-        <div className={cn("flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50/50 p-4 shadow-none transition-all hover:bg-slate-50/80 dark:border-border dark:bg-card dark:hover:bg-muted/60", className)}>
+        <div className={cn("flex items-center justify-between gap-4 rounded-xl border border-border bg-muted/35 p-4 shadow-none transition-colors hover:bg-muted/60", className)}>
             <div className="min-w-0 space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
                     {titleElement}
                     {extraBadge}
                 </div>
                 {description && (
-                    <div className="text-xs leading-relaxed text-slate-500 dark:text-muted-foreground">
+                    <div className="text-xs leading-relaxed text-muted-foreground">
                         {description}
                     </div>
                 )}
                 {showStatusDot && (
-                    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-muted-foreground">
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <span
                             className={cn(
                                 "inline-flex h-2.5 w-2.5 shrink-0 rounded-full",

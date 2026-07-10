@@ -31,7 +31,7 @@ function cliApi() {
 }
 
 function shellIcon() {
-  const iconPath = productImagePath();
+  const iconPath = trayIconPath();
   if (iconPath) {
     const image = nativeImage.createFromPath(iconPath);
     if (!image.isEmpty()) return image;
@@ -137,15 +137,37 @@ async function isAdminLoggedIn() {
   }
 }
 
-function productImagePath() {
+function shellAssetPath(name) {
+  const candidate = path.resolve(__dirname, '..', 'assets', name);
+  return fs.existsSync(candidate) ? candidate : '';
+}
+
+function productMarkPath() {
   const candidates = [
     path.join(repoRoot, 'apps', 'v8-agent-os-web', 'public', 'product-mark.png'),
     path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'public', 'product-mark.png'),
+    shellAssetPath('icon.png'),
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function taskbarIconPath() {
+  const candidates = [
+    shellAssetPath(process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
+    shellAssetPath('icon.png'),
     path.join(repoRoot, 'apps', 'v8-agent-os-web', 'public', 'icon.png'),
     path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'public', 'icon.png'),
-    path.join(desktopPetDir, 'electron', 'assets', 'tray-icon.png'),
-  ];
+  ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+function trayIconPath() {
+  const candidates = [
+    shellAssetPath('tray-icon.png'),
+    shellAssetPath('icon.png'),
+    path.join(desktopPetDir, 'electron', 'assets', 'tray-icon.png'),
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || taskbarIconPath();
 }
 
 function mimeForImagePath(filePath) {
@@ -157,7 +179,7 @@ function mimeForImagePath(filePath) {
 }
 
 function productMarkUrl() {
-  const found = productImagePath();
+  const found = productMarkPath();
   if (!found) return '';
   try {
     const data = fs.readFileSync(found);
@@ -272,7 +294,7 @@ function createMainWindow() {
     minHeight: 640,
     title: 'V8 Agent OS',
     frame: false,
-    icon: productImagePath() || undefined,
+    icon: taskbarIconPath() || undefined,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

@@ -62,12 +62,12 @@ function ProductTopbarContent({
       </div>
       <div className="v8-product-topbar__actions">
         {actions}
-        {windowControls ? (
-          <div className="v8-product-topbar__window-controls">
-            {windowControls}
-          </div>
-        ) : null}
       </div>
+      {windowControls ? (
+        <div className="v8-product-topbar__window-controls">
+          {windowControls}
+        </div>
+      ) : null}
     </div>
   );
 }

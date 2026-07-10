@@ -21,6 +21,7 @@ import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { tg } from "@/i18n/admin-legacy";
 type ExtensionCatalogResponse = {
@@ -257,9 +258,9 @@ function StatPill({ label, value
 
 
 }: {label: string;value: string | number;}) {
-  return <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 dark:border-border dark:bg-card">
-            <div className="text-xs text-slate-500 dark:text-muted-foreground">{label}</div>
-            <div className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">{value}</div>
+  return <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 dark:border-border dark:bg-card">
+            <div className="text-xs text-muted-foreground dark:text-muted-foreground">{label}</div>
+            <div className="mt-2 text-2xl font-semibold text-foreground dark:text-slate-100">{value}</div>
         </div>;
 }
 function PolicyToggleCard({ title, description, checked, onCheckedChange, children
@@ -269,7 +270,7 @@ function PolicyToggleCard({ title, description, checked, onCheckedChange, childr
 
 
 }: {title: string;description?: string;checked: boolean;onCheckedChange: (checked: boolean) => void;children?: ReactNode;}) {
-  return <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-border dark:bg-muted/40">
+  return <div className="space-y-4 rounded-2xl border border-border bg-muted/80 p-4 dark:border-border dark:bg-muted/40">
             <SettingToggleCard
                 title={title}
                 description={description}
@@ -294,7 +295,7 @@ function SliderField({ label, value, min, max, step = 1, disabled, onValueChange
   return <div className={`space-y-3 ${disabled ? "opacity-50" : ""}`}>
             <div className="flex items-center justify-between gap-3">
                 <Label>{label}</Label>
-                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 dark:border-border dark:bg-card dark:text-slate-100">
+                <span className="rounded-full border border-border bg-card px-2.5 py-1 text-xs font-semibold text-foreground dark:border-border dark:bg-card dark:text-slate-100">
                     {formatter ? formatter(value) : value}
                 </span>
             </div>
@@ -303,11 +304,11 @@ function SliderField({ label, value, min, max, step = 1, disabled, onValueChange
         onValueChange(next);
       }
     }} />
-            <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-muted-foreground">
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground/80 dark:text-muted-foreground">
                 <span>{min}</span>
                 <span>{max}</span>
             </div>
-            {hint ? <div className="text-xs leading-5 text-slate-500 dark:text-muted-foreground">{hint}</div> : null}
+            {hint ? <div className="text-xs leading-5 text-muted-foreground dark:text-muted-foreground">{hint}</div> : null}
         </div>;
 }
 function skillSourceBadgeLabel(sourceType: string | undefined, t: TranslateFn) {
@@ -580,24 +581,16 @@ export default function ExtensionsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const [mcpFormMode, setMcpFormMode] = useState<McpFormMode>("create");
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (force = false) => {
     setLoading(true);
     try {
-      const [healthResponse, config, modelList, skillSafetyPayload] = await Promise.all([
-      fetch("/api/extensions/health", { cache: "no-store" }),
-      fetchConfigDomain<ExtensionsConfigData>("extensions"),
-      fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
-      fetch("/api/skills/safety/reviews?limit=100", { cache: "no-store" }).then((response) => response.json().catch(() => ({ items: [] })))]
+      const [healthPayload, config, modelList, skillSafetyPayload] = await Promise.all([
+      fetchAdminJson<ExtensionHealthResponse>("/api/extensions/health", { force }),
+      fetchConfigDomain<ExtensionsConfigData>("extensions", { force }),
+      fetchAdminJson<SysModel[]>("/api/models", { force }),
+      fetchAdminJson<{ items?: SkillSafetyReview[] }>("/api/skills/safety/reviews?limit=100", { force })]
       );
-      if (!healthResponse.ok) {
-        throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
-      }
-      const healthPayload = await healthResponse.json();
-      const catalogResponse = await fetch("/api/extensions/catalog", { cache: "no-store" });
-      if (!catalogResponse.ok) {
-        throw new Error(t("app.admin.dashboard.extensions.page.kae795c9a"));
-      }
-      const catalogPayload = await catalogResponse.json();
+      const catalogPayload = await fetchAdminJson<ExtensionCatalogResponse>("/api/extensions/catalog", { force });
       setCatalog(catalogPayload);
       setHealth(healthPayload);
       setConfigEnvelope(config);
@@ -693,7 +686,7 @@ export default function ExtensionsPage() {
       if (!res.ok)
       throw new Error(t("app.admin.dashboard.extensions.page.k812655ea"));
       await res.json();
-      await loadData();
+      await loadData(true);
       toast({ title: t("app.admin.dashboard.extensions.page.kcfa8ac90") });
     }
     catch {
@@ -722,7 +715,7 @@ export default function ExtensionsPage() {
       toast({ title: t("app.admin.dashboard.extensions.page.k4877c2e6"), description: t("app.admin.dashboard.extensions.page.kc33ca4fe", {
           data_installed_length_0: data.installed?.length ?? 0
         }) });
-      await loadData();
+      await loadData(true);
     }
     catch (error) {
       toast({
@@ -759,7 +752,7 @@ export default function ExtensionsPage() {
       }
       setInstallResult(data);
       toast({ title: t("app.admin.dashboard.extensions.page.k98312139") });
-      await loadData();
+      await loadData(true);
     }
     catch (error) {
       setZipValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k61c03dc2"));
@@ -799,7 +792,7 @@ export default function ExtensionsPage() {
       setMcpConfigInput("");
       setMcpValidationSummary("");
       toast({ title: t("app.admin.dashboard.extensions.page.kceb42548"), description: t("app.admin.dashboard.extensions.page.kcc0b918f") });
-      await loadData();
+      await loadData(true);
     }
     catch (error) {
       setMcpValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"));
@@ -871,7 +864,7 @@ export default function ExtensionsPage() {
       setMcpInstallForm(DEFAULT_MCP_INSTALL_FORM);
       setMcpFormMode("create");
       toast({ title: t("app.admin.dashboard.extensions.page.kceb42548"), description: t("app.admin.dashboard.extensions.page.kcc0b918f") });
-      await loadData();
+      await loadData(true);
     }
     catch (error) {
       setMcpValidationError(error instanceof Error ? error.message : t("app.admin.dashboard.extensions.page.k02db39a8"));
@@ -914,7 +907,7 @@ export default function ExtensionsPage() {
 
         description: tg(t, "2ec10ec7")
       });
-      await loadData();
+      await loadData(true);
     }
     catch (error) {
       toast({
@@ -956,7 +949,7 @@ export default function ExtensionsPage() {
         title: tg(t, "e95e338d"),
         description: tg(t, "955629d4")
       });
-      await loadData();
+      await loadData(true);
     }
     catch (error) {
       toast({
@@ -971,7 +964,7 @@ export default function ExtensionsPage() {
   };
   if (loading || !catalog || !health || !configEnvelope) {
     return <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>;
   }
   const clampRange = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max));
@@ -1011,7 +1004,7 @@ export default function ExtensionsPage() {
                             {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                             {t("app.admin.dashboard.extensions.page.k6010e1ed")}
                         </Button>
-                        <Button variant="outline" onClick={() => void loadData()} disabled={reloading || saving}>
+                        <Button variant="outline" onClick={() => void loadData(true)} disabled={reloading || saving}>
                             <RefreshCw className="mr-2 h-4 w-4" />
                             {t("app.admin.dashboard.extensions.page.k286cb634")}
                         </Button>
@@ -1034,7 +1027,7 @@ export default function ExtensionsPage() {
                             title={t("app.admin.dashboard.extensions.page.k74dc7104")}
                             checked={prefilterEnabled}
                             onCheckedChange={(checked) => updateConfig({ prefilterPolicy: { enabled: checked, mode: "two_stage" } })}
-                            className="border-slate-200 bg-slate-50/80 px-4 py-3 rounded-2xl"
+                            className="border-border bg-muted/80 px-4 py-3 rounded-2xl"
                         />
 
                         <div className="space-y-2">
@@ -1048,9 +1041,9 @@ export default function ExtensionsPage() {
                         </div>
 
                         <div className="grid gap-4 xl:grid-cols-2">
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-border dark:bg-card">
+                            <div className="space-y-4 rounded-2xl border border-border bg-card p-4 dark:border-border dark:bg-card">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{tg(t, "79736210")}</div>
+                                    <div className="text-sm font-semibold text-foreground dark:text-slate-100">{tg(t, "79736210")}</div>
                                     <Badge variant="outline">{skillsPolicyBadge}</Badge>
                                 </div>
                                 <PolicyToggleCard title={tg(t, "49bc8921")} checked={skillsStage1Enabled} onCheckedChange={(checked) => updateConfig({
@@ -1080,9 +1073,9 @@ export default function ExtensionsPage() {
                                 </PolicyToggleCard>
                             </div>
 
-                            <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-border dark:bg-card">
+                            <div className="space-y-4 rounded-2xl border border-border bg-card p-4 dark:border-border dark:bg-card">
                                 <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{tg(t, "48ba093e")}</div>
+                                    <div className="text-sm font-semibold text-foreground dark:text-slate-100">{tg(t, "48ba093e")}</div>
                                     <Badge variant="outline">{mcpPolicyBadge}</Badge>
                                 </div>
                                 <PolicyToggleCard title={tg(t, "49bc8921")} checked={mcpStage1Enabled} onCheckedChange={(checked) => updateConfig({
@@ -1124,7 +1117,7 @@ export default function ExtensionsPage() {
                         <StatPill label={tg(t, "eaae1132")} value={skillSafetyReviewCount} />
                         <StatPill label={tg(t, "65c814f7")} value={skillSafetyApprovedCount} />
                     </div>
-                    <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm leading-6 text-slate-500">
+                    <div className="rounded-2xl border border-dashed border-border bg-muted/70 px-4 py-5 text-sm leading-6 text-muted-foreground">
                         {skillSafetyReviews.length === 0 ? tg(t, "c38e628d") : tg(t, "f2b2b3a6")
 
           }
@@ -1140,68 +1133,68 @@ export default function ExtensionsPage() {
             <div className="grid auto-rows-fr gap-4 xl:grid-cols-2">
                 <ConfigCard title={"app.admin.dashboard.extensions.page.kec74feaf"} description={"app.admin.dashboard.extensions.page.kcc79174f"} variant="list" bodyHeight={420} bodyScroll="auto" className="h-full">
                     <div className="space-y-3">
-                        <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+                        <div className="space-y-3 rounded-2xl border border-border bg-muted/80 px-4 py-3 text-sm text-muted-foreground">
                             <div>
                                 {t("app.admin.dashboard.extensions.page.k99bf9749")}
-                                <span className="font-medium break-all text-slate-900">{catalog.skills?.root || "—"}</span>
+                                <span className="font-medium break-all text-foreground">{catalog.skills?.root || "—"}</span>
                             </div>
                             <div className="grid gap-2 md:grid-cols-2">
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{tg(t, "7279ecd4")}</div>
-                                    <div className="mt-1 text-xs text-slate-700">{String(catalog.catalogScope?.mode || "default")}</div>
-                                    {catalog.catalogScope?.projectId ? <div className="mt-1 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{catalog.catalogScope.projectId}</div> : null}
-                                    {catalog.catalogScope?.workspacePath ? <div className="mt-1 break-all text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{catalog.catalogScope.workspacePath}</div> : null}
+                                <div className="rounded-xl border border-border bg-card px-3 py-2">
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tg(t, "7279ecd4")}</div>
+                                    <div className="mt-1 text-xs text-foreground">{String(catalog.catalogScope?.mode || "default")}</div>
+                                    {catalog.catalogScope?.projectId ? <div className="mt-1 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{catalog.catalogScope.projectId}</div> : null}
+                                    {catalog.catalogScope?.workspacePath ? <div className="mt-1 break-all text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.kd723b49c")}{catalog.catalogScope.workspacePath}</div> : null}
                                 </div>
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                    <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{tg(t, "161c82a4")}</div>
-                                    <div className="mt-1 break-all text-xs text-slate-700">{catalog.skills?.visibleRootSignature || catalog.visibleRootSignature || "—"}</div>
-                                    <div className="mt-1 text-[11px] text-slate-500">{tg(t, "b23c239c")}{String(catalog.skills?.discoveryRevision || "—")}</div>
-                                    <div className="mt-1 text-[11px] text-slate-500">{tg(t, "1a5ed9ee")}{String(catalog.skills?.scopedRefreshMode || "base")}</div>
+                                <div className="rounded-xl border border-border bg-card px-3 py-2">
+                                    <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tg(t, "161c82a4")}</div>
+                                    <div className="mt-1 break-all text-xs text-foreground">{catalog.skills?.visibleRootSignature || catalog.visibleRootSignature || "—"}</div>
+                                    <div className="mt-1 text-[11px] text-muted-foreground">{tg(t, "b23c239c")}{String(catalog.skills?.discoveryRevision || "—")}</div>
+                                    <div className="mt-1 text-[11px] text-muted-foreground">{tg(t, "1a5ed9ee")}{String(catalog.skills?.scopedRefreshMode || "base")}</div>
                                 </div>
                             </div>
-                            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{tg(t, "88063e8d")}</div>
+                            <div className="rounded-xl border border-border bg-card px-3 py-2">
+                                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{tg(t, "88063e8d")}</div>
                                 <div className="mt-2">
                                     {(catalog.skills?.changedRoots || []).length ?
                 <div className="space-y-1">
                                             {(catalog.skills?.changedRoots || []).map((root) =>
-                  <div key={String(root)} className="break-all rounded-lg bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
+                  <div key={String(root)} className="break-all rounded-lg bg-muted/50 px-2 py-1 text-[11px] text-muted-foreground">
                                                     {String(root)}
                                                 </div>
                   )}
                                         </div> :
 
-                <div className="text-xs text-slate-500">{tg(t, "0c294602")}</div>
+                <div className="text-xs text-muted-foreground">{tg(t, "0c294602")}</div>
                 }
                                 </div>
                             </div>
                             <div className="space-y-2">
-                                <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{t("app.admin.dashboard.extensions.page.kcc6ff432")}</div>
-                                {(catalog.skills?.rootDescriptors || []).length === 0 ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.extensions.page.k5a1c552a")}</div> : (catalog.skills?.rootDescriptors || []).map((root) => <div key={root.rootPath} className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+                                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("app.admin.dashboard.extensions.page.kcc6ff432")}</div>
+                                {(catalog.skills?.rootDescriptors || []).length === 0 ? <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.extensions.page.k5a1c552a")}</div> : (catalog.skills?.rootDescriptors || []).map((root) => <div key={root.rootPath} className="rounded-xl border border-border bg-card px-3 py-3">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant="secondary">{skillSourceBadgeLabel(root.sourceType, t)}</Badge>
                                                 {root.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k3d11f197")}</Badge> : null}
                                             </div>
-                                            <div className="mt-2 break-all text-xs text-slate-600">{root.rootPath}</div>
-                                            {root.workspacePath ? <div className="mt-1 break-all text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{root.workspacePath}</div> : null}
-                                            {root.projectId ? <div className="mt-1 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{root.projectId}</div> : null}
+                                            <div className="mt-2 break-all text-xs text-muted-foreground">{root.rootPath}</div>
+                                            {root.workspacePath ? <div className="mt-1 break-all text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.kd723b49c")}{root.workspacePath}</div> : null}
+                                            {root.projectId ? <div className="mt-1 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{root.projectId}</div> : null}
                                         </div>)}
                             </div>
                         </div>
-                        {(catalog.skills?.items || []).length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.k8f2a9946")} description={t("app.admin.dashboard.extensions.page.kd9677b98")} /> : (catalog.skills?.items || []).map((skill) => <div key={skill.skillId || `${skill.name}:${skill.path}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                        {(catalog.skills?.items || []).length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.k8f2a9946")} description={t("app.admin.dashboard.extensions.page.kd9677b98")} /> : (catalog.skills?.items || []).map((skill) => <div key={skill.skillId || `${skill.name}:${skill.path}`} className="rounded-2xl border border-border bg-card p-4 shadow-sm">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="min-w-0 space-y-2">
                                             <div className="flex items-center gap-2">
                                                 <PackageCheck className="h-4 w-4 text-emerald-600" />
-                                                <div className="text-sm font-semibold text-slate-900">{skill.name}</div>
+                                                <div className="text-sm font-semibold text-foreground">{skill.name}</div>
                                                 <Badge variant="secondary">{skillSourceBadgeLabel(skill.sourceType, t)}</Badge>
                                                 {skill.visibility === "scoped" ? <Badge variant="outline">{t("app.admin.dashboard.extensions.page.k43e1d513")}</Badge> : null}
                                             </div>
-                                            <div className="line-clamp-2 text-sm leading-6 text-slate-600">{skill.description}</div>
-                                            {skill.skillId ? <div className="break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">id: {skill.skillId}</div> : null}
-                                            {skill.workspacePath ? <div className="break-all rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.kd723b49c")}{skill.workspacePath}</div> : null}
-                                            {skill.projectId ? <div className="rounded-xl bg-slate-50 px-3 py-2 text-[11px] text-slate-500">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{skill.projectId}</div> : null}
-                                            <div className="break-all rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-500">{skill.path}</div>
+                                            <div className="line-clamp-2 text-sm leading-6 text-muted-foreground">{skill.description}</div>
+                                            {skill.skillId ? <div className="break-all rounded-xl bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">id: {skill.skillId}</div> : null}
+                                            {skill.workspacePath ? <div className="break-all rounded-xl bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.kd723b49c")}{skill.workspacePath}</div> : null}
+                                            {skill.projectId ? <div className="rounded-xl bg-muted/50 px-3 py-2 text-[11px] text-muted-foreground">{t("app.admin.dashboard.extensions.page.k6c66fa4c")}{skill.projectId}</div> : null}
+                                            <div className="break-all rounded-xl bg-muted/50 px-3 py-2 text-xs text-muted-foreground">{skill.path}</div>
                                         </div>
                                         <div className="flex shrink-0 items-center gap-2">
                                             <Button
@@ -1224,18 +1217,18 @@ export default function ExtensionsPage() {
 
                 <ConfigCard title={"app.admin.dashboard.extensions.page.kdbd9cf57"} description={"app.admin.dashboard.extensions.page.kcc7340fc"} variant="list" bodyHeight={420} bodyScroll="auto" className="h-full">
                     <div className="space-y-3">
-                        {catalog.mcp.servers.length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.kf3616847")} description={t("app.admin.dashboard.extensions.page.k9baa8ec6")} /> : catalog.mcp.servers.map((server) => <div key={server.name} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                        {catalog.mcp.servers.length === 0 ? <EmptyState title={t("app.admin.dashboard.extensions.page.kf3616847")} description={t("app.admin.dashboard.extensions.page.k9baa8ec6")} /> : catalog.mcp.servers.map((server) => <div key={server.name} className="rounded-2xl border border-border bg-card p-4 shadow-sm">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="min-w-0 space-y-2">
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <div className="text-sm font-semibold text-slate-900">{server.name}</div>
+                                                <div className="text-sm font-semibold text-foreground">{server.name}</div>
                                                 <Badge variant={server.status === "connected" ? "default" : server.status === "disabled" ? "secondary" : "destructive"}>{statusLabel(server.status, t)}</Badge>
                                                 <Badge variant="outline">{server.transport}</Badge>
                                             </div>
-                                            <div className="break-all text-xs text-slate-500">{server.target || t("app.admin.dashboard.extensions.page.k2af0f4dc")}</div>
-                                            <div className="text-xs text-slate-600">{t("app.admin.dashboard.extensions.page.k43da15a1")}{server.toolCount}</div>
+                                            <div className="break-all text-xs text-muted-foreground">{server.target || t("app.admin.dashboard.extensions.page.k2af0f4dc")}</div>
+                                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.extensions.page.k43da15a1")}{server.toolCount}</div>
                                             {server.appsSupported ? (
-                                                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                                     <Badge variant="secondary">{t("app.admin.dashboard.extensions.page.mcpAppsSupported")}</Badge>
                                                     <span>{t("app.admin.dashboard.extensions.page.mcpAppTools")}{server.appToolCount ?? 0}</span>
                                                     <span>{t("app.admin.dashboard.extensions.page.mcpUiResources")}{server.uiResourceCount ?? 0}</span>
@@ -1288,7 +1281,7 @@ export default function ExtensionsPage() {
                             <Label>{t("app.admin.dashboard.extensions.page.k94e8c946")}</Label>
                             <Input value={commandInput} onChange={(event) => setCommandInput(event.target.value)} placeholder="npx --yes skills add https://github.com/vercel-labs/skills -g --skill find-skills" />
                         </div>
-                        {installResult ? <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-sm text-slate-700">
+                        {installResult ? <div className="space-y-3 rounded-2xl border border-border bg-muted/80 p-4 text-sm text-foreground">
                                 <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{t("app.admin.dashboard.extensions.page.ke7139376")}</Badge><span className="break-all">{installResult.source}</span></div>
                                 <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{t("app.admin.dashboard.extensions.page.ke1a0bb35")}</Badge><span className="break-all">{installResult.targetRoot}</span></div>
                                 <div className="grid gap-3 md:grid-cols-3">
@@ -1308,17 +1301,17 @@ export default function ExtensionsPage() {
                                     <Upload className="mr-2 h-4 w-4" />
                                     {t("app.admin.dashboard.extensions.page.k424fe082")}
                                 </Button>
-                                <div className="min-w-0 flex-1 rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 px-3 py-2 text-xs text-slate-500">
+                                <div className="min-w-0 flex-1 rounded-2xl border border-dashed border-border bg-muted/80 px-3 py-2 text-xs text-muted-foreground">
                                     {zipFileLabel || t("app.admin.dashboard.extensions.page.k543b111a")}
                                 </div>
-                                {uploadingZip ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                                {uploadingZip ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/80" /> : null}
                             </div>
                         </div>
                         {zipValidationError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
                                 {zipValidationError}
                             </div> : null}
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-6 text-slate-600">
-                            <div className="font-medium text-slate-900">{t("app.admin.dashboard.extensions.page.k0122c8bd")}</div>
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-xs leading-6 text-muted-foreground">
+                            <div className="font-medium text-foreground">{t("app.admin.dashboard.extensions.page.k0122c8bd")}</div>
                             <ul className="mt-2 space-y-1">
                                 <li>{t("app.admin.dashboard.extensions.page.k7b12f611")}</li>
                                 <li>{t("app.admin.dashboard.extensions.page.k1db7e693")}</li>
@@ -1433,7 +1426,7 @@ export default function ExtensionsPage() {
                                     <DialogDescription>{t("app.admin.dashboard.extensions.page.ka0ebb4b7")}</DialogDescription>
                                 </DialogHeader>
                                 <div className="space-y-3 py-4">
-                                    <Textarea className="h-[300px] bg-slate-50 font-mono text-sm" value={mcpConfigInput} onChange={(event) => {
+                                    <Textarea className="h-[300px] bg-muted/50 font-mono text-sm" value={mcpConfigInput} onChange={(event) => {
                   setMcpConfigInput(event.target.value);
                   if (mcpValidationError)
                   setMcpValidationError("");
@@ -1454,14 +1447,14 @@ export default function ExtensionsPage() {
                             </DialogContent>
                         </Dialog>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-600">
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-sm text-muted-foreground">
                             <div className="flex items-start gap-2">
                                 <Wrench className="mt-0.5 h-4 w-4 text-sky-600" />
                                 <div>{t("app.admin.dashboard.extensions.page.kb69d2650")}</div>
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-6 text-slate-600">
-                            <div className="font-medium text-slate-900">{t("app.admin.dashboard.extensions.page.k499b6163")}</div>
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-xs leading-6 text-muted-foreground">
+                            <div className="font-medium text-foreground">{t("app.admin.dashboard.extensions.page.k499b6163")}</div>
                             <ul className="mt-2 space-y-1">
                                 <li>{t("app.admin.dashboard.extensions.page.ka8ca160e")}</li>
                                 <li>{t("app.admin.dashboard.extensions.page.k94876ec4")}</li>

@@ -311,8 +311,8 @@ function StorageRetentionPanel() {
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.storageRetention.title")}</div>
-                    <div className="text-xs leading-5 text-slate-500">
+                    <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.center.advanced.storageRetention.title")}</div>
+                    <div className="text-xs leading-5 text-muted-foreground">
                         {ti(t, "ka0d7a179bf")}
                     </div>
                 </div>
@@ -327,39 +327,39 @@ function StorageRetentionPanel() {
                 </div>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.governed")}</div>
-                    <div className="font-semibold text-slate-900">{formatBytes(stats?.totalGovernedBytes)}</div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.governed")}</div>
+                    <div className="font-semibold text-foreground">{formatBytes(stats?.totalGovernedBytes)}</div>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.cap")}</div>
-                    <div className="font-semibold text-slate-900">{formatBytes(stats?.maxBytes)}</div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.cap")}</div>
+                    <div className="font-semibold text-foreground">{formatBytes(stats?.maxBytes)}</div>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.overCap")}</div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.overCap")}</div>
                     <div className={Number(stats?.overCapBytes || 0) > 0 ? "font-semibold text-amber-700" : "font-semibold text-emerald-700"}>{formatBytes(stats?.overCapBytes)}</div>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.lastAction")}</div>
-                    <div className="font-semibold text-slate-900">{fieldText(lastResult?.status || stats?.recentRetentionEvents?.[0]?.status, "none")}</div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.lastAction")}</div>
+                    <div className="font-semibold text-foreground">{fieldText(lastResult?.status || stats?.recentRetentionEvents?.[0]?.status, "none")}</div>
                 </div>
             </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-3">
-                <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.budgets")}</div>
+            <div className="rounded-xl border border-border bg-card p-3">
+                <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.budgets")}</div>
                 <div className="grid gap-3 md:grid-cols-2">
                     {Object.entries(budgetComponents).map(([key, value]) => {
           const used = Number(value.usedBytes || 0);
           const max = Number(value.maxBytes || 0);
           const ratio = max > 0 ? used / max : 0;
-          return <div key={key} className="rounded-xl border border-slate-200 p-3 text-xs">
+          return <div key={key} className="rounded-xl border border-border p-3 text-xs">
                                 <div className="flex items-center justify-between gap-3">
                                     <div>
-                                        <div className="font-semibold text-slate-900">{value.label || key}</div>
-                                        <div className="text-slate-500">
+                                        <div className="font-semibold text-foreground">{value.label || key}</div>
+                                        <div className="text-muted-foreground">
                                             {t("app.admin.dashboard.operations.center.advanced.used")} {formatBytes(used)} · {value.mode || "warn_only"}{value.retentionDays ? ` · ${value.retentionDays}d` : ""}
                                         </div>
                                     </div>
-                                    <div className={ratio >= 1 ? "text-amber-700" : "text-slate-500"}>{Math.round(ratio * 100)}%</div>
+                                    <div className={ratio >= 1 ? "text-amber-700" : "text-muted-foreground"}>{Math.round(ratio * 100)}%</div>
                                 </div>
                                 <div className="mt-2 flex items-center gap-2">
                                     <Input className="h-8" type="number" min={1} value={budgetDraft[key] || ""} onChange={event => setBudgetDraft(current => ({
@@ -367,7 +367,7 @@ function StorageRetentionPanel() {
                 [key]: event.target.value
               }))} />
 
-                                    <span className="shrink-0 text-slate-500">MB</span>
+                                    <span className="shrink-0 text-muted-foreground">MB</span>
                                 </div>
                             </div>;
         })}
@@ -377,12 +377,12 @@ function StorageRetentionPanel() {
                     {stats.recommendations.map(item => <div key={`${item.key}-${item.action}`}>{item.message}</div>)}
                 </div> : null}
             <div className="grid gap-2 md:grid-cols-2">
-                {Object.entries(components).map(([key, value]) => <div key={key} className="flex items-center justify-between rounded-xl border border-slate-200 px-3 py-2 text-xs">
-                        <span className="text-slate-500">{key}</span>
-                        <span className="font-mono text-slate-900">{formatBytes(Number(value || 0))}</span>
+                {Object.entries(components).map(([key, value]) => <div key={key} className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-xs">
+                        <span className="text-muted-foreground">{key}</span>
+                        <span className="font-mono text-foreground">{formatBytes(Number(value || 0))}</span>
                     </div>)}
             </div>
-            {lastResult ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
+            {lastResult ? <div className="rounded-xl border border-border bg-card p-3 text-xs leading-5 text-muted-foreground">
                     {t("app.admin.dashboard.operations.center.advanced.resultSummary", {
             status: fieldText(lastResult.status, "unknown"),
             actionCount,
@@ -434,9 +434,9 @@ function SystemDoctorPanel() {
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.systemDoctor.title")}</div>
-                    <div className="text-xs leading-5 text-slate-500">{ti(t, "k6e8c71c3b5")}</div>
-                    <div className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
+                    <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.center.advanced.systemDoctor.title")}</div>
+                    <div className="text-xs leading-5 text-muted-foreground">{ti(t, "k6e8c71c3b5")}</div>
+                    <div className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
                         {t("app.admin.dashboard.operations.center.advanced.systemDoctor.description")}
                     </div>
                 </div>
@@ -446,16 +446,16 @@ function SystemDoctorPanel() {
                 </Button>
             </div>
             <div className="grid gap-3 md:grid-cols-4">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.status")}</div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.status")}</div>
                     <div className={payload?.summary?.status === "ok" ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>{payload?.summary?.status ? statusLabels[payload.summary.status] || payload.summary.status : t("app.admin.dashboard.operations.center.advanced.status.unavailable")}</div>
                 </div>
-                {["ok", "warning", "error"].map(key => <div key={key} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                        <div className="text-xs text-slate-500">{statusLabels[key] || key}</div>
-                        <div className="font-semibold text-slate-900">{payload?.summary?.counts?.[key] ?? 0}</div>
+                {["ok", "warning", "error"].map(key => <div key={key} className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                        <div className="text-xs text-muted-foreground">{statusLabels[key] || key}</div>
+                        <div className="font-semibold text-foreground">{payload?.summary?.counts?.[key] ?? 0}</div>
                     </div>)}
             </div>
-            {payload?.generatedAt ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-500">
+            {payload?.generatedAt ? <div className="rounded-xl border border-border bg-card p-3 text-xs leading-5 text-muted-foreground">
                     {t("app.admin.dashboard.operations.center.advanced.systemDoctor.lastRun", {
           generatedAt: payload.generatedAt,
           checkCount: checks.length
@@ -470,24 +470,24 @@ function SystemDoctorPanel() {
                     {t("app.admin.dashboard.operations.center.advanced.systemDoctor.noChecks")}
                 </div> : null}
             <div className="grid gap-2 md:grid-cols-2">
-                {visibleChecks.map(check => <div key={check.id} className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
+                {visibleChecks.map(check => <div key={check.id} className="rounded-xl border border-border p-3 text-xs leading-5">
                         <div className="flex items-center justify-between gap-3">
-                            <span className="font-semibold text-slate-900">{check.title || check.id}</span>
+                            <span className="font-semibold text-foreground">{check.title || check.id}</span>
                             <span className={check.status === "ok" ? "text-emerald-700" : check.status === "error" ? "text-red-700" : "text-amber-700"}>{statusLabels[String(check.status || "info")] || check.status || "info"}</span>
                         </div>
-                        <div className="text-slate-500">{check.summary}</div>
+                        <div className="text-muted-foreground">{check.summary}</div>
                     </div>)}
             </div>
-            {checks.length > visibleChecks.length ? <div className="text-xs text-slate-500">
+            {checks.length > visibleChecks.length ? <div className="text-xs text-muted-foreground">
                     {t("app.admin.dashboard.operations.center.advanced.systemDoctor.omittedChecks", {
           omittedCount: checks.length - visibleChecks.length
         })}
                 </div> : null}
-            {actions.length ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
-                    <div className="mb-2 font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.repairPlan")}</div>
+            {actions.length ? <div className="rounded-xl border border-border bg-card p-3 text-xs leading-5 text-muted-foreground">
+                    <div className="mb-2 font-semibold text-foreground">{t("app.admin.dashboard.operations.center.advanced.repairPlan")}</div>
                     {actions.map(action => <div key={action.id} className="mb-2">
-                            <span className="font-medium text-slate-900">{action.title}</span>
-                            <span className="text-slate-500"> · {action.requiresConfirmation ? ti(t, "k9deb52e20d") : ti(t, "k6530601635")}</span>
+                            <span className="font-medium text-foreground">{action.title}</span>
+                            <span className="text-muted-foreground"> · {action.requiresConfirmation ? ti(t, "k9deb52e20d") : ti(t, "k6530601635")}</span>
                             <div>{action.description}</div>
                         </div>)}
                 </div> : null}
@@ -570,8 +570,8 @@ function ConfigMigrationPanel() {
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.configMigration.title")}</div>
-                    <div className="text-xs leading-5 text-slate-500">{ti(t, "k10851755fd")}</div>
+                    <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.center.advanced.configMigration.title")}</div>
+                    <div className="text-xs leading-5 text-muted-foreground">{ti(t, "k10851755fd")}</div>
                 </div>
                 <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{ti(t, "k38108eaa1d")}</Button>
@@ -583,29 +583,29 @@ function ConfigMigrationPanel() {
           error
         })}
                 </div> : null}
-            {plan ? <div className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
+            {plan ? <div className="rounded-xl border border-border p-3 text-xs leading-5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="font-semibold text-slate-900">{plan.target || "storage_retention_balanced"} · {plan.status}</div>
+                        <div className="font-semibold text-foreground">{plan.target || "storage_retention_balanced"} · {plan.status}</div>
                         <div className={migrationReady ? "rounded-full bg-amber-50 px-2 py-1 font-medium text-amber-700" : "rounded-full bg-emerald-50 px-2 py-1 font-medium text-emerald-700"}>
                             {migrationReady ? t("app.admin.dashboard.operations.center.advanced.configMigration.ready") : t("app.admin.dashboard.operations.center.advanced.configMigration.noActionNeeded")}
                         </div>
                     </div>
-                    <div className="mt-2 text-slate-500">{plan.reason}</div>
+                    <div className="mt-2 text-muted-foreground">{plan.reason}</div>
                     <div className="mt-2 grid gap-2 md:grid-cols-3">
-                        <div className="rounded-lg bg-slate-50 p-2">
-                            <div className="text-slate-500">{t("app.admin.dashboard.operations.center.advanced.configMigration.changeCount")}</div>
-                            <div className="font-semibold text-slate-900">{changes.length}</div>
+                        <div className="rounded-lg bg-muted/50 p-2">
+                            <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.configMigration.changeCount")}</div>
+                            <div className="font-semibold text-foreground">{changes.length}</div>
                         </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                            <div className="text-slate-500">{t("app.admin.dashboard.operations.center.advanced.configMigration.reversible")}</div>
-                            <div className="font-semibold text-slate-900">{plan.reversible ? t("app.admin.dashboard.operations.center.page.k2ae24b34") : t("app.admin.dashboard.operations.center.page.k8d9f05ae")}</div>
+                        <div className="rounded-lg bg-muted/50 p-2">
+                            <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.configMigration.reversible")}</div>
+                            <div className="font-semibold text-foreground">{plan.reversible ? t("app.admin.dashboard.operations.center.page.k2ae24b34") : t("app.admin.dashboard.operations.center.page.k8d9f05ae")}</div>
                         </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                            <div className="text-slate-500">{t("app.admin.dashboard.operations.center.advanced.configMigration.impact")}</div>
-                            <div className="font-semibold text-slate-900">{(plan.runtimeImpact || []).join(", ") || "-"}</div>
+                        <div className="rounded-lg bg-muted/50 p-2">
+                            <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.configMigration.impact")}</div>
+                            <div className="font-semibold text-foreground">{(plan.runtimeImpact || []).join(", ") || "-"}</div>
                         </div>
                     </div>
-                    <div className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-50 p-2 font-mono text-[11px] text-slate-600">
+                    <div className="mt-2 max-h-48 overflow-auto rounded-lg bg-muted/50 p-2 font-mono text-[11px] text-muted-foreground">
                         {changes.length ? changes.slice(0, 40).map(item => <div key={item.path}>{item.path}: {JSON.stringify(item.before)} → {JSON.stringify(item.after)}</div>) : t("app.admin.dashboard.operations.center.advanced.configMigration.currentlyTargetState")}
                     </div>
                 </div> : !loading && !error ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
@@ -616,16 +616,16 @@ function ConfigMigrationPanel() {
           status: fieldText(lastApplyResult.status, "-")
         })}
                 </div> : null}
-            {ledger?.ledgerPath ? <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-500">
+            {ledger?.ledgerPath ? <div className="rounded-xl border border-border bg-card p-3 text-xs leading-5 text-muted-foreground">
                     {t("app.admin.dashboard.operations.center.advanced.configMigration.ledgerPath", {
           ledgerPath: ledger.ledgerPath
         })}
                 </div> : null}
             <div className="grid gap-2 md:grid-cols-2">
-                {migrations.slice(0, 6).map(item => <div key={String(item.id)} className="rounded-xl border border-slate-200 p-3 text-xs leading-5">
-                        <div className="font-semibold text-slate-900">{String(item.id)}</div>
-                        <div className="text-slate-500">{String(item.status)} · {String(item.createdAt || "")}</div>
-                        <div className="break-all text-slate-500">{String(item.backupPath || "")}</div>
+                {migrations.slice(0, 6).map(item => <div key={String(item.id)} className="rounded-xl border border-border p-3 text-xs leading-5">
+                        <div className="font-semibold text-foreground">{String(item.id)}</div>
+                        <div className="text-muted-foreground">{String(item.status)} · {String(item.createdAt || "")}</div>
+                        <div className="break-all text-muted-foreground">{String(item.backupPath || "")}</div>
                     </div>)}
             </div>
         </div>;
@@ -696,24 +696,24 @@ function RuntimeEpisodeFabricPanel() {
     const kind = fieldText(item.kind, "runtime");
     const state = fieldText(item.state, "unknown");
     const targetKind = fieldText(item.targetKind || item.target_kind, "local_runtime");
-    return <div key={id} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+    return <div key={id} className="rounded-xl border border-border bg-card p-3 text-xs leading-5">
               <div className="flex items-center justify-between gap-3">
-                  <span className="truncate font-semibold text-slate-900">{kind}</span>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">{state}</span>
+                  <span className="truncate font-semibold text-foreground">{kind}</span>
+                  <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-muted-foreground">{state}</span>
               </div>
-              <div className="truncate font-mono text-[11px] text-slate-500">{id}</div>
-              <div className="text-slate-500">{targetKind}</div>
-              <div className="line-clamp-2 text-slate-600">{fieldText(item.reason || item.errorMessage || item.error_message, "")}</div>
+              <div className="truncate font-mono text-[11px] text-muted-foreground">{id}</div>
+              <div className="text-muted-foreground">{targetKind}</div>
+              <div className="line-clamp-2 text-muted-foreground">{fieldText(item.reason || item.errorMessage || item.error_message, "")}</div>
           </div>;
   };
   const renderQueue = (item: JsonRecord) => {
     const id = fieldText(item.episode_id || item.episodeId || item.id, "-");
-    return <div key={`${id}:${fieldText(item.state, "")}`} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+    return <div key={`${id}:${fieldText(item.state, "")}`} className="rounded-xl border border-border bg-card p-3 text-xs leading-5">
               <div className="flex items-center justify-between gap-3">
-                  <span className="truncate font-mono text-[11px] text-slate-900">{id}</span>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">{fieldText(item.state, "queued")}</span>
+                  <span className="truncate font-mono text-[11px] text-foreground">{id}</span>
+                  <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-muted-foreground">{fieldText(item.state, "queued")}</span>
               </div>
-              <div className="text-slate-500">
+              <div className="text-muted-foreground">
                   {t("app.admin.dashboard.operations.center.advanced.episodeFabric.priority", {
         priority: String(item.priority || 0)
       })} · {fieldText(item.scheduled_at || item.updated_at || item.created_at, "-")}
@@ -722,33 +722,33 @@ function RuntimeEpisodeFabricPanel() {
   };
   const renderLease = (item: JsonRecord) => {
     const id = fieldText(item.episode_id || item.episodeId || item.id, "-");
-    return <div key={`${id}:${fieldText(item.worker_id, "")}`} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+    return <div key={`${id}:${fieldText(item.worker_id, "")}`} className="rounded-xl border border-border bg-card p-3 text-xs leading-5">
               <div className="flex items-center justify-between gap-3">
-                  <span className="truncate font-semibold text-slate-900">{fieldText(item.worker_id, "worker")}</span>
+                  <span className="truncate font-semibold text-foreground">{fieldText(item.worker_id, "worker")}</span>
                   <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">{fieldText(item.state, "active")}</span>
               </div>
-              <div className="truncate font-mono text-[11px] text-slate-500">{id}</div>
-              <div className="text-slate-500">{fieldText(item.progress, "")}</div>
-              <div className="text-slate-400">{fieldText(item.heartbeat_at || item.lease_expires_at, "")}</div>
+              <div className="truncate font-mono text-[11px] text-muted-foreground">{id}</div>
+              <div className="text-muted-foreground">{fieldText(item.progress, "")}</div>
+              <div className="text-muted-foreground/80">{fieldText(item.heartbeat_at || item.lease_expires_at, "")}</div>
           </div>;
   };
   const renderHandoff = (item: JsonRecord) => {
     const payloadRecord = asRecord(item.payload);
     const id = fieldText(item.handoffId || item.handoffRefId || item.id || payloadRecord.handoffId || payloadRecord.handoffRefId, "-");
-    return <div key={id} className="rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5">
+    return <div key={id} className="rounded-xl border border-border bg-card p-3 text-xs leading-5">
               <div className="flex items-center justify-between gap-3">
-                  <span className="truncate font-semibold text-slate-900">{fieldText(item.kind || payloadRecord.kind, "handoff")}</span>
+                  <span className="truncate font-semibold text-foreground">{fieldText(item.kind || payloadRecord.kind, "handoff")}</span>
                   <span className="rounded-full bg-sky-50 px-2 py-0.5 font-medium text-sky-700">{fieldText(item.status || payloadRecord.status, "ready")}</span>
               </div>
-              <div className="truncate font-mono text-[11px] text-slate-500">{id}</div>
-              <div className="line-clamp-2 text-slate-600">{fieldText(item.compactSummary || payloadRecord.compactSummary || payloadRecord.summary, "")}</div>
+              <div className="truncate font-mono text-[11px] text-muted-foreground">{id}</div>
+              <div className="line-clamp-2 text-muted-foreground">{fieldText(item.compactSummary || payloadRecord.compactSummary || payloadRecord.summary, "")}</div>
           </div>;
   };
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.title")}</div>
-                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.description")}</div>
+                    <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.title")}</div>
+                    <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.description")}</div>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
                     {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
@@ -761,34 +761,34 @@ function RuntimeEpisodeFabricPanel() {
       })}
                 </div> : null}
             <div className="grid gap-3 md:grid-cols-4">
-                {cardItems.map(item => <div key={item.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">
-                        <div className="text-xs text-slate-500">{item.label}</div>
-                        <div className="font-semibold text-slate-900">{item.value}</div>
-                        <div className="text-xs text-slate-500">{item.hint}</div>
+                {cardItems.map(item => <div key={item.label} className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                        <div className="text-xs text-muted-foreground">{item.label}</div>
+                        <div className="font-semibold text-foreground">{item.value}</div>
+                        <div className="text-xs text-muted-foreground">{item.hint}</div>
                     </div>)}
             </div>
             <div className="grid gap-3 xl:grid-cols-2">
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.activeEpisodes")}</div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.activeEpisodes")}</div>
                     <div className="max-h-80 space-y-2 overflow-auto pr-1">
                         {(activeEpisodes.length ? activeEpisodes : episodes.slice(0, 8)).map(item => renderEpisode(item))}
-                        {!episodes.length && !loading ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-xs text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.empty")}</div> : null}
+                        {!episodes.length && !loading ? <div className="rounded-xl border border-dashed border-border bg-card p-4 text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.empty")}</div> : null}
                     </div>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.queueAndLeases")}</div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3">
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.queueAndLeases")}</div>
                     <div className="grid max-h-80 gap-2 overflow-auto pr-1 md:grid-cols-2">
                         {(activeQueue.length ? activeQueue : queue.slice(0, 6)).map(item => renderQueue(item))}
                         {(activeLeases.length ? activeLeases : leases.slice(0, 6)).map(item => renderLease(item))}
-                        {!queue.length && !leases.length && !loading ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-xs text-slate-500 md:col-span-2">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.emptyQueue")}</div> : null}
+                        {!queue.length && !leases.length && !loading ? <div className="rounded-xl border border-dashed border-border bg-card p-4 text-xs text-muted-foreground md:col-span-2">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.emptyQueue")}</div> : null}
                     </div>
                 </div>
             </div>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.recentHandoffs")}</div>
+            <div className="rounded-xl border border-border bg-muted/50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.recentHandoffs")}</div>
                 <div className="grid max-h-72 gap-2 overflow-auto pr-1 md:grid-cols-3">
                     {handoffs.slice(0, 12).map(item => renderHandoff(item))}
-                    {!handoffs.length && !loading ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-xs text-slate-500 md:col-span-3">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.emptyHandoff")}</div> : null}
+                    {!handoffs.length && !loading ? <div className="rounded-xl border border-dashed border-border bg-card p-4 text-xs text-muted-foreground md:col-span-3">{t("app.admin.dashboard.operations.center.advanced.episodeFabric.emptyHandoff")}</div> : null}
                 </div>
             </div>
         </div>;
@@ -912,7 +912,7 @@ function OperationLogsPanel() {
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <AdminHoverInfo content={t("app.admin.dashboard.operations.center.logs.description")}>
-                    <h2 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.logs.title")}</h2>
+                    <h2 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.center.logs.title")}</h2>
                 </AdminHoverInfo>
                 <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
                     {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
@@ -920,29 +920,29 @@ function OperationLogsPanel() {
                 </Button>
             </div>
             <div className="flex flex-wrap gap-2">
-                {OPERATION_LOG_SOURCES.map(item => <button key={item} type="button" onClick={() => setSource(item)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${source === item ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+                {OPERATION_LOG_SOURCES.map(item => <button key={item} type="button" onClick={() => setSource(item)} className={`rounded-full px-3 py-1 text-xs font-medium transition ${source === item ? "bg-slate-950 text-white" : "bg-muted text-muted-foreground hover:bg-muted"}`}>
 
                         {t(`app.admin.dashboard.operations.center.logs.source.${item}`)}
                     </button>)}
             </div>
-            <div className="max-h-[520px] space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-white p-3">
-                {items.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">
+            <div className="max-h-[520px] space-y-2 overflow-auto rounded-2xl border border-border bg-card p-3">
+                {items.length === 0 ? <div className="rounded-xl border border-dashed border-border p-5 text-sm text-muted-foreground">
                         {t("app.admin.dashboard.operations.center.logs.empty")}
-                    </div> : items.map(item => <div key={`${item.source}-${item.id}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                    </div> : items.map(item => <div key={`${item.source}-${item.id}`} className="rounded-xl border border-border bg-muted/50 px-3 py-2 text-xs">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="font-semibold text-slate-900">{item.action}</div>
-                            <div className="flex flex-wrap items-center gap-2 text-slate-500">
+                            <div className="font-semibold text-foreground">{item.action}</div>
+                            <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
                                 <span>{item.source}</span>
                                 <span>{item.status}</span>
                                 <span>{item.timestamp || "-"}</span>
                             </div>
                         </div>
-                        <div className="mt-1 text-slate-700">{item.summary}</div>
-                        <div className="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-slate-500">
+                        <div className="mt-1 text-foreground">{item.summary}</div>
+                        <div className="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-muted-foreground">
                             {item.runId ? <span>run {compactId(item.runId)}</span> : null}
                             {item.sessionId ? <span>session {compactId(item.sessionId)}</span> : null}
                         </div>
-                        {item.details ? <div className="mt-2 line-clamp-3 break-all text-slate-500">{item.details}</div> : null}
+                        {item.details ? <div className="mt-2 line-clamp-3 break-all text-muted-foreground">{item.details}</div> : null}
                     </div>)}
             </div>
         </div>;
@@ -1059,7 +1059,7 @@ function EvidencePanel() {
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <AdminHoverInfo content={t("app.admin.dashboard.operations.center.evidence.description")} panelClassName="text-sm leading-6">
 
-                    <h2 className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.evidence.title")}</h2>
+                    <h2 className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.center.evidence.title")}</h2>
                 </AdminHoverInfo>
                 <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
@@ -1092,8 +1092,8 @@ function EvidencePanel() {
             </div>
 
             <div className="grid min-h-0 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-                <div className="max-h-[520px] space-y-2 overflow-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-sm xl:max-h-[680px]">
-                    {items.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{t("app.admin.dashboard.operations.center.evidence.empty")}</div> : items.map(item => <button key={item.id || item.rawRef} type="button" onClick={() => setSelected(item)} className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition ${selected?.id === item.id ? "border-slate-900 bg-slate-950 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300"}`}>
+                <div className="max-h-[520px] space-y-2 overflow-auto rounded-2xl border border-border bg-card p-3 shadow-sm xl:max-h-[680px]">
+                    {items.length === 0 ? <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.empty")}</div> : items.map(item => <button key={item.id || item.rawRef} type="button" onClick={() => setSelected(item)} className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition ${selected?.id === item.id ? "border-slate-900 bg-slate-950 text-white" : "border-border bg-muted/50 text-foreground hover:border-input"}`}>
 
                             <div className="flex items-center justify-between gap-2">
                                 <span className="truncate font-semibold">{item.toolName || "unknown"}</span>
@@ -1107,29 +1107,29 @@ function EvidencePanel() {
                         </Button> : null}
                 </div>
 
-                <div className="min-w-0 space-y-4 overflow-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-sm xl:max-h-[680px]">
+                <div className="min-w-0 space-y-4 overflow-auto rounded-2xl border border-border bg-card p-4 shadow-sm xl:max-h-[680px]">
                     {selected ? <>
                             <div className="grid gap-2 text-xs md:grid-cols-3">
-                                <div className="rounded-xl border border-slate-200 p-3">
-                                    <div className="text-slate-500">{t("app.admin.dashboard.operations.center.evidence.rawRef")}</div>
-                                    <div className="mt-1 break-all font-mono text-slate-900">{selected.rawRef || "-"}</div>
+                                <div className="rounded-xl border border-border p-3">
+                                    <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.rawRef")}</div>
+                                    <div className="mt-1 break-all font-mono text-foreground">{selected.rawRef || "-"}</div>
                                 </div>
-                                <div className="rounded-xl border border-slate-200 p-3">
-                                    <div className="text-slate-500">{t("app.admin.dashboard.operations.center.evidence.size")}</div>
-                                    <div className="mt-1 font-semibold text-slate-900">{selected.rawChars || 0} / {selected.visibleChars || 0}</div>
+                                <div className="rounded-xl border border-border p-3">
+                                    <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.size")}</div>
+                                    <div className="mt-1 font-semibold text-foreground">{selected.rawChars || 0} / {selected.visibleChars || 0}</div>
                                 </div>
-                                <div className="rounded-xl border border-slate-200 p-3">
-                                    <div className="text-slate-500">{t("app.admin.dashboard.operations.center.evidence.hash")}</div>
-                                    <div className="mt-1 truncate font-mono text-slate-900">{selected.rawSha256 || "-"}</div>
+                                <div className="rounded-xl border border-border p-3">
+                                    <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.hash")}</div>
+                                    <div className="mt-1 truncate font-mono text-foreground">{selected.rawSha256 || "-"}</div>
                                 </div>
                             </div>
                             <div className="grid gap-2 text-xs md:grid-cols-2">
                                 <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
                                 <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
                             </div>
-                            <div className="rounded-xl border border-slate-200 p-3 text-xs">
-                                <div className="font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.evidence.relatedCompactions")}</div>
-                                <div className="mt-2 space-y-1 text-slate-600">
+                            <div className="rounded-xl border border-border p-3 text-xs">
+                                <div className="font-semibold text-foreground">{t("app.admin.dashboard.operations.center.evidence.relatedCompactions")}</div>
+                                <div className="mt-2 space-y-1 text-muted-foreground">
                                     {relatedCompactions.length ? relatedCompactions.slice(0, 3).map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2">
                                             <span className="font-mono">{compactId(item.id)}</span>
                                             <span>{item.summary_method || "-"}</span>
@@ -1141,7 +1141,7 @@ function EvidencePanel() {
                             </div>
                             <div>
                                 <div className="mb-2 flex items-center justify-between gap-2">
-                                    <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.operations.center.evidence.preview")}</div>
+                                    <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.center.evidence.preview")}</div>
                                     <div className="flex gap-2">
                                         <Button variant="outline" size="sm" onClick={() => navigator.clipboard?.writeText(selected.preview || "")}>
                                             {t("app.admin.dashboard.operations.center.evidence.copyPreview")}
@@ -1152,28 +1152,28 @@ function EvidencePanel() {
                                         </Button>
                                     </div>
                                 </div>
-                                <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-5 text-slate-800">{selected.preview || ""}</pre>
-                                <div className="mt-2 text-xs text-slate-500">
+                                <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-border bg-muted/50 p-4 text-xs leading-5 text-foreground">{selected.preview || ""}</pre>
+                                <div className="mt-2 text-xs text-muted-foreground">
                                     {t("app.admin.dashboard.operations.center.evidence.omitted", {
                 omitted_chars: selected.omittedChars || 0,
                 redacted: selected.redacted ? "yes" : "no"
               })}
                                 </div>
                             </div>
-                        </> : <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center text-sm text-slate-500">{t("app.admin.dashboard.operations.center.evidence.select")}</div>}
+                        </> : <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.select")}</div>}
                 </div>
             </div>
 
             <AdvancedSection title={t("app.admin.dashboard.operations.center.evidence.compactions")} defaultOpen={false}>
                 <div className="space-y-2">
-                    {compactions.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 p-4 text-sm text-slate-500">{t("app.admin.dashboard.operations.center.evidence.noCompactions")}</div> : compactions.map(item => <div key={item.id} className="grid gap-2 rounded-xl border border-slate-200 p-3 text-xs md:grid-cols-5">
-                            <div className="font-mono text-slate-600">{compactId(item.id)}</div>
+                    {compactions.length === 0 ? <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.noCompactions")}</div> : compactions.map(item => <div key={item.id} className="grid gap-2 rounded-xl border border-border p-3 text-xs md:grid-cols-5">
+                            <div className="font-mono text-muted-foreground">{compactId(item.id)}</div>
                             <div>{item.target_role || "-"}</div>
                             <div>{item.summary_method || "-"}</div>
                             <div>{t("app.admin.dashboard.operations.center.evidence.savedTokens", {
               tokens: item.estimated_saved_tokens || 0
             })}</div>
-                            <div className="truncate text-slate-500">{item.trigger_reason || "-"}</div>
+                            <div className="truncate text-muted-foreground">{item.trigger_reason || "-"}</div>
                         </div>)}
                 </div>
             </AdvancedSection>
@@ -1219,12 +1219,12 @@ function RunLedgerPanel({
   }
   const timeline = Array.isArray(ledger?.timeline) ? ledger.timeline : [];
   const refs = ledger?.refs || {};
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+  return <div className="rounded-3xl border border-border bg-card p-5 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <AdminHoverInfo content={tg(t, "2d4b9c7f")}>
                     <div>
-                        <h2 className="text-lg font-semibold text-slate-950">Run Ledger</h2>
-                        <p className="mt-1 font-mono text-xs text-slate-500">{runId}</p>
+                        <h2 className="text-lg font-semibold text-foreground">Run Ledger</h2>
+                        <p className="mt-1 font-mono text-xs text-muted-foreground">{runId}</p>
                     </div>
                 </AdminHoverInfo>
                 <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
@@ -1234,26 +1234,26 @@ function RunLedgerPanel({
             </div>
             {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div> : null}
             {ledger ? <div className="mt-4 grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
-                    <div className="space-y-2 rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm text-slate-600">
-                        <div>{ti(t, "kbf0ac89783")}<span className="font-medium text-slate-950">{ledger.status || "-"}</span></div>
-                        <div>Runtime：<span className="font-medium text-slate-950">{ledger.runtimeKind || "-"}</span></div>
-                        <div>{ti(t, "k9c9db830ea")}<span className="font-medium text-slate-950">{ledger.nextAction || "-"}</span></div>
-                        {Object.entries(refs).map(([key, value]) => <div key={key}>{key}: <span className="font-mono text-xs text-slate-700">{Array.isArray(value) ? value.length : 0}</span></div>)}
+                    <div className="space-y-2 rounded-2xl border border-border/60 bg-muted/50 p-3 text-sm text-muted-foreground">
+                        <div>{ti(t, "kbf0ac89783")}<span className="font-medium text-foreground">{ledger.status || "-"}</span></div>
+                        <div>Runtime：<span className="font-medium text-foreground">{ledger.runtimeKind || "-"}</span></div>
+                        <div>{ti(t, "k9c9db830ea")}<span className="font-medium text-foreground">{ledger.nextAction || "-"}</span></div>
+                        {Object.entries(refs).map(([key, value]) => <div key={key}>{key}: <span className="font-mono text-xs text-foreground">{Array.isArray(value) ? value.length : 0}</span></div>)}
                     </div>
                     <div className="max-h-[420px] space-y-2 overflow-auto pr-1">
-                        {timeline.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">{ti(t, "k0e212bccad")}</div> : timeline.map(item => <div key={item.id || `${item.type}-${item.ts}`} className="rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+                        {timeline.length === 0 ? <div className="rounded-2xl border border-dashed border-border p-5 text-sm text-muted-foreground">{ti(t, "k0e212bccad")}</div> : timeline.map(item => <div key={item.id || `${item.type}-${item.ts}`} className="rounded-2xl border border-border/60 bg-card p-3 shadow-sm">
                                 <div className="flex flex-wrap items-center gap-2 text-xs">
                                     <span className="rounded-full bg-slate-950 px-2 py-0.5 font-medium text-white">{item.type || "event"}</span>
-                                    <span className="text-slate-500">{item.source || "-"}</span>
-                                    <span className="font-mono text-slate-400">{item.ts || "-"}</span>
+                                    <span className="text-muted-foreground">{item.source || "-"}</span>
+                                    <span className="font-mono text-muted-foreground/80">{item.ts || "-"}</span>
                                 </div>
-                                {item.summary ? <p className="mt-2 text-sm text-slate-700">{item.summary}</p> : null}
-                                {item.refs && Object.keys(item.refs).length > 0 ? <pre className="mt-2 max-h-28 overflow-auto rounded-xl bg-slate-50 p-2 text-xs text-slate-500">
+                                {item.summary ? <p className="mt-2 text-sm text-foreground">{item.summary}</p> : null}
+                                {item.refs && Object.keys(item.refs).length > 0 ? <pre className="mt-2 max-h-28 overflow-auto rounded-xl bg-muted/50 p-2 text-xs text-muted-foreground">
                                         {JSON.stringify(item.refs, null, 2)}
                                     </pre> : null}
                             </div>)}
                     </div>
-                </div> : !loading && !error ? <div className="mt-4 rounded-2xl border border-dashed border-slate-200 p-5 text-sm text-slate-500">{ti(t, "k22fc006983")}</div> : null}
+                </div> : !loading && !error ? <div className="mt-4 rounded-2xl border border-dashed border-border p-5 text-sm text-muted-foreground">{ti(t, "k22fc006983")}</div> : null}
         </div>;
 }
 export default function OperationsCenterPage() {
@@ -1325,20 +1325,20 @@ export default function OperationsCenterPage() {
             {summary?.health?.mcp?.executionImpacted || (summary?.health?.mcp?.streamableHttpIssues?.length || 0) > 0 ? <StatusNotice title={"app.admin.dashboard.operations.center.page.kb5668925"} description={summary?.health?.mcp?.executionImpacted ? "app.admin.dashboard.operations.center.page.kc1e3ce76" : summary?.health?.mcp?.backgroundReconnectOnly ? "app.admin.dashboard.operations.center.page.k2d3e075a" : "app.admin.dashboard.operations.center.page.kdda9746a"} tone="warning" /> : null}
 
             <div className="grid gap-4 xl:grid-cols-3">
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.k7190d60a")}</div>
-                    <div className="mt-3 space-y-2 text-sm text-slate-600">
-                        <div><span className="font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.kfbd6399e")}</span>{summary?.health?.memory?.mode || t("app.admin.dashboard.operations.center.page.k76ebff7c")}</div>
-                        <div><span className="font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.kc6b5096c")}</span><span className="break-all font-mono text-xs">{summary?.health?.memory?.interpreterPath || t("app.admin.dashboard.operations.center.page.k76ebff7c")}</span></div>
-                        <div><span className="font-medium text-slate-900">ChromaDB：</span>{summary?.health?.memory?.chromadb?.available ? t("app.admin.dashboard.operations.center.page.k8b78e9e2", {
+                <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+                    <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k7190d60a")}</div>
+                    <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                        <div><span className="font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.kfbd6399e")}</span>{summary?.health?.memory?.mode || t("app.admin.dashboard.operations.center.page.k76ebff7c")}</div>
+                        <div><span className="font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.kc6b5096c")}</span><span className="break-all font-mono text-xs">{summary?.health?.memory?.interpreterPath || t("app.admin.dashboard.operations.center.page.k76ebff7c")}</span></div>
+                        <div><span className="font-medium text-foreground">ChromaDB：</span>{summary?.health?.memory?.chromadb?.available ? t("app.admin.dashboard.operations.center.page.k8b78e9e2", {
               summary_health_memory_chromadb_version: summary?.health?.memory?.chromadb?.version || t("app.admin.dashboard.operations.center.page.unknownVersion")
             }) : t("app.admin.dashboard.operations.center.page.kd2037c91")}</div>
-                        <div><span className="font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.k224983a9")}</span>{summary?.health?.memory?.vectorBackend?.ready ? "ready" : "not ready"}</div>
+                        <div><span className="font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k224983a9")}</span>{summary?.health?.memory?.vectorBackend?.ready ? "ready" : "not ready"}</div>
                     </div>
                 </div>
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.k127a42f4")}</div>
-                    <div className="mt-3 space-y-2 text-sm text-slate-600">
+                <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+                    <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k127a42f4")}</div>
+                    <div className="mt-3 space-y-2 text-sm text-muted-foreground">
                         {summary?.health?.memory?.warnings?.length ? summary.health.memory.warnings.map(warning => <div key={warning} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
                                     {warning}
                                 </div>) : <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-900">
@@ -1346,13 +1346,13 @@ export default function OperationsCenterPage() {
                             </div>}
                     </div>
                 </div>
-                <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.k778a6bf7")}</div>
-                    <div className="mt-3 space-y-2 text-sm text-slate-600">
-                        <div><span className="font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.ke583c052")}</span>{summary?.health?.mcp?.configured ?? 0}</div>
-                        <div><span className="font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.k8f5a01b3")}</span>{summary?.health?.mcp?.connected ?? 0}</div>
-                        <div><span className="font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.k7c7ba6d0")}</span>{summary?.health?.mcp?.degraded ?? 0}</div>
-                        <div><span className="font-medium text-slate-900">{t("app.admin.dashboard.operations.center.page.k37dfd1b7")}</span>{summary?.health?.mcp?.executionImpacted ? t("app.admin.dashboard.operations.center.page.k2ae24b34") : t("app.admin.dashboard.operations.center.page.k8d9f05ae")}</div>
+                <div className="rounded-2xl border border-border bg-card p-5 shadow-sm">
+                    <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k778a6bf7")}</div>
+                    <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                        <div><span className="font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.ke583c052")}</span>{summary?.health?.mcp?.configured ?? 0}</div>
+                        <div><span className="font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k8f5a01b3")}</span>{summary?.health?.mcp?.connected ?? 0}</div>
+                        <div><span className="font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k7c7ba6d0")}</span>{summary?.health?.mcp?.degraded ?? 0}</div>
+                        <div><span className="font-medium text-foreground">{t("app.admin.dashboard.operations.center.page.k37dfd1b7")}</span>{summary?.health?.mcp?.executionImpacted ? t("app.admin.dashboard.operations.center.page.k2ae24b34") : t("app.admin.dashboard.operations.center.page.k8d9f05ae")}</div>
                         {summary?.health?.mcp?.backgroundReconnectOnly ? <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-900">
                                 {t("app.admin.dashboard.operations.center.page.k0b0a6aba")}
                             </div> : null}
@@ -1362,10 +1362,10 @@ export default function OperationsCenterPage() {
                 streamableHttpIssues_length: streamableHttpIssues.length
               })}
                                 </div>
-                                {streamableHttpIssues.slice(0, 3).map(issue => <div key={`${issue.name}-${issue.status}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700">
-                                        <div><span className="font-medium text-slate-900">{issue.name || "unknown server"}</span> · {issue.status || "unknown"}</div>
+                                {streamableHttpIssues.slice(0, 3).map(issue => <div key={`${issue.name}-${issue.status}`} className="rounded-xl border border-border bg-muted/50 px-3 py-2 text-xs leading-5 text-foreground">
+                                        <div><span className="font-medium text-foreground">{issue.name || "unknown server"}</span> · {issue.status || "unknown"}</div>
                                         <div>{issue.executionImpacted ? t("app.admin.dashboard.operations.center.page.k81feb590") : issue.impact === "background_reconnect" ? t("app.admin.dashboard.operations.center.page.k92c7108e") : t("app.admin.dashboard.operations.center.page.k91c91e24")}</div>
-                                        {issue.lastError ? <div className="text-slate-500">{issue.lastError}</div> : null}
+                                        {issue.lastError ? <div className="text-muted-foreground">{issue.lastError}</div> : null}
                                     </div>)}
                             </div> : degradedServers.length > 0 ? <div className="space-y-2">
                                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">
@@ -1373,10 +1373,10 @@ export default function OperationsCenterPage() {
                 degradedServers_length: degradedServers.length
               })}
                                 </div>
-                                {degradedServers.slice(0, 2).map(server => <div key={`${server.name}-${server.status}`} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700">
-                                        <div><span className="font-medium text-slate-900">{server.name || "unknown server"}</span> · {server.transport || "unknown"} · {server.status || "unknown"}</div>
+                                {degradedServers.slice(0, 2).map(server => <div key={`${server.name}-${server.status}`} className="rounded-xl border border-border bg-muted/50 px-3 py-2 text-xs leading-5 text-foreground">
+                                        <div><span className="font-medium text-foreground">{server.name || "unknown server"}</span> · {server.transport || "unknown"} · {server.status || "unknown"}</div>
                                         <div>{server.impact === "background_reconnect" ? t("app.admin.dashboard.operations.center.page.k92c7108e") : t("app.admin.dashboard.operations.center.page.k0e3d684b")} </div>
-                                        {server.lastError ? <div className="text-slate-500">{server.lastError}</div> : null}
+                                        {server.lastError ? <div className="text-muted-foreground">{server.lastError}</div> : null}
                                     </div>)}
                             </div> : <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-900">
                                 {t("app.admin.dashboard.operations.center.page.k30e0aa83")}
@@ -1388,7 +1388,7 @@ export default function OperationsCenterPage() {
             <Tabs value={activeTab} onValueChange={value => router.replace(`/admin/operations-center?tab=${encodeURIComponent(value)}`, {
       scroll: false
     })} className="space-y-4">
-                <TabsList className="grid w-full grid-cols-5 rounded-2xl bg-white shadow-sm">
+                <TabsList className="grid w-full grid-cols-5 rounded-2xl bg-card shadow-sm">
                     <TabsTrigger value="overview">{t("app.admin.dashboard.operations.center.page.kbd84d331")}</TabsTrigger>
                     <TabsTrigger value="approvals">{t("app.admin.dashboard.operations.center.page.k61dba659")}</TabsTrigger>
                     <TabsTrigger value="runs">{t("app.admin.dashboard.operations.center.page.k1a586b06")}</TabsTrigger>

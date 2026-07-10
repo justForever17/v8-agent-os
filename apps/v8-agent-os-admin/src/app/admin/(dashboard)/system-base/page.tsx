@@ -477,7 +477,7 @@ export default function SystemBasePage() {
     if (loading || !envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         );
     }
@@ -575,7 +575,7 @@ export default function SystemBasePage() {
                                 placeholder="http://127.0.0.1:9528/api"
                             />
                             {!looksLikeLoopbackOrigin(bridge.adminBaseUrl) ? (
-                                <div className="text-xs leading-5 text-slate-500">
+                                <div className="text-xs leading-5 text-muted-foreground">
                                     {t("app.admin.dashboard.system.base.page.k83edadde")}
                                 </div>
                             ) : null}
@@ -610,7 +610,7 @@ export default function SystemBasePage() {
                                 placeholder={"http://localhost:9527\nhttp://localhost:9528\nhttps://your-web.example.com"}
                                 className="min-h-[108px]"
                             />
-                            <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k7c90244a")}</div>
+                            <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.k7c90244a")}</div>
                         </div>
                     </div>
                 </ConfigCard>
@@ -633,7 +633,7 @@ export default function SystemBasePage() {
                                     remoteLink: { ...(current.remoteLink || {}), enabled: checked },
                                 }))
                             }
-                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                            className="bg-muted/80 hover:bg-muted/80 rounded-2xl px-4 py-3"
                         />
                         <div className="grid gap-4 md:grid-cols-2">
                             <div className="space-y-2">
@@ -661,7 +661,7 @@ export default function SystemBasePage() {
                             </div>
                             <div className="space-y-2">
                                 <Label>{t("app.admin.dashboard.system.base.remoteLink.currentRoute")}</Label>
-                                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                                <div className="rounded-xl border border-border bg-card px-3 py-2 text-sm text-foreground">
                                     {transportLabel(remoteLinkManifest.transportKind || activeRemoteLinkProfile.kind, t)}
                                     {remoteLinkManifest.activeProfileId ? ` · ${remoteLinkManifest.activeProfileId}` : ""}
                                 </div>
@@ -697,8 +697,8 @@ export default function SystemBasePage() {
                                 </div>
                             ))}
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs leading-5 text-slate-600">
-                            <div className="mb-2 font-semibold text-slate-900">{t("app.admin.dashboard.system.base.remoteLink.diagnostics")}</div>
+                        <div className="rounded-2xl border border-border bg-card p-4 text-xs leading-5 text-muted-foreground">
+                            <div className="mb-2 font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.diagnostics")}</div>
                             <div>
                                 {t("app.admin.dashboard.system.base.remoteLink.candidateIps")}{" "}
                                 {(remoteLinkManifest.diagnostics?.candidateIps || []).map((item) => item.address).filter(Boolean).join(" · ")
@@ -716,12 +716,12 @@ export default function SystemBasePage() {
                                 </div>
                             ) : null}
                             {(remoteLinkManifest.diagnostics?.info || []).length > 0 ? (
-                                <div className="mt-2 text-slate-500">
+                                <div className="mt-2 text-muted-foreground">
                                     {t("app.admin.dashboard.system.base.remoteLink.info")}{" "}
                                     {(remoteLinkManifest.diagnostics?.info || []).slice(0, 4).join(" · ")}
                                 </div>
                             ) : null}
-                            <div className="mt-2 text-slate-500">{t("app.admin.dashboard.system.base.remoteLink.readOnlyNotice")}</div>
+                            <div className="mt-2 text-muted-foreground">{t("app.admin.dashboard.system.base.remoteLink.readOnlyNotice")}</div>
                         </div>
                         <AdvancedSection
                             title={t("app.admin.dashboard.system.base.remoteLink.meshProviders")}
@@ -729,34 +729,34 @@ export default function SystemBasePage() {
                             defaultOpen={false}
                         >
                             <div className="space-y-3">
-                                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <div className="rounded-2xl border border-border bg-muted/70 p-4">
                                     <div className="mb-3 flex items-center justify-between gap-3">
                                         <div>
-                                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.system.base.remoteLink.peerCandidates")}</div>
-                                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.system.base.remoteLink.peerCandidatesHelp")}</div>
+                                            <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.peerCandidates")}</div>
+                                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.system.base.remoteLink.peerCandidatesHelp")}</div>
                                         </div>
-                                        <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-600">{meshPeerCandidates.length}</span>
+                                        <span className="rounded-full bg-card px-2 py-1 text-xs font-semibold text-muted-foreground">{meshPeerCandidates.length}</span>
                                     </div>
                                     {meshPeerCandidates.length > 0 ? (
                                         <div className="grid gap-2">
                                             {meshPeerCandidates.slice(0, 8).map((candidate) => (
-                                                <div key={candidate.id || candidate.peerBaseUrl || candidate.hostName} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+                                                <div key={candidate.id || candidate.peerBaseUrl || candidate.hostName} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs">
                                                     <div className="min-w-0">
-                                                        <div className="truncate font-semibold text-slate-800">
+                                                        <div className="truncate font-semibold text-foreground">
                                                             {candidate.hostName || candidate.dnsName || candidate.ips?.[0] || t("app.admin.dashboard.system.base.remoteLink.unknownPeer")}
                                                         </div>
-                                                        <div className="truncate text-slate-500">
+                                                        <div className="truncate text-muted-foreground">
                                                             {candidate.source} · {candidate.os || t("app.admin.dashboard.system.base.page.k6ed9c299")} · {candidate.peerBaseUrl || candidate.ips?.join(" · ")}
                                                         </div>
                                                     </div>
-                                                    <div className={candidate.online ? "text-emerald-700" : "text-slate-400"}>
+                                                    <div className={candidate.online ? "text-emerald-700" : "text-muted-foreground/80"}>
                                                         {candidate.online ? t("app.admin.dashboard.system.base.remoteLink.peerOnline") : t("app.admin.dashboard.system.base.remoteLink.peerOffline")}
                                                     </div>
                                                 </div>
                                             ))}
                                         </div>
                                     ) : (
-                                        <div className="rounded-xl border border-dashed border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">
+                                        <div className="rounded-xl border border-dashed border-border bg-card px-3 py-3 text-xs text-muted-foreground">
                                             {t("app.admin.dashboard.system.base.remoteLink.noPeerCandidates")}
                                         </div>
                                     )}
@@ -764,12 +764,12 @@ export default function SystemBasePage() {
                                 {meshProviderStatuses.map((providerStatus) => {
                                     const providerConfig = meshProviders.find((item) => item.id === providerStatus.id || item.kind === providerStatus.kind) || {};
                                     return (
-                                        <div key={providerStatus.id || providerStatus.kind} className="rounded-2xl border border-slate-200 bg-white p-4">
+                                        <div key={providerStatus.id || providerStatus.kind} className="rounded-2xl border border-border bg-card p-4">
                                                 <SettingToggleCard
                                                     title={
-                                                        <div className="text-sm font-semibold text-slate-900">
+                                                        <div className="text-sm font-semibold text-foreground">
                                                             {providerStatus.kind === "headscale" ? "Headscale" : "Tailscale"}
-                                                            <span className="ml-2 text-xs font-medium text-slate-500">{providerStatus.status || "unknown"}</span>
+                                                            <span className="ml-2 text-xs font-medium text-muted-foreground">{providerStatus.status || "unknown"}</span>
                                                         </div>
                                                     }
                                                     description={providerStatus.dnsName || providerStatus.addresses?.[0] || providerStatus.recommendedNextAction || t("app.admin.dashboard.system.base.remoteLink.noMeshAddress")}
@@ -794,17 +794,17 @@ export default function SystemBasePage() {
                                                 />
                                             {providerStatus.recommendedUrls ? (
                                                 <div className="mt-3 grid gap-2 text-xs md:grid-cols-3">
-                                                    <div className="rounded-xl bg-slate-50 px-3 py-2">
-                                                        <div className="font-medium text-slate-700">Admin</div>
-                                                        <div className="break-all text-slate-500">{providerStatus.recommendedUrls.adminBaseUrl}</div>
+                                                    <div className="rounded-xl bg-muted/50 px-3 py-2">
+                                                        <div className="font-medium text-foreground">Admin</div>
+                                                        <div className="break-all text-muted-foreground">{providerStatus.recommendedUrls.adminBaseUrl}</div>
                                                     </div>
-                                                    <div className="rounded-xl bg-slate-50 px-3 py-2">
-                                                        <div className="font-medium text-slate-700">Engine</div>
-                                                        <div className="break-all text-slate-500">{providerStatus.recommendedUrls.engineBaseUrl}</div>
+                                                    <div className="rounded-xl bg-muted/50 px-3 py-2">
+                                                        <div className="font-medium text-foreground">Engine</div>
+                                                        <div className="break-all text-muted-foreground">{providerStatus.recommendedUrls.engineBaseUrl}</div>
                                                     </div>
-                                                    <div className="rounded-xl bg-slate-50 px-3 py-2">
-                                                        <div className="font-medium text-slate-700">{t("app.admin.dashboard.system.base.remoteLink.peerUrl")}</div>
-                                                        <div className="break-all text-slate-500">{providerStatus.recommendedUrls.peerBaseUrl}</div>
+                                                    <div className="rounded-xl bg-muted/50 px-3 py-2">
+                                                        <div className="font-medium text-foreground">{t("app.admin.dashboard.system.base.remoteLink.peerUrl")}</div>
+                                                        <div className="break-all text-muted-foreground">{providerStatus.recommendedUrls.peerBaseUrl}</div>
                                                     </div>
                                                 </div>
                                             ) : null}
@@ -854,9 +854,9 @@ export default function SystemBasePage() {
                                                             placeholder={t("app.admin.dashboard.system.base.remoteLink.headscaleNamespace")}
                                                         />
                                                     </div>
-                                                    <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                                                    <div className="rounded-xl border border-border bg-muted/80 p-3">
                                                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                                                            <span className="font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscaleApiKey")}</span>
+                                                            <span className="font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.headscaleApiKey")}</span>
                                                             <span className={providerStatus.apiKeyConfigured ? "text-emerald-700" : "text-amber-700"}>
                                                                 {providerStatus.apiKeyConfigured
                                                                     ? `${t("app.admin.dashboard.system.base.remoteLink.configured")} · ${providerStatus.apiKeyFingerprint || ""}`
@@ -886,8 +886,8 @@ export default function SystemBasePage() {
                                                         {headscaleMessage ? <div className="mt-2 text-xs text-emerald-700">{headscaleMessage}</div> : null}
                                                         {headscaleStatusError ? <div className="mt-2 text-xs text-amber-700">{headscaleStatusError}</div> : null}
                                                     </div>
-                                                    <div className="rounded-xl border border-slate-200 bg-white p-3">
-                                                        <div className="mb-2 text-xs font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.createPreauthKey")}</div>
+                                                    <div className="rounded-xl border border-border bg-card p-3">
+                                                        <div className="mb-2 text-xs font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.createPreauthKey")}</div>
                                                         <div className="grid gap-2 md:grid-cols-[1fr_120px_auto]">
                                                             <Input value={headscaleUserId} onChange={(event) => setHeadscaleUserId(event.target.value)} placeholder={t("app.admin.dashboard.system.base.remoteLink.headscaleUserPlaceholder")} />
                                                             <Input type="number" min={5} max={43200} value={headscaleTtlMinutes} onChange={(event) => setHeadscaleTtlMinutes(Number(event.target.value || 60))} />
@@ -903,21 +903,21 @@ export default function SystemBasePage() {
                                                         ) : null}
                                                     </div>
                                                     <div className="grid gap-3 text-xs md:grid-cols-3">
-                                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                                                            <div className="mb-2 font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscaleUsers")}</div>
+                                                        <div className="rounded-xl border border-border bg-muted/70 p-3">
+                                                            <div className="mb-2 font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.headscaleUsers")}</div>
                                                             {(headscaleData.users || []).slice(0, 6).map((item) => (
-                                                                <div key={String(item["id"] || item["name"])} className="truncate text-slate-600">{String(item["name"] || item["id"])}</div>
+                                                                <div key={String(item["id"] || item["name"])} className="truncate text-muted-foreground">{String(item["name"] || item["id"])}</div>
                                                             ))}
-                                                            {(headscaleData.users || []).length === 0 ? <div className="text-slate-400">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
+                                                            {(headscaleData.users || []).length === 0 ? <div className="text-muted-foreground/80">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
                                                         </div>
-                                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                                                            <div className="mb-2 font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscaleNodes")}</div>
+                                                        <div className="rounded-xl border border-border bg-muted/70 p-3">
+                                                            <div className="mb-2 font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.headscaleNodes")}</div>
                                                             {(headscaleData.nodes || []).slice(0, 6).map((item) => {
                                                                 const nodeId = String(item["id"] || item["nodeId"] || "");
                                                                 return (
-                                                                    <div key={nodeId || String(item["name"])} className="mb-2 rounded-lg bg-white px-2 py-2">
-                                                                        <div className="truncate font-medium text-slate-700">{String(item["name"] || item["givenName"] || nodeId)}</div>
-                                                                        <div className="truncate text-slate-400">{String(item["ipAddresses"] || item["lastSeen"] || "")}</div>
+                                                                    <div key={nodeId || String(item["name"])} className="mb-2 rounded-lg bg-card px-2 py-2">
+                                                                        <div className="truncate font-medium text-foreground">{String(item["name"] || item["givenName"] || nodeId)}</div>
+                                                                        <div className="truncate text-muted-foreground/80">{String(item["ipAddresses"] || item["lastSeen"] || "")}</div>
                                                                         {nodeId ? (
                                                                             <div className="mt-2 flex gap-2">
                                                                                 <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void dangerousHeadscaleNodeAction(nodeId, "expire")}>
@@ -931,16 +931,16 @@ export default function SystemBasePage() {
                                                                     </div>
                                                                 );
                                                             })}
-                                                            {(headscaleData.nodes || []).length === 0 ? <div className="text-slate-400">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
+                                                            {(headscaleData.nodes || []).length === 0 ? <div className="text-muted-foreground/80">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
                                                         </div>
-                                                        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                                                            <div className="mb-2 font-semibold text-slate-800">{t("app.admin.dashboard.system.base.remoteLink.headscalePreauthKeys")}</div>
+                                                        <div className="rounded-xl border border-border bg-muted/70 p-3">
+                                                            <div className="mb-2 font-semibold text-foreground">{t("app.admin.dashboard.system.base.remoteLink.headscalePreauthKeys")}</div>
                                                             {(headscaleData.preauthKeys || []).slice(0, 6).map((item) => (
-                                                                <div key={String(item["id"] || item["keyFingerprint"] || item["keyPrefix"])} className="truncate text-slate-600">
+                                                                <div key={String(item["id"] || item["keyFingerprint"] || item["keyPrefix"])} className="truncate text-muted-foreground">
                                                                     {String(item["keyPrefix"] || item["keyFingerprint"] || item["id"])}
                                                                 </div>
                                                             ))}
-                                                            {(headscaleData.preauthKeys || []).length === 0 ? <div className="text-slate-400">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
+                                                            {(headscaleData.preauthKeys || []).length === 0 ? <div className="text-muted-foreground/80">{t("app.admin.dashboard.system.base.remoteLink.noHeadscaleData")}</div> : null}
                                                         </div>
                                                     </div>
                                                 </div>
@@ -989,7 +989,7 @@ export default function SystemBasePage() {
                                     webFetch: { ...(current.webFetch || {}), bypassProxyEnv: checked },
                                 }))
                             }
-                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                            className="bg-muted/80 hover:bg-muted/80 rounded-2xl px-4 py-3"
                         />
                         <SettingToggleCard
                             title={t("app.admin.dashboard.system.base.webFetch.agentProfile.title")}
@@ -1001,7 +1001,7 @@ export default function SystemBasePage() {
                                     webFetch: { ...(current.webFetch || {}), useAgentBrowserProfile: checked },
                                 }))
                             }
-                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                            className="bg-muted/80 hover:bg-muted/80 rounded-2xl px-4 py-3"
                         />
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.system.base.webFetch.agentProfile.allowlist")}</Label>
@@ -1022,7 +1022,7 @@ export default function SystemBasePage() {
                                 placeholder={"github.com\nnotion.so\nmetaso.cn"}
                                 className="min-h-[96px]"
                             />
-                            <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.webFetch.agentProfile.allowlistHelp")}</div>
+                            <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.webFetch.agentProfile.allowlistHelp")}</div>
                         </div>
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.system.base.page.k2bd98420")}</Label>
@@ -1081,33 +1081,33 @@ export default function SystemBasePage() {
                                 </Button>
                             </div>
                             <div className="mt-4 grid gap-2 text-xs md:grid-cols-2">
-                                <div className="rounded-xl border border-current/10 bg-white/70 px-3 py-2">
+                                <div className="rounded-xl border border-current/10 bg-card/70 px-3 py-2">
                                     {t("app.admin.dashboard.system.base.page.k7463473f")}{desktopReadiness.ocrReady ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1a83bbab")}
                                 </div>
-                                <div className="rounded-xl border border-current/10 bg-white/70 px-3 py-2">
+                                <div className="rounded-xl border border-current/10 bg-card/70 px-3 py-2">
                                     {t("app.admin.dashboard.system.base.page.k7ea27759")}{desktopReadiness.imageLocatorReady ? t("app.admin.dashboard.system.base.page.k43d7227d") : t("app.admin.dashboard.system.base.page.k1a83bbab")}
                                 </div>
                             </div>
                         </div>
 
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                            <div className="mb-3 text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.page.ke4f6362c")}</div>
-                            <div className="grid gap-3 text-xs text-slate-600 md:grid-cols-2">
+                        <div className="rounded-2xl border border-border bg-muted/70 p-4">
+                            <div className="mb-3 text-sm font-medium text-foreground">{t("app.admin.dashboard.system.base.page.ke4f6362c")}</div>
+                            <div className="grid gap-3 text-xs text-muted-foreground md:grid-cols-2">
                                 <div className="space-y-1">
-                                    <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Tesseract</div>
+                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">Tesseract</div>
                                     <div className="break-all">{detectedDesktopTools.tesseractPath || t("app.admin.dashboard.system.base.page.k1f3ec640")}</div>
                                 </div>
                                 <div className="space-y-1">
-                                    <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Tessdata</div>
+                                    <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground/80">Tessdata</div>
                                     <div className="break-all">{detectedDesktopTools.tessdataPrefix || t("app.admin.dashboard.system.base.page.k1f3ec640")}</div>
                                 </div>
                             </div>
                         </div>
 
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
                             <div className="mb-4 space-y-1">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.system.base.page.k2aee346c")}</div>
-                                <div className="text-xs leading-5 text-slate-500">
+                                <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.system.base.page.k2aee346c")}</div>
+                                <div className="text-xs leading-5 text-muted-foreground">
                                     {t("app.admin.dashboard.system.base.page.k09d2d940")}
                                 </div>
                             </div>
@@ -1124,7 +1124,7 @@ export default function SystemBasePage() {
                                         }
                                         placeholder="C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
                                     />
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.kf4359c09")}</div>
+                                    <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.kf4359c09")}</div>
                                 </div>
                                 <div className="space-y-2">
                                     <Label>{t("app.admin.dashboard.system.base.page.k7e1cdc13")}</Label>
@@ -1138,7 +1138,7 @@ export default function SystemBasePage() {
                                         }
                                         placeholder="C:\\Program Files\\Tesseract-OCR\\tessdata"
                                     />
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k55b9f21a")}</div>
+                                    <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.k55b9f21a")}</div>
                                 </div>
                             </div>
                         </div>
@@ -1164,7 +1164,7 @@ export default function SystemBasePage() {
                                     desktopLive: { ...(current.desktopLive || {}), enabled: checked },
                                 }))
                             }
-                            className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                            className="bg-muted/80 hover:bg-muted/80 rounded-2xl px-4 py-3"
                         />
                         <div className="space-y-2">
                             <Label>{t("app.admin.dashboard.system.base.page.k41d6637a")}</Label>
@@ -1197,7 +1197,7 @@ export default function SystemBasePage() {
                                     <SelectItem value="custom">{t("app.admin.dashboard.system.base.page.kf1007633")}</SelectItem>
                                 </SelectContent>
                             </Select>
-                            <div className="text-xs leading-5 text-slate-500">
+                            <div className="text-xs leading-5 text-muted-foreground">
                                 {desktopLivePreset === "custom"
                                     ? t("app.admin.dashboard.system.base.page.k3130cb28")
                                     : t(DESKTOP_LIVE_PRESETS.find((preset) => preset.id === desktopLivePreset)?.description || "app.admin.dashboard.system.base.page.k6a1fa3c3")}
@@ -1222,7 +1222,7 @@ export default function SystemBasePage() {
                                         }))
                                     }
                                 />
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k4d40211f")}</div>
+                                <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.k4d40211f")}</div>
                             </div>
                             <div className="space-y-2">
                                 <SettingToggleCard
@@ -1238,7 +1238,7 @@ export default function SystemBasePage() {
                                             },
                                         }))
                                     }
-                                    className="bg-slate-50/80 hover:bg-slate-50/80 rounded-2xl px-4 py-3"
+                                    className="bg-muted/80 hover:bg-muted/80 rounded-2xl px-4 py-3"
                                 />
                             </div>
                         </div>
@@ -1266,7 +1266,7 @@ export default function SystemBasePage() {
                                             }))
                                         }
                                     />
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.kfa8d1901")}</div>
+                                    <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.kfa8d1901")}</div>
                                 </div>
                                 <div className="space-y-2">
                                     <Label>{t("app.admin.dashboard.system.base.page.k75781af8")}</Label>
@@ -1285,7 +1285,7 @@ export default function SystemBasePage() {
                                             }))
                                         }
                                     />
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k8d1bca52")}</div>
+                                    <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.k8d1bca52")}</div>
                                 </div>
                                 <div className="space-y-2">
                                     <Label>{t("app.admin.dashboard.system.base.page.k557fa0a6")}</Label>
@@ -1305,7 +1305,7 @@ export default function SystemBasePage() {
                                             }))
                                         }
                                     />
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.k9e79b22c")}</div>
+                                    <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.k9e79b22c")}</div>
                                 </div>
                                 <div className="space-y-2">
                                     <Label>{t("app.admin.dashboard.system.base.page.k748dc31b")}</Label>
@@ -1322,7 +1322,7 @@ export default function SystemBasePage() {
                                         }
                                         placeholder="primary"
                                     />
-                                    <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.system.base.page.kcf10d4e8")}</div>
+                                    <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.system.base.page.kcf10d4e8")}</div>
                                 </div>
                             </div>
                         </AdvancedSection>
@@ -1373,22 +1373,22 @@ export default function SystemBasePage() {
                         if (items.length === 0) return null;
                         return (
                             <div key={group.key} className="space-y-3">
-                                <div className="text-sm font-semibold text-slate-900">{t(group.title)}</div>
+                                <div className="text-sm font-semibold text-foreground">{t(group.title)}</div>
                                 <div className="grid gap-3 lg:grid-cols-2">
                                     {items.map((item) => (
-                                        <div key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-4">
+                                        <div key={item.id} className="rounded-2xl border border-border bg-muted/70 px-4 py-4">
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <div className="text-sm font-semibold text-slate-900">{item.label}</div>
-                                                <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 ring-1 ring-slate-200">
+                                                <div className="text-sm font-semibold text-foreground">{item.label}</div>
+                                                <span className="rounded-full bg-card px-2.5 py-1 text-[11px] font-medium text-muted-foreground ring-1 ring-slate-200">
                                                     {resolveAdminLabel(t, "dependencyRequiredness", item.requiredness)}
                                                 </span>
                                             </div>
-                                            <div className="mt-3 space-y-1.5 text-xs leading-5 text-slate-600">
+                                            <div className="mt-3 space-y-1.5 text-xs leading-5 text-muted-foreground">
                                                 <div>{t("app.admin.dashboard.system.base.page.ka5c77bf6")}{item.currentPlatform || "unknown"} · {t("app.admin.dashboard.system.base.page.k8fa02dc0")}{(item.platforms || []).join(" / ")}</div>
                                                 <div>{t("app.admin.dashboard.system.base.page.k2fcd0729")}{item.detection?.detected ? t("app.admin.dashboard.system.base.page.k61e9a74e") : item.appliesToCurrentPlatform ? t("app.admin.dashboard.system.base.page.k0042c6be") : t("app.admin.dashboard.system.base.page.k2ff317a4")}</div>
                                                 <div>{t("app.admin.dashboard.system.base.page.k80d16f4b")}{(item.usedBy || []).join(" / ") || t("app.admin.dashboard.system.base.page.kdc45dcdf")}</div>
                                                 <div>{item.installHint || t("app.admin.dashboard.system.base.page.k69f3de32")}</div>
-                                                {item.detection?.detail ? <div className="text-slate-500">{item.detection.detail}</div> : null}
+                                                {item.detection?.detail ? <div className="text-muted-foreground">{item.detection.detail}</div> : null}
                                             </div>
                                         </div>
                                     ))}
@@ -1402,21 +1402,21 @@ export default function SystemBasePage() {
             <AdvancedSection title={t("app.admin.dashboard.system.base.page.kd507ab95")} description={t("app.admin.dashboard.system.base.page.k6f194618")}>
                 <div className="grid gap-4 lg:grid-cols-3">
                     <ConfigCard title={t("app.admin.dashboard.system.base.page.ka0dc81c2")} description={t("app.admin.dashboard.system.base.page.k919153c5")} variant="summary">
-                        <div className="space-y-3 text-sm text-slate-600">
+                        <div className="space-y-3 text-sm text-muted-foreground">
                             <div className="flex items-center gap-2"><Server className="h-4 w-4 text-sky-600" />{t("app.admin.dashboard.system.base.page.k942f7326")}{runtimeInfo.engineHost || "0.0.0.0"}</div>
                             <div>{t("app.admin.dashboard.system.base.page.k68572957")}{runtimeInfo.enginePort || 9530}</div>
                             <div>{t("app.admin.dashboard.system.base.page.kb1b5bb9c")}{runtimeInfo.engineReload ? t("app.admin.dashboard.system.base.page.kd945d5d0") : t("app.admin.dashboard.system.base.page.k12b31ba6")}</div>
                         </div>
                     </ConfigCard>
                     <ConfigCard title={t("app.admin.dashboard.system.base.page.k451d04f4")} description={t("app.admin.dashboard.system.base.page.k618f081f")} variant="summary">
-                        <div className="space-y-3 text-sm text-slate-600">
+                        <div className="space-y-3 text-sm text-muted-foreground">
                             <div className="flex items-center gap-2"><Shield className="h-4 w-4 text-sky-600" />{t("app.admin.dashboard.system.base.page.k5d4eac31")}</div>
                             <div>{t("app.admin.dashboard.system.base.page.k7a2fb015")}config.json</div>
                             <div>{t("app.admin.dashboard.system.base.page.k716ae2c4")}{bridge.adminBaseUrl || t("app.admin.dashboard.system.base.page.k6ed9c299")}</div>
                         </div>
                     </ConfigCard>
                     <ConfigCard title={t("app.admin.dashboard.system.base.page.k29f66eda")} description={t("app.admin.dashboard.system.base.page.kd63c68c8")} variant="summary">
-                        <div className="space-y-3 text-sm text-slate-600">
+                        <div className="space-y-3 text-sm text-muted-foreground">
                             <div className="flex items-center gap-2"><Wrench className="h-4 w-4 text-sky-600" />{t("app.admin.dashboard.system.base.page.kd12a1540")}{desktopStatusLabel(desktopReadiness.status, t)}</div>
                             <div>{t("app.admin.dashboard.system.base.page.k7463473f")}{desktopReadiness.ocrReady ? t("app.admin.dashboard.system.base.page.kca64360a") : t("app.admin.dashboard.system.base.page.k1a83bbab")}</div>
                             <div>{t("app.admin.dashboard.system.base.page.kb9740fdc")}{desktopReadiness.pointLocatorReady ? t("app.admin.dashboard.system.base.page.kca64360a") : t("app.admin.dashboard.system.base.page.k1a83bbab")}</div>

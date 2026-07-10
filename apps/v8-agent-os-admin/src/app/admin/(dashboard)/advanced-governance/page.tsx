@@ -11,8 +11,8 @@ const RuntimeGovernanceWorkbench = dynamic(
     () => import("@/components/runtime/RuntimeGovernanceWorkbench").then((mod) => mod.RuntimeGovernanceWorkbench),
     {
         loading: () => (
-            <div className="flex min-h-[280px] items-center justify-center rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+            <div className="flex min-h-[280px] items-center justify-center rounded-2xl border border-border bg-card shadow-sm">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         ),
     }

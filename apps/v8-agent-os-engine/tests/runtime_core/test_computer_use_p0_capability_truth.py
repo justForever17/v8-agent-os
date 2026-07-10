@@ -98,6 +98,27 @@ def test_browser_lane_requires_cdp_helper_even_when_node_is_present(monkeypatch,
     assert summary["helperScriptExists"] is False
 
 
+def test_browser_availability_uses_short_cached_health_probe(monkeypatch):
+    provider = BrowserAutomationProvider()
+    provider.configure({"browserLane": {"enabled": True, "connectTimeoutMs": 3000}})
+    provider._node_path = None
+    observed_timeouts = []
+
+    def unavailable_health(*, timeout_seconds=None):
+        observed_timeouts.append(timeout_seconds)
+        raise TimeoutError("local proxy unavailable")
+
+    monkeypatch.setattr(provider, "_health", unavailable_health)
+
+    first = provider.availability_summary()
+    second = provider.availability_summary()
+
+    assert first["connected"] is False
+    assert first["helperHealth"]["status"] == "unreachable"
+    assert second["helperHealth"] == first["helperHealth"]
+    assert observed_timeouts == [0.25]
+
+
 def test_capability_truth_flags_missing_playwright_separately():
     matrix = {
         "currentPlatform": "windows",

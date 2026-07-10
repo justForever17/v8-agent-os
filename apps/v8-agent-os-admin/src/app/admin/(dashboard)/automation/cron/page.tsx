@@ -536,7 +536,7 @@ function ScheduledTasksPage() {
     if (loading || !envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         );
     }
@@ -584,18 +584,18 @@ function ScheduledTasksPage() {
                         <div className="flex flex-wrap items-start justify-between gap-4">
                             <div className="space-y-2">
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <div className="text-sm font-medium text-slate-900">{systemMemoryJob.name}</div>
+                                    <div className="text-sm font-medium text-foreground">{systemMemoryJob.name}</div>
                                     <Badge variant="outline">{t("app.admin.dashboard.automation.cron.page.k06ce54e5")}</Badge>
                                     <Badge variant={systemMemoryJob.enabled ? "default" : "secondary"}>
                                         {systemMemoryJob.enabled ? t("app.admin.dashboard.automation.cron.page.kdb6c0cc1") : t("app.admin.dashboard.automation.cron.page.k6f76d7f7")}
                                     </Badge>
                                 </div>
-                                <div className="flex items-center gap-2 text-xs text-slate-700">
+                                <div className="flex items-center gap-2 text-xs text-foreground">
                                     <Clock3 className="h-3.5 w-3.5 text-amber-600" />
                                     <span>{describeCronExpression(systemMemoryJob.cron_expression, locale)}</span>
                                 </div>
-                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.kbaf14523")}{systemMemoryJob.cron_expression}</div>
-                                <div className="text-xs text-slate-500">
+                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.automation.cron.page.kbaf14523")}{systemMemoryJob.cron_expression}</div>
+                                <div className="text-xs text-muted-foreground">
                                     {t("app.admin.dashboard.automation.cron.page.k99d6f83e")}
                                 </div>
                             </div>
@@ -606,8 +606,8 @@ function ScheduledTasksPage() {
                                      onCheckedChange={(checked) =>
                                          void saveJobs(jobs.map((item) => (item.id === systemMemoryJob.id ? { ...item, enabled: checked } : item)))
                                      }
-                                     className="border border-slate-200 bg-white px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-slate-50/50"
-                                     titleClassName="text-xs text-slate-500 font-normal cursor-pointer"
+                                     className="border border-border bg-card px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-muted/50"
+                                     titleClassName="text-xs text-muted-foreground font-normal cursor-pointer"
                                  />
                                 <Button variant="outline" size="sm" onClick={() => void handleRunNow(systemMemoryJob.id)} disabled={runningJobId === systemMemoryJob.id}>
                                     {runningJobId === systemMemoryJob.id ? (
@@ -633,22 +633,22 @@ function ScheduledTasksPage() {
                         <EmptyState title={"app.admin.dashboard.automation.cron.page.k6d0a6b60"} description={"app.admin.dashboard.automation.cron.page.k63b00f03"} />
                     ) : (
                         userJobs.map((job) => (
-                            <div key={job.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                            <div key={job.id} className="rounded-2xl border border-border bg-muted/80 p-4">
                                 <div className="flex flex-wrap items-start justify-between gap-4">
                                     <div className="min-w-0 space-y-2">
                                         <div className="flex flex-wrap items-center gap-2">
-                                            <div className="text-sm font-medium text-slate-900">{job.name}</div>
+                                            <div className="text-sm font-medium text-foreground">{job.name}</div>
                                             <Badge variant="outline">{job.action_type}</Badge>
                                             <Badge variant="outline">{job.triggerKind || "nudge"}</Badge>
                                             <Badge variant={job.enabled ? "default" : "secondary"}>{job.enabled ? t("app.admin.dashboard.automation.cron.page.kdb6c0cc1") : t("app.admin.dashboard.automation.cron.page.k6f76d7f7")}</Badge>
                                         </div>
-                                        <div className="flex items-center gap-2 text-xs text-slate-700">
+                                        <div className="flex items-center gap-2 text-xs text-foreground">
                                             <Clock3 className="h-3.5 w-3.5 text-sky-600" />
                                             <span>{describeCronExpression(job.cron_expression, locale)}</span>
                                         </div>
-                                        <div className="text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.kbaf14523")}{job.cron_expression}</div>
-                                        <div className="break-all text-xs text-slate-500">{t("app.admin.dashboard.automation.cron.page.k09308472")}{job.action_target}</div>
-                                        <div className="text-xs text-slate-500">
+                                        <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.automation.cron.page.kbaf14523")}{job.cron_expression}</div>
+                                        <div className="break-all text-xs text-muted-foreground">{t("app.admin.dashboard.automation.cron.page.k09308472")}{job.action_target}</div>
+                                        <div className="text-xs text-muted-foreground">
                                             {job.targetBinding || job.recoveryAnchor
                                                 ? t("app.admin.dashboard.automation.cron.page.k8b8fc65a")
                                                 : t("app.admin.dashboard.automation.cron.page.k4a2c0d63")}
@@ -659,8 +659,8 @@ function ScheduledTasksPage() {
                                             title={t("app.admin.dashboard.automation.cron.page.k37f0aa42")}
                                             checked={job.enabled}
                                             onCheckedChange={(checked) => void saveJobs(jobs.map((item) => (item.id === job.id ? { ...item, enabled: checked } : item)))}
-                                            className="border border-slate-200 bg-white px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-slate-50/50"
-                                            titleClassName="text-xs text-slate-500 font-normal cursor-pointer"
+                                            className="border border-border bg-card px-3 py-2 gap-2 rounded-2xl shadow-none hover:bg-muted/50"
+                                            titleClassName="text-xs text-muted-foreground font-normal cursor-pointer"
                                         />
                                         <Button variant="outline" size="sm" onClick={() => void handleRunNow(job.id)} disabled={runningJobId === job.id}>
                                             {runningJobId === job.id ? (
@@ -673,7 +673,7 @@ function ScheduledTasksPage() {
                                         <Button variant="outline" size="sm" onClick={() => openEditDialog(job)}>
                                             {t("app.admin.dashboard.automation.cron.page.k75997619")}
                                         </Button>
-                                        <Button variant="ghost" size="icon" className="text-slate-500 hover:text-rose-600" onClick={() => void saveJobs(jobs.filter((item) => item.id !== job.id))}>
+                                        <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-rose-600" onClick={() => void saveJobs(jobs.filter((item) => item.id !== job.id))}>
                                             <Trash2 className="h-4 w-4" />
                                         </Button>
                                     </div>
@@ -754,15 +754,15 @@ function ScheduledTasksPage() {
                             </div>
                         </div>
                     ) : (
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-sm text-slate-600">
+                        <div className="rounded-2xl border border-border bg-muted/70 px-4 py-3 text-sm text-muted-foreground">
                             {t("app.admin.dashboard.automation.cron.page.kc4bdc198")}
                         </div>
                     )}
 
-                    <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                    <div className="space-y-4 rounded-2xl border border-border bg-muted/70 p-4">
                         <div className="space-y-1">
-                            <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.automation.cron.page.k630b85cb")}</div>
-                            <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.automation.cron.page.k5b2a9659")}</div>
+                            <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.automation.cron.page.k630b85cb")}</div>
+                            <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.automation.cron.page.k5b2a9659")}</div>
                         </div>
 
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -774,12 +774,12 @@ function ScheduledTasksPage() {
                                         "rounded-2xl border px-4 py-4 text-left shadow-sm transition-colors",
                                         scheduleDraft.mode === option.key
                                             ? "border-sky-200 bg-sky-50 text-sky-900"
-                                            : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
+                                            : "border-border bg-card text-foreground hover:border-input",
                                     )}
                                     onClick={() => updateSchedule({ mode: option.key, rawExpression: option.key === "custom" ? scheduleDraft.rawExpression : scheduleDraft.rawExpression })}
                                 >
                                     <div className="text-sm font-semibold">{t(localizeScheduleModeTitle(option.key))}</div>
-                                    <div className="mt-2 text-xs leading-5 text-slate-500">{t(localizeScheduleModeDescription(option.key))}</div>
+                                    <div className="mt-2 text-xs leading-5 text-muted-foreground">{t(localizeScheduleModeDescription(option.key))}</div>
                                 </button>
                             ))}
                         </div>
@@ -865,15 +865,15 @@ function ScheduledTasksPage() {
                                 <Input value={scheduleDraft.rawExpression} onChange={(event) => updateSchedule({ rawExpression: event.target.value })} placeholder={t("app.admin.dashboard.automation.cron.page.kb9fba662")} />
                             </div>
                         ) : (
-                            <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
-                                {t("app.admin.dashboard.automation.cron.page.k90cf7fa8")}<span className="font-medium text-slate-900">{describeCronExpression(buildCronExpression(scheduleDraft), locale)}</span>
+                            <div className="rounded-2xl border border-dashed border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+                                {t("app.admin.dashboard.automation.cron.page.k90cf7fa8")}<span className="font-medium text-foreground">{describeCronExpression(buildCronExpression(scheduleDraft), locale)}</span>
                             </div>
                         )}
                     </div>
 
                     {!editingSystemJob ? (
                     <AdvancedSection title={"app.admin.dashboard.automation.cron.page.k5a31521e"} description={"app.admin.dashboard.automation.cron.page.kf89b0eca"}>
-                        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="space-y-4 rounded-2xl border border-border bg-card p-4">
                             <div className="space-y-2">
                                 <Label>{t("app.admin.dashboard.automation.cron.page.k758ac620")}</Label>
                                 <Input
@@ -887,7 +887,7 @@ function ScheduledTasksPage() {
                                     }
                                     placeholder={t("app.admin.dashboard.automation.cron.page.kb9fba662")}
                                 />
-                                <div className="text-xs leading-5 text-slate-500">{t("app.admin.dashboard.automation.cron.page.k1b9aa6dd")}</div>
+                                <div className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.automation.cron.page.k1b9aa6dd")}</div>
                             </div>
                             <div className="space-y-2">
                                 <Label>{t("app.admin.dashboard.automation.cron.page.k1f02616d")}</Label>
@@ -914,7 +914,7 @@ function ScheduledTasksPage() {
                         description={t("app.admin.dashboard.automation.cron.page.k135979e8")}
                         checked={draftJob.enabled}
                         onCheckedChange={(checked) => setDraftJob((current) => ({ ...current, enabled: checked }))}
-                        className="border-slate-200 bg-slate-50/70 px-4 py-3 rounded-2xl"
+                        className="border-border bg-muted/70 px-4 py-3 rounded-2xl"
                     />
 
                     {scheduleError ? <div className="text-sm text-rose-600">{scheduleError}</div> : null}

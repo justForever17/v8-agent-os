@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { ti } from "@/i18n/admin-legacy";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
@@ -449,14 +450,14 @@ export default function SafetyControlPage() {
   const [dashboard, setDashboard] = useState<SafetyDashboard | null>(null);
   const [governanceBusy, setGovernanceBusy] = useState<string | null>(null);
   const [rememberAllowlist, setRememberAllowlist] = useState<Record<string, boolean>>({});
-  const loadConfig = async () => {
+  const loadConfig = async (force = false) => {
     setLoading(true);
     try {
-      const [next, modelList, safetyDashboard] = await Promise.all([fetchConfigDomain<SafetyData>("safety"), fetch("/api/models", {
-        cache: "no-store"
-      }).then(response => response.json().catch(() => [])), fetch("/api/safety/dashboard?limit=80", {
-        cache: "no-store"
-      }).then(response => response.json().catch(() => ({})))]);
+      const [next, modelList, safetyDashboard] = await Promise.all([
+        fetchConfigDomain<SafetyData>("safety", { force }),
+        fetchAdminJson<ModelOption[]>("/api/models", { force }),
+        fetchAdminJson<SafetyDashboard>("/api/safety/dashboard?limit=80", { force, ttlMs: 10_000 }),
+      ]);
       const normalized = normalizeSafetyData(next.data);
       setEnvelope({
         ...next,
@@ -527,7 +528,7 @@ export default function SafetyControlPage() {
       if (!response.ok) {
         throw new Error(`Approval action failed: ${response.status}`);
       }
-      await loadConfig();
+      await loadConfig(true);
     } finally {
       setGovernanceBusy(null);
     }
@@ -542,7 +543,7 @@ export default function SafetyControlPage() {
       if (!response.ok) {
         throw new Error(`Skill safety action failed: ${response.status}`);
       }
-      await loadConfig();
+      await loadConfig(true);
     } finally {
       setGovernanceBusy(null);
     }
@@ -557,7 +558,7 @@ export default function SafetyControlPage() {
       if (!response.ok) {
         throw new Error(`Allowlist revoke failed: ${response.status}`);
       }
-      await loadConfig();
+      await loadConfig(true);
     } finally {
       setGovernanceBusy(null);
     }
@@ -578,14 +579,14 @@ export default function SafetyControlPage() {
       if (!response.ok) {
         throw new Error(`Active defense ${action} failed: ${response.status}`);
       }
-      await loadConfig();
+      await loadConfig(true);
     } finally {
       setGovernanceBusy(null);
     }
   };
   if (loading || !envelope) {
     return <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>;
   }
   const data = envelope.data;
@@ -619,7 +620,7 @@ export default function SafetyControlPage() {
                 <StatusNotice tone={data.machinePosture === "developer_mixed_host" ? "warning" : "success"} title={data.machinePosture === "developer_mixed_host" ? ti(t, "k0a54999adc") : ti(t, "k2de6238fbe")} description={data.machinePosture === "developer_mixed_host" ? ti(t, "kfea74a25fa") : ti(t, "kc22f677125")} />
 
 
-                <Card className="rounded-2xl border-slate-200 shadow-sm">
+                <Card className="rounded-2xl border-border shadow-sm">
                     <CardHeader>
                         <CardTitle className="text-base">
                             <AdminHoverInfo
@@ -699,60 +700,60 @@ export default function SafetyControlPage() {
                                     enabled: checked
                                 }
                             } : previous)}
-                            className="border-slate-200 px-4 py-3 rounded-2xl"
+                            className="border-border px-4 py-3 rounded-2xl"
                         />
                     </CardContent>
                 </Card>
 
-                <Card className="rounded-2xl border-slate-200 shadow-sm">
+                <Card className="rounded-2xl border-border shadow-sm">
                     <CardHeader>
                         <CardTitle className="text-base">{ti(t, "k8f7932ff92")}</CardTitle>
                     </CardHeader>
                     <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                        <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">{ti(t, "k0fad073470")}</div>
-                            <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {ti(t, "kda13a9cff5")}<span className="font-medium text-slate-900">{verdictLabel(t, data.skillRules?.declarationVerdict)}</span>
+                        <div className="rounded-2xl border border-border p-4">
+                            <div className="text-sm font-medium text-foreground">{ti(t, "k0fad073470")}</div>
+                            <div className="mt-2 text-sm leading-6 text-muted-foreground">
+                                {ti(t, "kda13a9cff5")}<span className="font-medium text-foreground">{verdictLabel(t, data.skillRules?.declarationVerdict)}</span>
                                 <br />
-                                {ti(t, "k8595ba0815")}<span className="font-medium text-slate-900">{verdictLabel(t, data.skillRules?.localSecretReadVerdict)}</span>
+                                {ti(t, "k8595ba0815")}<span className="font-medium text-foreground">{verdictLabel(t, data.skillRules?.localSecretReadVerdict)}</span>
                                 <br />
-                                {ti(t, "kdda26d8b82")}<span className="font-medium text-slate-900">{verdictLabel(t, data.skillRules?.browserProfileAccessVerdict?.developer_mixed_host)}</span>
+                                {ti(t, "kdda26d8b82")}<span className="font-medium text-foreground">{verdictLabel(t, data.skillRules?.browserProfileAccessVerdict?.developer_mixed_host)}</span>
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">{ti(t, "k3991c727ed")}</div>
-                            <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {ti(t, "k8b9f7fc0ed")}<span className="font-medium text-slate-900">{verdictLabel(t, data.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host)}</span>
+                        <div className="rounded-2xl border border-border p-4">
+                            <div className="text-sm font-medium text-foreground">{ti(t, "k3991c727ed")}</div>
+                            <div className="mt-2 text-sm leading-6 text-muted-foreground">
+                                {ti(t, "k8b9f7fc0ed")}<span className="font-medium text-foreground">{verdictLabel(t, data.networkMutationRules?.defaultExternalMutationVerdict?.dedicated_runtime_host)}</span>
                                 <br />
-                                {ti(t, "k546f1f657f")}<span className="font-medium text-slate-900">{verdictLabel(t, data.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host)}</span>
+                                {ti(t, "k546f1f657f")}<span className="font-medium text-foreground">{verdictLabel(t, data.networkMutationRules?.defaultExternalMutationVerdict?.developer_mixed_host)}</span>
                                 <br />
-                                {ti(t, "kd9abd67eaa")}<span className="font-medium text-slate-900">{verdictLabel(t, data.networkMutationRules?.sensitivePayloadVerdict)}</span>
+                                {ti(t, "kd9abd67eaa")}<span className="font-medium text-foreground">{verdictLabel(t, data.networkMutationRules?.sensitivePayloadVerdict)}</span>
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.safety.control.page.domain.computerUse")}</div>
-                            <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {ti(t, "k9e4884053a")}<span className="font-medium text-slate-900">{verdictLabel(t, data.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host)}</span>
+                        <div className="rounded-2xl border border-border p-4">
+                            <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.safety.control.page.domain.computerUse")}</div>
+                            <div className="mt-2 text-sm leading-6 text-muted-foreground">
+                                {ti(t, "k9e4884053a")}<span className="font-medium text-foreground">{verdictLabel(t, data.computerUseRules?.defaultMutationVerdict?.dedicated_runtime_host)}</span>
                                 <br />
-                                {ti(t, "k426e3712e7")}<span className="font-medium text-slate-900">{verdictLabel(t, data.computerUseRules?.defaultMutationVerdict?.developer_mixed_host)}</span>
+                                {ti(t, "k426e3712e7")}<span className="font-medium text-foreground">{verdictLabel(t, data.computerUseRules?.defaultMutationVerdict?.developer_mixed_host)}</span>
                                 <br />
-                                {ti(t, "k5b4d128734")}<span className="font-medium text-slate-900">{verdictLabel(t, data.computerUseRules?.hotkeyLifecycleVerdict)}</span>
+                                {ti(t, "k5b4d128734")}<span className="font-medium text-foreground">{verdictLabel(t, data.computerUseRules?.hotkeyLifecycleVerdict)}</span>
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 p-4">
-                            <div className="text-sm font-medium text-slate-900">{ti(t, "k94ba148b3e")}</div>
-                            <div className="mt-2 text-sm leading-6 text-slate-600">
-                                {ti(t, "ke64e2476ba")}<span className="font-medium text-slate-900">{verdictLabel(t, data.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host)}</span>
+                        <div className="rounded-2xl border border-border p-4">
+                            <div className="text-sm font-medium text-foreground">{ti(t, "k94ba148b3e")}</div>
+                            <div className="mt-2 text-sm leading-6 text-muted-foreground">
+                                {ti(t, "ke64e2476ba")}<span className="font-medium text-foreground">{verdictLabel(t, data.systemIntegrityRules?.packageInstallVerdict?.dedicated_runtime_host)}</span>
                                 <br />
-                                {ti(t, "k1c9f944a8e")}<span className="font-medium text-slate-900">{verdictLabel(t, data.v8IntegrityRules?.protectedConfigWriteVerdict)}</span>
+                                {ti(t, "k1c9f944a8e")}<span className="font-medium text-foreground">{verdictLabel(t, data.v8IntegrityRules?.protectedConfigWriteVerdict)}</span>
                                 <br />
-                                {ti(t, "kf5ed0ffb9c")}<span className="font-medium text-slate-900">{verdictLabel(t, data.v8IntegrityRules?.protectedRuntimeProcessVerdict)}</span>
+                                {ti(t, "kf5ed0ffb9c")}<span className="font-medium text-foreground">{verdictLabel(t, data.v8IntegrityRules?.protectedRuntimeProcessVerdict)}</span>
                             </div>
                         </div>
                     </CardContent>
                 </Card>
 
-                <Card className="rounded-2xl border-slate-200 shadow-sm">
+                <Card className="rounded-2xl border-border shadow-sm">
                     <CardHeader>
                         <CardTitle className="text-base">
                             <AdminHoverInfo
@@ -767,13 +768,13 @@ export default function SafetyControlPage() {
                         </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3 max-h-[380px] overflow-y-auto pr-2 scrollbar-thin">
-                        {summary.recentSkillScans.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k906ff562fc")}</div> : summary.recentSkillScans.map((item, index) => <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-slate-200 p-4">
+                        {summary.recentSkillScans.length === 0 ? <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">{ti(t, "k906ff562fc")}</div> : summary.recentSkillScans.map((item, index) => <div key={`${item.auditId || item.skillName || "skill"}-${index}`} className="rounded-2xl border border-border p-4">
                                     <div className="flex flex-wrap items-center gap-3">
-                                        <div className="text-sm font-medium text-slate-900">{item.skillName || ti(t, "k233cfa7db1")}</div>
-                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-500">{verdictLabel(t, item.verdict)}</div>
-                                        {item.confidence != null ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.safety.control.page.label.confidence")} {item.confidence}</div> : null}
+                                        <div className="text-sm font-medium text-foreground">{item.skillName || ti(t, "k233cfa7db1")}</div>
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{verdictLabel(t, item.verdict)}</div>
+                                        {item.confidence != null ? <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.safety.control.page.label.confidence")} {item.confidence}</div> : null}
                                     </div>
-                                    {Array.isArray(item.reasons) && item.reasons.length > 0 ? <ul className="mt-3 space-y-1 text-sm leading-6 text-slate-600">
+                                    {Array.isArray(item.reasons) && item.reasons.length > 0 ? <ul className="mt-3 space-y-1 text-sm leading-6 text-muted-foreground">
                                             {item.reasons.map(reason => <li key={reason}>- {reason}</li>)}
                                         </ul> : null}
                                 </div>)}
@@ -783,29 +784,29 @@ export default function SafetyControlPage() {
                 <AdvancedSection title="app.admin.dashboard.safety.control.page.section.observability" description="app.admin.dashboard.safety.control.page.section.observability.description" defaultOpen={false}>
                     <div className="space-y-4">
                         <div className="grid gap-3 md:grid-cols-4">
-                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.safety.control.page.summary.pending")}</div>
-                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.pendingSafetyApprovals ?? 0}</div>
-                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.safety.control.page.summary.pendingApprovals")}</div>
+                            <div className="rounded-2xl border border-border bg-card p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.safety.control.page.summary.pending")}</div>
+                                <div className="mt-2 text-2xl font-semibold text-foreground">{dashboard?.summary?.pendingSafetyApprovals ?? 0}</div>
+                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.safety.control.page.summary.pendingApprovals")}</div>
                             </div>
-                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.safety.control.page.summary.ledger")}</div>
-                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.skillReviews ?? 0}</div>
-                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.safety.control.page.summary.skillReviews")}</div>
+                            <div className="rounded-2xl border border-border bg-card p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.safety.control.page.summary.ledger")}</div>
+                                <div className="mt-2 text-2xl font-semibold text-foreground">{dashboard?.summary?.skillReviews ?? 0}</div>
+                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.safety.control.page.summary.skillReviews")}</div>
                             </div>
-                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.safety.control.page.summary.allowlist")}</div>
-                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.activeAllowlist ?? 0}</div>
-                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.safety.control.page.summary.activeEntries")}</div>
+                            <div className="rounded-2xl border border-border bg-card p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.safety.control.page.summary.allowlist")}</div>
+                                <div className="mt-2 text-2xl font-semibold text-foreground">{dashboard?.summary?.activeAllowlist ?? 0}</div>
+                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.safety.control.page.summary.activeEntries")}</div>
                             </div>
-                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                                <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.safety.control.page.summary.events")}</div>
-                                <div className="mt-2 text-2xl font-semibold text-slate-950">{dashboard?.summary?.recentDecisions ?? 0}</div>
-                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.safety.control.page.summary.recentDecisions")}</div>
+                            <div className="rounded-2xl border border-border bg-card p-4">
+                                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.safety.control.page.summary.events")}</div>
+                                <div className="mt-2 text-2xl font-semibold text-foreground">{dashboard?.summary?.recentDecisions ?? 0}</div>
+                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.safety.control.page.summary.recentDecisions")}</div>
                             </div>
                         </div>
 
-                        <Card className="rounded-2xl border-slate-200 shadow-sm">
+                        <Card className="rounded-2xl border-border shadow-sm">
                             <CardHeader>
                                 <CardTitle className="text-base">
                                     <AdminHoverInfo
@@ -834,28 +835,28 @@ export default function SafetyControlPage() {
                                             }
                                         })
                                     } : previous)}
-                                    className="border-slate-200 p-4 rounded-2xl"
+                                    className="border-border p-4 rounded-2xl"
                                 />
 
                                 <div className="grid gap-3 md:grid-cols-3">
-                                    <div className="rounded-2xl border border-slate-200 p-4">
-                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.safety.control.page.activeDefense.status")}</div>
-                                        <div className="mt-2 text-sm font-medium text-slate-900">{safetyLabel(t, "status", dashboard?.activeDefense?.status || "disabled")}</div>
-                                        <div className="mt-1 text-xs text-slate-500">
+                                    <div className="rounded-2xl border border-border p-4">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.safety.control.page.activeDefense.status")}</div>
+                                        <div className="mt-2 text-sm font-medium text-foreground">{safetyLabel(t, "status", dashboard?.activeDefense?.status || "disabled")}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
                                             {t("app.admin.dashboard.safety.control.page.activeDefense.lastSample")} {dashboard?.activeDefense?.lastSampleAt ? new Date(Number(dashboard.activeDefense.lastSampleAt) * 1000).toLocaleString() : "-"}
                                         </div>
                                     </div>
-                                    <div className="rounded-2xl border border-slate-200 p-4">
-                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.safety.control.page.activeDefense.incidents")}</div>
-                                        <div className="mt-2 text-sm font-medium text-slate-900">{dashboard?.activeDefense?.summary?.activeIncidents ?? 0} {t("app.admin.dashboard.safety.control.page.label.status.active")}</div>
-                                        <div className="mt-1 text-xs text-slate-500">
+                                    <div className="rounded-2xl border border-border p-4">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.safety.control.page.activeDefense.incidents")}</div>
+                                        <div className="mt-2 text-sm font-medium text-foreground">{dashboard?.activeDefense?.summary?.activeIncidents ?? 0} {t("app.admin.dashboard.safety.control.page.label.status.active")}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
                                             {t("app.admin.dashboard.safety.control.page.activeDefense.highLoad")} {dashboard?.activeDefense?.summary?.highLoad ?? 0} · {t("app.admin.dashboard.safety.control.page.activeDefense.tunnels")} {dashboard?.activeDefense?.summary?.networkTunnels ?? 0} · {t("app.admin.dashboard.safety.control.page.activeDefense.ports")} {dashboard?.activeDefense?.summary?.unknownListeningPorts ?? 0}
                                         </div>
                                     </div>
-                                    <div className="rounded-2xl border border-slate-200 p-4">
-                                        <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("app.admin.dashboard.safety.control.page.activeDefense.knownTunnels")}</div>
-                                        <div className="mt-2 text-sm font-medium text-slate-900">{(dashboard?.activeDefense?.knownNetworkTools || []).length}</div>
-                                        <div className="mt-1 line-clamp-2 text-xs text-slate-500">
+                                    <div className="rounded-2xl border border-border p-4">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.safety.control.page.activeDefense.knownTunnels")}</div>
+                                        <div className="mt-2 text-sm font-medium text-foreground">{(dashboard?.activeDefense?.knownNetworkTools || []).length}</div>
+                                        <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
                                             {(dashboard?.activeDefense?.knownNetworkTools || []).join(", ") || ti(t, "k37be479791")}
                                         </div>
                                     </div>
@@ -863,19 +864,19 @@ export default function SafetyControlPage() {
 
                                 {dashboard?.activeDefense?.lastError ? <StatusNotice tone="warning" title={t("app.admin.dashboard.safety.control.page.activeDefense.samplingError")} description={dashboard.activeDefense.lastError} /> : null}
 
-                                {(dashboard?.activeDefense?.incidents || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">
+                                {(dashboard?.activeDefense?.incidents || []).length === 0 ? <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
                                         {ti(t, "k8e279a292f")}
                                     </div> : <div className="space-y-3">
-                                        {(dashboard?.activeDefense?.incidents || []).slice(0, 8).map(incident => <div key={incident.id} className="rounded-2xl border border-slate-200 p-4">
+                                        {(dashboard?.activeDefense?.incidents || []).slice(0, 8).map(incident => <div key={incident.id} className="rounded-2xl border border-border p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <Badge variant={incident.riskCode === "high_resource_process" ? "secondary" : "outline"}>
                                                         {safetyLabel(t, "risk", incident.riskCode || "active_defense")}
                                                     </Badge>
                                                     {incident.severity ? <Badge variant="outline">{safetyLabel(t, "severity", incident.severity)}</Badge> : null}
-                                                    <span className="text-xs text-slate-500">{t("app.admin.dashboard.safety.control.page.activeDefense.seen")} {incident.seenCount || 1}</span>
+                                                    <span className="text-xs text-muted-foreground">{t("app.admin.dashboard.safety.control.page.activeDefense.seen")} {incident.seenCount || 1}</span>
                                                 </div>
-                                                <div className="mt-2 text-sm text-slate-700">{incident.summary || incident.id}</div>
-                                                {incident.process ? <div className="mt-2 text-xs text-slate-500">
+                                                <div className="mt-2 text-sm text-foreground">{incident.summary || incident.id}</div>
+                                                {incident.process ? <div className="mt-2 text-xs text-muted-foreground">
                                                         {incident.process.name || t("app.admin.dashboard.safety.control.page.activeDefense.process")}({incident.process.pid || "-"}) CPU {incident.process.cpuPercent ?? "-"}% · {t("app.admin.dashboard.safety.control.page.activeDefense.memory")} {incident.process.rssMb ?? "-"}MB
                                                     </div> : null}
                                                 <div className="mt-3 flex justify-end gap-2">
@@ -893,7 +894,7 @@ export default function SafetyControlPage() {
                             </CardContent>
                         </Card>
 
-                        <Card className="rounded-2xl border-slate-200 shadow-sm">
+                        <Card className="rounded-2xl border-border shadow-sm">
                             <CardHeader>
                                 <CardTitle className="text-base">
                                     <AdminHoverInfo
@@ -908,14 +909,14 @@ export default function SafetyControlPage() {
                                 </CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                    {(dashboard?.pendingSafetyApprovals || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k8943074568")}</div> : (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map(approval => <div key={approval.id} className="rounded-2xl border border-slate-200 p-4">
+                                    {(dashboard?.pendingSafetyApprovals || []).length === 0 ? <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">{ti(t, "k8943074568")}</div> : (dashboard?.pendingSafetyApprovals || []).slice(0, 8).map(approval => <div key={approval.id} className="rounded-2xl border border-border p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant="outline">{safetyLabel(t, "approvalKind", approval.approval_kind || "safety_review")}</Badge>
                                                 <Badge variant={approval.verdict === "block" ? "destructive" : "secondary"}>{safetyLabel(t, "risk", approval.riskCode)}</Badge>
-                                                <span className="text-xs text-slate-500">Run {approval.run_id || "-"}</span>
+                                                <span className="text-xs text-muted-foreground">Run {approval.run_id || "-"}</span>
                                             </div>
-                                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{approval.question || approval.reason || ti(t, "k82b3e41793")}</p>
-                                            {approval.allowlistCandidate ? <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
+                                            <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground">{approval.question || approval.reason || ti(t, "k82b3e41793")}</p>
+                                            {approval.allowlistCandidate ? <label className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
                                                     <input type="checkbox" checked={Boolean(rememberAllowlist[approval.id])} onChange={event => setRememberAllowlist(previous => ({
                     ...previous,
                     [approval.id]: event.target.checked
@@ -938,7 +939,7 @@ export default function SafetyControlPage() {
                         </Card>
 
                         <div className="grid gap-4 xl:grid-cols-2">
-                            <Card className="rounded-2xl border-slate-200 shadow-sm">
+                            <Card className="rounded-2xl border-border shadow-sm">
                                 <CardHeader>
                                     <CardTitle className="text-base">
                                         <AdminHoverInfo
@@ -953,15 +954,15 @@ export default function SafetyControlPage() {
                                     </CardTitle>
                                 </CardHeader>
                                 <CardContent>
-                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k4fd29dc28e")}</div> : <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-2">
-                                        {(dashboard?.skillSafetyReviews || []).map(review => <div key={review.id} className="rounded-2xl border border-slate-200 p-4">
+                                    {(dashboard?.skillSafetyReviews || []).length === 0 ? <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">{ti(t, "k4fd29dc28e")}</div> : <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-2">
+                                        {(dashboard?.skillSafetyReviews || []).map(review => <div key={review.id} className="rounded-2xl border border-border p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
-                                                    <span className="font-medium text-slate-950">{review.skill_name || review.skill_id || ti(t, "k233cfa7db1")}</span>
+                                                    <span className="font-medium text-foreground">{review.skill_name || review.skill_id || ti(t, "k233cfa7db1")}</span>
                                                     <Badge variant={review.disabled ? "destructive" : "outline"}>{review.disabled ? safetyLabel(t, "status", "disabled") : verdictLabel(t, review.effective_verdict)}</Badge>
                                                     {review.user_override ? <Badge variant="secondary">{verdictLabel(t, review.user_override)}</Badge> : null}
                                                 </div>
-                                                <div className="mt-2 line-clamp-1 text-xs text-slate-500">{review.skill_path || "-"}</div>
-                                                {Array.isArray(review.reasons) && review.reasons.length ? <div className="mt-2 text-sm text-slate-600">{review.reasons.slice(0, 2).join(" / ")}</div> : null}
+                                                <div className="mt-2 line-clamp-1 text-xs text-muted-foreground">{review.skill_path || "-"}</div>
+                                                {Array.isArray(review.reasons) && review.reasons.length ? <div className="mt-2 text-sm text-muted-foreground">{review.reasons.slice(0, 2).join(" / ")}</div> : null}
                                                 <div className="mt-3 flex flex-wrap justify-end gap-2">
                                                     <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "approve")}>{ti(t, "k0a6f0a30a8")}</Button>
                                                     <Button size="sm" variant="outline" disabled={Boolean(governanceBusy)} onClick={() => void handleSkillSafetyAction(review.id, "disable")}>{ti(t, "kbe70be5a2e")}</Button>
@@ -973,7 +974,7 @@ export default function SafetyControlPage() {
                                 </CardContent>
                             </Card>
 
-                            <Card className="rounded-2xl border-slate-200 shadow-sm">
+                            <Card className="rounded-2xl border-border shadow-sm">
                                 <CardHeader>
                                     <CardTitle className="text-base">
                                         <AdminHoverInfo
@@ -988,13 +989,13 @@ export default function SafetyControlPage() {
                                     </CardTitle>
                                 </CardHeader>
                                 <CardContent className="space-y-3">
-                                    {(dashboard?.allowlistEntries || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "kc83fd439cd")}</div> : (dashboard?.allowlistEntries || []).slice(0, 8).map(entry => <div key={entry.id} className="rounded-2xl border border-slate-200 p-4">
+                                    {(dashboard?.allowlistEntries || []).length === 0 ? <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">{ti(t, "kc83fd439cd")}</div> : (dashboard?.allowlistEntries || []).slice(0, 8).map(entry => <div key={entry.id} className="rounded-2xl border border-border p-4">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <Badge variant={entry.enabled ? "secondary" : "outline"}>{safetyLabel(t, "status", entry.enabled ? "active" : "revoked")}</Badge>
                                                     <Badge variant="outline">{safetyLabel(t, "risk", entry.risk_code)}</Badge>
-                                                    <span className="text-xs text-slate-500">{safetyLabel(t, "runtimeSource", entry.runtime_source)} / {safetyLabel(t, "pathPlane", entry.path_plane)} / {safetyLabel(t, "action", entry.action)}</span>
+                                                    <span className="text-xs text-muted-foreground">{safetyLabel(t, "runtimeSource", entry.runtime_source)} / {safetyLabel(t, "pathPlane", entry.path_plane)} / {safetyLabel(t, "action", entry.action)}</span>
                                                 </div>
-                                                <div className="mt-2 break-all text-sm text-slate-700">{entry.normalized_target_label || entry.id}</div>
+                                                <div className="mt-2 break-all text-sm text-foreground">{entry.normalized_target_label || entry.id}</div>
                                                 {entry.enabled ? <div className="mt-3 flex justify-end">
                                                         <Button size="sm" variant="outline" disabled={governanceBusy === `allowlist:revoke:${entry.id}`} onClick={() => void handleAllowlistRevoke(entry.id)}>
                                                             {ti(t, "kb31883bd20")}
@@ -1005,7 +1006,7 @@ export default function SafetyControlPage() {
                             </Card>
                         </div>
 
-                        <Card className="rounded-2xl border-slate-200 shadow-sm">
+                        <Card className="rounded-2xl border-border shadow-sm">
                             <CardHeader>
                                 <CardTitle className="text-base">
                                     <AdminHoverInfo
@@ -1020,15 +1021,15 @@ export default function SafetyControlPage() {
                                 </CardTitle>
                             </CardHeader>
                             <CardContent className="space-y-3">
-                                {(dashboard?.recentDecisions || []).length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-500">{ti(t, "k08fd2c0902")}</div> : (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-slate-200 p-4">
+                                {(dashboard?.recentDecisions || []).length === 0 ? <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">{ti(t, "k08fd2c0902")}</div> : (dashboard?.recentDecisions || []).slice(0, 10).map((event, index) => <div key={event.id || `${event.timestamp}-${index}`} className="rounded-2xl border border-border p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant={event.verdict === "block" ? "destructive" : "outline"}>{event.verdict ? verdictLabel(t, event.verdict) : safetyLabel(t, "status", event.status)}</Badge>
                                                 <Badge variant="secondary">{safetyLabel(t, "risk", event.riskCode)}</Badge>
-                                                <span className="text-xs text-slate-500">{safetyLabel(t, "action", event.action || "scan")} · {safetyLabel(t, "runtimeSource", event.runtimeSource)} · {event.timestamp || "-"}</span>
+                                                <span className="text-xs text-muted-foreground">{safetyLabel(t, "action", event.action || "scan")} · {safetyLabel(t, "runtimeSource", event.runtimeSource)} · {event.timestamp || "-"}</span>
                                             </div>
-                                            {event.subject ? <div className="mt-2 break-all text-sm text-slate-700">{event.subject}</div> : null}
-                                            {event.reason ? <div className="mt-2 text-sm text-slate-600">{event.reason}</div> : null}
-                                            {Array.isArray(event.downloadHosts) && event.downloadHosts.length ? <div className="mt-2 text-xs text-slate-500">{t("app.admin.dashboard.safety.control.page.label.downloadHosts")}: {event.downloadHosts.join(", ")}</div> : null}
+                                            {event.subject ? <div className="mt-2 break-all text-sm text-foreground">{event.subject}</div> : null}
+                                            {event.reason ? <div className="mt-2 text-sm text-muted-foreground">{event.reason}</div> : null}
+                                            {Array.isArray(event.downloadHosts) && event.downloadHosts.length ? <div className="mt-2 text-xs text-muted-foreground">{t("app.admin.dashboard.safety.control.page.label.downloadHosts")}: {event.downloadHosts.join(", ")}</div> : null}
                                         </div>)}
                             </CardContent>
                         </Card>

@@ -66,10 +66,10 @@ export default function ChatRuntimePage() {
                         : "translate-y-20 opacity-0 scale-95 pointer-events-none"
                 )}
             >
-                <div className="relative flex items-center bg-white/75 dark:bg-slate-900/75 backdrop-blur-md p-1 rounded-full border border-slate-200/80 dark:border-slate-800/80 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
+                <div className="relative flex items-center bg-card/75 dark:bg-slate-900/75 backdrop-blur-md p-1 rounded-full border border-border/80 dark:border-slate-800/80 shadow-[0_8px_30px_rgba(0,0,0,0.12)]">
                     {/* 滑块平移动画背景 */}
                     <div
-                        className="absolute top-1 bottom-1 rounded-full bg-slate-950 dark:bg-slate-100 shadow-sm transition-all duration-300 ease-out"
+                        className="absolute top-1 bottom-1 rounded-full bg-slate-950 dark:bg-muted shadow-sm transition-all duration-300 ease-out"
                         style={{
                             left: currentTab === "supervisor" ? "4px" : "calc(50% + 2px)",
                             width: "calc(50% - 6px)",
@@ -83,7 +83,7 @@ export default function ChatRuntimePage() {
                             "relative z-10 px-5 py-2 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors duration-300",
                             currentTab === "supervisor"
                                 ? "text-white dark:text-slate-950"
-                                : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                                : "text-muted-foreground hover:text-foreground dark:text-muted-foreground/80 dark:hover:text-slate-200"
                         )}
                     >
                         <Crown className="h-3.5 w-3.5" />
@@ -96,7 +96,7 @@ export default function ChatRuntimePage() {
                             "relative z-10 px-5 py-2 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors duration-300",
                             currentTab === "subagents"
                                 ? "text-white dark:text-slate-950"
-                                : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                                : "text-muted-foreground hover:text-foreground dark:text-muted-foreground/80 dark:hover:text-slate-200"
                         )}
                     >
                         <Bot className="h-3.5 w-3.5" />

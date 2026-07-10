@@ -1,3 +1,6 @@
+import asyncio
+from copy import deepcopy
+from time import monotonic
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
@@ -19,11 +22,20 @@ from .models import (
 
 router = APIRouter()
 
+_AVAILABILITY_CACHE_TTL_SECONDS = 5.0
+_availability_cache: dict[str, Any] | None = None
+_availability_cache_at = 0.0
+_availability_lock = asyncio.Lock()
+
 
 def _computer_use_runtime():
     from runtimes.computer_use.runtime import computer_use_runtime
 
     return computer_use_runtime
+
+
+def _build_computer_use_availability() -> dict[str, Any]:
+    return dict(_computer_use_runtime().availability() or {})
 
 
 def _compat_invocation_metadata(endpoint: str) -> dict:
@@ -48,8 +60,21 @@ def _real_host_matrix_service():
 
 @router.get("/computer-use/availability")
 async def get_computer_use_availability():
+    global _availability_cache, _availability_cache_at
+
     try:
-        return _computer_use_runtime().availability()
+        now = monotonic()
+        if _availability_cache is not None and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS:
+            return deepcopy(_availability_cache)
+
+        async with _availability_lock:
+            now = monotonic()
+            if _availability_cache is not None and (now - _availability_cache_at) <= _AVAILABILITY_CACHE_TTL_SECONDS:
+                return deepcopy(_availability_cache)
+            payload = await asyncio.to_thread(_build_computer_use_availability)
+            _availability_cache = dict(payload or {})
+            _availability_cache_at = monotonic()
+            return deepcopy(_availability_cache)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

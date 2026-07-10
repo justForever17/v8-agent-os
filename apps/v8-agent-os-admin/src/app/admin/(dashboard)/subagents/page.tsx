@@ -620,7 +620,7 @@ function StatusCardTitle({
   tooltip: ReactNode;
 }) {
   return <AdminHoverInfo content={tooltip} panelClassName="text-sm leading-7">
-            <CardTitle className="flex max-w-full items-center gap-2 truncate text-sm font-bold text-slate-950 dark:text-slate-100">
+            <CardTitle className="flex max-w-full items-center gap-2 truncate text-sm font-bold text-foreground dark:text-slate-100">
                 {icon}
                 <span className="truncate">{title}</span>
             </CardTitle>
@@ -634,7 +634,7 @@ function HoverHelpLabel({
   tooltip: ReactNode;
 }) {
   return <AdminHoverInfo content={tooltip} panelClassName="text-sm leading-7">
-            <Label className="font-medium text-slate-950 dark:text-slate-100">{label}</Label>
+            <Label className="font-medium text-foreground dark:text-slate-100">{label}</Label>
         </AdminHoverInfo>;
 }
 function WorkerConfigLabel({
@@ -1416,7 +1416,7 @@ export default function SubagentsPage() {
                             {t("app.admin.dashboard.subagents.page.k790af087")}
                             {debugMode && (
                                 <AdminHoverInfo content={t("app.admin.dashboard.subagents.page.debugConfigHint")}>
-                                    <span className="cursor-help rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-200 dark:bg-muted dark:text-muted-foreground dark:hover:bg-muted/80">{t("app.admin.dashboard.subagents.page.debugConfigTrigger")}</span>
+                                    <span className="cursor-help rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted dark:bg-muted dark:text-muted-foreground dark:hover:bg-muted/80">{t("app.admin.dashboard.subagents.page.debugConfigTrigger")}</span>
                                 </AdminHoverInfo>
                             )}
                         </p>
@@ -1442,7 +1442,7 @@ export default function SubagentsPage() {
                 {/* 顶部紧凑控制带：全局配置不再占用右侧常驻栏，给子代理卡片释放横向空间。 */}
                 <div className="space-y-6">
                     <div className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3 2xl:grid-cols-[minmax(180px,0.82fr)_minmax(190px,0.9fr)_minmax(210px,1fr)_minmax(250px,1.18fr)_minmax(250px,1.18fr)]">
-                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
+                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-border bg-card/95 shadow-sm dark:border-border dark:bg-card">
                             <CardHeader className="space-y-1 p-3 pb-1.5">
                                 <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.subagents.page.k00bf2013")} tooltip={<div>
                                             <div>{tg(t, "47f887c9")}: {baselineToolNames.length}</div>
@@ -1453,22 +1453,22 @@ export default function SubagentsPage() {
                             </CardHeader>
                             <CardContent className="space-y-2 px-3 pb-3">
                                 <div className="grid grid-cols-2 gap-2 text-xs">
-                                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-2 py-1.5 dark:border-border dark:bg-muted/40">
-                                        <div className="text-slate-500 dark:text-muted-foreground">{tg(t, "495fdf53")}</div>
-                                        <div className="font-semibold text-slate-950 dark:text-slate-100">{enabledSubagentCount}</div>
+                                    <div className="rounded-xl border border-border bg-muted/70 px-2 py-1.5 dark:border-border dark:bg-muted/40">
+                                        <div className="text-muted-foreground dark:text-muted-foreground">{tg(t, "495fdf53")}</div>
+                                        <div className="font-semibold text-foreground dark:text-slate-100">{enabledSubagentCount}</div>
                                     </div>
-                                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-2 py-1.5 dark:border-border dark:bg-muted/40">
-                                        <div className="text-slate-500 dark:text-muted-foreground">{tg(t, "fb1073a6")}</div>
-                                        <div className="font-semibold text-slate-950 dark:text-slate-100">{enabledExternalWorkerCount}/{externalWorkerTemplateCount}</div>
+                                    <div className="rounded-xl border border-border bg-muted/70 px-2 py-1.5 dark:border-border dark:bg-muted/40">
+                                        <div className="text-muted-foreground dark:text-muted-foreground">{tg(t, "fb1073a6")}</div>
+                                        <div className="font-semibold text-foreground dark:text-slate-100">{enabledExternalWorkerCount}/{externalWorkerTemplateCount}</div>
                                     </div>
                                 </div>
-                                <div className="truncate font-mono text-[11px] text-slate-500 dark:text-muted-foreground">
+                                <div className="truncate font-mono text-[11px] text-muted-foreground dark:text-muted-foreground">
                                     {baselineToolNames.slice(0, 2).join(" · ") || "none"}{baselineToolNames.length > 2 ? ` · +${baselineToolNames.length - 2}` : ""}
                                 </div>
                             </CardContent>
                         </Card>
 
-                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
+                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-border bg-card/95 shadow-sm dark:border-border dark:bg-card">
                             <CardHeader className="space-y-1 p-3 pb-1.5">
                                 <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "520dbe37")} tooltip={<div>
                                             <div>{tg(t, "8c3999bf")}: {formatDecimal(TEMPERATURE_PRESET)}</div>
@@ -1478,7 +1478,7 @@ export default function SubagentsPage() {
                             <CardContent className="space-y-2 px-3 pb-3">
                                 <Slider value={[temperatureSliderValue(subagentTemperature)]} min={MIN_CONFIG_TEMPERATURE} max={2} step={0.05} onValueChange={([value]) => setSubagentTemperature(formatDecimal(value))} />
                                 <div className="flex items-center justify-between gap-2">
-                                    <span className="text-xs text-slate-500 dark:text-muted-foreground">{subagentTemperature.trim() ? formatDecimal(temperatureSliderValue(subagentTemperature)) : temperatureDefaultText(t)}</span>
+                                    <span className="text-xs text-muted-foreground dark:text-muted-foreground">{subagentTemperature.trim() ? formatDecimal(temperatureSliderValue(subagentTemperature)) : temperatureDefaultText(t)}</span>
                                     <div className="flex gap-1.5">
                                         <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setSubagentTemperature("")}>
                                             {t("components.memory.MemoryConfigPanel.k5e4b837d")}
@@ -1492,13 +1492,13 @@ export default function SubagentsPage() {
                             </CardContent>
                         </Card>
 
-                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
+                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-border bg-card/95 shadow-sm dark:border-border dark:bg-card">
                             <CardHeader className="space-y-1 p-3 pb-1.5">
                                 <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "cd5d78a6")} tooltip={familyModeEnabled ? tg(t, "d096101e") : tg(t, "571f4a11")} />
                             </CardHeader>
                             <CardContent className="space-y-2 px-3 pb-3">
                                 <div className="flex items-center justify-between gap-3">
-                                    <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-900 dark:text-slate-100">
+                                    <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-foreground dark:text-slate-100">
                                         <Checkbox checked={familyModeEnabled} onCheckedChange={next => setFamilyModeEnabled(Boolean(next))} />
                                         <span className="truncate">{tg(t, "7074eefa")}：{maxMembersPerFamily}</span>
                                     </label>
@@ -1512,22 +1512,22 @@ export default function SubagentsPage() {
                             </CardContent>
                         </Card>
 
-                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
+                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-border bg-card/95 shadow-sm dark:border-border dark:bg-card">
                             <CardHeader className="space-y-1 p-3 pb-1.5">
                                 <StatusCardTitle icon={<SearchCheck className="h-4 w-4 shrink-0 text-cyan-600" />} title={tg(t, "ed0fa816")} tooltip={tg(t, "a1c3fdb1")} />
                             </CardHeader>
                             <CardContent className="space-y-2 px-3 pb-3">
                                 <div className="flex items-center justify-between gap-3">
-                                    <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-900 dark:text-slate-100">
+                                    <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-foreground dark:text-slate-100">
                                         <Checkbox checked={researchEnabled} onCheckedChange={next => setResearchEnabled(Boolean(next))} />
                                         <span className="truncate">{tg(t, "2a5c9f81")}</span>
                                     </label>
                                     <Badge variant={researchEnabled ? "secondary" : "destructive"}>{researchEnabled ? "research.core" : "off"}</Badge>
                                 </div>
-                                <div className="grid grid-cols-3 gap-1.5 text-[11px] text-slate-500 dark:text-muted-foreground">
-                                    <span className="truncate rounded-lg bg-slate-50 px-2 py-1 dark:bg-muted/40">{tg(t, "d6c520d8")} {researchDefaultShards}</span>
-                                    <span className="truncate rounded-lg bg-slate-50 px-2 py-1 dark:bg-muted/40">{tg(t, "03514d16")} {researchMaxShards}</span>
-                                    <span className="truncate rounded-lg bg-slate-50 px-2 py-1 dark:bg-muted/40">{tg(t, "d28b7ea4")} {researchMaxRounds}</span>
+                                <div className="grid grid-cols-3 gap-1.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
+                                    <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "d6c520d8")} {researchDefaultShards}</span>
+                                    <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "03514d16")} {researchMaxShards}</span>
+                                    <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "d28b7ea4")} {researchMaxRounds}</span>
                                 </div>
                                 <Button size="sm" onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch} className="h-7 w-full text-xs">
                                     {isSavingResearch ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
@@ -1536,13 +1536,13 @@ export default function SubagentsPage() {
                             </CardContent>
                         </Card>
 
-                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
+                        <Card className="min-h-[116px] overflow-visible rounded-2xl border-border bg-card/95 shadow-sm dark:border-border dark:bg-card">
                             <CardHeader className="space-y-1 p-3 pb-1.5">
                                 <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={t("admin.pages.subagents.recursive.title")} tooltip={t("admin.pages.subagents.recursive.description")} />
                             </CardHeader>
                             <CardContent className="space-y-2 px-3 pb-3">
                                 <div className="flex items-center justify-between gap-3">
-                                    <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-slate-900 dark:text-slate-100">
+                                    <label className="flex min-w-0 items-center gap-2 text-xs font-medium text-foreground dark:text-slate-100">
                                         <Checkbox checked={recursiveDelegationEnabled} onCheckedChange={next => setRecursiveDelegationEnabled(Boolean(next))} />
                                         <span className="truncate">{t("admin.pages.subagents.recursive.enableLabel")}</span>
                                     </label>
@@ -1550,11 +1550,11 @@ export default function SubagentsPage() {
                                         {recursiveDelegationEnabled ? t("admin.pages.subagents.recursive.enabledBadge") : t("admin.pages.subagents.recursive.disabledBadge")}
                                     </Badge>
                                 </div>
-                                <div className="grid grid-cols-4 gap-1.5 text-[11px] text-slate-500 dark:text-muted-foreground">
-                                    <span className="truncate rounded-lg bg-slate-50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</span>
-                                    <span className="truncate rounded-lg bg-slate-50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</span>
-                                    <span className="truncate rounded-lg bg-slate-50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</span>
-                                    <span className="truncate rounded-lg bg-slate-50 px-2 py-1 dark:bg-muted/40">{t("app.admin.dashboard.subagents.page.k150a33d0")} {recursiveMaxConcurrent}</span>
+                                <div className="grid grid-cols-4 gap-1.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
+                                    <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.depthBadge", { value: recursiveMaxDepth })}</span>
+                                    <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.childrenBadge", { value: recursiveMaxChildren })}</span>
+                                    <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</span>
+                                    <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("app.admin.dashboard.subagents.page.k150a33d0")} {recursiveMaxConcurrent}</span>
                                 </div>
                                 <Button size="sm" onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation} className="h-7 w-full text-xs">
                                     {isSavingRecursiveDelegation ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
@@ -1577,7 +1577,7 @@ export default function SubagentsPage() {
                             const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
                             const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "Freelancers", "F");
                             const isBuiltin = isBuiltinAgent(agent);
-                            return <Card key={agent.id} className="rounded-3xl border-slate-200 bg-white/95 shadow-sm">
+                            return <Card key={agent.id} className="rounded-3xl border-border bg-card/95 shadow-sm">
                                         <CardHeader className="p-4 pb-2">
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="flex min-w-0 items-center gap-3">
@@ -1594,7 +1594,7 @@ export default function SubagentsPage() {
                                                         setEditingAgent(agent);
                                                         setIsDialogOpen(true);
                                                     }}>
-                                                        <Pencil className="h-4 w-4 text-slate-500" />
+                                                        <Pencil className="h-4 w-4 text-muted-foreground" />
                                                     </Button>
                                                     <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-rose-600 disabled:opacity-40" onClick={() => void handleDelete(agent.id)} disabled={isBuiltin}>
                                                         <Trash2 className="h-4 w-4" />
@@ -1603,15 +1603,15 @@ export default function SubagentsPage() {
                                             </div>
                                         </CardHeader>
                                         <CardContent className="px-4 pb-4 pt-1 space-y-2">
-                                            <p className="text-xs leading-5 text-slate-500 line-clamp-2 min-h-[2.5rem] dark:text-muted-foreground" title={agent.description || ""}>
+                                            <p className="text-xs leading-5 text-muted-foreground line-clamp-2 min-h-[2.5rem] dark:text-muted-foreground" title={agent.description || ""}>
                                                 {agent.description || t("app.admin.dashboard.subagents.page.k70eaab39")}
                                             </p>
-                                            <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs text-muted-foreground dark:border-border">
+                                            <div className="flex items-center justify-between pt-1 border-t border-border/60 text-xs text-muted-foreground dark:border-border">
                                                 <div className="flex items-center gap-1.5">
                                                     {isBuiltin ? (
                                                         <Badge variant="outline" className="text-[10px] text-amber-600 bg-amber-50/50 border-amber-200 shadow-none px-1.5 py-0 h-5">{t("app.admin.dashboard.subagents.page.builtinBadge")}</Badge>
                                                     ) : (
-                                                        <Badge variant="outline" className="text-[10px] text-slate-600 bg-slate-50/50 border-slate-200 shadow-none px-1.5 py-0 h-5 dark:border-border dark:bg-muted dark:text-muted-foreground">{t("app.admin.dashboard.subagents.page.customBadge")}</Badge>
+                                                        <Badge variant="outline" className="text-[10px] text-muted-foreground bg-muted/50 border-border shadow-none px-1.5 py-0 h-5 dark:border-border dark:bg-muted dark:text-muted-foreground">{t("app.admin.dashboard.subagents.page.customBadge")}</Badge>
                                                     )}
                                                     {agent.globalExposure && <Badge className="text-[10px] bg-emerald-600 hover:bg-emerald-600 px-1.5 py-0 h-5 shadow-none text-white">{t("app.admin.dashboard.subagents.page.globalBadge")}</Badge>}
                                                 </div>
@@ -1646,13 +1646,13 @@ export default function SubagentsPage() {
                                         </CardContent>
                                     </Card>;
                         })}
-                        {agents.length === 0 ? <div className="col-span-full rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 py-12 text-center text-sm text-slate-500">
+                        {agents.length === 0 ? <div className="col-span-full rounded-3xl border border-dashed border-border bg-muted/80 py-12 text-center text-sm text-muted-foreground">
                                     {t("app.admin.dashboard.subagents.page.kc6380706")}
                                 </div> : null}
                     </div>
 
                     {/* External Workers 工人配置 Card */}
-                    <Card className="rounded-2xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
+                    <Card className="rounded-2xl border-border bg-card/95 shadow-sm dark:border-border dark:bg-card">
                         <CardHeader className="p-4 pb-2">
                             <CardTitle className="flex flex-wrap items-center justify-between gap-3 text-base">
                                 <span className="flex items-center gap-2">
@@ -1675,15 +1675,15 @@ export default function SubagentsPage() {
                             </CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-3 px-4 pb-4">
-                            <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-3 dark:border-border dark:bg-muted/30 lg:grid-cols-[180px_minmax(0,1fr)] lg:items-center">
+                            <div className="grid gap-3 rounded-2xl border border-border bg-muted/70 p-3 dark:border-border dark:bg-muted/30 lg:grid-cols-[180px_minmax(0,1fr)] lg:items-center">
                                 <div className="space-y-1">
-                                    <div className="text-xs font-medium text-slate-500 dark:text-muted-foreground">{tg(t, "fb1073a6")}</div>
-                                    <div className="text-2xl font-bold leading-none text-slate-950 dark:text-slate-100">{enabledExternalWorkerCount}</div>
-                                    <div className="text-xs text-slate-500 dark:text-muted-foreground">{externalWorkerTemplateCount ? `${enabledExternalWorkerCount}/${externalWorkerTemplateCount}` : tg(t, "bbb79e84")}</div>
+                                    <div className="text-xs font-medium text-muted-foreground dark:text-muted-foreground">{tg(t, "fb1073a6")}</div>
+                                    <div className="text-2xl font-bold leading-none text-foreground dark:text-slate-100">{enabledExternalWorkerCount}</div>
+                                    <div className="text-xs text-muted-foreground dark:text-muted-foreground">{externalWorkerTemplateCount ? `${enabledExternalWorkerCount}/${externalWorkerTemplateCount}` : tg(t, "bbb79e84")}</div>
                                 </div>
                                 <div className="min-w-0">
                                     {externalWorkers.length === 0 ? (
-                                        <div className="rounded-xl border border-dashed border-slate-200 bg-white/70 px-3 py-2 text-sm text-slate-500 dark:border-border dark:bg-background/40 dark:text-muted-foreground">
+                                        <div className="rounded-xl border border-dashed border-border bg-card/70 px-3 py-2 text-sm text-muted-foreground dark:border-border dark:bg-background/40 dark:text-muted-foreground">
                                             {tg(t, "bbb79e84")}
                                         </div>
                                     ) : (
@@ -1691,12 +1691,12 @@ export default function SubagentsPage() {
                                             {externalWorkers.map(worker => {
                                                 const isEnabledTarget = Boolean(worker.enabled && worker.launchProfile.commandTemplate.trim());
                                                 return (
-                                                    <div key={worker.id} className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm dark:border-border dark:bg-background/40">
+                                                    <div key={worker.id} className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-border bg-card/80 px-3 py-2 text-sm dark:border-border dark:bg-background/40">
                                                         <div className="flex min-w-0 items-center gap-2">
                                                             <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${isEnabledTarget ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"}`} aria-hidden="true" />
-                                                            <span className="truncate font-medium text-slate-900 dark:text-slate-100">{worker.name || worker.id}</span>
+                                                            <span className="truncate font-medium text-foreground dark:text-slate-100">{worker.name || worker.id}</span>
                                                         </div>
-                                                        <span className="shrink-0 text-xs text-slate-500 dark:text-muted-foreground">
+                                                        <span className="shrink-0 text-xs text-muted-foreground dark:text-muted-foreground">
                                                             {isEnabledTarget ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "06d0f38d")}
                                                         </span>
                                                     </div>
@@ -1707,8 +1707,8 @@ export default function SubagentsPage() {
                                 </div>
                             </div>
 
-                            <details className="rounded-2xl border border-slate-200 bg-white/70 p-3 dark:border-border dark:bg-background/40">
-                                <summary className="cursor-pointer text-sm font-medium text-slate-900 dark:text-slate-100">
+                            <details className="rounded-2xl border border-border bg-card/70 p-3 dark:border-border dark:bg-background/40">
+                                <summary className="cursor-pointer text-sm font-medium text-foreground dark:text-slate-100">
                                     {t("app.admin.dashboard.subagents.page.externalWorkers.advancedConfigSummary")}
                                 </summary>
                                 <div className="mt-4 space-y-5">
@@ -1729,46 +1729,46 @@ export default function SubagentsPage() {
 
                             <div className="grid gap-5 lg:grid-cols-[minmax(260px,0.9fr)_minmax(0,1.35fr)]">
                                 <div className="space-y-3 max-h-[360px] overflow-y-auto pr-2 scrollbar-thin">
-                                    {externalWorkers.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-5 text-sm text-slate-500">
+                                    {externalWorkers.length === 0 ? <div className="rounded-2xl border border-dashed border-border bg-muted/80 p-5 text-sm text-muted-foreground">
                                             {tg(t, "bbb79e84")}
                                         </div> : null}
                                     {externalWorkers.map(worker => {
                                         const isActive = worker.id === editingExternalWorkerId;
                                         const isEnabledTarget = Boolean(worker.enabled && worker.launchProfile.commandTemplate.trim());
-                                        return <button key={worker.id} type="button" className={`w-full rounded-2xl border p-4 text-left transition ${isActive ? "border-emerald-400 bg-emerald-50/70" : "border-slate-200 bg-slate-50/70 hover:border-slate-300"}`} onClick={() => handleSelectExternalWorker(worker.id)}>
+                                        return <button key={worker.id} type="button" className={`w-full rounded-2xl border p-4 text-left transition ${isActive ? "border-emerald-400 bg-emerald-50/70" : "border-border bg-muted/70 hover:border-input"}`} onClick={() => handleSelectExternalWorker(worker.id)}>
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div className="min-w-0">
-                                                        <div className="truncate text-sm font-semibold text-slate-950">{worker.name || worker.id}</div>
-                                                        <div className="mt-1 truncate font-mono text-xs text-slate-500">{worker.id}</div>
+                                                        <div className="truncate text-sm font-semibold text-foreground">{worker.name || worker.id}</div>
+                                                        <div className="mt-1 truncate font-mono text-xs text-muted-foreground">{worker.id}</div>
                                                     </div>
                                                     <Badge variant={isEnabledTarget ? "default" : "secondary"}>
                                                         {isEnabledTarget ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "06d0f38d")}
                                                     </Badge>
                                                 </div>
-                                                <div className="mt-3 text-xs leading-5 text-slate-500">
+                                                <div className="mt-3 text-xs leading-5 text-muted-foreground">
                                                     {resolveAdminLabel(t, "workerType", worker.workerType || "custom")} · {resolveAdminLabel(t, "workerCwdPolicy", worker.launchProfile.cwdPolicy || "inherit_workspace")} · {resolveAdminLabel(t, "workerSessionMode", worker.sessionMode || "interactive")}
                                                 </div>
                                             </button>;
                                     })}
                                 </div>
 
-                                <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                                <div className="space-y-4 rounded-2xl border border-border bg-muted/70 p-4">
                                     <div className="grid gap-3 md:grid-cols-4">
-                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                        <div className="rounded-2xl border border-border bg-card/80 p-3">
                                             <StatusCardTitle icon={<Cable className="h-4 w-4 shrink-0 text-emerald-600" />} title={tg(t, "8263f1ae")} tooltip={tg(t, "b70ead00")} />
-                                            <div className="mt-2 truncate text-xs text-slate-500">{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType || "custom")}</div>
+                                            <div className="mt-2 truncate text-xs text-muted-foreground">{resolveAdminLabel(t, "workerType", externalWorkerForm.workerType || "custom")}</div>
                                         </div>
-                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                        <div className="rounded-2xl border border-border bg-card/80 p-3">
                                             <StatusCardTitle icon={<BrainCircuit className="h-4 w-4 shrink-0 text-indigo-600" />} title={tg(t, "f17bef17")} tooltip={tg(t, "4a77fff3")} />
-                                            <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.agentClass || "external_worker"}</div>
+                                            <div className="mt-2 truncate text-xs text-muted-foreground">{externalWorkerForm.agentClass || "external_worker"}</div>
                                         </div>
-                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
+                                        <div className="rounded-2xl border border-border bg-card/80 p-3">
                                             <StatusCardTitle icon={<ShieldCheck className="h-4 w-4 shrink-0 text-sky-600" />} title={t("app.admin.dashboard.automation.cron.page.k3936c4f6")} tooltip={tg(t, "77b8a673")} />
-                                            <div className="mt-2 truncate text-xs text-slate-500">{externalWorkerForm.enabled ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "cfb6d117")}</div>
+                                            <div className="mt-2 truncate text-xs text-muted-foreground">{externalWorkerForm.enabled ? t("app.admin.dashboard.engineeringLane.enabledState") : tg(t, "cfb6d117")}</div>
                                         </div>
-                                        <div className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                            <StatusCardTitle icon={<Wrench className="h-4 w-4 shrink-0 text-slate-600" />} title={tg(t, "6dac0d10")} tooltip={tg(t, "e1efa4b4")} />
-                                            <div className="mt-2 truncate text-xs text-slate-500">V8_WORKER_RESULT</div>
+                                        <div className="rounded-2xl border border-border bg-card/80 p-3">
+                                            <StatusCardTitle icon={<Wrench className="h-4 w-4 shrink-0 text-muted-foreground" />} title={tg(t, "6dac0d10")} tooltip={tg(t, "e1efa4b4")} />
+                                            <div className="mt-2 truncate text-xs text-muted-foreground">V8_WORKER_RESULT</div>
                                         </div>
                                     </div>
 
@@ -1810,8 +1810,8 @@ export default function SubagentsPage() {
                                         </div>
                                     </div>
 
-                                    <details className="rounded-2xl border border-slate-200 bg-white/80 p-3">
-                                        <summary className="cursor-pointer text-sm font-medium text-slate-900">
+                                    <details className="rounded-2xl border border-border bg-card/80 p-3">
+                                        <summary className="cursor-pointer text-sm font-medium text-foreground">
                                             {tg(t, "976a39ef")}
                                         </summary>
                                         <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -1934,8 +1934,8 @@ export default function SubagentsPage() {
                                         </div>
                                     </details>
 
-                                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4">
-                                        <label className="flex items-center gap-3 text-sm font-medium text-slate-900">
+                                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+                                        <label className="flex items-center gap-3 text-sm font-medium text-foreground">
                                             <Checkbox checked={externalWorkerForm.enabled} onCheckedChange={next => setExternalWorkerForm(current => ({
                                                 ...current,
                                                 enabled: Boolean(next)
@@ -1955,13 +1955,13 @@ export default function SubagentsPage() {
                                 </div>
                             </div>
 
-                            <details className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4" open={showExternalWorkersJson} onToggle={event => setShowExternalWorkersJson(event.currentTarget.open)}>
-                                <summary className="cursor-pointer text-sm font-medium text-slate-900">
+                            <details className="rounded-2xl border border-border bg-muted/70 p-4" open={showExternalWorkersJson} onToggle={event => setShowExternalWorkersJson(event.currentTarget.open)}>
+                                <summary className="cursor-pointer text-sm font-medium text-foreground">
                                     {tg(t, "30b77df9")}
                                 </summary>
                                 <Textarea value={externalWorkersJson} onChange={event => setExternalWorkersJson(event.target.value)} className="mt-3 min-h-[220px] font-mono text-xs" placeholder='[{"id":"coding-cli-worker","enabled":false}]' />
                                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                                    <p className="text-xs leading-5 text-slate-500">
+                                    <p className="text-xs leading-5 text-muted-foreground">
                                         {t("app.admin.dashboard.subagents.page.externalWorkers.hintPrefix")} <code>launchProfile.commandTemplate</code> {t("app.admin.dashboard.subagents.page.externalWorkers.hintMiddle")} <code>resultSchema.markers</code>.
                                     </p>
                                     <Button type="button" variant="outline" size="sm" onClick={handleApplyExternalWorkersJson}>
@@ -1987,7 +1987,7 @@ export default function SubagentsPage() {
 
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogContent className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">
-                    <DialogHeader className="shrink-0 border-b border-slate-200 px-6 py-5">
+                    <DialogHeader className="shrink-0 border-b border-border px-6 py-5">
                         <DialogTitle>{editingAgent ? t("app.admin.dashboard.subagents.page.k74a55357") : t("app.admin.dashboard.subagents.page.k5ae562aa")}</DialogTitle>
                     </DialogHeader>
                     <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-5">
@@ -2081,21 +2081,21 @@ export default function SubagentsPage() {
                             </div>
                             <div className="space-y-2">
                                 <Label>{tg(t, "ec8c5cb6")}</Label>
-                                <label className="flex h-10 items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50/70 px-4 text-sm">
+                                <label className="flex h-10 items-center gap-3 rounded-2xl border border-border bg-muted/70 px-4 text-sm">
                                     <Checkbox checked={form.globalExposure} onCheckedChange={next => setForm(current => ({
                     ...current,
                     globalExposure: Boolean(next)
                   }))} />
 
-                                    <span className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.globalExposureLabel")}</span>
+                                    <span className="font-medium text-foreground">{t("app.admin.dashboard.subagents.page.globalExposureLabel")}</span>
                                 </label>
                             </div>
                         </div>
 
-                        <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="space-y-3 rounded-2xl border border-border bg-muted/70 p-4">
                             <div className="space-y-1">
                                 <Label>{t("app.admin.dashboard.subagents.page.runtimeBinding.title")}</Label>
-                                <p className="text-xs leading-5 text-slate-500">
+                                <p className="text-xs leading-5 text-muted-foreground">
                                     {t("app.admin.dashboard.subagents.page.runtimeBinding.description")}
                                 </p>
                             </div>
@@ -2103,7 +2103,7 @@ export default function SubagentsPage() {
                                 {RUNTIME_BINDING_OPTIONS.map(option => {
                                     const checked = form.runtimeBindingKinds.includes(option.kind);
                                     return (
-                                        <label key={option.kind} className="flex min-h-[88px] cursor-pointer gap-3 rounded-2xl border border-slate-200 bg-white/80 p-3 text-sm shadow-sm transition hover:border-slate-300">
+                                        <label key={option.kind} className="flex min-h-[88px] cursor-pointer gap-3 rounded-2xl border border-border bg-card/80 p-3 text-sm shadow-sm transition hover:border-input">
                                             <Checkbox
                                                 checked={checked}
                                                 onCheckedChange={next => setForm(current => {
@@ -2116,8 +2116,8 @@ export default function SubagentsPage() {
                                                 })}
                                             />
                                             <span className="space-y-1">
-                                                <span className="block font-medium text-slate-900">{t(option.labelKey)}</span>
-                                                <span className="block text-xs leading-5 text-slate-500">{t(option.descriptionKey)}</span>
+                                                <span className="block font-medium text-foreground">{t(option.labelKey)}</span>
+                                                <span className="block text-xs leading-5 text-muted-foreground">{t(option.descriptionKey)}</span>
                                             </span>
                                         </label>
                                     );
@@ -2125,17 +2125,17 @@ export default function SubagentsPage() {
                             </div>
                         </div>
 
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-sm leading-6 text-slate-500">
+                        <div className="rounded-2xl border border-border bg-muted/70 p-4 text-sm leading-6 text-muted-foreground">
                             {form.toolMode === "contextual_auto" ? <>
-                                    <div className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.k9431e8c4")}</div>
+                                    <div className="font-medium text-foreground">{t("app.admin.dashboard.subagents.page.k9431e8c4")}</div>
                                     <div>{t("app.admin.dashboard.subagents.page.k3b6c2a75")}</div>
                                 </> : <>
-                                    <div className="font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.kaaa3ff24")}</div>
+                                    <div className="font-medium text-foreground">{t("app.admin.dashboard.subagents.page.kaaa3ff24")}</div>
                                     <div>{t("app.admin.dashboard.subagents.page.k502a06d7")}</div>
                                 </>}
                         </div>
 
-                        <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="space-y-4 rounded-2xl border border-border bg-muted/70 p-4">
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label>{tg(t, "49aa0a72")}</Label>
@@ -2144,7 +2144,7 @@ export default function SubagentsPage() {
                     domainTagsText: event.target.value
                   }))} placeholder="software_engineering, frontend" />
 
-                                    <p className="text-xs leading-5 text-slate-500">
+                                    <p className="text-xs leading-5 text-muted-foreground">
                                         {tg(t, "aa3e8d8f")}
                                     </p>
                                 </div>
@@ -2155,7 +2155,7 @@ export default function SubagentsPage() {
                     operationCapabilitiesText: event.target.value
                   }))} placeholder="implement, review, test" />
 
-                                    <p className="text-xs leading-5 text-slate-500">
+                                    <p className="text-xs leading-5 text-muted-foreground">
                                         {tg(t, "172cd73c")}
                                     </p>
                                 </div>
@@ -2166,7 +2166,7 @@ export default function SubagentsPage() {
                     runtimeAffinitiesText: event.target.value
                   }))} placeholder="engine, admin, web" />
 
-                                    <p className="text-xs leading-5 text-slate-500">
+                                    <p className="text-xs leading-5 text-muted-foreground">
                                         {tg(t, "0afbbc87")}
                                     </p>
                                 </div>
@@ -2185,8 +2185,8 @@ export default function SubagentsPage() {
                                     </Select>
                                 </div>
                             </div>
-                            <details className="rounded-xl border border-slate-200 bg-white/80 p-3">
-                                <summary className="cursor-pointer text-sm font-medium text-slate-900">
+                            <details className="rounded-xl border border-border bg-card/80 p-3">
+                                <summary className="cursor-pointer text-sm font-medium text-foreground">
                                     {tg(t, "58deedf1")}
                                 </summary>
                                 <Textarea value={form.capabilitySnapshotJson} onChange={event => setForm(current => ({
@@ -2194,14 +2194,14 @@ export default function SubagentsPage() {
                   capabilitySnapshotJson: event.target.value
                 }))} className="mt-3 min-h-[140px] font-mono text-xs" placeholder='{"agentClass":"executor","domainTags":["software_engineering"]}' />
 
-                                <p className="mt-2 text-xs leading-5 text-slate-500">
+                                <p className="mt-2 text-xs leading-5 text-muted-foreground">
                                     {tg(t, "049582b6")}
                                 </p>
                             </details>
                         </div>
 
                         {form.toolMode === "explicit" ? <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
-                                <Card className="rounded-3xl border-slate-200 xl:col-span-2">
+                                <Card className="rounded-3xl border-border xl:col-span-2">
                                     <CardHeader className="space-y-0">
                                         <button type="button" className="flex w-full items-start justify-between gap-3 text-left" onClick={() => toggleToolPanel("baseline")}>
 
@@ -2212,94 +2212,94 @@ export default function SubagentsPage() {
                                                     <Badge variant="outline">{baselineToolNames.length}</Badge>
                                                 </CardTitle>
                                             </div>
-                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.baseline ? "rotate-180" : ""}`} />
+                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-muted-foreground/80 transition-transform ${toolPanels.baseline ? "rotate-180" : ""}`} />
                                         </button>
                                     </CardHeader>
                                     {toolPanels.baseline ? <CardContent className="max-h-[148px] space-y-3 overflow-y-auto overscroll-contain pr-2">
                                             {baselineSystemTools.length > 0 ? <div className="grid gap-2">
-                                                    {baselineSystemTools.map(tool => <div key={tool.name} className="rounded-2xl border border-slate-200 bg-slate-50/70 px-3 py-2">
-                                                            <div className="font-mono text-[11px] font-medium text-slate-900">{tool.name}</div>
-                                                            <div className="mt-1 text-xs leading-5 text-slate-500">
+                                                    {baselineSystemTools.map(tool => <div key={tool.name} className="rounded-2xl border border-border bg-muted/70 px-3 py-2">
+                                                            <div className="font-mono text-[11px] font-medium text-foreground">{tool.name}</div>
+                                                            <div className="mt-1 text-xs leading-5 text-muted-foreground">
                                                                 {tool.description || t("app.admin.dashboard.subagents.page.k86e9a787")}
                                                             </div>
                                                         </div>)}
-                                                </div> : <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.kca19dcd0")}</div>}
+                                                </div> : <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.subagents.page.kca19dcd0")}</div>}
                                         </CardContent> : null}
                                 </Card>
-                                <Card className="rounded-3xl border-slate-200">
+                                <Card className="rounded-3xl border-border">
                                     <CardHeader className="space-y-0">
                                         <button type="button" className="flex w-full items-start justify-between gap-3 text-left" onClick={() => toggleToolPanel("skills")}>
 
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><Sparkles className="h-4 w-4 text-violet-600" />{t("app.admin.dashboard.subagents.page.ke431abc9")}<Badge variant="outline">{skills.length}</Badge></CardTitle>
                                             </div>
-                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.skills ? "rotate-180" : ""}`} />
+                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-muted-foreground/80 transition-transform ${toolPanels.skills ? "rotate-180" : ""}`} />
                                         </button>
                                     </CardHeader>
                                     {toolPanels.skills ? <CardContent className="max-h-[224px] space-y-3 overflow-y-auto overscroll-contain pr-2">
-                                        {skills.length === 0 ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.k2b7b1954")}</div> : null}
+                                        {skills.length === 0 ? <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.subagents.page.k2b7b1954")}</div> : null}
                                         {skills.map(skill => {
                     const checked = form.tools.includes(skill.name);
                     return <label key={skill.path} className="flex items-start gap-3">
                                                     <Checkbox checked={checked} onCheckedChange={next => toggleSelector(skill.name, Boolean(next))} className="mt-1" />
                                                     <div className="min-w-0">
-                                                        <div className="text-sm font-medium text-slate-900">{skill.name}</div>
-                                                        <div className="text-xs leading-5 text-slate-500">{skill.description || skill.path}</div>
+                                                        <div className="text-sm font-medium text-foreground">{skill.name}</div>
+                                                        <div className="text-xs leading-5 text-muted-foreground">{skill.description || skill.path}</div>
                                                     </div>
                                                 </label>;
                   })}
                                     </CardContent> : null}
                                 </Card>
-                                <Card className="rounded-3xl border-slate-200">
+                                <Card className="rounded-3xl border-border">
                                     <CardHeader className="space-y-0">
                                         <button type="button" className="flex w-full items-start justify-between gap-3 text-left" onClick={() => toggleToolPanel("mcp")}>
 
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><Wrench className="h-4 w-4 text-sky-600" />MCP<Badge variant="outline">{availableMcpToolCount}</Badge></CardTitle>
                                             </div>
-                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.mcp ? "rotate-180" : ""}`} />
+                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-muted-foreground/80 transition-transform ${toolPanels.mcp ? "rotate-180" : ""}`} />
                                         </button>
                                     </CardHeader>
                                     {toolPanels.mcp ? <CardContent className="max-h-[224px] space-y-4 overflow-y-auto overscroll-contain pr-2">
-                                        {Object.keys(groupedMcpTools).length === 0 ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.k57c2bf93")}</div> : null}
+                                        {Object.keys(groupedMcpTools).length === 0 ? <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.subagents.page.k57c2bf93")}</div> : null}
                                         {Object.entries(groupedMcpTools).map(([serverName, items]) => <div key={serverName} className="space-y-2">
-                                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{serverName}</div>
+                                                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{serverName}</div>
                                                 {items.map(tool => {
                       const checked = form.tools.includes(tool.name);
                       return <label key={tool.name} className="flex items-start gap-3">
                                                             <Checkbox checked={checked} onCheckedChange={next => toggleSelector(tool.name, Boolean(next))} className="mt-1" />
                                                             <div className="min-w-0">
-                                                                <div className="break-all text-sm font-medium text-slate-900">{tool.name}</div>
-                                                                <div className="text-xs leading-5 text-slate-500">{tool.description || t("app.admin.dashboard.subagents.page.k86e9a787")}</div>
+                                                                <div className="break-all text-sm font-medium text-foreground">{tool.name}</div>
+                                                                <div className="text-xs leading-5 text-muted-foreground">{tool.description || t("app.admin.dashboard.subagents.page.k86e9a787")}</div>
                                                             </div>
                                                         </label>;
                     })}
                                             </div>)}
                                     </CardContent> : null}
                                 </Card>
-                                <Card className="rounded-3xl border-slate-200">
+                                <Card className="rounded-3xl border-border">
                                     <CardHeader className="space-y-0">
                                         <button type="button" className="flex w-full items-start justify-between gap-3 text-left" onClick={() => toggleToolPanel("plugin_host")}>
 
                                             <div className="space-y-1">
                                                 <CardTitle className="flex items-center gap-2 text-base"><BrainCircuit className="h-4 w-4 text-emerald-600" />PluginHost<Badge variant="outline">{pluginHostTools.length}</Badge></CardTitle>
                                             </div>
-                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform ${toolPanels.plugin_host ? "rotate-180" : ""}`} />
+                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-muted-foreground/80 transition-transform ${toolPanels.plugin_host ? "rotate-180" : ""}`} />
                                         </button>
                                     </CardHeader>
                                     {toolPanels.plugin_host ? <CardContent className="max-h-[224px] space-y-4 overflow-y-auto overscroll-contain pr-2">
                                         {bridgeError ? <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-700">{bridgeError}</div> : null}
-                                        {!bridgeError && Object.keys(groupedPluginHostTools).length === 0 ? <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.kc9324cc5")}</div> : null}
+                                        {!bridgeError && Object.keys(groupedPluginHostTools).length === 0 ? <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.subagents.page.kc9324cc5")}</div> : null}
                                         {Object.entries(groupedPluginHostTools).map(([pluginId, items]) => <div key={pluginId} className="space-y-2">
-                                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{pluginId}</div>
+                                                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{pluginId}</div>
                                                 {items.map(tool => {
                       const selector = String(tool.canonicalName || tool.toolName || "").trim();
                       const checked = form.tools.includes(selector);
                       return <label key={selector} className="flex items-start gap-3">
                                                             <Checkbox checked={checked} onCheckedChange={next => toggleSelector(selector, Boolean(next))} className="mt-1" />
                                                             <div className="min-w-0">
-                                                                <div className="break-all text-sm font-medium text-slate-900">{selector}</div>
-                                                                <div className="text-xs leading-5 text-slate-500">{tool.description || tool.label || selector}</div>
+                                                                <div className="break-all text-sm font-medium text-foreground">{selector}</div>
+                                                                <div className="text-xs leading-5 text-muted-foreground">{tool.description || tool.label || selector}</div>
                                                             </div>
                                                         </label>;
                     })}
@@ -2317,7 +2317,7 @@ export default function SubagentsPage() {
 
                         </div>
 
-                        <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="space-y-4 rounded-2xl border border-border bg-muted/70 p-4">
                             <label className="flex items-center gap-3">
                                 <Checkbox checked={form.reflectionEnabled} onCheckedChange={checked => setForm(current => ({
                   ...current,
@@ -2325,8 +2325,8 @@ export default function SubagentsPage() {
                 }))} />
 
                                 <div>
-                                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.subagents.page.kdaaa0859")}</div>
-                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.subagents.page.k45e15cc8")}</div>
+                                    <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.subagents.page.kdaaa0859")}</div>
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.subagents.page.k45e15cc8")}</div>
                                 </div>
                             </label>
                             {form.reflectionEnabled ? <div className="space-y-2">

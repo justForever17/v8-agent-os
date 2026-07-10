@@ -130,10 +130,10 @@ export function DevicePairingPanel() {
     }
 
     return (
-        <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+        <div className="rounded-lg border border-border bg-muted/70 p-4 dark:border-slate-800 dark:bg-slate-950/40">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
                 <div className="min-w-0 flex-1">
-                    <div className="inline-flex max-w-full text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    <div className="inline-flex max-w-full text-sm font-semibold text-foreground dark:text-slate-100">
                         <AdminHoverInfo content={t("components.admin.DevicePairingPanel.description")} panelClassName="text-xs leading-5">
                             <span>{t("components.admin.DevicePairingPanel.title")}</span>
                         </AdminHoverInfo>
@@ -154,20 +154,20 @@ export function DevicePairingPanel() {
             ) : null}
 
             {ticket ? (
-                <div className="mt-4 grid gap-3 rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-[160px_minmax(0,1fr)] sm:items-start dark:border-slate-800 dark:bg-slate-900">
-                    <div className="flex min-h-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-950">
+                <div className="mt-4 grid gap-3 rounded-lg border border-border bg-card p-3 sm:grid-cols-[160px_minmax(0,1fr)] sm:items-start dark:border-slate-800 dark:bg-slate-900">
+                    <div className="flex min-h-40 items-center justify-center rounded-lg border border-border bg-card p-2 dark:border-slate-800 dark:bg-slate-950">
                         {qrDataUrl ? (
                             <Image src={qrDataUrl} alt={t("components.admin.DevicePairingPanel.qrAlt")} width={144} height={144} unoptimized />
                         ) : (
-                            <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
+                            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                         )}
                     </div>
                     <div className="grid gap-3">
-                        <div className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900">
-                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                        <div className="min-w-0 rounded-lg border border-border bg-card px-3 py-3 dark:border-slate-800 dark:bg-slate-900">
+                            <div className="text-sm font-semibold text-foreground dark:text-slate-100">
                                 {t("components.admin.DevicePairingPanel.scanTitle")}
                             </div>
-                            <div className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
+                            <div className="mt-1 text-sm leading-6 text-muted-foreground dark:text-slate-300">
                                 {t("components.admin.DevicePairingPanel.scanHint")}
                             </div>
                         </div>
@@ -175,7 +175,7 @@ export function DevicePairingPanel() {
                             {copied ? <Check className="mr-2 h-4 w-4" /> : <Clipboard className="mr-2 h-4 w-4" />}
                             {copied ? t("components.admin.DevicePairingPanel.copied") : t("components.admin.DevicePairingPanel.copyBackup")}
                         </Button>
-                        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500">
+                        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
                             <span>{t("components.admin.DevicePairingPanel.instance")}: {ticket.instanceId}</span>
                             <span>{t("components.admin.DevicePairingPanel.expires")}: {new Date(ticket.expiresAt).toLocaleTimeString()}</span>
                         </div>
@@ -183,24 +183,24 @@ export function DevicePairingPanel() {
                 </div>
             ) : null}
 
-            <div className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-800">
+            <div className="mt-5 border-t border-border pt-4 dark:border-slate-800">
                 <div className="flex items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    <div className="text-sm font-semibold text-foreground dark:text-slate-100">
                         {t("components.admin.DevicePairingPanel.connectedDevices")}
                     </div>
-                    {devicesBusy ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                    {devicesBusy ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
                 </div>
                 {!devicesBusy && devices.length === 0 ? (
-                    <div className="mt-2 text-sm text-slate-500">
+                    <div className="mt-2 text-sm text-muted-foreground">
                         {t("components.admin.DevicePairingPanel.noDevices")}
                     </div>
                 ) : null}
                 <div className="mt-2 grid gap-2">
                     {devices.map((device) => (
-                        <div key={device.id} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-900">
+                        <div key={device.id} className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2 dark:border-slate-800 dark:bg-slate-900">
                             <div className="min-w-0 flex-1">
-                                <div className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{device.deviceName}</div>
-                                <div className="text-xs text-slate-500">
+                                <div className="truncate text-sm font-medium text-foreground dark:text-slate-100">{device.deviceName}</div>
+                                <div className="text-xs text-muted-foreground">
                                     {t("components.admin.DevicePairingPanel.connectedAt")}: {new Date(device.createdAt).toLocaleString()}
                                 </div>
                             </div>

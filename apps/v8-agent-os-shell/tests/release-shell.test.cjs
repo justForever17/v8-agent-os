@@ -22,6 +22,33 @@ test('packaged shell starts core services before waiting for them', () => {
   assert.match(mainSource, /await ensureCoreServicesStarted\(\);\s*await waitForServices\(\);/);
 });
 
+test('shell uses dedicated taskbar and tray icon assets', () => {
+  const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
+  assert.match(mainSource, /function taskbarIconPath\(\)/);
+  assert.match(mainSource, /function trayIconPath\(\)/);
+  assert.match(mainSource, /new Tray\(shellIcon\(\)\)/);
+  assert.match(mainSource, /icon: taskbarIconPath\(\) \|\| undefined/);
+  assert.equal(fs.existsSync(path.join(shellRoot, 'assets', 'tray-icon.png')), true);
+});
+
+test('desktop traffic lights use centered softened vector glyphs', () => {
+  const controlsSource = fs.readFileSync(
+    path.join(repoRoot, 'packages', 'product-ui', 'src', 'ProductTrafficLightWindowControls.tsx'),
+    'utf8',
+  );
+  const styles = fs.readFileSync(
+    path.join(repoRoot, 'packages', 'product-ui', 'src', 'styles.css'),
+    'utf8',
+  );
+
+  assert.match(controlsSource, /<svg viewBox="0 0 10 10"/);
+  assert.doesNotMatch(controlsSource, />[×−+]<\/span>/);
+  assert.match(styles, /\.v8-product-traffic-light svg/);
+  assert.match(styles, /stroke-linecap:\s*round/);
+  assert.match(styles, /opacity:\s*0\.58/);
+  assert.match(styles, /place-items:\s*center/);
+});
+
 test('electron launcher strips ELECTRON_RUN_AS_NODE before starting child Electron apps', () => {
   const launcherSource = fs.readFileSync(path.join(shellRoot, 'scripts', 'electron-launcher.mjs'), 'utf8');
   assert.match(launcherSource, /delete env\.ELECTRON_RUN_AS_NODE/);

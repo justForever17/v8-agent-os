@@ -23,9 +23,9 @@ export default function LegacyMusicPage() {
                         {ti(t, "kccc6bb88d9")}
                     </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4 text-sm text-slate-700">
-                    <div className="rounded-md border bg-white p-3">{ti(t, "k0963515701")}</div>
-                    <div className="rounded-md border bg-white p-3">{ti(t, "k0e58d09d1a")}</div>
+                <CardContent className="space-y-4 text-sm text-foreground">
+                    <div className="rounded-md border bg-card p-3">{ti(t, "k0963515701")}</div>
+                    <div className="rounded-md border bg-card p-3">{ti(t, "k0e58d09d1a")}</div>
                     <Button asChild>
                         <Link href="/admin/creative-media">
                             <Sparkles className="mr-2 h-4 w-4" />

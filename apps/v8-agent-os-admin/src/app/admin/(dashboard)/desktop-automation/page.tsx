@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { useT } from "@/components/providers/LocaleProvider";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 
 type ModelOption = {
     id: string;
@@ -107,6 +108,7 @@ export default function DesktopAutomationPage() {
     const [models, setModels] = useState<ModelOption[]>([]);
     const [runtimeCapability, setRuntimeCapability] = useState<RuntimeCapabilityEntry | null>(null);
     const [availability, setAvailability] = useState<ComputerUseAvailability | null>(null);
+    const [availabilityRefreshKey, setAvailabilityRefreshKey] = useState(0);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -115,19 +117,18 @@ export default function DesktopAutomationPage() {
     const [agentBrowserResult, setAgentBrowserResult] = useState<Record<string, unknown> | null>(null);
     const [featurePackMissing, setFeaturePackMissing] = useState(false);
 
-    const loadData = async () => {
+    const loadData = async (force = false) => {
         setLoading(true);
         try {
-            const [config, modelsResponse, capabilitySnapshot, computerAvailability, featurePacks] = await Promise.all([
-                fetchConfigDomain<ComputerUseData>("computer-use"),
-                fetch("/api/models", { cache: "no-store" }).then((response) => response.json().catch(() => [])),
-                fetch("/api/runtime-capabilities", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
-                fetch("/api/computer-use/availability", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
-                fetch("/api/runtime-feature-packs", { cache: "no-store" }).then((response) => response.json().catch(() => ({}))),
+            const [config, modelsResponse, capabilitySnapshot, featurePacks] = await Promise.all([
+                fetchConfigDomain<ComputerUseData>("computer-use", { force }),
+                fetchAdminJson<ModelOption[]>("/api/models", { force }),
+                fetchAdminJson<Record<string, unknown>>("/api/runtime-capabilities", { force }),
+                fetchAdminJson<{ packs?: Array<{ id?: string; status?: string }> }>("/api/runtime-feature-packs", { force }),
             ]);
             setEnvelope(config);
             setModels(Array.isArray(modelsResponse) ? modelsResponse : []);
-            setAvailability(computerAvailability || null);
+            setAvailabilityRefreshKey((current) => current + 1);
             const runtimes = Array.isArray(capabilitySnapshot?.runtimes) ? capabilitySnapshot.runtimes : [];
             setRuntimeCapability(runtimes.find((item: RuntimeCapabilityEntry) => item.kind === "computer_use") || null);
             const packs = Array.isArray(featurePacks?.packs) ? featurePacks.packs : [];
@@ -141,6 +142,25 @@ export default function DesktopAutomationPage() {
     useEffect(() => {
         void loadData();
     }, []);
+
+    useEffect(() => {
+        if (availabilityRefreshKey === 0) return;
+        let active = true;
+        const timer = window.setTimeout(() => {
+            void fetchAdminJson<ComputerUseAvailability>("/api/computer-use/availability", {
+                force: availabilityRefreshKey > 1,
+                ttlMs: 5_000,
+            }).then((computerAvailability) => {
+                if (active) setAvailability(computerAvailability || null);
+            }).catch(() => {
+                if (active) setAvailability(null);
+            });
+        }, 1_000);
+        return () => {
+            active = false;
+            window.clearTimeout(timer);
+        };
+    }, [availabilityRefreshKey]);
 
     const llmModels = useMemo(
         () => models.filter((model) => ["TEXT", "MULTIMODAL", "CHAT", "LLM"].includes((model.type || "").toUpperCase())),
@@ -173,7 +193,7 @@ export default function DesktopAutomationPage() {
         const normalized = String(status || "");
         if (normalized === "real_host_passed") return "border-emerald-200 bg-emerald-50 text-emerald-700";
         if (normalized === "blocked_by_permission" || normalized.startsWith("blocked_by")) return "border-amber-200 bg-amber-50 text-amber-700";
-        if (normalized === "unsupported") return "border-slate-200 bg-slate-100 text-slate-500";
+        if (normalized === "unsupported") return "border-border bg-muted text-muted-foreground";
         return "border-sky-200 bg-sky-50 text-sky-700";
     };
 
@@ -221,7 +241,7 @@ export default function DesktopAutomationPage() {
                     notes: enabled ? "Admin desktop-automation enabled" : "Admin desktop-automation disabled",
                 }),
             });
-            await loadData();
+            await loadData(true);
         } finally {
             setRuntimeSaving(false);
         }
@@ -238,7 +258,7 @@ export default function DesktopAutomationPage() {
             });
             const payload = await response.json().catch(() => ({}));
             setAgentBrowserResult({ ...(payload || {}), httpStatus: response.status });
-            await loadData();
+            await loadData(true);
         } catch (error) {
             setAgentBrowserResult({
                 ok: false,
@@ -252,7 +272,7 @@ export default function DesktopAutomationPage() {
     if (loading || !envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         );
     }
@@ -288,17 +308,17 @@ export default function DesktopAutomationPage() {
 
             <ConfigCard title={"app.admin.dashboard.desktop.automation.page.kb6443896"} description={"app.admin.dashboard.desktop.automation.page.kc064340e"}>
                 <div className="space-y-3">
-                    <div className="grid gap-3 text-sm text-slate-600 sm:grid-cols-2">
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.page.k73b0e79c")}</div>
-                            <div className="mt-1 text-base font-semibold text-slate-900">
+                    <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
+                        <div className="rounded-2xl border border-border bg-muted/80 p-4">
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.desktop.automation.page.k73b0e79c")}</div>
+                            <div className="mt-1 text-base font-semibold text-foreground">
                                 {runtimeCapability?.policy?.enabled === false ? t("app.admin.dashboard.desktop.automation.page.kc6ff9900") : t("app.admin.dashboard.desktop.automation.page.kdb6c0cc1")}
                             </div>
-                            <div className="mt-2 text-xs text-slate-500">
+                            <div className="mt-2 text-xs text-muted-foreground">
                                 {runtimeCapability?.displayName || t("app.admin.dashboard.desktop.automation.page.k8e3b4847")} · {runtimeCapability?.summary || t("app.admin.dashboard.desktop.automation.page.k4039664e")}
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 text-xs leading-6 text-slate-600">
+                        <div className="rounded-2xl border border-border bg-muted/80 p-4 text-xs leading-6 text-muted-foreground">
                             <div>{t("app.admin.dashboard.desktop.automation.page.k660c8c15")}{runtimeCapability?.policy?.autoRoute === false ? t("app.admin.dashboard.desktop.automation.page.k574ff3b2") : t("app.admin.dashboard.desktop.automation.page.k85549844")}</div>
                             <div>{t("app.admin.dashboard.desktop.automation.page.k320d306e")}{runtimeCapability?.policy?.exposeDirectTools === false ? t("app.admin.dashboard.desktop.automation.page.k574ff3b2") : t("app.admin.dashboard.desktop.automation.page.k85549844")}</div>
                             <div>{t("app.admin.dashboard.desktop.automation.page.k77ed4e5b")}</div>
@@ -323,22 +343,22 @@ export default function DesktopAutomationPage() {
             >
                 <div className="space-y-4">
                     <div className="grid gap-3 lg:grid-cols-[1.5fr_1fr]">
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                        <div className="rounded-2xl border border-border bg-muted/80 p-4">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div>
-                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.currentPlatform")}</div>
-                                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.currentPlatform")}</div>
+                                    <div className="mt-1 text-lg font-semibold text-foreground">
                                         {currentPlatformTruth?.displayPlatform || availability?.platform || t("app.admin.dashboard.desktop.automation.capabilityTruth.unknown")}
                                     </div>
                                 </div>
-                                <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+                                <span className="rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
                                     {availability?.backend || t("app.admin.dashboard.desktop.automation.capabilityTruth.unknown")}
                                 </span>
                             </div>
                             <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                                 {(currentPlatformTruth?.facets || []).map((facet) => (
-                                    <div key={facet.key} className="rounded-xl border border-white bg-white px-3 py-2 shadow-sm">
-                                        <div className="text-xs font-medium text-slate-900">{facetLabel(facet.key)}</div>
+                                    <div key={facet.key} className="rounded-xl border border-white bg-card px-3 py-2 shadow-sm">
+                                        <div className="text-xs font-medium text-foreground">{facetLabel(facet.key)}</div>
                                         <div className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusClassName(facet.status)}`}>
                                             {statusLabel(facet.status)}
                                         </div>
@@ -347,37 +367,37 @@ export default function DesktopAutomationPage() {
                             </div>
                         </div>
                         <div className="space-y-3">
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.browserLane")}</div>
+                            <div className="rounded-2xl border border-border bg-muted/80 p-4">
+                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.browserLane")}</div>
                                 <div className={`mt-2 inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${statusClassName(String(capabilityTruth?.browserLaneTruth?.status || ""))}`}>
                                     {statusLabel(String(capabilityTruth?.browserLaneTruth?.status || "unknown"))}
                                 </div>
                                 {capabilityTruth?.browserLaneTruth?.reason ? (
-                                    <p className="mt-2 text-xs leading-5 text-slate-500">{String(capabilityTruth.browserLaneTruth.reason)}</p>
+                                    <p className="mt-2 text-xs leading-5 text-muted-foreground">{String(capabilityTruth.browserLaneTruth.reason)}</p>
                                 ) : null}
-                                <p className="mt-2 text-xs leading-5 text-slate-500">
+                                <p className="mt-2 text-xs leading-5 text-muted-foreground">
                                     {t("app.admin.dashboard.desktop.automation.capabilityTruth.playwright")}
                                     {capabilityTruth?.browserLaneTruth?.playwrightAvailable
                                         ? t("app.admin.dashboard.desktop.automation.page.k85549844")
                                         : t("app.admin.dashboard.desktop.automation.page.k574ff3b2")}
                                 </p>
                                 {capabilityTruth?.browserLaneTruth?.defaultUserDataDir ? (
-                                    <p className="mt-1 truncate text-xs leading-5 text-slate-500" title={String(capabilityTruth.browserLaneTruth.defaultUserDataDir)}>
+                                    <p className="mt-1 truncate text-xs leading-5 text-muted-foreground" title={String(capabilityTruth.browserLaneTruth.defaultUserDataDir)}>
                                         {t("app.admin.dashboard.desktop.automation.capabilityTruth.browserProfile")}
                                         {String(capabilityTruth.browserLaneTruth.defaultUserDataDir)}
                                     </p>
                                 ) : null}
                                 {capabilityTruth?.browserLaneTruth?.targetPort ? (
-                                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
                                         {t("app.admin.dashboard.desktop.automation.capabilityTruth.debugPort")}
                                         {String(capabilityTruth.browserLaneTruth.targetPort)}
                                     </p>
                                 ) : null}
-                                <div className="mt-3 space-y-2 rounded-xl border border-slate-200 bg-white/80 p-3">
-                                    <div className="text-xs font-semibold text-slate-900">
+                                <div className="mt-3 space-y-2 rounded-xl border border-border bg-card/80 p-3">
+                                    <div className="text-xs font-semibold text-foreground">
                                         {t("app.admin.dashboard.desktop.automation.agentBrowser.title")}
                                     </div>
-                                    <p className="text-xs leading-5 text-slate-500">
+                                    <p className="text-xs leading-5 text-muted-foreground">
                                         {t("app.admin.dashboard.desktop.automation.agentBrowser.description")}
                                     </p>
                                     <div className="flex flex-wrap gap-2">
@@ -409,49 +429,49 @@ export default function DesktopAutomationPage() {
                                     ) : null}
                                 </div>
                             </div>
-                            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                                <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.screenWake")}</div>
-                                <div className="mt-2 text-sm font-semibold text-slate-900">
+                            <div className="rounded-2xl border border-border bg-muted/80 p-4">
+                                <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.screenWake")}</div>
+                                <div className="mt-2 text-sm font-semibold text-foreground">
                                     {t("app.admin.dashboard.desktop.automation.capabilityTruth.spaceWake")}
                                 </div>
-                                <p className="mt-1 text-xs leading-5 text-slate-500">
+                                <p className="mt-1 text-xs leading-5 text-muted-foreground">
                                     {t("app.admin.dashboard.desktop.automation.capabilityTruth.screenWakeDetail")}
                                 </p>
                             </div>
                         </div>
                     </div>
                     <div className="grid gap-3 lg:grid-cols-2">
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.portableChecklist")}</div>
+                        <div className="rounded-2xl border border-border bg-card p-4">
+                            <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.portableChecklist")}</div>
                             <div className="mt-2 flex flex-wrap gap-2">
                                 {(capabilityTruth?.portableChecklist || []).slice(0, 12).map((item) => (
-                                    <span key={item} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+                                    <span key={item} className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
                                         {item}
                                     </span>
                                 ))}
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.knownGaps")}</div>
+                        <div className="rounded-2xl border border-border bg-card p-4">
+                            <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.knownGaps")}</div>
                             <div className="mt-2 space-y-2">
                                 {(capabilityTruth?.knownGaps || []).length ? (
                                     (capabilityTruth?.knownGaps || []).map((gap) => (
-                                        <div key={gap.code || gap.summary} className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-                                            <span className="font-semibold text-slate-900">{gap.code}</span>
+                                        <div key={gap.code || gap.summary} className="rounded-xl bg-muted/50 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                                            <span className="font-semibold text-foreground">{gap.code}</span>
                                             {gap.summary ? ` · ${gap.summary}` : ""}
                                         </div>
                                     ))
                                 ) : (
-                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.noKnownGaps")}</div>
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.noKnownGaps")}</div>
                                 )}
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.parityPackage")}</div>
+                        <div className="rounded-2xl border border-border bg-card p-4">
+                            <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.parityPackage")}</div>
                             <div className="mt-2 space-y-2">
                                 {parityPlatforms.slice(0, 4).map((platform) => (
-                                    <div key={platform.key} className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-                                        <div className="font-semibold text-slate-900">
+                                    <div key={platform.key} className="rounded-xl bg-muted/50 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                                        <div className="font-semibold text-foreground">
                                             {platform.platform || platform.key} · {statusLabel(platform.status)}
                                         </div>
                                         <div className="truncate">{platform.driverContract || ""}</div>
@@ -459,26 +479,26 @@ export default function DesktopAutomationPage() {
                                 ))}
                             </div>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="text-sm font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.capabilityTruth.playbooks")}</div>
+                        <div className="rounded-2xl border border-border bg-card p-4">
+                            <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.playbooks")}</div>
                             <div className="mt-2 space-y-2">
                                 {builtInPlaybooks.length ? (
                                     builtInPlaybooks.map((playbook) => (
-                                        <div key={playbook.id} className="rounded-xl bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-                                            <span className="font-semibold text-slate-900">{playbook.id}</span>
+                                        <div key={playbook.id} className="rounded-xl bg-muted/50 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                                            <span className="font-semibold text-foreground">{playbook.id}</span>
                                             {playbook.preferredLane ? ` · ${playbook.preferredLane}` : ""}
                                         </div>
                                     ))
                                 ) : (
-                                    <div className="text-xs text-slate-500">{t("app.admin.dashboard.desktop.automation.capabilityTruth.noPlaybooks")}</div>
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.noPlaybooks")}</div>
                                 )}
                             </div>
                         </div>
                     </div>
-                    <div className="grid gap-2 text-xs text-slate-500 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
                         {truthPlatforms.map((platform) => (
-                            <div key={platform.key} className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2">
-                                <div className="font-semibold text-slate-800">{platform.displayPlatform || platform.key}</div>
+                            <div key={platform.key} className="rounded-xl border border-border bg-muted/80 px-3 py-2">
+                                <div className="font-semibold text-foreground">{platform.displayPlatform || platform.key}</div>
                                 <div>{platform.currentHost ? t("app.admin.dashboard.desktop.automation.capabilityTruth.realHost") : t("app.admin.dashboard.desktop.automation.capabilityTruth.portableOnly")}</div>
                             </div>
                         ))}
@@ -494,7 +514,7 @@ export default function DesktopAutomationPage() {
                             <AdminHoverInfo
                                 content={
                                     <div className="space-y-1.5 text-xs leading-5">
-                                        <div className="font-semibold text-slate-900">{t("app.admin.dashboard.desktop.automation.page.kf558439c")}</div>
+                                        <div className="font-semibold text-foreground">{t("app.admin.dashboard.desktop.automation.page.kf558439c")}</div>
                                         <div>
                                             {t("app.admin.dashboard.desktop.automation.page.ke2e6c721")}
                                             {" "}
@@ -504,14 +524,14 @@ export default function DesktopAutomationPage() {
                                             {" "}
                                             {t("app.admin.dashboard.desktop.automation.page.k2a90dceb")}
                                         </div>
-                                        <div className="mt-1 text-slate-500">
+                                        <div className="mt-1 text-muted-foreground">
                                             {t("app.admin.dashboard.desktop.automation.page.k091d7083")}{envelope.data.modelBindings.ocrAssistModel || t("app.admin.dashboard.desktop.automation.page.k594ee6bf")}
                                         </div>
                                     </div>
                                 }
                                 panelClassName="max-w-xs"
                             >
-                                <span className="cursor-help text-slate-400 hover:text-slate-600">
+                                <span className="cursor-help text-muted-foreground/80 hover:text-muted-foreground">
                                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="h-4 w-4">
                                         <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" />
                                     </svg>
@@ -552,7 +572,7 @@ export default function DesktopAutomationPage() {
                                     },
                                 })
                             }
-                            className="rounded-2xl border-slate-200 bg-slate-50/80 p-4"
+                            className="rounded-2xl border-border bg-muted/80 p-4"
                         />
                     <div className="space-y-2">
                         <Label>{t("app.admin.dashboard.desktop.automation.page.kfef16620")}</Label>
@@ -563,7 +583,7 @@ export default function DesktopAutomationPage() {
                             placeholder={t("app.admin.dashboard.desktop.automation.page.k39830d18")}
                             onValueChange={(value) => updateBinding("candidateRerankerModel", value)}
                         />
-                        <p className="text-xs leading-5 text-slate-500">
+                        <p className="text-xs leading-5 text-muted-foreground">
                             {t("app.admin.dashboard.desktop.automation.page.k59f13024")}{envelope.data.modelBindings.fallbackRerankerModel || t("app.admin.dashboard.desktop.automation.page.k54745147")}{t("app.admin.dashboard.desktop.automation.page.k75b279f7")}
                         </p>
                     </div>

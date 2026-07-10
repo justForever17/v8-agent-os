@@ -30,17 +30,17 @@ export default async function UsersPage() {
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.users.page.ownerAccount")}</CardTitle>
                     </CardHeader>
-                    <CardContent className="grid gap-3 text-sm text-slate-700 sm:grid-cols-3">
+                    <CardContent className="grid gap-3 text-sm text-foreground sm:grid-cols-3">
                         <div>
-                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.users.page.kb6f6dc96")}</div>
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.users.page.kb6f6dc96")}</div>
                             <div className="mt-1 font-medium">{owner.name || "-"}</div>
                         </div>
                         <div>
-                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.users.page.k27ba7ff8")}</div>
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.users.page.k27ba7ff8")}</div>
                             <div className="mt-1 font-mono">{owner.login}</div>
                         </div>
                         <div>
-                            <div className="text-xs text-slate-500">{t("app.admin.dashboard.users.page.kc52804de")}</div>
+                            <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.users.page.kc52804de")}</div>
                             <div className="mt-1">{owner.createdAt ? new Date(owner.createdAt).toLocaleDateString() : "-"}</div>
                         </div>
                     </CardContent>

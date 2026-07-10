@@ -27,13 +27,13 @@ export function AdvancedSection({
             <Button
                 type="button"
                 variant="outline"
-                className="h-auto w-full justify-between rounded-2xl border-slate-200 bg-white px-4 py-4 text-left shadow-sm"
+                className="h-auto w-full justify-between rounded-2xl border-border bg-card px-4 py-4 text-left text-card-foreground shadow-sm hover:bg-muted/50"
                 onClick={() => setOpen((current) => !current)}
             >
                 <AdminHoverInfo content={description ? resolveText(description) : undefined}>
-                    <span className="text-sm font-medium text-slate-900">{resolveText(title)}</span>
+                    <span className="text-sm font-medium text-foreground">{resolveText(title)}</span>
                 </AdminHoverInfo>
-                <ChevronDown className={cn("h-4 w-4 text-slate-500 transition-transform", open ? "rotate-180" : "")} />
+                <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", open ? "rotate-180" : "")} />
             </Button>
             {open ? children : null}
         </div>

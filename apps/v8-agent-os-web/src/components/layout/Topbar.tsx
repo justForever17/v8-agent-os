@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useSyncExternalStore } from "react";
 import {
     ProductShellTopbar,
     ProductSurfaceSwitcher,
@@ -18,13 +18,13 @@ import { ShellWindowControls } from "./ShellWindowControls";
 
 const ADMIN_SURFACE_URL = "http://localhost:9528/admin";
 
+const subscribeToShellSurface = () => () => {};
+const readShellSurface = () => Boolean(window.v8osShell?.isShell);
+const readServerShellSurface = () => false;
+
 export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
     const t = useT();
-    const [isShell, setIsShell] = useState(false);
-
-    useEffect(() => {
-        setIsShell(Boolean(window.v8osShell?.isShell));
-    }, []);
+    const isShell = useSyncExternalStore(subscribeToShellSurface, readShellSurface, readServerShellSurface);
 
     const TopbarComponent = isShell ? ProductShellTopbar : ProductTopbar;
     const resolvedWindowControls = windowControls ?? (isShell ? <ShellWindowControls /> : undefined);

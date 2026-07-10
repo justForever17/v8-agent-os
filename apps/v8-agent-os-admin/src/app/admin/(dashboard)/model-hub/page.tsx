@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
+import { fetchAdminJson } from "@/lib/admin-client-cache";
 import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import audioVoicePresets from "@/lib/models/audio-voice-presets.json";
@@ -181,6 +182,15 @@ type AudioRuntimeConfig = {
         };
         model_ref?: { modelRef?: string; voice?: string; format?: string; speed?: string };
     };
+};
+
+type ModelHubBootstrapPayload = {
+    providers?: AIProvider[];
+    models?: AIModel[];
+    hubEnvelope?: ConfigRegistryEnvelope<ModelHubPayload> | null;
+    defaultModel?: { modelRef?: string | null; modelId?: string | null; value?: string | null };
+    catalog?: { providers?: CatalogProvider[] };
+    audioConfig?: unknown;
 };
 type AudioVoicePreset = {
     value: string;
@@ -509,7 +519,7 @@ function ProviderOptionLabel({
     const initial = (provider.name || provider.id || "?").trim().slice(0, 1).toUpperCase();
     return (
         <span className="flex min-w-0 items-center gap-2">
-            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[10px] font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] font-semibold text-muted-foreground dark:bg-card/10 dark:text-slate-300">
                 {logo ? <Image src={logo} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : initial}
             </span>
             <span className="min-w-0 truncate leading-5">{provider.name}{suffix ? ` · ${suffix}` : ""}</span>
@@ -601,11 +611,10 @@ export default function ModelHubPage() {
     const [ttsCloneVoiceId, setTtsCloneVoiceId] = useState("");
     const [ttsClonePreviewText, setTtsClonePreviewText] = useState("");
     const [isTtsCloning, setIsTtsCloning] = useState(false);
-    const fetchData = async () => {
+    const fetchData = async (force = false) => {
         setIsLoading(true);
         try {
-            const response = await fetch("/api/model-hub/bootstrap", { cache: "no-store" });
-            const payload = response.ok ? await response.json().catch(() => ({})) : {};
+            const payload = await fetchAdminJson<ModelHubBootstrapPayload>("/api/model-hub/bootstrap", { force, ttlMs: 30_000 });
             setProviders(Array.isArray(payload.providers) ? payload.providers : []);
             setModels(Array.isArray(payload.models) ? payload.models : []);
             setHubEnvelope(payload.hubEnvelope || null);
@@ -738,7 +747,7 @@ export default function ModelHubPage() {
         });
         setIsProviderDialogOpen(false);
         setEditingProvider(null);
-        await fetchData();
+        await fetchData(true);
     };
     const platformProviderSelected = providerType === "PLATFORM";
     const activePlatformPreset = getPlatformLoginPresetConfig(platformLoginPreset);
@@ -773,7 +782,7 @@ export default function ModelHubPage() {
         }
         setIsModelDialogOpen(false);
         setEditingModel(null);
-        await fetchData();
+        await fetchData(true);
     };
     const handleToggleNoThink = async (model: AIModel, controlMeta: ControlPlaneModel | null, disabled: boolean) => {
         const thinkingControl = {
@@ -804,7 +813,7 @@ export default function ModelHubPage() {
             title: disabled ? t("app.admin.dashboard.model.hub.page.thinkingDisabled") : t("app.admin.dashboard.model.hub.page.thinkingDefaultRestored"),
             description: model.modelId,
         });
-        await fetchData();
+        await fetchData(true);
     };
     const handleDeleteProvider = async (id: string) => {
         const pendingToast = toast({
@@ -828,7 +837,7 @@ export default function ModelHubPage() {
                 title: t("app.admin.dashboard.model.hub.page.k38297510"),
                 description: t("app.admin.dashboard.model.hub.page.k654e3a33"),
             });
-            await fetchData();
+            await fetchData(true);
         }
         catch (error) {
             pendingToast.update({
@@ -882,7 +891,7 @@ export default function ModelHubPage() {
                     model_id: model.id
                 }),
             });
-            await fetchData();
+            await fetchData(true);
         }
         catch (error) {
             pendingToast.update({
@@ -907,7 +916,7 @@ export default function ModelHubPage() {
         if (!categoryKey || categoryKey === "text_generation") {
             setDefaultModelRef(modelRef);
         }
-        await fetchData();
+        await fetchData(true);
     };
     const handleProbeCatalogProvider = async () => {
         if (!selectedCatalogProviderId) return;
@@ -1044,7 +1053,7 @@ export default function ModelHubPage() {
             });
             if (isCustomProvider) {
                 setSelectedCatalogProviderId(providerId);
-                await fetchData();
+                await fetchData(true);
             }
         }
         finally {
@@ -1092,7 +1101,7 @@ export default function ModelHubPage() {
             if (isCustomProvider) {
                 setSelectedCatalogProviderId(data.providerId || providerId);
             }
-            await fetchData();
+            await fetchData(true);
         }
         finally {
             setIsCatalogBusy(false);
@@ -1114,7 +1123,7 @@ export default function ModelHubPage() {
         setCatalogProbeModels([]);
         setSelectedCatalogModelId("");
         setProbedCatalogProviderId("");
-        await fetchData();
+        await fetchData(true);
     };
     const handleSaveAudioConfig = async () => {
         setIsAudioSaving(true);
@@ -1415,7 +1424,7 @@ export default function ModelHubPage() {
                 description: message,
             });
             if (data.saveStatus === "saved") {
-                await fetchData();
+                await fetchData(true);
             }
         }
         catch (error) {
@@ -1432,8 +1441,8 @@ export default function ModelHubPage() {
                 <AdminSurfaceCard surface="nested" className="p-4">
                     <div className="flex items-start justify-between gap-3">
                         <div>
-                            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                <Mic className="h-4 w-4 text-slate-500 dark:text-slate-400" />
+                            <div className="flex items-center gap-2 text-sm font-semibold text-foreground dark:text-slate-100">
+                                <Mic className="h-4 w-4 text-muted-foreground dark:text-muted-foreground/80" />
                                 {t("app.admin.dashboard.model.hub.audio.sttTitle")}
                             </div>
                         </div>
@@ -1504,8 +1513,8 @@ export default function ModelHubPage() {
                 <AdminSurfaceCard surface="nested" className="p-4">
                     <div className="flex items-start justify-between gap-3">
                         <div>
-                            <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                <Volume2 className="h-4 w-4 text-slate-500 dark:text-slate-400" />
+                            <div className="flex items-center gap-2 text-sm font-semibold text-foreground dark:text-slate-100">
+                                <Volume2 className="h-4 w-4 text-muted-foreground dark:text-muted-foreground/80" />
                                 {t("app.admin.dashboard.model.hub.audio.ttsTitle")}
                             </div>
                         </div>
@@ -1661,7 +1670,7 @@ export default function ModelHubPage() {
     );
     return (<AdminPageShell>
             <AdminPageHeader title={t("app.admin.dashboard.model.hub.page.kf88eff69")} description={t("app.admin.dashboard.model.hub.page.k45bea0e7")} actions={<>
-                        <Button variant="outline" onClick={() => void fetchData()} disabled={isLoading}>
+                        <Button variant="outline" onClick={() => void fetchData(true)} disabled={isLoading}>
                             <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`}/>
                             {t("app.admin.dashboard.model.hub.page.k876e8c06")}
                         </Button>
@@ -1702,7 +1711,7 @@ export default function ModelHubPage() {
                                 <button
                                     key={purpose.id}
                                     type="button"
-                                    className={`rounded-xl border px-3 py-2 text-left transition ${catalogPurpose === purpose.id ? "border-slate-900 bg-slate-900 text-white dark:border-slate-100 dark:bg-slate-100 dark:text-slate-950" : "bg-background hover:bg-muted"}`}
+                                    className={`rounded-xl border px-3 py-2 text-left transition ${catalogPurpose === purpose.id ? "border-slate-900 bg-slate-900 text-white dark:border-border/60 dark:bg-muted dark:text-slate-950" : "bg-background hover:bg-muted"}`}
                                     onClick={() => {
                                         setCatalogPurpose(purpose.id);
                                         setCatalogProbeModels([]);
@@ -1785,7 +1794,7 @@ export default function ModelHubPage() {
                         {catalogPurpose === "chat" && selectedCatalogProvider?.anthropicCompatible?.baseUrl ? (
                             <div className="mt-3 grid gap-2 rounded-xl border border-dashed px-3 py-2">
                                 <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocol")}</Label>
-                                <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-slate-700 dark:text-slate-300">{catalogRuntimeProtocol === "anthropic" ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic") : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</div>}>
+                                <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-foreground dark:text-slate-300">{catalogRuntimeProtocol === "anthropic" ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic") : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</div>}>
                                     <Select value={catalogRuntimeProtocol} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
                                         <SelectTrigger className="h-9">
                                             <SelectValue />
@@ -1865,14 +1874,14 @@ export default function ModelHubPage() {
                                                 <button
                                                     key={`${probedCatalogProviderId || selectedCatalogProviderId}:${modelId}`}
                                                     type="button"
-                                                    className={`mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-950" : "hover:bg-muted"}`}
+                                                    className={`mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition ${selectedCatalogModelId === modelId ? "bg-slate-900 text-white dark:bg-muted dark:text-slate-950" : "hover:bg-muted"}`}
                                                     onClick={() => {
                                                         setSelectedCatalogModelId(modelId);
                                                         setCatalogModelFilter(modelId);
                                                     }}
                                                 >
                                                     <span className="flex min-w-0 items-center gap-2">
-                                                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-white/10 dark:bg-slate-950/10" : "bg-slate-100 dark:bg-white/10"}`}>
+                                                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-card/10 dark:bg-slate-950/10" : "bg-muted dark:bg-card/10"}`}>
                                                             {modelIcon ? <Image src={modelIcon} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : null}
                                                         </span>
                                                         <span className="truncate">{modelId}</span>
@@ -1931,25 +1940,25 @@ export default function ModelHubPage() {
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ isEnabled: enabled }),
                     });
-                    await fetchData();
+                    await fetchData(true);
                 }}/>))}
                     </div>)}
             </ConfigCard>
 
             <ConfigCard title={t("app.admin.dashboard.model.hub.page.k6a95644c")} description={t("app.admin.dashboard.model.hub.page.k933aeed1")} variant="list" allowOverflow>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm text-slate-500 dark:text-slate-400">{t("app.admin.dashboard.model.hub.page.kdea3cadf")}</div>
+                    <div className="text-sm text-muted-foreground dark:text-muted-foreground/80">{t("app.admin.dashboard.model.hub.page.kdea3cadf")}</div>
                     <HydrationSafeClientOnly
                         fallback={
-                            <div className="grid w-full max-w-5xl grid-cols-4 rounded-2xl bg-slate-100 p-1 text-center text-sm dark:bg-white/10 md:grid-cols-6 xl:grid-cols-11">
+                            <div className="grid w-full max-w-5xl grid-cols-4 rounded-2xl bg-muted p-1 text-center text-sm dark:bg-card/10 md:grid-cols-6 xl:grid-cols-11">
                                 {[t("app.admin.dashboard.model.hub.page.ke8cc995b"), t("app.admin.dashboard.model.hub.page.kc4eaa582"), t("app.admin.dashboard.model.hub.page.k2d2f7b56"), t("app.admin.dashboard.model.hub.catalog.tabImage"), t("app.admin.dashboard.model.hub.catalog.tabVideo"), t("app.admin.dashboard.model.hub.catalog.tabVoice"), t("app.admin.dashboard.model.hub.catalog.tabMusic"), t("app.admin.dashboard.model.hub.catalog.tabWorkflow"), t("app.admin.dashboard.model.hub.catalog.tabModel3d"), t("app.admin.dashboard.model.hub.page.kc1798b61"), t("app.admin.dashboard.model.hub.page.k81ac6b74")].map((label, index) => (
-                                    <span key={`${label}-${index}`} className="rounded-md px-3 py-1 text-slate-600 dark:text-slate-300">{label}</span>
+                                    <span key={`${label}-${index}`} className="rounded-md px-3 py-1 text-muted-foreground dark:text-slate-300">{label}</span>
                                 ))}
                             </div>
                         }
                     >
                         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full max-w-5xl">
-                            <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-slate-100 dark:bg-white/10 md:grid-cols-6 xl:grid-cols-11">
+                            <TabsList className="grid w-full grid-cols-4 rounded-2xl bg-muted dark:bg-card/10 md:grid-cols-6 xl:grid-cols-11">
                                 <TabsTrigger value="all">{t("app.admin.dashboard.model.hub.page.ke8cc995b")}</TabsTrigger>
                                 <TabsTrigger value="text">{t("app.admin.dashboard.model.hub.page.kc4eaa582")}</TabsTrigger>
                                 <TabsTrigger value="multimodal">{t("app.admin.dashboard.model.hub.page.k2d2f7b56")}</TabsTrigger>

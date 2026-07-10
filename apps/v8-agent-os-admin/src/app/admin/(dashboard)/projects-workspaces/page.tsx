@@ -733,7 +733,7 @@ export default function ProjectsWorkspacesPage() {
     if (loading || !projectsEnvelope || !workspaceEnvelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/80" />
             </div>
         );
     }
@@ -755,7 +755,7 @@ export default function ProjectsWorkspacesPage() {
                     contentClassName="flex h-full flex-col gap-4"
                 >
                     <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-900">
+                        <label className="text-sm font-medium text-foreground">
                             {t("app.admin.dashboard.projects.workspaces.page.field.defaultWorkspace")}
                         </label>
                         <div className="flex flex-col gap-2 xl:flex-row">
@@ -791,7 +791,7 @@ export default function ProjectsWorkspacesPage() {
                                 {t("app.admin.dashboard.projects.workspaces.page.action.save")}
                             </Button>
                         </div>
-                        <div className="flex items-center justify-between gap-3 text-xs text-slate-500">
+                        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
                             <span>{t("app.admin.dashboard.projects.workspaces.page.field.defaultWorkspaceHint")}</span>
                             <InlineSaveState saving={workspaceSaving} saved={workspaceSaved && !workspaceHasChanges} label="app.admin.dashboard.projects.workspaces.page.defaultSavedLabel" />
                         </div>
@@ -804,33 +804,33 @@ export default function ProjectsWorkspacesPage() {
                     </div>
 
                     {workspaceValidationError || defaultWorkspaceStatus.reason ? (
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-4 text-sm leading-6 text-slate-600">
+                        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-4 text-sm leading-6 text-muted-foreground">
                             {workspaceValidationError || defaultWorkspaceStatus.reason}
                         </div>
                     ) : null}
 
-                    <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-slate-200 bg-white">
-                        <div className="border-b border-slate-200 px-4 py-3">
+                    <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-border bg-card">
+                        <div className="border-b border-border px-4 py-3">
                             <div className="flex items-center justify-between gap-3">
-                                <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.inlineTitle")}</div>
+                                <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.inlineTitle")}</div>
                                 <Button type="button" onClick={() => void saveDefaultRules()} disabled={defaultRulesSaving || defaultRulesLoading || defaultRulesOverBudget}>
                                     {defaultRulesSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                                     {t("app.admin.dashboard.projects.workspaces.page.agentsRules.save")}
                                 </Button>
                             </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                                <span className={cn("rounded-full border px-2 py-1", defaultRulesOverBudget ? "border-rose-200 bg-rose-50 text-rose-700" : "border-slate-200 bg-slate-50 text-slate-600")}>
+                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                <span className={cn("rounded-full border px-2 py-1", defaultRulesOverBudget ? "border-rose-200 bg-rose-50 text-rose-700" : "border-border bg-muted/50 text-muted-foreground")}>
                                     {t("app.admin.dashboard.projects.workspaces.page.agentsRules.budget", {
                                         estimated: defaultRulesEstimatedTokens,
                                         budget: WORKSPACE_RULES_BUDGET_TOKENS,
                                     })}
                                 </span>
-                                {defaultRules?.path ? <span className="truncate rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{defaultRules.path}</span> : null}
+                                {defaultRules?.path ? <span className="truncate rounded-full border border-border bg-muted/50 px-2 py-1">{defaultRules.path}</span> : null}
                             </div>
                         </div>
                         <div className="min-h-0 flex-1 overflow-y-auto p-4">
                             {defaultRulesLoading ? (
-                                <div className="flex h-40 items-center justify-center text-sm text-slate-500">
+                                <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                     {t("app.admin.dashboard.projects.workspaces.page.agentsRules.loading")}
                                 </div>
@@ -857,8 +857,8 @@ export default function ProjectsWorkspacesPage() {
                     className="h-full"
                     contentClassName="flex h-full flex-col gap-4"
                 >
-                    <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                        <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.projectsCard.createTitle")}</div>
+                    <div className="space-y-2 rounded-2xl border border-border bg-muted/80 p-4">
+                        <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.projects.workspaces.page.projectsCard.createTitle")}</div>
                         <div className="flex flex-col gap-2 xl:flex-row">
                             <Input
                                 value={newProjectPath}
@@ -892,7 +892,7 @@ export default function ProjectsWorkspacesPage() {
                                 {t("app.admin.dashboard.projects.workspaces.page.projectsCard.create")}
                             </Button>
                         </div>
-                        <div className="text-xs leading-5 text-slate-500">
+                        <div className="text-xs leading-5 text-muted-foreground">
                             {t("app.admin.dashboard.projects.workspaces.page.projectsCard.derivedName", {
                                 name: deriveFolderName(newProjectPath) || t("app.admin.dashboard.projects.workspaces.page.value.notSet"),
                             })}
@@ -901,7 +901,7 @@ export default function ProjectsWorkspacesPage() {
 
                     <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
                         {projects.length === 0 ? (
-                            <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-sm text-slate-500">
+                            <div className="rounded-2xl border border-dashed border-input p-6 text-sm text-muted-foreground">
                                 {t("app.admin.dashboard.projects.workspaces.page.projectsCard.empty")}
                             </div>
                         ) : (
@@ -914,7 +914,7 @@ export default function ProjectsWorkspacesPage() {
                                 const trustState = projectTrustState(project);
                                 const rulesBlockedByTrust = trustState === "restricted";
                                 return (
-                                    <div key={project.id} className="rounded-2xl border border-slate-200 bg-white">
+                                    <div key={project.id} className="rounded-2xl border border-border bg-card">
                                         <button
                                             type="button"
                                             onClick={() => setExpandedProjectId(expanded ? null : project.id)}
@@ -922,8 +922,8 @@ export default function ProjectsWorkspacesPage() {
                                         >
                                             <div className="min-w-0">
                                                 <div className="flex flex-wrap items-center gap-2">
-                                                    <span className="font-medium text-slate-900">{project.name || deriveFolderName(project.workspacePath || "") || project.id}</span>
-                                                    <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[11px] text-slate-600">{project.id}</span>
+                                                    <span className="font-medium text-foreground">{project.name || deriveFolderName(project.workspacePath || "") || project.id}</span>
+                                                    <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{project.id}</span>
                                                     <span className={cn(
                                                         "rounded-full border px-2 py-0.5 text-[11px] font-medium",
                                                         trustState === "trusted"
@@ -935,13 +935,13 @@ export default function ProjectsWorkspacesPage() {
                                                             : t("app.admin.dashboard.projects.workspaces.page.trust.badgeRestricted")}
                                                     </span>
                                                 </div>
-                                                <div className="mt-1 text-xs text-slate-500">{project.workspacePath || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
+                                                <div className="mt-1 text-xs text-muted-foreground">{project.workspacePath || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
                                             </div>
-                                            <ChevronDown className={cn("h-4 w-4 text-slate-500 transition-transform", expanded ? "rotate-180" : "")} />
+                                            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", expanded ? "rotate-180" : "")} />
                                         </button>
 
                                         {expanded ? (
-                                            <div className="border-t border-slate-200 px-4 pb-4 pt-3">
+                                            <div className="border-t border-border px-4 pb-4 pt-3">
                                                 <div className="space-y-4">
                                                     <div className="flex flex-col gap-2 xl:flex-row">
                                                         <Input
@@ -989,26 +989,26 @@ export default function ProjectsWorkspacesPage() {
                                                         <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.writableLabel")} ok={Boolean(projectStatus.writable)} okText={t("app.admin.dashboard.projects.workspaces.page.status.writable")} badText={t("app.admin.dashboard.projects.workspaces.page.status.pending")} />
                                                     </div>
 
-                                                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-xs leading-5 text-slate-500">
+                                                    <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-xs leading-5 text-muted-foreground">
                                                         {rulesBlockedByTrust
                                                             ? t("app.admin.dashboard.projects.workspaces.page.trust.restrictedHint")
                                                             : t("app.admin.dashboard.projects.workspaces.page.projectsCard.singleChoiceHint")}
                                                     </div>
 
-                                                    <div className="rounded-2xl border border-slate-200">
-                                                        <div className="border-b border-slate-200 px-4 py-3">
+                                                    <div className="rounded-2xl border border-border">
+                                                        <div className="border-b border-border px-4 py-3">
                                                             <div className="flex items-center justify-between gap-3">
                                                                 <div>
-                                                                    <div className="text-sm font-medium text-slate-900">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.projectTitle")}</div>
-                                                                    <div className="mt-1 text-xs text-slate-500">{editor?.rules?.path || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
+                                                                    <div className="text-sm font-medium text-foreground">{t("app.admin.dashboard.projects.workspaces.page.agentsRules.projectTitle")}</div>
+                                                                    <div className="mt-1 text-xs text-muted-foreground">{editor?.rules?.path || t("app.admin.dashboard.projects.workspaces.page.value.notSet")}</div>
                                                                 </div>
                                                                 <Button type="button" onClick={() => void handleSaveProjectRules(project)} disabled={editor?.rulesSaving || editor?.rulesLoading || projectRulesOverBudget || rulesBlockedByTrust}>
                                                                     {editor?.rulesSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                                                                     {t("app.admin.dashboard.projects.workspaces.page.agentsRules.save")}
                                                                 </Button>
                                                             </div>
-                                                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                                                                <span className={cn("rounded-full border px-2 py-1", projectRulesOverBudget ? "border-rose-200 bg-rose-50 text-rose-700" : "border-slate-200 bg-slate-50 text-slate-600")}>
+                                                            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                                                <span className={cn("rounded-full border px-2 py-1", projectRulesOverBudget ? "border-rose-200 bg-rose-50 text-rose-700" : "border-border bg-muted/50 text-muted-foreground")}>
                                                                     {t("app.admin.dashboard.projects.workspaces.page.agentsRules.budget", {
                                                                         estimated: projectRulesEstimatedTokens,
                                                                         budget: WORKSPACE_RULES_BUDGET_TOKENS,
@@ -1058,9 +1058,9 @@ function StatusChip({
     badText: string;
 }) {
     return (
-        <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
-            <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">{label}</div>
-            <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
+        <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3">
+            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+            <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-foreground">
                 {ok ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <AlertTriangle className="h-4 w-4 text-amber-600" />}
                 {ok ? okText : badText}
             </div>

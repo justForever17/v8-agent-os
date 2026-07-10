@@ -137,14 +137,42 @@ class MemoryLifecycleTests(unittest.TestCase):
             project_test7 = {item["id"]: item for item in db.get_all_knowledge(scope="project:test7", limit=10)}
             project_test1 = {item["id"]: item for item in db.get_all_knowledge(scope="project:test1", limit=10)}
             with db._conn() as conn:
+                superseded = conn.execute(
+                    "SELECT lifecycle_state, superseded_by FROM knowledge WHERE id = ?",
+                    ("same-scope-old",),
+                ).fetchone()
                 relation = conn.execute("SELECT source_fact_id FROM relations WHERE subject = ?", ("memory maintenance v2",)).fetchone()
+            active_count = db.get_knowledge_count()
 
         self.assertEqual(result["supersededCount"], 1)
-        self.assertEqual(project_test7["same-scope-old"]["lifecycle_state"], "superseded")
-        self.assertEqual(project_test7["same-scope-old"]["superseded_by"], "same-scope-new")
+        self.assertEqual(set(project_test7), {"same-scope-new"})
+        self.assertEqual(superseded["lifecycle_state"], "superseded")
+        self.assertEqual(superseded["superseded_by"], "same-scope-new")
         self.assertEqual(project_test1["other-scope"]["lifecycle_state"], "active")
+        self.assertEqual(active_count, 2)
         self.assertIsNotNone(relation)
         self.assertEqual(relation["source_fact_id"], "same-scope-new")
+
+    def test_graph_maintenance_prunes_only_old_runtime_owned_isolated_entities(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            db.add_entity("runtime old", maintainer_source="memory_runtime")
+            db.add_entity("runtime recent", maintainer_source="memory_runtime")
+            db.add_entity("human old", maintainer_source="human_admin")
+            with db._conn() as conn:
+                conn.execute(
+                    "UPDATE entities SET created_at = ?, updated_at = ? WHERE name IN (?, ?)",
+                    ("2020-01-01 00:00:00", "2020-01-01 00:00:00", "runtime old", "human old"),
+                )
+
+            result = db.maintenance_compact_graph(limit=20, isolated_entity_grace_days=7)
+            with db._conn() as conn:
+                remaining = {row["name"] for row in conn.execute("SELECT name FROM entities")}
+
+        self.assertEqual(result["isolatedEntityCountBefore"], 3)
+        self.assertEqual(result["prunedIsolatedEntityCount"], 1)
+        self.assertEqual(result["isolatedEntityCount"], 2)
+        self.assertEqual(remaining, {"runtime recent", "human old"})
 
     def test_maintenance_compaction_records_uncertain_merge_suggestion(self):
         with tempfile.TemporaryDirectory() as temp_dir:

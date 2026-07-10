@@ -39,6 +39,27 @@ def _write_day_log(path: Path, *, summaries: list[str] | None = None, scope: str
 
 
 class MemoryBrokeredMapTests(unittest.TestCase):
+    def test_memory_map_ignores_empty_calendar_directories(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_root = Path(temp_dir) / "memory"
+            with patch.object(memory_store_module, "MEMORY_ROOT", memory_root):
+                store = MemoryStore()
+                (memory_root / "daily" / "2026" / "01_january" / "week_01").mkdir(parents=True)
+                (memory_root / "daily" / "2099" / "01_january" / "week_01").mkdir(parents=True)
+                month_dir = memory_root / "daily" / "2026" / "04_april"
+                week_dir = month_dir / "week_16"
+                _write_day_log(week_dir / "2026-04-18.md", summaries=["有效日志"])
+                week_dir.joinpath("summary.md").write_text("weekly summary", encoding="utf-8")
+                month_dir.joinpath("summary.md").write_text("monthly summary", encoding="utf-8")
+                month_dir.parent.joinpath("summary.md").write_text("yearly summary", encoding="utf-8")
+
+                memory_map = store.build_memory_map(anchor_date="2026-04-18")
+                health = store.get_memory_map_health()
+
+                self.assertEqual([item["memoryRef"] for item in memory_map["items"]], ["memory://year/2026"])
+                self.assertEqual(health["counts"]["month"], 1)
+                self.assertEqual(health["counts"]["missing"], 0)
+
     def test_memory_map_uses_virtual_refs_and_tracks_missing_or_stale_summaries(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             memory_root = Path(temp_dir) / "memory"

@@ -333,10 +333,16 @@ class KnowledgeDB:
             return [dict(r) for r in rows]
             
     def get_all_knowledge(self, scope: Optional[str] = None, limit: int = 50, status: str = "active") -> List[Dict]:
-        """查询所有激活的知识条目"""
+        """查询知识条目；active 投影只包含当前可用的 lifecycle。"""
+        normalized_status = str(status or "active").strip().lower() or "active"
+        lifecycle_clause = (
+            "AND COALESCE(lifecycle_state, 'active') NOT IN ('tombstoned', 'superseded', 'quarantined')"
+            if normalized_status == "active"
+            else ""
+        )
         with self._conn() as conn:
             if scope:
-                rows = conn.execute("""
+                rows = conn.execute(f"""
                     SELECT id, fact, category, scope, status, source_session, updated_at,
                            lifecycle_state, last_seen_at, last_injected_at, last_verified_at,
                            evidence_refs_json, promotion_reason, superseded_by, tombstone_of,
@@ -344,11 +350,12 @@ class KnowledgeDB:
                            maintainer_source, confidence, effective_confidence, metadata_json
                     FROM knowledge
                     WHERE scope IN (?, 'global') AND status = ?
+                      {lifecycle_clause}
                     ORDER BY effective_confidence DESC, updated_at DESC
                     LIMIT ?
-                """, (scope, status, limit)).fetchall()
+                """, (scope, normalized_status, limit)).fetchall()
             else:
-                rows = conn.execute("""
+                rows = conn.execute(f"""
                     SELECT id, fact, category, scope, status, source_session, updated_at,
                            lifecycle_state, last_seen_at, last_injected_at, last_verified_at,
                            evidence_refs_json, promotion_reason, superseded_by, tombstone_of,
@@ -356,9 +363,10 @@ class KnowledgeDB:
                            maintainer_source, confidence, effective_confidence, metadata_json
                     FROM knowledge
                     WHERE status = ?
+                      {lifecycle_clause}
                     ORDER BY effective_confidence DESC, updated_at DESC
                     LIMIT ?
-                """, (status, limit)).fetchall()
+                """, (normalized_status, limit)).fetchall()
             
             return [dict(r) for r in rows]
     
@@ -731,9 +739,15 @@ class KnowledgeDB:
             "graph": graph_result,
         }
 
-    def maintenance_compact_graph(self, *, limit: int = 500) -> Dict[str, object]:
-        """Return conservative graph health/compaction stats without destructive cleanup."""
+    def maintenance_compact_graph(
+        self,
+        *,
+        limit: int = 500,
+        isolated_entity_grace_days: int = 7,
+    ) -> Dict[str, object]:
+        """Repair graph references and prune old runtime-owned nodes without edges."""
         effective_limit = max(1, min(int(limit or 500), 2000))
+        grace_days = max(1, min(int(isolated_entity_grace_days or 7), 365))
         with self._conn() as conn:
             rows = conn.execute(
                 """
@@ -761,19 +775,55 @@ class KnowledgeDB:
                         (superseded_by, now, row["id"]),
                     )
                     rewired += cursor.rowcount
-            isolated_entities = conn.execute(
+            isolated_before = conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM entities e
-                WHERE e.name NOT IN (SELECT subject FROM relations)
-                  AND e.name NOT IN (SELECT object FROM relations)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM relations r
+                    WHERE r.subject = e.name OR r.object = e.name
+                )
+                """
+            ).fetchone()[0]
+            prunable_rows = conn.execute(
+                """
+                SELECT e.name
+                FROM entities e
+                WHERE COALESCE(e.maintainer_source, 'memory_runtime') = 'memory_runtime'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relations r
+                      WHERE r.subject = e.name OR r.object = e.name
+                  )
+                  AND datetime(COALESCE(e.updated_at, e.created_at, '1970-01-01')) <= datetime('now', ?)
+                ORDER BY datetime(COALESCE(e.updated_at, e.created_at, '1970-01-01')) ASC, e.name ASC
+                LIMIT ?
+                """,
+                (f"-{grace_days} days", effective_limit),
+            ).fetchall()
+            prunable_names = [str(row["name"] or "").strip() for row in prunable_rows if str(row["name"] or "").strip()]
+            pruned = 0
+            if prunable_names:
+                placeholders = ",".join("?" for _ in prunable_names)
+                cursor = conn.execute(f"DELETE FROM entities WHERE name IN ({placeholders})", prunable_names)
+                pruned = cursor.rowcount
+            isolated_after = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM entities e
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM relations r
+                    WHERE r.subject = e.name OR r.object = e.name
+                )
                 """
             ).fetchone()[0]
         return {
             "relationCandidateCount": len(rows),
             "rewiredRelationCount": rewired,
             "orphanedRelationCount": orphaned,
-            "isolatedEntityCount": int(isolated_entities or 0),
+            "isolatedEntityCountBefore": int(isolated_before or 0),
+            "isolatedEntityCount": int(isolated_after or 0),
+            "prunedIsolatedEntityCount": int(pruned or 0),
+            "isolatedEntityGraceDays": grace_days,
         }
 
     def mark_stale_for_signature_mismatch(
@@ -845,7 +895,14 @@ class KnowledgeDB:
     def get_knowledge_count(self) -> int:
         """获取活跃知识条目数"""
         with self._conn() as conn:
-            row = conn.execute("SELECT COUNT(*) FROM knowledge WHERE status = 'active'").fetchone()
+            row = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM knowledge
+                WHERE status = 'active'
+                  AND COALESCE(lifecycle_state, 'active') NOT IN ('tombstoned', 'superseded', 'quarantined')
+                """
+            ).fetchone()
             return row[0] if row else 0
     
     # ==========================================

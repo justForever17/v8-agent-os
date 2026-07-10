@@ -353,6 +353,7 @@ class MemoryRuntime:
             "knowledgeMergeSuggestions": 0,
             "graphCandidates": 0,
             "graphRewiredRelations": 0,
+            "graphPrunedEntities": 0,
             "workflowCandidates": 0,
             "workflowActivated": 0,
             "workflowQuarantined": 0,
@@ -380,6 +381,7 @@ class MemoryRuntime:
             summary["knowledgeMergeSuggestions"] += int(maintenance_meta.get("knowledgeMergeSuggestionCount") or 0)
             summary["graphCandidates"] += int(maintenance_meta.get("graphCandidateCount") or 0)
             summary["graphRewiredRelations"] += int(maintenance_meta.get("graphRewiredRelationCount") or 0)
+            summary["graphPrunedEntities"] += int(maintenance_meta.get("graphPrunedIsolatedEntityCount") or 0)
             summary["workflowCandidates"] += int(maintenance_meta.get("workflowCandidateCount") or 0)
             summary["workflowActivated"] += int(maintenance_meta.get("workflowActiveHintCount") or 0)
             summary["workflowQuarantined"] += int(maintenance_meta.get("workflowQuarantinedCount") or 0)
@@ -404,6 +406,7 @@ class MemoryRuntime:
                     "graphCandidateCount": int(maintenance_meta.get("graphCandidateCount") or 0),
                     "graphRewiredRelationCount": int(maintenance_meta.get("graphRewiredRelationCount") or 0),
                     "graphOrphanedRelationCount": int(maintenance_meta.get("graphOrphanedRelationCount") or 0),
+                    "graphPrunedIsolatedEntityCount": int(maintenance_meta.get("graphPrunedIsolatedEntityCount") or 0),
                     "workflowCandidateCount": int(maintenance_meta.get("workflowCandidateCount") or 0),
                     "workflowCandidateUpdatedCount": int(maintenance_meta.get("workflowCandidateUpdatedCount") or 0),
                     "workflowActiveHintCount": int(maintenance_meta.get("workflowActiveHintCount") or 0),

@@ -38,6 +38,10 @@ interface MaintenanceRun {
     summaryBackfilledCount?: number;
     summaryStaleCountBefore?: number;
     summaryStaleCountAfter?: number;
+    knowledgeCandidateCount?: number;
+    knowledgeSupersededCount?: number;
+    knowledgeMergeSuggestionCount?: number;
+    graphPrunedIsolatedEntityCount?: number;
     touchedRefs?: string[];
 }
 type MemoryRuntimeDiagnosticsData = {
@@ -233,7 +237,7 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                     </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
                         {[
             [t("components.memory.MemoryRuntimeDiagnosticsPanel.k6edad83c"), memoryMapHealth?.counts?.year || 0],
             [t("components.memory.MemoryRuntimeDiagnosticsPanel.k14c25f84"), memoryMapHealth?.counts?.month || 0],
@@ -242,6 +246,8 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
             [t("components.memory.MemoryRuntimeDiagnosticsPanel.k74873285"), memoryMapHealth?.counts?.missing || 0],
             [t("components.memory.MemoryRuntimeDiagnosticsPanel.ked33029b"), memoryMapHealth?.counts?.stale || 0],
             [t("components.memory.MemoryRuntimeDiagnosticsPanel.k0ddb4572"), maintenanceSummary.summaryBackfilled || 0],
+            [t("components.memory.MemoryRuntimeDiagnosticsPanel.knowledgeSuperseded"), maintenanceSummary.knowledgeSuperseded || 0],
+            [t("components.memory.MemoryRuntimeDiagnosticsPanel.graphPrunedEntities"), maintenanceSummary.graphPrunedEntities || 0],
         ].map(([label, value]) => (<div key={String(label)} className="rounded-xl border bg-muted/20 p-3">
                                 <p className="text-xs text-muted-foreground">{label}</p>
                                 <p className="mt-2 text-2xl font-semibold">{value}</p>
@@ -284,6 +290,10 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                                         <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.k530f0b61")}：{run.summaryStaleCountBefore || 0}</span>
                                         <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.ke02b302b")}：{run.summaryStaleCountAfter || 0}</span>
                                         <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.k484644f7")}：{run.summaryBackfilledCount || 0}</span>
+                                        <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.knowledgeCandidates")}：{run.knowledgeCandidateCount || 0}</span>
+                                        <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.knowledgeSuperseded")}：{run.knowledgeSupersededCount || 0}</span>
+                                        <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.knowledgeMergeSuggestions")}：{run.knowledgeMergeSuggestionCount || 0}</span>
+                                        <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.graphPrunedEntities")}：{run.graphPrunedIsolatedEntityCount || 0}</span>
                                     </div>
                                     {(run.touchedRefs || []).length > 0 ? (<div className="mt-3 space-y-2">
                                             {(run.touchedRefs || []).map((ref) => (<div key={ref} className="rounded-lg bg-muted/30 px-3 py-2 font-mono text-xs text-muted-foreground">

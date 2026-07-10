@@ -2277,6 +2277,10 @@ class MemoryStore:
                 month_part = month_dir.name.split("_", 1)[0]
                 month_value = int(month_part)
                 day_paths = self._iter_day_log_paths(month_dir)
+                month_summary_path = month_dir / "summary.md"
+                has_week_summary = any(month_dir.glob("week_*/summary.md"))
+                if not day_paths and not month_summary_path.exists() and not has_week_summary:
+                    continue
                 year_day_paths.extend(day_paths)
                 latest_month_day = day_paths[-1].stem if day_paths else None
                 if latest_month_day and (year_latest_day is None or latest_month_day > year_latest_day):
@@ -2333,7 +2337,6 @@ class MemoryStore:
                         }
                     )
 
-                month_summary_path = month_dir / "summary.md"
                 month_has_summary, month_summary_state = self._summary_state(summary_path=month_summary_path, descendant_paths=day_paths)
                 month_nodes.append(
                     {
@@ -2352,6 +2355,8 @@ class MemoryStore:
                 )
 
             year_summary_path = year_dir / "summary.md"
+            if not year_day_paths and not month_nodes and not year_summary_path.exists():
+                continue
             year_has_summary, year_summary_state = self._summary_state(summary_path=year_summary_path, descendant_paths=year_day_paths)
             years.append(
                 {

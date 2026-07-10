@@ -101,15 +101,19 @@ def _memory_logs_sort_key(path: Path) -> tuple[int, int, str]:
     return (1, summary_rank, f"{date_rank}:{path.name.lower()}")
 
 
-def _build_memory_log_tree_node(path: Path, root: Path) -> dict:
+def _build_memory_log_tree_node(path: Path, root: Path) -> dict | None:
     relative_path = "" if path == root else path.relative_to(root).as_posix()
     if path.is_dir():
         children = sorted(list(path.iterdir()), key=_memory_logs_sort_key)
-        visible_children = [
-            _build_memory_log_tree_node(child, root)
-            for child in children
-            if child.is_dir() or child.suffix.lower() == ".md"
-        ]
+        visible_children = []
+        for child in children:
+            if not child.is_dir() and child.suffix.lower() != ".md":
+                continue
+            child_node = _build_memory_log_tree_node(child, root)
+            if child_node is not None:
+                visible_children.append(child_node)
+        if not visible_children:
+            return None
         return {
             "id": relative_path or "daily",
             "name": path.name if path != root else "daily",
@@ -446,12 +450,15 @@ async def get_memory_logs_tree():
     try:
         root = _ensure_memory_daily_root()
         children = sorted(list(root.iterdir()), key=_memory_logs_sort_key)
+        tree = []
+        for child in children:
+            if not child.is_dir() and child.suffix.lower() != ".md":
+                continue
+            node = _build_memory_log_tree_node(child, root)
+            if node is not None:
+                tree.append(node)
         return {
-            "tree": [
-                _build_memory_log_tree_node(child, root)
-                for child in children
-                if child.is_dir() or child.suffix.lower() == ".md"
-            ]
+            "tree": tree
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

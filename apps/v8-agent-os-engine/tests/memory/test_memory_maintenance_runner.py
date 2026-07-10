@@ -91,7 +91,9 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
                     "relationCandidateCount": 2,
                     "rewiredRelationCount": 1,
                     "orphanedRelationCount": 0,
+                    "isolatedEntityCountBefore": 2,
                     "isolatedEntityCount": 0,
+                    "prunedIsolatedEntityCount": 2,
                 },
             },
         ), patch(
@@ -124,6 +126,7 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
         self.assertEqual(result["result"]["workflow_active_hint_count"], 1)
         self.assertEqual(result["result"]["knowledge_superseded_count"], 1)
         self.assertEqual(result["result"]["graph_rewired_relation_count"], 1)
+        self.assertEqual(result["result"]["graph_pruned_isolated_entity_count"], 2)
         maintenance_updates = [item for item in update_calls if "memory_maintenance" in item]
         self.assertTrue(maintenance_updates)
         self.assertEqual(maintenance_updates[0]["memory_maintenance"]["summaryBackfilledCount"], 2)
@@ -138,6 +141,7 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
         )
         self.assertEqual(maintenance_updates[0]["memory_maintenance"]["workflowCandidateCount"], 3)
         self.assertEqual(maintenance_updates[0]["memory_maintenance"]["knowledgeSupersededCount"], 1)
+        self.assertEqual(maintenance_updates[0]["memory_maintenance"]["graphPrunedIsolatedEntityCount"], 2)
 
     def test_run_maintenance_treats_no_logs_as_skipped_no_op(self):
         run_handle = _FakeRunHandle()

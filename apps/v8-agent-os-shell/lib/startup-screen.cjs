@@ -59,26 +59,35 @@ function buildStartupHtml(options = {}) {
       position: relative;
       display: inline-block;
       white-space: nowrap;
-      font-size: clamp(28px, 5vw, 64px);
+      font-size: clamp(14px, 2.5vw, 32px);
       line-height: 1.18;
       font-weight: 900;
-      letter-spacing: 0;
+      letter-spacing: 0.015em;
       background:
-        linear-gradient(105deg, transparent 38%, var(--text-shine) 48%, transparent 58%),
+        linear-gradient(
+          102deg,
+          transparent 0%,
+          transparent 43%,
+          rgba(255, 255, 255, 0.4) 47%,
+          var(--text-shine) 50%,
+          rgba(255, 255, 255, 0.32) 53%,
+          transparent 57%,
+          transparent 100%
+        ),
         linear-gradient(180deg, #f8fafc 0%, var(--text-base) 35%, var(--text-mid) 68%, var(--text-dark) 100%);
-      background-size: 300% 100%, 100% 100%;
-      background-position: -190% 0, 0 0;
+      background-size: 220% 100%, 100% 100%;
+      background-position: -140% 0, 0 0;
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
-      animation: text-shine 3.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
-      text-shadow: 0 22px 58px var(--text-shadow);
+      animation: text-shine 2.6s linear infinite;
+      text-shadow: 0 12px 34px var(--text-shadow);
       user-select: none;
       will-change: background-position;
     }
     @keyframes text-shine {
-      0%, 28% { background-position: -190% 0, 0 0; }
-      72%, 100% { background-position: 190% 0, 0 0; }
+      from { background-position: -140% 0, 0 0; }
+      to { background-position: 140% 0, 0 0; }
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -95,7 +104,7 @@ function buildStartupHtml(options = {}) {
     @media (prefers-reduced-motion: reduce) {
       .brand-text {
         animation: none;
-        background-position: -190% 0, 0 0;
+        background-position: -140% 0, 0 0;
         will-change: auto;
       }
     }

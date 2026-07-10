@@ -8,8 +8,11 @@ test('startup screen uses minimal centered product mark and shimmer brand', () =
   assert.match(html, /class="product-mark"/);
   assert.match(html, /class="brand-text"/);
   assert.match(html, /white-space: nowrap/);
-  assert.match(html, /font-size: clamp\(28px, 5vw, 64px\)/);
-  assert.match(html, /linear-gradient\(105deg[\s\S]*linear-gradient\(180deg/);
+  assert.match(html, /font-size: clamp\(14px, 2\.5vw, 32px\)/);
+  assert.match(html, /linear-gradient\([\s\S]*102deg[\s\S]*linear-gradient\(180deg/);
+  assert.match(html, /animation: text-shine 2\.6s linear infinite/);
+  assert.match(html, /from \{ background-position: -140% 0, 0 0; \}/);
+  assert.match(html, /to \{ background-position: 140% 0, 0 0; \}/);
   assert.match(html, /prefers-reduced-motion: reduce/);
   assert.doesNotMatch(html, /正在准备 V8OS/);
   assert.doesNotMatch(html, /Engine 运行核心/);

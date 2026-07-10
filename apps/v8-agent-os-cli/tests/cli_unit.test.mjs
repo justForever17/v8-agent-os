@@ -130,7 +130,7 @@ test("desktop pet managed mode suppresses its own tray", () => {
   assert.match(main, /if \(!MANAGED_BY_SHELL\) createTray\(\)/);
 });
 
-test("desktop pet survives Shell process-tree shutdown through detached handoff and PID reconciliation", () => {
+test("desktop pet survives Shell replacement through detached handoff and exact Shell termination", () => {
   const launcher = fs.readFileSync(
     path.join(repoRoot, "apps", "v8-agent-os-shell", "scripts", "launch-desktop-pet.mjs"),
     "utf8",
@@ -148,6 +148,9 @@ test("desktop pet survives Shell process-tree shutdown through detached handoff 
   assert.match(interposer, /child\.unref\(\)/);
   assert.match(processManager, /desktop-pet\.json/);
   assert.match(processManager, /effectiveManagedPid/);
+  assert.match(processManager, /shell-control\.json/);
+  assert.match(processManager, /killPid\(pid, \{ tree: id !== "shell" \}\)/);
+  assert.match(processManager, /stopped_during_kill/);
 });
 
 test("preview build check is based on Next BUILD_ID", () => {

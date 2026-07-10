@@ -12,10 +12,22 @@ function componentHasPort(component) {
 }
 
 const DESKTOP_PET_PROCESS_PATH = path.join(STATE_ROOT, "runtime", "desktop-pet.json");
+const SHELL_CONTROL_PATH = path.join(STATE_ROOT, "runtime", "shell-control.json");
 
 function readDesktopPetProcessDescriptor() {
   try {
     const descriptor = JSON.parse(fs.readFileSync(DESKTOP_PET_PROCESS_PATH, "utf8"));
+    const pid = Number(descriptor?.pid);
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    return { ...descriptor, pid };
+  } catch {
+    return null;
+  }
+}
+
+function readShellControlDescriptor() {
+  try {
+    const descriptor = JSON.parse(fs.readFileSync(SHELL_CONTROL_PATH, "utf8"));
     const pid = Number(descriptor?.pid);
     if (!Number.isInteger(pid) || pid <= 0) return null;
     return { ...descriptor, pid };
@@ -112,12 +124,18 @@ export async function startComponents(componentIds, options = {}) {
   return results;
 }
 
-function killPid(pid) {
+function killPid(pid, options = {}) {
   const numeric = Number(pid);
   if (!Number.isInteger(numeric) || numeric <= 0) return { ok: false, reason: "invalid_pid" };
   if (!isPidAlive(numeric)) return { ok: true, reason: "already_stopped" };
   if (process.platform === "win32") {
-    const result = spawnSync("taskkill", ["/PID", String(numeric), "/T", "/F"], { encoding: "utf8" });
+    const args = ["/PID", String(numeric)];
+    if (options.tree !== false) args.push("/T");
+    args.push("/F");
+    const result = spawnSync("taskkill", args, { encoding: "utf8" });
+    if (result.status !== 0 && !isPidAlive(numeric)) {
+      return { ok: true, reason: "stopped_during_kill" };
+    }
     return { ok: result.status === 0, reason: result.status === 0 ? "killed" : (result.stderr || result.stdout || "taskkill_failed").trim() };
   }
   try {
@@ -138,25 +156,37 @@ export function stopComponents(componentIds = Object.keys(COMPONENTS)) {
   for (const id of componentIds) {
     const record = state.processes[id];
     const desktopPetDescriptor = id === "desktop-pet" ? readDesktopPetProcessDescriptor() : null;
-    if (!record && !desktopPetDescriptor) {
+    const shellControlDescriptor = id === "shell" ? readShellControlDescriptor() : null;
+    if (!record && !desktopPetDescriptor && !shellControlDescriptor) {
       results.push({ id, status: "not_managed" });
       continue;
     }
     const targetPids = [...new Set([
       desktopPetDescriptor?.pid,
+      shellControlDescriptor?.pid,
       record?.pid,
     ].filter(Boolean))];
-    const killResults = targetPids.map((pid) => ({ pid, ...killPid(pid) }));
+    // Windows keeps the original parent process relationship even for detached
+    // children. Killing the whole Shell tree can therefore terminate the managed
+    // desktop pet. Stop the Shell browser and launcher PIDs exactly; Electron
+    // tears down its own renderer/GPU children when the browser process exits.
+    const killResults = targetPids.map((pid) => ({ pid, ...killPid(pid, { tree: id !== "shell" }) }));
     const failed = killResults.find((item) => !item.ok);
     if (!failed) {
       delete state.processes[id];
       if (id === "desktop-pet") fs.rmSync(DESKTOP_PET_PROCESS_PATH, { force: true });
+      if (id === "shell") {
+        const currentShellDescriptor = readShellControlDescriptor();
+        if (!currentShellDescriptor || currentShellDescriptor.pid === shellControlDescriptor?.pid) {
+          fs.rmSync(SHELL_CONTROL_PATH, { force: true });
+        }
+      }
     }
     results.push({
       id,
       status: failed ? "stop_failed" : "stopped",
       reason: failed?.reason || killResults.map((item) => item.reason).join(",") || "already_stopped",
-      pid: desktopPetDescriptor?.pid || record?.pid || null,
+      pid: desktopPetDescriptor?.pid || shellControlDescriptor?.pid || record?.pid || null,
     });
   }
   writeProcessState(state);

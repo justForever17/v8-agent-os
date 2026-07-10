@@ -3,7 +3,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { ADMIN_DIR, DEFAULT_PORTS, LOG_DIR, REPO_ROOT, WEB_DIR } from "./paths.mjs";
-import { startComponents } from "./process_manager.mjs";
+import { startComponents, stopComponents } from "./process_manager.mjs";
+
+export const PREVIEW_REBUILD_STOP_COMPONENTS = ["shell", "admin", "web"];
 
 export const PREVIEW_NEXT_APPS = {
   admin: {
@@ -46,6 +48,10 @@ export function planPreviewBuilds(options = {}) {
   }));
 }
 
+export function previewRebuildStopComponentIds(options = {}) {
+  return options.rebuild ? [...PREVIEW_REBUILD_STOP_COMPONENTS] : [];
+}
+
 export function runNextBuild(app) {
   fs.mkdirSync(LOG_DIR, { recursive: true });
   const logs = previewBuildLogPaths(app);
@@ -80,6 +86,14 @@ export async function commandPreview(args = {}) {
   if (noBuild && missing.length) {
     throw new Error(`Preview build is missing for: ${missing.map((item) => item.label).join(", ")}. Run v8os preview without --no-build or use --rebuild.`);
   }
+  const rebuildStopComponentIds = previewRebuildStopComponentIds({ rebuild });
+  const rebuildStopResults = rebuildStopComponentIds.length > 0
+    ? stopComponents(rebuildStopComponentIds)
+    : [];
+  const stopFailures = rebuildStopResults.filter((item) => item.status === "stop_failed");
+  if (stopFailures.length > 0) {
+    throw new Error(`Unable to stop the running preview before rebuild: ${stopFailures.map((item) => item.id).join(", ")}. Run v8os stop and retry.`);
+  }
   const buildResults = [];
   for (const item of buildPlan) {
     if (!item.shouldBuild) {
@@ -93,6 +107,7 @@ export async function commandPreview(args = {}) {
   const shellResults = await startComponents(["shell"], { mode: "start" });
   return {
     buildPlan,
+    rebuildStopResults,
     buildResults,
     serviceResults,
     shellResults,

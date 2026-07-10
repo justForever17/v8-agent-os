@@ -15,7 +15,7 @@ import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
-import { isNextBuildPresent, nextBuildIdPath, previewBuildLogPaths } from "../src/preview_commands.mjs";
+import { isNextBuildPresent, nextBuildIdPath, previewBuildLogPaths, previewRebuildStopComponentIds } from "../src/preview_commands.mjs";
 import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
@@ -142,6 +142,11 @@ test("preview build logs are written to CLI logs", () => {
   const logs = previewBuildLogPaths({ app: "web" });
   assert.match(logs.out, /web\.build\.out\.log$/);
   assert.match(logs.err, /web\.build\.err\.log$/);
+});
+
+test("preview rebuild stops shell and Next servers before replacing standalone files", () => {
+  assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web"]);
+  assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
 });
 
 test("Windows root wrappers reach the CLI help without entering the app directory", { skip: process.platform !== "win32" }, () => {

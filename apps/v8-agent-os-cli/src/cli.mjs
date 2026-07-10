@@ -85,6 +85,9 @@ async function runPreview(args) {
     printJson(result);
     return;
   }
+  for (const item of result.rebuildStopResults || []) {
+    if (item.status === "stopped") console.log(`${item.id}: stopped before rebuild`);
+  }
   for (const item of result.buildResults || result.buildPlan) {
     if (item.status === "built") console.log(`${item.label}: production build ready. Log: ${item.logOut}`);
     else if (item.status === "already_built" || !item.shouldBuild) console.log(`${item.label}: production build already exists.`);

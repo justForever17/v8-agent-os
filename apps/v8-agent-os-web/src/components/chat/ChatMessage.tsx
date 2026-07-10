@@ -141,7 +141,7 @@ function extractSupervisorMicroStageSpeech(nodes: UiTimelineNode[]) {
         if (node.kind !== "narrative" || node.role !== "assistant") {
             continue;
         }
-        const text = parseContentToBlocks(String(node.content || ""), false, 0)
+        const text = parseContentToBlocks(String(node.content || ""), false, 0, false)
             .filter((block) => block.type !== "voice")
             .map((block) => block.content.trim())
             .filter(Boolean)

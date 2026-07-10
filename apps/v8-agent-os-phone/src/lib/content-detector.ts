@@ -398,7 +398,12 @@ function pushTextBlock(blocks: PhoneContentBlock[], content: string, blockIndex:
     }
 }
 
-export function parsePhoneContentBlocks(content: string, isStreaming = false, startId = 0): PhoneContentBlock[] {
+export function parsePhoneContentBlocks(
+    content: string,
+    isStreaming = false,
+    startId = 0,
+    parseInlineThinking = true,
+): PhoneContentBlock[] {
     const blocks: PhoneContentBlock[] = [];
     const blockIndex = { current: startId };
     let processedContent = String(content || "");
@@ -430,13 +435,15 @@ export function parsePhoneContentBlocks(content: string, isStreaming = false, st
             const openingTag = match[1];
             const thinkContent = String(match[2] || "");
             const timeMatch = openingTag.match(/time="(\d+)"/);
-            blocks.push({
-                id: `thinking-${blockIndex.current++}`,
-                type: "thinking",
-                content: thinkContent,
-                isStreaming: isStreaming && !match[0].endsWith("</think>"),
-                data: timeMatch ? { elapsedTime: Number(timeMatch[1]) || undefined } : undefined,
-            });
+            if (parseInlineThinking) {
+                blocks.push({
+                    id: `thinking-${blockIndex.current++}`,
+                    type: "thinking",
+                    content: thinkContent,
+                    isStreaming: isStreaming && !match[0].endsWith("</think>"),
+                    data: timeMatch ? { elapsedTime: Number(timeMatch[1]) || undefined } : undefined,
+                });
+            }
         } else if (match[3]) {
             blocks.push({
                 id: `tool-${blockIndex.current++}`,

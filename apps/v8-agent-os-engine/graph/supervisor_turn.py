@@ -978,10 +978,6 @@ def execute_supervisor_turn(
         visible_supervisor_tools = _filter_spec_tools_for_mode(visible_supervisor_tools, state)
         runtime_handoff_ready = _runtime_episode_handoff_ready(state)
         runtime_handoff_needs_continuation = runtime_handoff_ready and _runtime_handoff_requires_continuation(state)
-        if _runtime_episode_recoverable_failure(state):
-            response = _runtime_recoverable_failure_final_response(state)
-            extensions_runtime_service.emit_execution_completed(response=response)
-            return response
         if _is_network_supervisor_compat_transport(state) and not _compat_v8_main_chain_mode(state):
             visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()

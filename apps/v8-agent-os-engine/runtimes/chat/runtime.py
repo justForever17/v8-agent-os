@@ -8924,8 +8924,8 @@ class ChatRuntime:
         for message in reversed(list(state.get("messages") or [])):
             if not isinstance(message, AIMessage):
                 continue
-            raw_text, _raw_reasoning = extract_text_and_reasoning(message)
-            if not raw_text and isinstance(getattr(message, "content", None), str):
+            raw_text, raw_reasoning = extract_text_and_reasoning(message)
+            if not raw_text and not raw_reasoning and isinstance(getattr(message, "content", None), str):
                 raw_text = str(message.content or "")
             raw_text = str(raw_text or "").strip()
             if raw_text:

@@ -512,16 +512,16 @@ def _compact_snippet(value: str, *, limit: int = 520) -> str:
 def _extract_task_field(block: str, markers: tuple[str, ...]) -> str:
     marker_pattern = "|".join(re.escape(item) for item in markers)
     patterns = [
-        rf"(?im)^[ \t]*(?:[-*][ \t]*)?\*\*[ \t]*(?:{marker_pattern})[ \t]*[:：][ \t]*\*\*[ \t]*(.+?)[ \t]*$",
-        rf"(?im)^[ \t]*(?:[-*][ \t]*)?(?:\*\*)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*)?[ \t]*[:：][ \t]*(.+?)[ \t]*$",
-        rf"(?im)^\|[ \t]*(?:\*\*)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*)?[ \t]*\|[ \t]*(.+?)[ \t]*\|",
+        rf"(?im)^[ \t]*(?:[-*][ \t]*)?\*\*[ \t]*(?:`)?(?:{marker_pattern})(?:`)?[ \t]*[:：][ \t]*\*\*[ \t]*(.+?)[ \t]*$",
+        rf"(?im)^[ \t]*(?:[-*][ \t]*)?(?:\*\*|`)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*|`)?[ \t]*[:：][ \t]*(.+?)[ \t]*$",
+        rf"(?im)^\|[ \t]*(?:\*\*|`)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*|`)?[ \t]*\|[ \t]*(.+?)[ \t]*\|",
     ]
     for pattern in patterns:
         match = re.search(pattern, block or "")
         if match:
             return _compact_snippet(re.sub(r"[*`]+", "", match.group(1)).strip(), limit=700)
     label_only = re.compile(
-        rf"(?i)^[ \t]*(?:[-*][ \t]*)?(?:\*\*)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*)?[ \t]*[:：][ \t]*(?:\*\*)?[ \t]*$"
+        rf"(?i)^[ \t]*(?:[-*][ \t]*)?(?:\*\*|`)?[ \t]*(?:{marker_pattern})[ \t]*(?:\*\*|`)?[ \t]*[:：][ \t]*(?:\*\*)?[ \t]*$"
     )
     next_label = re.compile(
         r"^\s*(?:[-*]\s*)?\*\*[^*\n:：]{1,80}(?:\*\*\s*[:：]|[:：]\s*\*\*)"

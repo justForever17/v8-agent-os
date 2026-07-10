@@ -4,7 +4,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from langchain_core.messages import AIMessage, HumanMessage
+
 from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
+import graph.supervisor_turn as supervisor_turn_module
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
     _filter_tool_names,
@@ -19,6 +22,7 @@ from graph.supervisor_turn import (
     _runtime_recoverable_failure_final_text,
     _runtime_recoverable_failure_message,
     _should_hide_todo_tools_for_direct_writing,
+    execute_supervisor_turn,
 )
 from runtimes.chat.supervisor_completion_gate import ACTIVE_EPISODE_STATES, evaluate_supervisor_completion
 from runtimes.chat.runtime import ChatRuntime
@@ -212,6 +216,114 @@ def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_succe
     coerced = _coerce_recoverable_failure_response(response, state)
     assert "还没有真正完成" in coerced.content
     assert "artifact_acceptance_failed" in coerced.content
+
+
+def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeypatch):
+    calls = []
+    decision = SimpleNamespace(as_dict=lambda: {})
+    route_bundle = SimpleNamespace(
+        filtered_tools=[],
+        prompt_addition="",
+        selected_skill_names=[],
+        exposed_mcp_tool_names=[],
+        candidate_summary={"reason": "test", "pluginHostTools": []},
+    )
+    runtime_service = SimpleNamespace(
+        bind_execution_context=lambda **_kwargs: "token",
+        reset_execution_context=lambda _token: None,
+        emit_route_selected=lambda **_kwargs: None,
+        emit_supervisor_diagnostics=lambda _payload: None,
+        emit_response_tool_calls=lambda _response: None,
+        emit_execution_completed=lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(supervisor_turn_module, "extensions_runtime_service", runtime_service)
+    monkeypatch.setattr(
+        supervisor_turn_module,
+        "resolve_supervisor_request_context",
+        lambda _messages, _service: {
+            "user_query": "repair the failed artifact",
+            "current_scope": "workspace",
+            "scope_chain": ["workspace"],
+            "session_id": "session-repair",
+        },
+    )
+    monkeypatch.setattr(supervisor_turn_module, "filter_visible_tools_for_actor", lambda tools, **_kwargs: tools)
+    monkeypatch.setattr(supervisor_turn_module, "_filter_spec_tools_for_mode", lambda tools, _state: tools)
+    monkeypatch.setattr(supervisor_turn_module, "_is_network_supervisor_compat_transport", lambda _state: False)
+    monkeypatch.setattr(supervisor_turn_module, "_should_use_fast_first_turn_route", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(supervisor_turn_module, "_should_use_spec_narrow_route", lambda _state: True)
+    monkeypatch.setattr(supervisor_turn_module, "_build_neutral_extensions_route", lambda _tools: route_bundle)
+    monkeypatch.setattr(supervisor_turn_module, "_should_include_extensions_prefilter_prompt", lambda **_kwargs: False)
+    monkeypatch.setattr(supervisor_turn_module, "_suppress_extensions_prefilter_prompt", lambda bundle: bundle)
+    monkeypatch.setattr(supervisor_turn_module, "_memory_no_match_since_latest_human", lambda _state: False)
+    monkeypatch.setattr(supervisor_turn_module, "_should_hide_todo_tools_for_direct_writing", lambda *_args: False)
+    monkeypatch.setattr(supervisor_turn_module, "runtime_reflex_service", SimpleNamespace(evaluate=lambda **_kwargs: decision))
+    monkeypatch.setattr(supervisor_turn_module, "runtime_preflight_gate", SimpleNamespace(evaluate=lambda **_kwargs: decision))
+    monkeypatch.setattr(supervisor_turn_module, "render_reflex_prompt_addition", lambda _decision: "")
+    monkeypatch.setattr(supervisor_turn_module, "render_gate_prompt_addition", lambda _decision: "")
+    monkeypatch.setattr(
+        supervisor_turn_module,
+        "build_supervisor_system_content",
+        lambda **_kwargs: {"system_content": "system", "v8_prompt_segments": []},
+    )
+    monkeypatch.setattr(supervisor_turn_module, "_last_memory_session_context_diagnostics", lambda: {})
+    monkeypatch.setattr(supervisor_turn_module, "log_memory_observation", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(supervisor_turn_module, "_estimate_memory_context_chars", lambda _value: 0)
+    monkeypatch.setattr(
+        supervisor_turn_module,
+        "runtime_evidence_feedback_service",
+        SimpleNamespace(record=lambda **_kwargs: decision),
+    )
+    monkeypatch.setattr(supervisor_turn_module, "apply_passive_rag_injection", lambda messages, **_kwargs: messages)
+    monkeypatch.setattr(
+        supervisor_turn_module,
+        "_last_human_memory_rag_diagnostics",
+        lambda _messages: {"injection_allowed": False, "reject_reason": "test"},
+    )
+    monkeypatch.setattr(supervisor_turn_module, "prepare_supervisor_messages", lambda **kwargs: list(kwargs["messages"]))
+    monkeypatch.setattr(supervisor_turn_module, "_should_force_memory_broker_first", lambda **_kwargs: False)
+    monkeypatch.setattr(supervisor_turn_module, "_spec_mode_stage_guidance", lambda **_kwargs: None)
+    monkeypatch.setattr(supervisor_turn_module, "debug_supervisor_messages", lambda _messages: None)
+    monkeypatch.setattr(supervisor_turn_module, "_attach_route_context_to_response", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(supervisor_turn_module, "apply_no_progress_breaker", lambda _messages, response: (response, None))
+
+    def robust_invoke(*_args, **_kwargs):
+        calls.append("invoked")
+        return AIMessage(
+            content="",
+            tool_calls=[{"id": "call_repair", "name": "runtime_broker", "args": {"mode": "route"}}],
+        )
+
+    state = {
+        "run_id": "run-repair",
+        "planner_dispatch_status": {
+            "mode": "runtime_episode",
+            "nextAction": "recoverable_failure",
+            "state": "episode_failed",
+            "reason": "artifact_acceptance_failed",
+        },
+    }
+    response = execute_supervisor_turn(
+        state=state,
+        config={},
+        messages=[HumanMessage(content="repair it")],
+        loaded_agents=[],
+        supervisor_tools=[],
+        memory_runtime=None,
+        scope_resolution_service=None,
+        ensure_reasoning_content=lambda message: message,
+        sanitize_message_chain=lambda messages, **_kwargs: messages,
+        context_orchestrator=None,
+        robust_invoke=robust_invoke,
+        supervisor_base_llm=object(),
+        sup_model_name="test-model",
+        caller_kwargs={},
+        llm_factory=SimpleNamespace(create_chat_model=lambda *_args, **_kwargs: object()),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert calls == ["invoked"]
+    assert response.tool_calls[0]["name"] == "runtime_broker"
 
 
 def test_direct_writing_skill_plan_hides_supervisor_todo_tools():

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from typing import Any, Callable, Optional
 
 from core.database import db
@@ -13,12 +14,113 @@ CanonicalNode = dict[str, Any]
 CanonicalMessage = dict[str, Any]
 
 
+_INLINE_THINK_PATTERN = re.compile(
+    r"<think\b[^>]*>([\s\S]*?)(?:</think>|$)",
+    re.IGNORECASE,
+)
+
+
 def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _split_inline_reasoning(value: Any) -> tuple[str, str]:
+    raw = str(value or "")
+    if "<think" not in raw.lower():
+        return raw, ""
+    reasoning_parts = [
+        str(match.group(1) or "").strip()
+        for match in _INLINE_THINK_PATTERN.finditer(raw)
+        if str(match.group(1) or "").strip()
+    ]
+    visible = _INLINE_THINK_PATTERN.sub("", raw).strip()
+    return visible, "\n".join(dict.fromkeys(reasoning_parts))
+
+
+def _reasoning_fingerprint(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _inline_reasoning_node_id(narrative_node_id: Any) -> str:
+    return f"{str(narrative_node_id or 'assistant-narrative')}:inline-reasoning"
+
+
+def normalize_canonical_nodes(nodes: list[CanonicalNode], *, role: str) -> list[CanonicalNode]:
+    """Normalize assistant inline reasoning without mutating the stored input.
+
+    Canonical text nodes are the source of truth. Historical rows are projected
+    through this function at read time, while active rows use it before writes.
+    """
+
+    source_nodes = [dict(node) for node in _as_list(nodes) if isinstance(node, dict)]
+    if str(role or "").strip().lower() != "assistant":
+        return source_nodes
+
+    inline_reasoning_by_node_id = {
+        _inline_reasoning_node_id(node.get("id")): _split_inline_reasoning(node.get("content"))[1]
+        for node in source_nodes
+        if str(node.get("kind") or "").strip() == "narrative"
+        and _split_inline_reasoning(node.get("content"))[1]
+    }
+    explicit_reasoning = {
+        _reasoning_fingerprint(node.get("content"))
+        for node in source_nodes
+        if str(node.get("kind") or "").strip() == "execution"
+        and str(node.get("executionType") or "").strip() == "reasoning"
+        and str(node.get("id") or "").strip() not in inline_reasoning_by_node_id
+        and _reasoning_fingerprint(node.get("content"))
+    }
+    normalized: list[CanonicalNode] = []
+    emitted_reasoning: set[str] = set()
+    for node in source_nodes:
+        kind = str(node.get("kind") or "").strip()
+        execution_type = str(node.get("executionType") or "").strip()
+        if kind == "execution" and execution_type == "reasoning":
+            if str(node.get("id") or "").strip() in inline_reasoning_by_node_id:
+                continue
+            fingerprint = _reasoning_fingerprint(node.get("content"))
+            if fingerprint and fingerprint in emitted_reasoning:
+                continue
+            if fingerprint:
+                emitted_reasoning.add(fingerprint)
+            normalized.append(node)
+            continue
+        if kind != "narrative":
+            normalized.append(node)
+            continue
+
+        visible, inline_reasoning = _split_inline_reasoning(node.get("content"))
+        fingerprint = _reasoning_fingerprint(inline_reasoning)
+        if fingerprint and fingerprint not in explicit_reasoning and fingerprint not in emitted_reasoning:
+            normalized.append(
+                {
+                    **{
+                        key: node.get(key)
+                        for key in (
+                            "timestamp",
+                            "agentName",
+                            "agentAvatar",
+                            "agentRoleLabel",
+                            "finalized",
+                            "partial",
+                        )
+                        if node.get(key) is not None
+                    },
+                    "id": _inline_reasoning_node_id(node.get("id")),
+                    "kind": "execution",
+                    "executionType": "reasoning",
+                    "content": inline_reasoning,
+                    "reasoningKind": "legacy_inline_think",
+                    "reasoningUnverified": True,
+                }
+            )
+            emitted_reasoning.add(fingerprint)
+        normalized.append({**node, "content": visible})
+    return normalized
 
 
 def derive_text_fields(nodes: list[CanonicalNode]) -> tuple[str, str]:
@@ -128,13 +230,22 @@ def _artifact_nodes_for_message(message_id: str, artifacts: list[dict[str, Any]]
 
 def format_canonical_message(row: CanonicalMessage, runtime_artifacts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     metadata = _as_dict(row.get("metadata"))
-    base_nodes = [dict(node) for node in _as_list(row.get("nodes")) if isinstance(node, dict)]
+    stored_nodes = [dict(node) for node in _as_list(row.get("nodes")) if isinstance(node, dict)]
+    base_nodes = normalize_canonical_nodes(stored_nodes, role=str(row.get("role") or ""))
     stored_artifacts = [dict(item) for item in _as_list(row.get("artifacts")) if isinstance(item, dict)]
     effective_artifacts = merge_artifacts(stored_artifacts, [dict(item) for item in _as_list(runtime_artifacts) if isinstance(item, dict)])
     nodes = base_nodes + _artifact_nodes_for_message(str(row.get("id") or ""), effective_artifacts, metadata)
     derived_content_text, derived_reasoning_text = derive_text_fields(base_nodes)
-    content_text = derived_content_text or str(row.get("content_text") or "")
-    reasoning_text = derived_reasoning_text or str(row.get("reasoning_text") or "")
+    has_canonical_text_nodes = any(
+        str(node.get("kind") or "").strip() == "narrative"
+        or (
+            str(node.get("kind") or "").strip() == "execution"
+            and str(node.get("executionType") or "").strip() == "reasoning"
+        )
+        for node in base_nodes
+    )
+    content_text = derived_content_text if has_canonical_text_nodes else str(row.get("content_text") or "")
+    reasoning_text = derived_reasoning_text if has_canonical_text_nodes else str(row.get("reasoning_text") or "")
     return {
         "id": row.get("id"),
         "role": row.get("role"),
@@ -313,13 +424,20 @@ def _contains_internal_tool_arg(value: Any) -> bool:
 
 
 def validate_canonical_message_invariants(row: CanonicalMessage) -> list[str]:
-    nodes = [dict(node) for node in _as_list(row.get("nodes")) if isinstance(node, dict)]
+    stored_nodes = [dict(node) for node in _as_list(row.get("nodes")) if isinstance(node, dict)]
+    nodes = normalize_canonical_nodes(stored_nodes, role=str(row.get("role") or ""))
     derived_content_text, derived_reasoning_text = derive_text_fields(nodes)
     errors: list[str] = []
     if str(row.get("content_text") or "") != derived_content_text:
         errors.append("content_text_mismatch")
     if str(row.get("reasoning_text") or "") != (derived_reasoning_text or ""):
         errors.append("reasoning_text_mismatch")
+    if str(row.get("role") or "").strip().lower() == "assistant" and any(
+        str(node.get("kind") or "").strip() == "narrative"
+        and "<think" in str(node.get("content") or "").lower()
+        for node in stored_nodes
+    ):
+        errors.append("assistant_narrative_contains_think")
     for node in nodes:
         if str(node.get("kind") or "").strip() != "execution":
             continue
@@ -354,8 +472,17 @@ class CanonicalTranscriptBuilder:
         content_text: Optional[str] = None,
         reasoning_text: Optional[str] = None,
     ) -> CanonicalMessage:
-        seeded_nodes = [dict(node) for node in _as_list(nodes) if isinstance(node, dict)]
+        stored_nodes = [dict(node) for node in _as_list(nodes) if isinstance(node, dict)]
+        seeded_nodes = normalize_canonical_nodes(stored_nodes, role=role)
         derived_content_text, derived_reasoning_text = derive_text_fields(seeded_nodes)
+        has_canonical_text_nodes = any(
+            str(node.get("kind") or "").strip() == "narrative"
+            or (
+                str(node.get("kind") or "").strip() == "execution"
+                and str(node.get("executionType") or "").strip() == "reasoning"
+            )
+            for node in seeded_nodes
+        )
         db.create_chat_canonical_message(
             message_id=message_id,
             session_id=session_id,
@@ -365,8 +492,8 @@ class CanonicalTranscriptBuilder:
             state=state,
             nodes=seeded_nodes,
             artifacts=[],
-            content_text=content_text if content_text is not None else derived_content_text,
-            reasoning_text=reasoning_text if reasoning_text is not None else (derived_reasoning_text or None),
+            content_text=derived_content_text if has_canonical_text_nodes else (content_text or ""),
+            reasoning_text=(derived_reasoning_text or None) if has_canonical_text_nodes else reasoning_text,
             metadata=metadata or {},
         )
         return db.get_chat_canonical_message(message_id) or {}
@@ -388,6 +515,7 @@ class CanonicalTranscriptBuilder:
         if metadata_updates:
             current_metadata.update(metadata_updates)
         next_nodes, node_id = mutator(current_nodes, current_metadata)
+        next_nodes = normalize_canonical_nodes(next_nodes, role=str(existing.get("role") or ""))
         content_text, reasoning_text = derive_text_fields(next_nodes)
         updated = db.update_chat_canonical_message(
             message_id,

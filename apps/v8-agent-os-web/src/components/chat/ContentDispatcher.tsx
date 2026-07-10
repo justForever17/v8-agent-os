@@ -306,7 +306,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             
             // Parse the text part into its sub-blocks (markdown, ppt, html, artifacts, code, mermaid)
             // using the Unified Content Detector
-            const blocks = parseContentToBlocks(node.content, isStreaming, 0);
+            const blocks = parseContentToBlocks(node.content, isStreaming, 0, false);
 
             return (
                 <div className="mb-1.5 mt-0.5 flex flex-col gap-2.5">

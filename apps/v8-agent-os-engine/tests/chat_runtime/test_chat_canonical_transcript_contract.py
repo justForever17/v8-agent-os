@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 import sys
 import unittest
 import importlib.machinery
@@ -195,6 +197,112 @@ class _FakeRequestInputDb:
 
 
 class ChatCanonicalTranscriptContractTests(unittest.TestCase):
+    def test_historical_inline_think_is_reprojected_without_rewriting_row(self):
+        row = {
+            "id": "assistant-polluted",
+            "role": "assistant",
+            "run_id": "run-polluted",
+            "state": "completed",
+            "version": 7,
+            "content_text": "<think>private chain</think>",
+            "reasoning_text": "private chain",
+            "metadata": {"timestamp": 9},
+            "nodes": [
+                {
+                    "id": "assistant-polluted:narrative",
+                    "kind": "narrative",
+                    "role": "assistant",
+                    "content": "<think>private chain</think>",
+                },
+                {
+                    "id": "assistant-polluted:reasoning",
+                    "kind": "execution",
+                    "executionType": "reasoning",
+                    "content": "private chain",
+                },
+            ],
+        }
+        original = copy.deepcopy(row)
+
+        formatted = transcript_module.format_canonical_message(row)
+
+        self.assertEqual(formatted["content"], "")
+        self.assertEqual(formatted["reasoningContent"], "private chain")
+        self.assertEqual(
+            len([node for node in formatted["nodes"] if node.get("executionType") == "reasoning"]),
+            1,
+        )
+        self.assertNotIn("<think", json.dumps(formatted["nodes"], ensure_ascii=False).lower())
+        self.assertEqual(row, original)
+
+    def test_builder_normalizes_mixed_inline_think_into_reasoning_node(self):
+        fake_db = _FakeCanonicalDb()
+        builder = CanonicalTranscriptBuilder()
+
+        with mock.patch.object(transcript_module, "db", fake_db):
+            row = builder.create_message(
+                message_id="assistant-inline",
+                session_id="session-inline",
+                run_id="run-inline",
+                ordinal=1,
+                role="assistant",
+                state="completed",
+                nodes=[
+                    {
+                        "id": "assistant-inline:narrative",
+                        "kind": "narrative",
+                        "role": "assistant",
+                        "content": "<think>inspect first</think>Visible answer",
+                    }
+                ],
+                content_text="polluted fallback",
+            )
+
+        self.assertEqual(row["content_text"], "Visible answer")
+        self.assertEqual(row["reasoning_text"], "inspect first")
+        self.assertEqual(row["nodes"][0]["executionType"], "reasoning")
+        self.assertEqual(row["nodes"][1]["content"], "Visible answer")
+        self.assertEqual(transcript_module.validate_canonical_message_invariants(row), [])
+
+    def test_inline_reasoning_snapshot_updates_one_generated_node(self):
+        fake_db = _FakeCanonicalDb()
+        builder = CanonicalTranscriptBuilder()
+
+        with mock.patch.object(transcript_module, "db", fake_db):
+            builder.create_message(
+                message_id="assistant-inline-stream",
+                session_id="session-inline",
+                run_id="run-inline",
+                ordinal=1,
+                role="assistant",
+                state="streaming",
+                nodes=[
+                    {
+                        "id": "assistant-inline-stream:narrative",
+                        "kind": "narrative",
+                        "role": "assistant",
+                        "content": "<think>inspect",
+                    }
+                ],
+            )
+
+            def replace_snapshot(nodes, _metadata):
+                updated = []
+                for node in nodes:
+                    if node.get("id") == "assistant-inline-stream:narrative":
+                        updated.append({**node, "content": "<think>inspect files</think>Visible"})
+                    else:
+                        updated.append(node)
+                return updated, "assistant-inline-stream:narrative"
+
+            builder.mutate_message("assistant-inline-stream", replace_snapshot)
+            row = fake_db.get_chat_canonical_message("assistant-inline-stream")
+
+        reasoning_nodes = [node for node in row["nodes"] if node.get("executionType") == "reasoning"]
+        self.assertEqual(len(reasoning_nodes), 1)
+        self.assertEqual(reasoning_nodes[0]["content"], "inspect files")
+        self.assertEqual(row["content_text"], "Visible")
+
     def test_canonical_model_event_reasoning_accepts_token_deltas(self):
         snapshots: dict[str, str] = {}
 

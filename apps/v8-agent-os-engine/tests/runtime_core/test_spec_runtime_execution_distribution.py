@@ -1,5 +1,11 @@
 from core.runtime_episode_runner import RuntimeEpisodeRunner
-from core.tools.native.runtime import _task_briefs_from_spec_bundle
+import core.tools.native.runtime as runtime_tool_module
+from core.tools.native.runtime import (
+    _approved_spec_execution_bundle,
+    _enrich_route_need_for_episode,
+    _task_briefs_from_spec_bundle,
+    _task_sections_from_markdown,
+)
 
 
 def _bundle() -> dict:
@@ -120,6 +126,105 @@ def test_engineering_expected_artifact_check_requires_every_declared_file(tmp_pa
     )
 
     assert missing == [".v8/demo/README.md"]
+
+
+def test_backtick_table_fields_and_noisy_prose_do_not_expand_spec_write_set():
+    tasks = _task_sections_from_markdown(
+        """
+## TASK-001 Build page
+
+| field | value |
+| --- | --- |
+| `runtimeLane` | Engineering |
+| `output` | `index.html` |
+| `inputRefs` | `package.json`, `file://E:/input/mockup.png` |
+| `acceptance` | Read package.json but only write index.html. |
+
+## TASK-002 Write docs
+
+| `runtimeLane` | Engineering |
+| `output` | `README.md` |
+| `acceptance` | Link to index.html without modifying it. |
+
+## TASK-003 Record proof
+
+| `runtimeLane` | Engineering |
+| `expectedArtifacts` | `PROOF.json` |
+| `acceptance` | Inspect the workspace root and input files. |
+""",
+        ["TASK-001", "TASK-002", "TASK-003"],
+    )
+    bundle = _bundle()
+    bundle["tasks"] = tasks
+
+    briefs = _task_briefs_from_spec_bundle(bundle, "engineering")
+
+    assert [brief["writeSet"] for brief in briefs] == [["index.html"], ["README.md"], ["PROOF.json"]]
+    flattened = [path for brief in briefs for path in brief["writeSet"]]
+    assert "package.json" not in flattened
+    assert not any(path.startswith("file://") for path in flattened)
+    assert bundle["workspacePath"] not in flattened
+
+
+def test_approved_spec_workspace_ignores_model_supplied_output_subdirectory(monkeypatch):
+    captured = {}
+
+    def read_spec(*, workspace_path, spec_id, max_chars):
+        captured.update(workspace_path=workspace_path, spec_id=spec_id, max_chars=max_chars)
+        return {
+            "specBrief": {
+                "specId": spec_id,
+                "workspacePath": "E:/Projects/product-root",
+                "approvedStages": ["requirements", "design", "tasks"],
+                "pipelineControl": {"runtimeExecutionAllowed": True},
+            },
+            "stages": {},
+        }
+
+    monkeypatch.setattr(runtime_tool_module.spec_service, "read_spec", read_spec)
+    bundle = _approved_spec_execution_bundle(
+        {"specId": "spec_demo"},
+        {"workspacePath": "E:/Projects/product-root/output/index"},
+        state={
+            "current_route_context": {
+                "specId": "spec_demo",
+                "specBrief": {
+                    "specId": "spec_demo",
+                    "workspacePath": "E:/Projects/product-root",
+                    "pipelineControl": {"runtimeExecutionAllowed": True},
+                },
+            }
+        },
+    )
+
+    assert captured["workspace_path"] == "E:/Projects/product-root"
+    assert bundle["workspacePath"] == "E:/Projects/product-root"
+
+
+def test_spec_write_task_without_explicit_artifact_is_blocked_before_dispatch(monkeypatch):
+    bundle = _bundle()
+    bundle["tasks"] = [
+        {
+            "taskId": "TASK-001",
+            "title": "Write artifact",
+            "runtimeLane": "Engineering",
+            "taskExcerpt": "Write the requested artifact, then verify it.",
+            "acceptance": "The implementation is complete.",
+        }
+    ]
+    monkeypatch.setattr(runtime_tool_module, "_approved_spec_execution_bundle", lambda *_args, **_kwargs: bundle)
+
+    enriched = _enrich_route_need_for_episode(
+        {"specId": "spec_demo", "inputs": {}},
+        kind="engineering",
+        state={"current_route_context": {"specId": "spec_demo"}},
+    )
+
+    quality = enriched["inputs"]["routeBriefQuality"]
+    assert quality["blocking"] is True
+    assert quality["reason"] == "spec_write_artifact_contract_missing"
+    assert quality["taskBriefIds"] == ["TASK-001"]
+    assert enriched["inputs"]["workerBriefs"][0]["writeSet"] == []
 
 
 def test_nuwa_like_spec_tasks_are_distributed_without_route_layer_compression():

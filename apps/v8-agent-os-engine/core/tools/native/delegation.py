@@ -776,7 +776,7 @@ def delegation_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Dispatch, observe, resume, or interrupt real subagent/external-worker tasks.
+    """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
     Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit tasks/worker_briefs. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks.

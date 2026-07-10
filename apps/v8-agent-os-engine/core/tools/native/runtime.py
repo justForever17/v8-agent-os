@@ -241,6 +241,34 @@ def _workspace_path_from_route(inputs: dict[str, Any], state: dict[str, Any] | N
     return ""
 
 
+def _spec_workspace_path_from_route(inputs: dict[str, Any], state: dict[str, Any] | None) -> str:
+    state_dict = dict(state or {})
+    route_context = dict(state_dict.get("current_route_context") or {})
+    for candidate in (
+        state_dict.get("specBrief"),
+        state_dict.get("spec_brief"),
+        route_context.get("specBrief"),
+        route_context.get("spec_brief"),
+    ):
+        if not isinstance(candidate, dict):
+            continue
+        workspace = str(
+            candidate.get("workspacePath")
+            or candidate.get("workspace_path")
+            or candidate.get("projectRoot")
+            or candidate.get("project_root")
+            or ""
+        ).strip()
+        if workspace:
+            return workspace
+    runtime_context = get_runtime_context()
+    for source in (route_context, state_dict, runtime_context, inputs):
+        workspace = str(source.get("workspacePath") or source.get("workspace_path") or "").strip()
+        if workspace:
+            return workspace
+    return ""
+
+
 def _spec_runtime_execution_allowed(spec_brief: dict[str, Any]) -> bool:
     pipeline = dict(spec_brief.get("pipelineControl") or {})
     approved = {str(item).strip().lower() for item in list(spec_brief.get("approvedStages") or [])}
@@ -267,14 +295,14 @@ def _split_spec_refs(value: Any) -> list[str]:
 def _extract_task_field(excerpt: str, labels: tuple[str, ...]) -> str:
     for label in labels:
         match = re.search(
-            rf"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*[:：](?:\*\*)?\s*(.+?)\s*$",
+            rf"(?im)^\s*(?:[-*]\s*)?(?:\*\*|`)?{re.escape(label)}(?:\*\*|`)?\s*[:：](?:\*\*)?\s*(.+?)\s*$",
             excerpt,
         )
         if match:
             return match.group(1).strip()
     for label in labels:
         match = re.search(
-            rf"(?im)^\s*\|\s*(?:\*\*)?{re.escape(label)}(?:\*\*)?\s*\|\s*(.+?)\s*\|\s*$",
+            rf"(?im)^\s*\|\s*(?:\*\*|`)?{re.escape(label)}(?:\*\*|`)?\s*\|\s*(.+?)\s*\|\s*$",
             excerpt,
         )
         if match:
@@ -395,7 +423,17 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
         first_line = excerpt.splitlines()[0] if excerpt else normalized_id
         title = re.sub(r"(?i)^.*\b(?:TASK|TSK|T)-\d{2,}\b\s*[:：.\-、]?\s*", "", first_line).strip()
         title = re.sub(r"^\[[ xX]\]\s*", "", title).strip("-:： ")
-        output_labels = ("expectedOutput", "expected output", "output", "输出", "产物", "预期输出", "预期输出路径")
+        output_labels = (
+            "expectedArtifacts",
+            "expected artifacts",
+            "expectedOutput",
+            "expected output",
+            "output",
+            "输出",
+            "产物",
+            "预期输出",
+            "预期输出路径",
+        )
         output_file = _extract_task_block(
             excerpt,
             ("输出文件", "预期输出路径", "预期输出", "输出路径"),
@@ -473,7 +511,7 @@ def _approved_spec_execution_bundle(
     spec_id = _spec_id_from_route_need(need, inputs, state)
     if not spec_id:
         return None
-    workspace_path = _workspace_path_from_route(inputs, state)
+    workspace_path = _spec_workspace_path_from_route(inputs, state)
     if not workspace_path:
         return None
     try:
@@ -681,16 +719,31 @@ def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
     if family == "creative_media":
         return True
     if family == "research":
-        output = str(task.get("expectedOutput") or task.get("expectedOutputs") or "")
+        output = str(
+            task.get("expectedArtifacts")
+            or task.get("expectedOutput")
+            or task.get("expectedOutputs")
+            or task.get("output")
+            or ""
+        )
         text = " ".join(
             str(task.get(key) or "")
             for key in ("taskId", "title", "excerpt", "taskExcerpt", "expectedOutput", "expectedOutputs", "acceptance", "proofRequired")
         )
-        return bool(_spec_task_expected_paths(output, text))
+        return bool(_spec_task_expected_paths(output)) or any(
+            marker in text.lower()
+            for marker in ("write artifact", "create artifact", "写入", "创建文件", "生成文件")
+        )
     if family != "engineering":
         return False
     lane = str(task.get("runtimeLane") or "").strip().lower()
-    expected_output = str(task.get("expectedOutput") or "")
+    expected_output = str(
+        task.get("expectedArtifacts")
+        or task.get("expectedOutput")
+        or task.get("expectedOutputs")
+        or task.get("output")
+        or ""
+    )
     text = " ".join(
         str(task.get(key) or "")
         for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
@@ -777,8 +830,8 @@ def _spec_task_expected_paths(*values: Any) -> list[str]:
             candidate = candidate.strip("`'\"，,。;；:：")
             lowered = candidate.lower()
             if (
-                lowered in {"http://", "https://"}
-                or lowered.startswith(("http://", "https://", "spec://"))
+                lowered in {"http://", "https://", "file://"}
+                or lowered.startswith(("http://", "https://", "file://", "spec://"))
                 or any(marker in candidate for marker in ("<", ">", "\r", "\n"))
             ):
                 continue
@@ -1096,7 +1149,13 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
         family = _spec_task_runtime_family(task, kind)
         if family == "governance" and kind != "governance":
             continue
-        output = str(task.get("expectedOutput") or task.get("expectedOutputs") or "").strip()
+        explicit_output_values = [
+            task.get("expectedArtifacts"),
+            task.get("expectedOutput"),
+            task.get("expectedOutputs"),
+            task.get("output"),
+        ]
+        output = str(next((value for value in explicit_output_values if value not in (None, "", [], {})), "")).strip()
         acceptance = str(task.get("acceptance") or task.get("acceptanceProof") or "").strip()
         proof = str(task.get("proofRequired") or task.get("proof") or "").strip()
         mvp_slice = str(task.get("mvpSlice") or task.get("mvp") or "").strip()
@@ -1110,16 +1169,12 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             spec_refs = requirement_refs + design_refs
         else:
             spec_refs = list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
-        task_text_for_paths = " ".join(
-            str(task.get(key) or "")
-            for key in ("taskId", "title", "excerpt", "taskExcerpt", "expectedOutput", "expectedOutputs", "acceptance", "proofRequired")
-        )
         writes_artifact = _spec_task_writes_artifact(task, family)
-        expected_paths = (_spec_task_expected_paths(output) or _spec_task_expected_paths("", task_text_for_paths)) if writes_artifact else []
+        expected_paths = _spec_task_expected_paths(*explicit_output_values) if writes_artifact else []
         if not output and expected_paths:
             output = "; ".join(expected_paths)
         validates_skill_artifact = _spec_task_validates_skill_artifact(task, family, writes_artifact=writes_artifact)
-        allowed_write_set = list(expected_paths or ([workspace_path] if workspace_path else []))
+        allowed_write_set = list(expected_paths)
         execution_contract = _spec_task_engineering_execution_contract(
             spec_id=spec_id,
             workspace_path=workspace_path,
@@ -1546,9 +1601,12 @@ def _enrich_route_need_for_episode(
     spec_bundle = _approved_spec_execution_bundle(enriched, inputs, state=state)
     requested_spec_task_refs = _requested_spec_task_refs(enriched, inputs)
     if spec_bundle:
-        inputs.setdefault("specExecutionBundle", spec_bundle)
+        inputs["specExecutionBundle"] = spec_bundle
         enriched.setdefault("specId", spec_bundle.get("specId"))
         if str(spec_bundle.get("status") or "") == "ready":
+            authoritative_workspace = str(spec_bundle.get("workspacePath") or "").strip()
+            if authoritative_workspace:
+                inputs["workspacePath"] = authoritative_workspace
             spec_groups = _required_runtime_access_from_spec_bundle(spec_bundle, kind)
             if spec_groups:
                 existing_groups = list(enriched.get("requiredRuntimeAccess") or [])
@@ -1603,6 +1661,24 @@ def _enrich_route_need_for_episode(
                 ),
                 "requiredFields": ["goal", "context", "expectedOutput", "acceptance", "constraints", "detailRefs"],
             }
+        if spec_bundle and str(spec_bundle.get("status") or "") == "ready":
+            missing_artifact_contracts = [
+                str(task.get("taskBriefId") or task.get("id") or "unknown")
+                for task in route_tasks
+                if bool(task.get("writeRequired")) and not list(task.get("writeSet") or [])
+            ]
+            if missing_artifact_contracts:
+                inputs["routeBriefQuality"] = {
+                    "status": "blocked",
+                    "reason": "spec_write_artifact_contract_missing",
+                    "blocking": True,
+                    "message": (
+                        "Approved Spec write tasks must declare explicit expectedArtifacts/output paths before dispatch. "
+                        "Acceptance text, forbidden scopes, dependencies, input files, and the workspace root are not write grants."
+                    ),
+                    "taskBriefIds": missing_artifact_contracts,
+                    "requiredFields": ["expectedArtifacts", "output"],
+                }
         if task_filter_applied or not inputs.get("workerBriefs"):
             inputs["workerBriefs"] = route_tasks
         if task_filter_applied or not inputs.get("tasks"):
@@ -1808,7 +1884,7 @@ def runtime_broker(
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
-    """Route work into a V8OS specialist mode and wait for typed handoff.
+    """Supervisor route broker for V8OS active execution runtimes; waits for typed specialist handoff.
 
     Use `mode='route'` with `need={'kind':'research'|'engineering'|'creative_media'|'computer_use'|'rpa'|'delegation', ...}` when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration.
     Product words for user-facing replies: `research`=深度调研, `engineering`=编程模式, `creative_media`=多媒体创作, `computer_use`=桌面操作, `rpa`=自动流程, `delegation`=子代理协作. Do not tell ordinary users "runtime_broker"; that is only the internal tool name.
@@ -1993,11 +2069,10 @@ def runtime_broker(
         need_payload = _enrich_route_need_for_episode(need_payload, kind=route_kind, state=state)
         route_inputs = dict(need_payload.get("inputs") or {}) if isinstance(need_payload.get("inputs"), dict) else {}
         route_brief_quality = route_inputs.get("routeBriefQuality") if isinstance(route_inputs.get("routeBriefQuality"), dict) else {}
-        if (
-            route_kind in {"engineering", "delegation"}
-            and bool(route_brief_quality.get("blocking"))
-            and str(route_brief_quality.get("reason") or "") == "minimal_brief_only"
-        ):
+        if route_kind in {"engineering", "delegation"} and bool(route_brief_quality.get("blocking")):
+            blocking_reason = str(route_brief_quality.get("reason") or "task_brief_required").strip()
+            missing_spec_artifact_contract = blocking_reason == "spec_write_artifact_contract_missing"
+            public_error = blocking_reason if missing_spec_artifact_contract else "task_brief_required"
             return Command(
                 goto="supervisor",
                 update={
@@ -2007,14 +2082,21 @@ def runtime_broker(
                                 mode=normalized_mode,
                                 ok=False,
                                 summary=(
-                                    f"{route_kind} runtime route needs a concrete task brief before it can queue an episode. "
-                                    "Planner hints may fill blanks, but cannot replace a Supervisor-written task."
+                                    str(route_brief_quality.get("message") or "").strip()
+                                    or (
+                                        f"{route_kind} runtime route needs a concrete task brief before it can queue an episode. "
+                                        "Planner hints may fill blanks, but cannot replace a Supervisor-written task."
+                                    )
                                 ),
-                                error="task_brief_required",
+                                error=public_error,
                                 detail_level=detail_level,
                                 next_action=(
-                                    "Call runtime_broker(mode='route') again with need.inputs.workerBriefs/taskBriefs/tasks. "
-                                    "Each brief should include goal, context, expectedOutput, acceptance, constraints, and detailRefs."
+                                    "Add explicit expectedArtifacts/output paths to the approved Spec task, then route it again."
+                                    if missing_spec_artifact_contract
+                                    else (
+                                        "Call runtime_broker(mode='route') again with need.inputs.workerBriefs/taskBriefs/tasks. "
+                                        "Each brief should include goal, context, expectedOutput, acceptance, constraints, and detailRefs."
+                                    )
                                 ),
                                 route_brief_quality=route_brief_quality,
                             ),
@@ -2026,10 +2108,10 @@ def runtime_broker(
                         "mode": "runtime_broker_route",
                         "dispatched": False,
                         "blocked": True,
-                        "reason": "task_brief_required",
+                        "reason": blocking_reason,
                         "episodeKind": route_kind,
                         "episodeCount": 0,
-                        "nextAction": "provide_task_brief",
+                        "nextAction": "define_expected_artifacts" if missing_spec_artifact_contract else "provide_task_brief",
                     },
                 },
             )

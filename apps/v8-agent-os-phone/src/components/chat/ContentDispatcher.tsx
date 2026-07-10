@@ -264,7 +264,7 @@ export const ContentDispatcher = memo(function ContentDispatcher({
         return null;
     }
     const narrativeBlocks = useMemo(
-        () => (node.kind === "narrative" ? parsePhoneContentBlocks(String(node.content || "")) : []),
+        () => (node.kind === "narrative" ? parsePhoneContentBlocks(String(node.content || ""), false, 0, false) : []),
         [node],
     );
 

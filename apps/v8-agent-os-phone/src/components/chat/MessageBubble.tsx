@@ -56,7 +56,7 @@ function isExecutionNode(node: PhoneUiTimelineNode): node is PhoneUiExecutionNod
 
 function isSupervisorVisibleActivityNode(node: PhoneUiTimelineNode) {
     if (node.kind === "narrative") {
-        return parsePhoneContentBlocks(String(node.content || ""))
+        return parsePhoneContentBlocks(String(node.content || ""), false, 0, false)
             .some((block) => block.type !== "voice" && block.content.trim().length > 0);
     }
 
@@ -120,7 +120,7 @@ function extractSupervisorMicroStageSpeech(nodes: PhoneUiTimelineNode[]) {
         if (node.kind !== "narrative" || node.role !== "assistant") {
             continue;
         }
-        const text = parsePhoneContentBlocks(String(node.content || ""))
+        const text = parsePhoneContentBlocks(String(node.content || ""), false, 0, false)
             .filter((block) => block.type !== "voice")
             .map((block) => block.content.trim())
             .filter(Boolean)
@@ -974,7 +974,7 @@ export const MessageBubble = memo(function MessageBubble({
                 if (node.kind !== "narrative") {
                     return;
                 }
-                parsePhoneContentBlocks(String(node.content || "")).forEach((block, blockIndex) => {
+                parsePhoneContentBlocks(String(node.content || ""), false, 0, false).forEach((block, blockIndex) => {
                     if (block.type !== "voice" || !block.content.trim()) {
                         return;
                     }
@@ -1001,7 +1001,7 @@ export const MessageBubble = memo(function MessageBubble({
         if (hasStructuredNodes) {
             return renderableNodes.some((node) => {
                 if (node.kind === "narrative") {
-                    return parsePhoneContentBlocks(String(node.content || "")).some((block) => block.type !== "voice" && block.content.trim());
+                    return parsePhoneContentBlocks(String(node.content || ""), false, 0, false).some((block) => block.type !== "voice" && block.content.trim());
                 }
                 return true;
             });
@@ -1012,7 +1012,7 @@ export const MessageBubble = memo(function MessageBubble({
         if (hasStructuredNodes) {
             return renderableNodes.some((node) => (
                 node.kind === "narrative"
-                && parsePhoneContentBlocks(String(node.content || "")).some((block) => block.type !== "voice" && block.content.trim())
+                && parsePhoneContentBlocks(String(node.content || ""), false, 0, false).some((block) => block.type !== "voice" && block.content.trim())
             ));
         }
         return fallbackBlocks.some((block) => block.type !== "voice" && block.content.trim());

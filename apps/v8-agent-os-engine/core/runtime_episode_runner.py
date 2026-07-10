@@ -11,6 +11,7 @@ from typing import Any
 
 from core.database import db
 from core.delegation_broker import normalize_task_briefs
+from core.delegation_result_contract import build_delegation_result_contract
 from core.json_safe import to_jsonable
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
@@ -2565,14 +2566,7 @@ class RuntimeEpisodeRunner:
                         if isinstance(item, dict)
                     ],
                     "results": [
-                        {
-                            "delegationId": item.get("delegationId") or item.get("id"),
-                            "targetLabel": item.get("targetLabel") or item.get("agentName"),
-                            "status": item.get("status"),
-                            "error": item.get("error"),
-                            "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
-                            "compactTranscript": _preview(item.get("compactTranscript"), limit=900),
-                        }
+                        build_delegation_result_contract(item)
                         for item in results[:8]
                         if isinstance(item, dict)
                     ],

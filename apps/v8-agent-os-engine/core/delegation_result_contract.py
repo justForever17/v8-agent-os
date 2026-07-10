@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+from typing import Any
+
+from core.json_safe import to_jsonable
+
+
+def _compact(value: Any, *, limit: int = 900) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 24)].rstrip() + "\n...[truncated]"
+
+
+def _list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    if value in (None, "", {}):
+        return []
+    return [value]
+
+
+def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
+    """Project one child result without dropping acceptance or lineage evidence."""
+
+    item = dict(result or {})
+    task_brief = item.get("taskBrief") if isinstance(item.get("taskBrief"), dict) else {}
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    status = str(item.get("status") or "unknown").strip() or "unknown"
+    local_self_check = _compact(item.get("localSelfCheck"), limit=1200)
+    acceptance_hint = _compact(
+        item.get("acceptanceHint")
+        or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
+        limit=900,
+    )
+    artifact_refs = _list(item.get("artifactRefs") or item.get("artifacts"))
+    missing_artifact_evidence = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in [
+                *_list(item.get("missingArtifacts")),
+                *_list(item.get("missingExpectedArtifacts")),
+                *_list(item.get("sparseArtifacts")),
+            ]
+            if str(value).strip()
+        )
+    )
+    supervisor_acceptance = item.get("supervisorAcceptance")
+    if not isinstance(supervisor_acceptance, dict):
+        supervisor_acceptance = {
+            "status": "pending",
+            "requiredAction": ["accept", "retry", "ignore"],
+        }
+    required_values = (
+        item.get("taskBriefId") or task_brief.get("taskBriefId") or task_brief.get("id"),
+        item.get("delegationId") or item.get("id"),
+        item.get("targetId") or item.get("agentId"),
+        status,
+        local_self_check,
+        acceptance_hint,
+    )
+    result_schema_matched = item.get("resultSchemaMatched")
+    if result_schema_matched is None:
+        result_schema_matched = all(bool(value) for value in required_values)
+
+    contract = {
+        "contractVersion": "delegation-result/v1",
+        "taskBriefId": item.get("taskBriefId") or task_brief.get("taskBriefId") or task_brief.get("id"),
+        "delegationId": item.get("delegationId") or item.get("id"),
+        "parentDelegationId": (
+            item.get("parentDelegationId")
+            or task_brief.get("parentDelegationId")
+            or context.get("parentDelegationId")
+        ),
+        "parentInvocationId": (
+            item.get("parentInvocationId")
+            or task_brief.get("parentInvocationId")
+            or context.get("parentInvocationId")
+        ),
+        "delegationDepth": item.get("delegationDepth") or task_brief.get("delegationDepth") or context.get("delegationDepth"),
+        "invocationId": item.get("invocationId"),
+        "targetId": item.get("targetId") or item.get("agentId"),
+        "targetLabel": item.get("targetLabel") or item.get("agentName") or item.get("targetId") or item.get("agentId"),
+        "agentId": item.get("agentId"),
+        "agentName": item.get("agentName"),
+        "lane": item.get("lane"),
+        "status": status,
+        "error": item.get("error"),
+        "dispatchStatus": item.get("dispatchStatus"),
+        "artifactRefs": to_jsonable(artifact_refs),
+        "missingArtifactEvidence": missing_artifact_evidence,
+        "localSelfCheck": local_self_check,
+        "acceptanceHint": acceptance_hint,
+        "supervisorAcceptance": supervisor_acceptance,
+        "resultSchemaMatched": bool(result_schema_matched),
+        "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
+        "summary": _compact(item.get("summary") or item.get("compactTranscript") or item.get("taskGoal"), limit=900),
+        "compactTranscript": _compact(item.get("compactTranscript"), limit=1200),
+    }
+    return {key: value for key, value in contract.items() if value not in (None, "", [], {})}

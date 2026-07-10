@@ -2109,6 +2109,9 @@ def test_delegation_episode_promotes_malformed_child_delegate_signal(monkeypatch
     assert payload["status"] == "waiting"
     assert payload["childEpisodeIds"] == [child_episodes[0]["episodeId"]]
     assert payload["results"][-1]["status"] == "waiting_child_delegation"
+    assert payload["results"][-1]["taskBriefId"] == "brief-parent"
+    assert payload["results"][-1]["supervisorAcceptance"]["status"] == "pending"
+    assert "acceptanceHint" in payload["results"][-1]
 
 
 def test_parallel_branch_extracts_child_delegation_from_command_update_list():

@@ -55,6 +55,13 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.workflow_patch.start()
 
+    def test_final_state_extractor_never_promotes_think_only_content(self):
+        think_only = {"messages": [AIMessage(content="<think>private reasoning</think>")]}
+        mixed = {"messages": [AIMessage(content="<think>private reasoning</think>Visible answer")]}
+
+        self.assertEqual(self.runtime._extract_final_assistant_text_from_state(think_only), "")
+        self.assertEqual(self.runtime._extract_final_assistant_text_from_state(mixed), "Visible answer")
+
     def tearDown(self) -> None:
         self.workflow_patch.stop()
         chat_runtime_module.db.delete_session(self.chat_run.session_id)

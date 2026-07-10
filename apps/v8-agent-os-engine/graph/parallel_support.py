@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command, Send
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from core.delegation_result_contract import build_delegation_result_contract
 from core.runtime_episodes import (
     append_handoff_ref,
     build_handoff_ref,
@@ -352,7 +353,7 @@ def _infer_expected_artifact_paths(branch: dict[str, Any], state: dict[str, Any]
             candidate = str(match.group(1) or match.group(2) or "").strip().strip("`'\"，,。;；:：")
             if (
                 not candidate
-                or candidate.startswith(("spec://", "http://", "https://"))
+                or candidate.startswith(("spec://", "http://", "https://", "file://"))
                 or any(marker in candidate for marker in ("<", ">", "\r", "\n"))
             ):
                 continue
@@ -1084,6 +1085,17 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
         "compactTranscript": _compact_transcript(delta_messages),
         "localSelfCheck": "Subagent branch completed; supervisor must still accept, retry, or ignore the result.",
         "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
+        "parentDelegationId": branch.get("parentDelegationId"),
+        "parentInvocationId": branch.get("parentInvocationId"),
+        "delegationDepth": branch.get("delegationDepth"),
+        "artifactRefs": [
+            {"path": str(path), "kind": "workspace_artifact"}
+            for path in expected_artifact_paths
+            if path.exists()
+        ],
+        "missingExpectedArtifacts": [str(path) for path in expected_artifact_paths if not path.exists()],
+        "supervisorAcceptance": {"status": "pending", "requiredAction": ["accept", "retry", "ignore"]},
+        "resultSchemaMatched": True,
     }
     return delta_messages, delta_todos, summary, []
 
@@ -1346,6 +1358,10 @@ def build_parallel_delegate_join_node():
         route_context = dict(state.get("current_route_context") or {})
         handoff_refs: list[dict[str, Any]] = []
         for item in results:
+            result_contract = build_delegation_result_contract(item)
+            worker_status = result_contract.pop("status", None)
+            if worker_status:
+                result_contract["workerStatus"] = worker_status
             producer_episode_id = str(item.get("delegationId") or item.get("invocationId") or invocation_id or "").strip()
             compact = str(item.get("compactTranscript") or item.get("localSelfCheck") or item.get("error") or item.get("taskGoal") or "").strip()
             handoff = build_handoff_ref(
@@ -1355,15 +1371,7 @@ def build_parallel_delegate_join_node():
                 compact_summary=compact or f"Subagent result for {producer_episode_id or invocation_id}",
                 detail_tool="delegation_broker(mode='observe')",
                 consumer_hint=str(item.get("acceptanceHint") or "Supervisor should accept, retry, or ignore this delegated result."),
-                extra={
-                    "invocationId": item.get("invocationId"),
-                    "taskBriefId": item.get("taskBriefId"),
-                    "agentId": item.get("agentId"),
-                    "agentName": item.get("agentName"),
-                    "delegationId": item.get("delegationId"),
-                    "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
-                    "compactTranscript": compact,
-                },
+                extra=result_contract,
             )
             route_context = append_handoff_ref(route_context, handoff)
             route_context, episode = transition_runtime_episode(

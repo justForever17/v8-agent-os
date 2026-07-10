@@ -24,7 +24,12 @@ export interface ContentBlock {
  * 2. Markdown Code Blocks: ```lang ... ``` (including unclosed blocks in streaming)
  * 3. Text
  */
-export function parseContentToBlocks(content: string, isStreaming: boolean, startId: number): ContentBlock[] {
+export function parseContentToBlocks(
+    content: string,
+    isStreaming: boolean,
+    startId: number,
+    parseInlineThinking = true,
+): ContentBlock[] {
     const blocks: ContentBlock[] = [];
     let blockIndex = startId;
     let processedContent = content;
@@ -208,13 +213,15 @@ export function parseContentToBlocks(content: string, isStreaming: boolean, star
             const timeMatch = openingTag.match(/time="(\d+)"/);
             if (timeMatch) elapsedTime = parseInt(timeMatch[1], 10);
 
-            blocks.push({
-                id: `think-${blockIndex++}`,
-                type: 'thinking',
-                content: thinkContent,
-                isStreaming: isStreaming && isIncomplete,
-                data: { startTime: Date.now(), elapsedTime } // elapsedTime can be updated by UI
-            });
+            if (parseInlineThinking) {
+                blocks.push({
+                    id: `think-${blockIndex++}`,
+                    type: 'thinking',
+                    content: thinkContent,
+                    isStreaming: isStreaming && isIncomplete,
+                    data: { startTime: Date.now(), elapsedTime } // elapsedTime can be updated by UI
+                });
+            }
 
         } else if (match[3]) {
             // --- Tool Call (<tool-call>) ---

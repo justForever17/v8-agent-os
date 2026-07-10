@@ -213,7 +213,7 @@ function collectVoiceCardDescriptors(messages: ChatMessage[]) {
                 if (node.kind !== "narrative") {
                     return;
                 }
-                parsePhoneContentBlocks(String(node.content || ""))
+                parsePhoneContentBlocks(String(node.content || ""), false, 0, false)
                     .forEach((block, blockIndex) => {
                         if (block.type !== "voice" || !block.content.trim()) {
                             return;

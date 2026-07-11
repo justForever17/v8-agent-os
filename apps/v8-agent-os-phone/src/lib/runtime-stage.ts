@@ -23,6 +23,7 @@ import {
     type AuthoritativeRuntimeTimelineEntry,
     type SessionRuntimeId,
 } from "@v8/session-realtime";
+import { shouldProjectRuntimeSummarySignal } from "@v8/session-realtime/runtime-summary-policy";
 
 export type PhoneRuntimeId =
     SessionRuntimeId | "context_governance";
@@ -66,7 +67,27 @@ export type PhoneRuntimeStageModel = {
     activeRuntimeId: PhoneRuntimeId | null;
     items: PhoneRuntimeStageCard[];
     activities: PhoneRuntimeStageActivity[];
+    messageActivities: PhoneRuntimeStageActivity[];
 };
+
+export const PHONE_RUNTIME_TIMELINE_LIMIT = 240;
+
+function phoneRuntimeTimelineEntrySemanticallyEqual(
+    left: PhoneRuntimeTimelineEntry,
+    right: PhoneRuntimeTimelineEntry,
+) {
+    return left.id === right.id
+        && left.runtimeId === right.runtimeId
+        && left.runId === right.runId
+        && left.topic === right.topic
+        && left.kind === right.kind
+        && left.summary === right.summary
+        && left.actorLabel === right.actorLabel
+        && left.status === right.status
+        && left.dedupeKey === right.dedupeKey
+        && left.replacesEventId === right.replacesEventId
+        && JSON.stringify(left.metadata || null) === JSON.stringify(right.metadata || null);
+}
 
 export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "chat",
@@ -396,17 +417,49 @@ export function mergePhoneRuntimeTimeline(
     current: PhoneRuntimeTimelineEntry[],
     incoming: PhoneRuntimeTimelineEntry[],
 ) {
-    const map = new Map<string, PhoneRuntimeTimelineEntry>();
+    if (incoming.length === 0) {
+        return current.length <= PHONE_RUNTIME_TIMELINE_LIMIT
+            ? current
+            : current.slice(0, PHONE_RUNTIME_TIMELINE_LIMIT);
+    }
 
-    for (const item of [...current, ...incoming]) {
-        const key = item.dedupeKey || item.id || `${item.runtimeId}:${item.topic}:${item.timestamp}`;
+    const keyFor = (item: PhoneRuntimeTimelineEntry) =>
+        item.dedupeKey || item.id || `${item.runtimeId}:${item.topic}:${item.timestamp}`;
+    const map = new Map<string, PhoneRuntimeTimelineEntry>(
+        current.map((item) => [keyFor(item), item]),
+    );
+    let changed = current.length > PHONE_RUNTIME_TIMELINE_LIMIT;
+
+    for (const item of incoming) {
+        const key = keyFor(item);
         const existing = map.get(key);
-        if (!existing || item.seq >= existing.seq || item.timestamp >= existing.timestamp) {
+        if (!existing) {
             map.set(key, item);
+            changed = true;
+            continue;
+        }
+        if (phoneRuntimeTimelineEntrySemanticallyEqual(existing, item)) {
+            continue;
+        }
+        if (item.seq >= existing.seq || item.timestamp >= existing.timestamp) {
+            map.set(key, item);
+            changed = true;
         }
     }
 
-    return Array.from(map.values()).sort((left, right) => right.timestamp - left.timestamp);
+    if (!changed) {
+        return current;
+    }
+    const next = Array.from(map.values())
+        .sort((left, right) => right.timestamp - left.timestamp)
+        .slice(0, PHONE_RUNTIME_TIMELINE_LIMIT);
+    if (
+        next.length === current.length
+        && next.every((item, index) => item === current[index])
+    ) {
+        return current;
+    }
+    return next;
 }
 
 export function getPhoneRuntimeDescriptor(runtimeId: PhoneRuntimeId, locale: LocaleCode = "zh-CN") {
@@ -429,7 +482,21 @@ export function getPhoneRuntimeDescriptor(runtimeId: PhoneRuntimeId, locale: Loc
 }
 
 export function normalizePhoneRuntimeTimeline(input: unknown[]): PhoneRuntimeTimelineEntry[] {
-    return normalizeAuthoritativeRuntimeTimeline(input);
+    return mergePhoneRuntimeTimeline([], normalizeAuthoritativeRuntimeTimeline(input));
+}
+
+export function reconcilePhoneRuntimeTimelineSnapshot(
+    current: PhoneRuntimeTimelineEntry[],
+    incoming: unknown[],
+) {
+    const normalized = normalizePhoneRuntimeTimeline(incoming);
+    if (
+        current.length === normalized.length
+        && current.every((item, index) => phoneRuntimeTimelineEntrySemanticallyEqual(item, normalized[index]))
+    ) {
+        return current;
+    }
+    return normalized;
 }
 
 export function buildPhoneRuntimeTimelineEntryFromEvent(
@@ -449,6 +516,27 @@ function runtimeActivitiesForCard(runtimeId: PhoneRuntimeId, activities: PhoneRu
         return activities.filter((activity) => activity.runtimeId === "chat" || activity.runtimeId === "subagent_swarm");
     }
     return activities.filter((activity) => activity.runtimeId === runtimeId);
+}
+
+function compactPhoneRuntimeStatusActivities(input: PhoneRuntimeStageActivity[]) {
+    const compacted: PhoneRuntimeStageActivity[] = [];
+    const seenExact = new Set<string>();
+    const seenProgress = new Set<string>();
+    for (const activity of [...input].sort((left, right) => right.timestamp - left.timestamp)) {
+        const executionType = activity.node.kind === "execution" ? activity.node.executionType : undefined;
+        if (!shouldProjectRuntimeSummarySignal({ kind: activity.kind, topic: activity.topic, executionType })) continue;
+        const exactKey = `${activity.runtimeId}:${activity.kind}:${activity.summary.trim().toLowerCase()}`;
+        if (seenExact.has(exactKey)) continue;
+        seenExact.add(exactKey);
+        if (activity.kind === "progress") {
+            const progressKey = `${runtimeCardIdForActivity(activity)}:${activity.messageId}`;
+            if (seenProgress.has(progressKey)) continue;
+            seenProgress.add(progressKey);
+        }
+        compacted.push(activity);
+        if (compacted.length >= 40) break;
+    }
+    return compacted;
 }
 
 export function buildPhoneRuntimeStageModel(
@@ -611,30 +699,33 @@ export function buildPhoneRuntimeStageModel(
         });
     }
 
-    activities.sort((left, right) => right.timestamp - left.timestamp);
-    const realActivities = activities.filter((activity) => !activity.synthetic);
+    const messageActivities = [...activities]
+        .sort((left, right) => right.timestamp - left.timestamp)
+        .slice(0, PHONE_RUNTIME_TIMELINE_LIMIT);
+    const summaryActivities = compactPhoneRuntimeStatusActivities(messageActivities);
+    const realActivities = summaryActivities.filter((activity) => !activity.synthetic);
     const normalizedOwnerRuntime = normalizePhoneRuntimeId(options?.ownerRuntime);
     const rawActiveRuntimeId = normalizedOwnerRuntime === "subagent_swarm"
         ? "chat"
         : normalizedOwnerRuntime ?? realActivities[0]?.runtimeId ?? null;
     const runtimeActivitiesById = new Map<PhoneRuntimeId, PhoneRuntimeStageActivity[]>();
+    const runtimeStatus = String(options?.status || "").trim().toLowerCase();
+    const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
     const visibleRuntimeOrder = VISIBLE_PHONE_RUNTIME_ORDER.filter((runtimeId) => {
-        const runtimeActivities = runtimeActivitiesForCard(runtimeId, activities);
-        if (runtimeActivities.length === 0) {
+        const runtimeActivities = runtimeActivitiesForCard(runtimeId, summaryActivities);
+        const ownerVisible = runtimeId === rawActiveRuntimeId && (isBusy || options?.pendingApproval);
+        if (runtimeActivities.length === 0 && !ownerVisible) {
             return false;
         }
         runtimeActivitiesById.set(runtimeId, runtimeActivities);
         return true;
     });
-    const firstVisibleRuntimeWithActivity = activities
+    const firstVisibleRuntimeWithActivity = summaryActivities
         .map(runtimeCardIdForActivity)
         .find((runtimeId) => runtimeActivitiesById.has(runtimeId)) ?? null;
     const activeRuntimeId = rawActiveRuntimeId && runtimeActivitiesById.has(rawActiveRuntimeId)
         ? rawActiveRuntimeId
         : firstVisibleRuntimeWithActivity;
-    const runtimeStatus = String(options?.status || "").trim().toLowerCase();
-    const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
-
     const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getPhoneRuntimeDescriptor(runtimeId, options?.locale);
         const runtimeActivities = runtimeActivitiesById.get(runtimeId) || [];
@@ -668,6 +759,7 @@ export function buildPhoneRuntimeStageModel(
     return {
         activeRuntimeId,
         items,
-        activities,
+        activities: summaryActivities,
+        messageActivities,
     };
 }

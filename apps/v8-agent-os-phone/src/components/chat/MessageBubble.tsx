@@ -766,6 +766,8 @@ function readIdentityField(message: ChatMessage, keys: string[]) {
     return "";
 }
 
+const EMPTY_RUNTIME_ACTIVITIES: PhoneRuntimeStageActivity[] = [];
+
 export const MessageBubble = memo(function MessageBubble({
     adminBaseUrl,
     message,
@@ -778,7 +780,7 @@ export const MessageBubble = memo(function MessageBubble({
     userImageUri,
     userDisplayName,
     processes = [],
-    runtimeActivities = [],
+    runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
 }: {
     adminBaseUrl: string;
     message: ChatMessage;

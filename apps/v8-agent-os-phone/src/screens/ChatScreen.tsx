@@ -64,8 +64,9 @@ import {
     buildPhoneRuntimeTimelineEntryFromEvent,
     getPhoneRuntimeDescriptor,
     mergePhoneRuntimeTimeline,
-    normalizePhoneRuntimeTimeline,
     normalizePhoneRuntimeId,
+    PHONE_RUNTIME_TIMELINE_LIMIT,
+    reconcilePhoneRuntimeTimelineSnapshot,
     type PhoneRuntimeId,
     type PhoneRuntimeTimelineEntry,
 } from "@/src/lib/runtime-stage";
@@ -162,7 +163,7 @@ import {
 } from "@v8/session-realtime";
 
 const REPLY_POP_SOUND = require("../../assets/audio/message-pop.mp3");
-const PHONE_PROJECTION_RUNTIME_TIMELINE_LIMIT = 240;
+const PHONE_PROJECTION_RUNTIME_TIMELINE_LIMIT = PHONE_RUNTIME_TIMELINE_LIMIT;
 
 type RuntimeSummary = {
     status: string;
@@ -3498,7 +3499,10 @@ export default function ChatScreen() {
         if (Array.isArray(view.processes) && view.processes.length > 0) {
             applySessionProcessSurface(view.processes);
         }
-        const normalizedRuntimeTimeline = normalizePhoneRuntimeTimeline(nextRuntimeEvents);
+        const normalizedRuntimeTimeline = reconcilePhoneRuntimeTimelineSnapshot(
+            runtimeTimelineRef.current,
+            nextRuntimeEvents,
+        );
         runtimeTimelineRef.current = normalizedRuntimeTimeline;
         setRuntimeTimeline(normalizedRuntimeTimeline);
         const nextRuntime: RuntimeSummary = {
@@ -4048,10 +4052,10 @@ export default function ChatScreen() {
 
         if (normalized.type === "reasoning_chunk") {
             appendRuntimeTimeline(
-                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildPhaseRuntimeTimelineEntry(
+                buildPhaseRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
                     "reasoning",
-                    String(normalized.content || tRef.current("src.screens.chatscreen.thinking")).trim() || tRef.current("src.screens.chatscreen.thinking"),
+                    tRef.current("src.screens.chatscreen.thinking"),
                     {
                         runId: normalized.run_id,
                         seq: normalized.seq,
@@ -4080,10 +4084,10 @@ export default function ChatScreen() {
 
         if (normalized.type === "text_chunk") {
             appendRuntimeTimeline(
-                buildPhoneRuntimeTimelineEntryFromEvent(normalized, { locale }) || buildPhaseRuntimeTimelineEntry(
+                buildPhaseRuntimeTimelineEntry(
                     normalizePhoneRuntimeId(String(normalized.runtimeId || "chat")) || "chat",
                     "streaming",
-                    String(normalized.content || tRef.current("src.screens.chatscreen.replying")).trim() || tRef.current("src.screens.chatscreen.replying"),
+                    tRef.current("src.screens.chatscreen.replying"),
                     {
                         runId: normalized.run_id,
                         seq: normalized.seq,
@@ -6940,7 +6944,7 @@ export default function ChatScreen() {
                                     userImageUri={profileImageUri || ""}
                                     userDisplayName={user?.name || user?.login || user?.email || ""}
                                     processes={hudProcesses}
-                                    runtimeActivities={projection.runtimeStageModel.activities}
+                                    runtimeActivities={projection.runtimeStageModel.messageActivities}
                                     contextReferences={projection.contextReferences}
                                     pendingApproval={projection.pendingApproval}
                                     pendingApprovalCount={projection.pendingApprovalCount}

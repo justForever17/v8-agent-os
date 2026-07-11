@@ -22,6 +22,7 @@ import { radii, spacing } from "@/src/theme/tokens";
 import type { AskUserInteraction, ChatMessage, PendingApproval } from "@/src/types/admin";
 
 type ChatPendingInteraction = PendingApproval | AskUserInteraction;
+const EMPTY_RUNTIME_ACTIVITIES: PhoneRuntimeStageActivity[] = [];
 
 type ChatWindowProps = {
     adminBaseUrl: string;
@@ -117,7 +118,7 @@ export const ChatWindow = memo(function ChatWindow({
     userImageUri,
     userDisplayName,
     processes,
-    runtimeActivities = [],
+    runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
     contextReferences,
     pendingApproval,
     pendingApprovalCount = 0,
@@ -138,6 +139,18 @@ export const ChatWindow = memo(function ChatWindow({
         [messages],
     );
     const lastVisibleMessage = visibleMessages[visibleMessages.length - 1] || null;
+    const liveRuntimeMessageIndex = useMemo(() => {
+        for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
+            const message = visibleMessages[index];
+            if (
+                message.role === "assistant"
+                && (message.uiEphemeral || isActiveAssistantStreamPhase(message.uiStreamPhase))
+            ) {
+                return index;
+            }
+        }
+        return -1;
+    }, [visibleMessages]);
     const lastVisibleSignature = useMemo(() => {
         if (!lastVisibleMessage) {
             return "";
@@ -254,7 +267,11 @@ export const ChatWindow = memo(function ChatWindow({
                                 userImageUri={userImageUri}
                                 userDisplayName={userDisplayName}
                                 processes={processes}
-                                runtimeActivities={runtimeActivities}
+                                runtimeActivities={
+                                    index === liveRuntimeMessageIndex
+                                        ? runtimeActivities
+                                        : EMPTY_RUNTIME_ACTIVITIES
+                                }
                             />
                         ))
                     )}

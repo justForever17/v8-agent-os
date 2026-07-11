@@ -105,6 +105,7 @@ import {
     listWorkspaceFolders,
     listCommandPresets,
     listConversations,
+    listPlugins,
     listSkillsAndSubagentFamilies,
     requestTextToSpeech,
     respondAskUser,
@@ -131,6 +132,7 @@ import type {
     ConversationSummary,
     AskUserInteraction,
     PendingApproval,
+    PluginReferenceSummary,
     PhoneUiTimelineNode,
     DesktopLiveStatus,
     RealtimeSessionSnapshot,
@@ -182,7 +184,8 @@ const CONTEXT_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$/;
 
 type ComposerMentionItem =
     | { kind: "skill"; key: string; skill: SkillReferenceSummary }
-    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary };
+    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary }
+    | { kind: "plugin"; key: string; plugin: PluginReferenceSummary };
 
 type WorkspaceBindingDraft =
     | { kind: "main" }
@@ -414,6 +417,7 @@ function buildUserMessage(
         command: CommandPresetSummary | null;
         skills: SkillReferenceSummary[];
         subagentFamilies: SubagentFamilySummary[];
+        plugins: PluginReferenceSummary[];
         taskPlanningMode: boolean;
         files: UploadedWorkspaceFile[];
         contextSessionRefs: ContextSessionReference[];
@@ -434,6 +438,9 @@ function buildUserMessage(
     }
     if (options.skills.length > 0) {
         metadata.skillReferences = options.skills.map((skill) => ({ ...skill }));
+    }
+    if (options.plugins.length > 0) {
+        metadata.pluginReferences = options.plugins.map((plugin) => ({ ...plugin }));
     }
     if (options.skills.length > 0 || options.subagentFamilies.length > 0) {
         metadata.contextMentions = [
@@ -2164,10 +2171,12 @@ export default function ChatScreen() {
     const [commands, setCommands] = useState<CommandPresetSummary[]>([]);
     const [skills, setSkills] = useState<SkillReferenceSummary[]>([]);
     const [subagentFamilies, setSubagentFamilies] = useState<SubagentFamilySummary[]>([]);
+    const [plugins, setPlugins] = useState<PluginReferenceSummary[]>([]);
     const [uploadedFiles, setUploadedFiles] = useState<UploadedWorkspaceFile[]>([]);
     const [selectedCommand, setSelectedCommand] = useState<CommandPresetSummary | null>(null);
     const [selectedSkills, setSelectedSkills] = useState<SkillReferenceSummary[]>([]);
     const [selectedSubagentFamilies, setSelectedSubagentFamilies] = useState<SubagentFamilySummary[]>([]);
+    const [selectedPlugins, setSelectedPlugins] = useState<PluginReferenceSummary[]>([]);
     const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
     const [activeQueryText, setActiveQueryText] = useState("");
     const [taskPlanningMode, setTaskPlanningMode] = useState(false);
@@ -2273,6 +2282,7 @@ export default function ChatScreen() {
     const filteredMentionItems = useMemo<ComposerMentionItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}:${skill.path || ""}`));
         const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
+        const selectedPluginIds = new Set(selectedPlugins.map((plugin) => plugin.pluginId));
         const base: ComposerMentionItem[] = [
             ...skills
                 .filter((item) => !selectedKeys.has(`${item.name}:${item.path || ""}`))
@@ -2280,6 +2290,9 @@ export default function ChatScreen() {
             ...subagentFamilies
                 .filter((family) => family.familyId && !selectedFamilyIds.has(family.familyId))
                 .map((family) => ({ kind: "subagent_family" as const, key: `family:${family.familyId}`, family })),
+            ...plugins
+                .filter((plugin) => plugin.pluginId && !selectedPluginIds.has(plugin.pluginId))
+                .map((plugin) => ({ kind: "plugin" as const, key: `plugin:${plugin.pluginId}`, plugin })),
         ];
         if (!queryTerm) {
             return base;
@@ -2291,14 +2304,18 @@ export default function ChatScreen() {
                     || String(item.skill.description || "").toLowerCase().includes(queryTerm)
                     || String(item.skill.path || "").toLowerCase().includes(queryTerm)
                 )
-                : (
+                : item.kind === "subagent_family" ? (
                     item.family.familyId.toLowerCase().includes(queryTerm)
                     || String(item.family.displayName || "").toLowerCase().includes(queryTerm)
                     || String(item.family.description || "").toLowerCase().includes(queryTerm)
                     || (item.family.aliases || []).some((alias) => String(alias || "").toLowerCase().includes(queryTerm))
+                ) : (
+                    item.plugin.pluginId.toLowerCase().includes(queryTerm)
+                    || item.plugin.displayName.toLowerCase().includes(queryTerm)
+                    || String(item.plugin.description || "").toLowerCase().includes(queryTerm)
                 ),
         );
-    }, [queryTerm, selectedSkills, selectedSubagentFamilies, skills, subagentFamilies]);
+    }, [queryTerm, selectedSkills, selectedSubagentFamilies, selectedPlugins, skills, subagentFamilies, plugins]);
     const boundProject = useMemo(
         () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
         [projects, scopeBinding?.projectId],
@@ -3150,6 +3167,7 @@ export default function ChatScreen() {
         setSelectedCommand(null);
         setSelectedSkills([]);
         setSelectedSubagentFamilies([]);
+        setSelectedPlugins([]);
         setTaskPlanningMode(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
@@ -3386,16 +3404,18 @@ export default function ChatScreen() {
             workspaceId: scopeBinding?.workspaceId || undefined,
             projectId: scopeBinding?.projectId || undefined,
         };
-        const [nextConversations, nextCommands, nextReferences] = await Promise.all([
+        const [nextConversations, nextCommands, nextReferences, nextPlugins] = await Promise.all([
             listConversations(authorizedFetch),
             listCommandPresets(authorizedFetch).catch(() => []),
             listSkillsAndSubagentFamilies(authorizedFetch, skillScope).catch(() => ({ skills: [], subagentFamilies: [] })),
+            listPlugins(authorizedFetch).catch(() => []),
         ]);
 
         setConversations(nextConversations);
         setCommands(nextCommands);
         setSkills(nextReferences.skills);
         setSubagentFamilies(nextReferences.subagentFamilies);
+        setPlugins(nextPlugins);
         await loadProjects();
 
         if (
@@ -4881,13 +4901,17 @@ export default function ChatScreen() {
             projectId: scopeBinding?.projectId || undefined,
         };
         let cancelled = false;
-        void listSkillsAndSubagentFamilies(authorizedFetch, skillScope)
-            .then((nextReferences) => {
+        void Promise.all([
+            listSkillsAndSubagentFamilies(authorizedFetch, skillScope),
+            listPlugins(authorizedFetch).catch(() => []),
+        ])
+            .then(([nextReferences, nextPlugins]) => {
                 if (cancelled) {
                     return;
                 }
                 setSkills(nextReferences.skills);
                 setSubagentFamilies(nextReferences.subagentFamilies);
+                setPlugins(nextPlugins);
             })
             .catch((error) => {
                 console.warn("[phone/chat] scoped skill refresh failed", error instanceof Error ? error.message : error);
@@ -5017,6 +5041,7 @@ export default function ChatScreen() {
         setUploadedFiles([]);
         setSelectedCommand(null);
         setSelectedSkills([]);
+        setSelectedPlugins([]);
         setTaskPlanningMode(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
@@ -5048,6 +5073,7 @@ export default function ChatScreen() {
         setUploadedFiles([]);
         setSelectedCommand(null);
         setSelectedSkills([]);
+        setSelectedPlugins([]);
         setTaskPlanningMode(false);
         setWorkspaceInfoOpen(false);
         setWorkspaceChooserVisible(true);
@@ -5357,8 +5383,12 @@ export default function ChatScreen() {
             setSelectedSubagentFamilies((current) => current.slice(0, -1));
             return;
         }
+        if (selectedPlugins.length > 0) {
+            setSelectedPlugins((current) => current.slice(0, -1));
+            return;
+        }
         setSelectedCommand((current) => (current ? null : current));
-    }, [input, selectedSkills.length, selectedSubagentFamilies.length]);
+    }, [input, selectedSkills.length, selectedSubagentFamilies.length, selectedPlugins.length]);
 
     const handleSpeakVoice = useCallback(async (text: string, messageKey: string) => {
         const voiceText = text.trim();
@@ -5906,7 +5936,7 @@ export default function ChatScreen() {
         const preserveComposer = Boolean(options.preserveComposer);
         const text = String(options.text ?? input).trim();
         const effectiveUploadedFiles = hasExplicitFiles ? [...(options.files || [])] : uploadedFiles;
-        if (!text && !selectedCommand && selectedSkills.length === 0 && selectedSubagentFamilies.length === 0 && effectiveUploadedFiles.length === 0) {
+        if (!text && !selectedCommand && selectedSkills.length === 0 && selectedSubagentFamilies.length === 0 && selectedPlugins.length === 0 && effectiveUploadedFiles.length === 0) {
             return;
         }
         const currentConversationId = activeConversationIdRef.current;
@@ -5922,6 +5952,7 @@ export default function ChatScreen() {
             : undefined;
         const pendingSkills = [...selectedSkills];
         const pendingSubagentFamilies = [...selectedSubagentFamilies];
+        const pendingPlugins = [...selectedPlugins];
         const pendingFiles = [...effectiveUploadedFiles];
         const pendingSessionRefs = [...pendingContextSessionRefs];
         const pendingTaskPlanningMode = taskPlanningMode;
@@ -5961,6 +5992,7 @@ export default function ChatScreen() {
                 command: pendingCommand,
                 skills: pendingSkills,
                 subagentFamilies: pendingSubagentFamilies,
+                plugins: pendingPlugins,
                 taskPlanningMode: pendingTaskPlanningMode,
                 files: pendingFiles,
                 contextSessionRefs: pendingSessionRefs,
@@ -5994,6 +6026,7 @@ export default function ChatScreen() {
                     setSelectedCommand(null);
                     setSelectedSkills([]);
                     setSelectedSubagentFamilies([]);
+                    setSelectedPlugins([]);
                 }
                 if (!hasExplicitFiles) {
                     setUploadedFiles([]);
@@ -6029,6 +6062,7 @@ export default function ChatScreen() {
                         specCommand: pendingSpecCommand,
                         specMode: Boolean(pendingSpecCommand),
                         skillReferences: pendingSkills,
+                        pluginReferences: pendingPlugins,
                         contextMentions: [
                             ...pendingSkills.map((skill): ContextMentionSummary => ({
                                 kind: "skill",
@@ -6167,6 +6201,7 @@ export default function ChatScreen() {
                 setSelectedCommand(null);
                 setSelectedSkills([]);
                 setSelectedSubagentFamilies([]);
+                setSelectedPlugins([]);
             }
             if (!hasExplicitFiles) {
                 setUploadedFiles([]);
@@ -6202,6 +6237,7 @@ export default function ChatScreen() {
                     specCommand: pendingSpecCommand,
                     specMode: Boolean(pendingSpecCommand),
                     skillReferences: pendingSkills,
+                    pluginReferences: pendingPlugins,
                     contextMentions: [
                         ...pendingSkills.map((skill): ContextMentionSummary => ({
                             kind: "skill",
@@ -6275,6 +6311,7 @@ export default function ChatScreen() {
                 setSelectedCommand(null);
                 setSelectedSkills([]);
                 setSelectedSubagentFamilies([]);
+                setSelectedPlugins([]);
                 setActiveQueryMode(null);
                 setActiveQueryText("");
             }
@@ -6326,6 +6363,7 @@ export default function ChatScreen() {
                     setSelectedCommand(pendingCommand);
                     setSelectedSkills(pendingSkills);
                     setSelectedSubagentFamilies(pendingSubagentFamilies);
+                    setSelectedPlugins(pendingPlugins);
                 }
                 if (!hasExplicitFiles) {
                     setUploadedFiles(pendingFiles);
@@ -6370,6 +6408,7 @@ export default function ChatScreen() {
         selectedCommand,
         selectedSkills,
         selectedSubagentFamilies,
+        selectedPlugins,
         scopeBinding?.projectId,
         scopeBinding?.workspaceId,
         scopeBinding?.workspacePath,
@@ -6488,6 +6527,14 @@ export default function ChatScreen() {
         setActiveQueryText("");
     };
 
+    const handleSelectPluginFromPicker = (plugin: PluginReferenceSummary) => {
+        setSelectedPlugins((current) => current.some((item) => item.pluginId === plugin.pluginId)
+            ? current
+            : [...current, { ...plugin, grantScope: "task" }]);
+        setActiveQueryMode(null);
+        setActiveQueryText("");
+    };
+
     const overlayDockContent = hasOverlayLayer ? (
         <View pointerEvents="box-none" style={styles.keyboardOverlayHost}>
             {pickerOverlayVisible ? (
@@ -6503,6 +6550,7 @@ export default function ChatScreen() {
                     onSelectCommand={handleSelectCommandFromPicker}
                     onSelectSkill={handleSelectSkillFromPicker}
                     onSelectSubagentFamily={handleSelectSubagentFamilyFromPicker}
+                    onSelectPlugin={handleSelectPluginFromPicker}
                 />
             ) : null}
             <View
@@ -6658,6 +6706,9 @@ export default function ChatScreen() {
                     selectedCommand={selectedCommand}
                     selectedSkills={selectedSkills}
                     selectedSubagentFamilies={selectedSubagentFamilies}
+                    selectedPlugins={selectedPlugins}
+                    onChangePluginScope={(pluginId, grantScope) => setSelectedPlugins((current) => current.map((item) => item.pluginId === pluginId ? { ...item, grantScope } : item))}
+                    onRemovePlugin={(pluginId) => setSelectedPlugins((current) => current.filter((item) => item.pluginId !== pluginId))}
                     contextSessionRefs={pendingContextSessionRefs}
                     onRemoveContextSessionRef={(sessionId) => {
                         setPendingContextSessionRefs((current) => current.filter((item) => item.sessionId !== sessionId));

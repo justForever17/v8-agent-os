@@ -169,14 +169,16 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         message = ToolMessage(
             content=json.dumps(
                 {
-                    "jobId": "job-1",
-                    "providerTaskId": "task-1",
-                    "operationKind": "video.text_to_video",
-                    "artifactIds": ["artifact-1"],
-                    "providerResponse": "z" * 8000,
+                    "ok": True,
+                    "facade": "jobs",
+                    "action": "get",
+                    "status": "succeeded",
+                    "summary": "video.text_to_video job succeeded with 1 artifact" + (" z" * 4000),
+                    "refs": ["job-1", "artifact-1"],
+                    "detailRef": "toolobs://creative-internal",
                 }
             ),
-            name="creative_media_get_job",
+            name="creative_media_jobs",
             tool_call_id="tool-call-1",
         )
         command = Command(update={"messages": [message], "other": "kept"})
@@ -193,11 +195,11 @@ class ToolOutputDynamicBudgetTest(unittest.TestCase):
         content = str(result_message.content)
 
         self.assertEqual(result.update["other"], "kept")
-        self.assertIn("Creative Media get_job", content)
+        self.assertIn("Creative Media jobs.get", content)
         self.assertIn("job-1", content)
         self.assertIn("video.text_to_video", content)
-        self.assertIn("Artifacts: 1", content)
-        self.assertIn("providerResponse", content)
+        self.assertIn("artifact-1", content)
+        self.assertNotIn("providerResponse", content)
 
 
 if __name__ == "__main__":

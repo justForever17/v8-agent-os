@@ -63,15 +63,6 @@ DEFAULT_VISIBLE_BUDGET = 6000
 UNSAFE_REASONS: dict[str, str] = {
     "rpa_run_draft": "would execute a Robot Framework draft script",
     "rpa_run_existing_flow": "would execute a Robot Framework flow",
-    "creative_media_create_job": "would create a provider-facing media job",
-    "creative_media_compile_recipe": "compiles and persists a Creative Media recipe",
-    "creative_media_register_asset": "would mutate the Creative Media asset ledger",
-    "creative_media_create_character_bible": "would mutate the Creative Media character ledger",
-    "creative_media_register_keyframe": "would mutate the Creative Media keyframe ledger",
-    "creative_media_create_edit_plan": "would mutate the Creative Media edit-plan ledger",
-    "creative_media_render_edit_plan": "would render media and record artifacts",
-    "creative_media_create_quality_job": "would create a quality-check ledger entry",
-    "creative_media_retry_job": "would retry a provider-facing media job",
     "computer_use_click": "would perform a real desktop click",
     "computer_use_type_text": "would type into the desktop",
     "computer_use_hotkey": "would send a real desktop hotkey",
@@ -124,77 +115,16 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "runtime_broker": {"mode": "list"},
     "session_context_broker": {"sourceSessionId": "calibration-missing-session", "mode": "summary"},
     "mcp_server_config": {"mode": "mcp_list"},
+    "plugin_broker": {"mode": "list"},
     "spec_broker": {"mode": "brief", "workspace_path": ""},
     "workspace_broker": {"mode": "inspect", "path": ".", "depth": 1, "max_entries": 30},
     "rpa_list_robot_scripts": {"limit": 5},
-    "creative_media_catalog": {"detail_level": "summary", "limit": 8},
-    "creative_media_resolutions": {},
-    "creative_media_list_jobs": {"modality": None, "status": None, "limit": 10},
-    "creative_media_list_recipes": {"modality": None, "recipe_kind": None, "limit": 10},
-    "creative_media_list_assets": {"modality": None, "role": None, "limit": 10},
-    "creative_media_list_character_bibles": {"limit": 10},
-    "creative_media_list_keyframes": {"recipe_id": None, "role": None, "character_bible_id": None, "limit": 10},
-    "creative_media_list_edit_plans": {"recipe_id": None, "limit": 10},
-    "creative_media_list_renders": {"plan_id": None, "status": None, "limit": 10},
-    "creative_media_list_quality_jobs": {"status": None, "limit": 10},
-    "creative_media_cost_ledger": {"limit": 10},
-    "creative_media_safety_events": {"limit": 10},
-    "creative_media_production_pack": {
-        "request": {
-            "goal": "Dry-run creative media production pack.",
-            "brief": {"summary": "Create one sample image and one sample narration asset."},
-            "providerId": "dry-run-provider",
-            "modelId": "dry-run-model",
-            "sampleArtifactRefs": [{"artifactId": "artifact_sample", "kind": "image"}],
-        }
-    },
-    "creative_media_rank_models": {"modality": "image", "operation_kind": "image.generate", "goal": "Dry-run selector", "limit": 3},
-    "creative_media_reference_media_brief": {
-        "request": {
-            "goal": "Extract style from references before generation.",
-            "media": [{"artifactId": "artifact_ref", "kind": "image", "title": "style frame"}],
-        }
-    },
-    "creative_media_sample_approval_packet": {
-        "request": {
-            "question": "Confirm dry-run sample direction",
-            "media": [{"artifactId": "artifact_sample", "kind": "image", "title": "sample frame"}],
-            "questions": [{"id": "style", "question": "Pick a style", "type": "single", "options": [{"id": "a", "label": "A"}]}],
-        }
-    },
-    "creative_media_qa_check": {
-        "request": {
-            "artifacts": [{"title": "missing dry-run artifact", "kind": "video", "path": "__v8_calibration_missing_video.mp4"}],
-            "requiredKinds": ["video"],
-        }
-    },
-    "creative_media_alpha_inspect": {"path": "__v8_calibration_missing_alpha.png"},
-    "creative_media_psd_inspect": {"path": "__v8_calibration_missing.psd"},
-    "creative_media_psd_export_preview": {"path": "__v8_calibration_missing.psd", "dry_run": True},
-    "creative_media_psd_compose_template": {
-        "request": {
-            "name": "dry-run-layered-asset",
-            "canvas": {"width": 320, "height": 180, "background": "transparent"},
-            "layers": [
-                {"name": "subject", "path": "assets/subject.png", "x": 24, "y": 16},
-                {"name": "caption", "path": "assets/caption.png", "x": 32, "y": 120},
-            ],
-            "dryRun": True,
-        }
-    },
-    "creative_media_compile_work_order": {
-        "request": {
-            "intent": "simple_asset",
-            "modality": "image",
-            "assetRole": "background",
-            "brief": "Dry-run calibration image for native tool output docs.",
-            "aspectRatio": "16:9",
-            "qualityTier": "draft",
-            "costLimit": 0,
-            "requestingRuntime": "calibration",
-        }
-    },
-    "creative_media_list_work_orders": {"status": None, "requesting_runtime": None, "limit": 10},
+    "creative_media_capabilities": {"action": "describe", "request": {}},
+    "creative_media_plan": {"action": "list_work_orders", "request": {"limit": 10}},
+    "creative_media_assets": {"action": "list_assets", "request": {"limit": 10}},
+    "creative_media_jobs": {"action": "list", "request": {"limit": 10}},
+    "creative_media_edit": {"action": "list_plans", "request": {"limit": 10}},
+    "creative_media_quality": {"action": "cost_ledger", "request": {"limit": 10}},
     "computer_use_list_apps": {"app_query": None, "limit": 10, "include_running": True, "force_refresh": False},
     "computer_use_list_primitives": {"category": None, "detail_level": "summary"},
     "computer_use_desktop_capabilities": {"detail_level": "summary"},
@@ -268,65 +198,7 @@ SPECIAL_SCENARIOS = {
 }
 DETAIL_SCENARIOS = {"tool_observation_detail"}
 
-LEDGER_ID_SCENARIOS: dict[str, dict[str, Any]] = {
-    "creative_media_get_job": {
-        "listTool": "creative_media_list_jobs",
-        "listArgs": {"limit": 10},
-        "listKey": "jobs",
-        "idKey": "jobId",
-        "argName": "job_id",
-        "extraArgs": {"refresh": False},
-    },
-    "creative_media_job_artifacts": {
-        "listTool": "creative_media_list_jobs",
-        "listArgs": {"limit": 10},
-        "listKey": "jobs",
-        "idKey": "jobId",
-        "argName": "job_id",
-    },
-    "creative_media_get_recipe": {
-        "listTool": "creative_media_list_recipes",
-        "listArgs": {"limit": 10},
-        "listKey": "recipes",
-        "idKey": "recipeId",
-        "argName": "recipe_id",
-    },
-    "creative_media_get_character_bible": {
-        "listTool": "creative_media_list_character_bibles",
-        "listArgs": {"limit": 10},
-        "listKey": "characterBibles",
-        "idKey": "characterBibleId",
-        "argName": "character_bible_id",
-    },
-    "creative_media_get_keyframe": {
-        "listTool": "creative_media_list_keyframes",
-        "listArgs": {"limit": 10},
-        "listKey": "keyframes",
-        "idKey": "keyframeId",
-        "argName": "keyframe_id",
-    },
-    "creative_media_get_edit_plan": {
-        "listTool": "creative_media_list_edit_plans",
-        "listArgs": {"limit": 10},
-        "listKey": "editPlans",
-        "idKey": "planId",
-        "argName": "plan_id",
-    },
-    "creative_media_get_render": {
-        "listTool": "creative_media_list_renders",
-        "listArgs": {"limit": 10},
-        "listKey": "renders",
-        "idKey": "renderJobId",
-        "argName": "render_job_id",
-    },
-    "creative_media_get_quality_job": {
-        "listTool": "creative_media_list_quality_jobs",
-        "listArgs": {"limit": 10},
-        "listKey": "qualityJobs",
-        "idKey": "qualityJobId",
-        "argName": "quality_job_id",
-    },
-}
+LEDGER_ID_SCENARIOS: dict[str, dict[str, Any]] = {}
 
 
 DIRTY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [

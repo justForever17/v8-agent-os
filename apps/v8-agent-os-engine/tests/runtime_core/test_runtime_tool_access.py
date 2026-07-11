@@ -11,11 +11,12 @@ from core.delegation_broker import normalize_task_brief
 from core.native_tools import (
     _decode_completed_process_bytes,
     _windows_shell_syntax_violation_payload,
-    creative_media_catalog,
-    creative_media_compile_recipe,
-    creative_media_create_edit_plan,
-    creative_media_create_job,
-    creative_media_create_quality_job,
+    creative_media_assets,
+    creative_media_capabilities,
+    creative_media_edit,
+    creative_media_jobs,
+    creative_media_plan,
+    creative_media_quality,
     memory_broker,
     delegation_broker,
     runtime_broker,
@@ -1512,57 +1513,48 @@ def test_creative_media_tools_can_call_runtime_facade(monkeypatch):
     module.creative_media_runtime = fake_runtime
     monkeypatch.setitem(sys.modules, "runtimes.creative_media.runtime", module)
 
-    catalog_payload = creative_media_catalog.invoke({})
-    assert "modalities" in catalog_payload
+    catalog_payload = json.loads(creative_media_capabilities.invoke({"action": "catalog", "request": {}}))
+    assert catalog_payload["ok"] is True
 
-    job_payload = asyncio.run(creative_media_create_job.ainvoke({"request": {"modality": "image"}}))
-    assert "cm_fake" in job_payload
+    job_payload = json.loads(
+        asyncio.run(
+            creative_media_jobs.ainvoke(
+                {
+                    "action": "create",
+                    "request": {"modality": "image", "operationKind": "image.generate", "prompt": "hero"},
+                }
+            )
+        )
+    )
+    assert "cm_fake" in job_payload["refs"]
 
-    recipe_payload = creative_media_compile_recipe.invoke({"request": {"modality": "music", "prompt": "soft bgm"}})
-    assert "cm_recipe_fake" in recipe_payload
+    recipe_payload = json.loads(
+        creative_media_plan.invoke(
+            {"action": "compile_recipe", "request": {"modality": "music", "prompt": "soft bgm"}}
+        )
+    )
+    assert "cm_recipe_fake" in recipe_payload["refs"]
 
-    plan_payload = creative_media_create_edit_plan.invoke({"request": {"assetIds": ["asset-video"]}})
-    assert "cm_edit_fake" in plan_payload
+    plan_payload = json.loads(
+        creative_media_edit.invoke({"action": "create_plan", "request": {"assetIds": ["asset-video"]}})
+    )
+    assert "cm_edit_fake" in plan_payload["refs"]
 
-    quality_payload = creative_media_create_quality_job.invoke({"request": {"jobId": "cm_fake"}})
-    assert "cm_quality_fake" in quality_payload
+    quality_payload = json.loads(
+        creative_media_quality.invoke({"action": "create_job", "request": {"jobId": "cm_fake"}})
+    )
+    assert "cm_quality_fake" in quality_payload["refs"]
 
 
-def test_creative_media_runtime_group_includes_p2_p3_recipe_asset_and_render_tools():
+def test_creative_media_runtime_group_exposes_only_six_facades():
     tools = [
-        _tool("creative_media_catalog"),
-        _tool("creative_media_compile_recipe"),
-        _tool("creative_media_get_recipe"),
-        _tool("creative_media_list_recipes"),
-        _tool("creative_media_register_asset"),
-        _tool("creative_media_list_assets"),
-        _tool("creative_media_create_character_bible"),
-        _tool("creative_media_get_character_bible"),
-        _tool("creative_media_list_character_bibles"),
-        _tool("creative_media_register_keyframe"),
-        _tool("creative_media_get_keyframe"),
-        _tool("creative_media_list_keyframes"),
-        _tool("creative_media_create_edit_plan"),
-        _tool("creative_media_get_edit_plan"),
-        _tool("creative_media_list_edit_plans"),
-        _tool("creative_media_render_edit_plan"),
-        _tool("creative_media_get_render"),
-        _tool("creative_media_list_renders"),
-        _tool("creative_media_create_quality_job"),
-        _tool("creative_media_list_quality_jobs"),
-        _tool("creative_media_get_quality_job"),
-        _tool("creative_media_retry_job"),
-        _tool("creative_media_cost_ledger"),
-        _tool("creative_media_safety_events"),
-        _tool("creative_media_production_pack"),
-        _tool("creative_media_rank_models"),
-        _tool("creative_media_reference_media_brief"),
-        _tool("creative_media_sample_approval_packet"),
-        _tool("creative_media_qa_check"),
-        _tool("creative_media_alpha_inspect"),
-        _tool("creative_media_psd_inspect"),
-        _tool("creative_media_psd_export_preview"),
-        _tool("creative_media_psd_compose_template"),
+        _tool("creative_media_capabilities"),
+        _tool("creative_media_plan"),
+        _tool("creative_media_assets"),
+        _tool("creative_media_jobs"),
+        _tool("creative_media_edit"),
+        _tool("creative_media_quality"),
+        _tool("creative_media_create_job"),
     ]
     visible = filter_visible_tools_for_actor(
         tools,
@@ -1572,39 +1564,12 @@ def test_creative_media_runtime_group_includes_p2_p3_recipe_asset_and_render_too
     names = {tool.name for tool in visible}
 
     assert names == {
-        "creative_media_catalog",
-        "creative_media_compile_recipe",
-        "creative_media_get_recipe",
-        "creative_media_list_recipes",
-        "creative_media_register_asset",
-        "creative_media_list_assets",
-        "creative_media_create_character_bible",
-        "creative_media_get_character_bible",
-        "creative_media_list_character_bibles",
-        "creative_media_register_keyframe",
-        "creative_media_get_keyframe",
-        "creative_media_list_keyframes",
-        "creative_media_create_edit_plan",
-        "creative_media_get_edit_plan",
-        "creative_media_list_edit_plans",
-        "creative_media_render_edit_plan",
-        "creative_media_get_render",
-        "creative_media_list_renders",
-        "creative_media_create_quality_job",
-        "creative_media_list_quality_jobs",
-        "creative_media_get_quality_job",
-        "creative_media_retry_job",
-        "creative_media_cost_ledger",
-        "creative_media_safety_events",
-        "creative_media_production_pack",
-        "creative_media_rank_models",
-        "creative_media_reference_media_brief",
-        "creative_media_sample_approval_packet",
-        "creative_media_qa_check",
-        "creative_media_alpha_inspect",
-        "creative_media_psd_inspect",
-        "creative_media_psd_export_preview",
-        "creative_media_psd_compose_template",
+        "creative_media_capabilities",
+        "creative_media_plan",
+        "creative_media_assets",
+        "creative_media_jobs",
+        "creative_media_edit",
+        "creative_media_quality",
     }
 
 
@@ -1612,8 +1577,8 @@ def test_contextual_auto_subagent_base_tools_include_granted_runtime_tools():
     tools = [
         _tool("run_system_command"),
         _tool("read_native_file"),
-        _tool("creative_media_catalog"),
-        _tool("creative_media_create_job"),
+        _tool("creative_media_capabilities"),
+        _tool("creative_media_jobs"),
         _tool("memory_recall"),
         _tool("http_request"),
     ]
@@ -1626,6 +1591,6 @@ def test_contextual_auto_subagent_base_tools_include_granted_runtime_tools():
     names = {tool.name for tool in selected}
 
     assert {"run_system_command", "read_native_file"}.issubset(names)
-    assert {"creative_media_catalog", "creative_media_create_job"}.issubset(names)
+    assert {"creative_media_capabilities", "creative_media_jobs"}.issubset(names)
     assert "memory_recall" not in names
     assert "http_request" not in names

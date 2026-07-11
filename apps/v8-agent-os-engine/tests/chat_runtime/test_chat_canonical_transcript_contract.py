@@ -512,7 +512,6 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
             fetch_skill_instructions_tool=fetch_skill_instructions_tool,
             filtered_native_tools=[_Tool("delegation_broker"), _Tool("run_system_command")],
             all_mcp_tools=[],
-            plugin_host_tools=[],
             supervisor_allowed_tools=None,
             config_allowed_tools=None,
         )

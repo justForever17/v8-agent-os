@@ -15,6 +15,7 @@ from erc.safety_guardian import safety_guardian
 from runtimes.extensions import runtime as extensions_runtime_module
 from runtimes.extensions.mcp.client import MCPManager
 from runtimes.extensions.runtime import ExtensionRouteBundle, ExtensionsRuntimeService
+from runtimes.plugin_manager.service import plugin_manager_service
 from runtimes.extensions.skills.lexicons import ExtensionLexiconRegistry
 from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
 
@@ -51,32 +52,6 @@ class _FakeTool:
         self.name = name
         self.description = description
         self.metadata = {"server_name": server_name}
-
-
-class _FakePluginHostTool:
-    def __init__(
-        self,
-        *,
-        canonical_name: str,
-        raw_name: str,
-        description: str,
-        plugin_id: str = "openclaw-lark",
-        managed_channels: list[str] | None = None,
-        bridge_ready: bool = True,
-        inventory_source: str = "gateway_rpc",
-    ) -> None:
-        self.name = canonical_name
-        self.description = description
-        self.metadata = {
-            "pluginHost": True,
-            "pluginId": plugin_id,
-            "canonicalName": canonical_name,
-            "rawName": raw_name,
-            "bridgeReady": bridge_ready,
-            "toolInventorySource": inventory_source,
-            "toolInventoryHealth": "healthy",
-            "managedChannels": managed_channels or ["feishu"],
-        }
 
 
 class ExtensionsPrefilterSelectionTests(unittest.TestCase):
@@ -163,7 +138,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=2,
-                plugin_host_limit=0,
             )
 
         self.assertEqual({item["key"] for item in captured_mcp_families}, {"context7", "jimeng_visual_generation"})
@@ -181,6 +155,54 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             set(tool.name for tool in bundle.filtered_tools if getattr(tool, "metadata", {}).get("server_name") == "jimeng_visual_generation"),
             {"generate_image", "generate_video"},
         )
+
+    def test_plugin_owned_mcp_bypasses_normal_prefilter_and_only_returns_via_grant_projection(self):
+        service = ExtensionsRuntimeService()
+        ordinary = _FakeTool("query-docs", "Documentation lookup", "context7")
+        privileged = _FakeTool("get_design_context", "Read Figma design context", "figma")
+        policy = {
+            "enabled": False,
+            "available": False,
+            "mode": "lexical",
+            "modelId": None,
+            "role": None,
+            "reason": "disabled",
+            "skills": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+            "mcp": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+        }
+        common_patches = (
+            patch.object(service, "_resolve_prefilter_policy", return_value=policy),
+            patch.object(service, "_resolve_skill_inventory", return_value={"items": [], "rootDescriptors": []}),
+            patch.object(service, "_resolve_event_context", return_value={"session_id": "s1", "run_id": "r1", "runtime_kind": "chat", "agent_id": "supervisor"}),
+            patch.object(plugin_manager_service, "plugin_owned_components", return_value=(set(), {"figma"})),
+        )
+        with common_patches[0], common_patches[1], common_patches[2], common_patches[3], patch.object(
+            plugin_manager_service,
+            "projection_for",
+            return_value={"grants": [], "skills": [], "mcpTools": [], "cliProfiles": [], "uiAdapters": []},
+        ):
+            without_grant = service.build_contextual_route(
+                user_query="Figma design context documentation",
+                available_tools=[ordinary, privileged],
+            )
+        self.assertNotIn("get_design_context", {tool.name for tool in without_grant.filtered_tools})
+
+        with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
+            service, "_resolve_skill_inventory", return_value={"items": [], "rootDescriptors": []}
+        ), patch.object(
+            service, "_resolve_event_context", return_value={"session_id": "s1", "run_id": "r1", "runtime_kind": "chat", "agent_id": "supervisor"}
+        ), patch.object(
+            plugin_manager_service, "plugin_owned_components", return_value=(set(), {"figma"})
+        ), patch.object(
+            plugin_manager_service,
+            "projection_for",
+            return_value={"grants": [{"pluginId": "figma"}], "skills": [], "mcpTools": [privileged], "cliProfiles": [], "uiAdapters": []},
+        ):
+            with_grant = service.build_contextual_route(
+                user_query="Figma design context documentation",
+                available_tools=[ordinary, privileged],
+            )
+        self.assertIn("get_design_context", {tool.name for tool in with_grant.filtered_tools})
 
     def test_video_skill_selection_uses_all_skill_name_description_candidates(self):
         service = ExtensionsRuntimeService()
@@ -233,7 +255,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=2,
-                plugin_host_limit=0,
             )
 
         family_names = {str(item.get("name") or item.get("title") or "") for item in captured_skill_families}
@@ -294,7 +315,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.candidate_summary["skillEntries"][0]["description"], skills[0]["description"])
@@ -358,7 +378,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertIn("Root: C:/skills/huashu-nuwa", bundle.prompt_addition)
@@ -390,7 +409,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=0,
                 mcp_limit=2,
-                plugin_host_limit=0,
             )
 
         self.assertIn("当前暴露给本轮的 MCP 工具：", bundle.prompt_addition)
@@ -441,7 +459,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names, ["huashu-nuwa"])
@@ -492,7 +509,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names, ["seedance2-api"])
@@ -543,7 +559,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names, [])
@@ -592,7 +607,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(
@@ -640,7 +654,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(len(bundle.selected_skill_names), 10)
@@ -696,7 +709,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 inherited_skill_ids=["global:nuwa"],
                 skill_limit=10,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(len(bundle.selected_skill_names), 10)
@@ -741,7 +753,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(len(bundle.selected_skill_names), 7)
@@ -793,7 +804,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(
@@ -844,7 +854,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(len(bundle.selected_skill_names), 3)
@@ -883,7 +892,6 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 loaded_agents=None,
                 skill_limit=0,
                 mcp_limit=2,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(
@@ -1600,7 +1608,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names[0], "pptx")
@@ -1706,7 +1713,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
             deck_bundle = service.build_contextual_route(
                 user_query="演示稿",
@@ -1714,7 +1720,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(slide_bundle.selected_skill_names[0], "pptx")
@@ -1801,7 +1806,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "document")
@@ -1887,7 +1891,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "document")
@@ -1981,7 +1984,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=2,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names[0], "huashu-nuwa")
@@ -2069,7 +2071,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertIn("huashu-nuwa", bundle.selected_skill_names)
@@ -2154,7 +2155,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names[0], "huashu-nuwa")
@@ -2263,7 +2263,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names[0], "elon-musk-perspective")
@@ -2373,7 +2372,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertIn("organization_leadership", bundle.candidate_summary.get("primaryThemeIntents") or [])
@@ -2485,7 +2483,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertIn("startup_growth", bundle.candidate_summary.get("primaryThemeIntents") or [])
@@ -2595,7 +2592,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertIn("negotiation_persuasion", bundle.candidate_summary.get("primaryThemeIntents") or [])
@@ -2696,7 +2692,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names[0], "pptx")
@@ -2781,7 +2776,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.selected_skill_names[0], "ai-video-generation")
@@ -2819,7 +2813,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=0,
                 mcp_limit=1,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.candidate_summary.get("artifactIntent"), "document")
@@ -2859,65 +2852,11 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=0,
                 mcp_limit=1,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "documentation")
         self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["doc_wiki"])
         self.assertEqual(bundle.candidate_summary.get("mcpDocumentSubIntentMatched"), 1)
-
-    def test_extensions_runtime_plugin_host_document_queries_prefer_doc_family_after_gate(self):
-        service = ExtensionsRuntimeService()
-        tools = [
-            _FakePluginHostTool(
-                canonical_name="openclaw-lark.feishu_doc_create",
-                raw_name="feishu_doc_create",
-                description="Create and edit Feishu docs, design docs, RFCs and proposals.",
-            ),
-            _FakePluginHostTool(
-                canonical_name="openclaw-lark.feishu_doc_comment",
-                raw_name="feishu_doc_comment",
-                description="Comment on Feishu docs and documentation.",
-            ),
-            _FakePluginHostTool(
-                canonical_name="openclaw-lark.feishu_video_generate",
-                raw_name="feishu_video_generate",
-                description="Generate short videos for campaigns.",
-            ),
-        ]
-
-        with patch.object(
-            service,
-            "_resolve_prefilter_policy",
-            return_value={
-                "enabled": False,
-                "available": False,
-                "mode": "lexical",
-                "modelId": None,
-                "role": None,
-                "reason": "disabled",
-                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
-                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
-            },
-        ), patch.object(
-            service,
-            "_resolve_skill_inventory",
-            return_value={"items": [], "rootDescriptors": []},
-        ):
-            bundle = service.build_contextual_route(
-                user_query="请用 OpenClaw 的 feishu docs 帮我写技术文档",
-                available_tools=tools,
-                loaded_agents=None,
-                skill_limit=0,
-                mcp_limit=0,
-                plugin_host_limit=1,
-            )
-
-        self.assertEqual(bundle.candidate_summary.get("documentSubIntent"), "documentation")
-        self.assertEqual(bundle.candidate_summary.get("pluginHostSelectedFamilies"), ["openclaw-lark::feishu_doc"])
-        self.assertIn("openclaw-lark.feishu_doc_create", bundle.candidate_summary.get("pluginHostTools") or [])
-        self.assertNotIn("openclaw-lark.feishu_video_generate", bundle.candidate_summary.get("pluginHostTools") or [])
-        self.assertEqual(bundle.candidate_summary.get("pluginHostDocumentSubIntentMatched"), 1)
 
     def test_extensions_runtime_mcp_theme_queries_prefer_advisory_servers_over_generators(self):
         service = ExtensionsRuntimeService()
@@ -2959,75 +2898,11 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=0,
                 mcp_limit=1,
-                plugin_host_limit=0,
             )
 
         self.assertEqual(bundle.candidate_summary.get("primaryThemeIntents"), ["startup_growth"])
         self.assertEqual(bundle.candidate_summary.get("mcpSelectedServers"), ["growth_advisor"])
         self.assertGreaterEqual(int(bundle.candidate_summary.get("mcpThemeMatchedCount") or 0), 1)
-
-    def test_extensions_runtime_plugin_host_stage2_payload_includes_profile_summary(self):
-        service = ExtensionsRuntimeService()
-        tools = [
-            _FakePluginHostTool(
-                canonical_name="openclaw-lark.feishu_doc_create",
-                raw_name="feishu_doc_create",
-                description="Create and edit Feishu docs, design docs, RFCs and proposals.",
-            ),
-            _FakePluginHostTool(
-                canonical_name="openclaw-lark.feishu_doc_comment",
-                raw_name="feishu_doc_comment",
-                description="Comment on documentation and specs.",
-            ),
-            _FakePluginHostTool(
-                canonical_name="openclaw-lark.feishu_video_generate",
-                raw_name="feishu_video_generate",
-                description="Generate short videos for campaigns.",
-            ),
-        ]
-        captured_plugin_families: list[dict[str, object]] = []
-
-        def fake_select_family_keys_with_llm(**kwargs):  # noqa: ANN003
-            if kwargs.get("family_label") == "plugin_host":
-                captured_plugin_families.extend(list(kwargs.get("families") or []))
-                return ["openclaw-lark::feishu_doc"], {"mode": "llm_tree", "reason": "documentation", "timedOut": False, "cacheHit": False}
-            return [], {"mode": "lexical", "reason": "empty", "timedOut": False, "cacheHit": False}
-
-        with patch.object(
-            service,
-            "_resolve_prefilter_policy",
-            return_value={
-                "enabled": True,
-                "available": True,
-                "mode": "two_stage",
-                "modelId": "test-prefilter",
-                "role": "extensions_prefilter",
-                "reason": "",
-                "skills": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5, "llmTimeoutSeconds": 5},
-                "mcp": {"stage1Enabled": True, "stage1TopK": 20, "llmEnabled": False, "stage2TopK": 2, "llmTimeoutSeconds": 5},
-            },
-        ), patch.object(
-            service,
-            "_resolve_skill_inventory",
-            return_value={"items": [], "rootDescriptors": []},
-        ), patch.object(
-            extensions_runtime_module,
-            "select_family_keys_with_llm",
-            side_effect=fake_select_family_keys_with_llm,
-        ):
-            bundle = service.build_contextual_route(
-                user_query="请用 OpenClaw 的 feishu docs 帮我写 design doc",
-                available_tools=tools,
-                loaded_agents=None,
-                skill_limit=0,
-                mcp_limit=0,
-                plugin_host_limit=1,
-            )
-
-        family_payload = next(item for item in captured_plugin_families if item["key"] == "openclaw-lark::feishu_doc")
-        self.assertIn("documentSubIntent=", family_payload["description"])
-        self.assertIn("artifacts=", family_payload["description"])
-        self.assertEqual(bundle.candidate_summary.get("pluginHostSelectedFamilies"), ["openclaw-lark::feishu_doc"])
 
     def test_rule_profile_keeps_primary_artifacts_narrow_for_pptx(self):
         profile = SkillLoader._derive_capability_profile(
@@ -3626,7 +3501,6 @@ description: 三月七视角 skill。
                         loaded_agents=None,
                         skill_limit=5,
                         mcp_limit=0,
-                        plugin_host_limit=0,
                     )
                     query_tokens, query_profile, _cache_hit, _lexicon_state, market_state = extensions_runtime_module._analyze_extensions_query("超帧")
             finally:
@@ -3736,7 +3610,6 @@ description: 三月七视角 skill。
                         loaded_agents=None,
                         skill_limit=5,
                         mcp_limit=0,
-                        plugin_host_limit=0,
                     )
                     self.assertIn("wechat-account-articles", bundle.selected_skill_names)
                     self.assertEqual(bundle.selected_skill_names[0], "wechat-account-articles")
@@ -3754,7 +3627,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
             self.assertTrue(short_query_bundle.candidate_summary.get("shortCanonicalNarrowing"))
             self.assertTrue(short_query_bundle.candidate_summary.get("shortCanonicalNarrowingApplied"))
@@ -3807,7 +3679,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
             second_bundle = service.build_contextual_route(
                 user_query="公众号文章",
@@ -3815,7 +3686,6 @@ description: 三月七视角 skill。
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=0,
-                plugin_host_limit=0,
             )
 
         self.assertFalse(first_bundle.candidate_summary.get("queryAnalysisCacheHit"))

@@ -34,32 +34,14 @@ type OperationsSummary = {
     };
 };
 
-type PluginHostSnapshot = {
-    startupState?: string | null;
-    lastRefreshError?: string | null;
-    hostSurface?: {
-        bridgeReady?: boolean;
-        handoffReady?: boolean;
-        handoffDrift?: boolean;
-        bridgePluginId?: string | null;
-        pluginsAllowConfigured?: boolean | null;
-        pluginProvenanceWarnings?: Array<{
-            kind?: string | null;
-            level?: string | null;
-            title?: string | null;
-            description?: string | null;
-            pluginId?: string | null;
-            pluginIds?: string[] | null;
-        }> | null;
-        recentInboundProof?: {
-            stage?: string | null;
-            reason?: string | null;
-        } | null;
-        gatewayHealth?: {
-            runtime?: { status?: string | null; detail?: string | null };
-            rpc?: { ok?: boolean; error?: string | null };
-        } | null;
-    };
+type PluginStatusSummary = {
+    plugins?: Array<{
+        pluginId?: string;
+        name?: string;
+        installed?: boolean;
+        configured?: boolean;
+        online?: boolean;
+    }>;
 };
 
 const AUTH_PATTERN = /(auth|authorization|unauthorized|forbidden|permission|token|api key|credential|鉴权|授权|令牌|密钥|权限)/i;
@@ -117,16 +99,16 @@ export async function GET(req: NextRequest) {
     try {
         const locale = resolveInitialLocale(req.cookies.get(LOCALE_COOKIE_NAME)?.value, req.headers.get("accept-language"));
         const t = createTranslator(locale);
-        const [approvalsResult, runsResult, healthResult, pluginHostResult] = await Promise.all([
+        const [approvalsResult, runsResult, healthResult, pluginsResult] = await Promise.all([
             proxyEngineJsonSafe<{ approvals?: unknown[] }>("/approvals?status=pending"),
             proxyEngineJsonSafe<{ runs?: Array<{ status?: string }> }>("/runs?limit=12"),
             proxyEngineJsonSafe<OperationsSummary["health"]>("/health"),
-            proxyEngineJsonSafe<PluginHostSnapshot>("/plugin-host"),
+            proxyEngineJsonSafe<PluginStatusSummary>("/api/plugins/status-summary"),
         ]);
         const approvals = approvalsResult.data;
         const runs = runsResult.data;
         const health = healthResult.data;
-        const pluginHost = pluginHostResult.data;
+        const pluginStatus = pluginsResult.data;
 
         const approvalItems = Array.isArray((approvals as { approvals?: unknown[] })?.approvals)
             ? ((approvals as { approvals?: unknown[] }).approvals || [])
@@ -139,7 +121,7 @@ export async function GET(req: NextRequest) {
             pendingApprovals: approvalItems.length,
             health: (health || {}) as OperationsSummary["health"],
         };
-        const pluginSnapshot = (pluginHost || {}) as PluginHostSnapshot;
+        const plugins = Array.isArray(pluginStatus?.plugins) ? pluginStatus.plugins : [];
         const items: InboxItem[] = [];
 
         if (summary.pendingApprovals > 0) {
@@ -202,42 +184,15 @@ export async function GET(req: NextRequest) {
             });
         }
 
-        if (
-            pluginSnapshot.hostSurface?.bridgeReady === false
-            || pluginSnapshot.hostSurface?.handoffReady === false
-            || pluginSnapshot.hostSurface?.handoffDrift
-        ) {
+        const pluginConfigurationIssues = plugins.filter((plugin) => plugin.installed && (!plugin.configured || !plugin.online));
+        if (pluginConfigurationIssues.length > 0) {
             pushItem(items, {
-                id: "plugin-host-bridge-warning",
-                title: t("app.api.adminInbox.pluginHostBridge.title"),
-                summary: pluginSnapshot.hostSurface?.handoffDrift
-                    ? t("app.api.adminInbox.pluginHostBridge.handoffDrift")
-                    : pluginSnapshot.hostSurface?.bridgeReady === false
-                        ? t("app.api.adminInbox.pluginHostBridge.bridgeNotReady", {
-                            plugin_id: pluginSnapshot.hostSurface?.bridgePluginId || "unknown",
-                        })
-                        : t("app.api.adminInbox.pluginHostBridge.handoffNotReady"),
-                severity: pluginSnapshot.hostSurface?.bridgeReady === false ? "error" : "warning",
-                href: "/admin/plugin-host",
-                source: "plugin-host",
-            });
-        }
-
-        const pluginTrustWarnings = Array.isArray(pluginSnapshot.hostSurface?.pluginProvenanceWarnings)
-            ? pluginSnapshot.hostSurface?.pluginProvenanceWarnings || []
-            : [];
-        if (pluginSnapshot.hostSurface?.pluginsAllowConfigured === false || pluginTrustWarnings.length > 0) {
-            pushItem(items, {
-                id: "plugin-host-trust-warning",
-                title: t("app.api.adminInbox.pluginHostTrust.title"),
-                summary: pluginSnapshot.hostSurface?.pluginsAllowConfigured === false
-                    ? t("app.api.adminInbox.pluginHostTrust.allowEmpty")
-                    : t("app.api.adminInbox.pluginHostTrust.provenanceWarning", {
-                        count: pluginTrustWarnings.length,
-                    }),
+                id: "plugin-configuration-warning",
+                title: t("app.api.adminInbox.pluginManager.title"),
+                summary: t("app.api.adminInbox.pluginManager.summary", { count: pluginConfigurationIssues.length }),
                 severity: "warning",
-                href: "/admin/plugin-host",
-                source: "plugin-host",
+                href: "/admin/plugins?tab=installed",
+                source: "plugin-manager",
             });
         }
 
@@ -245,10 +200,6 @@ export async function GET(req: NextRequest) {
             ...degradedServers.map((item) => item.lastError),
             ...streamableIssues.map((item) => item.lastError),
             ...(summary.health?.memory?.warnings || []),
-            pluginSnapshot.lastRefreshError,
-            pluginSnapshot.hostSurface?.gatewayHealth?.runtime?.detail,
-            pluginSnapshot.hostSurface?.gatewayHealth?.rpc?.error,
-            pluginSnapshot.hostSurface?.recentInboundProof?.reason,
         ];
         if (containsAuthIssue(authSignals)) {
             pushItem(items, {
@@ -256,8 +207,8 @@ export async function GET(req: NextRequest) {
                 title: t("app.api.adminInbox.authorizationNeeded.title"),
                 summary: t("app.api.adminInbox.authorizationNeeded.summary"),
                 severity: "warning",
-                href: "/admin/plugin-host",
-                source: "plugin-host",
+                href: "/admin/plugins",
+                source: "plugin-manager",
             });
         }
 
@@ -276,7 +227,7 @@ export async function GET(req: NextRequest) {
             approvalsResult.error,
             runsResult.error,
             healthResult.error,
-            pluginHostResult.error,
+            pluginsResult.error,
         ].filter(Boolean);
         if (!items.length && endpointErrors.length > 0) {
             pushItem(items, {

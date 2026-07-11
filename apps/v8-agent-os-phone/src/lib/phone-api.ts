@@ -15,6 +15,7 @@ import type {
     DesktopLiveSessionPayload,
     DesktopLiveStatus,
     PendingApproval,
+    PluginReferenceSummary,
     PhoneUser,
     ProfileUpdatePayload,
     ProjectSummary,
@@ -902,6 +903,28 @@ export async function getRealtimeSnapshot(authorizedFetch: AuthorizedFetch, conv
     );
 }
 
+export async function listPlugins(authorizedFetch: AuthorizedFetch) {
+    const payload = await authorizedJson<{ items?: Array<Record<string, unknown>> }>(
+        authorizedFetch,
+        "/api/client/plugins/mentions",
+        translateCurrent("src.lib.phone_api.plugin_catalog_load_failed"),
+        { cache: "no-store" },
+    );
+    return normalizeArray<Record<string, unknown>>(payload.items)
+        .map((item): PluginReferenceSummary => ({
+            pluginId: String(item.pluginId || "").trim(),
+            displayName: String(item.displayName || item.pluginId || "").trim(),
+            description: String(item.description || "").trim(),
+            status: ["ready", "not_installed", "needs_configuration", "offline", "invalid"].includes(String(item.status || ""))
+                ? String(item.status) as PluginReferenceSummary["status"]
+                : "invalid",
+            configurationUrl: String(item.configurationUrl || "").trim(),
+            componentIds: Array.isArray(item.componentIds) ? item.componentIds.map((value) => String(value || "").trim()).filter(Boolean) : undefined,
+            grantScope: "task",
+        }))
+        .filter((item) => item.pluginId);
+}
+
 export type SupervisorReasoningEffortControl = {
     visible?: boolean;
     supported?: boolean;
@@ -970,6 +993,14 @@ export async function submitChatMessage(
                         name: skill.name,
                         description: skill.description,
                         path: skill.path,
+                    }))
+                    : undefined,
+                pluginReferences: Array.isArray(options.pluginReferences) && options.pluginReferences.length > 0
+                    ? options.pluginReferences.map((plugin) => ({
+                        pluginId: plugin.pluginId,
+                        name: plugin.displayName,
+                        scope: plugin.grantScope,
+                        componentIds: plugin.componentIds,
                     }))
                     : undefined,
                 contextMentions: Array.isArray(options.contextMentions) && options.contextMentions.length > 0
@@ -1221,6 +1252,7 @@ type SendChatOptions = {
     workspacePath?: string | null;
     commandPresetName?: string | null;
     skillReferences?: SkillReferenceSummary[];
+    pluginReferences?: PluginReferenceSummary[];
     contextMentions?: ContextMentionSummary[];
     contextSessionRefs?: Array<{ sessionId: string; source: "history_menu" }>;
     fileUrls?: string[];
@@ -1271,6 +1303,14 @@ export async function sendChatMessageStream(
                         name: skill.name,
                         description: skill.description,
                         path: skill.path,
+                    }))
+                    : undefined,
+                pluginReferences: Array.isArray(options.pluginReferences) && options.pluginReferences.length > 0
+                    ? options.pluginReferences.map((plugin) => ({
+                        pluginId: plugin.pluginId,
+                        name: plugin.displayName,
+                        scope: plugin.grantScope,
+                        componentIds: plugin.componentIds,
                     }))
                     : undefined,
                 contextMentions: Array.isArray(options.contextMentions) && options.contextMentions.length > 0

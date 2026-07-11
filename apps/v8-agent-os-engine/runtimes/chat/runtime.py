@@ -10,10 +10,10 @@ import uuid
 import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from api.models import ChatRequest, ChatToolCall
 from agents.runners.supervisor_runner import SupervisorExecutionBundle, supervisor_runner
@@ -230,6 +230,8 @@ class ChatPreparedRequest:
     task_shape_hint: dict[str, Any] = field(default_factory=dict)
     skill_references: list[dict[str, str]] = field(default_factory=list)
     context_mentions: list[dict[str, str]] = field(default_factory=list)
+    plugin_references: list[dict[str, Any]] = field(default_factory=list)
+    plugin_authorizations: list[dict[str, Any]] = field(default_factory=list)
     context_session_refs: list[dict[str, str]] = field(default_factory=list)
     explicit_subagent_families: list[str] = field(default_factory=list)
     planner_plan: dict[str, Any] | None = None
@@ -1420,7 +1422,7 @@ class ChatRuntime:
                 break
         return normalized
 
-    def _normalize_context_mentions(self, request: ChatRequest, *, skill_references: list[dict[str, str]]) -> list[dict[str, str]]:
+    def _normalize_context_mentions(self, request: ChatRequest, *, skill_references: list[dict[str, str]]) -> list[dict[str, Any]]:
         request_data = request.data
         selected = getattr(request_data, "context_mentions", None) if request_data else None
         normalized: list[dict[str, str]] = []
@@ -1428,6 +1430,8 @@ class ChatRuntime:
 
         def add_mention(payload: dict[str, Any]) -> None:
             kind = str(payload.get("kind") or "").strip().lower()
+            if kind == "plugin" and str(payload.get("sourceType") or "").strip() != "plugin_reference":
+                return
             mention_id = str(payload.get("id") or payload.get("familyId") or "").strip()
             name = str(payload.get("name") or payload.get("label") or "").strip()
             path = str(payload.get("path") or "").strip()
@@ -1448,6 +1452,8 @@ class ChatRuntime:
                 "path": path,
                 "familyId": normalize_specialist_family_id(payload.get("familyId") or mention_id or name) if kind == "subagent_family" else "",
                 "sourceType": str(payload.get("sourceType") or payload.get("source_type") or "explicit_mention").strip(),
+                "grantScope": str(payload.get("grantScope") or payload.get("scope") or "task").strip().lower() if kind == "plugin" else "",
+                "componentIds": [str(item).strip() for item in list(payload.get("componentIds") or []) if str(item).strip()] if kind == "plugin" else [],
             }
             normalized.append(current)
 
@@ -1464,6 +1470,21 @@ class ChatRuntime:
                     "path": getattr(item, "path", ""),
                     "familyId": getattr(item, "family_id", ""),
                     "sourceType": getattr(item, "source_type", ""),
+                    "grantScope": getattr(item, "grant_scope", ""),
+                    "componentIds": getattr(item, "component_ids", None) or [],
+                }
+            )
+        plugin_references = getattr(request_data, "plugin_references", None) if request_data else None
+        for item in list(plugin_references or []):
+            add_mention(
+                {
+                    "kind": "plugin",
+                    "id": getattr(item, "plugin_id", ""),
+                    "name": getattr(item, "name", ""),
+                    "label": getattr(item, "name", ""),
+                    "grantScope": getattr(item, "scope", "task"),
+                    "componentIds": getattr(item, "component_ids", None) or [],
+                    "sourceType": "plugin_reference",
                 }
             )
         for skill in list(skill_references or []):
@@ -1479,6 +1500,89 @@ class ChatRuntime:
                 }
             )
         return normalized
+
+    @staticmethod
+    def _normalize_plugin_references(request: ChatRequest) -> list[dict[str, Any]]:
+        request_data = request.data
+        selected = getattr(request_data, "plugin_references", None) if request_data else None
+        normalized: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, tuple[str, ...]]] = set()
+        for item in list(selected or []):
+            plugin_id = str(getattr(item, "plugin_id", "") or "").strip().lower()
+            if not plugin_id:
+                continue
+            scope = str(getattr(item, "scope", "task") or "task").strip().lower()
+            if scope not in {"task", "session"}:
+                scope = "task"
+            component_ids = sorted(
+                {
+                    str(value).strip()
+                    for value in list(getattr(item, "component_ids", None) or [])
+                    if str(value).strip()
+                }
+            )
+            key = (plugin_id, scope, tuple(component_ids))
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                {
+                    "pluginId": plugin_id,
+                    "name": str(getattr(item, "name", "") or plugin_id).strip(),
+                    "scope": scope,
+                    "componentIds": component_ids,
+                }
+            )
+        return normalized
+
+    def _apply_explicit_plugin_grants(self, chat_run: ChatRunContext) -> list[dict[str, Any]]:
+        from runtimes.plugin_manager.service import PluginManagerError, plugin_manager_service
+
+        results: list[dict[str, Any]] = []
+        for reference in list(chat_run.prepared.plugin_references or []):
+            plugin_id = str(reference.get("pluginId") or "").strip().lower()
+            if not plugin_id:
+                continue
+            scope = str(reference.get("scope") or "task").strip().lower()
+            if scope not in {"task", "session"}:
+                scope = "task"
+            try:
+                grant = plugin_manager_service.create_grant(
+                    plugin_id=plugin_id,
+                    scope=scope,
+                    session_id=chat_run.session_id,
+                    run_id=chat_run.active_run_id,
+                    grantee_type="supervisor",
+                    grantee_id="supervisor",
+                    component_ids=list(reference.get("componentIds") or []),
+                    grant_source="user_reference",
+                )
+                results.append({"pluginId": plugin_id, "status": "authorized", "grant": grant})
+            except PluginManagerError as exc:
+                refreshed = plugin_manager_service.authorization_status(
+                    plugin_id,
+                    session_id=chat_run.session_id,
+                    run_id=chat_run.active_run_id,
+                )
+                blocked_status = str(refreshed.get("status") or "invalid")
+                results.append(
+                    {
+                        "pluginId": plugin_id,
+                        "status": blocked_status,
+                        "code": exc.code,
+                        "reason": str(exc),
+                        "configurationUrl": f"/admin/plugins?plugin={plugin_id}",
+                    }
+                )
+        chat_run.prepared.plugin_authorizations = results
+        if results:
+            chat_run.emit_runtime_event(
+                "plugin.authorization.resolved",
+                {"items": results},
+                agent_id=None,
+                node="plugin_manager",
+            )
+        return results
 
     def _registered_subagent_family_lookup(self) -> dict[str, str]:
         supervisor_config = storage.get_supervisor_config() or {}
@@ -1666,6 +1770,7 @@ class ChatRuntime:
         planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
         context_mentions: list[dict[str, str]],
+        plugin_references: list[dict[str, Any]] | None = None,
         context_session_refs: list[dict[str, str]],
         planner_dispatch_mode: str = "suggest",
         spec_continuation: dict[str, Any] | None = None,
@@ -1674,6 +1779,7 @@ class ChatRuntime:
             not command_preset
             and not skill_references
             and not context_mentions
+            and not plugin_references
             and not context_session_refs
             and not spec_mode
             and not spec_command
@@ -1815,6 +1921,17 @@ class ChatRuntime:
                         mention_lines.append(f"  description: {mention['description']}")
                 mention_lines.append("[/SUBAGENT FAMILY MENTIONS]")
                 wrapped_sections.append("\n".join(mention_lines))
+            if plugin_references:
+                plugin_lines = [
+                    "[PLUGIN REFERENCES]",
+                    "These are explicit user selections, not proof that authorization or execution succeeded. Engine grants only installed, configured and online components. Never install, configure, import credentials, or self-authorize a plugin.",
+                ]
+                for reference in plugin_references:
+                    plugin_lines.append(
+                        f"- pluginId: {reference.get('pluginId') or 'unknown'} | scope: {reference.get('scope') or 'task'}"
+                    )
+                plugin_lines.append("[/PLUGIN REFERENCES]")
+                wrapped_sections.append("\n".join(plugin_lines))
             user_content = str(message.content or "").strip()
             wrapped_sections.append(
                 "\n".join(
@@ -3982,6 +4099,7 @@ class ChatRuntime:
             explicit_subagent_families,
             spec_mode,
         ) = self._resolve_request_context(request)
+        plugin_references = self._normalize_plugin_references(request)
         spec_command = self._normalize_spec_command(request)
         live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
         explicit_runtime_episode_requested = self._detect_explicit_runtime_episode_request(self._latest_user_content(request))
@@ -4009,6 +4127,7 @@ class ChatRuntime:
             planner_intent_diagnostics=planner_intent_diagnostics,
             skill_references=skill_references,
             context_mentions=context_mentions,
+            plugin_references=plugin_references,
             context_session_refs=context_session_refs,
         )
 
@@ -4056,6 +4175,7 @@ class ChatRuntime:
             explicit_engineering_requested=explicit_engineering_requested,
             skill_references=skill_references,
             context_mentions=context_mentions,
+            plugin_references=plugin_references,
             context_session_refs=context_session_refs,
             explicit_subagent_families=explicit_subagent_families,
             live_audit_context={
@@ -4680,7 +4800,14 @@ class ChatRuntime:
                 metadata["engineeringContextPack"] = dict(engineering_context_pack)
         if chat_run.prepared.skill_references:
             metadata["skillReferences"] = list(chat_run.prepared.skill_references)
-        context_mentions = getattr(chat_run.prepared, "context_mentions", None) or []
+        plugin_references = list(getattr(chat_run.prepared, "plugin_references", None) or [])
+        if plugin_references:
+            metadata["pluginReferences"] = plugin_references
+        context_mentions = [
+            item
+            for item in list(getattr(chat_run.prepared, "context_mentions", None) or [])
+            if str(item.get("kind") or "").strip().lower() != "plugin"
+        ]
         if context_mentions:
             metadata["contextMentions"] = list(context_mentions)
         context_session_refs = list(getattr(chat_run.prepared, "context_session_refs", None) or [])
@@ -4726,6 +4853,7 @@ class ChatRuntime:
                 **({"engineeringMode": metadata.get("engineeringMode")} if metadata.get("engineeringMode") else {}),
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
+                **({"pluginReferences": list(metadata.get("pluginReferences") or [])} if isinstance(metadata.get("pluginReferences"), list) and metadata.get("pluginReferences") else {}),
                 **({"contextMentions": list(metadata.get("contextMentions") or [])} if isinstance(metadata.get("contextMentions"), list) and metadata.get("contextMentions") else {}),
                 **({"contextSessionRefs": list(metadata.get("contextSessionRefs") or [])} if isinstance(metadata.get("contextSessionRefs"), list) and metadata.get("contextSessionRefs") else {}),
                 **({"explicitSubagentFamilies": list(metadata.get("explicitSubagentFamilies") or [])} if isinstance(metadata.get("explicitSubagentFamilies"), list) and metadata.get("explicitSubagentFamilies") else {}),
@@ -5001,6 +5129,10 @@ class ChatRuntime:
             "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
             "contextSessionRefs": list(chat_run.prepared.context_session_refs),
             "context_session_refs": list(chat_run.prepared.context_session_refs),
+            "pluginReferences": list(chat_run.prepared.plugin_references),
+            "plugin_references": list(chat_run.prepared.plugin_references),
+            "pluginAuthorizations": list(chat_run.prepared.plugin_authorizations),
+            "plugin_authorizations": list(chat_run.prepared.plugin_authorizations),
         }
         prepared_spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
         prepared_spec_brief = (
@@ -6385,8 +6517,6 @@ class ChatRuntime:
             "replace_native_file",
             "edit_native_file",
             "delete_native_file",
-            "creative_media_create_job",
-            "creative_media_retry_job",
             "computer_use_execute",
             "computer_use_click",
             "computer_use_type_text",
@@ -8149,6 +8279,46 @@ class ChatRuntime:
                     return uri
         return ""
 
+    @classmethod
+    def _extract_figma_canvas_ref(cls, value: Any) -> dict[str, str] | None:
+        candidate = cls._coerce_json_like_value(to_jsonable(value))
+        texts: list[str] = []
+
+        def collect(item: Any, depth: int = 0) -> None:
+            if depth > 5 or len(texts) > 80:
+                return
+            if isinstance(item, str):
+                texts.append(item)
+            elif isinstance(item, dict):
+                for nested in item.values():
+                    collect(nested, depth + 1)
+            elif isinstance(item, list):
+                for nested in item:
+                    collect(nested, depth + 1)
+
+        collect(candidate)
+        url_pattern = re.compile(r"https://(?:www\.)?figma\.com/(?:design|file|proto|board)/[A-Za-z0-9_-]+[^\s\]>)\"']*")
+        for text in texts:
+            match = url_pattern.search(text)
+            if not match:
+                continue
+            parsed = urlparse(match.group(0))
+            host = str(parsed.hostname or "").lower()
+            if host not in {"figma.com", "www.figma.com"}:
+                continue
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) < 2 or parts[0] not in {"design", "file", "proto", "board"}:
+                continue
+            file_key = parts[1]
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", file_key):
+                continue
+            node_id = str((parse_qs(parsed.query).get("node-id") or [""])[0]).strip()
+            external_url = f"https://www.figma.com/{parts[0]}/{file_key}"
+            if node_id:
+                external_url += f"?node-id={quote(node_id, safe=':-')}"
+            return {"fileKey": file_key, "nodeId": node_id, "externalUrl": external_url}
+        return None
+
     def _build_mcp_app_payload(
         self,
         *,
@@ -8157,18 +8327,76 @@ class ChatRuntime:
         tool_invocation_id: str,
         output: Any,
     ) -> dict[str, Any] | None:
+        from runtimes.plugin_manager.guarded_tools import resolve_plugin_tool_alias
+
+        alias = resolve_plugin_tool_alias(tool_name)
+        original_tool_name = str((alias or {}).get("originalToolName") or tool_name or "").strip()
+        registry_entry = mcp_manager.find_app_for_tool(tool_name=original_tool_name)
+        tool_server_name = str((alias or {}).get("serverName") or (registry_entry or {}).get("serverName") or "").strip()
+        if not tool_server_name:
+            for tool in mcp_manager.get_tools():
+                if str(getattr(tool, "name", "") or "").strip() != original_tool_name:
+                    continue
+                tool_server_name = str((getattr(tool, "metadata", None) or {}).get("server_name") or "").strip()
+                if tool_server_name:
+                    break
+        figma_ref = self._extract_figma_canvas_ref(output) if tool_server_name == "figma" else None
+        if figma_ref:
+            if not alias or str(alias.get("pluginId") or "") != "figma":
+                return None
+            try:
+                from runtimes.plugin_manager.service import plugin_manager_service
+
+                grant = plugin_manager_service.validate_grant_for_invocation(
+                    grant_id=str(alias.get("grantId") or ""),
+                    plugin_id="figma",
+                    component_id=str(alias.get("componentId") or ""),
+                    session_id=chat_run.session_id,
+                    run_id=chat_run.active_run_id,
+                    grantee_type="supervisor",
+                    grantee_id="supervisor",
+                    manifest_digest=str(alias.get("pluginDigest") or "") or None,
+                )
+            except Exception:
+                return None
+            instance_id = f"figma_canvas_{uuid.uuid4().hex}"
+            view_expires_at = str(grant.get("expiresAt") or "").strip()
+            if not view_expires_at:
+                view_expires_at = (
+                    datetime.now(timezone.utc) + timedelta(minutes=15)
+                ).isoformat().replace("+00:00", "Z")
+            return {
+                "appInstanceId": instance_id,
+                "serverName": "figma",
+                "resourceUri": f"ui://plugins/figma/canvas/{instance_id}",
+                "toolInvocationId": tool_invocation_id,
+                "sessionId": chat_run.session_id,
+                "runId": chat_run.active_run_id,
+                "renderer": "figma",
+                "pluginId": "figma",
+                "pluginDigest": str(alias.get("pluginDigest") or grant.get("manifestDigest") or ""),
+                "grantId": str(alias.get("grantId") or grant.get("grantId") or ""),
+                "expiresAt": view_expires_at,
+                "title": "Figma Canvas",
+                "externalUrl": figma_ref["externalUrl"],
+                "fileKey": figma_ref["fileKey"],
+                "nodeId": figma_ref["nodeId"],
+                "presentation": {"web": "edge_to_edge", "phone": "modal"},
+                "allowedFrameOrigins": ["https://www.figma.com"],
+                "status": "open",
+            }
+
         resource_uri = self._extract_mcp_app_resource_uri_from_result(output)
-        registry_entry = mcp_manager.find_app_for_tool(tool_name=tool_name)
         if registry_entry and not resource_uri:
             resource_uri = str(registry_entry.get("resourceUri") or "").strip()
         if not resource_uri:
             return None
-        server_name = str((registry_entry or {}).get("serverName") or "").strip()
+        server_name = tool_server_name
         if not server_name:
             return None
         instance = mcp_manager.create_app_instance(
             server_name=server_name,
-            tool_name=str(tool_name or ""),
+            tool_name=original_tool_name,
             resource_uri=resource_uri,
             tool_invocation_id=tool_invocation_id,
             initial_tool_result=self._compact_tool_result_value(tool_name, output),
@@ -9746,6 +9974,8 @@ class ChatRuntime:
                 )
         chat_run.run_handle.refresh_chat_snapshot()
         status = "paused" if interrupted_signal.get("command") in {"pause", "interrupt"} else "cancelled"
+        if status == "cancelled":
+            self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_cancelled")
         return [
             self.build_legacy_control_event(interrupted_signal),
             {"type": "done", "status": status, "run_id": chat_run.active_run_id},
@@ -9985,6 +10215,7 @@ class ChatRuntime:
                 node="completion_gate",
             )
             chat_run.run_handle.fail(decision.reason, node="completion_gate")
+            self._expire_plugin_task_grants(chat_run.active_run_id, reason="completion_gate_failed")
             return {
                 "type": "done",
                 "status": "failed",
@@ -10033,6 +10264,7 @@ class ChatRuntime:
                         chat_run.active_run_id,
                     )
         chat_run.run_handle.complete(reason="stream_finished", node="run_manager")
+        self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_completed")
         return {"type": "done", "status": "finished", "run_id": chat_run.active_run_id}
 
     def finalize_failed_run(self, chat_run: ChatRunContext | None, exc: Exception) -> list[dict[str, Any]]:
@@ -10205,6 +10437,7 @@ class ChatRuntime:
                         "Fallback run_service.transition_run also failed for run '%s'",
                         chat_run.active_run_id,
                     )
+            self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_failed")
         return [
             {
                 "type": "error",
@@ -10216,6 +10449,18 @@ class ChatRuntime:
 
     def consume_control_signal(self, run_id: str):
         return erc_kernel.consume_control_signal(run_id)
+
+    @staticmethod
+    def _expire_plugin_task_grants(run_id: str, *, reason: str) -> None:
+        try:
+            from runtimes.plugin_manager.service import plugin_manager_service
+
+            plugin_manager_service.expire_task_grants(run_id=run_id, reason=reason)
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Failed to expire plugin task grants for terminal run '%s'",
+                run_id,
+            )
 
     def should_stop_stream(self, signal: dict | None) -> bool:
         if not signal:
@@ -10422,6 +10667,7 @@ class ChatRuntime:
             )
         self.emit_lifecycle_start_events(chat_run)
         self.record_request_inputs(chat_run)
+        self._apply_explicit_plugin_grants(chat_run)
 
         stream_state = self.create_stream_state(transport=chat_run.transport, chat_run=chat_run)
 

@@ -284,7 +284,7 @@ const SAFETY_LABEL_KEYS = {
     engineering: "app.admin.dashboard.safety.control.page.label.runtime.engineering",
     memory: "app.admin.dashboard.safety.control.page.label.runtime.memory",
     network_supervisor: "app.admin.dashboard.safety.control.page.label.runtime.networkSupervisor",
-    plugin_host: "app.admin.dashboard.safety.control.page.label.runtime.pluginHost",
+    plugin_manager: "app.admin.dashboard.safety.control.page.label.runtime.pluginManager",
     rpa: "app.admin.dashboard.safety.control.page.label.runtime.rpa",
     safety: "app.admin.dashboard.safety.control.page.label.runtime.safety"
   },

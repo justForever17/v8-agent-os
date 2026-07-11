@@ -56,6 +56,14 @@ export interface UiExecutionNode extends UiTimelineNodeBase {
         csp?: Record<string, unknown>;
         permissions?: Record<string, unknown>;
         status?: string;
+        renderer?: string;
+        title?: string;
+        externalUrl?: string;
+        thumbnailUrl?: string;
+        fileKey?: string;
+        nodeId?: string;
+        presentation?: { web?: "inline" | "edge_to_edge"; phone?: "inline" | "modal" };
+        allowedFrameOrigins?: string[];
     };
     
     // For runtime progress

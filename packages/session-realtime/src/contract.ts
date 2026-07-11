@@ -9,8 +9,6 @@ export const SESSION_RUNTIME_IDS = [
   "creative_media",
   "research",
   "network_supervisor",
-  "plugin_host_tool",
-  "plugin_host_channel",
   "subagent_swarm",
   "computer_use",
   "rpa",
@@ -264,6 +262,32 @@ export type NormalizedSessionRuntimeEvent = {
   raw?: Record<string, unknown>;
 };
 
+export type PluginGrantScope = "task" | "session";
+
+export type PluginReferenceStatus =
+  | "ready"
+  | "not_installed"
+  | "needs_configuration"
+  | "offline"
+  | "invalid";
+
+export type PluginReferenceSummary = {
+  pluginId: string;
+  displayName: string;
+  status: PluginReferenceStatus;
+  configurationUrl: string;
+  grantScope: PluginGrantScope;
+  componentIds?: string[];
+  description?: string;
+};
+
+export type PluginReferenceSelection = {
+  pluginId: string;
+  scope: PluginGrantScope;
+  componentIds?: string[];
+  name?: string;
+};
+
 export type McpAppViewRef = {
   appInstanceId: string;
   serverName?: string;
@@ -273,6 +297,21 @@ export type McpAppViewRef = {
   csp?: Record<string, unknown>;
   permissions?: Record<string, unknown>;
   status?: string;
+  renderer?: "figma" | string;
+  pluginId?: string;
+  pluginDigest?: string;
+  grantId?: string;
+  expiresAt?: string;
+  title?: string;
+  externalUrl?: string;
+  thumbnailUrl?: string;
+  fileKey?: string;
+  nodeId?: string;
+  presentation?: {
+    web?: "inline" | "edge_to_edge";
+    phone?: "inline" | "modal";
+  };
+  allowedFrameOrigins?: string[];
 };
 
 export type SessionRealtimeStore = {

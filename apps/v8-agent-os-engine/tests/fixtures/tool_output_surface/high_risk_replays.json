@@ -24,52 +24,26 @@
       }
     },
     {
-      "name": "creative_media_mutation",
+      "name": "creative_media_facades",
       "tools": [
-        "creative_media_create_job",
-        "creative_media_compile_recipe",
-        "creative_media_register_asset",
-        "creative_media_create_character_bible",
-        "creative_media_register_keyframe",
-        "creative_media_create_edit_plan",
-        "creative_media_render_edit_plan",
-        "creative_media_create_quality_job",
-        "creative_media_retry_job"
+        "creative_media_capabilities",
+        "creative_media_plan",
+        "creative_media_assets",
+        "creative_media_jobs",
+        "creative_media_edit",
+        "creative_media_quality"
       ],
       "payload": {
         "ok": true,
+        "facade": "jobs",
+        "action": "create",
         "status": "completed",
-        "summary": "Creative Media operation completed; the reusable artifact and verification result were recorded.",
-        "artifacts": [{"title": "Generated scene asset", "kind": "image", "artifactId": "artifact_media_fixture"}],
-        "verification": {"status": "passed", "summary": "Required subject and aspect ratio were retained."},
-        "recommendedNextAction": "Use the artifact in the current work order or open detail if visual review is needed.",
+        "summary": "Creative Media operation completed and produced one reusable artifact.",
+        "refs": ["artifact_media_fixture"],
+        "detailRef": "toolobs://creative-media-internal-fixture",
+        "nextAction": "Use the artifact in the current work order or open detail if visual review is needed.",
         "providerRaw": "PROVIDER_RAW_DO_NOT_EXPOSE",
         "runtimeOnly": {"marker": "RUNTIME_ONLY_DO_NOT_EXPOSE", "cache": "CACHE_METRIC_DO_NOT_EXPOSE", "approvalFingerprint": "APPROVAL_FINGERPRINT_DO_NOT_EXPOSE"}
-      }
-    },
-    {
-      "name": "creative_media_detail",
-      "tools": [
-        "creative_media_get_job",
-        "creative_media_job_artifacts",
-        "creative_media_get_recipe",
-        "creative_media_get_character_bible",
-        "creative_media_get_keyframe",
-        "creative_media_get_edit_plan",
-        "creative_media_get_render",
-        "creative_media_get_quality_job"
-      ],
-      "payload": {
-        "status": "completed",
-        "modality": "image",
-        "providerId": "fixture-provider",
-        "model": "fixture-image-model",
-        "artifactCount": 1,
-        "artifacts": [{"title": "Approved scene asset", "kind": "image", "artifactId": "artifact_media_detail_fixture"}],
-        "sourcePath": "C:\\Users\\fixture\\private-source.png",
-        "providerResponse": "PROVIDER_RAW_DO_NOT_EXPOSE",
-        "timeline": "RUNTIME_ONLY_DO_NOT_EXPOSE",
-        "runtimeOnly": {"sessionId": "SESSION_PRIVATE_DO_NOT_EXPOSE"}
       }
     },
     {

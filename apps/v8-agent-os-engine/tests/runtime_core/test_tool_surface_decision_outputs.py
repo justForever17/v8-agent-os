@@ -183,30 +183,24 @@ def test_computer_use_route_hides_matches_and_manual_controls():
     _assert_not_json_wrapper(visible)
 
 
-def test_creative_media_list_jobs_is_short_queue_surface():
+def test_creative_media_jobs_facade_is_short_queue_surface():
     visible = _visible(
-        "creative_media_list_jobs",
+        "creative_media_jobs",
         {
             "ok": True,
-            "statusCounts": {"failed": 8, "succeeded": 9},
-            "jobs": [
-                {
-                    "jobId": "cm_15ff203da04c46b0a39506b5a9ade2c2",
-                    "operationKind": "image.generate",
-                    "status": "failed",
-                    "providerId": "openai",
-                    "model": "gpt-image-2",
-                    "error": "RemoteProtocolError: Server disconnected without sending a response.",
-                    "providerResponse": {"large": "raw"},
-                }
-            ],
-            "detailTool": "creative_media_get_job(job_id=...)",
+            "facade": "jobs",
+            "action": "list",
+            "status": "ready",
+            "summary": "17 jobs: failed=8, succeeded=9",
+            "refs": ["cm_15ff203da04c46b0a39506b5a9ade2c2"],
+            "detailRef": "toolobs://creative-internal",
         },
     )
 
-    assert "Creative Media jobs" in visible
-    assert "Status: failed=8, succeeded=9" in visible
-    assert "RemoteProtocolError" in visible
+    assert "Creative Media jobs.list" in visible
+    assert "Status: ready" in visible
+    assert "failed=8, succeeded=9" in visible
+    assert "cm_15ff203da04c46b0a39506b5a9ade2c2" in visible
     assert "providerResponse" not in visible
     _assert_not_json_wrapper(visible)
 

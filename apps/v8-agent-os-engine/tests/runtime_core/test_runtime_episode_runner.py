@@ -7,7 +7,8 @@ import pytest
 from langgraph.types import Send
 
 from erc.runtime_context import bind_runtime_context
-from core.database import db
+from core.database import DatabaseManager, db
+import core.runtime_episode_runner as runtime_episode_runner_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 
@@ -33,7 +34,9 @@ def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: s
     )
 
 
-def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably():
+def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(tmp_path, monkeypatch):
+    manager = DatabaseManager(tmp_path / "unknown-executor.db")
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
     kind = "test_unknown_episode"
     episode = build_runtime_episode(
         need={"kind": kind, "source": "test", "reason": "exercise queue"},
@@ -41,17 +44,17 @@ def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(
         state="queued",
         continuation_target="runtime_episode_runner",
     )
-    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    manager.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
 
     runner = RuntimeEpisodeRunner()
-    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=[kind])
+    claimed = manager.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=[kind])
     assert claimed is not None
     assert claimed["episodeId"] == episode["episodeId"]
     assert claimed["state"] == "active"
 
     asyncio.run(runner._execute_episode(claimed))
 
-    stored = db.get_runtime_episode(episode["episodeId"])
+    stored = manager.get_runtime_episode(episode["episodeId"])
     assert stored is not None
     assert stored["state"] == "failed"
     assert stored["resultRef"]
@@ -830,7 +833,9 @@ def test_delegation_child_budget_boundary_returns_degraded_handoff(monkeypatch):
     assert handoff["failedDelegationCount"] == 0
 
 
-def test_runtime_episode_retry_policy_requeues_before_final_failure():
+def test_runtime_episode_retry_policy_requeues_before_final_failure(tmp_path, monkeypatch):
+    manager = DatabaseManager(tmp_path / "retry-policy.db")
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
     kind = "test_retry_episode"
     episode = build_runtime_episode(
         need={"kind": kind, "source": "test", "reason": "retry once"},
@@ -839,22 +844,22 @@ def test_runtime_episode_retry_policy_requeues_before_final_failure():
         continuation_target="runtime_episode_runner",
         extra={"retryPolicy": {"maxAttempts": 2, "delaySeconds": 0}},
     )
-    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    manager.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
 
     runner = RuntimeEpisodeRunner()
-    first = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=[kind])
+    first = manager.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=[kind])
     assert first is not None
     asyncio.run(runner._execute_episode(first))
 
-    after_first = db.get_runtime_episode(episode["episodeId"])
+    after_first = manager.get_runtime_episode(episode["episodeId"])
     assert after_first is not None
     assert after_first["state"] == "queued"
 
-    second = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=[kind])
+    second = manager.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=[kind])
     assert second is not None
     asyncio.run(runner._execute_episode(second))
 
-    final = db.get_runtime_episode(episode["episodeId"])
+    final = manager.get_runtime_episode(episode["episodeId"])
     assert final is not None
     assert final["state"] == "failed"
     assert final["attempt_count"] == 2

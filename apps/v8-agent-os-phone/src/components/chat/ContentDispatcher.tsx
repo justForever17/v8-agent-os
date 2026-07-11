@@ -1,10 +1,10 @@
 import { memo, useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { buildClientToolSurface, type AdminProcessRef } from "@v8/session-realtime";
+import { buildClientToolSurface, type AdminProcessRef, type McpAppViewRef } from "@v8/session-realtime";
 
 import { GenericToolTraceCard } from "@/src/components/chat/GenericToolTraceCard";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
-import { McpAppWebView, type McpAppViewRef } from "@/src/components/chat/McpAppWebView";
+import { McpAppWebView } from "@/src/components/chat/McpAppWebView";
 import { ToolCard, type ToolInvocation } from "@/src/components/chat/ToolCard";
 import {
     isBackgroundCommandTraceTool,
@@ -79,6 +79,12 @@ function extractMcpAppRef(...values: unknown[]): McpAppViewRef | null {
             resourceUri,
             toolInvocationId: String(record.toolInvocationId || record.tool_invocation_id || "").trim() || undefined,
             status: String(record.status || "").trim() || undefined,
+            renderer: String(record.renderer || "").trim() || undefined,
+            title: String(record.title || "").trim() || undefined,
+            externalUrl: String(record.externalUrl || record.external_url || "").trim() || undefined,
+            thumbnailUrl: String(record.thumbnailUrl || record.thumbnail_url || "").trim() || undefined,
+            presentation: record.presentation && typeof record.presentation === "object" ? record.presentation as McpAppViewRef["presentation"] : undefined,
+            allowedFrameOrigins: Array.isArray(record.allowedFrameOrigins) ? record.allowedFrameOrigins.map((item) => String(item || "")).filter(Boolean) : undefined,
         };
     }
     return null;

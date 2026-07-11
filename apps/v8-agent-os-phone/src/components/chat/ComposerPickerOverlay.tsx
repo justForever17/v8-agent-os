@@ -11,7 +11,7 @@ import { FlatList as GestureFlatList } from "react-native-gesture-handler";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
-import type { CommandPresetSummary, SkillReferenceSummary, SubagentFamilySummary } from "@/src/types/admin";
+import type { CommandPresetSummary, PluginReferenceSummary, SkillReferenceSummary, SubagentFamilySummary } from "@/src/types/admin";
 
 const PICKER_MIN_VIEWPORT_HEIGHT = 248;
 const PICKER_MAX_VIEWPORT_HEIGHT = 372;
@@ -28,11 +28,13 @@ type ComposerPickerOverlayProps = {
     onSelectCommand: (command: CommandPresetSummary) => void;
     onSelectSkill: (skill: SkillReferenceSummary) => void;
     onSelectSubagentFamily: (family: SubagentFamilySummary) => void;
+    onSelectPlugin: (plugin: PluginReferenceSummary) => void;
 };
 
 type ComposerMentionItem =
     | { kind: "skill"; key: string; skill: SkillReferenceSummary }
-    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary };
+    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary }
+    | { kind: "plugin"; key: string; plugin: PluginReferenceSummary };
 
 export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     visible,
@@ -46,6 +48,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     onSelectCommand,
     onSelectSkill,
     onSelectSubagentFamily,
+    onSelectPlugin,
 }: ComposerPickerOverlayProps) {
     const { colors, t, themeMode } = useUiPrefs();
     const { height: windowHeight } = useWindowDimensions();
@@ -96,7 +99,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
         </Pressable>
     );
     const renderMentionItem = ({ item }: { item: ComposerMentionItem }) => (
-        item.kind === "skill" ? renderSkillItem({ item: item.skill }) : (
+        item.kind === "skill" ? renderSkillItem({ item: item.skill }) : item.kind === "subagent_family" ? (
             <Pressable onPress={() => onSelectSubagentFamily(item.family)} style={styles.row}>
                 <MaterialCommunityIcons name="account-group-outline" size={16} color={colors.accent} />
                 <View style={styles.body}>
@@ -108,6 +111,23 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                     ) : null}
                     <Text style={[styles.pathText, { color: colors.textSoft }]} numberOfLines={1}>
                         {item.family.memberCount ? `${item.family.memberCount} members` : item.family.familyId}
+                    </Text>
+                </View>
+            </Pressable>
+        ) : (
+            <Pressable onPress={() => onSelectPlugin(item.plugin)} style={styles.row}>
+                <MaterialCommunityIcons name="puzzle-outline" size={16} color={item.plugin.status === "ready" ? colors.success : colors.warning} />
+                <View style={styles.body}>
+                    <Text style={[styles.title, { color: colors.text }]}>{item.plugin.displayName}</Text>
+                    {item.plugin.description ? <Text style={[styles.summary, { color: colors.textMuted }]} numberOfLines={2}>{item.plugin.description}</Text> : null}
+                    <Text style={[styles.pathText, { color: item.plugin.status === "ready" ? colors.success : colors.warning }]} numberOfLines={1}>
+                                            {item.plugin.status === "ready"
+                                                ? t("src.components.chat.composerpickeroverlay.plugin_ready_task_default")
+                                                : item.plugin.status === "not_installed"
+                                                    ? t("src.components.chat.composerpickeroverlay.plugin_not_installed")
+                                                    : item.plugin.status === "needs_configuration"
+                                                        ? t("src.components.chat.composerpickeroverlay.plugin_needs_configuration")
+                                                        : t("src.components.chat.composerpickeroverlay.plugin_offline")}
                     </Text>
                 </View>
             </Pressable>
@@ -210,7 +230,7 @@ const styles = StyleSheet.create({
         width: "100%",
     },
     panel: {
-        borderRadius: 22,
+        borderRadius: 8,
         borderWidth: 1,
         paddingHorizontal: 12,
         paddingTop: 10,
@@ -226,7 +246,7 @@ const styles = StyleSheet.create({
         marginBottom: 8,
     },
     viewport: {
-        borderRadius: 18,
+        borderRadius: 6,
         overflow: "hidden",
     },
     listContent: {

@@ -80,8 +80,6 @@ export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "context_governance",
     "computer_use",
     "network_supervisor",
-    "plugin_host_tool",
-    "plugin_host_channel",
     "rpa",
     "desktop_live",
 ];

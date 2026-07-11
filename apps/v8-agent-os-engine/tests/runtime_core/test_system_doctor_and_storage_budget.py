@@ -17,7 +17,7 @@ def test_storage_retention_stats_include_balanced_budgets(monkeypatch):
         monkeypatch.setattr(storage_retention_module, "STATE_DB_PATH", root / "state.db")
         monkeypatch.setattr(storage_retention_module, "CHECKPOINT_DB_PATH", root / "checkpoints.db")
         monkeypatch.setattr(storage_retention_module, "OBSERVABILITY_DB_PATH", root / "observability.db")
-        monkeypatch.setattr(storage_retention_module, "PLUGIN_INSTALL_LOG_ROOT", root / "logs" / "plugins")
+        monkeypatch.setattr(storage_retention_module, "PLUGIN_MANAGER_LOG_ROOT", root / "logs" / "plugins")
         monkeypatch.setattr(storage_retention_module, "RUNTIME_DATA_HOME", root / "runtime-data")
         monkeypatch.setattr(storage_retention_module, "V8_AGENT_OS_HOME", root)
         monkeypatch.setattr(storage_retention_module, "WORKSPACE_HOME", root / "workspace")

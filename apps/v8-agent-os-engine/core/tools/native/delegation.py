@@ -555,6 +555,8 @@ def _delegation_task_has_meaningful_content(value: Any) -> bool:
         "required_capabilities",
         "runtimeAccess",
         "runtime_access",
+        "pluginReferences",
+        "plugin_references",
         "researchRefs",
         "research_refs",
     )
@@ -1076,6 +1078,23 @@ def delegation_broker(
                 agent_id = str(local_agent.get("id") or "").strip()
                 agent_name = str(local_agent.get("name") or agent_id).strip() or agent_id
                 branch_task_brief = _with_recursive_delegation_access(task_brief)
+                requested_plugin_references = list(branch_task_brief.get("pluginReferences") or [])
+                if requested_plugin_references:
+                    if current_depth > 0:
+                        raise RuntimeError("插件授权只能从 Supervisor 分配给直接子代理，不能继续向孙代理传播。")
+                    from runtimes.plugin_manager.service import plugin_manager_service
+
+                    delegated_plugin_grants = plugin_manager_service.delegate_grants_to_subagent(
+                        plugin_references=requested_plugin_references,
+                        session_id=str(base_state.get("session_id") or "").strip(),
+                        run_id=str(base_state.get("run_id") or "").strip(),
+                        subagent_id=agent_id,
+                    )
+                    branch_task_brief["pluginGrantIds"] = [
+                        str(item.get("grantId") or "")
+                        for item in delegated_plugin_grants
+                        if str(item.get("grantId") or "")
+                    ]
                 delegation_id_value = make_local_delegation_id(
                     invocation_id=invocation_id,
                     branch_index=index,
@@ -1093,7 +1112,6 @@ def delegation_broker(
                     selected_skill_entries=inherited_context.get("selectedSkillEntries"),
                     skill_root_descriptors=inherited_context.get("skillRootDescriptors"),
                     selected_mcp_tools=inherited_context.get("selectedMcpTools"),
-                    selected_plugin_host_tools=inherited_context.get("selectedPluginHostTools"),
                     selected_baseline_tools=inherited_context.get("selectedBaselineTools"),
                     prompt_addition=inherited_context.get("promptAddition"),
                     invocation_id=invocation_id,

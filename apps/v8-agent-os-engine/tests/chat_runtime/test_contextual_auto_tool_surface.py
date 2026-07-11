@@ -27,18 +27,10 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                         "description": "Test agent",
                         "system_prompt": "You are a test agent.",
                         "tool_mode": tool_mode,
-                        "tools": ["docs_server.query", "plugin-a.generate"],
+                        "tools": ["docs_server.query"],
                     }
                 ],
                 all_mcp_tools=[_tool("docs_server.query")],
-                all_plugin_host_tools=[
-                    _tool(
-                        "gateway.generate",
-                        pluginId="plugin-a",
-                        rawName="generate",
-                        canonicalName="plugin-a.generate",
-                    )
-                ],
                 filtered_native_tools=[
                     _tool("run_system_command"),
                     _tool("command_session_broker"),
@@ -93,7 +85,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("run_system_command", tool_names)
         self.assertIn("fetch_skill_instructions", tool_names)
         self.assertIn("docs_server.query", tool_names)
-        self.assertIn("gateway.generate", tool_names)
+        self.assertNotIn("gateway.generate", tool_names)
 
     def test_delegated_plan_context_formats_compact_task_contract(self):
         content = _format_delegated_plan_context(
@@ -381,7 +373,6 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                     }
                 ],
                 all_mcp_tools=[],
-                all_plugin_host_tools=[],
                 filtered_native_tools=filtered_native_tools,
                 default_agent_llm=object(),
                 supervisor_model_id="supervisor",

@@ -3,6 +3,7 @@ import type {
     AdminResourceRef,
     AuthoritativeSessionHistoryRecord,
     ContextReferenceItem,
+    PluginReferenceSummary,
     SessionHistoryControls,
 } from "@v8/session-realtime";
 
@@ -11,6 +12,7 @@ export type {
     AdminResourceRef,
     AuthoritativeSessionHistoryRecord,
     ContextReferenceItem,
+    PluginReferenceSummary,
     SessionHistoryControls,
 } from "@v8/session-realtime";
 
@@ -194,7 +196,7 @@ export type SubagentFamilySummary = {
 };
 
 export type ContextMentionSummary = {
-    kind: "skill" | "subagent_family";
+    kind: "skill" | "subagent_family" | "plugin";
     id?: string;
     name?: string;
     label?: string;
@@ -202,6 +204,8 @@ export type ContextMentionSummary = {
     path?: string;
     familyId?: string;
     sourceType?: string;
+    grantScope?: "task" | "session";
+    componentIds?: string[];
 };
 
 export type ChatArtifact = {
@@ -388,6 +392,7 @@ export type ChatMessage = {
     metadata?: {
         commandPreset?: { name?: string };
         skillReferences?: SkillReferenceSummary[];
+        pluginReferences?: PluginReferenceSummary[];
         contextMentions?: ContextMentionSummary[];
         explicitSubagentFamilies?: string[];
         specMode?: boolean;

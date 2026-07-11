@@ -88,6 +88,14 @@ function extractMcpAppRef(...values: unknown[]) {
             resourceUri,
             toolInvocationId: String(record.toolInvocationId || record.tool_invocation_id || "").trim() || undefined,
             status: String(record.status || "").trim() || undefined,
+            renderer: String(record.renderer || "").trim() || undefined,
+            title: String(record.title || "").trim() || undefined,
+            externalUrl: String(record.externalUrl || record.external_url || "").trim() || undefined,
+            thumbnailUrl: String(record.thumbnailUrl || record.thumbnail_url || "").trim() || undefined,
+            fileKey: String(record.fileKey || record.file_key || "").trim() || undefined,
+            nodeId: String(record.nodeId || record.node_id || "").trim() || undefined,
+            presentation: record.presentation && typeof record.presentation === "object" ? record.presentation as { web?: "inline" | "edge_to_edge"; phone?: "inline" | "modal" } : undefined,
+            allowedFrameOrigins: Array.isArray(record.allowedFrameOrigins) ? record.allowedFrameOrigins.map((item) => String(item || "")).filter(Boolean) : undefined,
         };
     }
     return null;

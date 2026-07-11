@@ -20,8 +20,7 @@ from core.background_model_output import parse_background_json_object, sanitize_
 from core.llm_factory import llm_factory
 from core.llm_tree_prefilter import select_family_keys_with_llm
 from core.model_control_plane import model_control_plane
-from core.plugin_host.tool_exposure import _family_prefix_for_tool, expand_tool_family_seeds
-from core.plugin_host.silk_codec import silk_toolchain_status
+from core.tools.plugin_cli import plugin_cli
 from core.skills_install_service import get_skill_dependency_policy
 from core.storage import storage
 from core.extensions_capability_index import (
@@ -75,9 +74,6 @@ _STOPWORDS = {
 }
 _SKILL_RERANK_POOL_FLOOR = 10
 _MCP_RERANK_POOL_FLOOR = 12
-_PLUGIN_HOST_RERANK_POOL_FLOOR = 12
-_PLUGIN_HOST_BOUND_CAP = 24
-_PLUGIN_HOST_LIVE_INVENTORY_SOURCES = {"gateway_rpc", "plugin_source_scan", "durable_cache"}
 _DYNAMIC_PROFILE_CACHE_LIMIT = 256
 _DYNAMIC_PROFILE_LLM_TIMEOUT_SECONDS = 6.0
 _DYNAMIC_THEME_FALLBACK_LIMIT = 2
@@ -98,7 +94,6 @@ _MARKET_LEXICON_SIGNATURE = "lexicon-market:uninitialized"
 _MARKET_LEXICON_ENABLED = False
 _MARKET_LEXICON_LOCALES: tuple[str, ...] = ()
 _MARKET_LEXICON_LOAD_ERRORS: tuple[str, ...] = ()
-_PLUGIN_HOST_QUERY_HINTS: tuple[str, ...] = ()
 _CROSS_RUNTIME_ESCAPE_TOKENS: tuple[str, ...] = ()
 _EXTENSION_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {}
 _EXTENSION_QUERY_SYNONYMS_EXACT: dict[str, tuple[str, ...]] = {}
@@ -155,7 +150,6 @@ def _apply_extension_lexicon_state(state: dict[str, Any]) -> None:
     global _MARKET_LEXICON_ENABLED
     global _MARKET_LEXICON_LOCALES
     global _MARKET_LEXICON_LOAD_ERRORS
-    global _PLUGIN_HOST_QUERY_HINTS
     global _CROSS_RUNTIME_ESCAPE_TOKENS
     global _EXTENSION_QUERY_SYNONYMS
     global _EXTENSION_QUERY_SYNONYMS_EXACT
@@ -195,7 +189,6 @@ def _apply_extension_lexicon_state(state: dict[str, Any]) -> None:
     _MARKET_LEXICON_LOAD_ERRORS = tuple(
         str(item).strip() for item in list(state.get("marketLoadErrors") or []) if str(item).strip()
     )
-    _PLUGIN_HOST_QUERY_HINTS = tuple(state.get("pluginHostQueryHints") or ())
     _CROSS_RUNTIME_ESCAPE_TOKENS = tuple(state.get("crossRuntimeEscapeTokens") or ())
     _EXTENSION_QUERY_SYNONYMS = {
         key: tuple(values)
@@ -1702,11 +1695,6 @@ def _is_mcp_tool(tool_ref: Any) -> bool:
     return bool(metadata.get("server_name"))
 
 
-def _is_plugin_host_tool(tool_ref: Any) -> bool:
-    metadata = getattr(tool_ref, "metadata", None) or {}
-    return bool(metadata.get("pluginHost"))
-
-
 def _build_skill_rerank_document(skill: dict[str, Any]) -> str:
     return "\n".join(
         [
@@ -1763,103 +1751,6 @@ def _build_mcp_rerank_document(tool_ref: Any) -> str:
             f"description: {_tool_description(tool_ref) or '暂无说明。'}",
         ]
     ).strip()
-
-
-def _build_plugin_host_rerank_document(tool_ref: Any) -> str:
-    metadata = getattr(tool_ref, "metadata", None) or {}
-    return "\n".join(
-        [
-            f"tool: {str(metadata.get('canonicalName') or _tool_name(tool_ref)).strip()}",
-            f"plugin: {str(metadata.get('pluginId') or '').strip() or 'gateway'}",
-            f"raw: {str(metadata.get('rawName') or '').strip() or _tool_name(tool_ref)}",
-            f"description: {_tool_description(tool_ref) or '暂无说明。'}",
-        ]
-    ).strip()
-
-
-def _plugin_host_tool_plugin_id(tool_ref: Any) -> str:
-    metadata = getattr(tool_ref, "metadata", None) or {}
-    return str(metadata.get("pluginId") or "gateway").strip() or "gateway"
-
-
-def _plugin_host_tool_raw_name(tool_ref: Any) -> str:
-    metadata = getattr(tool_ref, "metadata", None) or {}
-    raw_name = str(metadata.get("rawName") or "").strip()
-    if raw_name:
-        return raw_name
-    tool_name = _tool_name(tool_ref)
-    if tool_name.startswith("gateway."):
-        return tool_name[len("gateway.") :].strip()
-    if "." in tool_name:
-        return tool_name.split(".", 1)[1].strip()
-    return tool_name
-
-
-def _plugin_host_tool_identity(tool_ref: Any) -> str:
-    metadata = getattr(tool_ref, "metadata", None) or {}
-    return str(metadata.get("canonicalName") or _tool_name(tool_ref)).strip()
-
-
-def _plugin_host_tool_managed_channels(tool_ref: Any) -> list[str]:
-    metadata = getattr(tool_ref, "metadata", None) or {}
-    return [
-        str(item).strip().lower()
-        for item in list(metadata.get("managedChannels") or [])
-        if str(item).strip()
-    ]
-
-
-def _plugin_host_tool_inventory_ready(tool_ref: Any) -> bool:
-    metadata = getattr(tool_ref, "metadata", None) or {}
-    if not bool(metadata.get("bridgeReady")):
-        return False
-    inventory_source = str(metadata.get("toolInventorySource") or "").strip().lower()
-    if inventory_source not in _PLUGIN_HOST_LIVE_INVENTORY_SOURCES:
-        return False
-    inventory_health = str(metadata.get("toolInventoryHealth") or "").strip().lower()
-    if inventory_health and inventory_health != "healthy":
-        return False
-    return True
-
-
-def _query_mentions_plugin_host_surface(*, user_query: str, plugin_host_tools: list[Any]) -> bool:
-    query_text = str(user_query or "").strip().lower()
-    if not query_text:
-        return False
-    if any(hint in query_text for hint in _PLUGIN_HOST_QUERY_HINTS):
-        return True
-
-    derived_hints: set[str] = set()
-    for tool in plugin_host_tools:
-        metadata = getattr(tool, "metadata", None) or {}
-        for value in (
-            metadata.get("pluginId"),
-            metadata.get("canonicalName"),
-            metadata.get("rawName"),
-        ):
-            normalized = str(value or "").strip().lower()
-            if not normalized:
-                continue
-            derived_hints.add(normalized)
-            derived_hints.update(part for part in re.split(r"[^a-z0-9\u4e00-\u9fff]+", normalized) if len(part) >= 2)
-        derived_hints.update(_plugin_host_tool_managed_channels(tool))
-    return any(hint and hint in query_text for hint in derived_hints)
-
-
-def _should_expose_plugin_host_tools(
-    *,
-    user_query: str,
-    plugin_host_tools: list[Any],
-    context_payload: dict[str, Any],
-) -> bool:
-    if not plugin_host_tools:
-        return False
-    if not any(_plugin_host_tool_inventory_ready(tool) for tool in plugin_host_tools):
-        return False
-    runtime_kind = str(context_payload.get("runtime_kind") or "").strip().lower()
-    if runtime_kind in {"plugin_host", "channel"}:
-        return True
-    return _query_mentions_plugin_host_surface(user_query=user_query, plugin_host_tools=plugin_host_tools)
 
 
 def _mcp_tool_server_name(tool_ref: Any) -> str:
@@ -2031,14 +1922,12 @@ class ExtensionsRuntimeService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._blocked_skill_records: list[dict[str, Any]] = []
         self._mcp_family_profile_cache: dict[str, dict[str, Any]] = {}
-        self._plugin_host_family_profile_cache: dict[str, dict[str, Any]] = {}
 
     def _now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
     def _clear_dynamic_family_profile_caches(self) -> None:
         self._mcp_family_profile_cache.clear()
-        self._plugin_host_family_profile_cache.clear()
 
     def _skill_inventory_status(self) -> dict[str, Any]:
         try:
@@ -2488,7 +2377,7 @@ class ExtensionsRuntimeService:
             prepared = prepare_background_model_messages(
                 system_prompt=(
                     "你是 V8 Agent OS 的扩展族级画像归一器。\n"
-                    "任务：为 MCP server 或 PluginHost 工具族输出轻量画像。\n"
+                    "任务：为 MCP server 工具族输出轻量画像。\n"
                     "只返回 JSON："
                     "{\"skillClassLike\":\"...\",\"primaryArtifactTypes\":[...],"
                     "\"primaryOperations\":[...],\"documentSubIntentHints\":[...],"
@@ -2563,93 +2452,6 @@ class ExtensionsRuntimeService:
             profile=final_profile,
         )
 
-    def _build_plugin_host_family_entries(self, plugin_host_tools: list[Any]) -> dict[str, dict[str, Any]]:
-        grouped: dict[str, dict[str, Any]] = {}
-        sibling_names_by_plugin: dict[str, list[str]] = {}
-        for tool in plugin_host_tools:
-            plugin_id = _plugin_host_tool_plugin_id(tool)
-            sibling_names_by_plugin.setdefault(plugin_id, []).append(_plugin_host_tool_raw_name(tool))
-        for tool in plugin_host_tools:
-            plugin_id = _plugin_host_tool_plugin_id(tool)
-            raw_name = _plugin_host_tool_raw_name(tool)
-            family_prefix = _family_prefix_for_tool(
-                tool_name=raw_name,
-                sibling_tool_names=sibling_names_by_plugin.get(plugin_id, []),
-            )
-            family_name = family_prefix or raw_name
-            family_key = f"{plugin_id}::{family_name}"
-            bucket = grouped.setdefault(
-                family_key,
-                {
-                    "familyKey": family_key,
-                    "pluginId": plugin_id,
-                    "familyName": family_name,
-                    "items": [],
-                    "managedChannels": set(),
-                },
-            )
-            bucket["items"].append(tool)
-            for channel in _plugin_host_tool_managed_channels(tool):
-                bucket["managedChannels"].add(channel)
-        for payload in grouped.values():
-            payload["items"] = sorted(
-                list(payload.get("items") or []),
-                key=lambda tool: (
-                    _plugin_host_tool_plugin_id(tool).lower(),
-                    _plugin_host_tool_raw_name(tool).lower(),
-                    _plugin_host_tool_identity(tool).lower(),
-                ),
-            )
-            payload["managedChannels"] = sorted(payload.get("managedChannels") or [])
-            payload["seed"] = (payload["items"] or [None])[0]
-        return grouped
-
-    def _get_plugin_host_family_profile(
-        self,
-        *,
-        family_key: str,
-        family_name: str,
-        items: list[Any],
-        managed_channels: list[str],
-        allow_llm: bool,
-    ) -> dict[str, Any]:
-        ordered_items = sorted(
-            list(items or []),
-            key=lambda tool: (
-                _plugin_host_tool_plugin_id(tool).lower(),
-                _plugin_host_tool_raw_name(tool).lower(),
-                _plugin_host_tool_identity(tool).lower(),
-            ),
-        )
-        tool_names = [_plugin_host_tool_raw_name(tool) for tool in ordered_items if _plugin_host_tool_raw_name(tool)]
-        descriptions = [_tool_description(tool) for tool in ordered_items if _tool_description(tool)]
-        fingerprint = _tool_family_fingerprint([family_key, *tool_names, *descriptions, *managed_channels])
-        cached = self._plugin_host_family_profile_cache.get(fingerprint)
-        if cached and (not _should_attempt_dynamic_profile_inference(base_profile=cached, allow_llm=allow_llm)):
-            return dict(cached)
-        base_profile = dict(cached or _derive_tool_family_profile_rules(
-            family_name=family_name,
-            descriptions=descriptions,
-            tool_names=tool_names,
-            managed_channels=managed_channels,
-        ))
-        final_profile = dict(base_profile)
-        if _should_attempt_dynamic_profile_inference(base_profile=base_profile, allow_llm=allow_llm):
-            llm_profile = self._infer_dynamic_family_profile_with_llm(
-                family_kind="plugin_host_family",
-                family_name=family_name,
-                descriptions=descriptions,
-                tool_names=tool_names,
-                managed_channels=managed_channels,
-                base_profile=base_profile,
-            )
-            final_profile = _normalize_dynamic_profile_with_fallback(payload=llm_profile, fallback=base_profile)
-        return self._remember_dynamic_profile(
-            cache=self._plugin_host_family_profile_cache,
-            fingerprint=fingerprint,
-            profile=final_profile,
-        )
-
     def _derive_phase(self, *, skills_state: dict[str, Any], mcp_state: dict[str, Any]) -> tuple[str, list[str], list[str]]:
         blocked_reasons: list[str] = []
         degraded_reasons: list[str] = []
@@ -2704,7 +2506,6 @@ class ExtensionsRuntimeService:
             "blockedReasons": blocked_reasons,
             "degradedReasons": degraded_reasons,
             "controls": self._controls_payload(),
-            "silk": silk_toolchain_status(),
             "lastSkillInventoryChange": self._last_skill_inventory_change,
         }
 
@@ -2748,7 +2549,6 @@ class ExtensionsRuntimeService:
                 "degradedReasons": runtime_state["degradedReasons"],
                 "controls": runtime_state["controls"],
                 "runtime": runtime_state,
-                "silk": runtime_state["silk"],
             }
         )
         return decorated
@@ -3383,7 +3183,6 @@ class ExtensionsRuntimeService:
                 loaded_agents=None,
                 skill_limit=5,
                 mcp_limit=2,
-                plugin_host_limit=0,
                 freshness_mode=_INVENTORY_FRESHNESS_PREVIEW,
             )
         finally:
@@ -3457,20 +3256,14 @@ class ExtensionsRuntimeService:
                 "selectedMcpServers": candidate_summary.get("mcpSelectedServers") or [],
                 "selectedMcpFamilies": candidate_summary.get("mcpSelectedFamilies") or [],
                 "selectedMcpTools": candidate_summary.get("mcpTools") or [],
-                "selectedPluginHostFamilies": candidate_summary.get("pluginHostSelectedFamilies") or [],
-                "selectedPluginHostTools": candidate_summary.get("pluginHostTools") or [],
                 "primaryThemeIntents": candidate_summary.get("primaryThemeIntents") or [],
                 "themeMatchedCount": candidate_summary.get("themeMatchedCount"),
                 "themeBackfilledCount": candidate_summary.get("themeBackfilledCount"),
                 "themeRankingSignals": candidate_summary.get("themeRankingSignals") or {},
                 "mcpProfileMatchedCount": candidate_summary.get("mcpProfileMatchedCount"),
-                "pluginHostProfileMatchedCount": candidate_summary.get("pluginHostProfileMatchedCount"),
                 "mcpThemeMatchedCount": candidate_summary.get("mcpThemeMatchedCount"),
-                "pluginHostThemeMatchedCount": candidate_summary.get("pluginHostThemeMatchedCount"),
                 "mcpDocumentSubIntentMatched": candidate_summary.get("mcpDocumentSubIntentMatched"),
-                "pluginHostDocumentSubIntentMatched": candidate_summary.get("pluginHostDocumentSubIntentMatched"),
                 "mcpThemeFallbackInjectedCount": candidate_summary.get("mcpThemeFallbackInjectedCount"),
-                "pluginHostThemeFallbackInjectedCount": candidate_summary.get("pluginHostThemeFallbackInjectedCount"),
             },
         }
 
@@ -3484,7 +3277,6 @@ class ExtensionsRuntimeService:
         inherited_skill_names: list[str] | None = None,
         skill_limit: int = 5,
         mcp_limit: int = 2,
-        plugin_host_limit: int = 8,
         freshness_mode: str = _INVENTORY_FRESHNESS_GUARDED,
         _pre_resolved_skill_inventory: dict[str, Any] | None = None,
         _pre_resolved_inventory_freshness: dict[str, Any] | None = None,
@@ -3492,6 +3284,27 @@ class ExtensionsRuntimeService:
         query_text = str(user_query or "").strip()
         query_tokens, query_profile, query_analysis_cache_hit, lexicon_state, market_enrichment = _analyze_extensions_query(query_text)
         context_payload = self._resolve_event_context()
+        plugin_projection: dict[str, Any] = {"grants": [], "skills": [], "mcpTools": [], "cliProfiles": [], "uiAdapters": []}
+        plugin_owned_skill_roots: set[str] = set()
+        plugin_owned_mcp_servers: set[str] = set()
+        try:
+            from runtimes.plugin_manager.service import plugin_manager_service
+
+            session_id = str(context_payload.get("session_id") or "").strip()
+            run_id = str(context_payload.get("run_id") or "").strip() or None
+            runtime_kind = str(context_payload.get("runtime_kind") or "chat").strip()
+            agent_id = str(context_payload.get("agent_id") or "supervisor").strip() or "supervisor"
+            grantee_type = "subagent" if runtime_kind == "subagent" and agent_id != "supervisor" else "supervisor"
+            if session_id:
+                plugin_projection = plugin_manager_service.projection_for(
+                    session_id=session_id,
+                    run_id=run_id,
+                    grantee_type=grantee_type,
+                    grantee_id=agent_id,
+                )
+            plugin_owned_skill_roots, plugin_owned_mcp_servers = plugin_manager_service.plugin_owned_components()
+        except Exception:
+            pass
         cross_runtime_escape = _should_enable_cross_runtime_escape(query_tokens)
         prefilter_policy = self._resolve_prefilter_policy()
         skill_policy = dict(prefilter_policy.get("skills") or {})
@@ -3508,7 +3321,6 @@ class ExtensionsRuntimeService:
         mcp_stage2_timeout = max(5, min(int(mcp_policy.get("llmTimeoutSeconds") or 5), 10))
         effective_skill_stage1_limit = skill_stage1_top_k
         effective_mcp_stage1_limit = mcp_stage1_top_k
-        effective_plugin_host_limit = max(0, min(plugin_host_limit, 12))
         prefilter_model_id = str(prefilter_policy.get("modelId") or "").strip()
         prefilter_role = str(prefilter_policy.get("role") or "").strip()
         prefilter_reason = str(prefilter_policy.get("reason") or "").strip()
@@ -3544,6 +3356,11 @@ class ExtensionsRuntimeService:
             for item in raw_skill_entries
             if not bool((item.get("safety") or {}).get("disabled"))
             and str(((item.get("safety") or {}).get("effectiveVerdict") or (item.get("safety") or {}).get("verdict") or "")).strip().lower() != "block"
+            and not any(
+                str(Path(str(item.get("skillRoot") or item.get("path") or "")).resolve()).startswith(root)
+                for root in plugin_owned_skill_roots
+                if str(item.get("skillRoot") or item.get("path") or "").strip()
+            )
         ]
         skill_root_descriptors = list(skill_inventory.get("rootDescriptors") or [])
         skill_inventory_revision = str(
@@ -3655,18 +3472,12 @@ class ExtensionsRuntimeService:
         selected_skills = list(skill_stage1_shortlist) if skill_stage1_enabled else list(skill_entries)
         skill_routing_mode = "stage1_only" if skill_stage1_enabled else "unfiltered"
 
-        mcp_tools = [tool for tool in available_tools if _is_mcp_tool(tool)]
-        raw_plugin_host_tools = [tool for tool in available_tools if _is_plugin_host_tool(tool)]
-        base_tools = [tool for tool in available_tools if not _is_mcp_tool(tool) and not _is_plugin_host_tool(tool)]
-        plugin_host_tools = (
-            raw_plugin_host_tools
-            if _should_expose_plugin_host_tools(
-                user_query=user_query,
-                plugin_host_tools=raw_plugin_host_tools,
-                context_payload=context_payload,
-            )
-            else []
-        )
+        mcp_tools = [
+            tool
+            for tool in available_tools
+            if _is_mcp_tool(tool) and _mcp_tool_server_name(tool) not in plugin_owned_mcp_servers
+        ]
+        base_tools = [tool for tool in available_tools if not _is_mcp_tool(tool)]
         mcp_server_map: dict[str, list[Any]] = {}
         for tool in mcp_tools:
             server_name = _mcp_tool_server_name(tool)
@@ -3786,110 +3597,11 @@ class ExtensionsRuntimeService:
 
         selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
 
-        plugin_host_family_entries = self._build_plugin_host_family_entries(plugin_host_tools)
-        plugin_host_family_profiles: dict[str, dict[str, Any]] = {}
-        ranked_plugin_host: list[tuple[int, str, dict[str, Any]]] = []
-        for family_key, payload in plugin_host_family_entries.items():
-            items = list(payload.get("items") or [])
-            if not items:
-                continue
-            family_name = str(payload.get("familyName") or family_key).strip() or family_key
-            descriptions = [_tool_description(tool) for tool in items if _tool_description(tool)]
-            profile = self._get_plugin_host_family_profile(
-                family_key=family_key,
-                family_name=family_name,
-                items=items,
-                managed_channels=list(payload.get("managedChannels") or []),
-                allow_llm=stage2_runtime_available,
-            )
-            plugin_host_family_profiles[family_key] = profile
-            family_description = " | ".join(
-                part
-                for part in [
-                    " ".join(_plugin_host_tool_raw_name(tool) for tool in items if _plugin_host_tool_raw_name(tool)),
-                    " ".join(descriptions),
-                    " ".join(str(item).strip() for item in list(payload.get("managedChannels") or []) if str(item).strip()),
-                    _build_family_profile_summary(profile),
-                ]
-                if str(part or "").strip()
-            )
-            family_score = _score_dynamic_family_entry(
-                query_text=query_text,
-                query_tokens=query_tokens,
-                query_profile=query_profile,
-                family_name=family_name,
-                description=family_description,
-                profile=profile,
-            )
-            ranked_plugin_host.append((family_score, family_key, payload))
-        ranked_plugin_host.sort(key=lambda row: (-row[0], row[1].lower()))
-        plugin_host_pool_limit = max(effective_plugin_host_limit * 2, _PLUGIN_HOST_RERANK_POOL_FLOOR)
-        plugin_host_stage1_hits = [row[1] for row in ranked_plugin_host if row[0] > 0]
-        plugin_host_theme_fallback_keys: list[str] = []
-        if (
-            plugin_host_tools
-            and not query_profile.get("artifactIntent")
-            and list(query_profile.get("primaryThemeIntents") or [])
-        ):
-            direct_theme_hits = [
-                family_key
-                for family_key, profile in plugin_host_family_profiles.items()
-                if str(profile.get("skillClassLike") or "").strip().lower() in _THEME_HEAVY_CLASSES
-                and _has_direct_dynamic_theme_match(profile, query_profile)
-            ]
-            if not direct_theme_hits:
-                ranked_plugin_fallback = sorted(
-                    (
-                        (
-                            _score_dynamic_family_fallback_entry(
-                                query_text=query_text,
-                                query_tokens=query_tokens,
-                                query_profile=query_profile,
-                                family_name=str(payload.get("familyName") or family_key).strip() or family_key,
-                                description=" | ".join(
-                                    part
-                                    for part in [
-                                        " ".join(_plugin_host_tool_raw_name(tool) for tool in list(payload.get("items") or []) if _plugin_host_tool_raw_name(tool)),
-                                        " ".join(_tool_description(tool) for tool in list(payload.get("items") or []) if _tool_description(tool)),
-                                        " ".join(str(item).strip() for item in list(payload.get("managedChannels") or []) if str(item).strip()),
-                                    ]
-                                    if str(part or "").strip()
-                                ),
-                                profile=plugin_host_family_profiles.get(family_key, {}),
-                            ),
-                            family_key.lower(),
-                            family_key,
-                        )
-                        for family_key, payload in plugin_host_family_entries.items()
-                    ),
-                    key=lambda row: (-row[0], row[1]),
-                )
-                plugin_host_theme_fallback_keys = [row[2] for row in ranked_plugin_fallback if row[0] > 0][:_DYNAMIC_THEME_FALLBACK_LIMIT]
-                if plugin_host_theme_fallback_keys:
-                    plugin_host_stage1_hits = _merge_keepalive_keys(
-                        plugin_host_stage1_hits,
-                        plugin_host_theme_fallback_keys,
-                        max(len(plugin_host_stage1_hits) + len(plugin_host_theme_fallback_keys), plugin_host_pool_limit),
-                    )
-        plugin_host_pool_family_keys = plugin_host_stage1_hits[:plugin_host_pool_limit]
-        plugin_host_pool = [plugin_host_family_entries[key] for key in plugin_host_pool_family_keys if key in plugin_host_family_entries]
-        selected_plugin_host_family_keys = list(plugin_host_pool_family_keys[:effective_plugin_host_limit])
-        selected_plugin_host_seeds = [
-            plugin_host_family_entries[key].get("seed")
-            for key in selected_plugin_host_family_keys
-            if plugin_host_family_entries.get(key, {}).get("seed") is not None
-        ]
         skill_family_map = {
             str(item.get("path") or item.get("name") or item.get("folder") or "").strip(): item
             for item in skill_stage2_candidate_entries
             if str(item.get("path") or item.get("name") or item.get("folder") or "").strip()
         }
-        plugin_host_seed_map: dict[str, Any] = {
-            family_key: plugin_host_family_entries[family_key].get("seed")
-            for family_key in plugin_host_pool_family_keys
-            if plugin_host_family_entries.get(family_key, {}).get("seed") is not None
-        }
-
         skill_state: dict[str, Any] = {
             "mode": skill_routing_mode,
             "reason": prefilter_reason or (
@@ -3912,17 +3624,9 @@ class ExtensionsRuntimeService:
             "cacheHit": False,
             "bypassed": not stage2_runtime_available or not mcp_stage2_configured,
         }
-        plugin_host_state: dict[str, Any] = {}
         selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
         skill_stage2_enabled = bool(stage2_runtime_available and skill_stage2_configured)
         mcp_stage2_enabled = bool(stage2_runtime_available and mcp_stage2_configured)
-        plugin_host_llm_enabled = (
-            stage2_runtime_available
-            and effective_plugin_host_limit > 0
-            and bool(plugin_host_tools)
-            and bool(plugin_host_seed_map)
-            and any(_plugin_host_tool_inventory_ready(tool) for tool in plugin_host_tools)
-        )
         if skill_stage2_enabled:
             if len(skill_family_map) > skill_stage2_top_k:
                 skill_state = {}
@@ -4000,41 +3704,6 @@ class ExtensionsRuntimeService:
                         "timeout_seconds": mcp_stage2_timeout,
                     },
                 ))
-            if plugin_host_llm_enabled and len(plugin_host_seed_map) > effective_plugin_host_limit:
-                rerank_specs.append((
-                    "plugin_host",
-                    {
-                        "role": prefilter_role or "extensions_prefilter",
-                        "user_query": query_text,
-                        "family_label": "plugin_host",
-                        "families": [
-                            {
-                                "key": family_key,
-                                "name": str((getattr(tool, "metadata", None) or {}).get("canonicalName") or _tool_name(tool)).strip() or family_key,
-                                "description": " | ".join(
-                                    part
-                                    for part in [
-                                        _tool_description(tool),
-                                        _build_family_profile_summary(plugin_host_family_profiles.get(family_key, {})),
-                                    ]
-                                    if str(part or "").strip()
-                                ),
-                            }
-                            for family_key, tool in plugin_host_seed_map.items()
-                        ],
-                        "max_families": effective_plugin_host_limit,
-                        "timeout_seconds": max(skill_stage2_timeout, mcp_stage2_timeout),
-                    },
-                ))
-            else:
-                plugin_host_state = {
-                    "mode": "lexical_shortlist",
-                    "reason": "PluginHost bridge 未 ready 或候选数量不足，跳过第 2 层精排。",
-                    "timedOut": False,
-                    "cacheHit": False,
-                    "bypassed": True,
-                }
-
             rerank_results: dict[str, tuple[list[str], dict[str, Any]]] = {}
             if rerank_specs:
                 try:
@@ -4057,11 +3726,6 @@ class ExtensionsRuntimeService:
                 selected_mcp_server_keys = [key for key in mcp_keys if key in mcp_server_map]
                 selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
                 mcp_routing_mode = "llm_rerank_shortlist" if mcp_stage1_enabled else "llm_rerank_full_inventory"
-            if "plugin_host" in rerank_results:
-                plugin_host_keys, plugin_host_state = rerank_results["plugin_host"]
-                selected_plugin_host_seeds = [plugin_host_seed_map[key] for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
-                selected_plugin_host_family_keys = [key for key in plugin_host_keys if key in plugin_host_seed_map][:effective_plugin_host_limit]
-
             if bool(skill_state.get("timedOut")):
                 prefilter_reason = "timeout"
                 if skill_stage1_enabled:
@@ -4079,43 +3743,8 @@ class ExtensionsRuntimeService:
                     selected_mcp_server_keys = list(mcp_server_map.keys())
                     mcp_routing_mode = "fallback_unfiltered"
                 selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
-            if bool(plugin_host_state.get("timedOut")):
-                prefilter_reason = "timeout"
-                selected_plugin_host_seeds = [
-                    payload.get("seed")
-                    for payload in plugin_host_pool[:effective_plugin_host_limit]
-                    if payload.get("seed") is not None
-                ]
-                selected_plugin_host_family_keys = list(plugin_host_pool_family_keys[:effective_plugin_host_limit])
-        else:
-            plugin_host_state = {
-                "mode": "lexical_shortlist",
-                "reason": prefilter_reason or "未启用第 2 层 LLM 精排。",
-                "timedOut": False,
-                "cacheHit": False,
-                "bypassed": True,
-            }
         selected_mcp_server_keys = _unique_preserve_order(selected_mcp_server_keys)
         selected_mcp_tools = _expand_mcp_server_keys(selected_mcp_server_keys)
-        selected_plugin_host_family_keys = _unique_preserve_order(selected_plugin_host_family_keys)
-
-        plugin_host_bound_limit = min(
-            max(effective_plugin_host_limit * 2, _PLUGIN_HOST_RERANK_POOL_FLOOR),
-            _PLUGIN_HOST_BOUND_CAP,
-        )
-        selected_plugin_host_tools = expand_tool_family_seeds(
-            items=plugin_host_tools,
-            seeds=selected_plugin_host_seeds,
-            get_plugin_id=_plugin_host_tool_plugin_id,
-            get_tool_name=_plugin_host_tool_raw_name,
-            get_identity=_plugin_host_tool_identity,
-            get_sort_key=lambda tool: (
-                _plugin_host_tool_plugin_id(tool).lower(),
-                _plugin_host_tool_raw_name(tool).lower(),
-                _plugin_host_tool_identity(tool).lower(),
-            ),
-            max_items=plugin_host_bound_limit,
-        )
 
         inherited_skill_ids_ordered = [
             str(item or "").strip()
@@ -4187,6 +3816,41 @@ class ExtensionsRuntimeService:
                         break
                 selected_skills = merged_skills
 
+        plugin_skill_roots = {
+            str((Path.home() / ".agents" / "skills" / str(item.get("targetDirectory") or "")).resolve())
+            for item in list(plugin_projection.get("skills") or [])
+            if str(item.get("targetDirectory") or "").strip()
+        }
+        if plugin_skill_roots:
+            selected_keys = {
+                str(item.get("skillId") or item.get("skillRoot") or item.get("path") or "").strip()
+                for item in selected_skills
+            }
+            for item in raw_skill_entries:
+                item_path = str(item.get("skillRoot") or item.get("path") or "").strip()
+                if not item_path:
+                    continue
+                resolved_item_path = Path(item_path).resolve()
+                if not any(root == str(resolved_item_path) or root in {str(parent) for parent in resolved_item_path.parents} for root in plugin_skill_roots):
+                    continue
+                key = str(item.get("skillId") or item.get("skillRoot") or item.get("path") or "").strip()
+                if key and key not in selected_keys:
+                    selected_keys.add(key)
+                    selected_skills.append(item)
+
+        plugin_mcp_tools = list(plugin_projection.get("mcpTools") or [])
+        if plugin_mcp_tools:
+            seen_mcp_tool_names = {_tool_name(tool) for tool in selected_mcp_tools}
+            for tool in plugin_mcp_tools:
+                tool_name = _tool_name(tool)
+                if tool_name and tool_name not in seen_mcp_tool_names:
+                    seen_mcp_tool_names.add(tool_name)
+                    selected_mcp_tools.append(tool)
+                server_name = _mcp_tool_server_name(tool)
+                mcp_server_map.setdefault(server_name, []).append(tool)
+                if server_name not in selected_mcp_server_keys:
+                    selected_mcp_server_keys.append(server_name)
+
         selected_skill_ids = [str(item.get("skillId") or "").strip() for item in selected_skills if str(item.get("skillId") or "").strip()]
         selected_skill_names = [str(item.get("name") or item.get("folder") or "") for item in selected_skills]
         skill_stage1_entries = [_skill_entry_payload(item) for item in skill_stage1_shortlist]
@@ -4213,12 +3877,6 @@ class ExtensionsRuntimeService:
             for server_key in selected_mcp_server_keys
             if mcp_server_profiles.get(server_key)
         ]
-        exposed_plugin_host_tool_names = [_tool_name(tool) for tool in selected_plugin_host_tools]
-        selected_plugin_host_profiles = [
-            dict(plugin_host_family_profiles.get(family_key) or {})
-            for family_key in selected_plugin_host_family_keys
-            if plugin_host_family_profiles.get(family_key)
-        ]
         query_document_sub_intent = str(query_profile.get("documentSubIntent") or "").strip().lower() or None
         mcp_document_subintent_matched = len(
             [
@@ -4228,16 +3886,8 @@ class ExtensionsRuntimeService:
                 and query_document_sub_intent in _normalize_profile_items(profile.get("documentSubIntentHints"))
             ]
         )
-        plugin_host_document_subintent_matched = len(
-            [
-                profile
-                for profile in selected_plugin_host_profiles
-                if query_document_sub_intent
-                and query_document_sub_intent in _normalize_profile_items(profile.get("documentSubIntentHints"))
-            ]
-        )
-        filtered_tools = base_tools + selected_mcp_tools + selected_plugin_host_tools
-        plugin_host_routing_mode = str(plugin_host_state.get("mode") or ("skipped" if not plugin_host_tools else "lexical_shortlist")).strip() or "skipped"
+        privileged_plugin_tools = [plugin_cli] if plugin_projection.get("cliProfiles") else []
+        filtered_tools = base_tools + selected_mcp_tools + privileged_plugin_tools
         route_modes = [skill_routing_mode, mcp_routing_mode]
         distinct_route_modes = _unique_preserve_order([mode for mode in route_modes if str(mode or "").strip()])
         prefilter_mode = distinct_route_modes[0] if len(distinct_route_modes) == 1 else "mixed"
@@ -4245,7 +3895,6 @@ class ExtensionsRuntimeService:
             prefilter_reason
             or skill_state.get("reason")
             or mcp_state.get("reason")
-            or plugin_host_state.get("reason")
             or ""
         )
 
@@ -4287,15 +3936,14 @@ class ExtensionsRuntimeService:
                 lines.append(
                     f"  - {_tool_name(tool)} ({server_name}): {_truncate(_tool_description(tool) or '暂无说明。', 80)}"
                 )
-        if exposed_plugin_host_tool_names:
-            lines.append("- 当前暴露给本轮的 OpenClaw 工具：")
-            for tool in selected_plugin_host_tools[:effective_plugin_host_limit]:
-                metadata = getattr(tool, "metadata", None) or {}
-                plugin_id = str(metadata.get("pluginId") or "").strip() or "gateway"
+        if plugin_projection.get("grants"):
+            lines.append("- 插件特权投影（来自用户插件引用或 Supervisor 最小任务授权）：")
+            for grant in list(plugin_projection.get("grants") or []):
                 lines.append(
-                    f"  - {str(metadata.get('canonicalName') or _tool_name(tool)).strip()} ({plugin_id}): "
-                    f"{_truncate(_tool_description(tool) or '暂无说明。', 80)}"
+                    f"  - {grant.get('pluginId')} | {grant.get('scope')} | components={len(list(grant.get('componentIds') or []))}"
                 )
+            if plugin_projection.get("cliProfiles"):
+                lines.append("- 已授权 CLI 仅通过 plugin_cli 的 actionId + typed parameters 合同执行，禁止传入任意 argv 或拼接 shell 字符串。")
         lines.append("[/Extensions Runtime]")
 
         return ExtensionRouteBundle(
@@ -4344,12 +3992,15 @@ class ExtensionsRuntimeService:
                 },
                 "skillsRoutingMode": skill_routing_mode,
                 "mcpRoutingMode": mcp_routing_mode,
-                "pluginHostRoutingMode": plugin_host_routing_mode,
+                "pluginGrantIds": [str(item.get("grantId") or "") for item in list(plugin_projection.get("grants") or []) if str(item.get("grantId") or "")],
+                "pluginSkillCount": len(list(plugin_projection.get("skills") or [])),
+                "pluginMcpToolCount": len(plugin_mcp_tools),
+                "pluginCliProfileCount": len(list(plugin_projection.get("cliProfiles") or [])),
                 "modelId": prefilter_model_id,
                 "role": prefilter_role,
                 "reason": prefilter_reason or None,
-                "prefilterTimedOut": bool(any(bool(state.get("timedOut")) for state in (skill_state, mcp_state, plugin_host_state))),
-                "prefilterCacheHit": bool(any(bool(state.get("cacheHit")) for state in (skill_state, mcp_state, plugin_host_state))),
+                "prefilterTimedOut": bool(any(bool(state.get("timedOut")) for state in (skill_state, mcp_state))),
+                "prefilterCacheHit": bool(any(bool(state.get("cacheHit")) for state in (skill_state, mcp_state))),
                 "queryAnalysisCacheHit": query_analysis_cache_hit,
                 "lexiconSignature": str(lexicon_state.get("signature") or _EXTENSION_LEXICON_SIGNATURE),
                 "lexiconCoreSignature": str(lexicon_state.get("coreSignature") or _EXTENSION_LEXICON_CORE_SIGNATURE),
@@ -4445,15 +4096,6 @@ class ExtensionsRuntimeService:
                         or bool(profile.get("documentSubIntentHints"))
                     ]
                 ),
-                "pluginHostProfileMatchedCount": len(
-                    [
-                        profile
-                        for profile in selected_plugin_host_profiles
-                        if bool(profile.get("primaryArtifactTypes"))
-                        or bool(profile.get("primaryOperations"))
-                        or bool(profile.get("documentSubIntentHints"))
-                    ]
-                ),
                 "mcpThemeMatchedCount": len(
                     [
                         profile
@@ -4461,17 +4103,8 @@ class ExtensionsRuntimeService:
                         if bool(profile.get("primaryThemes")) or bool(profile.get("secondaryThemeTags"))
                     ]
                 ),
-                "pluginHostThemeMatchedCount": len(
-                    [
-                        profile
-                        for profile in selected_plugin_host_profiles
-                        if bool(profile.get("primaryThemes")) or bool(profile.get("secondaryThemeTags"))
-                    ]
-                ),
                 "mcpDocumentSubIntentMatched": mcp_document_subintent_matched,
-                "pluginHostDocumentSubIntentMatched": plugin_host_document_subintent_matched,
                 "mcpThemeFallbackInjectedCount": len(mcp_theme_fallback_keys),
-                "pluginHostThemeFallbackInjectedCount": len(plugin_host_theme_fallback_keys),
                 "skillStage1Entries": skill_stage1_entries,
                 "skillEntries": selected_skill_entries,
                 "skillRootDescriptors": skill_root_descriptors,
@@ -4479,13 +4112,10 @@ class ExtensionsRuntimeService:
                 "mcpStage1Servers": mcp_stage1_servers,
                 "mcpServers": selected_mcp_servers,
                 "mcpFamilies": selected_mcp_servers,
-                "pluginHostTools": exposed_plugin_host_tool_names,
-                "pluginHostSelectedFamilies": list(selected_plugin_host_family_keys),
                 "seedUnit": "skill_or_mcp_server",
                 "skillCandidates": len(selected_skill_names),
                 "mcpCandidates": len(exposed_mcp_tool_names),
                 "mcpServerCandidates": len(selected_mcp_servers),
-                "pluginHostCandidates": len(exposed_plugin_host_tool_names),
                 "skillInventoryCount": len(skill_entries),
                 "skillPoolSize": len(skill_entries),
                 "skillStage1HitCount": skill_stage1_hit_count,
@@ -4505,20 +4135,13 @@ class ExtensionsRuntimeService:
                 "mcpExpandedToolCount": len(exposed_mcp_tool_names),
                 "mcpSelectedServers": list(selected_mcp_server_keys),
                 "mcpSelectedFamilies": list(selected_mcp_server_keys),
-                "pluginHostPoolSize": len(plugin_host_pool),
                 "requestedSkillLimit": skill_limit,
                 "requestedMcpLimit": mcp_limit,
-                "requestedPluginHostLimit": plugin_host_limit,
                 "effectiveSkillLimit": len(selected_skill_entries),
                 "effectiveMcpLimit": len(selected_mcp_servers),
-                "effectivePluginHostLimit": effective_plugin_host_limit,
                 "crossRuntimeEscape": cross_runtime_escape,
-                "pluginHostSeedCount": len(selected_plugin_host_seeds),
-                "pluginHostBoundLimit": plugin_host_bound_limit,
-                "pluginHostBoundCount": len(exposed_plugin_host_tool_names),
                 "totalInstalledSkills": len(skill_entries),
                 "totalConnectedMcpTools": len(mcp_tools),
-                "totalPluginHostTools": len(plugin_host_tools),
                 "agentCount": len(list(loaded_agents or [])),
             },
         )
@@ -4531,7 +4154,6 @@ class ExtensionsRuntimeService:
         loaded_agents: list[dict[str, Any]] | None = None,
         skill_limit: int = 5,
         mcp_limit: int = 2,
-        plugin_host_limit: int = 8,
     ) -> ExtensionRouteBundle:
         context_payload = self._resolve_event_context()
         session_id = str(context_payload.get("session_id") or "").strip() or "global"
@@ -4570,9 +4192,16 @@ class ExtensionsRuntimeService:
                 str(len(list(loaded_agents or []))),
                 str(skill_limit),
                 str(mcp_limit),
-                str(plugin_host_limit),
                 tool_signature,
                 lexicon_signature,
+                ",".join(
+                    str(item.get("grantId") or "")
+                    for item in __import__("runtimes.plugin_manager.service", fromlist=["plugin_manager_service"])
+                    .plugin_manager_service.active_grants(
+                        session_id=str(context_payload.get("session_id") or ""),
+                        run_id=str(context_payload.get("run_id") or "").strip() or None,
+                    )
+                ) if str(context_payload.get("session_id") or "").strip() else "",
             ]
         )
         now = time.monotonic()
@@ -4587,7 +4216,6 @@ class ExtensionsRuntimeService:
             loaded_agents=loaded_agents,
             skill_limit=skill_limit,
             mcp_limit=mcp_limit,
-            plugin_host_limit=plugin_host_limit,
             freshness_mode=_INVENTORY_FRESHNESS_GUARDED,
             _pre_resolved_skill_inventory=skill_inventory,
             _pre_resolved_inventory_freshness=inventory_freshness,
@@ -4653,7 +4281,6 @@ class ExtensionsRuntimeService:
                     "skillRootDescriptors",
                     "mcpStage1Servers",
                     "mcpServers",
-                    "pluginHostTools",
                 ],
                 "routing": {
                     "mode": candidate_summary.get("mode"),
@@ -4701,7 +4328,6 @@ class ExtensionsRuntimeService:
                     "mcpFinalExposedCount": candidate_summary.get("mcpFinalExposedCount"),
                     "skillPoolSize": candidate_summary.get("skillPoolSize"),
                     "mcpPoolSize": candidate_summary.get("mcpPoolSize"),
-                    "pluginHostPoolSize": candidate_summary.get("pluginHostPoolSize"),
                 },
             },
             node="route_selected",
@@ -4916,7 +4542,7 @@ class ExtensionsRuntime:
         return {
             "kind": self.kind,
             "displayName": "ExtensionsRuntime",
-            "summary": "负责 Skills + MCP 的编目、健康、候选暴露与扩展治理汇总，不承担 plugin_host 渠道宿主职责。",
+            "summary": "负责普通 Skills 与 MCP 的编目、健康、候选暴露和扩展治理；插件能力由独立特权授权链投影。",
             "responsibilities": [
                 "统一管理 skills 与 MCP inventory",
                 "维护扩展 catalog / health / phase / refresh 控制面",

@@ -50,8 +50,6 @@ const runtimeIcons: Record<RuntimeId, React.ElementType<{ className?: string }>>
     context_governance: Shield,
     subagent_swarm: GitBranch,
     network_supervisor: Globe,
-    plugin_host_tool: RadioTower,
-    plugin_host_channel: RadioTower,
     computer_use: TerminalSquare,
     rpa: Cpu,
     desktop_live: RadioTower,

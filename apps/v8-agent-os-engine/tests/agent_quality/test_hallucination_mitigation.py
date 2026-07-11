@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 
 from core.native_tools import tool_observation_detail
-from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_runtime_episode
-from core.database import db
+from core.database import DatabaseManager
 from core.runtime_projection import project_runtime_timeline_from_events
 
 
@@ -40,28 +39,36 @@ def test_missing_delegation_result_projects_unconfirmed_instead_of_success() -> 
     assert "未确认实际派发" in missing[0]["summary"]
 
 
-def test_unknown_episode_executor_fails_recoverably_not_success() -> None:
+def test_unknown_episode_is_archived_without_execution_or_row_rewrite(tmp_path) -> None:
+    manager = DatabaseManager(tmp_path / "runtime-compatibility.db")
     episode = build_runtime_episode(
         need={"kind": "agent_quality_unknown", "source": "test", "reason": "hallucination guard"},
         kind="agent_quality_unknown",
         state="queued",
         continuation_target="runtime_episode_runner",
     )
-    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    manager.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    with manager.get_connection() as conn:
+        before = dict(conn.execute("SELECT * FROM runtime_episodes WHERE id = ?", (episode["episodeId"],)).fetchone())
 
-    runner = RuntimeEpisodeRunner()
-    claimed = db.claim_runtime_episode(worker_id=runner.worker_id, lease_seconds=30, kinds=["agent_quality_unknown"])
-    assert claimed is not None
+    claimed = manager.claim_runtime_episode(
+        worker_id="compatibility-test",
+        lease_seconds=30,
+    )
+    stored = manager.get_runtime_episode(episode["episodeId"])
+    with manager.get_connection() as conn:
+        after = dict(conn.execute("SELECT * FROM runtime_episodes WHERE id = ?", (episode["episodeId"],)).fetchone())
 
-    import asyncio
-
-    asyncio.run(runner._execute_episode(claimed))
-    stored = db.get_runtime_episode(episode["episodeId"])
-
+    assert claimed is None
     assert stored is not None
-    assert stored["state"] == "failed"
-    assert stored["recoverable"] is True
-    assert stored["resultRef"]
+    assert stored["state"] == "queued"
+    assert stored["displayState"] == "archived"
+    assert stored["persistedState"] == "queued"
+    assert stored["executionSupported"] is False
+    assert stored["compatibilityStatus"] == "unsupported_archived_runtime"
+    assert manager.list_runtime_episodes(active_only=True) == []
+    assert manager.list_runtime_episode_queue(active_only=True) == []
+    assert before == after
 
 
 def test_research_detail_surface_prefers_final_architect_pack_not_raw_json(tmp_path, monkeypatch) -> None:
@@ -118,4 +125,3 @@ def test_research_detail_surface_prefers_final_architect_pack_not_raw_json(tmp_p
     assert "https://docs.example.com/research-runtime" in result
     assert '"sourceMatrix"' not in result
     assert "raw noisy entry" not in result
-

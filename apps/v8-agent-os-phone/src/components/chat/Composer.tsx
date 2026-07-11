@@ -25,7 +25,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
-import type { CommandPresetSummary, SkillReferenceSummary, SubagentFamilySummary, UploadedWorkspaceFile } from "@/src/types/admin";
+import type { CommandPresetSummary, PluginReferenceSummary, SkillReferenceSummary, SubagentFamilySummary, UploadedWorkspaceFile } from "@/src/types/admin";
 
 type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
 type SafetyApprovalMode = "manual" | "reduced" | "minimal";
@@ -256,6 +256,9 @@ export const Composer = memo(function Composer({
     selectedCommand,
     selectedSkills,
     selectedSubagentFamilies,
+    selectedPlugins,
+    onChangePluginScope,
+    onRemovePlugin,
     contextSessionRefs,
     onRemoveContextSessionRef,
     taskPlanningMode,
@@ -291,6 +294,9 @@ export const Composer = memo(function Composer({
     selectedCommand: CommandPresetSummary | null;
     selectedSkills: SkillReferenceSummary[];
     selectedSubagentFamilies: SubagentFamilySummary[];
+    selectedPlugins: PluginReferenceSummary[];
+    onChangePluginScope: (pluginId: string, scope: "task" | "session") => void;
+    onRemovePlugin: (pluginId: string) => void;
     contextSessionRefs: ContextSessionReference[];
     onRemoveContextSessionRef: (sessionId: string) => void;
     taskPlanningMode: boolean;
@@ -314,14 +320,16 @@ export const Composer = memo(function Composer({
     const safeAreaInsets = useSafeAreaInsets();
     const [isFocused, setIsFocused] = useState(false);
     const [safetyApprovalOpen, setSafetyApprovalOpen] = useState(false);
+    const [pluginSheetId, setPluginSheetId] = useState("");
     const bodyInputRef = useRef<TextInput | null>(null);
     const queryInputRef = useRef<TextInput | null>(null);
-    const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || uploadedFiles.length > 0);
+    const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || selectedPlugins.length > 0 || uploadedFiles.length > 0);
     const stopAvailable = Boolean(isRunning && canStop && onStop);
     const canQueue = Boolean(hasPayload && !busy && isRunning && allowQueueWhileRunning);
     const canSend = hasPayload && !busy && (!isRunning || allowQueueWhileRunning);
     const canAct = canSend || (stopAvailable && !hasPayload);
-    const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || contextSessionRefs.length > 0 || activeQueryMode);
+    const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || selectedPlugins.length > 0 || contextSessionRefs.length > 0 || activeQueryMode);
+    const pluginInSheet = selectedPlugins.find((plugin) => plugin.pluginId === pluginSheetId) || null;
     const reasoningEffortLabelMap: Record<ReasoningEffortLevel, string> = {
         auto: t("src.components.chat.composer.reasoning_effort_auto_short"),
         low: t("src.components.chat.composer.reasoning_effort_low_short"),
@@ -505,6 +513,23 @@ export const Composer = memo(function Composer({
                                         {family.displayName || family.familyId}
                                     </Text>
                                 </View>
+                            ))}
+                            {selectedPlugins.map((plugin) => (
+                                <Pressable
+                                    key={plugin.pluginId}
+                                    onPress={() => setPluginSheetId(plugin.pluginId)}
+                                    style={[
+                                        styles.tokenChip,
+                                        {
+                                            backgroundColor: themeMode === "dark" ? "rgba(16,185,129,0.15)" : "rgba(16,185,129,0.11)",
+                                            borderColor: themeMode === "dark" ? "rgba(16,185,129,0.25)" : "rgba(16,185,129,0.20)",
+                                        },
+                                    ]}
+                                >
+                                    <MaterialCommunityIcons name="puzzle-outline" size={11} color={plugin.status === "ready" ? colors.success : colors.warning} />
+                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>{plugin.displayName}</Text>
+                                        <Text style={[styles.tokenText, { color: colors.textMuted }]}>{plugin.grantScope === "session" ? t("src.components.chat.composer.plugin_scope_session_short") : t("src.components.chat.composer.plugin_scope_task_short")}</Text>
+                                </Pressable>
                             ))}
                             {activeQueryMode ? (
                                 <View
@@ -830,6 +855,39 @@ export const Composer = memo(function Composer({
                             );
                         })}
                     </ScrollView>
+                </View>
+            </View>
+        </Modal>
+        <Modal
+            visible={Boolean(pluginInSheet)}
+            transparent
+            animationType="slide"
+            statusBarTranslucent
+            onRequestClose={() => setPluginSheetId("")}
+        >
+            <View style={styles.safetyOverlay}>
+                <Pressable style={StyleSheet.absoluteFill} onPress={() => setPluginSheetId("")} />
+                <View style={[styles.safetySheet, { paddingBottom: Math.max(safeAreaInsets.bottom, 16), backgroundColor: themeMode === "dark" ? "rgba(24,24,27,0.99)" : "rgba(255,255,255,0.99)", borderColor: colors.border }]}>
+                    <View style={[styles.safetySheetHandle, { backgroundColor: colors.border }]} />
+                    {pluginInSheet ? (
+                        <View style={styles.safetySheetContent}>
+                            <Text style={[styles.safetyMenuTitle, { color: colors.text, marginBottom: 4 }]}>{pluginInSheet.displayName}</Text>
+                        <Text style={[styles.safetyMenuDescription, { color: colors.textMuted, marginBottom: 12 }]}>{t("src.components.chat.composer.plugin_authorization_description")}</Text>
+                            {(["task", "session"] as const).map((scope) => (
+                                <Pressable key={scope} style={({ pressed }) => [styles.safetyMenuItem, { backgroundColor: pluginInSheet.grantScope === scope ? `${colors.success}18` : pressed ? colors.surfaceStrong : "transparent" }]} onPress={() => { onChangePluginScope(pluginInSheet.pluginId, scope); setPluginSheetId(""); }}>
+                                    <MaterialCommunityIcons name={scope === "task" ? "checkbox-marked-circle-outline" : "chat-processing-outline"} size={19} color={pluginInSheet.grantScope === scope ? colors.success : colors.textMuted} />
+                                    <View style={styles.safetyMenuText}>
+                                        <Text style={[styles.safetyMenuTitle, { color: colors.text }]}>{scope === "task" ? t("src.components.chat.composer.plugin_scope_task_title") : t("src.components.chat.composer.plugin_scope_session_title")}</Text>
+                                        <Text style={[styles.safetyMenuDescription, { color: colors.textMuted }]}>{scope === "task" ? t("src.components.chat.composer.plugin_scope_task_description") : t("src.components.chat.composer.plugin_scope_session_description")}</Text>
+                                    </View>
+                                </Pressable>
+                            ))}
+                            <Pressable style={({ pressed }) => [styles.safetyMenuItem, { opacity: pressed ? 0.7 : 1 }]} onPress={() => { onRemovePlugin(pluginInSheet.pluginId); setPluginSheetId(""); }}>
+                                <MaterialCommunityIcons name="trash-can-outline" size={19} color={colors.danger} />
+                                <Text style={[styles.safetyMenuTitle, { color: colors.danger }]}>{t("src.components.chat.composer.remove_plugin")}</Text>
+                            </Pressable>
+                        </View>
+                    ) : null}
                 </View>
             </View>
         </Modal>

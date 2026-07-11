@@ -52,6 +52,28 @@ def _normalize_scope_values(value: Any) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _normalize_plugin_references(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    merged: dict[str, set[str]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        plugin_id = str(item.get("pluginId") or item.get("plugin_id") or "").strip().lower()
+        component_ids = {
+            str(component).strip()
+            for component in list(item.get("componentIds") or item.get("component_ids") or [])
+            if str(component).strip()
+        }
+        if not plugin_id or not component_ids:
+            continue
+        merged.setdefault(plugin_id, set()).update(component_ids)
+    return [
+        {"pluginId": plugin_id, "componentIds": sorted(component_ids)}
+        for plugin_id, component_ids in sorted(merged.items())
+    ]
+
+
 def _first_present(payload: dict[str, Any], keys: Iterable[str]) -> Any:
     for key in keys:
         if key in payload:
@@ -142,6 +164,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "behaviorScope": [],
         "requiredCapabilities": [],
         "runtimeAccess": [],
+        "pluginReferences": [],
         "acceptanceContract": "",
         "acceptanceTiers": {"must": [], "should": [], "nice": []},
         "dependency": [],
@@ -201,6 +224,9 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "behaviorScope": _normalize_scope_values(payload.get("behaviorScope") or payload.get("behavior_scope")),
         "requiredCapabilities": _normalize_scope_values(payload.get("requiredCapabilities") or payload.get("required_capabilities")),
         "runtimeAccess": _normalize_scope_values(payload.get("runtimeAccess") or payload.get("runtime_access")),
+        "pluginReferences": _normalize_plugin_references(
+            payload.get("pluginReferences") or payload.get("plugin_references")
+        ),
         "acceptanceContract": acceptance_contract if isinstance(acceptance_contract, dict) else str(acceptance_contract or "").strip(),
         "acceptanceTiers": normalized_acceptance_tiers,
         "dependency": _normalize_scope_values(payload.get("dependency")),
@@ -342,6 +368,8 @@ def expand_delegation_task_briefs(values: Iterable[Any] | None) -> list[dict[str
                 "required_capabilities",
                 "runtimeAccess",
                 "runtime_access",
+                "pluginReferences",
+                "plugin_references",
                 "acceptanceContract",
                 "acceptance_contract",
                 "dependency",

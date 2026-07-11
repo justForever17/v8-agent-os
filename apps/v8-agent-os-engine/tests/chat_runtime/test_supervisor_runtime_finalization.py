@@ -259,7 +259,7 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
         prompt_addition="",
         selected_skill_names=[],
         exposed_mcp_tool_names=[],
-        candidate_summary={"reason": "test", "pluginHostTools": []},
+        candidate_summary={"reason": "test"},
     )
     runtime_service = SimpleNamespace(
         bind_execution_context=lambda **_kwargs: "token",

@@ -360,21 +360,6 @@ function resolveSource(envelope: RuntimeEnvelope, payload?: Record<string, unkno
   return source;
 }
 
-function resolveChannelType(payload: JsonRecord, source?: SessionRuntimeEventSource) {
-  return normalizeString(
-    payload.channel_type
-    || payload.channelType
-    || payload.channel_name
-    || payload.channelName
-    || payload.transport_managed_by
-    || payload.transportManagedBy
-    || payload.handoff_source
-    || payload.handoffSource
-    || source?.node
-    || source?.component,
-  );
-}
-
 function resolveRuntimeKind(payload: JsonRecord) {
   const episode = asRecord(payload.episode);
   const need = asRecord(payload.need);
@@ -452,70 +437,7 @@ function normalizeArtifactRuntimeId(hint: string): SessionRuntimeId | null {
   return normalizeRuntimeId(normalized);
 }
 
-function resolveSourceHints(source?: SessionRuntimeEventSource) {
-  return {
-    component: normalizeString(source?.component),
-    node: normalizeString(source?.node),
-    agentId: normalizeString(source?.agent_id),
-  };
-}
-
-function resolvePluginHostRuntimeId(
-  topic: string,
-  payload: JsonRecord,
-  source?: SessionRuntimeEventSource,
-): SessionRuntimeId | null {
-  const normalizedTopic = normalizeString(topic);
-  const runtimeKind = resolveRuntimeKind(payload);
-  const channelType = resolveChannelType(payload, source);
-  const { component, node, agentId } = resolveSourceHints(source);
-  const joinedHints = [component, node, agentId, runtimeKind, channelType, normalizedTopic].filter(Boolean).join("¦");
-
-  const isPluginHostRuntime = joinedHints.includes("plugin_host");
-  if (!isPluginHostRuntime) {
-    return null;
-  }
-
-  if (
-    normalizedTopic.startsWith("gateway.")
-    || normalizedTopic.startsWith("plugin_tool.")
-    || runtimeKind.includes("plugin_host_tool")
-    || runtimeKind.includes("gateway")
-    || runtimeKind.includes("plugin_tool")
-    || channelType.includes("tool")
-    || channelType.includes("gateway")
-  ) {
-    return "plugin_host_tool";
-  }
-
-  if (
-    normalizedTopic.startsWith("plugin_host.")
-    || normalizedTopic.startsWith("channel.")
-    || runtimeKind.includes("plugin_host_channel")
-    || runtimeKind.includes("channel")
-    || channelType.includes("channel")
-    || channelType.includes("openclaw")
-    || channelType.includes("wechat")
-    || channelType.includes("feishu")
-    || channelType.includes("telegram")
-    || channelType.includes("discord")
-    || joinedHints.includes("inbound")
-    || joinedHints.includes("push")
-    || joinedHints.includes("dispatch")
-    || joinedHints.includes("delivery")
-  ) {
-    return "plugin_host_channel";
-  }
-
-  return "plugin_host_tool";
-}
-
 function resolveRuntimeId(topic: string, payload: JsonRecord, source?: SessionRuntimeEventSource): SessionRuntimeId | null {
-  const pluginHostRuntimeId = resolvePluginHostRuntimeId(topic, payload, source);
-  if (pluginHostRuntimeId) {
-    return pluginHostRuntimeId;
-  }
-
   const nestedRuntimeId = normalizeArtifactRuntimeId(resolveRuntimeKind(payload));
   if (nestedRuntimeId) {
     return nestedRuntimeId;
@@ -948,6 +870,16 @@ function extractMcpAppRef(...values: unknown[]) {
       csp: asRecord(record.csp),
       permissions: asRecord(record.permissions),
       status: pickFirstString(record.status),
+      renderer: pickFirstString(record.renderer),
+      title: pickFirstString(record.title),
+      externalUrl: pickFirstString(record.externalUrl, record.external_url),
+      thumbnailUrl: pickFirstString(record.thumbnailUrl, record.thumbnail_url),
+      fileKey: pickFirstString(record.fileKey, record.file_key),
+      nodeId: pickFirstString(record.nodeId, record.node_id),
+      presentation: asRecord(record.presentation),
+      allowedFrameOrigins: Array.isArray(record.allowedFrameOrigins)
+        ? record.allowedFrameOrigins.map((item) => String(item || "")).filter(Boolean)
+        : [],
     };
   }
   return undefined;

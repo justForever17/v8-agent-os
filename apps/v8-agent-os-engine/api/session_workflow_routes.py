@@ -451,6 +451,12 @@ async def create_session(data: dict = Body(...)):
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     try:
+        # Session-scoped plugin authority must terminate with the owning session.
+        # Keep this before the session row is removed so owner checks and audit
+        # events can still resolve the original session truth.
+        from runtimes.plugin_manager.service import plugin_manager_service
+
+        plugin_manager_service.revoke_session_grants(session_id)
         db.delete_session(session_id)
         _refresh_web_session_index_safely()
         return {"status": "success"}

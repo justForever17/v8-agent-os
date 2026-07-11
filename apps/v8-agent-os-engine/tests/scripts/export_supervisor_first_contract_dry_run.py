@@ -14,10 +14,10 @@ if str(ENGINE_ROOT) not in sys.path:
 
 from core.tools.native.automation import manage_cron, manage_hook, wait  # noqa: E402
 from core.tools.native.computer_use import computer_use_execute_task, computer_use_observe  # noqa: E402
-from core.tools.native.creative_media import (  # noqa: E402
-    creative_media_create_job,
-    creative_media_production_pack,
-    creative_media_rank_models,
+from core.tools.native.creative_media_facade import (  # noqa: E402
+    creative_media_capabilities,
+    creative_media_jobs,
+    creative_media_plan,
 )
 from core.tools.native.delegation import delegation_broker  # noqa: E402
 from core.tools.native.runtime import runtime_broker  # noqa: E402
@@ -70,9 +70,9 @@ def main() -> int:
         "runtime_broker": _tool_description(runtime_broker),
         "delegation_broker": _tool_description(delegation_broker),
         "spec_broker": _tool_description(spec_broker),
-        "creative_media_create_job": _tool_description(creative_media_create_job),
-        "creative_media_production_pack": _tool_description(creative_media_production_pack),
-        "creative_media_rank_models": _tool_description(creative_media_rank_models),
+        "creative_media_capabilities": _tool_description(creative_media_capabilities),
+        "creative_media_jobs": _tool_description(creative_media_jobs),
+        "creative_media_plan": _tool_description(creative_media_plan),
         "computer_use_execute_task": _tool_description(computer_use_execute_task),
         "computer_use_observe": _tool_description(computer_use_observe),
         "wait": _tool_description(wait),
@@ -111,13 +111,13 @@ def main() -> int:
             and "Do not tell ordinary users" in tool_descriptions["delegation_broker"],
             "spec_engine_creates_spec_id": "Engine creates the canonical `specId`" in tool_descriptions["spec_broker"],
             "spec_product_language": "规格文档" in tool_descriptions["spec_broker"] or "Spec 模式" in tool_descriptions["spec_broker"],
-            "creative_create_job_product_language": "多媒体创作" in tool_descriptions["creative_media_create_job"]
-            and "music.generate" in tool_descriptions["creative_media_create_job"]
-            and "model3d.generate" in tool_descriptions["creative_media_create_job"],
-            "creative_rank_clean_markdown": "Markdown" in tool_descriptions["creative_media_rank_models"]
-            and "provider JSON" in tool_descriptions["creative_media_rank_models"],
-            "creative_pack_delivery": "artifact proof" in tool_descriptions["creative_media_production_pack"]
-            and "QA" in tool_descriptions["creative_media_production_pack"],
+            "creative_jobs_product_language": "多媒体创作" in tool_descriptions["creative_media_jobs"]
+            and "music.generate" in tool_descriptions["creative_media_jobs"]
+            and "model3d.generate" in tool_descriptions["creative_media_jobs"],
+            "creative_contract_discovery": "action='describe'" in tool_descriptions["creative_media_capabilities"]
+            and "six-facade" in tool_descriptions["creative_media_capabilities"],
+            "creative_pack_delivery": "artifact proof" in tool_descriptions["creative_media_plan"]
+            and "QA" in tool_descriptions["creative_media_plan"],
             "computer_execute_product_language": "桌面操作" in tool_descriptions["computer_use_execute_task"]
             and "goal" in tool_descriptions["computer_use_execute_task"]
             and "successCriteria" in tool_descriptions["computer_use_execute_task"],

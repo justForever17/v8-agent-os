@@ -76,16 +76,6 @@ type SkillEntry = {
   description: string;
   path: string;
 };
-type PluginHostTool = {
-  canonicalName: string;
-  toolName?: string;
-  pluginId?: string | null;
-  label?: string;
-  description?: string;
-};
-type BridgeToolsPayload = {
-  inventory?: PluginHostTool[];
-};
 type SupervisorConfigRegistryPayload = {
   data?: {
     modelParameters?: {
@@ -233,7 +223,7 @@ type ExternalWorkerFormState = {
   toolExposurePolicy: string;
   capabilitySnapshotJson: string;
 };
-type ToolPanelKey = "baseline" | "skills" | "mcp" | "plugin_host";
+type ToolPanelKey = "baseline" | "skills" | "mcp";
 const FREELANCERS_FAMILY_ID = "freelancers";
 const DEFAULT_FORM_STATE: AgentFormState = {
   name: "",
@@ -656,7 +646,6 @@ export default function SubagentsPage() {
   const [models, setModels] = useState<AIModel[]>([]);
   const [mcpTools, setMcpTools] = useState<MCPTool[]>([]);
   const [skills, setSkills] = useState<SkillEntry[]>([]);
-  const [pluginHostTools, setPluginHostTools] = useState<PluginHostTool[]>([]);
   const [extensionsSummary, setExtensionsSummary] = useState<{
     mcpServerCount: number;
     connectedMcpServerCount: number;
@@ -666,7 +655,6 @@ export default function SubagentsPage() {
     connectedMcpServerCount: 0,
     mcpToolCount: 0
   });
-  const [bridgeError, setBridgeError] = useState<string | null>(null);
   const [baselineSystemTools, setBaselineSystemTools] = useState<BaselineSystemTool[]>([]);
   const [defaultModelId, setDefaultModelId] = useState("");
   const [supervisorDomainData, setSupervisorDomainData] = useState<SupervisorConfigRegistryPayload | null>(null);
@@ -700,8 +688,7 @@ export default function SubagentsPage() {
   const [toolPanels, setToolPanels] = useState<Record<ToolPanelKey, boolean>>({
     baseline: false,
     skills: true,
-    mcp: false,
-    plugin_host: false
+    mcp: false
   });
   const baselineToolNames = useMemo(() => baselineSystemTools.map(item => String(item.name || "").trim()).filter(Boolean), [baselineSystemTools]);
   const familyOptions = useMemo(() => {
@@ -751,14 +738,6 @@ export default function SubagentsPage() {
       return acc;
     }, {});
   }, [mcpTools]);
-  const groupedPluginHostTools = useMemo(() => {
-    return pluginHostTools.reduce<Record<string, PluginHostTool[]>>((acc, tool) => {
-      const key = String(tool.pluginId || "gateway").trim() || "gateway";
-      acc[key] = acc[key] || [];
-      acc[key].push(tool);
-      return acc;
-    }, {});
-  }, [pluginHostTools]);
   const resolveAgentModelDisplay = useCallback((agent: Agent) => {
     const explicitModelRef = String(agent.modelId || "").trim();
     const effectiveModelRef = explicitModelRef || String(defaultModelId || "").trim();
@@ -847,15 +826,13 @@ export default function SubagentsPage() {
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [agentsRes, modelsRes, defaultModelRes, extensionsRes, bridgeRes, supervisorRes, toolSurfaceRes] = await Promise.all([fetch("/api/agents", {
+      const [agentsRes, modelsRes, defaultModelRes, extensionsRes, supervisorRes, toolSurfaceRes] = await Promise.all([fetch("/api/agents", {
         cache: "no-store"
       }), fetch("/api/models", {
         cache: "no-store"
       }), fetch("/api/settings/default-agent-model", {
         cache: "no-store"
       }), fetch("/api/extensions/catalog", {
-        cache: "no-store"
-      }), fetch("/api/plugin-host/bridge/tools?limit=24", {
         cache: "no-store"
       }), fetch("/api/config-registry/supervisor", {
         cache: "no-store"
@@ -882,15 +859,6 @@ export default function SubagentsPage() {
           connectedMcpServerCount: Number(data.summary?.connectedMcpServerCount || 0) || 0,
           mcpToolCount: Number(data.summary?.mcpToolCount || 0) || 0
         });
-      }
-      if (bridgeRes.ok) {
-        const data: BridgeToolsPayload = await bridgeRes.json();
-        setPluginHostTools(Array.isArray(data.inventory) ? data.inventory : []);
-        setBridgeError(null);
-      } else {
-        const data = await bridgeRes.json().catch(() => ({}));
-        setPluginHostTools([]);
-        setBridgeError(typeof data?.error === "string" ? data.error : t("app.admin.dashboard.subagents.page.keff963b3"));
       }
       if (supervisorRes.ok) {
         const data: SupervisorConfigRegistryPayload = await supervisorRes.json();
@@ -2271,35 +2239,6 @@ export default function SubagentsPage() {
                                                             <div className="min-w-0">
                                                                 <div className="break-all text-sm font-medium text-foreground">{tool.name}</div>
                                                                 <div className="text-xs leading-5 text-muted-foreground">{tool.description || t("app.admin.dashboard.subagents.page.k86e9a787")}</div>
-                                                            </div>
-                                                        </label>;
-                    })}
-                                            </div>)}
-                                    </CardContent> : null}
-                                </Card>
-                                <Card className="rounded-3xl border-border">
-                                    <CardHeader className="space-y-0">
-                                        <button type="button" className="flex w-full items-start justify-between gap-3 text-left" onClick={() => toggleToolPanel("plugin_host")}>
-
-                                            <div className="space-y-1">
-                                                <CardTitle className="flex items-center gap-2 text-base"><BrainCircuit className="h-4 w-4 text-emerald-600" />PluginHost<Badge variant="outline">{pluginHostTools.length}</Badge></CardTitle>
-                                            </div>
-                                            <ChevronDown className={`mt-1 h-4 w-4 shrink-0 text-muted-foreground/80 transition-transform ${toolPanels.plugin_host ? "rotate-180" : ""}`} />
-                                        </button>
-                                    </CardHeader>
-                                    {toolPanels.plugin_host ? <CardContent className="max-h-[224px] space-y-4 overflow-y-auto overscroll-contain pr-2">
-                                        {bridgeError ? <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-700">{bridgeError}</div> : null}
-                                        {!bridgeError && Object.keys(groupedPluginHostTools).length === 0 ? <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.subagents.page.kc9324cc5")}</div> : null}
-                                        {Object.entries(groupedPluginHostTools).map(([pluginId, items]) => <div key={pluginId} className="space-y-2">
-                                                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{pluginId}</div>
-                                                {items.map(tool => {
-                      const selector = String(tool.canonicalName || tool.toolName || "").trim();
-                      const checked = form.tools.includes(selector);
-                      return <label key={selector} className="flex items-start gap-3">
-                                                            <Checkbox checked={checked} onCheckedChange={next => toggleSelector(selector, Boolean(next))} className="mt-1" />
-                                                            <div className="min-w-0">
-                                                                <div className="break-all text-sm font-medium text-foreground">{selector}</div>
-                                                                <div className="text-xs leading-5 text-muted-foreground">{tool.description || tool.label || selector}</div>
                                                             </div>
                                                         </label>;
                     })}

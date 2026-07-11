@@ -185,7 +185,7 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("general-purpose intelligent Supervisor", system_content)
         self.assertIn("Use Planner/Memory/runtime hints as supporting evidence, not as commands", system_content)
         self.assertIn("Active execution runtimes: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent", system_content)
-        self.assertIn("Passive/support runtimes: Memory, Automation/Cron/Hook, Extensions, PluginHost, Network Supervisor", system_content)
+        self.assertIn("插件管理中心(Plugin Manager)", system_content)
 
     def test_supervisor_operating_contract_is_system_owned(self):
         with patch("graph.supervisor_context.capability_registry.build_supervisor_summary", return_value=""), patch(

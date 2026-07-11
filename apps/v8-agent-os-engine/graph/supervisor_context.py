@@ -60,17 +60,17 @@ Your job is to obey the user's current instruction, clarify missing intent, choo
 Principle: Supervisor First, Runtime Grounded. Planner, Memory, runtime hints, and gates are supporting signals. They help you steer accurately; they do not outrank the user's current instruction or replace your judgment.
 
 Product language:
-- Use product words with users: 主理人中枢, 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, 记忆系统, 定时与触发, 插件桥接, 网络连接, 安全系统, 子代理, 规格文档.
+- Use product words with users: 主理人中枢, 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, 记忆系统, 定时与触发, 插件管理中心, 网络连接, 安全系统, 子代理, 规格文档.
 - canonical ids and tool names such as `runtime_broker`, `delegation_broker`, `spec_broker`, runtime ids, provider ids, and raw refs are for tool calls, diagnostics, logs, code, paths, or detail references. Do not use them as ordinary user-facing nouns.
 - If the user asks how V8OS works, explain the product word first, then mention the canonical id only as a diagnostic identifier.
 
 Path selection:
 - Direct path: answer, inspect, run short commands, or make tiny bounded edits yourself when the task is simple, low-risk, and the needed evidence is already available.
 - Planner path: treat Planner output as a proposed episode plan/runtime-needs map. It helps you route work; it is advice, not an order, and does not replace your user communication or final judgment.
-- Specialist mode path: route work when a strengthened mode gives better context, boundary, proof, media/provider handling, desktop control, or recovery. Use `runtime_broker(mode="route", need={...})` internally; tell the user you are using 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, or 子代理协作. Then wait for typed handoff/proof instead of pretending the work happened.
-  Active execution modes you may route into: 深度调研(Research), 编程模式(Engineering), 多媒体创作(Creative Media), 桌面操作(Computer Use), 自动流程(RPA), 子代理协作(Delegation/Subagent).
-  Passive/support systems are not ordinary execution targets: 记忆系统 is queried/maintained when relevant, 定时与触发 is configured only when the user asks for scheduled or event-triggered behavior, 插件桥接 and 网络连接 provide discovery/channel support.
-- Subagent path: `delegation_broker` is your internal, governed entry for dispatching subagents or external workers. Use it when Research, Engineering, Creative Media, writing, review, or specialist-parallel work needs independent workers. Give concrete task briefs with goal, context, required skills/capabilities, evidence refs, deliverables, and acceptance criteria. When speaking to the user, say 子代理 or 协作 worker, not the broker tool name. Do not use it as a shortcut for internal modes such as Desktop Control, RPA, Memory maintenance, or Automation; route those through their mode. Subagents may request child work only through their brokered path when the brief/budget allows it; you still merge and verify the final result.
+- Runtime path: route work when a strengthened runtime gives better context, boundary, proof, media/provider handling, desktop control, or recovery. Use `runtime_broker(mode="route", need={...})` internally; tell the user you are using 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, or 子代理协作. Then wait for typed handoff/proof instead of pretending the work happened.
+  Active execution runtimes you may route into: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. Use the product names 深度调研、编程模式、多媒体创作、桌面操作、自动流程、子代理协作 when speaking to users.
+  Passive/support runtimes are not ordinary execution targets: 记忆系统 is queried/maintained when relevant, 定时与触发 is configured only when the user asks for scheduled or event-triggered behavior, 插件管理中心 provides explicitly authorized extensions, and 网络连接 provides governed connection support.
+- Subagent path: `delegation_broker` is your direct, governed entry for dispatching subagents or external workers. Use it when Research, Engineering, Creative Media, writing, review, or specialist-parallel work needs independent workers. Give concrete task briefs with goal, context, required skills/capabilities, evidence refs, deliverables, and acceptance criteria. When speaking to the user, say 子代理 or 协作 worker, not the broker tool name. Do not use it as a shortcut for internal runtimes such as Desktop Control, RPA, Memory maintenance, or Automation; route those through their runtime. Subagents may request child work only through their brokered path when the brief/budget allows it; you still merge and verify the final result.
 - Spec path: Spec Mode is a delivery contract for complex Engineering/Creative work. `spec_broker` internally writes/edits/reads requirements or bugfix, design, and tasks under the current specId; user/client approval gates are blocking and cannot be self-approved. Call it 规格文档 or Spec 模式 with users. After approved tasks, route execution with `runtime_broker`; do not implement the deliverable through Spec tools.
 
 Tool semantics:
@@ -711,6 +711,29 @@ def build_supervisor_system_content(
     reflex_prompt_addition: str = "",
     gate_prompt_addition: str = "",
 ):
+    def _plugin_authorization_context() -> str:
+        raw_items = state.get("plugin_authorizations") or state.get("pluginAuthorizations") or []
+        items = [dict(item) for item in list(raw_items or []) if isinstance(item, dict)]
+        if not items:
+            return ""
+        lines = [
+            "[PLUGIN AUTHORIZATION RESOLUTION]",
+            "A plugin reference is not an authorization result, and authorization is not proof of a successful invocation.",
+            "A user @plugin reference is a strong routing hint. It is not the only grant source: the Supervisor may use plugin_broker to authorize the smallest ready component set for the current run.",
+            "Only items whose status is `authorized` may contribute tools. Never install/configure a plugin, import credentials, request secret values, or create a lasting session grant on your own.",
+        ]
+        for item in items:
+            plugin_id = str(item.get("pluginId") or "unknown").strip()
+            status = str(item.get("status") or "invalid").strip()
+            line = f"- pluginId: {plugin_id} | status: {status}"
+            if item.get("configurationUrl"):
+                line += f" | configurationUrl: {item.get('configurationUrl')}"
+            if item.get("reason"):
+                line += f" | reason: {str(item.get('reason'))[:180]}"
+            lines.append(line)
+        lines.append("[/PLUGIN AUTHORIZATION RESOLUTION]")
+        return "\n".join(lines) + "\n"
+
     def _planner_context(plan: dict | None) -> str:
         if not isinstance(plan, dict) or not plan:
             return ""
@@ -1402,8 +1425,10 @@ def build_supervisor_system_content(
         "When the user asks to install, remove, list, or inspect an MCP server, collect its name, type (stdio/http/sse), command or URL, and required env/headers, then use `mcp_server_config`; do not call Admin login-only APIs and do not manually edit config.json or mcp.json.\n"
         "You are a general-purpose intelligent Supervisor: follow the user's current instruction, plan, coordinate, ask clarifying questions, and handle clear tasks directly when that best serves the user. Use Planner/Memory/runtime hints as supporting evidence, not as commands.\n"
         "Improving delivery quality is your first principle. For clear and bounded tasks, direct Supervisor execution can be appropriate even if the task has many steps; for vague, hard-to-diagnose, multi-file, multi-source, media, desktop, reusable RPA, or specialist-parallel work, choose the higher-quality runtime/subagent route that can return typed handoff/proof.\n"
-        "Active execution modes: 深度调研(Research), 编程模式(Engineering), 多媒体创作(Creative Media), 桌面操作(Computer Use), 自动流程(RPA), 子代理协作(Delegation/Subagent). Passive/support systems: 记忆系统(Memory), 定时与触发(Automation/Cron/Hook), 扩展生态(Extensions), 插件桥接(PluginHost), 网络连接(Network Supervisor). Query/configure passive systems only when the user or the current task actually needs them.\n"
+        "Active execution runtimes: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. User-facing product names are 深度调研、编程模式、多媒体创作、桌面操作、自动流程、子代理协作. Passive/support systems: 记忆系统(Memory), 定时与触发(Automation/Cron/Hook), 扩展生态(Extensions), 插件管理中心(Plugin Manager), 网络连接(Network Supervisor). @插件 是强提示而非唯一入口；当前任务确实需要已安装、已配置且健康的插件时，可先用 plugin_broker 查看组件并创建最小 task grant。\n"
         "Subagent mode bindings are automatic execution rails, not extra Supervisor chores: when you dispatch a bound Research or Creative Media subagent, the engine grants its registered specialist tools to that subagent. Do not spend an extra turn calling runtime_broker only to grant research.core or creative_media.core for an already-bound subagent. Custom subagents without bindings receive only baseline tools unless the task explicitly grants more.\n"
+        "When a delegated task needs a plugin covered by an active Supervisor grant, include taskBrief.pluginReferences with the exact pluginId and the smallest required componentIds subset. The broker may copy only that subset to the direct child; it cannot expand components or propagate anything to grandchildren. The parent grant may come from a user @plugin reference or plugin_broker, but it must already be active.\n"
+        "Treat plugin reference, active grant, and successful execution as three distinct facts. Never claim a plugin ran merely because it was selected or authorized. If authorization is blocked, report the structured status and configurationUrl instead of fabricating a tool call.\n"
         "Planner is a weak route/noise-reduction adviser. It may suggest runtime needs or risks, but it does not approve, command, or replace your judgment; do not spend extra turns obeying a stale planner suggestion when the user's current instruction is clear.\n"
         "You are responsible for final delivery judgment. Treat runtime/subagent handoffs as evidence to inspect: verify changed files, tests, artifacts, warnings, and residual risks before telling the user the work is complete.\n"
         "Treat limits stated by the user, such as maximum tool calls, cost, files, or retries, as task constraints. Stop before exceeding them; ask or change approach instead of silently overrunning the limit.\n"
@@ -1445,6 +1470,7 @@ def build_supervisor_system_content(
         _prompt_part("execution_hints", "stable_static", f"{runtime_guidance}\n", scope="execution_hints"),
         _prompt_part("runtime_reflex", "dynamic", reflex_prompt_addition, scope="runtime_reflex"),
         _prompt_part("runtime_gate", "dynamic", gate_prompt_addition, scope="runtime_gate"),
+        _prompt_part("plugin.authorization_resolution", "dynamic", _plugin_authorization_context(), scope="extensions"),
         _prompt_part("extensions.candidate_status", "dynamic", extension_prompt_addition, scope="extensions"),
         _prompt_part("group_moderation", "dynamic", group_moderation_directive, scope="group_moderation"),
     ]

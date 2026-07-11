@@ -100,24 +100,6 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Handles network supervision, fetch flows, and external observation.",
     },
   },
-  plugin_host_tool: {
-    id: "plugin_host_tool",
-    label: { zh: "插件工具", en: "Plugin-host tools" },
-    shortLabel: { zh: "插件", en: "Plugin" },
-    description: {
-      zh: "承接受管插件工具和网关工具调用。",
-      en: "Handles managed plugin-host and gateway-backed tool execution.",
-    },
-  },
-  plugin_host_channel: {
-    id: "plugin_host_channel",
-    label: { zh: "外部通讯", en: "External channels" },
-    shortLabel: { zh: "通讯", en: "Channels" },
-    description: {
-      zh: "承接 OpenClaw channels 等外部通讯，会话归入历史层。",
-      en: "Handles OpenClaw channels and external communication history.",
-    },
-  },
   subagent_swarm: {
     id: "subagent_swarm",
     label: { zh: "子代理蜂群", en: "Subagent swarm" },
@@ -166,20 +148,18 @@ export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
   "computer_use",
   "rpa",
   "network_supervisor",
-  "plugin_host_tool",
   "subagent_swarm",
   "automation",
   "memory",
-  "plugin_host_channel",
   "desktop_live",
 ];
 
 export const VISIBLE_SESSION_RUNTIME_ORDER: SessionRuntimeId[] = SESSION_RUNTIME_ORDER.filter(
-  (runtimeId) => runtimeId !== "planner_lane" && runtimeId !== "subagent_swarm" && runtimeId !== "plugin_host_channel" && runtimeId !== "desktop_live",
+  (runtimeId) => runtimeId !== "planner_lane" && runtimeId !== "subagent_swarm" && runtimeId !== "desktop_live",
 );
 
-export function isHistoryOnlyRuntimeId(runtimeId: SessionRuntimeId) {
-  return runtimeId === "plugin_host_channel";
+export function isHistoryOnlyRuntimeId(_runtimeId: SessionRuntimeId) {
+  return false;
 }
 
 export function isExcludedRealtimeRuntimeId(runtimeId: SessionRuntimeId) {
@@ -250,31 +230,6 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
   ) {
     return "research";
   }
-  if (
-    normalized === "plugin_host_channel"
-    || normalized.includes("channel")
-    || normalized.includes("openclaw")
-    || normalized.includes("wechat")
-    || normalized.includes("feishu")
-    || normalized.includes("gateway_message")
-    || normalized.includes("push")
-    || normalized.includes("inbound")
-    || normalized.includes("dispatch")
-    || normalized.includes("tts")
-    || normalized.includes("audio_delivery")
-    || normalized.includes("media_delivery")
-  ) {
-    return "plugin_host_channel";
-  }
-  if (
-    normalized === "plugin_host_tool"
-    || normalized.startsWith("gateway_")
-    || normalized.startsWith("gateway.")
-    || normalized.includes("plugin_tool")
-    || normalized.includes("tool_registry")
-  ) {
-    return "plugin_host_tool";
-  }
   if (normalized.includes("extension") || normalized.includes("skill") || normalized.includes("mcp")) {
     return "extensions";
   }
@@ -286,9 +241,6 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
   }
   if (normalized.includes("network") || normalized.includes("crawler") || normalized.includes("fetch") || normalized.includes("browser") || normalized.includes("http")) {
     return "network_supervisor";
-  }
-  if (normalized.includes("plugin") || normalized.includes("host") || normalized.includes("gateway")) {
-    return "plugin_host_tool";
   }
   if (normalized.includes("automation") || normalized.includes("cron") || normalized.includes("hook") || normalized.includes("scheduler")) {
     return "automation";

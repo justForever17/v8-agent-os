@@ -2,6 +2,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import * as React from "react";
+import type { PluginReferenceSummary } from "@v8/session-realtime";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -235,13 +236,18 @@ interface SubagentFamilySummary {
 
 type MentionPickerItem =
     | { kind: "skill"; key: string; skill: SkillReferenceSummary }
-    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary };
+    | { kind: "subagent_family"; key: string; family: SubagentFamilySummary }
+    | { kind: "plugin"; key: string; plugin: PluginReferenceSummary };
 
 function isSkillReferenceSummaryCandidate(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isSubagentFamilyCandidate(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPluginCandidate(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -266,10 +272,12 @@ export function InputArea({
     const [selectedCommandPreset, setSelectedCommandPreset] = React.useState<CommandPresetSummary | null>(null);
     const [skills, setSkills] = React.useState<SkillReferenceSummary[]>([]);
     const [subagentFamilies, setSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
+    const [plugins, setPlugins] = React.useState<PluginReferenceSummary[]>([]);
     const [skillsLoaded, setSkillsLoaded] = React.useState(false);
     const [skillsLoading, setSkillsLoading] = React.useState(false);
     const [selectedSkills, setSelectedSkills] = React.useState<SkillReferenceSummary[]>([]);
     const [selectedSubagentFamilies, setSelectedSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
+    const [selectedPlugins, setSelectedPlugins] = React.useState<PluginReferenceSummary[]>([]);
     const [taskPlanningMode, setTaskPlanningMode] = React.useState(false);
     const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffortLevel>("auto");
     const [reasoningEffortOpen, setReasoningEffortOpen] = React.useState(false);
@@ -389,6 +397,7 @@ export function InputArea({
     const filteredMentionItems = React.useMemo<MentionPickerItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}::${skill.path || ""}`));
         const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
+        const selectedPluginIds = new Set(selectedPlugins.map((plugin) => plugin.pluginId));
         const base: MentionPickerItem[] = [
             ...skills
                 .filter((skill) => !selectedKeys.has(`${skill.name}::${skill.path || ""}`))
@@ -396,6 +405,9 @@ export function InputArea({
             ...subagentFamilies
                 .filter((family) => family.familyId && !selectedFamilyIds.has(family.familyId))
                 .map((family) => ({ kind: "subagent_family" as const, key: `family:${family.familyId}`, family })),
+            ...plugins
+                .filter((plugin) => plugin.pluginId && !selectedPluginIds.has(plugin.pluginId))
+                .map((plugin) => ({ kind: "plugin" as const, key: `plugin:${plugin.pluginId}`, plugin })),
         ];
         if (!skillQuery) {
             return base;
@@ -408,14 +420,19 @@ export function InputArea({
                     || String(item.skill.description || "").toLowerCase().includes(keyword)
                     || String(item.skill.path || "").toLowerCase().includes(keyword)
                 )
-                : (
+                : item.kind === "subagent_family" ? (
                     item.family.familyId.toLowerCase().includes(keyword)
                     || String(item.family.displayName || "").toLowerCase().includes(keyword)
                     || String(item.family.description || "").toLowerCase().includes(keyword)
                     || (item.family.aliases || []).some((alias) => String(alias || "").toLowerCase().includes(keyword))
                 )
+                : (
+                    item.plugin.pluginId.toLowerCase().includes(keyword)
+                    || item.plugin.displayName.toLowerCase().includes(keyword)
+                    || String(item.plugin.description || "").toLowerCase().includes(keyword)
+                )
         );
-    }, [selectedSkills, selectedSubagentFamilies, skillQuery, skills, subagentFamilies]);
+    }, [selectedSkills, selectedSubagentFamilies, selectedPlugins, skillQuery, skills, subagentFamilies, plugins]);
 
     const updateInputValue = React.useCallback((nextValue: string) => {
         handleInputChange({
@@ -476,7 +493,10 @@ export function InputArea({
         if (skillsLoaded || skillsLoading) return;
         setSkillsLoading(true);
         try {
-            const res = await fetch("/api/skills/list", { cache: "no-store" });
+            const [res, pluginRes] = await Promise.all([
+                fetch("/api/skills/list", { cache: "no-store" }),
+                fetch("/api/plugins/mentions", { cache: "no-store" }),
+            ]);
             const payload = await res.json().catch(() => ({}));
             if (!res.ok) {
                 throw new Error(
@@ -487,6 +507,11 @@ export function InputArea({
             }
             const nextSkills: unknown[] = Array.isArray(payload?.skills) ? payload.skills : [];
             const nextFamilies: unknown[] = Array.isArray(payload?.subagentFamilies) ? payload.subagentFamilies : [];
+            const pluginPayload = await pluginRes.json().catch(() => ({}));
+            if (!pluginRes.ok) {
+                throw new Error(typeof pluginPayload?.error === "string" ? pluginPayload.error : "插件目录加载失败");
+            }
+            const nextPlugins: unknown[] = Array.isArray(pluginPayload?.items) ? pluginPayload.items : [];
             setSkills(
                 nextSkills
                     .filter(isSkillReferenceSummaryCandidate)
@@ -508,6 +533,22 @@ export function InputArea({
                         memberCount: Number(item.memberCount || 0) || 0,
                     }))
                     .filter((item) => item.familyId)
+            );
+            setPlugins(
+                nextPlugins
+                    .filter(isPluginCandidate)
+                    .map((item): PluginReferenceSummary => ({
+                        pluginId: String(item.pluginId || "").trim(),
+                        displayName: String(item.displayName || item.pluginId || "").trim(),
+                        description: String(item.description || "").trim(),
+                        status: (["ready", "not_installed", "needs_configuration", "offline", "invalid"] as const).includes(item.status as never)
+                            ? item.status as PluginReferenceSummary["status"]
+                            : "invalid",
+                        configurationUrl: String(item.configurationUrl || "").trim(),
+                        componentIds: Array.isArray(item.componentIds) ? item.componentIds.map((value) => String(value || "").trim()).filter(Boolean) : undefined,
+                        grantScope: "task",
+                    }))
+                    .filter((item) => item.pluginId)
             );
             setSkillsLoaded(true);
         } catch (error) {
@@ -567,13 +608,25 @@ export function InputArea({
         dismissInlineNotice();
     }, [dismissInlineNotice, updateInputValue]);
 
+    const selectPluginReference = React.useCallback((plugin: PluginReferenceSummary) => {
+        setSelectedPlugins((current) => current.some((item) => item.pluginId === plugin.pluginId)
+            ? current
+            : [...current, { ...plugin, grantScope: "task" }]);
+        updateInputValue("");
+        dismissInlineNotice();
+    }, [dismissInlineNotice, updateInputValue]);
+
     const selectMentionItem = React.useCallback((item: MentionPickerItem) => {
         if (item.kind === "skill") {
             selectSkillReference(item.skill);
             return;
         }
-        selectSubagentFamilyReference(item.family);
-    }, [selectSkillReference, selectSubagentFamilyReference]);
+        if (item.kind === "subagent_family") {
+            selectSubagentFamilyReference(item.family);
+            return;
+        }
+        selectPluginReference(item.plugin);
+    }, [selectPluginReference, selectSkillReference, selectSubagentFamilyReference]);
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -852,7 +905,8 @@ export function InputArea({
         || files.length > 0
         || Boolean(selectedCommandPreset)
         || selectedSkills.length > 0
-        || selectedSubagentFamilies.length > 0;
+        || selectedSubagentFamilies.length > 0
+        || selectedPlugins.length > 0;
     const canQueueWhileRunning = isLoading && canSubmit;
 
     // Convert attached files to MediaItems for Lightbox
@@ -903,6 +957,14 @@ export function InputArea({
                         path: skill.path || "",
                     }));
                 }
+                if (selectedPlugins.length > 0) {
+                    nextData.pluginReferences = selectedPlugins.map((plugin) => ({
+                        pluginId: plugin.pluginId,
+                        name: plugin.displayName,
+                        scope: plugin.grantScope,
+                        componentIds: plugin.componentIds,
+                    }));
+                }
                 const contextMentions = [
                     ...selectedSkills.map((skill) => ({
                         kind: "skill",
@@ -942,6 +1004,7 @@ export function InputArea({
                 setSelectedCommandPreset(null);
                 setSelectedSkills([]);
                 setSelectedSubagentFamilies([]);
+                setSelectedPlugins([]);
             }}
             className={cn(
                 "relative mx-auto flex w-full flex-col overflow-hidden rounded-[1.25rem] border shadow-sm transition-all duration-500",
@@ -1017,7 +1080,7 @@ export function InputArea({
             )}
 
             <div className="flex flex-col relative">
-                {(selectedCommandPreset || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || contextSessionRefs.length > 0) && (
+                {(selectedCommandPreset || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || selectedPlugins.length > 0 || contextSessionRefs.length > 0) && (
                     <div className="flex min-h-[28px] flex-wrap items-center gap-1 px-2.5 pt-1.5">
                         {contextSessionRefs.map((reference) => (
                             <div
@@ -1087,6 +1150,39 @@ export function InputArea({
                                 </button>
                             </div>
                         ))}
+                        {selectedPlugins.map((plugin) => (
+                            <div
+                                key={plugin.pluginId}
+                                className="inline-flex max-w-full items-center gap-1 border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200 sm:text-[11px]"
+                                title={plugin.description || plugin.pluginId}
+                            >
+                                <span className={cn("size-1.5 rounded-full", plugin.status === "ready" ? "bg-emerald-500" : "bg-amber-500")} />
+                                <span className="truncate">{plugin.displayName}</span>
+                                <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                        <button type="button" className="border-l border-current/15 pl-1 text-[9px] text-current/75 hover:text-current">
+                                            {plugin.grantScope === "session" ? "本会话" : "本任务"}
+                                        </button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="start" side="top" className="w-48 rounded-md p-1">
+                                        <DropdownMenuItem onSelect={() => setSelectedPlugins((current) => current.map((item) => item.pluginId === plugin.pluginId ? { ...item, grantScope: "task" } : item))} className="rounded-sm text-xs">
+                                            <span className="flex-1">仅当前任务</span>{plugin.grantScope === "task" ? <CheckCircle2 className="size-3.5" /> : null}
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem onSelect={() => setSelectedPlugins((current) => current.map((item) => item.pluginId === plugin.pluginId ? { ...item, grantScope: "session" } : item))} className="rounded-sm text-xs">
+                                            <span className="flex-1">本会话持续授权</span>{plugin.grantScope === "session" ? <CheckCircle2 className="size-3.5" /> : null}
+                                        </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                </DropdownMenu>
+                                <button
+                                    type="button"
+                                    onClick={() => setSelectedPlugins((current) => current.filter((item) => item.pluginId !== plugin.pluginId))}
+                                    className="text-current/65 transition hover:text-current"
+                                    aria-label={`移除 ${plugin.displayName}`}
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        ))}
                     </div>
                 )}
 
@@ -1142,7 +1238,7 @@ export function InputArea({
                 )}
 
                 {isSkillPickerOpen && (
-                    <div className="mx-3 mb-2 rounded-2xl border border-fuchsia-200/60 bg-background/95 shadow-lg backdrop-blur-xl dark:border-fuchsia-500/20">
+                    <div className="mx-3 mb-2 rounded-md border border-border/70 bg-background/98 shadow-md backdrop-blur-xl">
                         <div className="border-b border-fuchsia-200/40 px-3 py-2 text-[11px] text-muted-foreground dark:border-fuchsia-500/10">
                             {t("web.generated.b27144499f")}<span className="font-medium text-fuchsia-600">@</span>{t("web.generated.7c6c5d2a05")}
                         </div>
@@ -1156,29 +1252,31 @@ export function InputArea({
                                         type="button"
                                         onClick={() => selectMentionItem(item)}
                                         className={cn(
-                                            "flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition",
+                                            "flex w-full items-start gap-2 rounded-md px-3 py-2 text-left transition",
                                             item.kind === "skill"
                                                 ? "hover:bg-fuchsia-50/70 dark:hover:bg-fuchsia-500/10"
-                                                : "hover:bg-sky-50/70 dark:hover:bg-sky-500/10",
+                                                : item.kind === "subagent_family"
+                                                    ? "hover:bg-sky-50/70 dark:hover:bg-sky-500/10"
+                                                    : "hover:bg-emerald-50/70 dark:hover:bg-emerald-500/10",
                                             index > 0 && filteredMentionItems[index - 1]?.kind !== item.kind ? "mt-1 border-t border-border/50 pt-3" : ""
                                         )}
                                     >
                                         <AtSign className={cn(
                                             "mt-0.5 h-4 w-4 shrink-0",
-                                            item.kind === "skill" ? "text-fuchsia-500" : "text-sky-500"
+                                            item.kind === "skill" ? "text-fuchsia-500" : item.kind === "subagent_family" ? "text-sky-500" : "text-emerald-500"
                                         )} />
                                         <div className="min-w-0 flex-1">
                                             <div className="flex items-center gap-2">
                                                 <span className="truncate text-sm font-medium text-foreground">
-                                                    {item.kind === "skill" ? item.skill.name : (item.family.displayName || item.family.familyId)}
+                                                    {item.kind === "skill" ? item.skill.name : item.kind === "subagent_family" ? (item.family.displayName || item.family.familyId) : item.plugin.displayName}
                                                 </span>
-                                                <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                                    {item.kind === "skill" ? "Skill" : "Family"}
+                                                <span className="shrink-0 border border-border/60 bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                                    {item.kind === "skill" ? "Skill" : item.kind === "subagent_family" ? "Family" : "Plugin"}
                                                 </span>
                                             </div>
-                                            {(item.kind === "skill" ? item.skill.description : item.family.description) && (
+                                            {(item.kind === "skill" ? item.skill.description : item.kind === "subagent_family" ? item.family.description : item.plugin.description) && (
                                                 <div className="line-clamp-1 text-[11px] leading-4.5 text-muted-foreground sm:line-clamp-2">
-                                                    {item.kind === "skill" ? item.skill.description : item.family.description}
+                                                    {item.kind === "skill" ? item.skill.description : item.kind === "subagent_family" ? item.family.description : item.plugin.description}
                                                 </div>
                                             )}
                                             {item.kind === "skill" && item.skill.path && (
@@ -1189,6 +1287,19 @@ export function InputArea({
                                             {item.kind === "subagent_family" && item.family.memberCount ? (
                                                 <div className="truncate text-[10px] text-sky-700/80 dark:text-sky-300/80">
                                                     {t("web.generated.87a9341147", { value0: item.family.memberCount })}
+                                                </div>
+                                            ) : null}
+                                            {item.kind === "plugin" ? (
+                                                <div className={cn("text-[10px]", item.plugin.status === "ready" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>
+                                                    {item.plugin.status === "ready"
+                                                        ? "已就绪 · 默认仅当前任务"
+                                                        : item.plugin.status === "not_installed"
+                                                            ? "未安装 · 提交后返回安装入口"
+                                                            : item.plugin.status === "needs_configuration"
+                                                                ? "需配置 · 提交后返回配置入口"
+                                                                : item.plugin.status === "offline"
+                                                                    ? "离线 · 提交后返回阻断原因"
+                                                                    : "状态不可用 · 提交后返回诊断入口"}
                                                 </div>
                                             ) : null}
                                         </div>

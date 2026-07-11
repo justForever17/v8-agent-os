@@ -116,6 +116,7 @@ export function runNextBuild(app) {
     cwd: REPO_ROOT,
     encoding: "utf8",
     stdio: ["ignore", out, err],
+    windowsHide: true,
   });
   fs.closeSync(out);
   fs.closeSync(err);

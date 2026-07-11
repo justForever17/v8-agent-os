@@ -32,6 +32,7 @@ const result = spawnSync(process.execPath, [installer], {
   cwd: root,
   stdio: "inherit",
   env: installEnv,
+  windowsHide: true,
 });
 
 if (result.status !== 0 || !electronBinaryExists()) {

@@ -216,6 +216,10 @@ export async function main(argv) {
     help();
     return;
   }
+  if (args.includes("-h") || args.includes("--help")) {
+    help();
+    return;
+  }
   if (command === "start") return commandStart(args);
   if (command === "preview") return runPreview(args);
   if (command === "stop") return commandStop(args);

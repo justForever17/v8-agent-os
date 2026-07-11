@@ -132,7 +132,7 @@ function killPid(pid, options = {}) {
     const args = ["/PID", String(numeric)];
     if (options.tree !== false) args.push("/T");
     args.push("/F");
-    const result = spawnSync("taskkill", args, { encoding: "utf8" });
+    const result = spawnSync("taskkill", args, { encoding: "utf8", windowsHide: true });
     if (result.status !== 0 && !isPidAlive(numeric)) {
       return { ok: true, reason: "stopped_during_kill" };
     }

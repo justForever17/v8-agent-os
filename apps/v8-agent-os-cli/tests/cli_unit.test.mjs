@@ -24,6 +24,7 @@ import {
   removeOwnedShellRestartLease,
 } from "../src/preview_commands.mjs";
 import { currentWorkspaceBinding, currentWorkspacePath, inspectWorkspace, resolveWorkspacePath } from "../src/workspace_commands.mjs";
+import { main as runCli } from "../src/cli.mjs";
 
 const currentFile = fileURLToPath(import.meta.url);
 const cliRoot = path.resolve(path.dirname(currentFile), "..");
@@ -60,6 +61,18 @@ test("--all returns all components", () => {
   assert.deepEqual(parseComponentSelection(["--all"]), ALL_COMPONENTS);
   assert.ok(ALL_COMPONENTS.includes("shell"));
   assert.ok(ALL_COMPONENTS.includes("desktop-pet"));
+});
+
+test("subcommand help is read-only and does not execute preview", async () => {
+  const lines = [];
+  const originalLog = console.log;
+  console.log = (...args) => lines.push(args.join(" "));
+  try {
+    await runCli(["preview", "--help"]);
+  } finally {
+    console.log = originalLog;
+  }
+  assert.match(lines.join("\n"), /v8os preview \[--rebuild\|--no-build\]/);
 });
 
 test("local repair plan proposes safe state root creation", () => {
@@ -158,6 +171,7 @@ test("desktop pet survives Shell replacement through detached handoff and exact 
   assert.match(processManager, /shell-control\.json/);
   assert.match(processManager, /killPid\(pid, \{ tree: id !== "shell" \}\)/);
   assert.match(processManager, /stopped_during_kill/);
+  assert.match(processManager, /spawnSync\("taskkill", args, \{ encoding: "utf8", windowsHide: true \}\)/);
 });
 
 test("preview build check is based on Next BUILD_ID", () => {

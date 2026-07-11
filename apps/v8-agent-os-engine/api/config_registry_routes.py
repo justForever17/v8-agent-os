@@ -38,10 +38,6 @@ ConfigBuilder = Callable[[], dict[str, Any]]
 ConfigSaver = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-def _get_plugin_host_service():
-    return importlib.import_module("core.plugin_host").plugin_host_service
-
-
 def _get_network_supervisor_service():
     return importlib.import_module("runtimes.network_supervisor.service").network_supervisor_service
 
@@ -358,7 +354,7 @@ def _build_extensions_domain() -> dict[str, Any]:
     return {
         "domain": "extensions",
         "title": "扩展生态",
-        "summary": "控制 Skills、MCP 与 PluginHost 候选树是否进入 LLM 预筛，并绑定扩展专用预筛模型。",
+        "summary": "控制普通 Skills 与 MCP 候选树是否进入 LLM 预筛，并绑定扩展专用预筛模型。插件能力不参与该预筛。",
         "data": {
             "prefilterPolicy": {
                 "enabled": bool(policy.get("enabled")),
@@ -500,45 +496,6 @@ def _save_context_domain(payload: dict[str, Any]) -> dict[str, Any]:
     _update_role_bindings({"summary": model_bindings.get("summaryModel")})
     storage.save_context_config(policy)
     return _build_context_domain()
-
-
-def _build_plugin_host_domain() -> dict[str, Any]:
-    config = storage.get_plugin_host_config()
-    snapshot = _get_plugin_host_service().public_snapshot()
-    warnings: list[str] = []
-    if not config.get("enabled", True):
-        warnings.append("PluginHostRuntime 当前已关闭；插件仍可扫描与安装，但不会接管渠道入站与出站。")
-    if "channel" not in list(config.get("allowedFamilies") or []):
-        warnings.append("当前未允许 channel 家族，渠道插件只会被发现，不会接管消息主链。")
-    if str(config.get("hostMode") or "managed_local") == "external":
-        warnings.append("当前使用外部 OpenClaw host；Engine 不会托管本地 sidecar/gateway。")
-    return {
-        "domain": "plugin-host",
-        "title": "插件宿主",
-        "summary": "控制 PluginHostRuntime 的启停、宿主模式、家族接管范围与启动扫描策略；插件注册表仍以 ~/.v8-agent-os/plugin.json 为准。",
-        "data": {
-            "config": config,
-            "snapshot": snapshot,
-        },
-        "source": _config_source("pluginHost"),
-        "savePath": _config_save_path("pluginHost"),
-        "reloadRequired": False,
-        "warnings": warnings,
-        "advancedFields": ["snapshot"],
-    }
-
-
-def _save_plugin_host_domain(payload: dict[str, Any]) -> dict[str, Any]:
-    data = dict(payload.get("data") or payload or {})
-    config = data.get("config") if isinstance(data.get("config"), dict) else data
-    previous = storage.get_plugin_host_config()
-    storage.save_plugin_host_config(config)
-    current = storage.get_plugin_host_config()
-    if previous != current:
-        asyncio.run(_get_plugin_host_service().stop())
-        if bool(current.get("enabled", True)):
-            asyncio.run(_get_plugin_host_service().start())
-    return _build_plugin_host_domain()
 
 
 def _build_audio_domain() -> dict[str, Any]:
@@ -1173,7 +1130,6 @@ DOMAIN_REGISTRY: dict[str, tuple[ConfigBuilder, ConfigSaver]] = {
     "extensions": (_build_extensions_domain, _save_extensions_domain),
     "engineering-lane": (_build_engineering_lane_domain, _save_engineering_lane_domain),
     "context": (_build_context_domain, _save_context_domain),
-    "plugin-host": (_build_plugin_host_domain, _save_plugin_host_domain),
     "audio": (_build_audio_domain, _save_audio_domain),
     "hooks": (_build_hooks_domain, _save_hooks_domain),
     "cron": (_build_cron_domain, _save_cron_domain),

@@ -12,7 +12,7 @@ from core.storage import storage
 from core.v8_agent_os_paths import (
     CHECKPOINT_DB_PATH,
     OBSERVABILITY_DB_PATH,
-    PLUGIN_INSTALL_LOG_ROOT,
+    PLUGIN_MANAGER_LOG_ROOT,
     RUNTIME_DATA_HOME,
     STATE_DB_PATH,
     V8_AGENT_OS_HOME,
@@ -113,7 +113,7 @@ class StorageRetentionService:
         return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
 
     def _log_files(self) -> List[Path]:
-        roots = [PLUGIN_INSTALL_LOG_ROOT, RUNTIME_DATA_HOME / "rpa"]
+        roots = [PLUGIN_MANAGER_LOG_ROOT, RUNTIME_DATA_HOME / "rpa"]
         files: list[Path] = []
         for root in roots:
             if not root.exists():

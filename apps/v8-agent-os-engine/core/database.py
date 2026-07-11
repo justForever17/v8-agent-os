@@ -12,6 +12,10 @@ from core.json_safe import to_jsonable
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.observability_db import ObservabilityDatabaseManager
 from core.realtime_protocol import utc_now_iso
+from core.runtime_compatibility import (
+    EXECUTABLE_RUNTIME_EPISODE_KINDS,
+    project_runtime_episode_compatibility,
+)
 from core.time_truth import latest_utc_iso, normalize_utc_iso
 
 class DatabaseManager:
@@ -1215,6 +1219,101 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_computer_use_fact_ledger_target ON computer_use_fact_ledger (target_kind, updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_session_id ON runtime_artifacts (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_run_id ON runtime_artifacts (run_id, created_at DESC)')
+
+            # Plugin Manager owns installation, component provenance, transaction,
+            # explicit grants and audit history.  Runtime state belongs in SQLite;
+            # config.json only stores policy and catalog refresh settings.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS plugin_installations (
+                    plugin_id TEXT PRIMARY KEY,
+                    manifest_version TEXT NOT NULL,
+                    catalog_revision INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL,
+                    install_root TEXT,
+                    external_ownership INTEGER NOT NULL DEFAULT 0,
+                    configured INTEGER NOT NULL DEFAULT 0,
+                    online INTEGER NOT NULL DEFAULT 0,
+                    health_json TEXT,
+                    installed_at TEXT,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS plugin_components (
+                    id TEXT PRIMARY KEY,
+                    plugin_id TEXT NOT NULL,
+                    component_id TEXT NOT NULL,
+                    component_type TEXT NOT NULL,
+                    owned_path TEXT,
+                    source_url TEXT,
+                    source_version TEXT,
+                    content_sha256 TEXT,
+                    ownership TEXT NOT NULL DEFAULT 'managed',
+                    state TEXT NOT NULL DEFAULT 'installed',
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(plugin_id, component_id),
+                    FOREIGN KEY (plugin_id) REFERENCES plugin_installations (plugin_id) ON DELETE CASCADE
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS plugin_install_jobs (
+                    id TEXT PRIMARY KEY,
+                    plugin_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    dry_run INTEGER NOT NULL DEFAULT 1,
+                    approval_required INTEGER NOT NULL DEFAULT 0,
+                    approved INTEGER NOT NULL DEFAULT 0,
+                    plan_json TEXT,
+                    snapshot_json TEXT,
+                    result_json TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS plugin_grants (
+                    id TEXT PRIMARY KEY,
+                    plugin_id TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    run_id TEXT,
+                    grantee_type TEXT NOT NULL,
+                    grantee_id TEXT NOT NULL,
+                    component_ids_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT,
+                    revoked_at TEXT,
+                    parent_grant_id TEXT,
+                    grant_source TEXT NOT NULL DEFAULT 'user_reference',
+                    CHECK(scope IN ('task', 'session')),
+                    CHECK(grantee_type IN ('supervisor', 'subagent'))
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS plugin_events (
+                    id TEXT PRIMARY KEY,
+                    plugin_id TEXT,
+                    job_id TEXT,
+                    grant_id TEXT,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    actor_type TEXT,
+                    actor_id TEXT,
+                    session_id TEXT,
+                    run_id TEXT,
+                    details_json TEXT,
+                    created_at TEXT NOT NULL
+                )
+            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_components_plugin ON plugin_components (plugin_id, component_type)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_jobs_plugin ON plugin_install_jobs (plugin_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_grants_session ON plugin_grants (session_id, run_id, revoked_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_events_plugin ON plugin_events (plugin_id, created_at DESC)')
             
             # Simple Schema Migration (Adding missing columns if upgrading)
             try:
@@ -2911,7 +3010,7 @@ class DatabaseManager:
         data["targetKind"] = data.get("target_kind")
         data["targetId"] = data.get("target_id")
         data["leaseGeneration"] = int(data.get("lease_generation") or 0)
-        return data
+        return project_runtime_episode_compatibility(data)
 
     def upsert_runtime_episode_record(
         self,
@@ -3171,7 +3270,12 @@ class DatabaseManager:
     ) -> Optional[Dict[str, Any]]:
         now_iso = utc_now_iso()
         expires_iso = (datetime.now(timezone.utc) + timedelta(seconds=int(lease_seconds or 60))).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-        normalized_kinds = [str(item).strip() for item in list(kinds or []) if str(item).strip()]
+        requested_kinds = [str(item).strip() for item in list(kinds or []) if str(item).strip()]
+        # The background runner calls without an explicit kind list and may
+        # claim only registered executors. A bounded internal caller can still
+        # pass an explicit kind for diagnostics or a controlled compatibility
+        # test without widening the production runner surface.
+        normalized_kinds = requested_kinds or sorted(EXECUTABLE_RUNTIME_EPISODE_KINDS)
 
         def _write():
             with self.get_connection() as conn:
@@ -3633,7 +3737,9 @@ class DatabaseManager:
                     data["retryPolicy"] = json.loads(data.get("retry_policy_json") or "{}")
                 except Exception:
                     data["retryPolicy"] = {}
-                items.append(data)
+                items.append(project_runtime_episode_compatibility(data))
+            if active_only:
+                return [item for item in items if bool(item.get("executionSupported", True))]
             return items
 
     def list_runtime_episode_leases(
@@ -3698,7 +3804,10 @@ class DatabaseManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            return [self._hydrate_runtime_episode_row(dict(row)) for row in cursor.fetchall()]
+            items = [self._hydrate_runtime_episode_row(dict(row)) for row in cursor.fetchall()]
+            if active_only:
+                return [item for item in items if bool(item.get("executionSupported", True))]
+            return items
 
     def upsert_session_lane_record(
         self,

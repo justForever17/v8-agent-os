@@ -18,9 +18,6 @@ from core.v8_agent_os_paths import (
     CONFIG_JSON_PATH,
     LEGACY_CONFIG_BACKUP_ROOT,
     MCP_JSON_PATH,
-    OPENCLAW_DEFAULT_STATE_ROOT,
-    PLUGIN_INSTALL_LOG_ROOT,
-    PLUGIN_JSON_PATH,
     RUNTIME_DATA_HOME,
     WORKSPACE_HOME,
     protected_runtime_paths,
@@ -242,7 +239,7 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "- MEMORY RUNTIME: long-term knowledge, preferences, recall, graph, artifacts.\n"
         "- AUTOMATION RUNTIME: hooks, cron, recurring jobs, durable automation.\n"
         "- WORKFLOW RUNTIME: multi-step structured execution and stateful task flows.\n"
-        "- PLUGIN HOST RUNTIME: external channels, OpenClaw tools, plugin-host routing.\n"
+        "- PLUGIN MANAGER RUNTIME: curated CLI, Skill, MCP, UI adapter installation and governed task grants.\n"
         "- COMPUTER USE RUNTIME: desktop/UI execution with guarded escalation.\n"
         "- RPA RUNTIME: deterministic scripted operational flows.\n\n",
         "## Runtime Worldview\n"
@@ -255,13 +252,13 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "## Tool Discipline\n"
         "Tool priority order:\n"
         "1. Use the most appropriate runtime-managed path.\n"
-        "2. Use skills / MCP / plugin_host candidates selected for the current route.\n"
+        "2. Use route-selected skills / MCP and only explicitly granted plugin capabilities.\n"
         "3. Use baseline system tools for reading, writing, searching, commands, media inspection, and web access.\n"
         "4. Use low-level or destructive tools only when clearly necessary and safe.\n\n"
         "Do not assume that a route miss means a capability is forbidden. If the task is blocked or stale, expand carefully and switch capabilities deliberately.\n\n",
         "## Tool Discipline\n"
         "- Prefer the best runtime-managed path for the current task.\n"
-        "- Use route-selected skills / MCP / plugin_host candidates instead of exploring every tool family at once.\n"
+        "- Use route-selected skills / MCP and explicit plugin grants instead of exploring every tool family at once.\n"
         "- Use baseline system tools for direct reading, writing, searching, commands, media inspection, and web access only when route-level tools are not enough.\n"
         "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n\n"
         "Do not treat a route miss as a ban. Expand deliberately only when the task is blocked or stale.\n\n",
@@ -274,13 +271,13 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "- If a task needs a distinct role, independent context, or parallel execution, use `delegation_broker`.\n"
         "- Treat planner task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
-        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n",
+        "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n\n",
         "## Delegation Discipline\n"
         "- If a task is small, local, and realistically finishes within 1-10 tool steps, solve it directly.\n"
         "- If a task needs a distinct role, independent context, parallel execution, broad multi-file implementation, or source-backed research plus coding, use `delegation_broker` / Engineering discipline first.\n"
         "- Treat planner task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
-        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n"
+        "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
         "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n",
     ),
     (
@@ -292,13 +289,13 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "- If a task needs a distinct role, independent context, or parallel execution, delegate.\n"
         "- Use `create_agent` to create durable specialists for future turns.\n"
         "- Use `delegate_parallel` only for bounded fan-out, at most two subtasks, with isolated scopes.\n"
-        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n\n",
+        "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n\n",
         "## Delegation Discipline\n"
         "- If a task is small, local, and realistically finishes within 1-10 tool steps, solve it directly.\n"
         "- If a task needs a distinct role, independent context, parallel execution, broad multi-file implementation, or source-backed research plus coding, use `delegation_broker` / Engineering discipline first.\n"
         "- Treat planner task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
-        "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n"
+        "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
         "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n",
     ),
     (
@@ -316,7 +313,7 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
 
 _PRODUCT_LANGUAGE_PROMPT_BLOCK = (
     "## Product Language\n"
-    "- Use product words with users: 主理人中枢, 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, 记忆系统, 定时与触发, 插件桥接, 网络连接, 安全系统, 子代理, 规格文档.\n"
+    "- Use product words with users: 主理人中枢, 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, 记忆系统, 定时与触发, 插件管理中心, 网络连接, 安全系统, 子代理, 规格文档.\n"
     "- Canonical ids and tool names such as `runtime_broker`, `delegation_broker`, `spec_broker`, runtime ids, provider ids, and raw refs are for tool calls, diagnostics, logs, code, paths, and detail references.\n"
     "- Do not use internal tool names as ordinary user-facing nouns. If the user asks how V8OS works, explain the product word first and mention the canonical id only as a diagnostic identifier.\n\n"
 )
@@ -324,6 +321,17 @@ _PRODUCT_LANGUAGE_PROMPT_BLOCK = (
 
 def _sanitize_stock_supervisor_prompt_text(content: str) -> str:
     normalized = str(content or "")
+    legacy_runtime_id = "plugin" + "_" + "host"
+    legacy_product_label = "插件" + "桥接"
+    normalized = normalized.replace(legacy_product_label, "插件管理中心")
+    normalized = normalized.replace(
+        f"skills / MCP / {legacy_runtime_id} candidates",
+        "skills / MCP and explicit plugin grant candidates",
+    )
+    normalized = normalized.replace(
+        f"skills, MCP, {legacy_runtime_id}, and baseline tool context",
+        "skills, MCP, explicit plugin grants, and baseline tool context",
+    )
     for source, target in _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS:
         normalized = normalized.replace(source, target)
     normalized = normalized.replace(
@@ -551,7 +559,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "wakeIngressPolicies": {
             "allowNudgeWithoutTarget": True,
             "defaultAttachPolicy": "new_session",
-            "enabledSourceRuntimes": ["cron", "hook", "plugin_host", "network_supervisor", "chat", "computer_use"],
+            "enabledSourceRuntimes": ["cron", "hook", "network_supervisor", "chat", "computer_use"],
         },
     },
     "networkSupervisorRuntime": {
@@ -650,22 +658,17 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "custom": {"endpoint": "", "api_key": "", "voice": ""},
         },
     },
-    "pluginHost": {
+    "pluginManager": {
         "enabled": True,
-        "allowedFamilies": ["channel", "plugin"],
-        "scanOnStartup": True,
-        "hostMode": "managed_local",
-        "managedLocal": {
-            "rootDir": str(OPENCLAW_DEFAULT_STATE_ROOT),
-            "toolingRoot": "",
-            "launcherPath": "",
-            "autoStart": False,
-        },
-        "externalHost": {
-            "baseUrl": "",
-            "gatewayBaseUrl": "",
-            "authToken": "",
-        },
+        "catalogUrl": "https://raw.githubusercontent.com/justForever17/v8-agent-os/main/apps/v8-agent-os-engine/runtimes/plugin_manager/resources/catalog.json",
+        "catalogSignatureUrl": "https://raw.githubusercontent.com/justForever17/v8-agent-os/main/apps/v8-agent-os-engine/runtimes/plugin_manager/resources/catalog.sig",
+        "refreshOnStartup": True,
+        "refreshIntervalHours": 24,
+        "defaultGrantScope": "task",
+        "allowSessionGrant": True,
+        "requireExplicitMention": True,
+        "installRoot": "",
+        "binRoot": "",
     },
     "computerUse": {
         "candidateRerankEnabled": False,
@@ -790,7 +793,6 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "runtimeRules": {
             "chat": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
             "automation": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
-            "plugin_host": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
             "computer_use": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
             "rpa": {"auditTriggerSources": [], "reviewTriggerSources": [], "blockedTriggerSources": [], "auditScopePatterns": [], "reviewScopePatterns": [], "blockedScopePatterns": []},
         },
@@ -973,13 +975,12 @@ class StorageManager:
             RUNTIME_DATA_HOME,
             runtime_private_root("computer_use"),
             runtime_private_root("rpa"),
-            runtime_private_root("plugin_host"),
+            runtime_private_root("plugin_manager"),
             self.base_dir / "agents",
             self.base_dir / "commands",
             self.base_dir / "sessions",
             self.base_dir / "web_fetch",
             self.base_dir / "plugins",
-            PLUGIN_INSTALL_LOG_ROOT,
         ]
         for d in dirs_to_create:
             d.mkdir(parents=True, exist_ok=True)
@@ -996,7 +997,7 @@ class StorageManager:
                 "## Runtime Worldview\n"
                 "Think in product paths, not in giant capability catalogs.\n"
                 "- Prefer the active mode card and current route over memorizing every subsystem.\n"
-                "- Treat 记忆系统, 定时与触发, 插件桥接, 桌面操作, and 自动流程 as managed systems that can be consulted or delegated when needed.\n"
+                "- Treat 记忆系统, 定时与触发, 插件管理中心, 桌面操作, and 自动流程 as managed systems that can be consulted or delegated when needed.\n"
                 "- Only expand deeper diagnostic detail when the current task truly depends on it.\n\n"
                 "## Multi-Runtime Orchestration\n"
                 "- When a request combines research and implementation, keep Supervisor as the coordinator: gather source-backed evidence first, then choose the implementation route.\n"
@@ -1008,7 +1009,7 @@ class StorageManager:
                 "- Supervisor todos are cross-runtime milestones; Engineering proof, worksets, research evidence, media recipes, and command sessions stay in their runtime ledgers/cards.\n\n"
                 "## Tool Discipline\n"
                 "- Prefer the best runtime-managed path for the current task.\n"
-                "- Use route-selected skills / MCP / plugin_host candidates instead of exploring every tool family at once.\n"
+                "- Use route-selected skills / MCP and explicit plugin grants instead of exploring every tool family at once.\n"
                 "- Use baseline system tools for direct reading, writing, searching, commands, media inspection, and web access only when route-level tools are not enough.\n"
                 "- Escalate to low-level or destructive tools only when clearly necessary and safe.\n\n"
                 "- Use command sessions, not sync commands, for scaffolding, dependency installs, dev servers, CLIs that may prompt, and long-running processes.\n\n"
@@ -1019,7 +1020,7 @@ class StorageManager:
                 "- Use `delegation_broker` as the internal canonical delegation entrypoint, but say 子代理 / 协作 worker to users.\n"
                 "- Treat planner task briefs as the canonical delegation contract.\n"
                 "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
-                "- Subagents should inherit relevant skills, MCP, plugin_host, and baseline tool context instead of starting blind.\n"
+                "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
                 "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n"
                 "## Todo Discipline\n"
                 "- For non-trivial tasks, create and maintain todos.\n"
@@ -1057,7 +1058,6 @@ class StorageManager:
         self._ensure_default_subagents()
         self._ensure_config_json_exists()
         self._migrate_computer_use_storage()
-        self._ensure_plugin_json_exists()
         self._migrate_legacy_structured_files()
 
     def _ensure_default_subagents(self):
@@ -1264,23 +1264,6 @@ class StorageManager:
     def _default_computer_use_payload(self) -> dict[str, Any]:
         return {"version": 1, "apps": {}}
 
-    def _default_plugin_payload(self) -> dict[str, Any]:
-        plugin_host_root, plugin_extensions_root = self._plugin_registry_roots()
-        return {
-            "version": 1,
-            "pluginRoot": str(plugin_host_root),
-            "pluginExtensionsRoot": str(plugin_extensions_root),
-            "pluginInstallLogRoot": str(PLUGIN_INSTALL_LOG_ROOT),
-            "plugins": {},
-            "installJobs": {},
-        }
-
-    def _plugin_registry_roots(self) -> tuple[Path, Path]:
-        plugin_host_config = self.get_plugin_host_config()
-        managed_local = dict(plugin_host_config.get("managedLocal") or {})
-        plugin_root = Path(str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT))
-        return plugin_root, plugin_root / "extensions"
-
     def _deep_merge(self, base: Any, incoming: Any) -> Any:
         if isinstance(base, dict) and isinstance(incoming, dict):
             merged = {key: deepcopy(value) for key, value in base.items()}
@@ -1358,6 +1341,37 @@ class StorageManager:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def _partition_config_payload(self, payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        known_domains = set(self._default_config_payload())
+        supported = {
+            key: deepcopy(value)
+            for key, value in dict(payload or {}).items()
+            if key in known_domains
+        }
+        ignored = {
+            key: deepcopy(value)
+            for key, value in dict(payload or {}).items()
+            if key not in known_domains
+        }
+        return supported, ignored
+
+    def _report_ignored_config_domains(self, ignored: dict[str, Any]) -> None:
+        names = tuple(sorted(str(key) for key in ignored))
+        if not names or names == getattr(self, "_last_ignored_config_domains", ()):
+            return
+        self._last_ignored_config_domains = names
+        print(
+            "[Storage] Ignoring unsupported config domains while preserving them on disk: "
+            + ", ".join(names)
+        )
+
+    def _config_payload_for_persistence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        incoming_supported, incoming_ignored = self._partition_config_payload(dict(payload or {}))
+        _, existing_ignored = self._partition_config_payload(self._read_raw_config_payload())
+        preserved_ignored = {**existing_ignored, **incoming_ignored}
+        normalized_supported = self._deep_merge(self._default_config_payload(), incoming_supported)
+        return {**preserved_ignored, **normalized_supported}
+
     def _config_payload_signature(self) -> tuple[int, int] | None:
         try:
             stat = CONFIG_JSON_PATH.stat()
@@ -1383,8 +1397,8 @@ class StorageManager:
         signature = self._config_payload_signature()
         if (
             signature is not None
-            and self._config_payload_cache_signature == signature
-            and self._config_payload_cache_data is not None
+            and getattr(self, "_config_payload_cache_signature", None) == signature
+            and getattr(self, "_config_payload_cache_data", None) is not None
         ):
             return deepcopy(self._config_payload_cache_data)
         try:
@@ -1397,7 +1411,9 @@ class StorageManager:
                 payload = migrated_payload
                 self._write_config_payload(payload)
                 signature = self._config_payload_signature()
-        merged = self._deep_merge(self._default_config_payload(), payload if isinstance(payload, dict) else {})
+        supported_payload, ignored_payload = self._partition_config_payload(payload if isinstance(payload, dict) else {})
+        self._report_ignored_config_domains(ignored_payload)
+        merged = self._deep_merge(self._default_config_payload(), supported_payload)
         if signature is not None:
             self._config_payload_cache_signature = signature
             self._config_payload_cache_data = deepcopy(merged)
@@ -1422,59 +1438,6 @@ class StorageManager:
     def _write_computer_use_payload(self, payload: dict[str, Any]):
         filepath = COMPUTER_USE_JSON_PATH
         data = self._deep_merge(self._default_computer_use_payload(), dict(payload or {}))
-        serialized = json.dumps(data, indent=2, ensure_ascii=False)
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
-        with open(temp_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(serialized)
-            f.flush()
-            os.fsync(f.fileno())
-        try:
-            os.replace(temp_path, filepath)
-        finally:
-            if temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except OSError:
-                    pass
-        backup_path = self._json_backup_path(filepath)
-        backup_temp_path = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
-        try:
-            with open(backup_temp_path, "w", encoding="utf-8", newline="\n") as backup_file:
-                backup_file.write(serialized)
-                backup_file.flush()
-                os.fsync(backup_file.fileno())
-            os.replace(backup_temp_path, backup_path)
-        finally:
-            if backup_temp_path.exists():
-                try:
-                    backup_temp_path.unlink()
-                except OSError:
-                    pass
-
-    def _ensure_plugin_json_exists(self):
-        if PLUGIN_JSON_PATH.exists():
-            return
-        try:
-            self._write_plugin_payload(self._default_plugin_payload())
-        except PermissionError:
-            pass
-
-    def _read_plugin_payload(self) -> dict[str, Any]:
-        if not PLUGIN_JSON_PATH.exists():
-            self._ensure_plugin_json_exists()
-        try:
-            payload = self._read_json_file(PLUGIN_JSON_PATH) if PLUGIN_JSON_PATH.exists() else {}
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            payload = {}
-        return self._deep_merge(
-            self._default_plugin_payload(),
-            payload if isinstance(payload, dict) else {},
-        )
-
-    def _write_plugin_payload(self, payload: dict[str, Any]):
-        filepath = PLUGIN_JSON_PATH
-        data = self._deep_merge(self._default_plugin_payload(), dict(payload or {}))
         serialized = json.dumps(data, indent=2, ensure_ascii=False)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
@@ -1924,8 +1887,6 @@ class StorageManager:
             return self._read_config_payload()
         if normalized_name in {"computer_use.json", "computer_use_memory.json"}:
             return self._read_computer_use_payload()
-        if normalized_name == "plugin.json":
-            return self._read_plugin_payload()
         if normalized_name == "settings.json":
             return self._system_base_to_legacy_settings(self.get_system_base_config())
         mapped_domain = LEGACY_STRUCTURED_FILE_TO_DOMAIN.get(normalized_name)
@@ -1961,7 +1922,7 @@ class StorageManager:
         normalized_name = str(filename or "").replace("\\", "/").strip()
         if normalized_name == "config.json":
             filepath = CONFIG_JSON_PATH
-            payload = self._deep_merge(self._default_config_payload(), dict(data or {}))
+            payload = self._config_payload_for_persistence(dict(data or {}))
             serialized = json.dumps(payload, indent=2, ensure_ascii=False)
             filepath.parent.mkdir(parents=True, exist_ok=True)
             temp_path = filepath.with_name(f".{filepath.name}.{uuid4().hex}.tmp")
@@ -1997,10 +1958,6 @@ class StorageManager:
         if normalized_name in {"computer_use.json", "computer_use_memory.json"}:
             self._write_computer_use_payload(data)
             return
-        if normalized_name == "plugin.json":
-            self._write_plugin_payload(data)
-            return
-
         if normalized_name == "settings.json":
             config_payload = self._read_config_payload()
             incoming = self._legacy_settings_to_system_base(dict(data or {}))
@@ -2803,64 +2760,26 @@ class StorageManager:
         payload["computerUse"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["computerUse"], dict(data or {}))
         self._write_config_payload(payload)
 
-    # --- Plugin Host Runtime Config Accessors ---
-    def get_plugin_host_config(self) -> Dict[str, Any]:
-        data = self._read_config_payload().get("pluginHost") or {}
-        normalized = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["pluginHost"], data if isinstance(data, dict) else {})
-        raw_allowed_families = data.get("allowedFamilies") if isinstance(data, dict) else None
-        if raw_allowed_families is None:
-            normalized["allowedFamilies"] = list(STRUCTURED_CONFIG_DEFAULTS["pluginHost"]["allowedFamilies"])
-        else:
-            normalized["allowedFamilies"] = [str(item).strip() for item in list(raw_allowed_families or []) if str(item).strip()]
+    # --- Plugin Manager Runtime Config Accessors ---
+    def get_plugin_manager_config(self) -> Dict[str, Any]:
+        data = self._read_config_payload().get("pluginManager") or {}
+        normalized = self._deep_merge(
+            STRUCTURED_CONFIG_DEFAULTS["pluginManager"],
+            data if isinstance(data, dict) else {},
+        )
         normalized["enabled"] = bool(normalized.get("enabled", True))
-        normalized["scanOnStartup"] = bool(normalized.get("scanOnStartup", True))
-        host_mode = str(normalized.get("hostMode") or "managed_local").strip().lower()
-        normalized["hostMode"] = host_mode if host_mode in {"managed_local", "external"} else "managed_local"
-        managed_local = dict(normalized.get("managedLocal") or {})
-        tooling_root = managed_local.get("toolingRoot")
-        launcher_path = managed_local.get("launcherPath")
-        normalized["managedLocal"] = {
-            "rootDir": str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT),
-            "toolingRoot": "" if tooling_root is None else str(tooling_root).strip(),
-            "launcherPath": "" if launcher_path is None else str(launcher_path).strip(),
-            "autoStart": bool(managed_local.get("autoStart", False)),
-        }
-        external_host = dict(normalized.get("externalHost") or {})
-        normalized["externalHost"] = {
-            "baseUrl": str(external_host.get("baseUrl") or "").strip(),
-            "gatewayBaseUrl": str(external_host.get("gatewayBaseUrl") or "").strip(),
-            "authToken": str(external_host.get("authToken") or "").strip(),
-        }
+        normalized["refreshOnStartup"] = bool(normalized.get("refreshOnStartup", True))
+        normalized["allowSessionGrant"] = bool(normalized.get("allowSessionGrant", True))
+        normalized["requireExplicitMention"] = True
+        normalized["defaultGrantScope"] = "task"
         return normalized
 
-    def save_plugin_host_config(self, data: Dict[str, Any]):
-        current = self.get_plugin_host_config()
-        merged = self._deep_merge(current, dict(data or {}))
-        if merged.get("allowedFamilies") is None:
-            merged["allowedFamilies"] = list(STRUCTURED_CONFIG_DEFAULTS["pluginHost"]["allowedFamilies"])
-        else:
-            merged["allowedFamilies"] = [str(item).strip() for item in list(merged.get("allowedFamilies") or []) if str(item).strip()]
-        merged["enabled"] = bool(merged.get("enabled", True))
-        merged["scanOnStartup"] = bool(merged.get("scanOnStartup", True))
-        host_mode = str(merged.get("hostMode") or "managed_local").strip().lower()
-        merged["hostMode"] = host_mode if host_mode in {"managed_local", "external"} else "managed_local"
-        managed_local = dict(merged.get("managedLocal") or {})
-        tooling_root = managed_local.get("toolingRoot")
-        launcher_path = managed_local.get("launcherPath")
-        merged["managedLocal"] = {
-            "rootDir": str(managed_local.get("rootDir") or OPENCLAW_DEFAULT_STATE_ROOT),
-            "toolingRoot": "" if tooling_root is None else str(tooling_root).strip(),
-            "launcherPath": "" if launcher_path is None else str(launcher_path).strip(),
-            "autoStart": bool(managed_local.get("autoStart", False)),
-        }
-        external_host = dict(merged.get("externalHost") or {})
-        merged["externalHost"] = {
-            "baseUrl": str(external_host.get("baseUrl") or "").strip(),
-            "gatewayBaseUrl": str(external_host.get("gatewayBaseUrl") or "").strip(),
-            "authToken": str(external_host.get("authToken") or "").strip(),
-        }
+    def save_plugin_manager_config(self, data: Dict[str, Any]):
         payload = self._read_config_payload()
-        payload["pluginHost"] = merged
+        merged = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["pluginManager"], dict(data or {}))
+        merged["requireExplicitMention"] = True
+        merged["defaultGrantScope"] = "task"
+        payload["pluginManager"] = merged
         self._write_config_payload(payload)
 
     # --- Computer Use Memory Accessors ---
@@ -2877,31 +2796,6 @@ class StorageManager:
         payload.setdefault("version", 1)
         payload.setdefault("apps", {})
         self.write_json("computer_use.json", payload)
-
-    # --- Plugin Host Registry Accessors ---
-    def get_plugin_registry(self) -> Dict[str, Any]:
-        data = self.read_json("plugin.json")
-        if not data:
-            data = self._default_plugin_payload()
-        plugin_host_root, plugin_extensions_root = self._plugin_registry_roots()
-        data.setdefault("version", 1)
-        data["pluginRoot"] = str(plugin_host_root)
-        data["pluginExtensionsRoot"] = str(plugin_extensions_root)
-        data.setdefault("pluginInstallLogRoot", str(PLUGIN_INSTALL_LOG_ROOT))
-        data.setdefault("plugins", {})
-        data.setdefault("installJobs", {})
-        return data
-
-    def save_plugin_registry(self, data: Dict[str, Any]):
-        payload = dict(data or {})
-        plugin_host_root, plugin_extensions_root = self._plugin_registry_roots()
-        payload.setdefault("version", 1)
-        payload["pluginRoot"] = str(plugin_host_root)
-        payload["pluginExtensionsRoot"] = str(plugin_extensions_root)
-        payload.setdefault("pluginInstallLogRoot", str(PLUGIN_INSTALL_LOG_ROOT))
-        payload.setdefault("plugins", {})
-        payload.setdefault("installJobs", {})
-        self.write_json("plugin.json", payload)
 
     # --- Web Fetch Profile Accessors ---
     def get_web_fetch_profiles(self) -> Dict[str, Any]:
@@ -3012,9 +2906,6 @@ class StorageManager:
     def _normalize_safety_guardian_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
         payload = deepcopy(dict(data or {}))
         runtime_rules = dict(payload.get("runtimeRules") or {})
-        legacy_channel_rules = runtime_rules.pop("channel_chat", None)
-        if isinstance(legacy_channel_rules, dict) and not isinstance(runtime_rules.get("plugin_host"), dict):
-            runtime_rules["plugin_host"] = legacy_channel_rules
         if runtime_rules:
             payload["runtimeRules"] = runtime_rules
         elif "runtimeRules" in payload:

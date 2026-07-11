@@ -16,8 +16,10 @@ import httpx
 from pydantic import AnyUrl
 
 from core.json_safe import to_jsonable
+from core.security.credentials import resolve_config_credential_refs
 from core.storage import storage
 from runtimes.extensions.mcp.stdio import stdio_client
+from runtimes.extensions.mcp.oauth import mcp_oauth_coordinator
 
 MCP_SERVER_INIT_TIMEOUT_SECONDS = float(
     os.environ.get("V8_AGENT_OS_MCP_SERVER_INIT_TIMEOUT_SECONDS", "15.0").strip() or "15.0"
@@ -389,6 +391,9 @@ class MCPManager:
     ) -> None:
         if self._closing:
             raise asyncio.CancelledError("MCP manager is shutting down")
+        # Credential refs are resolved only in this ephemeral connection copy.
+        # The canonical config, fingerprints, logs and API responses keep refs.
+        srv_config = resolve_config_credential_refs(srv_config)
         stack = AsyncExitStack()
         command = srv_config.get("command")
         url = srv_config.get("url")
@@ -443,7 +448,8 @@ class MCPManager:
                     raise ValueError(f"Server '{name}' is configured for HTTP (Streamable) but missing 'url'.")
                 headers = srv_config.get("headers", {})
                 print(f"[MCP] Connecting to server '{name}' via HTTP ({url})...")
-                custom_client = httpx.AsyncClient(headers=headers, timeout=30.0)
+                auth = mcp_oauth_coordinator.provider_for(server_name=name, server_url=url, config=srv_config) if bool(srv_config.get("oauth")) else None
+                custom_client = httpx.AsyncClient(headers=headers, timeout=30.0, auth=auth)
                 custom_client = await stack.enter_async_context(custom_client)
                 read, write, _ = await stack.enter_async_context(
                     streamable_http_client(url=url, http_client=custom_client)
@@ -454,7 +460,8 @@ class MCPManager:
                     raise ValueError(f"Server '{name}' is configured for sse but missing 'url'.")
                 headers = srv_config.get("headers", {})
                 print(f"[MCP] Connecting to server '{name}' via SSE ({url})...")
-                read, write = await stack.enter_async_context(sse_client(url=url, headers=headers))
+                auth = mcp_oauth_coordinator.provider_for(server_name=name, server_url=url, config=srv_config) if bool(srv_config.get("oauth")) else None
+                read, write = await stack.enter_async_context(sse_client(url=url, headers=headers, auth=auth))
 
             else:
                 raise ValueError(f"Unknown transport type: {transport_type}")
@@ -492,6 +499,8 @@ class MCPManager:
                 executionImpacted=False,
                 readyAt=self._now_iso(),
             )
+            if bool(srv_config.get("oauth")):
+                mcp_oauth_coordinator.mark_connected(name)
             self._commit_inventory_revision()
             if not ready_future.done():
                 ready_future.set_result({"tool_count": len(server_tools)})
@@ -502,6 +511,8 @@ class MCPManager:
                 ready_future.cancel()
             raise
         except Exception as exc:
+            if bool(srv_config.get("oauth")):
+                mcp_oauth_coordinator.mark_failed(name, str(exc).strip() or exc.__class__.__name__)
             if ready_future.done():
                 self._set_server_state(
                     name,

@@ -39,3 +39,14 @@ export async function proxyEngineJson(
     const data = await response.json().catch(() => ({}));
     return { response, data };
 }
+
+export async function proxyEngineResponse(path: string, init?: RequestInit) {
+    const engineBaseUrl = resolveEngineBaseUrl();
+    const normalizedPath = engineBaseUrl.endsWith("/v1") && path.startsWith("/v1/")
+        ? path.slice(3)
+        : path;
+    return fetch(`${engineBaseUrl}${normalizedPath}`, {
+        cache: "no-store",
+        ...init,
+    });
+}

@@ -1,0 +1,2583 @@
+{
+  "schemaVersion": "v8.plugin.catalog.v1",
+  "revision": 5,
+  "sequence": 5,
+  "keyId": "v8os-plugin-catalog-2026-07-r3",
+  "generatedAt": "2026-07-11T12:30:00Z",
+  "expiresAt": "2027-07-11T00:00:00Z",
+  "revocations": [],
+  "plugins": [
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "aliyun-bailian",
+      "displayName": "阿里云百炼",
+      "version": "1",
+      "publisher": "阿里云",
+      "category": "AI 与多媒体",
+      "description": "通过百炼官方 CLI 使用模型、应用、数据集与供应商专属媒体工作流。",
+      "officialDomains": [
+        "aliyun.com",
+        "bailian.aliyun.com"
+      ],
+      "officialOrganizations": [
+        "modelstudioai"
+      ],
+      "officialLinks": {
+        "homepage": "https://bailian.aliyun.com/",
+        "documentation": "https://bailian.aliyun.com/cli/install.md",
+        "repository": "https://github.com/modelstudioai/cli"
+      },
+      "brand": {
+        "file": "logos/aliyun.ico",
+        "source": "https://img.alicdn.com/imgextra/i1/O1CN01IU2US71Ciicsi3Br3_!!6000000000115-55-tps-357-76.svg",
+        "license": "Alibaba Cloud brand asset; use subject to Alibaba Cloud brand rules",
+        "sha256": "effa95ef3238034819355e148abaf5911898896607a99b765724daf88126ecf4"
+      },
+      "cliProfiles": [
+        {
+          "id": "bailian-cli",
+          "commands": [
+            "bl",
+            "bailian"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "bailian-cli@1.7.0"
+            ],
+            "timeoutSeconds": 900,
+            "estimatedDownloadMb": 80
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "bl"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/bl.cmd",
+              "--version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "{pluginBin}/bl.cmd",
+              "auth",
+              "login",
+              "--console"
+            ],
+            "timeoutSeconds": 600
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "bailian-cli"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "auth",
+            "app",
+            "config",
+            "dataset",
+            "deploy",
+            "file",
+            "finetune",
+            "image",
+            "knowledge",
+            "mcp",
+            "memory",
+            "music",
+            "omni",
+            "pipeline",
+            "quota",
+            "search",
+            "speech",
+            "text",
+            "usage",
+            "video"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [
+        {
+          "id": "bailian-official-skills",
+          "repository": "https://github.com/modelstudioai/cli",
+          "path": "skills",
+          "revision": "6e095a6ce58eea9a2e25d31f1b05571071b0d41e",
+          "officialOrganization": "modelstudioai",
+          "targetDirectory": "bailian-official"
+        }
+      ],
+      "mcpServers": [
+        {
+          "id": "bailian-cli-mcp",
+          "serverName": "aliyun-bailian",
+          "repository": "https://github.com/modelstudioai/cli",
+          "transport": "stdio",
+          "configTemplate": {
+            "command": "{shim:bl}",
+            "args": [
+              "mcp",
+              "serve"
+            ],
+            "disabled": true
+          },
+          "authFields": [],
+          "allowedTools": [],
+          "officialOrganization": "modelstudioai"
+        }
+      ],
+      "uiAdapters": [],
+      "providerAdapters": [
+        {
+          "id": "aliyun-bailian-creative",
+          "handlerId": "creative_media.aliyun_bailian_dashscope",
+          "configRequirements": [
+            {
+              "id": "aliyun-bailian-creative.env.dashscope_api_key",
+              "kind": "secret",
+              "required": true,
+              "source": "manifest",
+              "confidence": "authoritative",
+              "labelKey": "plugins.config.DASHSCOPE_API_KEY",
+              "helpKey": "plugins.configHelp.DASHSCOPE_API_KEY",
+              "target": "env",
+              "targetName": "DASHSCOPE_API_KEY",
+              "componentId": "aliyun-bailian-creative",
+              "importSources": [
+                "env:DASHSCOPE_API_KEY"
+              ]
+            }
+          ]
+        }
+      ],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-read",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "paid-media-generation",
+          "cloud-resource-write",
+          "deployment"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "paid",
+          "deploy",
+          "delete",
+          "cloud-write"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status",
+          "network"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "模型与应用管理",
+        "图片/视频/音频/3D 基础生成",
+        "动作迁移",
+        "数字人与对口型",
+        "视频换人",
+        "风格重绘",
+        "供应商视频编辑"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "volcengine",
+      "displayName": "火山引擎 CLI",
+      "version": "1",
+      "publisher": "字节跳动 / 火山引擎",
+      "category": "云平台",
+      "description": "火山引擎官方命令行入口。",
+      "officialDomains": [
+        "volcengine.com"
+      ],
+      "officialOrganizations": [
+        "volcengine"
+      ],
+      "officialLinks": {
+        "homepage": "https://www.volcengine.com/",
+        "documentation": "https://github.com/volcengine/volcengine-cli",
+        "repository": "https://github.com/volcengine/volcengine-cli"
+      },
+      "brand": {
+        "file": "logos/volcengine.ico",
+        "source": "https://www.volcengine.com/favicon.ico",
+        "license": "Volcengine brand asset; use subject to Volcengine brand rules",
+        "sha256": "1002d42cbaac2f8ee97e8a7ba96acd47982cf9ec7d342c431ee587ddd07a5cc8"
+      },
+      "cliProfiles": [
+        {
+          "id": "volc-cli",
+          "commands": [
+            "ve"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "@volcengine/cli@1.0.49"
+            ],
+            "timeoutSeconds": 900,
+            "estimatedDownloadMb": 80
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "ve"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/ve.cmd",
+              "--version"
+            ]
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "@volcengine/cli"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "configure",
+            "auth",
+            "list",
+            "get",
+            "describe"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials"
+        ],
+        "sideEffects": [
+          "cloud-resource-write"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "read",
+        "approvalClasses": [
+          "cloud-write",
+          "delete",
+          "paid"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "火山引擎资源管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "lark",
+      "displayName": "飞书 / Lark CLI",
+      "version": "1",
+      "publisher": "ByteDance / Lark",
+      "category": "办公协作",
+      "description": "飞书开放平台官方 CLI 与 Skills。",
+      "officialDomains": [
+        "larksuite.com",
+        "feishu.cn"
+      ],
+      "officialOrganizations": [
+        "larksuite"
+      ],
+      "officialLinks": {
+        "homepage": "https://open.larksuite.com/",
+        "documentation": "https://github.com/larksuite/cli",
+        "repository": "https://github.com/larksuite/cli"
+      },
+      "brand": {
+        "file": "logos/lark.ico",
+        "source": "https://www.larksuite.com/favicon.ico",
+        "license": "Lark brand asset; use subject to Lark brand rules",
+        "sha256": "69da9be6053530750202e4f674d621274bd86a9fc23f44a16c5e6c7aa56dfd9e"
+      },
+      "cliProfiles": [
+        {
+          "id": "lark-cli",
+          "commands": [
+            "lark-cli",
+            "lark"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "@larksuite/cli@1.0.68"
+            ],
+            "timeoutSeconds": 900
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "lark-cli"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/lark-cli.cmd",
+              "--version"
+            ]
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "@larksuite/cli"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "auth",
+            "api",
+            "project",
+            "app",
+            "login",
+            "whoami"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [
+        {
+          "id": "lark-official-skills",
+          "repository": "https://github.com/larksuite/cli",
+          "path": "skills",
+          "revision": "452734f82443f9decd8a7a34f17ae169c7ae2b50",
+          "officialOrganization": "larksuite",
+          "targetDirectory": "lark-official"
+        }
+      ],
+      "mcpServers": [],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-read"
+        ],
+        "sideEffects": [
+          "send-message",
+          "document-write",
+          "approval-action"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "read",
+        "approvalClasses": [
+          "send",
+          "write",
+          "delete"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "飞书文档、消息、审批与开放平台操作"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "cloudflare",
+      "displayName": "Cloudflare Wrangler",
+      "version": "1",
+      "publisher": "Cloudflare",
+      "category": "云与边缘",
+      "description": "Workers、Pages、D1、R2 等 Cloudflare 开发与部署。",
+      "officialDomains": [
+        "cloudflare.com"
+      ],
+      "officialOrganizations": [
+        "cloudflare"
+      ],
+      "officialLinks": {
+        "homepage": "https://www.cloudflare.com/",
+        "documentation": "https://developers.cloudflare.com/workers/wrangler/install-and-update/",
+        "repository": "https://github.com/cloudflare/workers-sdk"
+      },
+      "brand": {
+        "file": "logos/cloudflare.ico",
+        "source": "https://www.cloudflare.com/favicon.ico",
+        "license": "Cloudflare brand asset; use subject to Cloudflare trademark guidelines",
+        "sha256": "5414bc6e4b3f6e10f99b5d37abf4420da4dcaece66f8f2c08e090e87267adbc5"
+      },
+      "cliProfiles": [
+        {
+          "id": "wrangler",
+          "commands": [
+            "wrangler"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "wrangler@4.110.0"
+            ],
+            "timeoutSeconds": 900
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "wrangler"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/wrangler.cmd",
+              "--version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "{pluginBin}/wrangler.cmd",
+              "login"
+            ],
+            "timeoutSeconds": 600
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "wrangler"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "login",
+            "whoami",
+            "dev",
+            "deploy",
+            "versions",
+            "pages",
+            "d1",
+            "r2",
+            "kv",
+            "tail",
+            "types"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "cloudflare-mcp",
+          "serverName": "cloudflare",
+          "repository": "https://github.com/cloudflare/mcp-server-cloudflare",
+          "transport": "stdio",
+          "configTemplate": {
+            "command": "npx",
+            "args": [
+              "-y",
+              "@cloudflare/mcp-server-cloudflare@0.2.0"
+            ],
+            "disabled": true
+          },
+          "authFields": [
+            "CLOUDFLARE_API_TOKEN"
+          ],
+          "allowedTools": [],
+          "officialOrganization": "cloudflare"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "deployment",
+          "cloud-resource-write"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "deploy",
+          "delete",
+          "cloud-write"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "Workers/Pages 开发部署",
+        "Cloudflare 资源管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "supabase",
+      "displayName": "Supabase CLI",
+      "version": "1",
+      "publisher": "Supabase",
+      "category": "数据库与后端",
+      "description": "Supabase 本地开发、迁移、函数与官方 MCP。",
+      "officialDomains": [
+        "supabase.com"
+      ],
+      "officialOrganizations": [
+        "supabase"
+      ],
+      "officialLinks": {
+        "homepage": "https://supabase.com/",
+        "documentation": "https://supabase.com/docs/guides/local-development/cli/getting-started",
+        "repository": "https://github.com/supabase/cli"
+      },
+      "brand": {
+        "file": "logos/supabase.ico",
+        "source": "https://supabase.com/favicon/favicon.ico",
+        "license": "Supabase brand asset; use subject to Supabase brand guidelines",
+        "sha256": "47267628af20b00fe9d76b98ed249f4b0a59c0a3555bf9adf77432060d933346"
+      },
+      "cliProfiles": [
+        {
+          "id": "supabase-cli",
+          "commands": [
+            "supabase"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "supabase@2.109.1"
+            ],
+            "timeoutSeconds": 900
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "supabase"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/supabase.cmd",
+              "--version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "{pluginBin}/supabase.cmd",
+              "login"
+            ]
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "supabase"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "login",
+            "status",
+            "start",
+            "stop",
+            "db",
+            "migration",
+            "functions",
+            "projects",
+            "link",
+            "gen",
+            "inspect",
+            "secrets"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "supabase-mcp",
+          "serverName": "supabase",
+          "url": "https://mcp.supabase.com/mcp",
+          "transport": "http",
+          "configTemplate": {
+            "url": "https://mcp.supabase.com/mcp",
+            "disabled": true
+          },
+          "authFields": [
+            "oauth"
+          ],
+          "allowedTools": [
+            "create_branch",
+            "create_project",
+            "deploy_edge_function",
+            "get_advisors",
+            "get_cost",
+            "get_edge_function",
+            "get_logs",
+            "get_organization",
+            "get_project",
+            "get_project_url",
+            "get_publishable_keys",
+            "get_storage_config",
+            "list_branches",
+            "list_edge_functions",
+            "list_extensions",
+            "list_migrations",
+            "list_organizations",
+            "list_projects",
+            "list_storage_buckets",
+            "list_tables",
+            "search_docs"
+          ],
+          "officialOrganization": "supabase"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "database-write",
+          "deployment",
+          "delete"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "deploy",
+          "delete",
+          "cloud-write"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "本地 Supabase",
+        "数据库迁移",
+        "Edge Functions",
+        "项目管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "vercel",
+      "displayName": "Vercel CLI",
+      "version": "1",
+      "publisher": "Vercel",
+      "category": "部署与托管",
+      "description": "Vercel 项目、环境、日志与部署。",
+      "officialDomains": [
+        "vercel.com"
+      ],
+      "officialOrganizations": [
+        "vercel"
+      ],
+      "officialLinks": {
+        "homepage": "https://vercel.com/",
+        "documentation": "https://vercel.com/docs/cli",
+        "repository": "https://github.com/vercel/vercel"
+      },
+      "brand": {
+        "file": "logos/vercel.ico",
+        "source": "https://vercel.com/favicon.ico",
+        "license": "Vercel brand asset; use subject to Vercel brand guidelines",
+        "sha256": "6d03f17164357abb5dc49e90a572f94c4f5e6004e659d3efed6a9e947670d81b"
+      },
+      "cliProfiles": [
+        {
+          "id": "vercel-cli",
+          "commands": [
+            "vercel"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "vercel@55.0.0"
+            ],
+            "timeoutSeconds": 900
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "vercel"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/vercel.cmd",
+              "--version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "{pluginBin}/vercel.cmd",
+              "login"
+            ]
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "vercel"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "login",
+            "whoami",
+            "link",
+            "deploy",
+            "dev",
+            "env",
+            "logs",
+            "projects",
+            "domains",
+            "inspect",
+            "rollback"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "vercel-mcp",
+          "serverName": "vercel",
+          "url": "https://mcp.vercel.com",
+          "transport": "http",
+          "configTemplate": {
+            "url": "https://mcp.vercel.com",
+            "disabled": true
+          },
+          "authFields": [
+            "oauth"
+          ],
+          "allowedTools": [],
+          "officialOrganization": "vercel"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "deployment",
+          "domain-write",
+          "delete"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "deploy",
+          "delete",
+          "cloud-write"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "项目部署",
+        "环境变量与日志",
+        "域名管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "google-workspace",
+      "displayName": "Google Workspace CLI",
+      "version": "1",
+      "publisher": "Google Workspace",
+      "category": "办公协作",
+      "description": "Google Workspace 官方 CLI 与 Skills。",
+      "officialDomains": [
+        "google.com",
+        "googleapis.com"
+      ],
+      "officialOrganizations": [
+        "googleworkspace"
+      ],
+      "officialLinks": {
+        "homepage": "https://workspace.google.com/",
+        "documentation": "https://github.com/googleworkspace/cli",
+        "repository": "https://github.com/googleworkspace/cli"
+      },
+      "brand": {
+        "file": "logos/google_workspace.ico",
+        "source": "https://workspace.google.com/favicon.ico",
+        "license": "Google Workspace brand asset; use subject to Google brand resource guidelines",
+        "sha256": "6da5620880159634213e197fafca1dde0272153be3e4590818533fab8d040770"
+      },
+      "cliProfiles": [
+        {
+          "id": "gws-cli",
+          "commands": [
+            "gws"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "@googleworkspace/cli@0.22.5"
+            ],
+            "timeoutSeconds": 900
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "gws"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/gws.cmd",
+              "--version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "{pluginBin}/gws.cmd",
+              "auth",
+              "login"
+            ]
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "@googleworkspace/cli"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "auth",
+            "calendar",
+            "chat",
+            "classroom",
+            "docs",
+            "drive",
+            "events",
+            "forms",
+            "gmail",
+            "people",
+            "sheets",
+            "slides",
+            "tasks"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [
+        {
+          "id": "gws-official-skills",
+          "repository": "https://github.com/googleworkspace/cli",
+          "path": "skills",
+          "revision": "a3768d0e82ad83cca2da97724e46bea4ff0e6dbd",
+          "officialOrganization": "googleworkspace",
+          "targetDirectory": "google-workspace-official"
+        }
+      ],
+      "mcpServers": [],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-read"
+        ],
+        "sideEffects": [
+          "send-message",
+          "document-write",
+          "calendar-write",
+          "file-write"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "read",
+        "approvalClasses": [
+          "send",
+          "write",
+          "delete"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "Gmail、Drive、Docs、Sheets、Calendar 与 Workspace 管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "github",
+      "displayName": "GitHub CLI",
+      "version": "1",
+      "publisher": "GitHub",
+      "category": "开发协作",
+      "description": "GitHub 仓库、Issue、Pull Request、Actions 与官方 MCP。",
+      "officialDomains": [
+        "github.com",
+        "githubusercontent.com",
+        "githubcopilot.com"
+      ],
+      "officialOrganizations": [
+        "github",
+        "cli"
+      ],
+      "officialLinks": {
+        "homepage": "https://cli.github.com/",
+        "documentation": "https://cli.github.com/manual/",
+        "repository": "https://github.com/cli/cli"
+      },
+      "brand": {
+        "file": "logos/github.ico",
+        "source": "https://github.com/favicon.ico",
+        "license": "GitHub brand asset; use subject to GitHub logo guidelines",
+        "sha256": "2ee43237d196100210f1786e7b73b57cd140f6013c072c70dbdffd9e9bc695f8"
+      },
+      "cliProfiles": [
+        {
+          "id": "gh",
+          "commands": [
+            "gh"
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "ownership": "external",
+          "install": {
+            "argv": [
+              "winget",
+              "install",
+              "--id",
+              "GitHub.cli",
+              "--exact",
+              "--accept-source-agreements",
+              "--accept-package-agreements"
+            ],
+            "timeoutSeconds": 1200,
+            "estimatedDownloadMb": 20
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "gh"
+            ]
+          },
+          "version": {
+            "argv": [
+              "gh",
+              "--version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "gh",
+              "auth",
+              "login"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "auth",
+            "repo",
+            "issue",
+            "pr",
+            "run",
+            "workflow",
+            "release",
+            "api",
+            "gist",
+            "codespace",
+            "search",
+            "status"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "github-mcp",
+          "serverName": "github",
+          "repository": "https://github.com/github/github-mcp-server",
+          "transport": "stdio",
+          "configTemplate": {
+            "command": "docker",
+            "args": [
+              "run",
+              "-i",
+              "--rm",
+              "-e",
+              "GITHUB_PERSONAL_ACCESS_TOKEN",
+              "ghcr.io/github/github-mcp-server:v1.5.0"
+            ],
+            "disabled": true
+          },
+          "authFields": [
+            "GITHUB_PERSONAL_ACCESS_TOKEN"
+          ],
+          "allowedTools": [],
+          "officialOrganization": "github"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "repository-write",
+          "send",
+          "deployment",
+          "delete"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "send",
+          "deploy",
+          "delete",
+          "write"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "仓库、Issue、PR、Actions 与 Release 管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "aws",
+      "displayName": "AWS CLI v2",
+      "version": "1",
+      "publisher": "Amazon Web Services",
+      "category": "云平台",
+      "description": "AWS 官方 CLI v2 与 AWS Labs MCP Servers。",
+      "officialDomains": [
+        "amazon.com",
+        "amazonaws.com",
+        "aws.amazon.com"
+      ],
+      "officialOrganizations": [
+        "aws",
+        "awslabs"
+      ],
+      "officialLinks": {
+        "homepage": "https://aws.amazon.com/cli/",
+        "documentation": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
+        "repository": "https://github.com/aws/aws-cli"
+      },
+      "brand": {
+        "file": "logos/aws.ico",
+        "source": "https://aws.amazon.com/favicon.ico",
+        "license": "AWS brand asset; use subject to AWS trademark guidelines",
+        "sha256": "4f56a75f3860c7136ab3a07347e57a7ef06dd84d324d19af0dac6b5f3268e023"
+      },
+      "cliProfiles": [
+        {
+          "id": "aws-cli-v2",
+          "commands": [
+            "aws"
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "ownership": "external",
+          "install": {
+            "argv": [
+              "winget",
+              "install",
+              "--id",
+              "Amazon.AWSCLI",
+              "--exact",
+              "--accept-source-agreements",
+              "--accept-package-agreements"
+            ],
+            "timeoutSeconds": 1800,
+            "requiresElevation": true,
+            "estimatedDownloadMb": 180
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "aws"
+            ]
+          },
+          "version": {
+            "argv": [
+              "aws",
+              "--version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "aws",
+              "configure",
+              "sso"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "configure",
+            "sso",
+            "sts",
+            "ec2",
+            "s3",
+            "lambda",
+            "cloudformation",
+            "logs",
+            "iam",
+            "bedrock",
+            "organizations"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "aws-mcp-servers",
+          "serverName": "aws",
+          "repository": "https://github.com/awslabs/mcp",
+          "transport": "stdio",
+          "configTemplate": {
+            "command": "uvx",
+            "args": [
+              "awslabs.aws-api-mcp-server@1.3.46"
+            ],
+            "disabled": true
+          },
+          "authFields": [
+            "AWS_PROFILE",
+            "AWS_REGION"
+          ],
+          "allowedTools": [],
+          "officialOrganization": "awslabs"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-write",
+          "system-install"
+        ],
+        "sideEffects": [
+          "cloud-resource-write",
+          "deployment",
+          "delete",
+          "paid"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "system-install",
+          "cloud-write",
+          "deploy",
+          "delete",
+          "paid"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "AWS 账户与云资源管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "wordpress",
+      "displayName": "WP-CLI",
+      "version": "1",
+      "publisher": "WordPress",
+      "category": "内容管理",
+      "description": "WordPress 官方命令行与官方 MCP Adapter。",
+      "officialDomains": [
+        "wordpress.org"
+      ],
+      "officialOrganizations": [
+        "wp-cli",
+        "wordpress"
+      ],
+      "officialLinks": {
+        "homepage": "https://wp-cli.org/",
+        "documentation": "https://make.wordpress.org/cli/handbook/guides/installing/",
+        "repository": "https://github.com/wp-cli/wp-cli"
+      },
+      "brand": {
+        "file": "logos/wordpress.ico",
+        "source": "https://wordpress.org/favicon.ico",
+        "license": "WordPress trademark asset; use subject to WordPress Foundation policy",
+        "sha256": "2cea359431715d7f9036ab6314eb4bc67266b7ac73b8206f30336d8f87f77e5f"
+      },
+      "cliProfiles": [
+        {
+          "id": "wp-cli",
+          "commands": [
+            "wp"
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "v8-managed-download",
+              "wp-cli-2.12.0.phar"
+            ],
+            "timeoutSeconds": 1200,
+            "estimatedDownloadMb": 7,
+            "downloadUrl": "https://github.com/wp-cli/wp-cli/releases/download/v2.12.0/wp-cli-2.12.0.phar",
+            "downloadTarget": "{pluginRoot}/wp-cli.phar",
+            "downloadSha256": "ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c"
+          },
+          "detect": {
+            "argv": [
+              "{pluginBin}/wp.cmd",
+              "--info"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/wp.cmd",
+              "--version"
+            ]
+          },
+          "shimCommand": [
+            "php",
+            "{pluginRoot}/wp-cli.phar"
+          ],
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "core",
+            "plugin",
+            "theme",
+            "post",
+            "user",
+            "db",
+            "search-replace",
+            "cache",
+            "config",
+            "cron",
+            "media",
+            "site"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "wordpress-mcp-adapter",
+          "serverName": "wordpress",
+          "repository": "https://github.com/WordPress/mcp-adapter",
+          "transport": "stdio",
+          "configTemplate": {
+            "command": "php",
+            "args": [
+              "{pluginRoot}/mcp-adapter/server.php"
+            ],
+            "disabled": true
+          },
+          "authFields": [
+            "WORDPRESS_URL",
+            "WORDPRESS_USERNAME",
+            "WORDPRESS_APPLICATION_PASSWORD"
+          ],
+          "allowedTools": [],
+          "officialOrganization": "wordpress"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-write",
+          "system-install"
+        ],
+        "sideEffects": [
+          "content-write",
+          "database-write",
+          "delete"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "system-install",
+          "write",
+          "delete"
+        ],
+        "healthChecks": [
+          "cli-version"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "WordPress 内容、插件、主题、用户与数据库管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "azure",
+      "displayName": "Azure CLI",
+      "version": "1",
+      "publisher": "Microsoft",
+      "category": "云平台",
+      "description": "Microsoft Azure 官方 CLI 与 MCP。",
+      "officialDomains": [
+        "microsoft.com",
+        "azure.com",
+        "azure.microsoft.com"
+      ],
+      "officialOrganizations": [
+        "azure",
+        "microsoft"
+      ],
+      "officialLinks": {
+        "homepage": "https://azure.microsoft.com/",
+        "documentation": "https://learn.microsoft.com/cli/azure/install-azure-cli",
+        "repository": "https://github.com/Azure/azure-cli"
+      },
+      "brand": {
+        "file": "logos/azure.ico",
+        "source": "https://azure.microsoft.com/favicon.ico",
+        "license": "Microsoft Azure brand asset; use subject to Microsoft trademark guidelines",
+        "sha256": "90cdaf487716184e4034000935c605d1633926d348116d198f355a98b8c6cd21"
+      },
+      "cliProfiles": [
+        {
+          "id": "azure-cli",
+          "commands": [
+            "az"
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "ownership": "external",
+          "install": {
+            "argv": [
+              "winget",
+              "install",
+              "--id",
+              "Microsoft.AzureCLI",
+              "--exact",
+              "--accept-source-agreements",
+              "--accept-package-agreements"
+            ],
+            "timeoutSeconds": 1800,
+            "requiresElevation": true,
+            "estimatedDownloadMb": 220
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "az"
+            ]
+          },
+          "version": {
+            "argv": [
+              "az",
+              "version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "az",
+              "login"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "version",
+            "login",
+            "account",
+            "group",
+            "resource",
+            "vm",
+            "webapp",
+            "functionapp",
+            "storage",
+            "acr",
+            "aks",
+            "deployment",
+            "monitor"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "azure-mcp",
+          "serverName": "azure",
+          "repository": "https://github.com/microsoft/mcp",
+          "transport": "stdio",
+          "configTemplate": {
+            "command": "npx",
+            "args": [
+              "-y",
+              "@azure/mcp@2.0.5",
+              "server",
+              "start"
+            ],
+            "disabled": true
+          },
+          "authFields": [],
+          "allowedTools": [],
+          "officialOrganization": "microsoft"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "workspace-write",
+          "system-install"
+        ],
+        "sideEffects": [
+          "cloud-resource-write",
+          "deployment",
+          "delete",
+          "paid"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "system-install",
+          "cloud-write",
+          "deploy",
+          "delete",
+          "paid"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "Azure 账户、资源与部署管理"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "figma",
+      "displayName": "Figma",
+      "version": "1",
+      "publisher": "Figma",
+      "category": "设计协作",
+      "description": "Figma 官方远程 MCP 与 UI:// 实时画布预览。",
+      "officialDomains": [
+        "figma.com"
+      ],
+      "officialOrganizations": [
+        "figma"
+      ],
+      "officialLinks": {
+        "homepage": "https://www.figma.com/",
+        "documentation": "https://developers.figma.com/docs/figma-mcp-server/",
+        "repository": "https://github.com/figma"
+      },
+      "brand": {
+        "file": "logos/figma.png",
+        "source": "https://static.figma.com/app/icon/1/favicon.png",
+        "license": "Figma brand asset; use subject to Figma brand guidelines",
+        "sha256": "53bff40abbfb9207233f0322f2329250b7d4e34617be84f4cecce5ee4a5d626f"
+      },
+      "cliProfiles": [],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "figma-remote-mcp",
+          "serverName": "figma",
+          "url": "https://mcp.figma.com/mcp",
+          "transport": "http",
+          "configTemplate": {
+            "url": "https://mcp.figma.com/mcp",
+            "disabled": true,
+            "oauth": true
+          },
+          "authFields": [
+            "oauth"
+          ],
+          "allowedTools": [
+            "add_code_connect_map",
+            "create_new_file",
+            "download_assets",
+            "generate_diagram",
+            "generate_figma_design",
+            "get_code_connect_map",
+            "get_code_connect_suggestions",
+            "get_context_for_code_connect",
+            "get_design_context",
+            "get_figjam",
+            "get_libraries",
+            "get_metadata",
+            "get_screenshot",
+            "get_shader_effect",
+            "get_shader_fill",
+            "get_variable_defs",
+            "list_shader_effects",
+            "list_shader_fills",
+            "search_design_system",
+            "send_code_connect_mappings",
+            "upload_assets",
+            "whoami"
+          ],
+          "officialOrganization": "figma"
+        }
+      ],
+      "uiAdapters": [
+        {
+          "id": "figma-canvas",
+          "renderer": "figma",
+          "resourcePrefix": "ui://plugins/figma/canvas/",
+          "allowedFrameOrigins": [
+            "https://www.figma.com"
+          ],
+          "presentation": {
+            "web": "edge_to_edge",
+            "phone": "modal"
+          }
+        }
+      ],
+      "governance": {
+        "permissions": [
+          "network",
+          "oauth"
+        ],
+        "sideEffects": [
+          "design-write",
+          "comment-write"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "none",
+        "approvalClasses": [
+          "write",
+          "send"
+        ],
+        "healthChecks": [
+          "mcp-online",
+          "oauth-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "ui"
+        ]
+      },
+      "capabilities": [
+        "实时画布预览",
+        "设计上下文读取",
+        "通过官方 MCP 修改画布",
+        "外部 Figma 完整编辑"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "hyperframes",
+      "displayName": "HyperFrames",
+      "version": "1",
+      "publisher": "HeyGen",
+      "category": "视频与动效",
+      "description": "HyperFrames 官方 CLI 与视频创作 Skills。",
+      "officialDomains": [
+        "heygen.com"
+      ],
+      "officialOrganizations": [
+        "heygen-com"
+      ],
+      "officialLinks": {
+        "homepage": "https://github.com/heygen-com/hyperframes",
+        "documentation": "https://github.com/heygen-com/hyperframes",
+        "repository": "https://github.com/heygen-com/hyperframes"
+      },
+      "brand": {
+        "file": "logos/hyperframes.png",
+        "source": "https://github.com/heygen-com.png",
+        "license": "Official HeyGen GitHub organization avatar; repository asset terms apply",
+        "sha256": "c31768a1c88a168e4238da6f5f006d7f7c2b99c4991b442859a137f0c74e8862"
+      },
+      "cliProfiles": [
+        {
+          "id": "hyperframes-cli",
+          "commands": [
+            "hyperframes"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "hyperframes@0.7.52"
+            ],
+            "timeoutSeconds": 1200,
+            "estimatedDownloadMb": 250
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "hyperframes"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/hyperframes.cmd",
+              "--version"
+            ]
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "hyperframes"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "--version",
+            "create",
+            "render",
+            "preview",
+            "doctor",
+            "skills",
+            "assets"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [
+        {
+          "id": "hyperframes-official-skills",
+          "repository": "https://github.com/heygen-com/hyperframes",
+          "path": "skills",
+          "revision": "7498eb4a3a601cff681ca7bc316b696c8de63539",
+          "officialOrganization": "heygen-com",
+          "targetDirectory": "hyperframes-official"
+        }
+      ],
+      "mcpServers": [],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "workspace-write"
+        ],
+        "sideEffects": [
+          "media-render",
+          "paid-media-generation"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "paid",
+          "write"
+        ],
+        "healthChecks": [
+          "cli-version"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "程序化视频与动效",
+        "字幕与视觉模板",
+        "渲染产物"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "stripe",
+      "displayName": "Stripe CLI",
+      "version": "1",
+      "publisher": "Stripe",
+      "category": "支付与商业",
+      "description": "Stripe 官方 CLI、Agent Skills 与 MCP。",
+      "officialDomains": [
+        "stripe.com"
+      ],
+      "officialOrganizations": [
+        "stripe"
+      ],
+      "officialLinks": {
+        "homepage": "https://stripe.com/",
+        "documentation": "https://docs.stripe.com/stripe-cli",
+        "repository": "https://github.com/stripe/stripe-cli"
+      },
+      "brand": {
+        "file": "logos/stripe.ico",
+        "source": "https://stripe.com/favicon.ico",
+        "license": "Stripe brand asset; use subject to Stripe trademark guidelines",
+        "sha256": "50630726cbd85299c64dbb510f051e5d70013abcd620fa2b23be82e618140150"
+      },
+      "cliProfiles": [
+        {
+          "id": "stripe-cli",
+          "commands": [
+            "stripe"
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "ownership": "external",
+          "install": {
+            "argv": [
+              "winget",
+              "install",
+              "--id",
+              "Stripe.StripeCli",
+              "--exact",
+              "--accept-source-agreements",
+              "--accept-package-agreements"
+            ],
+            "timeoutSeconds": 1200,
+            "estimatedDownloadMb": 30
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "stripe"
+            ]
+          },
+          "version": {
+            "argv": [
+              "stripe",
+              "version"
+            ]
+          },
+          "login": {
+            "argv": [
+              "stripe",
+              "login"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "version",
+            "login",
+            "listen",
+            "trigger",
+            "logs",
+            "fixtures",
+            "samples",
+            "resources",
+            "status",
+            "config"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [
+        {
+          "id": "stripe-official-skills",
+          "repository": "https://github.com/stripe/agent-toolkit",
+          "path": "providers/claude/plugin/skills",
+          "revision": "4a060c8394d48455500780de9642ea2a1da30aa1",
+          "officialOrganization": "stripe",
+          "targetDirectory": "stripe-official"
+        }
+      ],
+      "mcpServers": [
+        {
+          "id": "stripe-mcp",
+          "serverName": "stripe",
+          "url": "https://mcp.stripe.com",
+          "transport": "http",
+          "configTemplate": {
+            "url": "https://mcp.stripe.com",
+            "disabled": true
+          },
+          "authFields": [
+            "oauth"
+          ],
+          "allowedTools": [],
+          "officialOrganization": "stripe"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials"
+        ],
+        "sideEffects": [
+          "payment-write",
+          "refund",
+          "send",
+          "delete"
+        ],
+        "paidOperations": true,
+        "networkRequired": true,
+        "workspaceAccess": "read",
+        "approvalClasses": [
+          "paid",
+          "write",
+          "delete",
+          "send"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "auth-status",
+          "mcp-online"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "支付开发、Webhook、本地事件、Stripe API 与最佳实践"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "docker",
+      "displayName": "Docker",
+      "version": "1",
+      "publisher": "Docker",
+      "category": "开发基础设施",
+      "description": "Docker CLI/Desktop 状态与官方 MCP Catalog/Toolkit。",
+      "officialDomains": [
+        "docker.com",
+        "docker.io"
+      ],
+      "officialOrganizations": [
+        "docker"
+      ],
+      "officialLinks": {
+        "homepage": "https://www.docker.com/",
+        "documentation": "https://docs.docker.com/reference/cli/docker/",
+        "repository": "https://github.com/docker/cli"
+      },
+      "brand": {
+        "file": "logos/docker.ico",
+        "source": "https://www.docker.com/favicon.ico",
+        "license": "Docker brand asset; use subject to Docker trademark guidelines",
+        "sha256": "70e80a1aaffb492f02d51758ad86300b96416dbf6af75b0cbc6d1d69e4123f1f"
+      },
+      "cliProfiles": [
+        {
+          "id": "docker-cli",
+          "commands": [
+            "docker"
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "ownership": "external",
+          "install": {
+            "argv": [
+              "winget",
+              "install",
+              "--id",
+              "Docker.DockerDesktop",
+              "--exact",
+              "--accept-source-agreements",
+              "--accept-package-agreements"
+            ],
+            "timeoutSeconds": 2400,
+            "requiresElevation": true,
+            "mayRestart": true,
+            "estimatedDownloadMb": 650
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "docker"
+            ]
+          },
+          "version": {
+            "argv": [
+              "docker",
+              "version",
+              "--format",
+              "{{json .}}"
+            ]
+          },
+          "start": {
+            "argv": [
+              "docker",
+              "desktop",
+              "start"
+            ],
+            "timeoutSeconds": 600
+          },
+          "stop": {
+            "argv": [
+              "docker",
+              "desktop",
+              "stop"
+            ],
+            "timeoutSeconds": 600
+          },
+          "allowedArguments": [
+            "--help",
+            "version",
+            "info",
+            "login",
+            "ps",
+            "images",
+            "run",
+            "exec",
+            "logs",
+            "build",
+            "compose",
+            "container",
+            "image",
+            "network",
+            "volume",
+            "desktop",
+            "mcp"
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [],
+      "mcpServers": [
+        {
+          "id": "docker-mcp-gateway",
+          "serverName": "docker-mcp",
+          "repository": "https://github.com/docker/mcp-gateway",
+          "transport": "stdio",
+          "configTemplate": {
+            "command": "docker",
+            "args": [
+              "mcp",
+              "gateway",
+              "run"
+            ],
+            "disabled": true
+          },
+          "authFields": [],
+          "allowedTools": [],
+          "officialOrganization": "docker"
+        }
+      ],
+      "uiAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "workspace-write",
+          "system-install",
+          "process-control"
+        ],
+        "sideEffects": [
+          "container-run",
+          "image-build",
+          "delete",
+          "system-service"
+        ],
+        "paidOperations": false,
+        "networkRequired": false,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "system-install",
+          "run",
+          "delete"
+        ],
+        "healthChecks": [
+          "cli-version",
+          "daemon-online",
+          "desktop-status"
+        ],
+        "outputProtocols": [
+          "json",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "容器、镜像、Compose、Docker Desktop 与 MCP Catalog"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "amap",
+      "displayName": "高德地图 CLI",
+      "version": "1",
+      "publisher": "高德地图",
+      "category": "地图与位置服务",
+      "description": "通过高德官方 amap-gui CLI 控制本机地图容器，执行地图状态、路线规划与 POI 搜索。",
+      "officialDomains": [
+        "amap.com"
+      ],
+      "officialOrganizations": [
+        "amap"
+      ],
+      "officialLinks": {
+        "homepage": "https://lbs.amap.com/api/cli",
+        "documentation": "https://lbs.amap.com/api/cli/map-cli/reference",
+        "repository": null,
+        "support": "https://lbs.amap.com/api/cli/map-cli/install"
+      },
+      "brand": {
+        "file": "logos/amap.png",
+        "source": "https://lbs.amap.com/public/img/header/logo_2023.svg",
+        "license": "Amap brand asset; use subject to Amap brand rules",
+        "sha256": "143257ee1205a73551856510e18a5a88f31b859b4a0e4177477d1c3eec875e06"
+      },
+      "cliProfiles": [
+        {
+          "id": "amap-gui-cli",
+          "commands": [
+            "amap-gui"
+          ],
+          "platforms": [
+            "windows",
+            "macos",
+            "linux"
+          ],
+          "ownership": "managed",
+          "install": {
+            "argv": [
+              "npm",
+              "install",
+              "--prefix",
+              "{pluginRoot}",
+              "@amap-lbs/amap-gui@1.0.3"
+            ],
+            "timeoutSeconds": 900,
+            "estimatedDownloadMb": 120
+          },
+          "detect": {
+            "argv": [
+              "where.exe",
+              "amap-gui"
+            ]
+          },
+          "version": {
+            "argv": [
+              "{pluginBin}/amap-gui.cmd",
+              "--help"
+            ]
+          },
+          "start": {
+            "argv": [
+              "{pluginBin}/amap-gui.cmd",
+              "start"
+            ],
+            "timeoutSeconds": 180
+          },
+          "stop": {
+            "argv": [
+              "{pluginBin}/amap-gui.cmd",
+              "stop"
+            ],
+            "timeoutSeconds": 60
+          },
+          "uninstall": {
+            "argv": [
+              "npm",
+              "uninstall",
+              "--prefix",
+              "{pluginRoot}",
+              "@amap-lbs/amap-gui"
+            ]
+          },
+          "allowedArguments": [
+            "--help",
+            "status",
+            "start",
+            "stop",
+            "getLastEvent",
+            "mapState",
+            "route",
+            "searchPOI"
+          ],
+          "actions": [
+            {
+              "id": "status",
+              "argv": [
+                "amap-gui",
+                "status"
+              ],
+              "parameters": [],
+              "timeoutSeconds": 30,
+              "mutating": false
+            },
+            {
+              "id": "get-last-event",
+              "argv": [
+                "amap-gui",
+                "getLastEvent"
+              ],
+              "parameters": [],
+              "timeoutSeconds": 30,
+              "mutating": false
+            },
+            {
+              "id": "map-state-get",
+              "argv": [
+                "amap-gui",
+                "mapState",
+                "--action",
+                "get"
+              ],
+              "parameters": [],
+              "timeoutSeconds": 30,
+              "mutating": false
+            },
+            {
+              "id": "map-state-set",
+              "argv": [
+                "amap-gui",
+                "mapState",
+                "--action",
+                "set"
+              ],
+              "parameters": [
+                {
+                  "name": "center",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--center"
+                },
+                {
+                  "name": "zoom",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--zoom"
+                },
+                {
+                  "name": "rotation",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--rotation"
+                },
+                {
+                  "name": "pitch",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--pitch"
+                },
+                {
+                  "name": "style",
+                  "kind": "enum",
+                  "required": false,
+                  "flag": "--style",
+                  "options": [
+                    "normal",
+                    "dark",
+                    "light",
+                    "whitesmoke",
+                    "fresh",
+                    "grey",
+                    "graffiti",
+                    "macaron",
+                    "blue",
+                    "darkblue",
+                    "wine"
+                  ]
+                }
+              ],
+              "timeoutSeconds": 30,
+              "mutating": true
+            },
+            {
+              "id": "route",
+              "argv": [
+                "amap-gui",
+                "route"
+              ],
+              "parameters": [
+                {
+                  "name": "from",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--from"
+                },
+                {
+                  "name": "fromName",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--from-name"
+                },
+                {
+                  "name": "to",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--to"
+                },
+                {
+                  "name": "toName",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--to-name"
+                },
+                {
+                  "name": "type",
+                  "kind": "enum",
+                  "required": true,
+                  "flag": "--type",
+                  "options": [
+                    "driving",
+                    "walking",
+                    "riding",
+                    "transit"
+                  ]
+                },
+                {
+                  "name": "waypoints",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--waypoints"
+                },
+                {
+                  "name": "policy",
+                  "kind": "enum",
+                  "required": false,
+                  "flag": "--policy",
+                  "options": [
+                    "fastest",
+                    "least_fee",
+                    "shortest",
+                    "no_highway",
+                    "avoid_jam"
+                  ]
+                },
+                {
+                  "name": "strategy",
+                  "kind": "enum",
+                  "required": false,
+                  "flag": "--strategy",
+                  "options": [
+                    "fastest",
+                    "least_cost",
+                    "least_walk",
+                    "most_comfort",
+                    "no_subway"
+                  ]
+                },
+                {
+                  "name": "city",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--city"
+                }
+              ],
+              "timeoutSeconds": 90,
+              "mutating": true
+            },
+            {
+              "id": "search-poi",
+              "argv": [
+                "amap-gui",
+                "searchPOI"
+              ],
+              "parameters": [
+                {
+                  "name": "keyword",
+                  "kind": "text",
+                  "required": true,
+                  "flag": "--keyword"
+                },
+                {
+                  "name": "city",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--city"
+                },
+                {
+                  "name": "center",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--center"
+                },
+                {
+                  "name": "radius",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--radius"
+                },
+                {
+                  "name": "pageSize",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--pageSize"
+                },
+                {
+                  "name": "pageIndex",
+                  "kind": "text",
+                  "required": false,
+                  "flag": "--pageIndex"
+                }
+              ],
+              "timeoutSeconds": 60,
+              "mutating": true
+            }
+          ],
+          "configRequirements": [
+            {
+              "id": "amap-gui.env.amap_key",
+              "kind": "secret",
+              "required": true,
+              "source": "manifest",
+              "confidence": "authoritative",
+              "labelKey": "components.plugins.PluginManagerWorkbench.configuration.field.amapKey",
+              "helpKey": "components.plugins.PluginManagerWorkbench.configuration.help.amapKey",
+              "target": "env",
+              "targetName": "AMAP_KEY",
+              "componentId": "amap-gui-cli",
+              "importSources": [
+                "env:AMAP_KEY"
+              ]
+            },
+            {
+              "id": "amap-gui.env.amap_security_key",
+              "kind": "secret",
+              "required": true,
+              "source": "manifest",
+              "confidence": "authoritative",
+              "labelKey": "components.plugins.PluginManagerWorkbench.configuration.field.amapSecurityKey",
+              "helpKey": "components.plugins.PluginManagerWorkbench.configuration.help.amapSecurityKey",
+              "target": "env",
+              "targetName": "AMAP_SECURITY_KEY",
+              "componentId": "amap-gui-cli",
+              "importSources": [
+                "env:AMAP_SECURITY_KEY"
+              ]
+            }
+          ],
+          "outputProtocol": "json"
+        }
+      ],
+      "skills": [
+        {
+          "id": "amap-map-cli-skill",
+          "sourceKind": "managed_cli",
+          "sourceComponentId": "amap-gui-cli",
+          "repository": "https://lbs.amap.com/api/cli/map-cli/install",
+          "path": "node_modules/@amap-lbs/amap-gui/SKILL.md",
+          "revision": "1.0.3",
+          "officialOrganization": "amap",
+          "targetDirectory": "amap-map-cli"
+        }
+      ],
+      "mcpServers": [],
+      "uiAdapters": [],
+      "providerAdapters": [],
+      "governance": {
+        "permissions": [
+          "network",
+          "credentials",
+          "process-control",
+          "local-gui"
+        ],
+        "sideEffects": [
+          "start-local-gui",
+          "map-state-change",
+          "location-query"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "none",
+        "approvalClasses": [
+          "run",
+          "process-control"
+        ],
+        "healthChecks": [
+          "cli-help",
+          "configuration",
+          "gui-status"
+        ],
+        "outputProtocols": [
+          "json"
+        ]
+      },
+      "capabilities": [
+        "地图容器启动与状态读取",
+        "地图视角与样式控制",
+        "驾车、步行、骑行与公交路线规划",
+        "关键词与周边 POI 搜索",
+        "最近一次地图交互事件读取"
+      ]
+    }
+  ]
+}

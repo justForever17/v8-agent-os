@@ -123,6 +123,17 @@ class ContextMentionSelection(BaseModel):
     path: Optional[str] = None
     family_id: Optional[str] = Field(default=None, alias="familyId")
     source_type: Optional[str] = Field(default=None, alias="sourceType")
+    grant_scope: Optional[Literal["task", "session"]] = Field(default=None, alias="grantScope")
+    component_ids: Optional[List[str]] = Field(default=None, alias="componentIds")
+
+
+class PluginReferenceSelection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    plugin_id: str = Field(alias="pluginId", min_length=1, max_length=120)
+    name: Optional[str] = None
+    scope: Literal["task", "session"] = "task"
+    component_ids: Optional[List[str]] = Field(default=None, alias="componentIds")
 
 
 class ContextSessionReference(BaseModel):
@@ -172,6 +183,7 @@ class ChatRequestData(BaseModel):
     safety_approval_mode: Optional[str] = Field(default=None, alias="safetyApprovalMode")
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
     context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
+    plugin_references: Optional[List[PluginReferenceSelection]] = Field(default=None, alias="pluginReferences")
     context_session_refs: Optional[List[ContextSessionReference]] = Field(
         default=None,
         alias="contextSessionRefs",

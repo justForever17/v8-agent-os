@@ -13,14 +13,12 @@ RUNTIME_DATA_HOME = V8_AGENT_OS_HOME / "runtime-data"
 CONFIG_JSON_PATH = V8_AGENT_OS_HOME / "config.json"
 MCP_JSON_PATH = V8_AGENT_OS_HOME / "mcp.json"
 COMPUTER_USE_JSON_PATH = V8_AGENT_OS_HOME / "computer_use.json"
-PLUGIN_JSON_PATH = V8_AGENT_OS_HOME / "plugin.json"
+PLUGIN_MANAGER_ROOT = V8_AGENT_OS_HOME / "plugins"
+PLUGIN_MANAGER_BIN_ROOT = V8_AGENT_OS_HOME / "bin"
+PLUGIN_MANAGER_CACHE_ROOT = V8_AGENT_OS_HOME / "cache" / "plugin-catalog"
+PLUGIN_MANAGER_LOG_ROOT = V8_AGENT_OS_HOME / "logs" / "plugins"
 NETWORK_SUPERVISOR_SECRETS_PATH = V8_AGENT_OS_HOME / "network_supervisor_secrets.json"
 NETWORK_SUPERVISOR_STATE_PATH = V8_AGENT_OS_HOME / "network_supervisor_state.json"
-OPENCLAW_DEFAULT_STATE_ROOT = Path.home() / ".openclaw"
-PLUGIN_HOST_ROOT = V8_AGENT_OS_HOME / "plugins" / "openclaw"
-PLUGIN_EXTENSIONS_ROOT = PLUGIN_HOST_ROOT / "extensions"
-PLUGIN_HOST_TOOLING_ROOT = PLUGIN_HOST_ROOT / "tooling" / "openclaw-cli"
-PLUGIN_INSTALL_LOG_ROOT = V8_AGENT_OS_HOME / "logs" / "plugins"
 LEGACY_CONFIG_BACKUP_ROOT = V8_AGENT_OS_HOME / "_legacy_config_backup"
 STATE_DB_PATH = V8_AGENT_OS_HOME / "state.db"
 CHECKPOINT_DB_PATH = V8_AGENT_OS_HOME / "checkpoints.db"
@@ -56,14 +54,6 @@ def runtime_private_root(runtime_name: str) -> Path:
 
 def workspace_download_root(workspace_root: str | Path) -> Path:
     return Path(workspace_root).expanduser() / "downloaded_media"
-
-
-def openclaw_outbound_media_root(*segments: str) -> Path:
-    root = OPENCLAW_DEFAULT_STATE_ROOT / "media" / "outbound"
-    for segment in segments:
-        normalized = _safe_path_segment(segment, fallback="segment")
-        root = root / normalized
-    return root
 
 
 def workspace_artifacts_root(workspace_root: str | Path) -> Path:

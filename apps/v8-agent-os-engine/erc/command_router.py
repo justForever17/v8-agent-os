@@ -9,6 +9,7 @@ from core.database import db
 from core.realtime_protocol import build_runtime_event
 from core.runtime_episodes import ACTIVE_EPISODE_STATES, TERMINAL_EPISODE_STATES
 from core.spec_service import spec_service
+from erc.chat_canonical_transcript import build_canonical_chat_turn_window
 
 from erc.kernel import erc_kernel
 from erc.models import RuntimeCommand, RuntimeEventsPayload, RuntimeSnapshotPayload
@@ -34,6 +35,17 @@ class RuntimeCommandRouter:
     def configure(self, *, schedule_chat_run: ChatScheduler) -> None:
         self._schedule_chat_run = schedule_chat_run
 
+    def schedule_chat_run(
+        self,
+        request: ChatRequest,
+        *,
+        transport: str,
+        run_id: str | None = None,
+    ) -> Optional[str]:
+        if not self._schedule_chat_run:
+            return None
+        return self._schedule_chat_run(request, transport=transport, run_id=run_id)
+
     def get_snapshot(self, session_id: str) -> Dict[str, Any]:
         payload = session_runtime_service.get_snapshot(session_id)
         return RuntimeSnapshotPayload(
@@ -54,6 +66,7 @@ class RuntimeCommandRouter:
             source=payload.get("source"),
             context_governance=payload.get("contextGovernance"),
             context_governance_history=list(payload.get("contextGovernanceHistory") or []),
+            session_coordination_messages=list(payload.get("sessionCoordinationMessages") or []),
             lane=payload.get("lane"),
             liveness=payload.get("liveness"),
             recovery_class=payload.get("recoveryClass"),
@@ -148,6 +161,18 @@ class RuntimeCommandRouter:
                     interaction,
                     command.response or {},
                 )
+                try:
+                    from erc.session_coordination_service import session_coordination_service
+
+                    result["session_coordination"] = session_coordination_service.handle_ask_user_resolution(
+                        interaction,
+                        command.response or {},
+                    )
+                except Exception as exc:
+                    result["session_coordination"] = {
+                        "handled": False,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    }
                 self._resume_from_ask_user(interaction, command.response or {})
             return result
         raise ValueError(f"Unsupported ask_user command topic: {topic}")
@@ -222,6 +247,43 @@ class RuntimeCommandRouter:
                 )
             )
         return messages
+
+    def _canonical_chat_messages_for_coordination(self, session_id: str) -> list[ChatMessage]:
+        turn_window = build_canonical_chat_turn_window(
+            session_id,
+            limit_turns=12,
+        )
+        messages: list[ChatMessage] = []
+        for record in list(turn_window.get("messages") or []):
+            if not isinstance(record, dict):
+                continue
+            role = str(record.get("role") or "").strip().lower()
+            content = str(record.get("content") or "").strip()
+            if role not in {"user", "assistant", "system"} or not content:
+                continue
+            messages.append(ChatMessage(role=role, content=content))
+        return messages or self._chat_messages_from_session(session_id)
+
+    def build_session_coordination_chat_request(self, *, session_id: str, message_id: str) -> ChatRequest:
+        session = db.get_session(session_id) or {}
+        latest_runs = db.list_run_records(session_id=session_id, limit=1)
+        latest_run = latest_runs[0] if latest_runs else None
+        scope_payload = self._scope_payload_for_session(session_id)
+        request_data = ChatRequestData()
+        request_data._session_coordination_message_id = message_id
+        return ChatRequest(
+            messages=self._canonical_chat_messages_for_coordination(session_id),
+            config=self._engine_config_from_run(latest_run),
+            session_id=session_id,
+            conversation_id=session_id,
+            user_id=str(session.get("user_id") or (latest_run or {}).get("user_id") or "anonymous"),
+            project_id=scope_payload.get("project_id"),
+            workspace_id=scope_payload.get("workspace_id"),
+            workspace_path=scope_payload.get("workspace_path"),
+            scope_hint=scope_payload.get("scope_hint"),
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
+            data=request_data,
+        )
 
     def _build_retry_chat_request(self, run_record: Dict[str, Any]) -> ChatRequest:
         scope_payload = self._scope_payload_for_session(run_record["session_id"])

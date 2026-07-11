@@ -44,6 +44,8 @@ class AgentState(TypedDict):
     pluginAuthorizations: NotRequired[list]
     context_session_refs: NotRequired[list]
     contextSessionRefs: NotRequired[list]
+    session_coordination: NotRequired[dict]
+    sessionCoordination: NotRequired[dict]
     session_id: NotRequired[str]
     sessionId: NotRequired[str]
     run_id: NotRequired[str]

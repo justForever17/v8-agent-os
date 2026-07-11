@@ -31,8 +31,8 @@ def test_registry_builds_current_native_tools_in_order() -> None:
         "delegation_broker",
         "request_peer_help",
         "session_context_broker",
+        "session_message_broker",
         "mcp_server_config",
-        "plugin_broker",
     ]
     assert exported_names[-4:] == ["ask_user", "write_todos", "update_todo", "vision_media_analyzer"]
     assert build_native_tools(vars(native_tools)) == native_tools.NATIVE_TOOLS
@@ -142,6 +142,15 @@ def test_session_context_imports_remain_available() -> None:
     assert session_context_broker.name == "session_context_broker"
     assert broker_from_module.name == session_context_broker.name
     assert native_tool_family_for_name("session_context_broker") == "conversation_history"
+
+
+def test_session_message_imports_remain_available() -> None:
+    from core.tools.native.session_coordination import session_message_broker as broker_from_module
+    from core.native_tools import session_message_broker
+
+    assert session_message_broker.name == "session_message_broker"
+    assert broker_from_module.name == session_message_broker.name
+    assert native_tool_family_for_name("session_message_broker") == "conversation_coordination"
 
 
 def test_mcp_config_imports_remain_available() -> None:

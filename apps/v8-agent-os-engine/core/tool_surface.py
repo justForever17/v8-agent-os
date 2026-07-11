@@ -138,6 +138,8 @@ def runtime_kind_for_tool(tool_name: str) -> str:
         return "runtime_broker"
     if name == "session_context_broker":
         return "session_context"
+    if name == "session_message_broker":
+        return "session_coordination"
     if name == "delegation_broker" or name.startswith("delegation_") or name.startswith("subagent_"):
         return "subagent_swarm"
     if name == "fetch_skill_instructions":
@@ -204,6 +206,8 @@ def _tool_output_kind(tool_name: str) -> str:
     normalized = (tool_name or "").lower()
     if normalized == "session_context_broker":
         return "diagnostic"
+    if normalized == "session_message_broker":
+        return "operation"
     if normalized == "fetch_skill_instructions":
         return "skill_instructions"
     if normalized == "web_broker" or normalized.startswith("web_"):
@@ -845,6 +849,65 @@ def _render_session_context_surface(payload: dict[str, Any], raw_ref: str, *, bu
     if len(rendered) > budget:
         return _head_tail_truncate_text(rendered, budget, f"session context surface truncated; rawRef={raw_ref}")
     return rendered
+
+
+def _render_session_coordination_surface(payload: dict[str, Any], raw_ref: str, *, budget: int) -> str:
+    lines = ["Cross-session Supervisor coordination"]
+    if payload.get("ok") is False:
+        lines.append(f"Status: blocked ({_short_text(payload.get('error'), 100) or 'unknown_error'})")
+        if payload.get("summary"):
+            lines.append(f"Reason: {_short_text(payload.get('summary'), 420)}")
+        if payload.get("recommendedNextAction"):
+            lines.append(f"Next: {_short_text(payload.get('recommendedNextAction'), 320)}")
+        lines.extend(_surface_ref_lines(raw_ref, include_raw=True))
+        return "\n".join(lines)
+
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    if message:
+        lines.append(
+            "Status: "
+            + " | ".join(
+                part
+                for part in (
+                    _short_text(message.get("state"), 50),
+                    _short_text(message.get("intent"), 50),
+                    f"hop={message.get('hopCount')}/{message.get('maxHops')}" if message.get("hopCount") else "",
+                )
+                if part
+            )
+        )
+        if message.get("targetSessionId"):
+            lines.append(f"Target session: {_short_text(message.get('targetSessionId'), 190)}")
+        if message.get("replyStatus"):
+            lines.append(f"Reply status: {_short_text(message.get('replyStatus'), 80)}")
+    if payload.get("summary"):
+        lines.append("Message:")
+        lines.append(_content_excerpt(payload.get("summary"), min(1600, max(500, budget // 5))))
+    if payload.get("authorizationRequired"):
+        request = payload.get("askUserRequest") if isinstance(payload.get("askUserRequest"), dict) else {}
+        lines.append("Authorization: ask_user is required before delivery.")
+        if request.get("question"):
+            lines.append(f"Ask: {_short_text(request.get('question'), 320)}")
+        safe_request = {
+            key: request.get(key)
+            for key in (
+                "question",
+                "details",
+                "questions",
+                "selection_mode",
+                "coordinationContext",
+            )
+            if request.get(key) not in (None, "", [], {})
+        }
+        if safe_request:
+            lines.append("Required ask_user arguments:")
+            lines.append(json.dumps(safe_request, ensure_ascii=False, separators=(",", ":")))
+        lines.append("Call ask_user exactly once with these arguments; do not claim the message was sent yet.")
+    elif message.get("state") in {"queued", "promoted", "injected", "replied"}:
+        lines.append("Authority: same-user coordination only; no workspace, approval, plugin grant, or checkpoint is inherited.")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    rendered = "\n".join(line for line in lines if line).strip()
+    return rendered if len(rendered) <= budget else _head_tail_truncate_text(rendered, budget, "session coordination surface truncated")
 
 
 def _render_research_broker_surface(payload: dict[str, Any], raw_ref: str, *, budget: int) -> str | None:
@@ -1973,6 +2036,8 @@ def _decision_agent_visible_surface(
         renderer_result = _render_plugin_broker_surface(payload, raw_ref)
     elif tool_name == "session_context_broker":
         renderer_result = _render_session_context_surface(payload, raw_ref, budget=budget)
+    elif tool_name == "session_message_broker":
+        renderer_result = _render_session_coordination_surface(payload, raw_ref, budget=budget)
     elif tool_name == "workspace_broker":
         renderer_result = _render_workspace_broker_surface(payload, raw_ref)
     elif tool_name == "research_broker":

@@ -102,6 +102,7 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
 
 SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     RUNTIME_BROKER_TOOL_NAME,
+    "session_message_broker",
     "write_todos",
     "update_todo",
     "s3_broker",

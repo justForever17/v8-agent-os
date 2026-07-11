@@ -101,6 +101,7 @@ class RuntimeSnapshotPayload:
     source: Optional[str] = None
     context_governance: Optional[Dict[str, Any]] = None
     context_governance_history: List[Dict[str, Any]] = field(default_factory=list)
+    session_coordination_messages: List[Dict[str, Any]] = field(default_factory=list)
     lane: Optional[Dict[str, Any]] = None
     liveness: Optional[Dict[str, Any]] = None
     recovery_class: Optional[Dict[str, Any]] = None
@@ -124,6 +125,7 @@ class RuntimeSnapshotPayload:
             "source": self.source,
             "contextGovernance": self.context_governance,
             "contextGovernanceHistory": list(self.context_governance_history),
+            "sessionCoordinationMessages": list(self.session_coordination_messages),
             "lane": self.lane,
             "liveness": self.liveness,
             "recoveryClass": self.recovery_class,

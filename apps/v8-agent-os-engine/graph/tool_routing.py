@@ -32,6 +32,7 @@ def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
 SUPERVISOR_DIRECT_SCOPE_ALLOWED_TOOLS = {
     "delegation_broker",
     "runtime_broker",
+    "session_message_broker",
     "ask_user",
     "write_todos",
     "update_todo",
@@ -74,6 +75,7 @@ _SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS = {
     "memory_broker",
     "research_broker",
     "runtime_broker",
+    "session_message_broker",
     "spec_broker",
     "update_todo",
     "write_todos",

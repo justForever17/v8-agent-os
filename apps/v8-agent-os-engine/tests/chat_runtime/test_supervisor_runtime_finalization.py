@@ -21,7 +21,13 @@ from graph.supervisor_turn import (
     _runtime_recoverable_failure_final_response,
     _runtime_recoverable_failure_final_text,
     _runtime_recoverable_failure_message,
+    _message_session_coordination_reply,
+    _looks_like_session_coordination_request,
     _session_context_broker_first_response,
+    _session_coordination_guidance,
+    _session_coordination_outbound_guidance,
+    _session_coordination_reply_called_since_injection,
+    _session_coordination_requires_reply,
     _should_hide_todo_tools_for_direct_writing,
     execute_supervisor_turn,
 )
@@ -95,6 +101,116 @@ def test_session_context_refs_force_broker_calls_in_order_and_stop_after_failure
     assert second.tool_calls[0]["args"]["sourceSessionId"] == "session-source-2"
     completed_state = {"messages": [*failed_result_state["messages"], second], "contextSessionRefs": refs}
     assert _session_context_broker_first_response(completed_state, tools) is None
+
+
+def test_session_coordination_discipline_requires_exact_single_reply_call():
+    coordination = {
+        "messageId": "coord-001",
+        "messageType": "request",
+        "sourceSessionId": "session-source-001",
+        "targetSessionId": "session-target-001",
+        "state": "injected",
+        "hopCount": 1,
+        "maxHops": 2,
+    }
+    assert _session_coordination_requires_reply(coordination)
+    guidance = str(_session_coordination_guidance(coordination).content)
+    assert "latest user instruction has higher priority" in guidance
+    assert "Do not inherit the source workspace" in guidance
+    assert "exactly one reply" in guidance
+
+    injected = HumanMessage(
+        content="[V8OS Cross-session Coordination]",
+        additional_kwargs={"v8os_session_coordination": coordination},
+    )
+    wrong_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call-status",
+                "name": "session_message_broker",
+                "args": {"mode": "status", "messageId": "coord-001"},
+            }
+        ],
+    )
+    reply_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call-reply",
+                "name": "session_message_broker",
+                "args": {
+                    "mode": "reply",
+                    "messageId": "coord-001",
+                    "replyStatus": "accepted",
+                    "content": "Acknowledged.",
+                },
+            }
+        ],
+    )
+    assert not _message_session_coordination_reply(wrong_call, "coord-001")
+    assert _message_session_coordination_reply(reply_call, "coord-001")
+    assert not _session_coordination_reply_called_since_injection(
+        {"messages": [injected, wrong_call]},
+        "coord-001",
+    )
+    assert _session_coordination_reply_called_since_injection(
+        {"messages": [injected, reply_call]},
+        "coord-001",
+    )
+
+
+def test_session_coordination_second_hop_cannot_request_third_reply():
+    coordination = {
+        "messageId": "coord-reply-001",
+        "messageType": "reply",
+        "sourceSessionId": "session-target-001",
+        "targetSessionId": "session-source-001",
+        "state": "injected",
+        "hopCount": 2,
+        "maxHops": 2,
+    }
+    assert not _session_coordination_requires_reply(coordination)
+    guidance = str(_session_coordination_guidance(coordination).content)
+    assert "do not create a third hop" in guidance
+    assert "Do not call session_message_broker" in guidance
+
+
+def test_natural_language_session_coordination_request_keeps_brokers_visible():
+    existing = {
+        "spec-mode-project-live-20260709-213406",
+        "session-target-001",
+    }
+    session_exists = lambda session_id: session_id in existing
+    assert _looks_like_session_coordination_request(
+        "请通知 spec-mode-project-live-20260709-213406 核对最新任务。",
+        "session-current-001",
+        session_exists=session_exists,
+    )
+    assert _looks_like_session_coordination_request(
+        "send a correction to session-target-001",
+        "session-current-001",
+        session_exists=session_exists,
+    )
+    assert not _looks_like_session_coordination_request(
+        "请总结一下当前任务，不要联系其他会话。",
+        "session-current-001",
+        session_exists=session_exists,
+    )
+    assert not _looks_like_session_coordination_request(
+        "send the package.json summary to the build log",
+        "session-current-001",
+        session_exists=session_exists,
+    )
+    assert not _looks_like_session_coordination_request(
+        "不要通知 session-target-001，也不要创建协调草稿。",
+        "session-current-001",
+        session_exists=session_exists,
+    )
+    guidance = str(_session_coordination_outbound_guidance().content)
+    assert "Do not let Memory" in guidance
+    assert "pre-adjudicate a conflict" in guidance
+    assert "do not replace the explicit send with advice or options" in guidance
 
 def test_runtime_episode_degraded_handoff_ready_is_terminal():
     assert _runtime_episode_handoff_ready(

@@ -400,6 +400,42 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS session_coordination_messages (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    message_type TEXT NOT NULL,
+                    source_session_id TEXT NOT NULL,
+                    target_session_id TEXT NOT NULL,
+                    source_run_id TEXT,
+                    target_run_id TEXT,
+                    source_user_id TEXT,
+                    intent TEXT NOT NULL,
+                    authority TEXT NOT NULL,
+                    authorization_interaction_id TEXT,
+                    content TEXT NOT NULL,
+                    summary TEXT,
+                    context_json TEXT,
+                    evidence_refs_json TEXT,
+                    reply_to_message_id TEXT,
+                    reply_status TEXT,
+                    hop_count INTEGER NOT NULL DEFAULT 1,
+                    max_hops INTEGER NOT NULL DEFAULT 2,
+                    state TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    error_code TEXT,
+                    metadata_json TEXT,
+                    expires_at TIMESTAMP,
+                    authorized_at TIMESTAMP,
+                    promoted_at TIMESTAMP,
+                    injected_at TIMESTAMP,
+                    replied_at TIMESTAMP,
+                    cancelled_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS network_neighbor_links (
                     id TEXT PRIMARY KEY,
                     peer_id TEXT NOT NULL UNIQUE,
@@ -1138,6 +1174,12 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_session_lane_queue_entries_run_id ON session_lane_queue_entries (run_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_user_message_queue_session_state ON chat_user_message_queue (session_id, state, ordinal ASC, created_at ASC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_user_message_queue_run_id ON chat_user_message_queue (run_id, state, created_at ASC)')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_session_coordination_idempotency ON session_coordination_messages (idempotency_key)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_coordination_target_state ON session_coordination_messages (target_session_id, state, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_coordination_source_updated ON session_coordination_messages (source_session_id, updated_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_coordination_thread_hop ON session_coordination_messages (thread_id, hop_count ASC, created_at ASC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_coordination_target_run ON session_coordination_messages (target_run_id, state, updated_at DESC)')
+            conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_session_coordination_authorization_use ON session_coordination_messages (authorization_interaction_id) WHERE authorization_interaction_id IS NOT NULL')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_links_peer_id ON network_neighbor_links (peer_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_network_neighbor_links_updated_at ON network_neighbor_links (updated_at DESC)')
             conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_network_neighbor_messages_link_seq ON network_neighbor_messages (link_id, seq)')
@@ -4126,6 +4168,271 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
         return self.get_chat_user_message_queue_item(queue_id)
+
+    # --- Cross-session Supervisor Coordination Operations ---
+
+    def _hydrate_session_coordination_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        data["context"] = json.loads(data["context_json"]) if data.get("context_json") else {}
+        data["evidenceRefs"] = json.loads(data["evidence_refs_json"]) if data.get("evidence_refs_json") else []
+        data["metadata"] = json.loads(data["metadata_json"]) if data.get("metadata_json") else {}
+        aliases = {
+            "messageId": "id",
+            "threadId": "thread_id",
+            "messageType": "message_type",
+            "sourceSessionId": "source_session_id",
+            "targetSessionId": "target_session_id",
+            "sourceRunId": "source_run_id",
+            "targetRunId": "target_run_id",
+            "sourceUserId": "source_user_id",
+            "authorizationInteractionId": "authorization_interaction_id",
+            "replyToMessageId": "reply_to_message_id",
+            "replyStatus": "reply_status",
+            "hopCount": "hop_count",
+            "maxHops": "max_hops",
+            "idempotencyKey": "idempotency_key",
+            "errorCode": "error_code",
+            "expiresAt": "expires_at",
+            "authorizedAt": "authorized_at",
+            "promotedAt": "promoted_at",
+            "injectedAt": "injected_at",
+            "repliedAt": "replied_at",
+            "cancelledAt": "cancelled_at",
+            "createdAt": "created_at",
+            "updatedAt": "updated_at",
+        }
+        for alias, source in aliases.items():
+            data[alias] = data.get(source)
+        return data
+
+    def add_session_coordination_message(
+        self,
+        *,
+        message_id: str,
+        thread_id: str,
+        message_type: str,
+        source_session_id: str,
+        target_session_id: str,
+        source_run_id: Optional[str],
+        target_run_id: Optional[str],
+        source_user_id: Optional[str],
+        intent: str,
+        authority: str,
+        content: str,
+        summary: str,
+        context: Optional[dict[str, Any]],
+        evidence_refs: Optional[list[str]],
+        reply_to_message_id: Optional[str],
+        reply_status: Optional[str],
+        hop_count: int,
+        max_hops: int,
+        state: str,
+        idempotency_key: str,
+        authorization_interaction_id: Optional[str] = None,
+        error_code: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        expires_at: Optional[str] = None,
+        authorized_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now_iso = utc_now_iso()
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT OR IGNORE INTO session_coordination_messages
+                    (id, thread_id, message_type, source_session_id, target_session_id,
+                     source_run_id, target_run_id, source_user_id, intent, authority,
+                     authorization_interaction_id, content, summary, context_json,
+                     evidence_refs_json, reply_to_message_id, reply_status, hop_count,
+                     max_hops, state, idempotency_key, error_code, metadata_json,
+                     expires_at, authorized_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        message_id,
+                        thread_id,
+                        message_type,
+                        source_session_id,
+                        target_session_id,
+                        source_run_id,
+                        target_run_id,
+                        source_user_id,
+                        intent,
+                        authority,
+                        authorization_interaction_id,
+                        content,
+                        summary,
+                        json.dumps(to_jsonable(context or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(evidence_refs or []), ensure_ascii=False),
+                        reply_to_message_id,
+                        reply_status,
+                        int(hop_count),
+                        int(max_hops),
+                        state,
+                        idempotency_key,
+                        error_code,
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                        expires_at,
+                        authorized_at,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return (
+            self.get_session_coordination_message(message_id)
+            or self.get_session_coordination_message_by_idempotency(idempotency_key)
+            or {}
+        )
+
+    def get_session_coordination_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        normalized_id = str(message_id or "").strip()
+        if not normalized_id:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM session_coordination_messages WHERE id = ?', (normalized_id,))
+            row = cursor.fetchone()
+            return self._hydrate_session_coordination_row(dict(row)) if row else None
+
+    def get_session_coordination_message_by_idempotency(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key:
+            return None
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM session_coordination_messages WHERE idempotency_key = ?', (normalized_key,))
+            row = cursor.fetchone()
+            return self._hydrate_session_coordination_row(dict(row)) if row else None
+
+    def list_session_coordination_messages(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        target_session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        target_run_id: Optional[str] = None,
+        states: Optional[list[str]] = None,
+        newest_first: bool = False,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        query = 'SELECT * FROM session_coordination_messages WHERE 1=1'
+        params: list[Any] = []
+        if session_id:
+            query += ' AND (source_session_id = ? OR target_session_id = ?)'
+            params.extend([session_id, session_id])
+        if target_session_id:
+            query += ' AND target_session_id = ?'
+            params.append(target_session_id)
+        if thread_id:
+            query += ' AND thread_id = ?'
+            params.append(thread_id)
+        if target_run_id:
+            query += ' AND target_run_id = ?'
+            params.append(target_run_id)
+        normalized_states = [str(item or "").strip() for item in list(states or []) if str(item or "").strip()]
+        if normalized_states:
+            placeholders = ",".join("?" for _ in normalized_states)
+            query += f' AND state IN ({placeholders})'
+            params.extend(normalized_states)
+        query += (
+            ' ORDER BY created_at DESC, hop_count DESC LIMIT ?'
+            if newest_first
+            else ' ORDER BY created_at ASC, hop_count ASC LIMIT ?'
+        )
+        params.append(max(1, min(int(limit), 500)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_session_coordination_row(dict(row)) for row in cursor.fetchall()]
+
+    def count_pending_session_coordination_messages(self, target_session_id: str) -> int:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT COUNT(*) AS count
+                FROM session_coordination_messages
+                WHERE target_session_id = ?
+                  AND state IN ('awaiting_authorization', 'queued', 'promoted', 'injected')
+                ''',
+                (target_session_id,),
+            )
+            row = cursor.fetchone()
+            return int(row["count"]) if row else 0
+
+    def update_session_coordination_message(
+        self,
+        message_id: str,
+        *,
+        state: Optional[str] = None,
+        target_run_id: Optional[str] = None,
+        clear_target_run_id: bool = False,
+        authority: Optional[str] = None,
+        authorization_interaction_id: Optional[str] = None,
+        reply_status: Optional[str] = None,
+        summary: Optional[str] = None,
+        context: Optional[dict[str, Any]] = None,
+        evidence_refs: Optional[list[str]] = None,
+        error_code: Optional[str] = None,
+        metadata_updates: Optional[dict[str, Any]] = None,
+        timestamp_field: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        existing = self.get_session_coordination_message(message_id)
+        if not existing:
+            return None
+        now_iso = utc_now_iso()
+        next_metadata = dict(existing.get("metadata") or {})
+        if metadata_updates:
+            next_metadata.update(metadata_updates)
+        assignments = ["updated_at = ?", "metadata_json = ?"]
+        values: list[Any] = [now_iso, json.dumps(to_jsonable(next_metadata), ensure_ascii=False)]
+        scalar_updates = {
+            "state": state,
+            "target_run_id": target_run_id,
+            "authority": authority,
+            "authorization_interaction_id": authorization_interaction_id,
+            "reply_status": reply_status,
+            "summary": summary,
+            "error_code": error_code,
+        }
+        for column, value in scalar_updates.items():
+            if value is not None:
+                assignments.append(f"{column} = ?")
+                values.append(value)
+        if clear_target_run_id:
+            assignments.append("target_run_id = NULL")
+        if context is not None:
+            assignments.append("context_json = ?")
+            values.append(json.dumps(to_jsonable(context), ensure_ascii=False))
+        if evidence_refs is not None:
+            assignments.append("evidence_refs_json = ?")
+            values.append(json.dumps(to_jsonable(evidence_refs), ensure_ascii=False))
+        allowed_timestamp_fields = {
+            "authorized_at",
+            "promoted_at",
+            "injected_at",
+            "replied_at",
+            "cancelled_at",
+        }
+        if timestamp_field in allowed_timestamp_fields:
+            assignments.append(f"{timestamp_field} = ?")
+            values.append(now_iso)
+        values.append(message_id)
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    f"UPDATE session_coordination_messages SET {', '.join(assignments)} WHERE id = ?",
+                    tuple(values),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return self.get_session_coordination_message(message_id)
 
     # --- Network Neighbor Operations ---
 

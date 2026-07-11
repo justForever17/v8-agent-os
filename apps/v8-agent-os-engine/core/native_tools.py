@@ -107,6 +107,7 @@ from core.tools.native.creative_media_facade import (
 from core.tools.native.delegation import *  # delegation broker tool family compatibility exports
 from core.tools.native.runtime import *  # runtime broker tool family compatibility exports
 from core.tools.native.session_context import *  # V8OS session context broker compatibility exports
+from core.tools.native.session_coordination import *  # same-user Supervisor cross-session coordination
 from core.tools.native.mcp import *  # MCP config tool family compatibility exports
 from core.tools.native.plugin import *  # governed plugin discovery and task grants
 from core.tools.native.computer_use import *  # computer use tool family compatibility exports
@@ -328,6 +329,7 @@ def ask_user(
     artifacts: Optional[List[Dict[str, Any]]] = None,
     selection_mode: Optional[str] = None,
     specContext: Optional[Dict[str, Any]] = None,
+    coordinationContext: Optional[Dict[str, Any]] = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Ask the human for missing input and pause until they answer.
@@ -337,7 +339,8 @@ def ask_user(
     [{"id": "...", "title": "...", "detail": "..."}], "multiSelect": false}]`.
     For creative-media review, pass `media` or `artifacts` with thumbnail/url
     refs; `selection_mode` may be "single" or "multiple". This is user input,
-    not Safety approval and not Spec approval.
+    not Safety approval and not Spec approval. Pass `coordinationContext` only
+    when `session_message_broker` returns a one-shot cross-session authorization draft.
     """
     runtime_context = get_runtime_context() or {}
     session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
@@ -435,6 +438,8 @@ def ask_user(
         request["details"] = details
     if isinstance(specContext, dict) and specContext:
         request["specContext"] = specContext
+    if isinstance(coordinationContext, dict) and coordinationContext:
+        request["coordinationContext"] = coordinationContext
     if isinstance(questions, list) and questions:
         request["questions"] = questions[:8]
     merged_media: list[dict[str, Any]] = []
@@ -466,6 +471,7 @@ def ask_user(
                     "agentId": agent_id,
                     "node": node,
                     **({"specContext": specContext} if isinstance(specContext, dict) and specContext else {}),
+                    **({"coordinationContext": coordinationContext} if isinstance(coordinationContext, dict) and coordinationContext else {}),
                 },
                 request_payload=request_payload,
             )

@@ -81,6 +81,12 @@ class SnapshotService:
             for item in items
         ]
 
+    @staticmethod
+    def _session_coordination_messages(session_id: str) -> list[dict[str, Any]]:
+        from erc.session_coordination_service import session_coordination_service
+
+        return session_coordination_service.list_for_session(session_id, limit=20)
+
     def _build_projection_snapshot(
         self,
         session_id: str,
@@ -175,6 +181,7 @@ class SnapshotService:
         context_governance_history = extract_context_governance_history(runtime_events, limit=12)
         lane_view = session_admission_service.get_lane_view(session_id)
         queued_messages = self._queued_messages(session_id)
+        session_coordination_messages = self._session_coordination_messages(session_id)
         session_runtime = resolve_authoritative_session_runtime_state(
             session_id=session_id,
             workflow_view=workflow_view,
@@ -244,6 +251,7 @@ class SnapshotService:
                 "source": source,
                 "contextGovernance": context_governance,
                 "contextGovernanceHistory": context_governance_history,
+                "sessionCoordinationMessages": session_coordination_messages,
                 "lane": lane_view,
                 "liveness": liveness,
                 "recoveryClass": recovery_class,
@@ -287,6 +295,7 @@ class SnapshotService:
             "source": "canonical_snapshot",
             "contextGovernance": context_governance,
             "contextGovernanceHistory": context_governance_history,
+            "sessionCoordinationMessages": session_coordination_messages,
             "lane": lane_view,
             "liveness": liveness,
             "recoveryClass": recovery_class,

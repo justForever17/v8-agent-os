@@ -189,6 +189,8 @@ def _build_durable_detail_payload(
     runtime_timeline: list[dict] | None = None,
     runtime_events: list[dict] | None = None,
 ) -> dict:
+    from erc.session_coordination_service import session_coordination_service
+
     workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
     approvals = project_pending_approvals(db.list_pending_approvals(session_id=session_id, status="pending"))
     ask_user_interactions = project_ask_user_interactions(
@@ -243,6 +245,7 @@ def _build_durable_detail_payload(
         "source": "durable_detail_projection",
         "contextGovernance": context_governance,
         "contextGovernanceHistory": list(context_governance_history or []),
+        "sessionCoordinationMessages": session_coordination_service.list_for_session(session_id, limit=20),
         "lane": lane,
         "liveness": liveness,
         "recoveryClass": recovery_class,
@@ -459,8 +462,10 @@ async def delete_session(session_id: str):
         # Keep this before the session row is removed so owner checks and audit
         # events can still resolve the original session truth.
         from runtimes.plugin_manager.service import plugin_manager_service
+        from erc.session_coordination_service import session_coordination_service
 
         plugin_manager_service.revoke_session_grants(session_id)
+        session_coordination_service.prepare_session_deletion(session_id)
         db.delete_session(session_id)
         _refresh_web_session_index_safely()
         return {"status": "success"}
@@ -502,6 +507,7 @@ async def get_session_messages(session_id: str):
                 "summary": snapshot_payload.get("summary") or {},
                 "contextGovernance": snapshot_payload.get("contextGovernance"),
                 "contextGovernanceHistory": snapshot_payload.get("contextGovernanceHistory") or [],
+                "sessionCoordinationMessages": snapshot_payload.get("sessionCoordinationMessages") or [],
                 "projection": filtered_projection,
             }
         if snapshot_payload.get("legacyChatUnsupported") or snapshot.get("legacyChatUnsupported"):
@@ -523,6 +529,7 @@ async def get_session_messages(session_id: str):
                 "summary": snapshot_payload.get("summary") or {},
                 "contextGovernance": snapshot_payload.get("contextGovernance"),
                 "contextGovernanceHistory": snapshot_payload.get("contextGovernanceHistory") or [],
+                "sessionCoordinationMessages": snapshot_payload.get("sessionCoordinationMessages") or [],
                 "projection": snapshot_payload,
                 "legacyChatUnsupported": True,
             }
@@ -1031,6 +1038,7 @@ async def get_session_history(session_id: str):
         )
         timings["historyDetailBuildMs"] = _elapsed_ms(step_started)
         detail["askUserInteractions"] = ask_user_interactions
+        detail["sessionCoordinationMessages"] = snapshot_payload.get("sessionCoordinationMessages") or []
         if snapshot_payload.get("legacyChatUnsupported") or (snapshot or {}).get("legacyChatUnsupported"):
             detail["legacyChatUnsupported"] = True
         return _attach_profile(

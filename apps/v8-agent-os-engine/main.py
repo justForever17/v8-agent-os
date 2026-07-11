@@ -344,7 +344,15 @@ async def lifespan(app: FastAPI):
         await _get_network_neighbor_service().start()
         await _get_network_relay_worker_service().start()
     await _get_runtime_episode_runner().start()
-    
+    try:
+        from erc.session_coordination_service import session_coordination_service
+
+        recovery = await asyncio.to_thread(session_coordination_service.recover_pending)
+        if recovery.get("recovered") or recovery.get("expired"):
+            print("[Engine] Session coordination recovery completed:", recovery)
+    except Exception as exc:
+        print(f"[Engine] Session coordination recovery failed (non-fatal): {exc}")
+
     yield
     # Shutdown logic
     print("[Engine] Shutting down V8 Agent OS Engine...")

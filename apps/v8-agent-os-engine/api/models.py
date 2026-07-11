@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class ChatToolFunction(BaseModel):
@@ -189,6 +189,7 @@ class ChatRequestData(BaseModel):
         alias="contextSessionRefs",
         max_length=3,
     )
+    _session_coordination_message_id: Optional[str] = PrivateAttr(default=None)
     fileUrls: Optional[List[str]] = Field(default=None, description="Compatibility uploaded file URL list")
     attachments: Optional[List[ChatAttachment]] = Field(default=None, description="Structured uploaded attachments")
     disable_extensions_prefilter: Optional[bool] = Field(default=None, alias="disableExtensionsPrefilter")

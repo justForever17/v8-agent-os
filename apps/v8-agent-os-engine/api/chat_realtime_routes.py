@@ -430,7 +430,23 @@ def _fire_on_chat_end_if_terminal(session_id: str, run_id: str | None) -> None:
 
     try:
         record = db.get_run_record(run_id) or {}
-        if str(record.get("status") or "").strip().lower() != "completed":
+        run_status = str(record.get("status") or "").strip().lower()
+        if run_status in {"completed", "failed", "cancelled", "interrupted"}:
+            try:
+                from erc.session_coordination_service import session_coordination_service
+
+                session_coordination_service.on_run_terminal(
+                    session_id,
+                    run_id,
+                    status=run_status,
+                )
+            except Exception:
+                logger.exception(
+                    "Session coordination terminal reconciliation failed for session %s run %s",
+                    session_id,
+                    run_id,
+                )
+        if run_status != "completed":
             return
         for item in db.requeue_promoted_chat_user_messages_for_run(
             session_id=session_id,
@@ -959,6 +975,12 @@ async def promote_queued_message(queue_id: str):
         timestamp_field="promoted_at",
     )
     queue_payload = _queue_item_payload(updated or item)
+    try:
+        from erc.session_coordination_service import session_coordination_service
+
+        session_coordination_service.yield_to_human_guidance(run_id)
+    except Exception:
+        logger.exception("Failed to yield cross-session coordination to user guidance for queue item %s", queue_id)
     command_service.issue_control_signal(
         run_id,
         command="guidance",

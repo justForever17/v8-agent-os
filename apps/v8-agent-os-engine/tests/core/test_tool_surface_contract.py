@@ -84,6 +84,58 @@ def test_tool_observation_detail_long_text_stays_text_when_truncated():
     assert metadata["semanticTruncationStrategy"] == "tool_observation_detail_surface"
 
 
+def test_session_coordination_surface_preserves_exact_ask_user_authorization_args():
+    message = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "tool": "session_message_broker",
+                "authorizationRequired": True,
+                "summary": "Send a correction to the target task.",
+                "message": {
+                    "messageId": "coord-001",
+                    "targetSessionId": "session-target-001",
+                    "state": "awaiting_authorization",
+                    "intent": "correct",
+                    "hopCount": 1,
+                    "maxHops": 2,
+                },
+                "askUserRequest": {
+                    "question": "Allow this cross-task message?",
+                    "details": "Send a correction to the target task.",
+                    "questions": [
+                        {
+                            "id": "session_coordination_authorization",
+                            "options": [
+                                {"id": "approve_send", "title": "Allow"},
+                                {"id": "reject_send", "title": "Cancel"},
+                            ],
+                        }
+                    ],
+                    "selection_mode": "single",
+                    "coordinationContext": {
+                        "kind": "session_coordination_authorization",
+                        "draftMessageId": "coord-001",
+                        "messageDigest": "digest-001",
+                        "oneShot": True,
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        tool_call_id="call-session-message",
+        name="session_message_broker",
+    )
+
+    result = apply_tool_surface_budget(message, {"agentVisibleBudget": 5000})
+    rendered = str(result.content)
+    assert rendered.startswith("Cross-session Supervisor coordination")
+    assert "Required ask_user arguments:" in rendered
+    assert '"coordinationContext"' in rendered
+    assert '"draftMessageId":"coord-001"' in rendered
+    assert "do not claim the message was sent yet" in rendered
+
+
 def test_record_raw_observation_inherits_runtime_context_metadata(monkeypatch):
     captured: list[dict] = []
 

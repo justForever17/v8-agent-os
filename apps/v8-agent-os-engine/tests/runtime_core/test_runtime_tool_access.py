@@ -1327,6 +1327,26 @@ def test_memory_broker_is_default_supervisor_read_only_entry_but_not_default_sub
     assert "memory_broker" not in {tool.name for tool in subagent_visible}
 
 
+def test_session_message_broker_is_supervisor_only_even_with_subagent_runtime_access():
+    tools = [_tool("session_message_broker")]
+
+    supervisor_visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
+    assert {tool.name for tool in supervisor_visible} == {"session_message_broker"}
+
+    direct_child = filter_visible_tools_for_actor(
+        tools,
+        actor="subagent",
+        runtime_access=["conversation_coordination", "delegation.recursive"],
+    )
+    grandchild = filter_visible_tools_for_actor(
+        tools,
+        actor="subagent",
+        runtime_access=["*"],
+    )
+    assert direct_child == []
+    assert grandchild == []
+
+
 def test_memory_broker_explain_injection_is_read_only_decision_surface():
     payload = json.loads(memory_broker.func(mode="explain_injection"))
 

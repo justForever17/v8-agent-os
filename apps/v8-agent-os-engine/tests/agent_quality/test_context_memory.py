@@ -28,11 +28,19 @@ def _install_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> DatabaseMana
     return test_db
 
 
-def _request(*, session_id: str | None = None, data_session_id: str | None = None, client_message_id: str = "client-1", content: str = "继续") -> ChatRequest:
+def _request(
+    *,
+    session_id: str | None = None,
+    data_session_id: str | None = None,
+    client_message_id: str = "client-1",
+    content: str = "继续",
+    workspace_path: str | None = None,
+) -> ChatRequest:
     return ChatRequest(
         messages=[ChatMessage(role="user", content=content)],
         session_id=session_id,
         clientMessageId=client_message_id,
+        workspacePath=workspace_path,
         data=ChatRequestData(conversationId=data_session_id, clientMessageId=client_message_id),
     )
 
@@ -59,12 +67,22 @@ def test_active_session_message_queues_by_data_conversation_id_without_new_sessi
 
     first = asyncio.run(
         routes.chat_submit(
-            _request(data_session_id="session-quality-context", client_message_id="client-same", content="这条应该排队")
+            _request(
+                data_session_id="session-quality-context",
+                client_message_id="client-same",
+                content="这条应该排队",
+                workspace_path=str(tmp_path),
+            )
         )
     )
     second = asyncio.run(
         routes.chat_submit(
-            _request(data_session_id="session-quality-context", client_message_id="client-same", content="这条应该排队")
+            _request(
+                data_session_id="session-quality-context",
+                client_message_id="client-same",
+                content="这条应该排队",
+                workspace_path=str(tmp_path),
+            )
         )
     )
 

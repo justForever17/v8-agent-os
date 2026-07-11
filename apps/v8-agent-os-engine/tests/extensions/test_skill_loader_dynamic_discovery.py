@@ -1,8 +1,35 @@
 from __future__ import annotations
 
+from core.workspace_authority import WorkspaceAuthorityDescriptor
 from erc.runtime_context import bind_runtime_context
 from runtimes.extensions.skills.loader import SkillLoader, fetch_skill_instructions
 from unittest.mock import patch
+
+
+def _trusted_workspace_authority(workspace) -> WorkspaceAuthorityDescriptor:
+    return WorkspaceAuthorityDescriptor(
+        runtime_kind="chat",
+        workspace_id="",
+        project_id="",
+        workspace_root=str(workspace),
+        main_workspace_root=str(workspace),
+        source="main_workspace",
+        trust_state="trusted",
+        trust_source="test_explicit_trust",
+        uses_scoped_workspace=False,
+        is_scoped_override=False,
+        is_fallback_to_main=False,
+        side_effects_allowed=True,
+        capabilities={
+            "localRead": True,
+            "localWrite": True,
+            "commandCwd": True,
+            "upload": True,
+            "workspaceRules": True,
+            "externalWorker": True,
+        },
+        path_status={},
+    )
 
 
 def test_fetch_skill_instructions_missing_skill_refreshes_workspace_root(tmp_path):
@@ -175,7 +202,10 @@ Read references/skill-template.md when creating artifacts.
 
     # Large scripts do not need to be read in full before a governed run. The
     # selected SKILL.md contract is the authority for whether the script is used.
-    with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
+    with patch(
+        "core.workspace_capability.workspace_authority_service.resolve_from_context",
+        return_value=_trusted_workspace_authority(workspace),
+    ), bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
         script_result = fetch_skill_instructions.invoke(
             {
                 "skill_name": skill_name,
@@ -295,7 +325,10 @@ def test_run_skill_script_allows_selected_global_skill_but_blocks_unrelated_exte
         "sourceType": "global",
     }
 
-    with patch.object(SkillLoader, "resolve_skill_matches", return_value=[skill]):
+    with patch.object(SkillLoader, "resolve_skill_matches", return_value=[skill]), patch(
+        "core.workspace_capability.workspace_authority_service.resolve_from_context",
+        return_value=_trusted_workspace_authority(workspace),
+    ):
         with bind_runtime_context(workspace_path=str(workspace), runtime_kind="chat"):
             success = fetch_skill_instructions.invoke(
                 {

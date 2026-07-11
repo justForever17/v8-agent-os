@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from core.delegation_broker import (
@@ -13,6 +15,7 @@ from core.native_tools import command_session_broker, delegation_broker, run_sys
 from core.source_provider_registry import get_source_provider_capabilities, get_source_provider_config_defaults, get_source_router_defaults
 from core.tools.s3_tools import s3_broker
 from core.tools.web_fetcher import _WEB_BROKER_CONTEXT_COUNTS, WebPagePayload, web_broker, web_extract, web_read, web_search
+from core.workspace_capability import WorkspaceBinding
 
 
 class WebAndS3BrokerTests(unittest.TestCase):
@@ -957,22 +960,39 @@ class WebAndS3BrokerTests(unittest.TestCase):
 
     def test_render_external_worker_command_uses_workspace_for_inherit_policy(self):
         descriptor = default_external_worker_descriptors()[0]
-        command = render_external_worker_command(
-            descriptor=descriptor,
-            task_brief={
-                "taskBriefId": "task-claude",
-                "goal": "Implement a focused patch",
-                "writeSet": ["apps/example.py"],
-            },
-            workspace_path="E:/Projects/v8chat",
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir).resolve()
+            binding = WorkspaceBinding(
+                runtime_kind="chat",
+                workspace_id="",
+                project_id="",
+                active_workspace_root=workspace,
+                main_workspace_root=workspace,
+                source="main_workspace",
+                uses_scoped_workspace=False,
+                is_scoped_override=False,
+                trust_state="trusted",
+                trust_source="test_explicit_trust",
+                side_effects_allowed=True,
+            )
+            with patch("core.workspace_capability.build_workspace_binding", return_value=binding):
+                command = render_external_worker_command(
+                    descriptor=descriptor,
+                    task_brief={
+                        "taskBriefId": "task-claude",
+                        "goal": "Implement a focused patch",
+                        "writeSet": ["apps/example.py"],
+                    },
+                    workspace_path=str(workspace),
+                )
 
         self.assertIn("claude -p --permission-mode", command)
         self.assertIn("acceptEdits", command)
         self.assertIn("<V8_WORKER_RESULT>", command)
         self.assertIn("Read task brief JSON from file", command)
         self.assertIn(".v8-agent-os/external-workers/task-claude/task_brief.json", command)
-        self.assertTrue(command.startswith('cd /d "E:/Projects/v8chat" && ') or command.startswith("cd E:/Projects/v8chat && "))
+        self.assertTrue(command.startswith("cd /d ") or command.startswith("cd "))
+        self.assertIn(str(workspace), command)
 
 
 if __name__ == "__main__":

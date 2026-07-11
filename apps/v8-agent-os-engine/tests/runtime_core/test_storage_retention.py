@@ -102,6 +102,7 @@ def test_retention_prune_preserves_user_visible_messages(monkeypatch):
         _patch_retention_paths(monkeypatch, root)
         db = DatabaseManager(root / "state.db")
         db.create_or_update_session("s1", "demo", user_id="user")
+        db.create_run_record("run-retention", "s1", run_type="chat", status="completed")
         db.add_message("m1", "s1", "user", "hello")
         db.create_chat_canonical_message(
             message_id="cm1",
@@ -114,7 +115,14 @@ def test_retention_prune_preserves_user_visible_messages(monkeypatch):
             content_text="visible",
         )
         for index in range(6):
-            db.add_runtime_snapshot(f"snapshot-{index}", "s1", None, index, "chat_projection", {"payload": "x" * 4096})
+            db.add_runtime_snapshot(
+                f"snapshot-{index}",
+                "s1",
+                "run-retention",
+                index,
+                "chat_projection",
+                {"payload": "x" * 4096},
+            )
         service = _make_service(1)
 
         result = service.enforce(dry_run=False, reason="unit_test")

@@ -6,8 +6,34 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.artifact_store import artifact_store
+from core.workspace_capability import WorkspaceBinding
 from core.workspace_share import resolve_workspace_file_to_share
 from erc.runtime_context import bind_runtime_context
+
+
+def _trusted_binding(
+    workspace_root: Path,
+    *,
+    main_workspace_root: Path | None = None,
+    workspace_id: str = "",
+    project_id: str = "",
+) -> WorkspaceBinding:
+    main_root = (main_workspace_root or workspace_root).resolve()
+    active_root = workspace_root.resolve()
+    scoped = active_root != main_root
+    return WorkspaceBinding(
+        runtime_kind="chat",
+        workspace_id=workspace_id,
+        project_id=project_id,
+        active_workspace_root=active_root,
+        main_workspace_root=main_root,
+        source="project_registry" if scoped else "main_workspace",
+        uses_scoped_workspace=scoped,
+        is_scoped_override=scoped,
+        trust_state="trusted",
+        trust_source="test_explicit_trust",
+        side_effects_allowed=True,
+    )
 
 
 class ShareWorkspaceFileToolTests(unittest.TestCase):
@@ -17,14 +43,9 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
             target = root / "docs" / "demo.pdf"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"%PDF-1.4\n")
-            descriptor = {
-                "workspaceRoot": str(root),
-                "workspaceId": None,
-                "projectId": None,
-            }
-            with patch("core.workspace_share.workspace_resolution_service.resolve_workspace_descriptor", return_value=descriptor), patch(
-                "core.workspace_share.workspace_resolution_service.get_main_workspace_path",
-                return_value=str(root),
+            with patch(
+                "core.workspace_share.build_workspace_binding",
+                return_value=_trusted_binding(root),
             ), bind_runtime_context(runtime_kind="chat", session_id="sess_demo"):
                 result = resolve_workspace_file_to_share("docs/demo.pdf", "auto")
             self.assertTrue(result["ok"])
@@ -41,14 +62,14 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
             target = root / "models" / "demo.glb"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"glTF")
-            descriptor = {
-                "workspaceRoot": str(root),
-                "workspaceId": "ws_demo",
-                "projectId": "proj_demo",
-            }
-            with patch("core.workspace_share.workspace_resolution_service.resolve_workspace_descriptor", return_value=descriptor), patch(
-                "core.workspace_share.workspace_resolution_service.get_main_workspace_path",
-                return_value=str(main_dir),
+            with patch(
+                "core.workspace_share.build_workspace_binding",
+                return_value=_trusted_binding(
+                    root,
+                    main_workspace_root=Path(main_dir),
+                    workspace_id="ws_demo",
+                    project_id="proj_demo",
+                ),
             ), bind_runtime_context(runtime_kind="chat", session_id="sess_demo", workspace_id="ws_demo", project_id="proj_demo"):
                 result = resolve_workspace_file_to_share(str(target), "preview")
             self.assertEqual(result["viewerKind"], "model")
@@ -63,14 +84,9 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
             root = Path(temp_dir)
             target = root / "notes.md"
             target.write_text("# Notes\n", encoding="utf-8")
-            descriptor = {
-                "workspaceRoot": str(root),
-                "workspaceId": None,
-                "projectId": None,
-            }
-            with patch("core.workspace_share.workspace_resolution_service.resolve_workspace_descriptor", return_value=descriptor), patch(
-                "core.workspace_share.workspace_resolution_service.get_main_workspace_path",
-                return_value=str(root),
+            with patch(
+                "core.workspace_share.build_workspace_binding",
+                return_value=_trusted_binding(root),
             ), bind_runtime_context(runtime_kind="chat", session_id="sess_demo"):
                 result = resolve_workspace_file_to_share("notes.md", "download")
             self.assertTrue(result["ok"])
@@ -85,14 +101,9 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
             root = Path(temp_dir)
             target = Path(outside_dir) / "secret.txt"
             target.write_text("nope", encoding="utf-8")
-            descriptor = {
-                "workspaceRoot": str(root),
-                "workspaceId": None,
-                "projectId": None,
-            }
-            with patch("core.workspace_share.workspace_resolution_service.resolve_workspace_descriptor", return_value=descriptor), patch(
-                "core.workspace_share.workspace_resolution_service.get_main_workspace_path",
-                return_value=str(root),
+            with patch(
+                "core.workspace_share.build_workspace_binding",
+                return_value=_trusted_binding(root),
             ), bind_runtime_context(runtime_kind="chat", session_id="sess_demo"):
                 with self.assertRaises(PermissionError):
                     resolve_workspace_file_to_share(str(target), "auto")
@@ -103,14 +114,9 @@ class ShareWorkspaceFileToolTests(unittest.TestCase):
             target = root / "docs" / "demo.pdf"
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"%PDF-1.4\n")
-            descriptor = {
-                "workspaceRoot": str(root),
-                "workspaceId": "ws_demo",
-                "projectId": "proj_demo",
-            }
-            with patch("core.workspace_share.workspace_resolution_service.resolve_workspace_descriptor", return_value=descriptor), patch(
-                "core.workspace_share.workspace_resolution_service.get_main_workspace_path",
-                return_value=str(root),
+            with patch(
+                "core.workspace_share.build_workspace_binding",
+                return_value=_trusted_binding(root, workspace_id="ws_demo", project_id="proj_demo"),
             ), patch("core.artifact_store.db.add_runtime_artifact") as add_artifact, bind_runtime_context(
                 runtime_kind="chat",
                 session_id="sess_demo",

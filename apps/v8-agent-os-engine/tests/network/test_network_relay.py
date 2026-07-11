@@ -263,7 +263,13 @@ def test_relay_worker_pulls_inbox_and_acks(monkeypatch, tmp_path):
 
 
 def test_cloudflare_worker_template_declares_required_protocol_endpoints():
-    template = Path("apps/v8-agent-os-engine/runtimes/network_supervisor/relay_templates/cloudflare_worker.mjs").read_text(encoding="utf-8")
+    template = (
+        Path(__file__).resolve().parents[2]
+        / "runtimes"
+        / "network_supervisor"
+        / "relay_templates"
+        / "cloudflare_worker.mjs"
+    ).read_text(encoding="utf-8")
 
     for token in [
         "/.well-known/v8-relay",

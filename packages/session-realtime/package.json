@@ -92,6 +92,10 @@
     "./desktop-pet-events": {
       "types": "./dist/desktop-pet-events.d.ts",
       "default": "./dist/desktop-pet-events.js"
+    },
+    "./runtime-summary-policy": {
+      "types": "./dist/runtime-summary-policy.d.ts",
+      "default": "./dist/runtime-summary-policy.js"
     }
   },
   "devDependencies": {

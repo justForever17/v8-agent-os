@@ -53,6 +53,9 @@ export const RUNTIME_EVENT_TAXONOMY: RuntimeEventTaxonomyEntry[] = [
   { key: "chat.approval_resolved.rejected", topicPattern: "approval.rejected", eventType: "custom_event", eventName: "approval_resolved", runtimeId: "automation", scope: "active_run", visibility: "hidden", targets: ["approval", "hud", "runtime_card"], explicit: true },
   { key: "chat.approval_resolved.auto", topicPattern: "approval.auto_approved", eventType: "custom_event", eventName: "approval_resolved", runtimeId: "automation", scope: "active_run", visibility: "hidden", targets: ["approval", "hud", "runtime_card"], explicit: true },
   { key: "chat.artifact_recorded", topicPattern: "artifact.recorded", eventType: "custom_event", eventName: "artifact_recorded", runtimeId: "chat", scope: "active_run", visibility: "visible", targets: ["artifact", "message", "hud"], explicit: true },
+  { key: "workbench.document.opened", topicPattern: "workbench.document.opened", eventType: "custom_event", eventName: "workbench_document_opened", runtimeId: "chat", scope: "session", visibility: "hidden", targets: ["workbench"], explicit: true },
+  { key: "workbench.document.updated", topicPattern: "workbench.document.updated", eventType: "custom_event", eventName: "workbench_document_updated", runtimeId: "chat", scope: "session", visibility: "hidden", targets: ["workbench"], explicit: true },
+  { key: "workbench.document.unavailable", topicPattern: "workbench.document.unavailable", eventType: "custom_event", eventName: "workbench_document_unavailable", runtimeId: "chat", scope: "session", visibility: "hidden", targets: ["workbench"], explicit: true },
   { key: "chat.run_state_changed", topicPattern: "run.state.changed", eventType: "custom_event", eventName: "run_controlled", runtimeId: "chat", scope: "active_run", visibility: "hidden", targets: ["runtime_card", "hud"], explicit: true },
   { key: "chat.run_paused", topicPattern: "run.paused", eventType: "custom_event", eventName: "run_controlled", runtimeId: "chat", scope: "active_run", visibility: "hidden", targets: ["runtime_card", "hud"], explicit: true },
   { key: "chat.run_resumed", topicPattern: "run.resumed", eventType: "custom_event", eventName: "run_controlled", runtimeId: "chat", scope: "active_run", visibility: "hidden", targets: ["runtime_card", "hud"], explicit: true },
@@ -111,10 +114,10 @@ export function findRuntimeEventTaxonomyEntry(input?: {
   }
   return (
     RUNTIME_EVENT_TAXONOMY.find((entry) => {
-      if (entry.eventType && normalizedType !== entry.eventType) {
+      if (entry.eventType && normalizedType && normalizedType !== entry.eventType) {
         return false;
       }
-      if (entry.eventName && normalizedName !== entry.eventName) {
+      if (entry.eventName && normalizedName && normalizedName !== entry.eventName) {
         return false;
       }
       return topicMatches(entry.topicPattern, normalizedTopic);

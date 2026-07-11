@@ -83,6 +83,7 @@ from runtimes.computer_use.input_policy import (
     classify_target_input_kind,
     deterministic_input_normalization_required,
 )
+
 from runtimes.computer_use.live_matrix_feedback import primitive_live_feedback_for_action
 from runtimes.computer_use.observation_bundle import build_observation_bundle
 from runtimes.computer_use.platform_adapters import create_platform_discovery_providers
@@ -184,6 +185,17 @@ from runtimes.computer_use.types import (
 )
 
 from runtimes.computer_use.verification import normalize_verification_payload
+
+
+_WORKBENCH_BROWSER_CONTROL_ERRORS = {
+    "browser_user_control_active",
+    "browser_reobserve_required",
+}
+
+
+def _raise_if_workbench_browser_control_error(exc: Exception) -> None:
+    if str(getattr(exc, "code", "") or "").strip() in _WORKBENCH_BROWSER_CONTROL_ERRORS:
+        raise exc
 
 
 def _display_bounds_from_capture(capture_bounds: List[int] | None) -> Dict[str, Any]:
@@ -437,6 +449,16 @@ class ComputerUseRuntime:
             self.app_catalog.warm_start()
             self.browser_automation.configure(self._computer_use_config())
             self._runtime_ready = True
+
+    def workbench_browser_provider(self) -> BrowserAutomationProvider:
+        """Return a configured browser provider for the Web Workbench surface."""
+
+        self._ensure_runtime_ready()
+        # Configuration can change while Engine remains alive. Refresh it at the
+        # public surface boundary so the first Workbench launch does not depend
+        # on an earlier Computer Use availability probe.
+        self.browser_automation.configure(self._computer_use_config())
+        return self.browser_automation
 
     def _resource_lease_key(self, *, run_handle) -> str:
         return str(getattr(run_handle, "run_id", "") or "default")
@@ -7259,7 +7281,8 @@ class ComputerUseRuntime:
                     payload=payload,
                     decision=browser_decision,
                 )
-            except Exception:
+            except Exception as exc:
+                _raise_if_workbench_browser_control_error(exc)
                 pass
         point = payload.get("point")
         point_candidates = self._normalize_runtime_point_candidates(
@@ -7469,7 +7492,8 @@ class ComputerUseRuntime:
                     clipboard_payload=clipboard_payload,
                     focus_hotkey_metadata=focus_hotkey_metadata,
                 )
-            except Exception:
+            except Exception as exc:
+                _raise_if_workbench_browser_control_error(exc)
                 pass
         preflight = self._prepare_input_preflight(
             action_payload=payload,
@@ -7831,7 +7855,8 @@ class ComputerUseRuntime:
                     payload=payload,
                     decision=browser_decision,
                 )
-            except Exception:
+            except Exception as exc:
+                _raise_if_workbench_browser_control_error(exc)
                 pass
         return self.driver.scroll(
             amount=int(payload["amount"]),
@@ -12516,6 +12541,24 @@ class ComputerUseRuntime:
 
         opened = self.browser_automation.open_tab(url=target_url, decision=decision)
         target_id = str(opened.get("targetId") or "").strip()
+        try:
+            from runtimes.computer_use.browser_session_service import browser_session_service
+
+            workbench_browser = browser_session_service.register_existing_target(
+                session_id=run_handle.session_id,
+                run_id=run_handle.run_id,
+                provider=self.browser_automation,
+                opened=opened,
+            )
+            run_handle.emit(
+                "computer_use.workbench.browser_registered",
+                {"browserSessionId": workbench_browser.get("browserSessionId")},
+            )
+        except Exception as exc:
+            run_handle.emit(
+                "computer_use.workbench.browser_registration_failed",
+                {"errorClass": exc.__class__.__name__},
+            )
         self._record_resource_lease(
             run_handle=run_handle,
             kind="browser_tab",

@@ -405,6 +405,24 @@ def _open_browser_target(context: PlaybookExecutionContext, target_url: str, *, 
         _finish_run(context, run_handle, status="needs_human_attention", reason=decision.reason or "browser_lane_unavailable")
         raise RuntimeError(decision.reason or "browser_lane_unavailable")
     opened = context.runtime.browser_automation.open_tab(url=target_url, decision=decision)
+    try:
+        from runtimes.computer_use.browser_session_service import browser_session_service
+
+        workbench_browser = browser_session_service.register_existing_target(
+            session_id=context.session_id,
+            run_id=context.run_id,
+            provider=context.runtime.browser_automation,
+            opened=opened,
+        )
+        run_handle.emit(
+            "computer_use.workbench.browser_registered",
+            {"browserSessionId": workbench_browser.get("browserSessionId")},
+        )
+    except Exception as exc:
+        run_handle.emit(
+            "computer_use.workbench.browser_registration_failed",
+            {"errorClass": exc.__class__.__name__},
+        )
     context.runtime._record_resource_lease(
         run_handle=run_handle,
         kind="browser_tab",

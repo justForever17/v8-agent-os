@@ -1,6 +1,8 @@
+import asyncio
 import uuid
 import importlib
 import json
+import hashlib
 import time
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,8 @@ from core.database import db
 from core.artifact_store import artifact_store
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.scoped_workspace_resource import resolve_scoped_workspace_resource
+from core.workbench_files import workbench_file_service
+from core.workbench_events import emit_workbench_document_event
 from core.runtime_projection import (
     build_projection_controls,
     build_projection_summary,
@@ -607,6 +611,100 @@ async def get_workspace_resource(
     if resolved.project_id:
         response.headers["X-V8-Project-Id"] = resolved.project_id
     return response
+
+
+@router.post("/sessions/{session_id}/workbench/files/resolve")
+async def resolve_workbench_file(session_id: str, body: dict = Body(...)):
+    requested_path = str(body.get("path") or body.get("workspacePath") or "").strip()
+    try:
+        resolved = await asyncio.to_thread(
+            workbench_file_service.resolve,
+            session_id=session_id,
+            requested_path=requested_path,
+        )
+        metadata = resolved.metadata()
+        renderer = (
+            "markdown"
+            if resolved.language == "markdown"
+            else "html"
+            if resolved.language == "html"
+            else "code"
+            if resolved.language and resolved.language != "text"
+            else "text"
+            if not resolved.binary
+            else "metadata"
+        )
+        document = {
+            "kind": "workspace_file",
+            "documentId": f"file:{hashlib.sha256(f'{session_id}:{resolved.workspace_relative_path}'.encode('utf-8')).hexdigest()[:24]}",
+            "title": resolved.absolute_path.name,
+            "renderer": renderer,
+            "lifecycle": "session",
+            "status": "available",
+            "capabilities": ["read", "download"] if resolved.binary else ["read", "search", "copy", "download"],
+            "subjectRef": {
+                "sessionId": session_id,
+                "workspacePath": resolved.workspace_relative_path,
+            },
+        }
+        await asyncio.to_thread(
+            emit_workbench_document_event,
+            "workbench.document.opened",
+            session_id=session_id,
+            document=document,
+            source_component="workbench_files",
+            focus_requested=bool(body.get("focusRequested", True)),
+            user_initiated=bool(body.get("userInitiated", True)),
+        )
+        return {**metadata, "document": document}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Workspace file was not found") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Workspace file could not be resolved") from exc
+
+
+@router.get("/sessions/{session_id}/workbench/files/read")
+async def read_workbench_file(
+    session_id: str,
+    path: str = Query(...),
+    start_line: int = Query(1, alias="startLine"),
+    line_count: int = Query(500, alias="lineCount"),
+    download: bool = Query(False),
+):
+    try:
+        if download:
+            resolved = await asyncio.to_thread(
+                workbench_file_service.resolve,
+                session_id=session_id,
+                requested_path=path,
+            )
+            response = FileResponse(
+                str(resolved.absolute_path),
+                filename=resolved.absolute_path.name,
+                media_type=resolved.mime_type,
+            )
+            response.headers["ETag"] = resolved.etag
+            response.headers["X-V8-Workspace-Path"] = resolved.workspace_relative_path
+            return response
+        return await asyncio.to_thread(
+            workbench_file_service.read,
+            session_id=session_id,
+            requested_path=path,
+            start_line=start_line,
+            line_count=line_count,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Workspace file was not found") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Workspace file could not be resolved") from exc
 
 
 @router.get("/sessions/{session_id}/scope")

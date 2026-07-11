@@ -1,6 +1,7 @@
 from typing import Any
 import hashlib
 import json
+import logging
 from urllib.parse import urlparse
 import uuid
 
@@ -42,10 +43,16 @@ from runtimes.extensions.mcp.client import mcp_manager
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _ACTIVE_MCP_APP_GUIDANCE_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
 _DEMO_MCP_APP_SERVER = "v8-demo-fixture"
 _DEMO_MCP_APP_URIS = {"ui://v8-demo/counter", "ui://v8-demo/review-panel"}
+_MCP_APP_LEGACY_METHODS = {
+    "ui/updateModelContext": "ui/update-model-context",
+    "ui/openLink": "ui/open-link",
+    "ui/requestDisplayMode": "ui/request-display-mode",
+}
 
 
 def _credential_realm(provider_id: str, provider_meta: dict[str, Any] | None = None) -> str:
@@ -295,6 +302,142 @@ def _mcp_app_queue_payload(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _mcp_app_permission_allows(instance: dict[str, Any], permission: str, *, default: bool = True) -> bool:
+    permissions = instance.get("permissions") if isinstance(instance.get("permissions"), dict) else {}
+    value = permissions.get(permission)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        return bool(value.get("enabled", True))
+    return bool(value)
+
+
+def _mcp_app_tool_permission_error(instance: dict[str, Any], tool_name: str) -> str | None:
+    permissions = instance.get("permissions") if isinstance(instance.get("permissions"), dict) else {}
+    if not _mcp_app_permission_allows(instance, "toolCalls", default=True):
+        return "MCP app manifest does not allow tool calls"
+    allowed_tools = permissions.get("allowedTools") or permissions.get("tools")
+    if isinstance(allowed_tools, list):
+        allowed = {str(item or "").strip() for item in allowed_tools if str(item or "").strip()}
+        if allowed and tool_name not in allowed:
+            return "MCP app manifest does not allow this tool"
+    return None
+
+
+def _mcp_app_validate_plugin_grant(instance: dict[str, Any]) -> None:
+    plugin_id = str(instance.get("pluginId") or "").strip()
+    if not plugin_id:
+        return
+    from runtimes.plugin_manager.service import plugin_manager_service
+
+    plugin_manager_service.validate_grant_for_invocation(
+        grant_id=str(instance.get("grantId") or ""),
+        plugin_id=plugin_id,
+        component_id=str(instance.get("componentId") or ""),
+        session_id=str(instance.get("sessionId") or ""),
+        run_id=str(instance.get("runId") or ""),
+        grantee_type="supervisor",
+        grantee_id="supervisor",
+        manifest_digest=str(instance.get("pluginDigest") or "") or None,
+    )
+
+
+def _mcp_app_enqueue_guidance(
+    *,
+    instance: dict[str, Any],
+    app_instance_id: str,
+    params: dict[str, Any],
+    source_method: str,
+    prefix: str,
+) -> dict[str, Any]:
+    session_id = str(instance.get("sessionId") or "").strip()
+    run_id = str(instance.get("runId") or "").strip()
+    if not session_id:
+        raise ValueError("MCP app instance is not attached to a chat session")
+    content = _mcp_app_context_to_text(params)
+    queue_id = f"queued_mcpapp_{uuid.uuid4().hex}"
+    source_label = source_method.removeprefix("ui/")
+    queue_item = db.add_chat_user_message_queue_item(
+        queue_id=queue_id,
+        session_id=session_id,
+        run_id=run_id or None,
+        client_message_id=f"mcpapp_{source_label}_{app_instance_id}_{uuid.uuid4().hex[:8]}",
+        content=f"{prefix}：\n{content}",
+        attachments=[],
+        file_urls=[],
+        request_payload={
+            "source": f"mcp_app.{source_label}",
+            "appInstanceId": app_instance_id,
+            "serverName": instance.get("serverName"),
+            "resourceUri": instance.get("resourceUri"),
+            "params": to_jsonable(params),
+        },
+        metadata={
+            "source": f"mcp_app.{source_label}",
+            "appInstanceId": app_instance_id,
+            "serverName": instance.get("serverName"),
+            "resourceUri": instance.get("resourceUri"),
+            "toolInvocationId": instance.get("toolInvocationId"),
+        },
+    )
+    run_record = db.get_run_record(run_id) if run_id else None
+    run_status = str((run_record or {}).get("status") or "").strip().lower()
+    if run_record and run_status in _ACTIVE_MCP_APP_GUIDANCE_STATUSES:
+        promoted = db.update_chat_user_message_queue_item(
+            queue_id,
+            state="promoted",
+            timestamp_field="promoted_at",
+            metadata_updates={"promotedBy": f"mcp_app.{source_label}"},
+        ) or queue_item
+        queue_payload = _mcp_app_queue_payload(promoted)
+        command_service.issue_control_signal(
+            run_id,
+            command="guidance",
+            reason=f"mcp_app_{source_label}",
+            payload={"queueMessageId": queue_id, "source": f"mcp_app.{source_label}"},
+        )
+        _mcp_app_emit_event(
+            "human_guidance.promoted",
+            session_id=session_id,
+            run_id=run_id,
+            payload={
+                "queueMessage": queue_payload,
+                "state": "promoted",
+                "summary": f"{prefix}已提升为运行中引导，将在安全检查点注入。",
+                "source": f"mcp_app.{source_label}",
+            },
+        )
+        return {
+            "ok": True,
+            "queued": True,
+            "promoted": True,
+            "event": "human_guidance.promoted",
+            "queueMessageId": queue_id,
+            "appInstanceId": app_instance_id,
+        }
+    _mcp_app_emit_event(
+        "human_guidance.queued",
+        session_id=session_id,
+        run_id=run_id or None,
+        payload={
+            "queueMessage": _mcp_app_queue_payload(queue_item),
+            "state": "pending",
+            "summary": f"{prefix}已排队，将在后续可用时作为引导处理。",
+            "source": f"mcp_app.{source_label}",
+        },
+    )
+    return {
+        "ok": True,
+        "queued": True,
+        "promoted": False,
+        "event": "human_guidance.queued",
+        "queueMessageId": queue_id,
+        "appInstanceId": app_instance_id,
+    }
+
+
 def _mcp_app_operation_fingerprint(
     *,
     app_instance_id: str,
@@ -395,7 +538,15 @@ def _mcp_app_request_tool_approval(
 @router.post("/mcp/apps/instances/{app_instance_id}/rpc")
 async def mcp_app_instance_rpc(app_instance_id: str, payload: dict = Body(...)):
     request_id = payload.get("id")
-    method = str(payload.get("method") or "").strip()
+    requested_method = str(payload.get("method") or "").strip()
+    method = _MCP_APP_LEGACY_METHODS.get(requested_method, requested_method)
+    if method != requested_method:
+        logger.warning(
+            "Deprecated MCP App RPC method %s used for %s; migrate to %s before compatibility removal.",
+            requested_method,
+            app_instance_id,
+            method,
+        )
     params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
     instance = mcp_manager.get_app_instance(app_instance_id)
     if not instance:
@@ -406,6 +557,16 @@ async def mcp_app_instance_rpc(app_instance_id: str, payload: dict = Body(...)):
             return _json_rpc_result(
                 request_id,
                 {
+                    "protocolVersion": str(params.get("protocolVersion") or "2025-06-18"),
+                    "hostInfo": {"name": "V8 Agent OS", "version": "1"},
+                    "hostCapabilities": {
+                        "displayModes": ["inline", "fullscreen"],
+                        "openLinks": True,
+                        "serverTools": True,
+                    },
+                    "hostContext": {
+                        "displayMode": instance.get("displayMode") or "inline",
+                    },
                     "appInstanceId": app_instance_id,
                     "serverName": instance.get("serverName"),
                     "toolName": instance.get("toolName"),
@@ -420,6 +581,13 @@ async def mcp_app_instance_rpc(app_instance_id: str, payload: dict = Body(...)):
             arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
             if not tool_name:
                 return _json_rpc_error(request_id, -32602, "Missing tool name")
+            permission_error = _mcp_app_tool_permission_error(instance, tool_name)
+            if permission_error:
+                return _json_rpc_error(request_id, -32016, permission_error)
+            try:
+                _mcp_app_validate_plugin_grant(instance)
+            except Exception as exc:
+                return _json_rpc_error(request_id, -32017, f"Plugin grant is not valid for this MCP app: {exc}")
             fingerprint = _mcp_app_operation_fingerprint(
                 app_instance_id=app_instance_id,
                 server_name=str(instance.get("serverName") or ""),
@@ -504,106 +672,56 @@ async def mcp_app_instance_rpc(app_instance_id: str, payload: dict = Body(...)):
                 },
             )
 
-        if method in {"ui/notifications/tool-result", "ui/notifications/tool-input", "ui/notifications/log"}:
+        if method in {
+            "ui/notifications/tool-result",
+            "ui/notifications/tool-input",
+            "ui/notifications/log",
+            "ui/notifications/size-changed",
+        }:
+            if method == "ui/notifications/size-changed":
+                width = max(0, min(10000, int(params.get("width") or 0)))
+                height = max(0, min(10000, int(params.get("height") or 0)))
+                mcp_manager.update_app_instance(app_instance_id, preferredSize={"width": width, "height": height})
             return _json_rpc_result(request_id, {"ok": True, "acknowledged": method})
 
-        if method == "ui/updateModelContext":
-            session_id = str(instance.get("sessionId") or "").strip()
-            run_id = str(instance.get("runId") or "").strip()
-            if not session_id:
-                return _json_rpc_error(request_id, -32015, "MCP app instance is not attached to a chat session")
-            content = _mcp_app_context_to_text(params)
-            queue_id = f"queued_mcpapp_{uuid.uuid4().hex}"
-            queue_item = db.add_chat_user_message_queue_item(
-                queue_id=queue_id,
-                session_id=session_id,
-                run_id=run_id or None,
-                client_message_id=f"mcpapp_context_{app_instance_id}_{uuid.uuid4().hex[:8]}",
-                content=f"MCP App 上下文更新：\n{content}",
-                attachments=[],
-                file_urls=[],
-                request_payload={
-                    "source": "mcp_app.updateModelContext",
-                    "appInstanceId": app_instance_id,
-                    "serverName": instance.get("serverName"),
-                    "resourceUri": instance.get("resourceUri"),
-                    "params": to_jsonable(params),
-                },
-                metadata={
-                    "source": "mcp_app.context_update",
-                    "appInstanceId": app_instance_id,
-                    "serverName": instance.get("serverName"),
-                    "resourceUri": instance.get("resourceUri"),
-                    "toolInvocationId": instance.get("toolInvocationId"),
-                },
-            )
-            run_record = db.get_run_record(run_id) if run_id else None
-            run_status = str((run_record or {}).get("status") or "").strip().lower()
-            if run_record and run_status in _ACTIVE_MCP_APP_GUIDANCE_STATUSES:
-                promoted = db.update_chat_user_message_queue_item(
-                    queue_id,
-                    state="promoted",
-                    timestamp_field="promoted_at",
-                    metadata_updates={"promotedBy": "mcp_app.updateModelContext"},
-                ) or queue_item
-                queue_payload = _mcp_app_queue_payload(promoted)
-                command_service.issue_control_signal(
-                    run_id,
-                    command="guidance",
-                    reason="mcp_app_context_update",
-                    payload={"queueMessageId": queue_id, "source": "mcp_app.updateModelContext"},
-                )
-                _mcp_app_emit_event(
-                    "human_guidance.promoted",
-                    session_id=session_id,
-                    run_id=run_id,
-                    payload={
-                        "queueMessage": queue_payload,
-                        "state": "promoted",
-                        "summary": "MCP App 上下文更新已提升为运行中引导，将在安全检查点注入。",
-                        "source": "mcp_app.updateModelContext",
-                    },
-                )
-                return _json_rpc_result(
-                    request_id,
-                    {
-                        "ok": True,
-                        "queued": True,
-                        "promoted": True,
-                        "event": "human_guidance.promoted",
-                        "queueMessageId": queue_id,
-                        "appInstanceId": app_instance_id,
-                    },
-                )
-            _mcp_app_emit_event(
-                "human_guidance.queued",
-                session_id=session_id,
-                run_id=run_id or None,
-                payload={
-                    "queueMessage": _mcp_app_queue_payload(queue_item),
-                    "state": "pending",
-                    "summary": "MCP App 上下文更新已排队，将在后续可用时作为引导处理。",
-                    "source": "mcp_app.updateModelContext",
-                },
+        if method in {"ui/message", "ui/update-model-context"}:
+            if not _mcp_app_permission_allows(instance, "messages", default=True):
+                return _json_rpc_error(request_id, -32018, "MCP app manifest does not allow host messages")
+            prefix = "MCP App 消息" if method == "ui/message" else "MCP App 上下文更新"
+            result = _mcp_app_enqueue_guidance(
+                instance=instance,
+                app_instance_id=app_instance_id,
+                params=params,
+                source_method=method,
+                prefix=prefix,
             )
             return _json_rpc_result(
                 request_id,
-                {
-                    "ok": True,
-                    "queued": True,
-                    "promoted": False,
-                    "event": "human_guidance.queued",
-                    "queueMessageId": queue_id,
-                    "appInstanceId": app_instance_id,
-                },
+                result,
             )
 
-        if method == "ui/openLink":
+        if method == "ui/open-link":
+            if not _mcp_app_permission_allows(instance, "openLinks", default=True):
+                return _json_rpc_error(request_id, -32019, "MCP app manifest does not allow opening links")
             url = str(params.get("url") or "").strip()
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"}:
                 return _json_rpc_error(request_id, -32011, "Only http/https links can be opened")
-            return _json_rpc_result(request_id, {"ok": True, "action": "openLink", "url": url})
+            return _json_rpc_result(request_id, {"ok": True, "action": "open-link", "url": url})
+
+        if method == "ui/request-display-mode":
+            requested_mode = str(params.get("mode") or params.get("displayMode") or "inline").strip().lower()
+            if requested_mode not in {"inline", "fullscreen"}:
+                return _json_rpc_error(request_id, -32602, "Only inline and fullscreen display modes are supported")
+            mcp_manager.update_app_instance(app_instance_id, displayMode=requested_mode)
+            return _json_rpc_result(
+                request_id,
+                {"ok": True, "displayMode": requested_mode},
+            )
+
+        if method in {"ui/teardown", "ui/notifications/teardown"}:
+            result = mcp_manager.close_app_instance(app_instance_id)
+            return _json_rpc_result(request_id, {**result, "acknowledged": method})
 
         return _json_rpc_error(request_id, -32601, f"Unsupported MCP app RPC method: {method}")
     except ValueError as e:

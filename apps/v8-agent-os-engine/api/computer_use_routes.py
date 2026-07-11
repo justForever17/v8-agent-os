@@ -3,7 +3,7 @@ from copy import deepcopy
 from time import monotonic
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect
 
 from .models import (
     ComputerUseAgentBrowserOpenPayload,
@@ -32,6 +32,23 @@ def _computer_use_runtime():
     from runtimes.computer_use.runtime import computer_use_runtime
 
     return computer_use_runtime
+
+
+def _browser_session_service():
+    from runtimes.computer_use.browser_session_service import browser_session_service
+
+    return browser_session_service
+
+
+def _browser_session_http_error(exc: Exception) -> HTTPException:
+    from runtimes.computer_use.browser_session_service import BrowserSessionError
+
+    if isinstance(exc, BrowserSessionError):
+        return HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        )
+    return HTTPException(status_code=500, detail="Workbench browser session failed")
 
 
 def _build_computer_use_availability() -> dict[str, Any]:
@@ -92,6 +109,76 @@ async def open_computer_use_agent_browser(payload: ComputerUseAgentBrowserOpenPa
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/workbench/browser-sessions")
+async def create_workbench_browser_session(session_id: str, body: dict[str, Any] = Body(default={})):
+    try:
+        runtime = _computer_use_runtime()
+        provider_factory = getattr(runtime, "workbench_browser_provider", None)
+        provider = provider_factory() if callable(provider_factory) else None
+        if provider is None:
+            raise RuntimeError("Computer Use browser automation provider is unavailable")
+        return await asyncio.to_thread(
+            _browser_session_service().create_session,
+            session_id=session_id,
+            provider=provider,
+            url=str(body.get("url") or "about:blank"),
+            browser_kind=str(body.get("browserKind") or "chrome"),
+            focus_requested=bool(body.get("focusRequested", True)),
+            user_initiated=bool(body.get("userInitiated", True)),
+        )
+    except Exception as exc:
+        raise _browser_session_http_error(exc) from exc
+
+
+@router.get("/workbench/browser-sessions/{browser_session_id}")
+async def get_workbench_browser_session(browser_session_id: str):
+    try:
+        return await asyncio.to_thread(
+            _browser_session_service().public_status,
+            browser_session_id,
+        )
+    except Exception as exc:
+        raise _browser_session_http_error(exc) from exc
+
+
+@router.post("/workbench/browser-sessions/{browser_session_id}/ws-ticket")
+async def issue_workbench_browser_ws_ticket(browser_session_id: str):
+    try:
+        return _browser_session_service().issue_ws_ticket(browser_session_id)
+    except Exception as exc:
+        raise _browser_session_http_error(exc) from exc
+
+
+@router.websocket("/workbench/browser-sessions/{browser_session_id}/ws")
+async def workbench_browser_websocket(websocket: WebSocket, browser_session_id: str):
+    ticket_value = str(websocket.query_params.get("ticket") or "").strip()
+    try:
+        ticket = _browser_session_service().consume_ws_ticket(browser_session_id, ticket_value)
+    except Exception:
+        await websocket.close(code=4403, reason="Invalid or expired browser ticket")
+        return
+    await websocket.accept()
+    try:
+        await _browser_session_service().serve_websocket(
+            browser_session_id,
+            ticket.client_id,
+            websocket,
+        )
+    except WebSocketDisconnect:
+        return
+
+
+@router.delete("/workbench/browser-sessions/{browser_session_id}")
+async def delete_workbench_browser_session(browser_session_id: str):
+    try:
+        return await asyncio.to_thread(
+            _browser_session_service().delete_session,
+            browser_session_id,
+        )
+    except Exception as exc:
+        raise _browser_session_http_error(exc) from exc
 
 
 @router.get("/computer-use/real-host-matrix")

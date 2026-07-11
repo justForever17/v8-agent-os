@@ -223,6 +223,7 @@ function normalizeTargets(value: unknown): SessionRuntimeEventTarget[] | null {
     "terminal",
     "process",
     "context",
+    "workbench",
     "history",
   ]);
   const normalized = value

@@ -134,6 +134,7 @@ class BrowserAutomationProvider:
         self._user_data_dir: Path | None = None
         self._target_families: List[str] = ["chromium", "electron", "webview2"]
         self._managed_launches: Dict[str, Dict[str, Any]] = {}
+        self._managed_browser_processes: Dict[str, subprocess.Popen[str]] = {}
         self._node_path: str | None = shutil.which("node")
         self._playwright_probe_cache: Dict[str, Any] | None = None
         self._availability_health_cache: Dict[str, Any] | None = None
@@ -805,6 +806,7 @@ class BrowserAutomationProvider:
         *,
         app_id: str | None,
         app_name: str | None,
+        headless: bool = False,
     ) -> BrowserLaneDecision | None:
         if not self._allow_managed_launch:
             return None
@@ -824,17 +826,29 @@ class BrowserAutomationProvider:
             )
             if not isinstance(prepared_command, list):
                 return None
-            subprocess.Popen(
+            if headless:
+                prepared_command = [
+                    item
+                    for item in prepared_command
+                    if str(item or "").strip().lower() != "--start-maximized"
+                ]
+                if not any(str(item).startswith("--headless") for item in prepared_command):
+                    prepared_command.append("--headless=new")
+            process = subprocess.Popen(
                 prepared_command,
                 env=prepared_env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 text=True,
             )
+            self._managed_browser_processes[app_key] = process
             target_port = int((metadata or {}).get("browserTargetPort") or self._target_port)
             deadline = time.time() + max(5.0, self._connect_timeout_ms / 1000.0)
             while time.time() < deadline:
                 if self._is_debug_port_reachable(target_port):
+                    managed_state = self._managed_launches.get(app_key)
+                    if isinstance(managed_state, dict):
+                        managed_state["headless"] = bool(headless)
                     return BrowserLaneDecision(
                         enabled=True,
                         available=True,
@@ -845,10 +859,75 @@ class BrowserAutomationProvider:
                     )
                 time.sleep(0.2)
         except Exception:
+            process = self._managed_browser_processes.pop(app_key, None)
+            if process is not None:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
             self._managed_launches.pop(app_key, None)
             return None
+        process = self._managed_browser_processes.pop(app_key, None)
+        if process is not None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
         self._managed_launches.pop(app_key, None)
         return None
+
+    def open_workbench_browser(
+        self,
+        *,
+        browser_kind: str | None = None,
+        url: str = "about:blank",
+    ) -> Dict[str, Any]:
+        """Open a page for Workbench without exposing CDP connection details."""
+
+        kind = normalize_agent_browser_kind(browser_kind)
+        target_url = str(url or "").strip() or "about:blank"
+        if not self._enabled:
+            raise RuntimeError("Computer Use browser lane is disabled")
+        if not self._node_path:
+            raise RuntimeError("Node.js is required for Workbench browser sessions")
+        if not self._helper_script_path().exists():
+            raise RuntimeError("Computer Use browser automation helper is missing")
+        if not self._probe_playwright_dependency().get("available"):
+            raise RuntimeError("Playwright is required for Workbench browser sessions")
+
+        target_port = self._target_port
+        managed_started = False
+        external_window = False
+        if not self._is_debug_port_reachable(target_port):
+            decision = self._start_managed_chromium_debug_browser(
+                app_id=kind,
+                app_name=kind,
+                headless=True,
+            )
+            if decision is None or not decision.available:
+                raise RuntimeError("Unable to start the dedicated Workbench browser")
+            target_port = int(decision.target_port or target_port)
+            managed_started = True
+        else:
+            managed_state = self._managed_launches.get(kind) or {}
+            existing_headless = bool(managed_state.get("headless")) or self._debug_browser_is_headless(target_port)
+            external_window = not existing_headless
+
+        lane = BrowserLaneDecision(
+            enabled=True,
+            available=True,
+            family="chromium",
+            reason="workbench_browser_ready",
+            target_port=target_port,
+            managed_launch=managed_started,
+        )
+        opened = self.open_tab(url=target_url, decision=lane, bring_to_front=external_window)
+        return {
+            **opened,
+            "browserKind": kind,
+            "managedHeadless": not bool(external_window),
+            "externalWindow": bool(external_window),
+        }
 
     def open_agent_browser(self, *, browser_kind: str | None = None, url: str = "about:blank") -> Dict[str, Any]:
         kind = normalize_agent_browser_kind(browser_kind)
@@ -1016,16 +1095,29 @@ class BrowserAutomationProvider:
         with self._lock:
             proc = self._proxy_process
             self._proxy_process = None
-        if proc is None:
-            return
-        try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except Exception:
+            headless_processes = [
+                self._managed_browser_processes.pop(key)
+                for key, state in list(self._managed_launches.items())
+                if state.get("headless") and key in self._managed_browser_processes
+            ]
+        if proc is not None:
             try:
-                proc.kill()
+                proc.terminate()
+                proc.wait(timeout=2)
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        for browser_process in headless_processes:
+            try:
+                browser_process.terminate()
+                browser_process.wait(timeout=2)
+            except Exception:
+                try:
+                    browser_process.kill()
+                except Exception:
+                    pass
         self._invalidate_availability_health_cache()
 
     def _helper_script_path(self) -> Path:
@@ -1089,6 +1181,26 @@ class BrowserAutomationProvider:
         except Exception:
             return False
 
+    def _debug_browser_is_headless(self, port: int | None) -> bool:
+        if not port:
+            return False
+        try:
+            response = requests.get(
+                f"http://127.0.0.1:{int(port)}/json/version",
+                timeout=min(1.0, max(0.3, self._connect_timeout_ms / 1000.0)),
+            )
+            response.raise_for_status()
+            payload = dict(response.json() or {})
+            probe = " ".join(
+                [
+                    str(payload.get("Browser") or ""),
+                    str(payload.get("User-Agent") or payload.get("userAgent") or ""),
+                ]
+            ).lower()
+            return "headless" in probe
+        except Exception:
+            return False
+
     def _request_json(
         self,
         method: str,
@@ -1096,7 +1208,24 @@ class BrowserAutomationProvider:
         *,
         params: Dict[str, Any] | None = None,
         body: str | Dict[str, Any] | None = None,
+        control_actor: str = "agent",
     ) -> Any:
+        normalized_actor = str(control_actor or "agent").strip().lower() or "agent"
+        normalized_path = str(path or "").strip()
+        target_id = str((params or {}).get("target") or "").strip()
+        if normalized_actor == "agent" and target_id and normalized_path in {
+            "/bringToFront",
+            "/maximize",
+            "/navigate",
+            "/eval",
+            "/scroll",
+            "/setFiles",
+            "/close",
+            "/dispatch",
+        }:
+            from runtimes.computer_use.browser_session_service import browser_session_service
+
+            browser_session_service.assert_agent_control_available_for_target(target_id)
         url = f"{self._proxy_base_url()}{path}"
         headers = {"Content-Type": "application/json; charset=utf-8"}
         payload = None
@@ -1114,9 +1243,30 @@ class BrowserAutomationProvider:
             timeout=max(1.0, self._connect_timeout_ms / 1000.0) + 10.0,
         )
         response.raise_for_status()
-        if not response.text:
-            return {}
-        return response.json()
+        result = response.json() if response.text else {}
+        if normalized_actor == "agent" and target_id and normalized_path == "/info":
+            from runtimes.computer_use.browser_session_service import browser_session_service
+
+            browser_session_service.note_agent_observation(target_id)
+        return result
+
+    def workbench_request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        target_port: int | None = None,
+        params: Dict[str, Any] | None = None,
+        body: Dict[str, Any] | None = None,
+    ) -> Any:
+        self._ensure_proxy(target_port=target_port)
+        return self._request_json(
+            method,
+            path,
+            params=params,
+            body=body,
+            control_actor="user",
+        )
 
     def _list_targets(self) -> List[Dict[str, Any]]:
         response = self._request_json("GET", "/targets")
@@ -1165,20 +1315,27 @@ class BrowserAutomationProvider:
             raise RuntimeError("browser automation 未能创建可用 tab。")
         return target_id
 
-    def open_tab(self, *, url: str, decision: BrowserLaneDecision) -> Dict[str, Any]:
+    def open_tab(
+        self,
+        *,
+        url: str,
+        decision: BrowserLaneDecision,
+        bring_to_front: bool = True,
+    ) -> Dict[str, Any]:
         self._ensure_proxy(target_port=decision.target_port)
         created = self._request_json("GET", "/new", params={"url": url})
         target_id = str(created.get("targetId") or "").strip()
         if not target_id:
             raise RuntimeError("browser automation 未能创建目标页面。")
-        try:
-            self._request_json("POST", "/bringToFront", params={"target": target_id})
-        except Exception:
-            pass
-        try:
-            self._request_json("POST", "/maximize", params={"target": target_id})
-        except Exception:
-            pass
+        if bring_to_front:
+            try:
+                self._request_json("POST", "/bringToFront", params={"target": target_id})
+            except Exception:
+                pass
+            try:
+                self._request_json("POST", "/maximize", params={"target": target_id})
+            except Exception:
+                pass
         return {
             "targetId": target_id,
             "family": decision.family,

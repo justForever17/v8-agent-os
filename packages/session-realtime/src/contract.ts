@@ -30,6 +30,7 @@ export type SessionRuntimeEventTarget =
   | "terminal"
   | "process"
   | "context"
+  | "workbench"
   | "history";
 
 export type SessionRuntimeEventSource = {
@@ -149,6 +150,9 @@ export type SessionRuntimeEventName =
   | "lane_updated"
   | "human_guidance"
   | "context_governance_changed"
+  | "workbench_document_opened"
+  | "workbench_document_updated"
+  | "workbench_document_unavailable"
   | "run_controlled"
   | "done"
   | "error";
@@ -313,6 +317,81 @@ export type McpAppViewRef = {
   };
   allowedFrameOrigins?: string[];
 };
+
+export type WorkbenchMode = "closed" | "split" | "focus";
+
+export type WorkbenchDocumentLifecycle = "session" | "runtime";
+
+export type WorkbenchDocumentStatus =
+  | "available"
+  | "loading"
+  | "ready"
+  | "unavailable";
+
+export type WorkbenchDocumentCapability =
+  | "read"
+  | "search"
+  | "copy"
+  | "download"
+  | "interact"
+  | "navigate"
+  | "control"
+  | "focus";
+
+type WorkbenchDocumentBase<
+  Kind extends string,
+  Renderer extends string,
+  SubjectRef extends Record<string, unknown>,
+> = {
+  kind: Kind;
+  documentId: string;
+  title: string;
+  renderer: Renderer;
+  lifecycle: WorkbenchDocumentLifecycle;
+  status: WorkbenchDocumentStatus;
+  capabilities: WorkbenchDocumentCapability[];
+  subjectRef: SubjectRef;
+  createdAt?: string;
+  updatedAt?: string;
+  unavailableReason?: string;
+};
+
+export type SessionOverviewWorkbenchDocumentRef = WorkbenchDocumentBase<
+  "session_overview",
+  "session_overview",
+  { sessionId: string }
+>;
+
+export type WorkspaceFileWorkbenchDocumentRef = WorkbenchDocumentBase<
+  "workspace_file",
+  "code" | "text" | "markdown" | "html" | "metadata",
+  { sessionId: string; workspacePath: string; line?: number }
+>;
+
+export type ArtifactWorkbenchDocumentRef = WorkbenchDocumentBase<
+  "artifact",
+  "image" | "video" | "audio" | "code" | "text" | "markdown" | "html" | "pdf" | "model_3d" | "download",
+  { artifactId: string; sessionId?: string }
+>;
+
+export type UiAppWorkbenchDocumentRef = WorkbenchDocumentBase<
+  "ui_app",
+  "mcp_app" | "figma_canvas",
+  { app: McpAppViewRef }
+>;
+
+export type BrowserWorkbenchDocumentRef = WorkbenchDocumentBase<
+  "browser",
+  "browser",
+  { browserSessionId: string; sessionId: string }
+>;
+
+export type WorkbenchDocumentRef =
+  | SessionOverviewWorkbenchDocumentRef
+  | WorkspaceFileWorkbenchDocumentRef
+  | ArtifactWorkbenchDocumentRef
+  | UiAppWorkbenchDocumentRef
+  | BrowserWorkbenchDocumentRef;
 
 export type SessionRealtimeStore = {
   snapshot: AuthoritativeSessionSnapshot | null;

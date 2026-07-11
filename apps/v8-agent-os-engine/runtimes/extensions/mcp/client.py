@@ -929,6 +929,10 @@ class MCPManager:
         initial_tool_result: Any = None,
         session_id: str | None = None,
         run_id: str | None = None,
+        plugin_id: str | None = None,
+        plugin_digest: str | None = None,
+        grant_id: str | None = None,
+        component_id: str | None = None,
     ) -> dict[str, Any]:
         seed = f"{server_name}:{tool_name}:{resource_uri}:{tool_invocation_id or uuid.uuid4().hex}"
         app_instance_id = f"mcpapp_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:24]}"
@@ -942,6 +946,10 @@ class MCPManager:
             "toolInvocationId": tool_invocation_id,
             "sessionId": str(session_id or "").strip(),
             "runId": str(run_id or "").strip(),
+            "pluginId": str(plugin_id or "").strip(),
+            "pluginDigest": str(plugin_digest or "").strip(),
+            "grantId": str(grant_id or "").strip(),
+            "componentId": str(component_id or "").strip(),
             "initialToolResult": to_jsonable(initial_tool_result),
             "initialToolResultRef": None,
             "uiMeta": tool_meta.get("uiMeta") or resource_meta.get("uiMeta") or {},
@@ -958,6 +966,15 @@ class MCPManager:
     def get_app_instance(self, app_instance_id: str) -> dict[str, Any] | None:
         instance = self._app_instances.get(str(app_instance_id or "").strip())
         return dict(instance) if instance else None
+
+    def update_app_instance(self, app_instance_id: str, **updates: Any) -> dict[str, Any] | None:
+        normalized_id = str(app_instance_id or "").strip()
+        instance = self._app_instances.get(normalized_id)
+        if not instance:
+            return None
+        next_instance = {**instance, **to_jsonable(updates), "updatedAt": self._now_iso()}
+        self._app_instances[normalized_id] = next_instance
+        return dict(next_instance)
 
     async def read_app_resource(self, *, server_name: str, uri: str) -> dict[str, Any]:
         normalized_server = str(server_name or "").strip()

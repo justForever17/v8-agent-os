@@ -17,3 +17,4 @@ export * from "./client-tool-surface.js";
 export * from "./collaboration-micro-stage.js";
 export * from "./message-bound-execution-node.js";
 export * from "./desktop-pet-events.js";
+export * from "./runtime-summary-policy.js";

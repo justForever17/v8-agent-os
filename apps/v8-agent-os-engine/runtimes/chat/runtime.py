@@ -8402,6 +8402,10 @@ class ChatRuntime:
             initial_tool_result=self._compact_tool_result_value(tool_name, output),
             session_id=chat_run.session_id,
             run_id=chat_run.active_run_id,
+            plugin_id=str((alias or {}).get("pluginId") or ""),
+            plugin_digest=str((alias or {}).get("pluginDigest") or ""),
+            grant_id=str((alias or {}).get("grantId") or ""),
+            component_id=str((alias or {}).get("componentId") or ""),
         )
         return {
             "appInstanceId": instance.get("appInstanceId"),
@@ -8413,6 +8417,9 @@ class ChatRuntime:
             "initialToolResultRef": instance.get("initialToolResultRef"),
             "csp": instance.get("csp") or {},
             "permissions": instance.get("permissions") or {},
+            "pluginId": instance.get("pluginId") or None,
+            "pluginDigest": instance.get("pluginDigest") or None,
+            "grantId": instance.get("grantId") or None,
             "status": instance.get("status") or "open",
         }
 
@@ -9134,6 +9141,31 @@ class ChatRuntime:
                 tool_invocation_id=str(tool_call_id or ""),
                 output=output,
             )
+            if mcp_app_payload:
+                try:
+                    from core.workbench_events import emit_workbench_document_event
+
+                    mcp_app_instance_id = str(mcp_app_payload.get("appInstanceId") or "").strip()
+                    emit_workbench_document_event(
+                        "workbench.document.opened",
+                        session_id=chat_run.session_id,
+                        run_id=chat_run.active_run_id,
+                        source_component="mcp_apps",
+                        focus_requested=False,
+                        user_initiated=False,
+                        document={
+                            "kind": "ui_app",
+                            "documentId": f"ui-app:{mcp_app_instance_id}",
+                            "title": str(mcp_app_payload.get("title") or name or "UI App"),
+                            "renderer": "figma_canvas" if mcp_app_payload.get("renderer") == "figma" else "mcp_app",
+                            "lifecycle": "runtime",
+                            "status": "available",
+                            "capabilities": ["interact", "focus"],
+                            "subjectRef": {"app": mcp_app_payload},
+                        },
+                    )
+                except Exception:
+                    logger.debug("Failed to persist Workbench UI App document", exc_info=True)
             tool_result_event = {
                 "type": "tool_result",
                 "tool": {

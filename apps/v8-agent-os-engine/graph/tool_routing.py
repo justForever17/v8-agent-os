@@ -941,6 +941,14 @@ def _supervisor_direct_scope_hard_block_message(
         )
 
     hard_reasons: list[str] = []
+    planning_fact_gathering_active = _planning_fact_gathering_active(state_mapping)
+    if planning_fact_gathering_active and not _spec_runtime_execution_allowed(state_mapping):
+        if tool_name == "web_broker":
+            hard_reasons.append("planning_fact_gathering_budget_exhausted")
+        elif tool_name == "run_system_command":
+            hard_reasons.append("planning_mutation_not_allowed")
+        else:
+            hard_reasons.append("planning_execution_not_allowed")
     boundary = _task_boundary_from_state(state_mapping)
     forbidden_routes = {
         str(item or "").strip()

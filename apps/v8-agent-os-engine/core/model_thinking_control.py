@@ -274,6 +274,28 @@ def reasoning_effort_request_patch(
     return {}
 
 
+def ensure_anthropic_thinking_budget_headroom(kwargs: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """Keep Anthropic output tokens above its explicit thinking budget."""
+
+    normalized = _as_dict(kwargs)
+    thinking = _as_dict(normalized.get("thinking"))
+    try:
+        budget_value = int(thinking.get("budget_tokens") or 0)
+    except (TypeError, ValueError):
+        budget_value = 0
+    if budget_value <= 0:
+        return normalized
+
+    current_max = normalized.get("max_tokens_to_sample") or normalized.get("max_tokens")
+    try:
+        current_max_value = int(current_max or 0)
+    except (TypeError, ValueError):
+        current_max_value = 0
+    if current_max_value <= budget_value:
+        normalized["max_tokens_to_sample"] = budget_value + 1024
+    return normalized
+
+
 def merge_model_request_patch(kwargs: Dict[str, Any], patch: Mapping[str, Any] | None) -> Dict[str, Any]:
     merged = dict(kwargs)
     for key, value in _as_dict(patch).items():

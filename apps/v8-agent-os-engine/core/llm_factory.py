@@ -35,6 +35,7 @@ from core.model_budget_service import model_budget_service
 from core.model_control_plane import model_control_plane, normalize_config_temperature
 from core.model_telemetry import model_telemetry_service
 from core.model_thinking_control import (
+    ensure_anthropic_thinking_budget_headroom,
     merge_model_request_patch,
     no_think_request_patch,
     reasoning_effort_request_patch,
@@ -1013,23 +1014,7 @@ class LLMFactory:
                 meta.get("request_reasoning_effort"),
             ),
         )
-        thinking = final_kwargs.get("thinking")
-        if isinstance(thinking, dict):
-            budget_tokens = thinking.get("budget_tokens")
-            try:
-                budget_value = int(budget_tokens or 0)
-            except (TypeError, ValueError):
-                budget_value = 0
-            if budget_value > 0:
-                current_max = final_kwargs.get("max_tokens_to_sample") or final_kwargs.get("max_tokens")
-                try:
-                    current_max_value = int(current_max or 0)
-                except (TypeError, ValueError):
-                    current_max_value = 0
-                if current_max_value <= budget_value:
-                    final_kwargs["max_tokens_to_sample"] = budget_value + 1024
-
-        return final_kwargs
+        return ensure_anthropic_thinking_budget_headroom(final_kwargs)
 
     @classmethod
     def _build_gemini_kwargs(cls, model_id: str, meta: Dict[str, Any], **kwargs) -> Dict[str, Any]:

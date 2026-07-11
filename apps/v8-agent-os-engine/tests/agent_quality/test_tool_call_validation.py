@@ -45,7 +45,7 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         self._native_tools_patch.stop()
 
-    async def test_direct_replace_tool_is_forced_to_runtime_route(self) -> None:
+    async def test_direct_replace_tool_remains_supervisor_available_outside_planning(self) -> None:
         request = _DummyRequest(
             "replace_native_file",
             "tool_call_write",
@@ -54,19 +54,15 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
         )
 
         async def execute(_request):
-            raise AssertionError("direct mutation should be blocked before execution")
+            return ToolMessage(content="replaced focused file", name="replace_native_file", tool_call_id="tool_call_write")
 
         result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 
         self.assertIsInstance(result, ToolMessage)
-        self.assertEqual(getattr(result, "status", None), "error")
-        self.assertIn("[route required]", str(result.content))
-        self.assertEqual(result.additional_kwargs["allowedNextTools"], ["runtime_broker"])
-        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "runtime_broker(mode='route')")
-        self.assertEqual(result.additional_kwargs["routeIntent"]["kind"], "engineering")
-        self.assertEqual(result.additional_kwargs["routeIntent"]["inputs"]["workspacePath"], r"E:\Projects\test7")
+        self.assertIn("replaced focused file", str(result.content))
+        self.assertNotIn("[route required]", str(result.content))
 
-    async def test_direct_mutating_tool_enqueues_episode_when_runtime_context_exists(self) -> None:
+    async def test_direct_mutating_tool_does_not_enqueue_without_a_hard_gate(self) -> None:
         request = _DummyRequest(
             "run_system_command",
             "tool_call_cmd",
@@ -75,19 +71,15 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
         )
 
         async def execute(_request):
-            raise AssertionError("direct command should be blocked before execution")
+            return ToolMessage(content="build completed", name="run_system_command", tool_call_id="tool_call_cmd")
 
         with bind_runtime_context(run_id="run_agent_quality_gate", session_id="session_agent_quality_gate"):
             with patch("graph.tool_routing._enqueue_route_intent_episode") as enqueue_episode:
-                enqueue_episode.return_value = {"episodeId": "episode_agent_quality_gate", "state": "queued"}
                 result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
 
-        self.assertEqual(result.additional_kwargs["recommendedNextAction"], "wait_episode")
-        self.assertEqual(result.additional_kwargs["queuedEpisodeId"], "episode_agent_quality_gate")
-        self.assertTrue(result.additional_kwargs["hasActiveRuntimeEpisode"])
-        enqueue_episode.assert_called_once()
-        self.assertEqual(enqueue_episode.call_args.kwargs["run_id"], "run_agent_quality_gate")
-        self.assertEqual(enqueue_episode.call_args.kwargs["session_id"], "session_agent_quality_gate")
+        self.assertIn("build completed", str(result.content))
+        self.assertNotIn("[route required]", str(result.content))
+        enqueue_episode.assert_not_called()
 
     async def test_planning_mode_allows_bounded_readonly_command_fact_gathering(self) -> None:
         request = _DummyRequest(
@@ -183,7 +175,23 @@ def test_runtime_broker_route_accepts_json_need_and_returns_waitable_episode() -
             {
                 "tool": "write_native_file",
                 "reason": "blocked direct implementation",
-                "inputs": {"workspacePath": r"E:\Projects\test7"},
+                "inputs": {
+                    "workspacePath": r"E:\Projects\test7",
+                    "taskBriefs": [
+                        {
+                            "taskBriefId": "task-agent-quality-route",
+                            "title": "Apply a focused application patch",
+                            "goal": "Update src/App.tsx with the requested behavior.",
+                            "context": {"source": "current_supervisor_turn"},
+                            "expectedOutput": "src/App.tsx",
+                            "expectedArtifacts": ["src/App.tsx"],
+                            "writeSet": ["src/App.tsx"],
+                            "acceptance": "The requested behavior is present and the focused checks pass.",
+                            "constraints": ["Write only src/App.tsx."],
+                            "detailRefs": ["conversation://current-turn"],
+                        }
+                    ],
+                },
             }
         ),
         state={"current_route_context": {}},
@@ -197,7 +205,7 @@ def test_runtime_broker_route_accepts_json_need_and_returns_waitable_episode() -
     assert payload["nextAction"] == "wait_episode"
     assert episode["state"] == "queued"
     assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
-    assert episode["inputs"]["tasks"], "route must synthesize an executable task instead of an empty episode"
+    assert episode["inputs"]["tasks"][0]["taskBriefId"] == "task-agent-quality-route"
 
 
 def test_delegation_dispatch_without_tasks_is_single_diagnostic_not_fake_swarm() -> None:

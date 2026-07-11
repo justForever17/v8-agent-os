@@ -182,6 +182,9 @@ function summarizeGovernanceNode(node: UiGovernanceNode): string | null {
     if (node.governanceType === "lane_updated") {
         return node.reason || "运行调度状态已更新";
     }
+    if (node.governanceType === "session_coordination") {
+        return node.question || node.reason || "跨任务协调状态已更新";
+    }
     return node.reason || node.status || node.topic || "运行控制已更新";
 }
 
@@ -303,6 +306,7 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
         if (topic.startsWith("safety.")) return "safety_blocked" as const;
         if (topic.startsWith("context.") || topic.startsWith("supervisor.graph.")) return "context_governance" as const;
         if (topic.startsWith("run.lane.")) return "lane_updated" as const;
+        if (topic.startsWith("session_coordination.")) return "session_coordination" as const;
         return "run_controlled" as const;
     })();
     if (entry.kind === "governance") {

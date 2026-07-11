@@ -84,7 +84,8 @@ export interface UiGovernanceNode extends UiTimelineNodeBase {
         | 'safety_blocked'
         | 'context_governance'
         | 'lane_updated'
-        | 'human_guidance';
+        | 'human_guidance'
+        | 'session_coordination';
     
     // Approval
     approvalId?: string;

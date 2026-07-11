@@ -134,6 +134,48 @@ export type ContextReferenceItem = {
   resourceRef?: AdminResourceRef | null;
 };
 
+export type SessionCoordinationIntent = "inform" | "correct" | "request";
+
+export type SessionCoordinationReplyStatus =
+  | "acknowledged"
+  | "accepted"
+  | "conflict"
+  | "blocked"
+  | "completed";
+
+export type SessionCoordinationState =
+  | "awaiting_authorization"
+  | "queued"
+  | "promoted"
+  | "injected"
+  | "replied"
+  | "cancelled"
+  | "blocked"
+  | "failed"
+  | "expired";
+
+export type SessionCoordinationMessageRef = {
+  messageId: string;
+  threadId: string;
+  messageType: "request" | "reply";
+  sourceSessionId: string;
+  targetSessionId: string;
+  intent: SessionCoordinationIntent;
+  authority: "current_user_explicit" | "ask_user_approved" | "bounded_reply";
+  state: SessionCoordinationState;
+  summary: string;
+  replyStatus?: SessionCoordinationReplyStatus;
+  replyToMessageId?: string;
+  hopCount: 1 | 2;
+  maxHops: 2;
+  detailRef: string;
+  evidenceRefs?: string[];
+  direction?: "incoming" | "outgoing";
+  createdAt: string;
+  updatedAt: string;
+  errorCode?: string;
+};
+
 export type SessionRuntimeEventName =
   | "agent_start"
   | "text_chunk"
@@ -149,6 +191,7 @@ export type SessionRuntimeEventName =
   | "safety_blocked"
   | "lane_updated"
   | "human_guidance"
+  | "session_coordination"
   | "context_governance_changed"
   | "workbench_document_opened"
   | "workbench_document_updated"
@@ -205,6 +248,7 @@ export type AuthoritativeSessionSnapshot = {
   contextReferences?: ContextReferenceItem[];
   contextGovernance?: Record<string, unknown> | null;
   contextGovernanceHistory?: Record<string, unknown>[];
+  sessionCoordinationMessages?: SessionCoordinationMessageRef[];
   todos?: ActiveRunScopedTodos | null;
   workflowProjection?: Record<string, unknown> | null;
   projection?: Record<string, unknown> | null;

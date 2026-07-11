@@ -51,6 +51,63 @@ function extractSafetyEventSummary(value: unknown): Record<string, unknown> | un
     return nested || undefined;
 }
 
+function SessionCoordinationCard({ node }: { node: Extract<UiTimelineNode, { kind: 'governance' }> }) {
+    const t = useT();
+    const info = tryParseJsonRecord(node.requestInfo) || {};
+    const direction = String(info.direction || node.reason || "incoming").trim().toLowerCase();
+    const incoming = direction !== "outgoing";
+    const status = String(info.state || node.status || "queued").trim().toLowerCase();
+    const statusLabel = t(`web.sessionCoordination.status.${status}`);
+    const intent = String(info.intent || "inform").trim().toLowerCase();
+    const sessionLabel = String(
+        incoming
+            ? info.sourceSessionTitle || info.sourceSessionId || ""
+            : info.targetSessionTitle || info.targetSessionId || "",
+    ).trim();
+    const body = String(node.question || info.summary || node.topic || "").trim();
+    const replyStatus = String(info.replyStatus || "").trim().toLowerCase();
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.18, ease: 'easeOut' }}
+            className={`my-2 w-full max-w-[42rem] rounded-2xl border px-4 py-3 shadow-sm ${
+                incoming
+                    ? 'mr-auto border-cyan-500/20 bg-cyan-500/[0.055]'
+                    : 'ml-auto border-primary/25 bg-primary/[0.07]'
+            }`}
+        >
+            <div className="flex items-center gap-2 text-xs">
+                <span className={`h-2 w-2 shrink-0 rounded-full ${incoming ? 'bg-cyan-400' : 'bg-primary'}`} />
+                <span className="font-semibold text-foreground">
+                    {t(incoming ? 'web.sessionCoordination.incoming' : 'web.sessionCoordination.outgoing')}
+                </span>
+                <span className="rounded-full border border-border/70 bg-background/65 px-2 py-0.5 text-[10px] text-muted-foreground">
+                    {t(`web.sessionCoordination.intent.${intent}`)}
+                </span>
+                <span className="rounded-full border border-border/70 bg-background/65 px-2 py-0.5 text-[10px] text-muted-foreground">
+                    {statusLabel}
+                </span>
+            </div>
+            {sessionLabel ? (
+                <div className="mt-1 truncate text-[11px] text-muted-foreground" title={sessionLabel}>
+                    {sessionLabel}
+                </div>
+            ) : null}
+            {body ? (
+                <div className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">
+                    {body}
+                </div>
+            ) : null}
+            {replyStatus ? (
+                <div className="mt-2 text-[11px] text-muted-foreground">
+                    {t('web.sessionCoordination.reply')}: {t(`web.sessionCoordination.replyStatus.${replyStatus}`)}
+                </div>
+            ) : null}
+        </motion.div>
+    );
+}
+
 function compactToolResult(toolName: string, value: unknown) {
     if (toolName !== 'download_media_for_vision') {
         return value;
@@ -351,6 +408,9 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
             const eventSummary = extractSafetyEventSummary(node.requestInfo);
             if (node.governanceType === "ask_user") {
                 return null;
+            }
+            if (node.governanceType === "session_coordination") {
+                return <SessionCoordinationCard node={node} />;
             }
             if (node.governanceType === "context_governance") {
                 if (!isNoticeableContextGovernance(node.requestInfo)) {

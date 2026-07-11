@@ -249,6 +249,85 @@ function HumanGuidanceInlineCard({
     );
 }
 
+function SessionCoordinationInlineCard({
+    node,
+}: {
+    node: Extract<PhoneUiTimelineNode, { kind: "governance" }>;
+}) {
+    const { colors, t } = useUiPrefs();
+    const [expanded, setExpanded] = useState(false);
+    const info = asRecord(node.requestInfo);
+    const direction = String(info.direction || node.reason || "incoming").trim().toLowerCase();
+    const incoming = direction !== "outgoing";
+    const status = String(info.state || node.status || "queued").trim().toLowerCase();
+    const intent = String(info.intent || "inform").trim().toLowerCase();
+    const task = String(
+        incoming
+            ? info.sourceSessionTitle || info.sourceSessionId || ""
+            : info.targetSessionTitle || info.targetSessionId || "",
+    ).trim();
+    const body = String(node.question || info.summary || node.topic || "").trim();
+    const replyStatus = String(info.replyStatus || "").trim().toLowerCase();
+    return (
+        <View
+            style={[
+                styles.sessionCoordinationCard,
+                {
+                    backgroundColor: incoming ? colors.surfaceStrong : colors.primarySoft,
+                    borderColor: incoming ? colors.border : colors.primary,
+                },
+            ]}
+        >
+            <Pressable
+                style={styles.sessionCoordinationHeader}
+                onPress={() => setExpanded((value) => !value)}
+                accessibilityRole="button"
+            >
+                <MaterialCommunityIcons
+                    name={incoming ? "message-arrow-left-outline" : "message-arrow-right-outline"}
+                    size={16}
+                    color={incoming ? colors.accent : colors.primary}
+                />
+                <View style={styles.sessionCoordinationHeading}>
+                    <Text style={[styles.sessionCoordinationTitle, { color: colors.text }]} numberOfLines={1}>
+                        {t(incoming
+                            ? "src.components.chat.messageblockitem.session_coordination_incoming"
+                            : "src.components.chat.messageblockitem.session_coordination_outgoing")}
+                    </Text>
+                    {task ? (
+                        <Text style={[styles.sessionCoordinationTask, { color: colors.textMuted }]} numberOfLines={1}>
+                            {task}
+                        </Text>
+                    ) : null}
+                </View>
+                <View style={[styles.sessionCoordinationStatus, { backgroundColor: colors.surface }]}>
+                    <Text style={[styles.sessionCoordinationStatusText, { color: colors.textMuted }]}>
+                        {t(`src.components.chat.messageblockitem.session_coordination_intent_${intent}`)} · {t(`src.components.chat.messageblockitem.session_coordination_status_${status}`)}
+                    </Text>
+                </View>
+                <MaterialCommunityIcons
+                    name={expanded ? "chevron-up" : "chevron-down"}
+                    size={16}
+                    color={colors.textMuted}
+                />
+            </Pressable>
+            {body ? (
+                <Text
+                    style={[styles.sessionCoordinationBody, { color: colors.text }]}
+                    numberOfLines={expanded ? undefined : 3}
+                >
+                    {body}
+                </Text>
+            ) : null}
+            {replyStatus ? (
+                <Text style={[styles.sessionCoordinationReply, { color: colors.textMuted }]}>
+                    {t("src.components.chat.messageblockitem.session_coordination_reply")}: {t(`src.components.chat.messageblockitem.session_coordination_reply_${replyStatus}`)}
+                </Text>
+            ) : null}
+        </View>
+    );
+}
+
 function artifactDisplayTitle(artifact: Record<string, unknown>) {
     return String(
         artifact.displayLabel
@@ -504,6 +583,9 @@ export const MessageBlockItem = memo(function MessageBlockItem({
                     content={String(node.question || node.reason || node.topic || node.status || "").trim()}
                 />
             );
+        }
+        if (node.governanceType === "session_coordination") {
+            return <SessionCoordinationInlineCard node={node} />;
         }
         const title = node.governanceType === "safety_blocked"
             ? t("src.components.chat.messageblockitem.safety_blocked")
@@ -847,5 +929,49 @@ const styles = StyleSheet.create({
     humanGuidanceBody: {
         borderTopWidth: StyleSheet.hairlineWidth,
         paddingTop: 7,
+    },
+    sessionCoordinationCard: {
+        width: "100%",
+        borderRadius: radii.lg,
+        borderWidth: StyleSheet.hairlineWidth,
+        paddingHorizontal: spacing.sm,
+        paddingVertical: spacing.sm,
+        gap: 7,
+    },
+    sessionCoordinationHeader: {
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+    },
+    sessionCoordinationHeading: {
+        flex: 1,
+        gap: 1,
+    },
+    sessionCoordinationTitle: {
+        fontSize: 12,
+        lineHeight: 17,
+        fontWeight: "800",
+    },
+    sessionCoordinationTask: {
+        fontSize: 10,
+        lineHeight: 14,
+    },
+    sessionCoordinationStatus: {
+        borderRadius: 999,
+        paddingHorizontal: 7,
+        paddingVertical: 3,
+    },
+    sessionCoordinationStatusText: {
+        fontSize: 9,
+        lineHeight: 12,
+        fontWeight: "700",
+    },
+    sessionCoordinationBody: {
+        fontSize: 13,
+        lineHeight: 20,
+    },
+    sessionCoordinationReply: {
+        fontSize: 10,
+        lineHeight: 14,
     },
 });

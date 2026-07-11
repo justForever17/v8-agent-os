@@ -135,6 +135,11 @@ export async function GET(
                 : Array.isArray(snapshotData.contextGovernanceHistory)
                     ? snapshotData.contextGovernanceHistory
                     : [],
+            sessionCoordinationMessages: Array.isArray(historyRecord.sessionCoordinationMessages)
+                ? historyRecord.sessionCoordinationMessages
+                : Array.isArray(snapshotData.sessionCoordinationMessages)
+                    ? snapshotData.sessionCoordinationMessages
+                    : [],
             projection: projectionData,
             _profile: {
                 snapshot: snapshotData._profile,

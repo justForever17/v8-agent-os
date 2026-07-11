@@ -3956,6 +3956,7 @@ export default function ChatScreen() {
                 || normalized.name === "ask_user"
                 || normalized.name === "approval_requested"
                 || normalized.name === "human_guidance"
+                || normalized.name === "session_coordination"
                 || normalized.name === "artifact_recorded";
             queueRuntimeMessageEvent(normalized, shouldFlushImmediately);
         }

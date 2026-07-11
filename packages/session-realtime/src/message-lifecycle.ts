@@ -115,7 +115,7 @@ export type SessionStreamExecutionNode = {
 export type SessionStreamGovernanceNode = {
   id: string;
   kind: "governance";
-  governanceType: "ask_user" | "approval_request" | "approval_resolved" | "run_controlled" | "safety_blocked" | "context_governance" | "lane_updated" | "human_guidance";
+  governanceType: "ask_user" | "approval_request" | "approval_resolved" | "run_controlled" | "safety_blocked" | "context_governance" | "lane_updated" | "human_guidance" | "session_coordination";
   timestamp: number;
   agentName?: string;
   agentAvatar?: string;
@@ -1444,6 +1444,36 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
         clientMessageId: queueMessage.clientMessageId,
         state: queueMessage.state || eventData.state,
       },
+      timestamp: Date.now(),
+      ...nextActiveAgentProfile,
+      ...ownerFields,
+    });
+  } else if (event.type === "custom_event" && event.name === "session_coordination") {
+    const eventData = asRecord(event.data);
+    const targets = Array.isArray(event.targets) ? event.targets : [];
+    if (!targets.includes("message") && eventDisplayInMessage(event) !== true) {
+      return {
+        currentAiMsg: nextCurrentAiMsg,
+        activeAgentProfile: nextActiveAgentProfile,
+      };
+    }
+    const current = ensureCurrent();
+    current.uiStreamPhase = current.content ? "streaming" : "agent_started";
+    const content = String(eventData.summary || event.content || "").trim();
+    const nodeId = event.node_id || String(eventData.node_id || "").trim() || nextId("node", options?.createId);
+    upsertTimelineNode(current, {
+      id: nodeId,
+      kind: "governance",
+      governanceType: "session_coordination",
+      topic: typeof eventData.topic === "string" ? eventData.topic : "session_coordination.queued",
+      status: typeof eventData.state === "string"
+        ? eventData.state
+        : typeof eventData.status === "string"
+          ? eventData.status
+          : "queued",
+      reason: typeof eventData.direction === "string" ? eventData.direction : "incoming",
+      question: content,
+      requestInfo: eventData,
       timestamp: Date.now(),
       ...nextActiveAgentProfile,
       ...ownerFields,

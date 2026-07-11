@@ -520,6 +520,9 @@ function resolveTypedEventRuntimeId(type: string, name: string, payload: JsonRec
   if (name === "human_guidance") {
     return "chat";
   }
+  if (name === "session_coordination") {
+    return "chat";
+  }
   return null;
 }
 
@@ -563,6 +566,9 @@ function resolveTypedEventTargets(type: string, name: string): SessionRuntimeEve
   }
   if (name === "human_guidance") {
     return ["runtime_card", "hud"];
+  }
+  if (name === "session_coordination") {
+    return ["message", "runtime_card", "history"];
   }
   if (name === "safety_blocked") {
     return ["runtime_card", "hud"];

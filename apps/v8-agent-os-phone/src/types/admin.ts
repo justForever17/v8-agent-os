@@ -293,7 +293,8 @@ export type PhoneUiGovernanceNode = PhoneUiTimelineNodeBase & {
         | "safety_blocked"
         | "context_governance"
         | "lane_updated"
-        | "human_guidance";
+        | "human_guidance"
+        | "session_coordination";
     approvalId?: string;
     approvalKind?: string;
     interactionKind?: string;
@@ -548,6 +549,7 @@ export type ConversationDetail = {
     runtimeTimeline?: Record<string, unknown>[];
     contextGovernance?: Record<string, unknown> | null;
     contextGovernanceHistory?: Record<string, unknown>[];
+    sessionCoordinationMessages?: Array<Record<string, unknown>>;
     contextReferences?: ContextReferenceItem[];
     artifacts?: ArtifactDetail[];
     projection?: RealtimeSessionSnapshot & Record<string, unknown>;

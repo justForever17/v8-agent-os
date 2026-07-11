@@ -221,6 +221,9 @@ function summarizeGovernanceNode(node: PhoneUiGovernanceNode, locale: LocaleCode
     if (node.governanceType === "lane_updated") {
         return node.reason || t("src.lib.runtime_stage.runtime_scheduling_updated");
     }
+    if (node.governanceType === "session_coordination") {
+        return node.question || node.reason || t("src.components.chat.messageblockitem.session_coordination_updated");
+    }
     return node.reason || node.status || node.topic || t("src.lib.runtime_stage.runtime_control_updated");
 }
 
@@ -325,6 +328,7 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
         if (topic.startsWith("safety.")) return "safety_blocked" as const;
         if (topic.startsWith("context.") || topic.startsWith("supervisor.graph.")) return "context_governance" as const;
         if (topic.startsWith("run.lane.")) return "lane_updated" as const;
+        if (topic.startsWith("session_coordination.")) return "session_coordination" as const;
         return "run_controlled" as const;
     })();
     if (entry.kind === "governance") {

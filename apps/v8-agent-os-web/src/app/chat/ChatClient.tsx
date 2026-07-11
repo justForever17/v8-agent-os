@@ -2405,6 +2405,9 @@ export default function ChatClient() {
         const isHumanGuidanceEvent =
             normalizedEvent.name === "human_guidance"
             || String(normalizedEvent.topic || "").startsWith("human_guidance.");
+        const isSessionCoordinationEvent =
+            normalizedEvent.name === "session_coordination"
+            || String(normalizedEvent.topic || "").startsWith("session_coordination.");
 
         const localStreamActive = isLocalStreamActive(conversationId);
         if (
@@ -2412,6 +2415,7 @@ export default function ChatClient() {
             && !runtimeTimelineEntry
             && !(normalizedEvent.type === "custom_event" && normalizedEvent.name === "artifact_recorded")
             && !isHumanGuidanceEvent
+            && !isSessionCoordinationEvent
         ) {
             return;
         }

@@ -88,7 +88,11 @@ def job_summary(job: Any) -> dict[str, Any]:
             "error": preview_text(job.get("error"), limit=140),
             "createdAt": job.get("createdAt"),
             "completedAt": job.get("completedAt"),
-            "detailTool": f"creative_media_get_job(job_id='{job.get('jobId')}')" if job.get("jobId") else None,
+            "detailTool": (
+                f"creative_media_jobs(action='get', request={{'jobId': '{job.get('jobId')}'}})"
+                if job.get("jobId")
+                else None
+            ),
         }
     )
 

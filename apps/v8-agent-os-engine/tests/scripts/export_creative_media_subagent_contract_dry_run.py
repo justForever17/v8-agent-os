@@ -33,15 +33,14 @@ if "chromadb" not in sys.modules:
 
 
 from core.agents import default_subagent_configs  # noqa: E402
-from core.tools.native.creative_media import (  # noqa: E402
-    creative_media_create_job,
-    creative_media_get_job,
-    creative_media_job_artifacts,
-    creative_media_production_pack,
-    creative_media_qa_check,
-    creative_media_rank_models,
-    creative_media_reference_media_brief,
-    creative_media_sample_approval_packet,
+from core.tools.native.creative_media_facade import (  # noqa: E402
+    creative_media_action_contract,
+    creative_media_assets,
+    creative_media_capabilities,
+    creative_media_edit,
+    creative_media_jobs,
+    creative_media_plan,
+    creative_media_quality,
 )
 from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context  # noqa: E402
 
@@ -107,15 +106,14 @@ def _creative_agent_prompt() -> str:
 def build_matrix() -> dict[str, Any]:
     prompt = _creative_agent_prompt()
     tool_descriptions = {
-        "creative_media_create_job": creative_media_create_job.description,
-        "creative_media_get_job": creative_media_get_job.description,
-        "creative_media_job_artifacts": creative_media_job_artifacts.description,
-        "creative_media_production_pack": creative_media_production_pack.description,
-        "creative_media_rank_models": creative_media_rank_models.description,
-        "creative_media_reference_media_brief": creative_media_reference_media_brief.description,
-        "creative_media_sample_approval_packet": creative_media_sample_approval_packet.description,
-        "creative_media_qa_check": creative_media_qa_check.description,
+        "creative_media_capabilities": creative_media_capabilities.description,
+        "creative_media_plan": creative_media_plan.description,
+        "creative_media_assets": creative_media_assets.description,
+        "creative_media_jobs": creative_media_jobs.description,
+        "creative_media_edit": creative_media_edit.description,
+        "creative_media_quality": creative_media_quality.description,
     }
+    action_contract = creative_media_action_contract()
     joined_tool_descriptions = "\n".join(str(value or "") for value in tool_descriptions.values())
     validations = {
         "prompt_has_stable_worker_identity": _contains_all(
@@ -124,7 +122,7 @@ def build_matrix() -> dict[str, Any]:
         ),
         "prompt_teaches_creative_media_job_flow": _contains_all(
             prompt,
-            ["creative_media_create_job", "creative_media_get_job", "creative_media_job_artifacts"],
+            ["creative_media_jobs", "action='create'", "action='get'", "action='artifacts'"],
         ),
         "prompt_preserves_music_and_3d_operations": _contains_all(
             prompt,
@@ -149,30 +147,27 @@ def build_matrix() -> dict[str, Any]:
         ),
         "prompt_explains_sample_approval_and_qa": _contains_all(
             prompt,
-            ["creative_media_sample_approval_packet", "ask_user", "creative_media_qa_check"],
+            ["action='sample_approval'", "ask_user", "action='qa_check'"],
         ),
         "prompt_explains_reference_preflight_and_selector": _contains_all(
             prompt,
-            ["creative_media_reference_media_brief", "creative_media_rank_models", "clean Markdown"],
+            ["action='reference_brief'", "action='rank_models'", "clean Markdown"],
         ),
-        "tool_descriptions_explain_operation_parameters": _contains_all(
-            joined_tool_descriptions,
-            ["request.modality", "request.operationKind", "music.generate", "music.cover", "model3d.generate"],
+        "facade_registry_declares_operation_parameters": _contains_all(
+            json.dumps(action_contract, ensure_ascii=False),
+            ["modality", "operationKind", "providerAdapterId", "plugin_grant_required"],
         ),
-        "tool_descriptions_explain_poll_and_artifacts": _contains_all(
+        "tool_descriptions_explain_facade_discovery_and_jobs": _contains_all(
             joined_tool_descriptions,
-            ["creative_media_get_job", "creative_media_job_artifacts", "artifact IDs"],
+            ["action='describe'", "provider-backed", "six-facade"],
         ),
-        "tool_descriptions_explain_pack_approval_and_qa": _contains_all(
-            joined_tool_descriptions,
-            [
-                "CreativeMediaProductionPack",
-                "final handoff checklist",
-                "ask_user",
-                "ProductionPack.sampleApproval",
-                "file existence",
-                "selector surface",
-            ],
+        "action_registry_exposes_pack_approval_and_qa": all(
+            action in action_contract[facade]
+            for facade, action in (
+                ("plan", "production_pack"),
+                ("plan", "sample_approval"),
+                ("quality", "qa_check"),
+            )
         ),
     }
     return {
@@ -181,6 +176,7 @@ def build_matrix() -> dict[str, Any]:
         "passed": all(validations.values()),
         "agentPrompt": prompt,
         "toolDescriptions": tool_descriptions,
+        "actionContract": action_contract,
     }
 
 

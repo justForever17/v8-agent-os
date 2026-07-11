@@ -92,18 +92,21 @@ const DEFAULT_OPERATION_ROWS: CreativeOperationRow[] = [
     { operationKind: "music.brief", modality: "music", priority: 5 },
     { operationKind: "music.cover", modality: "music", priority: 100 },
     { operationKind: "music.generate", modality: "music", priority: 100 },
-    { operationKind: "video.action_transfer", modality: "video", priority: 100 },
-    { operationKind: "video.avatar", modality: "video", priority: 100 },
     { operationKind: "video.first_last_frame", modality: "video", priority: 100 },
     { operationKind: "video.image_to_video", modality: "video", priority: 100 },
-    { operationKind: "video.lipsync", modality: "video", priority: 100 },
     { operationKind: "video.reference_to_video", modality: "video", priority: 100 },
-    { operationKind: "video.replacement", modality: "video", priority: 100 },
-    { operationKind: "video.style_repaint", modality: "video", priority: 100 },
     { operationKind: "video.text_to_video", modality: "video", priority: 100 },
-    { operationKind: "video.video_edit", modality: "video", priority: 100 },
     { operationKind: "voice.tts", modality: "voice", priority: 100 },
 ];
+
+const PLUGIN_ONLY_OPERATION_KINDS = new Set([
+    "video.action_transfer",
+    "video.avatar",
+    "video.lipsync",
+    "video.replacement",
+    "video.style_repaint",
+    "video.video_edit",
+]);
 
 function mergeOperationRows(rows?: CreativeOperationRow[]) {
     const byOperation = new Map<string, CreativeOperationRow>();
@@ -112,7 +115,7 @@ function mergeOperationRows(rows?: CreativeOperationRow[]) {
     }
     for (const row of rows || []) {
         const key = String(row.operationKind || "").trim();
-        if (!key) continue;
+        if (!key || PLUGIN_ONLY_OPERATION_KINDS.has(key)) continue;
         byOperation.set(key, {
             ...(byOperation.get(key) || {}),
             ...row,

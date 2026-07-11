@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -76,6 +78,24 @@ DEFAULT_OPERATION_KINDS = {
     "music": ["music.generate", "music.brief"],
     "model3d": ["model3d.generate"],
 }
+
+_PROVIDER_CREDENTIAL_OVERRIDES: ContextVar[dict[str, str]] = ContextVar(
+    "creative_media_provider_credential_overrides",
+    default={},
+)
+
+
+@contextmanager
+def bind_creative_provider_credentials(values: dict[str, str] | None):
+    """Bind Engine-internal provider credentials to one async execution context."""
+
+    token = _PROVIDER_CREDENTIAL_OVERRIDES.set(
+        {str(key): str(value) for key, value in dict(values or {}).items() if str(value)}
+    )
+    try:
+        yield
+    finally:
+        _PROVIDER_CREDENTIAL_OVERRIDES.reset(token)
 EXECUTABLE_OPERATION_KINDS = {
     "image.generate",
     "image.edit",
@@ -83,12 +103,6 @@ EXECUTABLE_OPERATION_KINDS = {
     "video.image_to_video",
     "video.first_last_frame",
     "video.reference_to_video",
-    "video.video_edit",
-    "video.style_repaint",
-    "video.lipsync",
-    "video.avatar",
-    "video.action_transfer",
-    "video.replacement",
     "voice.tts",
     "voice.design",
     "music.generate",
@@ -100,12 +114,6 @@ DASHSCOPE_VIDEO_OPERATION_KINDS = {
     "video.image_to_video",
     "video.first_last_frame",
     "video.reference_to_video",
-    "video.video_edit",
-    "video.style_repaint",
-    "video.lipsync",
-    "video.avatar",
-    "video.action_transfer",
-    "video.replacement",
 }
 DASHSCOPE_BUILTIN_MODELS = {
     "image.generate": ["qwen-image-2.0-pro", "qwen-image-2.0", "wan2.7-image-pro"],
@@ -114,12 +122,14 @@ DASHSCOPE_BUILTIN_MODELS = {
     "video.image_to_video": ["wan2.7-i2v", "wan2.7-i2v-2026-04-25"],
     "video.first_last_frame": ["wan2.7-i2v", "wan2.7-i2v-2026-04-25"],
     "video.reference_to_video": ["wan2.7-r2v"],
-    "video.video_edit": ["wan2.7-videoedit"],
-    "video.style_repaint": ["wan2.7-videoedit"],
-    "video.lipsync": ["wan2.2-s2v", "videoretalk"],
-    "video.avatar": ["wan2.2-s2v"],
-    "video.action_transfer": ["wan2.2-animate-move"],
-    "video.replacement": ["wan2.2-animate-mix", "wan2.7-videoedit"],
+}
+PLUGIN_ONLY_OPERATION_KINDS = {
+    "video.action_transfer",
+    "video.lipsync",
+    "video.avatar",
+    "video.replacement",
+    "video.style_repaint",
+    "video.video_edit",
 }
 POLICY_REJECT_MARKERS = (
     "IPInfringementSuspect",
@@ -195,7 +205,7 @@ def _all_operation_kinds() -> list[str]:
     for items in DEFAULT_OPERATION_KINDS.values():
         values.update(items)
     values.update(DASHSCOPE_BUILTIN_MODELS.keys())
-    return sorted(values)
+    return sorted(values - PLUGIN_ONLY_OPERATION_KINDS)
 
 
 def _model_identifier_variants(value: Any) -> set[str]:
@@ -213,7 +223,7 @@ def _normalize_operation_kinds_for_modality(modality: str, operations: Iterable[
     filtered: list[str] = []
     for operation in operations:
         item = str(operation or "").strip()
-        if item and (item.startswith(f"{modality}.") or (modality == "voice" and item.startswith("voice."))):
+        if item and item not in PLUGIN_ONLY_OPERATION_KINDS and (item.startswith(f"{modality}.") or (modality == "voice" and item.startswith("voice."))):
             filtered.append(item)
     if modality == "image":
         filtered = [*filtered, "image.generate", "image.edit"]
@@ -242,7 +252,11 @@ def _registry_operation_kinds_for_model(*, provider_id: str, model_id: str, moda
             for value in list(item.get("operationKinds") or [])
             if str(value or "").strip()
         ]
-        return _normalize_operation_kinds_for_modality(modality, operations)
+        return [
+            item
+            for item in _normalize_operation_kinds_for_modality(modality, operations)
+            if item not in PLUGIN_ONLY_OPERATION_KINDS
+        ]
     return []
 
 
@@ -381,28 +395,38 @@ class CreativeMediaRuntime:
     kind = "creative_media"
 
     def runtime_descriptor(self) -> dict[str, Any]:
+        try:
+            from runtimes.plugin_manager.service import plugin_manager_service
+
+            plugin_items = [
+                item
+                for item in plugin_manager_service.status_summary().get("plugins", [])
+                if item.get("pluginId") in {"aliyun-bailian", "hyperframes"}
+            ]
+        except Exception:
+            plugin_items = []
         return {
             "kind": self.kind,
-            "displayName": "CreativeMediaRuntime",
-            "summary": "负责图片、视频、配音/旁白、音乐与 3D 媒体 job 的 provider 适配、轮询和 artifact 交付。",
+            "displayName": "多媒体创作",
+            "summary": "负责通用图片、视频、配音/旁白、音乐与 3D 基础生成，以及 recipe、产物和质量闭环。供应商独有工作流由受治理的插件 task grant 提供。",
             "responsibilities": [
                 "归一化媒体 provider 请求格式。",
                 "持久化媒体 job 状态。",
                 "把生成结果登记为 runtime artifact。",
             ],
             "routingKeywords": ["image", "video", "voice", "music", "creative_media", "artifact"],
-            "acceptedInputs": ["media job request"],
-            "producedOutputs": ["image artifact", "video artifact", "audio artifact", "media job status"],
+            "acceptedInputs": ["prompt", "image reference", "video reference", "audio reference", "first frame", "last frame", "media asset"],
+            "producedOutputs": ["image", "video", "audio", "music", "3D", "PSD", "recipe", "QA report"],
             "supportsResume": True,
             "supportsRepair": False,
             "visibility": "internal",
             "promptHints": [
                 "用法入口：通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode；输入 brief、modality、assetRole、referenceAssetIds、qualityTier/costLimit，不要让 Supervisor 直接拼 provider raw request。",
-                "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；明确图像、视频、配音/旁白、音乐、3D 素材或多媒体拼接任务时可作为主 runtime 或素材支持 runtime。",
+                "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；绑定 Agent 只使用 capabilities/plan/assets/jobs/edit/quality 六个 facade，不猜测旧工具名或 supplier 私有工具。",
+                "边界：科普/课程/产品介绍等可编辑代码视频由 Engineering 主导；Creative Media 只提供素材和媒体 provider 子能力。",
+                "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
                 "支撑能力与边界：Engineering、Research、Admin 等 runtime 只需要背景图、图标、封面、角色图、配音、音乐、3D 道具或关键帧素材时，Creative Media 作为 CreativeAssetRequest 素材支持 runtime；AI 生成拼接长视频可由 Creative Media 产出各类素材，由 Engineering 组装可编辑页面/时间线。",
                 "语音边界：Creative Media 的 voice.tts / voice.design 生成项目媒体 artifact 与 reusable voice_id，不等同于聊天气泡 `<voice>text</voice>` 的系统 TTS 播放协议。",
-                "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
-                "科普、课程、讲解、产品介绍这类需要可编辑时间线的视频，默认由 Engineering 的代码视频链路主导，Creative Media 只提供素材和媒体 provider 子能力。",
             ],
             "metadata": {
                 "p1": True,
@@ -411,38 +435,16 @@ class CreativeMediaRuntime:
                 "supervisorToolSurface": False,
                 "managedToolGroups": ["creative_media.core"],
                 "managedToolNames": [
-                    "creative_media_catalog",
-                    "creative_media_resolutions",
-                    "creative_media_create_job",
-                    "creative_media_get_job",
-                    "creative_media_list_jobs",
-                    "creative_media_job_artifacts",
-                    "creative_media_compile_recipe",
-                    "creative_media_get_recipe",
-                    "creative_media_list_recipes",
-                    "creative_media_register_asset",
-                    "creative_media_list_assets",
-                    "creative_media_create_character_bible",
-                    "creative_media_get_character_bible",
-                    "creative_media_list_character_bibles",
-                    "creative_media_register_keyframe",
-                    "creative_media_get_keyframe",
-                    "creative_media_list_keyframes",
-                    "creative_media_create_edit_plan",
-                    "creative_media_get_edit_plan",
-                    "creative_media_list_edit_plans",
-                    "creative_media_render_edit_plan",
-                    "creative_media_get_render",
-                    "creative_media_list_renders",
-                    "creative_media_create_quality_job",
-                    "creative_media_list_quality_jobs",
-                    "creative_media_get_quality_job",
-                    "creative_media_retry_job",
-                    "creative_media_cost_ledger",
-                    "creative_media_safety_events",
-                    "creative_media_compile_work_order",
-                    "creative_media_list_work_orders",
+                    "creative_media_capabilities",
+                    "creative_media_plan",
+                    "creative_media_assets",
+                    "creative_media_jobs",
+                    "creative_media_edit",
+                    "creative_media_quality",
                 ],
+                "baseOperationKinds": sorted(EXECUTABLE_OPERATION_KINDS),
+                "optionalPluginCapabilities": plugin_items,
+                "artifactRange": ["image", "video", "audio", "music", "3D", "PSD", "recipe", "QA"],
             },
         }
 
@@ -2708,12 +2710,12 @@ class CreativeMediaRuntime:
                         job = refreshed
                 if job.get("status") not in {"succeeded", "failed", "cancelled"}:
                     job["status"] = "running"
-                    with ToolExecutionEnvelope(tool_name="creative_media_create_job", family="creative_media", deadline_ms=timeout_seconds * 1000, retry_limit=1) as envelope:
+                    with ToolExecutionEnvelope(tool_name="creative_media_jobs.create.internal", family="creative_media", deadline_ms=timeout_seconds * 1000, retry_limit=1) as envelope:
                         job["toolExecution"] = envelope.payload(
                             ok=False,
                             failure_class="deadline_exceeded",
                             retryable=False,
-                            recommended_next_action="返回 running job；使用 creative_media_get_job 或 creative_media_list_jobs 观察后续状态。",
+                            recommended_next_action="返回 running job；使用 creative_media_jobs 的 get 或 list action 观察后续状态。",
                         )
                     job["recommendedNextAction"] = "observe_job"
                     self._save_job(job)
@@ -3028,12 +3030,12 @@ class CreativeMediaRuntime:
                 job = refreshed
         if job.get("status") not in {"succeeded", "failed", "cancelled"}:
             job["status"] = "running"
-            with ToolExecutionEnvelope(tool_name="creative_media_create_job", family="creative_media", deadline_ms=timeout_seconds * 1000, retry_limit=1) as envelope:
+            with ToolExecutionEnvelope(tool_name="creative_media_jobs.create.internal", family="creative_media", deadline_ms=timeout_seconds * 1000, retry_limit=1) as envelope:
                 job["toolExecution"] = envelope.payload(
                     ok=False,
                     failure_class="deadline_exceeded",
                     retryable=False,
-                    recommended_next_action="返回 running job；使用 creative_media_get_job 或 creative_media_list_jobs 观察后续状态。",
+                    recommended_next_action="返回 running job；使用 creative_media_jobs 的 get 或 list action 观察后续状态。",
                 )
             job["recommendedNextAction"] = "observe_job"
             return self._save_job(job)
@@ -3306,9 +3308,14 @@ class CreativeMediaRuntime:
         }
 
     def _dashscope_credentials(self) -> dict[str, str]:
+        overrides = _PROVIDER_CREDENTIAL_OVERRIDES.get()
         return {
-            "apiKey": str(os.getenv("DASHSCOPE_API_KEY") or "").strip(),
-            "baseUrl": str(os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/api/v1").rstrip("/"),
+            "apiKey": str(overrides.get("DASHSCOPE_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or "").strip(),
+            "baseUrl": str(
+                overrides.get("DASHSCOPE_BASE_URL")
+                or os.getenv("DASHSCOPE_BASE_URL")
+                or "https://dashscope.aliyuncs.com/api/v1"
+            ).rstrip("/"),
         }
 
     def _public_url_or_error(self, value: Any, *, field_name: str) -> str:

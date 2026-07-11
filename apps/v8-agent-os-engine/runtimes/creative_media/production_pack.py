@@ -162,7 +162,7 @@ def production_pack_markdown(pack: dict[str, Any]) -> str:
             "### 回流要求",
             "- subagent 回流必须保留 providerLock、sampleApproval、artifactProof、qa 状态；缺任一项时只能标记为待补齐或降级，不能声称复杂媒体交付完成。",
             "",
-            "下一步：先完成样片审批，再批量生成；最终交付前运行 `creative_media_qa_check`。",
+            "下一步：先完成样片审批，再批量生成；最终交付前运行 `creative_media_quality(action='qa_check')`。",
         ]
     )
     return "\n".join(lines).strip()

@@ -3,6 +3,12 @@ from __future__ import annotations
 from core.system_tools.baseline import is_baseline_system_tool_name
 
 DEFAULT_SUPERVISOR_NATIVE_TOOL_EXCLUDES = {
+    "creative_media_capabilities",
+    "creative_media_plan",
+    "creative_media_assets",
+    "creative_media_jobs",
+    "creative_media_edit",
+    "creative_media_quality",
     "computer_use_capture_screenshot",
     "computer_use_click",
     "computer_use_click_toolbar_action",

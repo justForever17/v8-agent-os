@@ -96,12 +96,19 @@ from core.tools.native.command_governance import (
 )
 from core.tools.native.automation import *  # automation/process/cron/hook tool family compatibility exports
 from core.tools.native.command import *  # command/session tool family compatibility exports
-from core.tools.native.creative_media import *  # creative media tool family compatibility exports
-from core.tools.native.creative_media_psd import *  # creative media PSD tool family compatibility exports
+from core.tools.native.creative_media_facade import (
+    creative_media_assets,
+    creative_media_capabilities,
+    creative_media_edit,
+    creative_media_jobs,
+    creative_media_plan,
+    creative_media_quality,
+)
 from core.tools.native.delegation import *  # delegation broker tool family compatibility exports
 from core.tools.native.runtime import *  # runtime broker tool family compatibility exports
 from core.tools.native.session_context import *  # V8OS session context broker compatibility exports
 from core.tools.native.mcp import *  # MCP config tool family compatibility exports
+from core.tools.native.plugin import *  # governed plugin discovery and task grants
 from core.tools.native.computer_use import *  # computer use tool family compatibility exports
 from core.tools.native.memory import *  # memory broker tool family compatibility exports
 from core.tools.native.network import *  # network neighbor broker tool family compatibility exports

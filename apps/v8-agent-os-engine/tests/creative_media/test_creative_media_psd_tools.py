@@ -79,7 +79,7 @@ def test_psd_compose_template_dry_run_returns_plan_without_writing(tmp_path: Pat
 
 
 def test_psd_dependency_is_declared() -> None:
-    requirements = Path("apps/v8-agent-os-engine/requirements/desktop-common.txt").read_text(encoding="utf-8")
+    requirements = (Path(__file__).resolve().parents[2] / "requirements/desktop-common.txt").read_text(encoding="utf-8")
     assert "psd-tools[composite]" in requirements
 
 

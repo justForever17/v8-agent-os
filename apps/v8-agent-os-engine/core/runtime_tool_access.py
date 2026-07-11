@@ -90,46 +90,12 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
         "label": "Creative Media core",
         "summary": "读取媒体目录，编译 recipe，登记资产/角色/关键帧，并创建和查询创意媒体 job。",
         "toolNames": [
-            "creative_media_catalog",
-            "creative_media_resolutions",
-            "creative_media_create_job",
-            "creative_media_get_job",
-            "creative_media_list_jobs",
-            "creative_media_job_artifacts",
-            "creative_media_compile_recipe",
-            "creative_media_compile_work_order",
-            "creative_media_list_work_orders",
-            "creative_media_get_recipe",
-            "creative_media_list_recipes",
-            "creative_media_register_asset",
-            "creative_media_list_assets",
-            "creative_media_create_character_bible",
-            "creative_media_get_character_bible",
-            "creative_media_list_character_bibles",
-            "creative_media_register_keyframe",
-            "creative_media_get_keyframe",
-            "creative_media_list_keyframes",
-            "creative_media_create_edit_plan",
-            "creative_media_get_edit_plan",
-            "creative_media_list_edit_plans",
-            "creative_media_render_edit_plan",
-            "creative_media_get_render",
-            "creative_media_list_renders",
-            "creative_media_create_quality_job",
-            "creative_media_list_quality_jobs",
-            "creative_media_get_quality_job",
-            "creative_media_retry_job",
-            "creative_media_cost_ledger",
-            "creative_media_safety_events",
-            "creative_media_production_pack",
-            "creative_media_rank_models",
-            "creative_media_reference_media_brief",
-            "creative_media_sample_approval_packet",
-            "creative_media_qa_check",
-            "creative_media_alpha_inspect",
-            "creative_media_psd_inspect",
-            "creative_media_psd_export_preview",
-            "creative_media_psd_compose_template",
+            "creative_media_capabilities",
+            "creative_media_plan",
+            "creative_media_assets",
+            "creative_media_jobs",
+            "creative_media_edit",
+            "creative_media_quality",
         ],
     },
 }
@@ -148,7 +114,7 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
 }
 RAW_WEB_INTERNAL_TOOL_NAMES = {"web_fetch", "web_read", "web_extract", "web_search"}
 
-RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_")
+RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_", "creative_media_")
 FEATURE_PACK_GATED_RUNTIME_KINDS = {"computer_use", "desktop_live", "rpa"}
 SUBAGENT_RUNTIME_BINDING_KINDS = {"research", "engineering", "creative_media"}
 SUBAGENT_RUNTIME_BINDING_DEFAULT_GROUPS: dict[str, list[str]] = {
@@ -212,6 +178,8 @@ def runtime_kind_for_tool_name(tool_name: Any) -> str:
         return "computer_use"
     if normalized.startswith("rpa_"):
         return "rpa"
+    if normalized.startswith("creative_media_"):
+        return "creative_media"
     return ""
 
 

@@ -505,14 +505,12 @@ def test_model_preferences_are_scoped_by_operation_kind(monkeypatch):
 
     assert "image.generate" in prefs["policies"]
     assert "video.first_last_frame" in prefs["policies"]
-    assert "video.action_transfer" in prefs["policies"]
+    assert "video.action_transfer" not in prefs["policies"]
     assert any(item["source"] == "model_control_plane" for item in prefs["connectedOptions"])
     assert any(item["source"] == "mcp_or_env" for item in prefs["diagnosticCandidates"])
     assert all(item["operationKind"] == "video.first_last_frame" for item in prefs["policies"]["video.first_last_frame"]["models"])
-    action_models = prefs["policies"]["video.action_transfer"]["models"]
-    assert action_models
-    assert all(item["operationKind"] == "video.action_transfer" for item in action_models)
-    assert all(item["available"] is False for item in action_models)
+    assert all(item.get("operationKind") != "video.action_transfer" for item in prefs["connectedOptions"])
+    assert all(item.get("operationKind") != "video.action_transfer" for item in prefs["diagnosticCandidates"])
 
 
 def test_seedance_1_0_fast_uses_exact_registry_operations(monkeypatch):
@@ -637,12 +635,11 @@ def test_dashscope_builtin_candidates_are_grouped_by_operation_kind(monkeypatch)
     prefs = creative_media_runtime.get_model_preferences()
 
     assert "image.edit" in prefs["policies"]
-    assert "video.lipsync" in prefs["policies"]
-    assert "video.action_transfer" in prefs["policies"]
+    assert "video.lipsync" not in prefs["policies"]
+    assert "video.action_transfer" not in prefs["policies"]
     assert all(item["source"] != "env_builtin" for item in prefs["connectedOptions"])
     assert any(item["source"] == "env_builtin" for item in prefs["diagnosticCandidates"])
-    assert all(item["adapter"] == "dashscope" for item in prefs["policies"]["video.action_transfer"]["models"])
-    assert all(item["operationKind"] == "video.lipsync" for item in prefs["policies"]["video.lipsync"]["models"])
+    assert all(item.get("operationKind") not in {"video.lipsync", "video.action_transfer"} for item in prefs["diagnosticCandidates"])
 
 
 def test_model_preferences_save_uses_operation_model_refs_without_secrets(monkeypatch):

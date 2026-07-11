@@ -93,7 +93,7 @@ def main() -> int:
         case_id="creative_media_engineering_joint",
         title="Engineering 与 Creative Media 联合真实交付",
         prompt=prompt,
-        expected_all_tools=["fetch_skill_instructions", "runtime_broker", "creative_media_create_job"],
+        expected_all_tools=["fetch_skill_instructions", "runtime_broker", "creative_media_jobs"],
         skill_required=True,
         skill_references=skill_refs,
         context_mentions=context_mentions,

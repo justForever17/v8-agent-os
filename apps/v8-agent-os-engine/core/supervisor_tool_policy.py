@@ -13,6 +13,7 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "run_system_command",
     "command_session_broker",
     "session_context_broker",
+    "plugin_broker",
     "rpa_list_robot_scripts",
     "rpa_run_draft",
     "rpa_run_existing_flow",
@@ -159,7 +160,7 @@ def _ensure_runtime_managed_descriptors_loaded() -> None:
         from runtimes.memory.runtime import memory_runtime  # noqa: F401
         from runtimes.automation.runtime import automation_runtime  # noqa: F401
         from runtimes.network_supervisor.runtime import network_supervisor_runtime  # noqa: F401
-        from runtimes.plugin_host.runtime import plugin_host_runtime  # noqa: F401
+        from runtimes.plugin_manager.runtime import plugin_manager_service  # noqa: F401
         if runtime_kind_available("computer_use"):
             from runtimes.computer_use.runtime import computer_use_runtime  # noqa: F401
         if runtime_kind_available("rpa"):

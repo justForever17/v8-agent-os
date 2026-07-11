@@ -44,8 +44,6 @@ SUPERVISOR_DIRECT_SCOPE_GATED_TOOLS = {
     "replace_native_file",
     "edit_native_file",
     "delete_native_file",
-    "creative_media_create_job",
-    "creative_media_retry_job",
     "computer_use_execute",
     "computer_use_click",
     "computer_use_type_text",

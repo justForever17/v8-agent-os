@@ -112,7 +112,7 @@ def _runtime_broker_payload(
 _RUNTIME_ROUTE_DEFAULT_GROUPS: dict[str, list[str]] = {
     "engineering": ["delegation.recursive"],
     "research": ["research.core"],
-    "creative_media": ["creative_media.core"],
+    "creative_media": [],
     "computer_use": ["computer_use.control"],
     "rpa": ["rpa.run"],
     "delegation": ["delegation.recursive"],
@@ -132,6 +132,8 @@ def _capability_route_groups(
     tool_groups: Optional[list[str]],
 ) -> list[str]:
     kind = _normalize_capability_kind(need.get("kind") or runtime_kind)
+    if kind == "creative_media":
+        return []
     requested: list[str] = []
     requested.extend(list(need.get("requiredRuntimeAccess") or []))
     requested.extend(list(tool_groups or []))
@@ -619,8 +621,6 @@ def _required_runtime_access_from_spec_bundle(bundle: dict[str, Any], kind: str)
         groups.append("research.core")
     if any(token in lanes for token in ("delegation", "subagent", "agent", "子agent", "孙agent", "并行")):
         groups.append("delegation.recursive")
-    if any(token in lanes for token in ("creative", "media", "image", "video", "audio", "素材", "视频", "图片")):
-        groups.append("creative_media.core")
     return list(dict.fromkeys(groups))
 
 
@@ -1889,7 +1889,7 @@ def runtime_broker(
     Use `mode='route'` with `need={'kind':'research'|'engineering'|'creative_media'|'computer_use'|'rpa'|'delegation', ...}` when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration.
     Product words for user-facing replies: `research`=深度调研, `engineering`=编程模式, `creative_media`=多媒体创作, `computer_use`=桌面操作, `rpa`=自动流程, `delegation`=子代理协作. Do not tell ordinary users "runtime_broker"; that is only the internal tool name.
     Fill `need` with the actual task, workspace/scope, expected output, acceptance/proof needs, and useful detailRefs. If you only have a vague route hint, ask or build a complete taskBrief first.
-    Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions/PluginHost/Network Supervisor are support/discovery surfaces.
+    Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions、插件管理中心和 Network Supervisor 是 support/discovery surfaces。@插件是强提示；Supervisor 也可通过 `plugin_broker` 为当前 run 创建最小插件授权。
     Use `mode='list'` only as a compact route menu; capability details already live in `<capability_registry>`.
     Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for execution.
     A route result queues an episode and returns a waitable typed handoff path; do not claim the specialist mode completed until the handoff/proof returns.

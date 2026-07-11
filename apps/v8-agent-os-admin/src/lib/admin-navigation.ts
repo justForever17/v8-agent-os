@@ -138,11 +138,11 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
             },
             {
                 title: "lib.admin.navigation.k64a90628",
-                href: "/admin/plugin-host",
+                href: "/admin/plugins",
                 icon: Blocks,
                 description: "lib.admin.navigation.k3f9710f0",
-                productVocabularyId: "pluginHost",
-                canonicalId: PRODUCT_VOCABULARY.pluginHost.canonicalId,
+                productVocabularyId: "pluginManager",
+                canonicalId: PRODUCT_VOCABULARY.pluginManager.canonicalId,
             },
             {
                 title: "lib.admin.navigation.kc32f16d1",

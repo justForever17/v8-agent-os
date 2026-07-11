@@ -17,7 +17,7 @@ type WakeIngressPolicies = {
 const DEFAULT_CONFIG: WakeIngressPolicies = {
     allowNudgeWithoutTarget: true,
     defaultAttachPolicy: "new_session",
-    enabledSourceRuntimes: ["cron", "hook", "plugin_host", "network_supervisor", "chat", "computer_use"],
+    enabledSourceRuntimes: ["cron", "hook", "network_supervisor", "chat", "computer_use"],
 };
 const ATTACH_POLICY_OPTIONS = [
     { value: "new_session", labelKey: "components.automation.WakeIngressPolicyCard.attachPolicy.newSession" },
@@ -131,7 +131,7 @@ export function WakeIngressPolicyCard() {
                     </div>
                     <div className="space-y-2">
                         <Label>{t("components.automation.WakeIngressPolicyCard.k279e4034")}</Label>
-                        <Input value={sourceRuntimeInput} disabled={loading || saving} onChange={(event) => setSourceRuntimeInput(event.target.value)} placeholder="cron, hook, plugin_host, network_supervisor"/>
+                        <Input value={sourceRuntimeInput} disabled={loading || saving} onChange={(event) => setSourceRuntimeInput(event.target.value)} placeholder="cron, hook, network_supervisor"/>
                     </div>
                 </div>
 

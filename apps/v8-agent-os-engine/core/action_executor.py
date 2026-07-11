@@ -766,106 +766,6 @@ class ActionExecutor:
     def _refresh_projection_snapshot(session_id: str, run_id: str):
         snapshot_service.refresh_chat_projection(session_id, run_id=run_id)
 
-    @classmethod
-    def _record_plugin_host_push(
-        cls,
-        *,
-        channel_type: str,
-        session_id: str,
-        final_msg: str,
-        trigger_source: str,
-        target_graph_module_name: str,
-        agent_profile: Dict[str, Any],
-        delivery_receipt: Optional[Dict[str, Any]] = None,
-    ):
-        from runtimes.plugin_host.runtime import plugin_host_runtime
-
-        source = channel_type
-        chat_type = "group" if ":group:" in session_id else "p2p"
-        remote_id = session_id.split(":")[-1]
-        plugin_host_runtime.record_outbound_push(
-            source=source,
-            chat_type=chat_type,
-            remote_id=remote_id,
-            final_msg=final_msg,
-            trigger_source=trigger_source,
-            agent_id=target_graph_module_name,
-            agent_profile=agent_profile,
-            delivery_receipt=delivery_receipt,
-        )
-
-    @classmethod
-    async def _deliver_plugin_host_message_async(
-        cls,
-        *,
-        channel_type: str,
-        target_id: str,
-        chat_type: str,
-        final_msg: str,
-        trigger_source: str,
-        target_graph_module_name: str,
-    ) -> Dict[str, Any]:
-        from api.routes import _get_agent_profile
-        from core.plugin_host import plugin_host_service
-        from core.plugin_host.dispatcher import PluginHostDispatcher
-
-        receipt = await plugin_host_service.broadcast_text(
-            channel_type=channel_type,
-            receive_id=target_id,
-            text=final_msg,
-        )
-        agent_profile = _get_agent_profile(target_graph_module_name)
-        session_id = PluginHostDispatcher.resolve_session_id(
-            source=channel_type,
-            chat_type=chat_type,
-            remote_id=target_id,
-        )
-        cls._record_plugin_host_push(
-            channel_type=channel_type,
-            session_id=session_id,
-            final_msg=final_msg,
-            trigger_source=trigger_source,
-            target_graph_module_name=target_graph_module_name,
-            agent_profile=agent_profile,
-            delivery_receipt=receipt,
-        )
-        return {
-            "targetId": target_id,
-            "chatType": chat_type,
-            "sessionId": session_id,
-            "deliveryReceipt": receipt,
-        }
-
-    @classmethod
-    def _deliver_plugin_host_message_sync(
-        cls,
-        *,
-        channel_type: str,
-        target_id: str,
-        chat_type: str,
-        final_msg: str,
-        trigger_source: str,
-        target_graph_module_name: str,
-    ) -> Dict[str, Any]:
-        coroutine = cls._deliver_plugin_host_message_async(
-            channel_type=channel_type,
-            target_id=target_id,
-            chat_type=chat_type,
-            final_msg=final_msg,
-            trigger_source=trigger_source,
-            target_graph_module_name=target_graph_module_name,
-        )
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coroutine)
-
-        target_loop = cls._main_loop if cls._main_loop and cls._main_loop.is_running() else loop
-        if target_loop is loop:
-            raise RuntimeError("同步渠道推送当前运行在事件循环线程内，无法阻塞等待 delivery receipt。")
-        future = asyncio.run_coroutine_threadsafe(coroutine, target_loop)
-        return future.result(timeout=120)
-
     @staticmethod
     def _execution_side_effect_target_identity(
         *,
@@ -919,41 +819,6 @@ class ActionExecutor:
                 "cronJobId": kwargs.get("cron_job_id"),
                 "hookName": kwargs.get("hook_name"),
                 "eventName": kwargs.get("event_name"),
-            },
-        )
-
-    @staticmethod
-    def _begin_plugin_host_outbound_side_effect(
-        *,
-        run_handle,
-        channel_type: str,
-        chat_type: str,
-        target_id: str,
-        final_msg: str,
-        trigger_source: str,
-        agent_id: str,
-    ):
-        if not hasattr(run_handle, "emit"):
-            return None
-        return side_effect_idempotency_service.begin(
-            run_handle=run_handle,
-            effect_kind="plugin_host.outbound",
-            step_key="plugin_host.outbound.push",
-            target_identity=f"{channel_type}|{chat_type}|{target_id}",
-            payload={
-                "channelType": channel_type,
-                "chatType": chat_type,
-                "targetId": target_id,
-                "message": final_msg,
-                "triggerSource": trigger_source,
-                "agentId": agent_id,
-            },
-            node="automation_runtime",
-            metadata={
-                "chatType": chat_type,
-                "targetId": target_id,
-                "channelType": channel_type,
-                "agentId": agent_id,
             },
         )
 
@@ -1082,63 +947,6 @@ class ActionExecutor:
             ):
                 result = compiled_graph.invoke(payload)
             
-            # --- CRON BROADCAST INJECTION ---
-            if channel_id and "cron" in trigger_reason.lower():
-                outbound_receipt = None
-                try:
-                    final_msg = ""
-                    if isinstance(result, dict) and "messages" in result and result["messages"]:
-                        last_message = result["messages"][-1]
-                        if hasattr(last_message, "content"):
-                            final_msg = last_message.content
-                    elif hasattr(result, "content"):
-                        final_msg = result.content
-                        
-                    if final_msg:
-                        from core.plugin_host import plugin_host_service
-
-                        resolved_channel_type = channel_id or plugin_host_service.default_channel_type()
-                        target_id = chat_id if chat_id else (plugin_host_service.default_target_for(resolved_channel_type or "") if resolved_channel_type else None)
-                        chat_type = "group" if target_id and target_id.startswith("oc_") else "p2p"
-                        outbound_receipt = ActionExecutor._begin_plugin_host_outbound_side_effect(
-                            run_handle=run_handle,
-                            channel_type=resolved_channel_type or "channel",
-                            chat_type=chat_type,
-                            target_id=target_id,
-                            final_msg=final_msg,
-                            trigger_source=trigger_reason,
-                            agent_id=target_graph_module_name,
-                        )
-                        if outbound_receipt is None or outbound_receipt.execute:
-                            if not target_id:
-                                raise RuntimeError("Cron 渠道推送未解析到 target_id，无法执行真实出站。")
-                            delivery_result = ActionExecutor._deliver_plugin_host_message_sync(
-                                channel_type=resolved_channel_type or "channel",
-                                target_id=target_id,
-                                chat_type=chat_type,
-                                final_msg=final_msg,
-                                trigger_source=trigger_reason,
-                                target_graph_module_name=target_graph_module_name,
-                            )
-                            print(f"[ActionExecutor] Appended cron push natively into session {delivery_result.get('sessionId')}")
-                            if outbound_receipt is not None:
-                                side_effect_idempotency_service.complete(
-                                    run_handle=run_handle,
-                                    receipt=outbound_receipt,
-                                    node="automation_runtime",
-                                    result=delivery_result,
-                                )
-                except Exception as b_e:
-                    if outbound_receipt is not None:
-                        side_effect_idempotency_service.fail(
-                            run_handle=run_handle,
-                            receipt=outbound_receipt,
-                            node="automation_runtime",
-                            error=str(b_e),
-                        )
-                    print(f"[ActionExecutor] Cron broadcast sync failed: {b_e}")
-            # --- END CRON BROADCAST ---
-
             if isinstance(result, dict) and result.get("hook_rejected"):
                 error_feedback = result.get("hook_feedback", "No feedback provided by Agent.")
                 raise Exception(f"Agent '{target_graph_module_name}' rejected the context: {error_feedback}")
@@ -1448,63 +1256,6 @@ class ActionExecutor:
                 status = str(controlled.get("status") or status)
                 error_message = str((controlled.get("control") or {}).get("reason") or "")
                 return
-
-            # --- CRON BROADCAST INJECTION ---
-            if channel_id and "cron" in trigger_reason.lower():
-                outbound_receipt = None
-                try:
-                    final_msg = ""
-                    if isinstance(result, dict) and "messages" in result and result["messages"]:
-                        last_message = result["messages"][-1]
-                        if hasattr(last_message, "content"):
-                            final_msg = last_message.content
-                    elif hasattr(result, "content"):
-                        final_msg = result.content
-                        
-                    if final_msg:
-                        from core.plugin_host import plugin_host_service
-
-                        resolved_channel_type = channel_id or plugin_host_service.default_channel_type()
-                        target_id = chat_id if chat_id else (plugin_host_service.default_target_for(resolved_channel_type or "") if resolved_channel_type else None)
-                        chat_type = "group" if target_id and target_id.startswith("oc_") else "p2p"
-                        outbound_receipt = ActionExecutor._begin_plugin_host_outbound_side_effect(
-                            run_handle=run_handle,
-                            channel_type=resolved_channel_type or "channel",
-                            chat_type=chat_type,
-                            target_id=target_id,
-                            final_msg=final_msg,
-                            trigger_source=trigger_reason,
-                            agent_id=target_graph_module_name,
-                        )
-                        if outbound_receipt is None or outbound_receipt.execute:
-                            if not target_id:
-                                raise RuntimeError("Cron 渠道推送未解析到 target_id，无法执行真实出站。")
-                            delivery_result = await ActionExecutor._deliver_plugin_host_message_async(
-                                channel_type=resolved_channel_type or "channel",
-                                target_id=target_id,
-                                chat_type=chat_type,
-                                final_msg=final_msg,
-                                trigger_source=trigger_reason,
-                                target_graph_module_name=target_graph_module_name,
-                            )
-                            print(f"[ActionExecutor] Appended cron async push natively into session {delivery_result.get('sessionId')}")
-                            if outbound_receipt is not None:
-                                side_effect_idempotency_service.complete(
-                                    run_handle=run_handle,
-                                    receipt=outbound_receipt,
-                                    node="automation_runtime",
-                                    result=delivery_result,
-                                )
-                except Exception as b_e:
-                    if outbound_receipt is not None:
-                        side_effect_idempotency_service.fail(
-                            run_handle=run_handle,
-                            receipt=outbound_receipt,
-                            node="automation_runtime",
-                            error=str(b_e),
-                        )
-                    print(f"[ActionExecutor] Cron broadcast async failed: {b_e}")
-            # --- END CRON BROADCAST ---
 
         except ModelGovernanceInterventionRequired as e:
             request_payload = e.to_request_payload()

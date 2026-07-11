@@ -4,7 +4,6 @@
 
 - `E:\Projects\v8chat\v8-agent-os`
 - `E:\Projects\v8chat\v8-agent-os-site`
-- `E:\Projects\v8chat\openclaw-v8-bridge`
 
 读者：
 
@@ -46,10 +45,6 @@
 #### `v8-agent-os-site`
 
 公开站、安装入口、对外叙事仓，不定义新的 runtime 真相。
-
-#### `openclaw-v8-bridge`
-
-OpenClaw / `plugin_host` / channels / handoff 桥接仓，属于 runtime 主链的一部分，不是可忽略插件。
 
 ### 2.2 Surface 角色
 
@@ -128,19 +123,16 @@ flowchart LR
 4. `network_supervisor`
 5. `computer_use`
 6. `rpa`
-7. `plugin_host_tool`
 
 当前不进入主聊天 realtime CDC 的 family：
 
 1. `memory`
 2. `desktop_live`
-3. `plugin_host_channel`
 
-这三类并不是不重要，而是它们属于不同 plane：
+这两类并不是不重要，而是它们属于不同 plane：
 
 - `memory`：底层长期记忆与维护面
 - `desktop_live`：手工驱动协作面
-- `plugin_host_channel`：外部 channel 历史面
 
 ---
 
@@ -205,28 +197,11 @@ flowchart LR
 
 ---
 
-## 8. plugin_host / bridge / OpenClaw
+## 8. 插件管理中心
 
-任何涉及下列主题的改动，都应按主链处理：
+插件是受治理的官方 CLI、Skill、MCP 和 UI 适配器组合，不是普通 Extensions 候选。任何插件改动都应联查 Engine `runtimes/plugin_manager`、Supervisor `plugin_broker`、Admin `/admin/plugins`、Web/Phone `@插件` 选择器，以及授权和安装事务表。
 
-- `plugin_host`
-- OpenClaw channels
-- managed tool bridge
-- handoff token
-- gateway catalog
-- local state manifest
-
-联查目录至少包括：
-
-- `E:\Projects\v8chat\openclaw-v8-bridge`
-- `E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\core\plugin_host`
-
-判定标准：
-
-1. fail-closed 是否仍成立
-2. allowlist / canonical tool name 是否仍一致
-3. inbound URL / gateway token 是否仍安全
-4. handoff 语义是否仍可恢复
+判定标准：没有有效 grant 时零插件能力；用户 `@插件` 与 Supervisor 最小 task grant 是两种受审入口；插件组件不进入普通预筛；Supervisor 不能自行安装、补配置、读取密钥或创建长期授权；子 Agent 授权不能扩大范围或向孙 Agent 传播；卸载遇到用户修改必须停止。
 
 ---
 
@@ -252,14 +227,9 @@ flowchart LR
 4. 独立配置文件
 5. 页面默认值与旧文案
 
-### 9.3 OpenClaw / plugin_host 问题
+### 9.3 插件问题
 
-优先顺序：
-
-1. `openclaw-v8-bridge`
-2. `plugin_host` runtime
-3. gateway / channel / manifest / secrets
-4. 再看具体 surface
+优先检查 manifest 与官方来源、安装任务回滚记录、组件哈希与所有权、登录/Doctor 状态、当前授权来源与范围，最后检查 Web/Phone 的用户选择、Supervisor `plugin_broker` 决策和能力投影。
 
 ---
 
@@ -281,4 +251,3 @@ flowchart LR
 3. `docs/Govern/*`
 4. `docs/phone/*`
 5. `docs/computer/*`
-

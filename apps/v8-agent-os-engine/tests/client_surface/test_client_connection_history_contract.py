@@ -44,10 +44,10 @@ def test_phone_connection_failure_keeps_cached_identity_readable() -> None:
 def test_local_trusted_client_boundary_is_documented() -> None:
     doc = _read_repo_file("docs/V8OS/V8OS_BINARY_CLI_WORKSPACE_AND_CLIENT_CONNECT_ZH.md")
 
-    assert "Web shell / CyberCore companion 可以直连 Engine WebSocket" in doc
-    assert "不能直连 DB" in doc or "不得直连数据库" in doc
-    assert "Phone 不应该直连 Engine" in doc
-    assert "Web shell / CyberCore companion 都不应该直连 Engine" not in doc
+    assert "Shell 通过本机可信会话和受控通道编排这些入口" in doc
+    assert "不得直连 Engine 数据库" in doc
+    assert "Phone 通过 Admin 暴露的配对与 BFF 接口访问产品能力，不应该直连 Engine" in doc
+    assert "CyberCore companion" not in doc
 
 
 def test_web_history_load_uses_server_turn_paging_not_local_message_cache() -> None:

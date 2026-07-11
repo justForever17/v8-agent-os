@@ -153,7 +153,7 @@ const PRESET_LABELS: Record<RuntimePresetId, {
     description: "components.runtime.RuntimeGovernanceWorkbench.kcd231fad"
   }
 };
-const NONCORE_RUNTIME_KINDS = ["plugin_host", "computer_use", "rpa"] as const;
+const NONCORE_RUNTIME_KINDS = ["plugin_manager", "computer_use", "rpa"] as const;
 function normalizePolicy(policy?: RuntimePolicy): Required<RuntimePolicy> {
   return {
     enabled: policy?.enabled ?? true,
@@ -947,7 +947,7 @@ export function RuntimeGovernanceWorkbench({
                                     <div className="grid gap-4 md:grid-cols-4">
                                         <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">workflow</div><div className="mt-2 text-sm font-medium">{selectedSessionDetail.workflow?.status || selectedSessionDetail.recoverable?.workflowStatus || "unknown"}</div></div>
                                         <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">owner runtime</div><div className="mt-2 text-sm font-medium">{runtimeNameMap.get(selectedSessionDetail.workflow?.ownerRuntime || "chat") || selectedSessionDetail.workflow?.ownerRuntime || "chat"}</div></div>
-                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">recoverable</div><div className="mt-2 text-sm font-medium">{t("components.plugin.host.PluginHostWorkbench.k2ae24b34")}</div></div>
+                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">recoverable</div><div className="mt-2 text-sm font-medium">{t("app.admin.dashboard.operations.center.page.k2ae24b34")}</div></div>
                                         <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">approvals</div><div className="mt-2 text-sm font-medium">{selectedSessionDetail.approvals?.length || 0}</div></div>
                                     </div>
                                     {plannerInspector ? <div className="rounded-xl border border-border/50 p-4">

@@ -203,7 +203,6 @@
   "artifactProfileAnchors": {
     "document": ["文章", "公众号", "公众号文章"]
   },
-  "pluginHostQueryHints": ["飞书", "微信", "插件宿主", "桥接", "渠道"],
   "crossRuntimeEscapeTokens": ["权限", "授权", "失败", "错误", "卡住", "阻塞", "并发", "切换", "降级"],
   "metaAdvisoryHints": ["模糊需求", "思维顾问", "诊断推荐", "生成人物skill", "人物skill", "造skill", "造人"],
   "familyAdvisoryHints": ["说服", "顾问", "视角", "框架", "方法论", "策略", "协作", "知识库", "知识协作"],

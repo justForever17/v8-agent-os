@@ -1717,8 +1717,6 @@ def _memory_source_runtime(trigger_source: str) -> str:
     normalized = str(trigger_source or "").strip().lower()
     if normalized.startswith("hook") or normalized.startswith("cron"):
         return "automation"
-    if normalized.startswith("plugin_host"):
-        return "plugin_host"
     if normalized.startswith("network_supervisor"):
         return "network_supervisor"
     if normalized.startswith("computer_use") or normalized.startswith("desktop_live"):

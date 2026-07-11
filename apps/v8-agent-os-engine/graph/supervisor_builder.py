@@ -13,7 +13,6 @@ from core.model_failover_service import model_failover_service
 from core.system_tools.native import NATIVE_TOOLS
 from core.agents import build_subagent_registry_snapshot
 from core.model_thinking_control import normalize_reasoning_effort
-from core.plugin_host.tool_registry import plugin_host_tool_registry
 from core.runtime.extensions_runtime import extensions_runtime_service
 from runtimes.network_supervisor.openai_compat import build_external_langchain_tools
 from core.storage import storage
@@ -96,7 +95,6 @@ def build_supervisor_runtime_bundle(
         )
 
     all_mcp_tools = extensions_runtime_service.get_mcp_tools()
-    plugin_host_tools = plugin_host_tool_registry.build_supervisor_tools()
     external_tools = build_external_langchain_tools(config.external_tools)
     loaded_agents = storage.get_all_agents()
     subagent_registry_snapshot = build_subagent_registry_snapshot(
@@ -116,7 +114,6 @@ def build_supervisor_runtime_bundle(
     agent_nodes_map = build_specialist_agent_components(
         loaded_agents=loaded_agents,
         all_mcp_tools=all_mcp_tools,
-        all_plugin_host_tools=plugin_host_tools,
         filtered_native_tools=filtered_native_tools,
         default_agent_llm=default_agent_llm,
         supervisor_model_id=sup_model_name,
@@ -134,7 +131,6 @@ def build_supervisor_runtime_bundle(
         filtered_native_tools=filtered_native_tools,
         external_tools=external_tools,
         all_mcp_tools=all_mcp_tools,
-        plugin_host_tools=plugin_host_tools,
         supervisor_allowed_tools=sup_config.get("allowed_tools"),
         config_allowed_tools=config.allowed_tools,
     )

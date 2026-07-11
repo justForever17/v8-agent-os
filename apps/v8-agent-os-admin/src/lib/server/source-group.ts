@@ -64,31 +64,10 @@ export function deriveCanonicalChannelContext(record: Record<string, unknown>): 
         ? record.summary as Record<string, unknown>
         : {};
     const metadata = parseMetadata(record.metadata || summary.metadata);
-    const source = normalizeSource(
-        record.source
-        || summary.source
-        || record.trigger_source
-        || summary.trigger_source
-        || metadata.trigger_source
-        || metadata.triggerSource
-        || metadata.source,
-    );
-    const handoffSource = normalizeSource(metadata.handoff_source || metadata.handoffSource);
-    const transportManagedBy = normalizeSource(metadata.transport_managed_by || metadata.transportManagedBy);
-    const bridgeBackedSource = (handoffSource === "openclaw_bridge" || transportManagedBy === "openclaw_bridge")
-        && source
-        && source !== "web"
-        && source !== "cron"
-        && source !== "hooks"
-        && !source.startsWith("hook")
-        && !source.startsWith("trigger")
-        && !source.startsWith("cron");
-
     const channelType = coerceString(
         readString(record, ["channel_type", "channelType"])
         || readString(summary, ["channel_type", "channelType"])
-        || readString(metadata, ["channel_type", "channelType"])
-        || (bridgeBackedSource ? source : ""),
+        || readString(metadata, ["channel_type", "channelType"]),
     );
     const channelName = coerceString(
         readString(record, ["channel_name", "channelName"])
@@ -137,22 +116,6 @@ function hasChannelContext(context: CanonicalChannelContext) {
     );
 }
 
-function isBridgeManagedChannelRecord(
-    source: string,
-    metadata: Record<string, unknown>,
-    context: CanonicalChannelContext,
-) {
-    const handoffSource = normalizeSource(metadata.handoff_source || metadata.handoffSource);
-    const transportManagedBy = normalizeSource(metadata.transport_managed_by || metadata.transportManagedBy);
-    if ((source === "channels" || source === "openclaw_channels" || source === "openclaw_channel") && hasChannelContext(context)) {
-        return true;
-    }
-    if ((handoffSource === "openclaw_bridge" || transportManagedBy === "openclaw_bridge") && hasChannelContext(context)) {
-        return true;
-    }
-    return false;
-}
-
 export function deriveCanonicalSourceGroup(record: Record<string, unknown>): CanonicalSourceGroup {
     const summary = record.summary && typeof record.summary === "object"
         ? record.summary as Record<string, unknown>
@@ -189,12 +152,8 @@ export function deriveCanonicalSourceGroup(record: Record<string, unknown>): Can
     if (source === "hooks" || source.startsWith("hook") || source.startsWith("trigger")) {
         return "hooks";
     }
-    const isCanonicalChannelRecord = isBridgeManagedChannelRecord(source, metadata, channelContext);
     if (explicit === "channels") {
-        return isCanonicalChannelRecord ? "channels" : "web";
-    }
-    if (isCanonicalChannelRecord) {
-        return "channels";
+        return hasChannelContext(channelContext) ? "channels" : "web";
     }
     if (explicit === "web") {
         return "web";

@@ -1016,7 +1016,7 @@ export default function ExtensionsPage() {
 
             <DomainSummaryStrip items={summaryItems} />
             {runtimeStartupState === "refreshing" ? <StatusNotice title={"app.admin.dashboard.extensions.page.ke3fbd37c"} description={t("app.admin.dashboard.extensions.page.k575262a6", {
-      snapshotFreshness_live_live_snapshotFreshness_cached: snapshotFreshness === "live" ? "live" : t("components.plugin.host.PluginHostWorkbench.snapshotFreshnessCached")
+      snapshotFreshness_live_live_snapshotFreshness_cached: snapshotFreshness === "live" ? "live" : "cached"
     })} tone="info" /> : null}
             {runtimeStartupState === "error" ? <StatusNotice title={"app.admin.dashboard.extensions.page.kc3221dca"} description={health.lastRefreshError || catalog.lastRefreshError || t("app.admin.dashboard.extensions.page.ka1c8eb51")} tone="warning" /> : null}
 

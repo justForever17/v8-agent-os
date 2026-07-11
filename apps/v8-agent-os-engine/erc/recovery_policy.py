@@ -35,11 +35,6 @@ def derive_recovery_class(
         reason = "基于 Agent 的自动化任务支持继续执行。"
     elif run_type in {
         "automation",
-        "channel",
-        "channel_chat",
-        "channel_push",
-        "plugin_host",
-        "plugin_host_push",
         "memory",
         "computer_use",
         "rpa",

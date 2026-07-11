@@ -10,27 +10,6 @@ from core.computer_use_tool_surface import (
 )
 from core.runtime_tool_access import all_runtime_group_tool_names, tool_ref_name
 
-def _matches_allowed_plugin_host_tool(tool, allowlist) -> bool:
-    if allowlist is None:
-        return True
-    normalized_allowlist = {str(item).strip() for item in allowlist if str(item).strip()}
-    if not normalized_allowlist:
-        return False
-    metadata = dict(getattr(tool, "metadata", {}) or {})
-    candidates = {
-        str(tool.name or "").strip(),
-        str(metadata.get("canonicalName") or "").strip(),
-        str(metadata.get("rawName") or "").strip(),
-    }
-    plugin_id = str(metadata.get("pluginId") or "").strip()
-    if plugin_id:
-        candidates.add(plugin_id)
-        raw_name = str(metadata.get("rawName") or "").strip()
-        if raw_name:
-            candidates.add(f"{plugin_id}.{raw_name}")
-    candidates = {item for item in candidates if item}
-    return bool(candidates & normalized_allowlist)
-
 
 def create_robust_invoke(
     *,
@@ -79,7 +58,6 @@ def build_supervisor_toolset(
     filtered_native_tools,
     external_tools=None,
     all_mcp_tools,
-    plugin_host_tools,
     supervisor_allowed_tools,
     config_allowed_tools,
 ):
@@ -118,18 +96,5 @@ def build_supervisor_toolset(
         supervisor_tools.extend(allowed_mcp_tools)
     else:
         supervisor_tools.extend(all_mcp_tools)
-
-    if supervisor_allowed_tools is not None:
-        allowed_plugin_host_tools = [
-            tool for tool in plugin_host_tools if _matches_allowed_plugin_host_tool(tool, supervisor_allowed_tools)
-        ]
-        supervisor_tools.extend(allowed_plugin_host_tools)
-    elif config_allowed_tools is not None:
-        allowed_plugin_host_tools = [
-            tool for tool in plugin_host_tools if _matches_allowed_plugin_host_tool(tool, config_allowed_tools)
-        ]
-        supervisor_tools.extend(allowed_plugin_host_tools)
-    else:
-        supervisor_tools.extend(plugin_host_tools)
 
     return supervisor_tools

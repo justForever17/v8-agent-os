@@ -78,7 +78,7 @@ test("runtime navigation keeps beta only on dependency-gated runtimes and places
 
   assert.match(itemBlock("/admin/desktop-automation"), /badge: \{ label: "lib\.admin\.navigation\.kdb4add74", tone: "beta" \}/);
   assert.match(itemBlock("/admin/rpa"), /badge: \{ label: "lib\.admin\.navigation\.kdb4add74", tone: "beta" \}/);
-  assert.doesNotMatch(itemBlock("/admin/plugin-host"), /tone: "beta"/);
+  assert.doesNotMatch(itemBlock("/admin/plugins"), /tone: "beta"/);
   assert.doesNotMatch(itemBlock("/admin/network-supervisor-runtime"), /tone: "beta"/);
   assert.doesNotMatch(itemBlock("/admin/creative-media"), /tone: "beta"/);
 
@@ -86,7 +86,7 @@ test("runtime navigation keeps beta only on dependency-gated runtimes and places
   const rpaIndex = runtimeGroup.indexOf('href: "/admin/rpa"');
   const creativeIndex = runtimeGroup.indexOf('href: "/admin/creative-media"');
   const networkIndex = runtimeGroup.indexOf('href: "/admin/network-supervisor-runtime"');
-  const pluginIndex = runtimeGroup.indexOf('href: "/admin/plugin-host"');
+  const pluginIndex = runtimeGroup.indexOf('href: "/admin/plugins"');
 
   assert.ok(creativeIndex > -1 && networkIndex > -1 && pluginIndex > -1);
   assert.ok(desktopIndex > creativeIndex);

@@ -32,13 +32,13 @@ KNOWN_RUNTIME_FAMILIES = (
     "engineering",
     "creative_media",
     "research",
-    "plugin_host",
+    "plugin_manager",
     "computer_use",
     "rpa",
     "desktop_live",
 )
 DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
-    "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor", "engineering", "creative_media", "research"),
+    "minimal": ("chat", "memory", "extensions", "automation", "network_supervisor", "engineering", "creative_media", "research", "plugin_manager"),
     "desktop": (
         "chat",
         "memory",
@@ -48,7 +48,7 @@ DEFAULT_RUNTIME_FAMILIES_BY_PROFILE = {
         "engineering",
         "creative_media",
         "research",
-        "plugin_host",
+        "plugin_manager",
         "computer_use",
         "rpa",
         "desktop_live",
@@ -72,7 +72,7 @@ _FEATURE_RUNTIME_FAMILY = {
     "research": "research",
     "research_broker": "research",
     "web_research": "research",
-    "plugin_host": "plugin_host",
+    "plugin_manager": "plugin_manager",
     "network_supervisor": "network_supervisor",
     "computer_use": "computer_use",
     "desktop_live": "desktop_live",
@@ -84,10 +84,7 @@ _DISABLED_REASON_LABELS = {
     "disabled_by_config": "配置关闭",
     "disabled_by_runtime_policy": "runtime policy 已禁用",
 }
-_LEGACY_EXTRA_FAMILIES_BY_STARTUP_PROFILE = {
-    "standard": ("plugin_host",),
-    "desktop": ("plugin_host",),
-}
+_LEGACY_EXTRA_FAMILIES_BY_STARTUP_PROFILE: dict[str, tuple[str, ...]] = {}
 _RUNTIME_CLUSTER_COMPAT_ORDER = (
     ("chatruntime", "chat"),
     ("memoryruntime", "memory"),
@@ -134,18 +131,12 @@ def _desktop_live_runtime_available() -> bool:
     )
 
 
-def _plugin_host_runtime_available() -> bool:
-    return _module_importable("core.plugin_host") and _module_importable("runtimes.plugin_host.runtime")
-
-
 def _rpa_runtime_available() -> bool:
     return _module_importable("robot") and _module_importable("RPA")
 
 
 def _detect_installed_runtime_families(install_platform: str) -> list[str]:
     families = _default_runtime_families_for_profile("minimal")
-    if _plugin_host_runtime_available() and "plugin_host" not in families:
-        families.append("plugin_host")
     if _computer_use_runtime_available_for_platform(install_platform) and "computer_use" not in families:
         families.append("computer_use")
     if _desktop_live_runtime_available() and "desktop_live" not in families:
@@ -172,8 +163,6 @@ def _needs_runtime_registry_installation_migration(payload: Any) -> bool:
     for family in _default_runtime_families_for_profile(install_profile):
         if family not in configured_families:
             return True
-    if install_profile == "desktop" and _plugin_host_runtime_available() and "plugin_host" not in configured_families:
-        return True
     return False
 
 
@@ -308,9 +297,6 @@ def get_runtime_registry_state() -> dict[str, Any]:
             startup_profile=legacy_startup_profile,
             install_profile=install_profile,
         )
-    if install_profile == "desktop" and _plugin_host_runtime_available() and "plugin_host" not in installed_runtime_families:
-        installed_runtime_families = [*installed_runtime_families, "plugin_host"]
-
     return {
         "version": int(payload.get("version") or 1),
         "installProfile": install_profile,
@@ -436,7 +422,7 @@ def startup_bundle_summary(profile: str | None = None) -> dict[str, bool]:
         "knowledge": service_enabled("knowledge", profile=normalized_profile),
         "ops": service_enabled("ops", profile=normalized_profile),
         "engineering": service_enabled("engineering", profile=normalized_profile),
-        "pluginHost": service_enabled("plugin_host", profile=normalized_profile),
+        "pluginManager": runtime_family_installed("plugin_manager", profile=normalized_profile),
         "networkSupervisor": service_enabled("network_supervisor", profile=normalized_profile),
         "computerUse": service_enabled("computer_use", profile=normalized_profile),
         "desktopLive": service_enabled("desktop_live", profile=normalized_profile),
@@ -455,7 +441,7 @@ def startup_bundle_diagnostics(profile: str | None = None) -> dict[str, dict[str
         "knowledge": service_state("knowledge", profile=normalized_profile),
         "ops": service_state("ops", profile=normalized_profile),
         "engineering": service_state("engineering", profile=normalized_profile),
-        "plugin_host": service_state("plugin_host", profile=normalized_profile),
+        "plugin_manager": service_state("plugin_manager", profile=normalized_profile),
         "network_supervisor": service_state("network_supervisor", profile=normalized_profile),
         "computer_use": service_state("computer_use", profile=normalized_profile),
         "desktop_live": service_state("desktop_live", profile=normalized_profile),

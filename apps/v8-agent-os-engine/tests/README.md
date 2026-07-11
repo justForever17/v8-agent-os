@@ -37,7 +37,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | `tests/creative_media/` | unit / integration | Creative Media Runtime | work order、provider plan、artifact/job/recipe contract。 |
 | `tests/erc/` | contract | ERC / reasoning surface | reasoning surface contract。 |
 | `tests/evals/` | eval harness | Benchmark / memory eval | memory benchmark matrix、LongMemEval harness、external API memory isolation；详见 [evals/README.md](evals/README.md)。 |
-| `tests/extensions/` | unit / integration | Skills / MCP / PluginHost | skill loader、dynamic discovery、prefilter、PluginHost control plane、artifact validator。 |
+| `tests/extensions/` | unit / integration | Skills / MCP / Plugin Manager | skill loader、dynamic discovery、prefilter、插件特权隔离、artifact validator。 |
 | `tests/fixtures/` | data | Stable fixtures | 只放可提交、稳定、无隐私的测试数据。 |
 | `tests/memory/` | unit / integration | Memory Runtime | lifecycle、durable policy、visual enrichment、workflow memory、vector sync degraded、reasoning sanitization。 |
 | `tests/model_control/` | unit / integration | ModelHub / provider control plane | model ref、connection tester、reasoning payload contract、embedding/rerank limits、media model capability registry。 |
@@ -57,7 +57,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | 改 Runtime Episode / Engineering / Delegation / Computer Use | `tests/runtime_core/` |
 | 改 Memory 抽取、注入、scope、视觉增强 | `tests/memory/` + `tests/evals/` 中相关 memory eval |
 | 改 ModelHub、provider、reasoning、embedding/rerank | `tests/model_control/` |
-| 改 Skill / MCP / PluginHost | `tests/extensions/` |
+| 改 Skill / MCP / Plugin Manager | `tests/extensions/` + `tests/plugin_manager/` |
 | 改 Research / Web source / evidence pack | `tests/core/test_research_broker.py`、`tests/core/test_research_ledger_experience_pack_lifecycle.py`、`tests/scripts/run_research_runtime_deep_live_audit.py` |
 | 改 Creative Media | `tests/creative_media/` + `tests/scripts/run_creative_media_*` |
 | 改 Safety / permissions / command gate | `tests/safety/` + `tests/runtime_core/test_runtime_tool_access.py` |

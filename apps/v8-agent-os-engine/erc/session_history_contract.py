@@ -93,8 +93,6 @@ def _derive_runtime_family(event: Dict[str, Any], payload: Dict[str, Any]) -> st
         "network_supervisor",
         "computer_use",
         "rpa",
-        "plugin_host_tool",
-        "plugin_host_channel",
         "desktop_live",
     }:
         return normalized
@@ -102,8 +100,6 @@ def _derive_runtime_family(event: Dict[str, Any], payload: Dict[str, Any]) -> st
         return "engineering"
     if topic.startswith("engineering.") or topic.startswith("engineering_lane."):
         return "engineering"
-    if topic.startswith("plugin_host.") or topic.startswith("channel."):
-        return "plugin_host_channel"
     if topic.startswith("extension."):
         return "extensions"
     if topic.startswith("approval.") or topic.startswith("run.") or topic.startswith("context."):
@@ -114,8 +110,6 @@ def _derive_runtime_family(event: Dict[str, Any], payload: Dict[str, Any]) -> st
 def _derive_visibility(runtime_family: str, topic: str) -> str:
     if runtime_family == "memory":
         return "hidden"
-    if runtime_family == "plugin_host_channel":
-        return "history_only"
     if runtime_family == "desktop_live":
         return "excluded"
     if topic == "context.prepared":

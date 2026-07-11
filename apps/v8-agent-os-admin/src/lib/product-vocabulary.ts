@@ -49,12 +49,12 @@ export const PRODUCT_VOCABULARY = {
         descriptionZh: "多源调研、证据包与答案卷宗。",
         descriptionEn: "Multi-source research, evidence packs, and answer dossiers.",
     },
-    pluginHost: {
-        canonicalId: "plugin_host",
-        zh: "插件桥接",
-        en: "Plugin Bridge",
-        descriptionZh: "OpenClaw、外部工具与渠道桥接。",
-        descriptionEn: "OpenClaw, external tools, and channel bridges.",
+    pluginManager: {
+        canonicalId: "plugin_manager",
+        zh: "插件管理中心",
+        en: "Plugin Center",
+        descriptionZh: "精选官方 CLI、Skill、MCP、UI 适配与任务授权。",
+        descriptionEn: "Curated official CLI, Skill, MCP, UI adapters, and task grants.",
     },
     computerUse: {
         canonicalId: "computer_use",

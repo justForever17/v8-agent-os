@@ -18,7 +18,7 @@ def _patch_retention_paths(monkeypatch, root: Path) -> ObservabilityDatabaseMana
     monkeypatch.setattr(storage_retention_module, "STATE_DB_PATH", state_path)
     monkeypatch.setattr(storage_retention_module, "CHECKPOINT_DB_PATH", checkpoint_path)
     monkeypatch.setattr(storage_retention_module, "OBSERVABILITY_DB_PATH", observability_path)
-    monkeypatch.setattr(storage_retention_module, "PLUGIN_INSTALL_LOG_ROOT", root / "logs" / "plugins")
+    monkeypatch.setattr(storage_retention_module, "PLUGIN_MANAGER_LOG_ROOT", root / "logs" / "plugins")
     monkeypatch.setattr(storage_retention_module, "RUNTIME_DATA_HOME", root / "runtime-data")
     monkeypatch.setattr(storage_retention_module, "V8_AGENT_OS_HOME", root)
     obs = ObservabilityDatabaseManager(observability_path)

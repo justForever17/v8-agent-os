@@ -82,6 +82,30 @@ _VOICE_MODEL_TOKENS = {
 }
 _MUSIC_MODEL_TOKENS = {"music", "song", "mureka", "suno"}
 
+_PLUGIN_ONLY_MEDIA_OPERATION_KINDS = {
+    "video.action_transfer",
+    "video.lipsync",
+    "video.avatar",
+    "video.replacement",
+    "video.style_repaint",
+    "video.video_edit",
+}
+
+_PLUGIN_ONLY_MEDIA_MODEL_IDS = {
+    "wan2.2-animate-mix",
+    "wan2.2-animate-move",
+    "wan2.2-s2v",
+    "wan2.7-videoedit",
+}
+
+
+def _creative_media_public_operations(values: Any) -> List[str]:
+    return [
+        str(item).strip()
+        for item in _as_list(values)
+        if str(item).strip() and str(item).strip() not in _PLUGIN_ONLY_MEDIA_OPERATION_KINDS
+    ]
+
 
 def _as_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else []
@@ -414,14 +438,14 @@ class ModelProviderCatalog:
                 "model3d": "model3d.",
             }
             prefix = prefixes.get(normalized_modality)
-            exact_operations = [
+            exact_operations = _creative_media_public_operations([
                 str(item).strip()
                 for item in registry_operations
                 if str(item).strip() and (not prefix or str(item).strip().startswith(prefix))
-            ]
+            ])
             if exact_operations:
                 return exact_operations
-        return self._media_operation_kinds(provider_entry, modality)
+        return _creative_media_public_operations(self._media_operation_kinds(provider_entry, modality))
 
     def _media_catalog_model(self, provider_entry: Dict[str, Any], modality: str, model_id: str) -> Dict[str, Any]:
         provider_id = str(provider_entry.get("id") or "")
@@ -489,7 +513,11 @@ class ModelProviderCatalog:
         normalized_modality = _normalized_modality(modality)
         explicit_model_ids = entry.get("modelIds")
         if isinstance(explicit_model_ids, list):
-            model_ids = [str(item).strip() for item in explicit_model_ids if str(item).strip()]
+            model_ids = [
+                str(item).strip()
+                for item in explicit_model_ids
+                if str(item).strip() and str(item).strip().lower() not in _PLUGIN_ONLY_MEDIA_MODEL_IDS
+            ]
         else:
             model_ids = []
         if not model_ids:
@@ -500,7 +528,7 @@ class ModelProviderCatalog:
             if str(model.get("canonicalModelId") or "").strip()
         ]
         for registry_model_id in registry_model_ids:
-            if registry_model_id not in model_ids:
+            if registry_model_id.lower() not in _PLUGIN_ONLY_MEDIA_MODEL_IDS and registry_model_id not in model_ids:
                 model_ids.append(registry_model_id)
         auth = dict(entry.get("auth") or {})
         adapter = str(entry.get("adapter") or "catalog_only")
@@ -537,7 +565,11 @@ class ModelProviderCatalog:
         provider_id = str(entry.get("providerId") or "").strip()
         if not provider_id:
             return None
-        models = media_model_capability_registry.models_for_provider(provider_id)
+        models = [
+            model
+            for model in media_model_capability_registry.models_for_provider(provider_id)
+            if str(model.get("canonicalModelId") or "").strip().lower() not in _PLUGIN_ONLY_MEDIA_MODEL_IDS
+        ]
         if not models:
             return None
         primary_modality = _normalized_modality((entry.get("modalities") or [""])[0])

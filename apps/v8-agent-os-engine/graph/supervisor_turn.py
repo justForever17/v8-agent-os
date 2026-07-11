@@ -682,7 +682,6 @@ def _build_neutral_extensions_route(visible_supervisor_tools):
         skill_root_descriptors=[],
         candidate_summary={
             "skillEntries": [],
-            "pluginHostTools": [],
             "compatIngressFiltering": True,
             "reason": "network_supervisor_compat_disables_v8_extensions_prefilter",
         },
@@ -742,7 +741,6 @@ def _attach_route_context_to_response(response, *, user_query: str, route_bundle
         "selectedSkillEntries": list(route_bundle.candidate_summary.get("skillEntries") or []),
         "skillRootDescriptors": list(route_bundle.skill_root_descriptors or []),
         "selectedMcpTools": list(route_bundle.exposed_mcp_tool_names or []),
-        "selectedPluginHostTools": list(route_bundle.candidate_summary.get("pluginHostTools") or []),
         "extensionsPrefilterSignature": prefilter_signature,
         "extensionsPrefilterQuery": str(user_query or "").strip(),
     }
@@ -755,7 +753,6 @@ def _attach_route_context_to_response(response, *, user_query: str, route_bundle
         selected_skill_entries=route_bundle.candidate_summary.get("skillEntries") or [],
         skill_root_descriptors=route_bundle.skill_root_descriptors or [],
         selected_mcp_tools=route_bundle.exposed_mcp_tool_names,
-        selected_plugin_host_tools=route_bundle.candidate_summary.get("pluginHostTools") or [],
         selected_baseline_tools=select_baseline_system_tool_names(selected_tools),
         prompt_addition=route_bundle.prompt_addition,
     )
@@ -1259,7 +1256,6 @@ def execute_supervisor_turn(
                 "passiveRagMs": passive_rag_duration_ms,
                 "selectedSkillCount": len(route_bundle.selected_skill_names or []),
                 "selectedMcpToolCount": len(route_bundle.exposed_mcp_tool_names or []),
-                "selectedPluginHostToolCount": len(route_bundle.candidate_summary.get("pluginHostTools") or []),
                 "extensionsPrefilterPromptIncluded": include_extensions_prefilter_prompt,
                 "fastFirstTurnRoute": fast_first_turn_route,
                 "routeReason": route_bundle.candidate_summary.get("reason"),

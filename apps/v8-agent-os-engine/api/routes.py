@@ -32,6 +32,7 @@ from . import engineering_routes as engineering_routes_module
 from . import link_routes as link_routes_module
 from . import model_cache_routes as model_cache_routes_module
 from . import observability_routes as observability_routes_module
+from . import plugin_manager_routes as plugin_manager_routes_module
 from . import platform_routes as platform_routes_module
 from . import run_control_routes as run_control_routes_module
 from . import runtime_episode_routes as runtime_episode_routes_module
@@ -59,18 +60,6 @@ def _get_extensions_runtime_service():
 
 def _get_memory_backend_health():
     return importlib.import_module("core.memory.backend_health").inspect_memory_backend
-
-
-def _get_silk_toolchain_status():
-    status = importlib.import_module("core.plugin_host.silk_codec").silk_toolchain_status
-    return status() if callable(status) else status
-
-
-def _plugin_host_enabled() -> bool:
-    try:
-        return bool(storage.get_plugin_host_config().get("enabled", True))
-    except Exception:
-        return True
 
 
 def _network_supervisor_enabled() -> bool:
@@ -114,12 +103,6 @@ def _service_states(profile: str = _STARTUP_PROFILE) -> dict[str, dict[str, obje
         ),
         "ops": service_state("ops", profile=profile),
         "mcp": service_state("mcp", profile=profile),
-        "plugin_host": service_state(
-            "plugin_host",
-            profile=profile,
-            runtime_kind="plugin_host",
-            config_enabled=_plugin_host_enabled(),
-        ),
     }
 
 
@@ -132,6 +115,7 @@ router.include_router(engineering_routes_module.router)
 router.include_router(link_routes_module.router)
 router.include_router(model_cache_routes_module.router)
 router.include_router(observability_routes_module.router)
+router.include_router(plugin_manager_routes_module.router)
 router.include_router(session_workflow_routes_module.router)
 router.include_router(run_control_routes_module.router)
 router.include_router(runtime_episode_routes_module.router)
@@ -193,7 +177,6 @@ async def health():
         "skillsRuntime": skills_status,
         "extensionsRuntime": extensions_status,
         "mcpRuntime": mcp_status,
-        "silk": _get_silk_toolchain_status() if service_enabled("plugin_host", profile=_STARTUP_PROFILE) else {"status": "disabled"},
         "memory": inspect_memory_backend(),
         "identity": storage.get_system_identity(),
     }

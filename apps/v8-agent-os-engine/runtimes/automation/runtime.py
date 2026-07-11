@@ -65,8 +65,6 @@ class AutomationRuntime:
             return "cron"
         if normalized.startswith("hook"):
             return "hook"
-        if normalized.startswith("plugin_host"):
-            return "plugin_host"
         if normalized.startswith("network_supervisor"):
             return "network_supervisor"
         if normalized.startswith("chat"):

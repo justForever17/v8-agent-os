@@ -7,7 +7,7 @@
     "zh-CN"
   ],
   "selectionTarget": 1000,
-  "selectionCount": 1000,
+  "selectionCount": 996,
   "selectionStrategy": "skills.sh public leaderboard union: all-time(600) + trending(600) + hot(600) => weighted unique top1000",
   "leaderboardViews": [
     "all-time",
@@ -2218,24 +2218,6 @@
           "rank": 112,
           "installs": 39,
           "change": 6
-        }
-      }
-    },
-    {
-      "source": "xixu-me/skills",
-      "skillId": "openclaw-secure-linux-cloud",
-      "name": "openclaw-secure-linux-cloud",
-      "score": 2109161.8,
-      "views": {
-        "all-time": {
-          "rank": 107,
-          "installs": 68064,
-          "change": 0
-        },
-        "trending": {
-          "rank": 176,
-          "installs": 766,
-          "change": 0
         }
       }
     },
@@ -7228,24 +7210,6 @@
           "rank": 292,
           "installs": 18323,
           "change": 0
-        }
-      }
-    },
-    {
-      "source": "useai-pro/openclaw-skills-security",
-      "skillId": "skill-vetter",
-      "name": "skill-vetter",
-      "score": 1426278.4,
-      "views": {
-        "all-time": {
-          "rank": 322,
-          "installs": 15967,
-          "change": 0
-        },
-        "hot": {
-          "rank": 512,
-          "installs": 5,
-          "change": 2
         }
       }
     },
@@ -14640,19 +14604,6 @@
       }
     },
     {
-      "source": "sundial-org/awesome-openclaw-skills",
-      "skillId": "stock-market-pro",
-      "name": "stock-market-pro",
-      "score": 122140.0,
-      "views": {
-        "hot": {
-          "rank": 262,
-          "installs": 4,
-          "change": 4
-        }
-      }
-    },
-    {
       "source": "redwoodjs/agent-ci",
       "skillId": "agent-ci",
       "name": "agent-ci",
@@ -14907,19 +14858,6 @@
       "views": {
         "hot": {
           "rank": 282,
-          "installs": 4,
-          "change": 4
-        }
-      }
-    },
-    {
-      "source": "sundial-org/awesome-openclaw-skills",
-      "skillId": "news-summary",
-      "name": "news-summary",
-      "score": 116680.0,
-      "views": {
-        "hot": {
-          "rank": 283,
           "installs": 4,
           "change": 4
         }

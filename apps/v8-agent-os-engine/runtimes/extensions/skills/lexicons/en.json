@@ -261,7 +261,6 @@
     "image": ["image", "images", "poster", "illustration"],
     "audio": ["audio", "voice", "speech", "podcast"]
   },
-  "pluginHostQueryHints": ["openclaw", "pluginhost", "plugin_host", "plugin-host", "plugin host", "channel", "channels", "bridge", "gateway", "feishu", "lark", "wechat", "weixin", "slack", "discord", "telegram", "line", "teams", "whatsapp"],
   "crossRuntimeEscapeTokens": ["blocker", "blocked", "blocking", "stale", "stuck", "retry", "fallback", "switch", "handoff", "delegate", "delegation", "parallel", "error", "errors", "failed", "failure", "cannot", "cant", "missing", "auth", "unauthorized", "permission"],
   "metaAdvisoryHints": ["diagnostic recommendation", "perspective recommendation", "create skill", "generate skill", "persona skill"],
   "familyAdvisoryHints": ["advisor", "advisory", "perspective", "framework", "guide", "tutorial", "strategy", "methodology", "analysis", "analyst", "playbook", "coauthor", "collaboration", "knowledge", "knowledge base", "knowledge-base", "wiki", "decision", "negotiation"],

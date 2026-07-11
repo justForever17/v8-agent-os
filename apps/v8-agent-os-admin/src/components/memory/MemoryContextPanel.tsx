@@ -53,14 +53,6 @@ interface ContextPolicy {
     noticeable_latency_ms?: number;
   };
   runtime_adapters?: {
-    plugin_host?: {
-      window_size?: number;
-      max_summary_items?: number;
-    };
-    channel?: {
-      window_size?: number;
-      max_summary_items?: number;
-    };
     automation?: {
       recent_run_limit?: number;
       job_memory_limit?: number;
@@ -95,10 +87,6 @@ const DEFAULT_POLICY: ContextPolicy = {
     noticeable_latency_ms: 800
   },
   runtime_adapters: {
-    plugin_host: {
-      window_size: 15,
-      max_summary_items: 8
-    },
     automation: {
       recent_run_limit: 3,
       job_memory_limit: 6
@@ -128,10 +116,6 @@ const PRESET_OPTIONS = [{
     noticeable_latency_ms: 600
   },
   runtime_adapters: {
-    plugin_host: {
-      window_size: 12,
-      max_summary_items: 6
-    },
     automation: {
       recent_run_limit: 2,
       job_memory_limit: 4
@@ -157,10 +141,6 @@ const PRESET_OPTIONS = [{
     noticeable_latency_ms: 800
   },
   runtime_adapters: {
-    plugin_host: {
-      window_size: 15,
-      max_summary_items: 8
-    },
     automation: {
       recent_run_limit: 3,
       job_memory_limit: 6
@@ -186,10 +166,6 @@ const PRESET_OPTIONS = [{
     noticeable_latency_ms: 1200
   },
   runtime_adapters: {
-    plugin_host: {
-      window_size: 20,
-      max_summary_items: 10
-    },
     automation: {
       recent_run_limit: 4,
       job_memory_limit: 8
@@ -198,8 +174,6 @@ const PRESET_OPTIONS = [{
 }] as const;
 type PresetKey = (typeof PRESET_OPTIONS)[number]["key"];
 function normalizePolicy(policy?: ContextPolicy): ContextPolicy {
-  const legacyChannel = policy?.runtime_adapters?.channel || {};
-  const pluginHost = policy?.runtime_adapters?.plugin_host || legacyChannel;
   const maxGraphContinuations = Number(policy?.maxGraphContinuations ?? (policy as Record<string, unknown> | undefined)?.max_graph_continuations ?? DEFAULT_POLICY.maxGraphContinuations ?? 5);
   return {
     ...DEFAULT_POLICY,
@@ -212,10 +186,6 @@ function normalizePolicy(policy?: ContextPolicy): ContextPolicy {
     runtime_adapters: {
       ...DEFAULT_POLICY.runtime_adapters,
       ...(policy?.runtime_adapters || {}),
-      plugin_host: {
-        ...DEFAULT_POLICY.runtime_adapters?.plugin_host,
-        ...pluginHost
-      },
       automation: {
         ...DEFAULT_POLICY.runtime_adapters?.automation,
         ...(policy?.runtime_adapters?.automation || {})
@@ -228,9 +198,6 @@ function canonicalizePolicyForSave(policy: ContextPolicy): ContextPolicy {
   return {
     ...normalized,
     runtime_adapters: {
-      plugin_host: {
-        ...(normalized.runtime_adapters?.plugin_host || {})
-      },
       automation: {
         ...(normalized.runtime_adapters?.automation || {})
       }
@@ -241,9 +208,8 @@ function matchesPreset(policy: ContextPolicy, presetKey: PresetKey) {
   const preset = PRESET_OPTIONS.find(item => item.key === presetKey);
   if (!preset) return false;
   const compression = policy.compression || {};
-  const pluginHost = policy.runtime_adapters?.plugin_host || {};
   const automation = policy.runtime_adapters?.automation || {};
-  return Boolean(compression.enabled) === Boolean(preset.compression.enabled) && String(compression.mode || "") === String(preset.compression.mode || "") && Number(compression.trigger_ratio ?? 0) === preset.compression.trigger_ratio && Number(compression.keep_recent_turns ?? 0) === preset.compression.keep_recent_turns && Number(compression.keep_recent_messages ?? 0) === preset.compression.keep_recent_messages && Boolean(compression.use_llm_summary) === Boolean(preset.compression.use_llm_summary) && Number(compression.max_summary_input_tokens ?? 0) === preset.compression.max_summary_input_tokens && Number(compression.max_summary_input_messages ?? 0) === preset.compression.max_summary_input_messages && Number(compression.max_summary_output_tokens ?? 0) === preset.compression.max_summary_output_tokens && Number(compression.compression_model_safety_ratio ?? 0) === preset.compression.compression_model_safety_ratio && Number(compression.noticeable_latency_ms ?? 0) === preset.compression.noticeable_latency_ms && Number(pluginHost.window_size ?? 0) === preset.runtime_adapters.plugin_host.window_size && Number(pluginHost.max_summary_items ?? 0) === preset.runtime_adapters.plugin_host.max_summary_items && Number(automation.recent_run_limit ?? 0) === preset.runtime_adapters.automation.recent_run_limit && Number(automation.job_memory_limit ?? 0) === preset.runtime_adapters.automation.job_memory_limit;
+  return Boolean(compression.enabled) === Boolean(preset.compression.enabled) && String(compression.mode || "") === String(preset.compression.mode || "") && Number(compression.trigger_ratio ?? 0) === preset.compression.trigger_ratio && Number(compression.keep_recent_turns ?? 0) === preset.compression.keep_recent_turns && Number(compression.keep_recent_messages ?? 0) === preset.compression.keep_recent_messages && Boolean(compression.use_llm_summary) === Boolean(preset.compression.use_llm_summary) && Number(compression.max_summary_input_tokens ?? 0) === preset.compression.max_summary_input_tokens && Number(compression.max_summary_input_messages ?? 0) === preset.compression.max_summary_input_messages && Number(compression.max_summary_output_tokens ?? 0) === preset.compression.max_summary_output_tokens && Number(compression.compression_model_safety_ratio ?? 0) === preset.compression.compression_model_safety_ratio && Number(compression.noticeable_latency_ms ?? 0) === preset.compression.noticeable_latency_ms && Number(automation.recent_run_limit ?? 0) === preset.runtime_adapters.automation.recent_run_limit && Number(automation.job_memory_limit ?? 0) === preset.runtime_adapters.automation.job_memory_limit;
 }
 function detectPreset(policy: ContextPolicy): PresetKey | "custom" {
   const matched = PRESET_OPTIONS.find(item => matchesPreset(policy, item.key));
@@ -259,10 +225,6 @@ function applyPreset(policy: ContextPolicy, presetKey: PresetKey): ContextPolicy
     },
     runtime_adapters: {
       ...(policy.runtime_adapters || {}),
-      plugin_host: {
-        ...(policy.runtime_adapters?.plugin_host || {}),
-        ...preset.runtime_adapters.plugin_host
-      },
       automation: {
         ...(policy.runtime_adapters?.automation || {}),
         ...preset.runtime_adapters.automation
@@ -320,18 +282,6 @@ export function MemoryContextPanel() {
       compression: {
         ...(prev.compression || {}),
         ...patch
-      }
-    }));
-  };
-  const updatePluginHostAdapter = (patch: Partial<NonNullable<NonNullable<ContextPolicy["runtime_adapters"]>["plugin_host"]>>) => {
-    setPolicyForm(prev => normalizePolicy({
-      ...prev,
-      runtime_adapters: {
-        ...(prev.runtime_adapters || {}),
-        plugin_host: {
-          ...(prev.runtime_adapters?.plugin_host || {}),
-          ...patch
-        }
       }
     }));
   };
@@ -576,25 +526,6 @@ export function MemoryContextPanel() {
                 </div>
 
                 <div className="mt-6 grid gap-6 xl:grid-cols-2">
-                    <ConfigCard title={"app.admin.dashboard.context.page.k499432c1"} description={"app.admin.dashboard.context.page.k1d384393"}>
-                        <div className="grid gap-5 md:grid-cols-2">
-                            <div className="space-y-1.5">
-                                <Label>{t("app.admin.dashboard.context.page.kf12cd060")}</Label>
-                                <Input type="number" min={3} max={100} value={policyForm.runtime_adapters?.plugin_host?.window_size ?? 15} onChange={event => updatePluginHostAdapter({
-                window_size: Number(event.target.value)
-              })} />
-
-                            </div>
-                            <div className="space-y-1.5">
-                                <Label>{t("app.admin.dashboard.context.page.kcb2c9afb")}</Label>
-                                <Input type="number" min={1} max={50} value={policyForm.runtime_adapters?.plugin_host?.max_summary_items ?? 8} onChange={event => updatePluginHostAdapter({
-                max_summary_items: Number(event.target.value)
-              })} />
-
-                            </div>
-                        </div>
-                    </ConfigCard>
-
                     <ConfigCard title={"app.admin.dashboard.context.page.k949f0930"} description={"app.admin.dashboard.context.page.kb53e7ba5"}>
                         <div className="grid gap-5 md:grid-cols-2">
                             <div className="space-y-1.5">

@@ -90,7 +90,7 @@ def _sanitize_tool_payload_value(value: Any) -> Any:
 
 def _normalize_source_group(value: Any) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"web", "channels", "cron", "hooks"}:
+    if normalized in {"web", "cron", "hooks"}:
         return normalized
     return ""
 
@@ -109,27 +109,10 @@ def _normalize_chat_type(value: Any) -> Optional[str]:
 def _derive_channel_context(record: Dict[str, Any], *, source_hint: str | None = None) -> Dict[str, Any]:
     summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
     metadata = _parse_metadata(record.get("metadata") or summary.get("metadata"))
-    source = _normalize_source(
-        record.get("source")
-        or summary.get("source")
-        or record.get("trigger_source")
-        or summary.get("trigger_source")
-        or metadata.get("trigger_source")
-        or metadata.get("triggerSource")
-        or metadata.get("source")
-        or source_hint
-    )
-    handoff_source = _normalize_source(metadata.get("handoff_source") or metadata.get("handoffSource"))
-    transport_managed_by = _normalize_source(metadata.get("transport_managed_by") or metadata.get("transportManagedBy"))
-    bridge_backed_source = (
-        handoff_source == "openclaw_bridge" or transport_managed_by == "openclaw_bridge"
-    ) and source not in {"", "web", "cron", "hooks"} and not source.startswith("hook") and not source.startswith("trigger") and not source.startswith("cron")
-
     channel_type = _coerce_string(
         _read_string(record, ["channel_type", "channelType"])
         or _read_string(summary, ["channel_type", "channelType"])
         or _read_string(metadata, ["channel_type", "channelType"])
-        or (source if bridge_backed_source else "")
     )
     channel_name = _coerce_string(
         _read_string(record, ["channel_name", "channelName"])
@@ -166,44 +149,6 @@ def _derive_channel_context(record: Dict[str, Any], *, source_hint: str | None =
         **({"accountId": account_id} if account_id else {}),
         **({"defaultAccount": default_account} if default_account else {}),
     }
-
-
-def _has_channel_context(context: Dict[str, Any]) -> bool:
-    return bool(
-        context.get("channelType")
-        or context.get("channelName")
-        or context.get("channelDomain")
-        or context.get("accountId")
-        or context.get("defaultAccount")
-    )
-
-
-def _is_bridge_managed_channel_record(record: Dict[str, Any], *, source_hint: str | None = None) -> bool:
-    summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
-    metadata = _parse_metadata(record.get("metadata") or summary.get("metadata"))
-    context = _derive_channel_context(record, source_hint=source_hint)
-    if not _has_channel_context(context):
-        return False
-
-    source = _normalize_source(
-        record.get("source")
-        or summary.get("source")
-        or record.get("trigger_source")
-        or summary.get("trigger_source")
-        or metadata.get("trigger_source")
-        or metadata.get("triggerSource")
-        or metadata.get("source")
-        or source_hint
-    )
-    handoff_source = _normalize_source(metadata.get("handoff_source") or metadata.get("handoffSource"))
-    transport_managed_by = _normalize_source(metadata.get("transport_managed_by") or metadata.get("transportManagedBy"))
-    bridge_managed = handoff_source == "openclaw_bridge" or transport_managed_by == "openclaw_bridge"
-
-    if source in {"channels", "openclaw_channels", "openclaw_channel"}:
-        return True
-    if bridge_managed:
-        return True
-    return False
 
 
 def _derive_source_group(record: Dict[str, Any], *, source_hint: str | None = None) -> str:
@@ -243,11 +188,6 @@ def _derive_source_group(record: Dict[str, Any], *, source_hint: str | None = No
     if source == "hooks" or source.startswith("hook") or source.startswith("trigger"):
         return "hooks"
 
-    is_canonical_channel_record = _is_bridge_managed_channel_record(record, source_hint=source_hint)
-    if explicit == "channels":
-        return "channels" if is_canonical_channel_record else "web"
-    if is_canonical_channel_record:
-        return "channels"
     if explicit == "web":
         return "web"
     return "web"

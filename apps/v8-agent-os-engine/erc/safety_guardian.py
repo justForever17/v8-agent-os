@@ -123,14 +123,6 @@ DEFAULT_SAFETY_GUARDIAN_CONFIG: Dict[str, Any] = {
             "reviewScopePatterns": [],
             "blockedScopePatterns": [],
         },
-        "plugin_host": {
-            "auditTriggerSources": [],
-            "reviewTriggerSources": [],
-            "blockedTriggerSources": [],
-            "auditScopePatterns": [],
-            "reviewScopePatterns": [],
-            "blockedScopePatterns": [],
-        },
         "computer_use": {
             "auditTriggerSources": [],
             "reviewTriggerSources": [],
@@ -1050,9 +1042,6 @@ class SafetyGuardian:
                 return "workspace"
             except Exception:
                 continue
-        lowered = str(normalized).lower()
-        if "\\openclaw" in lowered or "/openclaw" in lowered:
-            return "openclaw_workspace"
         home = Path.home().expanduser().resolve(strict=False)
         try:
             normalized.relative_to((home / ".agents").resolve(strict=False))

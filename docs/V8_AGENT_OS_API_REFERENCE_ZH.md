@@ -4,7 +4,6 @@
 
 - `E:\Projects\v8chat\v8-agent-os`
 - `E:\Projects\v8chat\v8-agent-os-site`
-- `E:\Projects\v8chat\openclaw-v8-bridge`
 
 本文不是“只列路径”的旧式接口表，而是帮助你理解当前 API 和 broker 主链。
 
@@ -157,21 +156,13 @@ Admin 负责：
 
 ---
 
-## 8. plugin_host / bridge API 边界
+## 8. 插件管理中心 API 边界
 
-涉及下列能力时，必须联查 `openclaw-v8-bridge`：
+插件目录、安装任务、配置、Doctor、卸载和授权统一位于 `/api/plugins/*`。普通 Extensions API 只管理通用 Skill/MCP 候选，不返回插件拥有的组件。Web/Phone 的 `@插件` 是强提示并可创建用户选择的 task/session grant；除此之外，Supervisor 可通过 `plugin_broker` 为当前 run 创建已安装、已配置且健康插件的最小 task grant。只有有效授权才会精确投影该插件允许的 Skill、MCP Tools 与结构化 CLI 入口。
 
-- channels
-- managed tools
-- handoff
-- gateway inventory
-- manifest/state
+Supervisor 不能通过该入口安装插件、补配置、读取密钥或创建长期 session grant。向子 Agent 委派时只能复制父级已授权的明确组件子集，且不能继续向孙 Agent 传播。
 
-当前规则：
-
-1. `plugin_host_tool` 可进入主聊天实时链
-2. `plugin_host_channel` 不进入主聊天 realtime CDC，而走历史层
-3. OpenClaw outbound staging 不应伪装成 workspace file
+CLI 执行禁止接收任意 shell 字符串；系统安装、部署、删除、付费与云资源写入继续经过安全审批。
 
 ---
 
@@ -201,4 +192,3 @@ Admin 负责：
 3. `docs/Govern/*`
 4. `docs/phone/*`
 5. `docs/computer/*`
-

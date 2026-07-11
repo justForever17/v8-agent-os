@@ -149,13 +149,6 @@ def _resolve_selected_mcp_tools(all_mcp_tools: list, selectors: list[str]) -> li
     return [tool for tool in all_mcp_tools if str(getattr(tool, "name", "")).strip() in selector_set]
 
 
-def _resolve_selected_plugin_host_tools(all_plugin_host_tools: list, selectors: list[str]) -> list:
-    selector_set = {str(item).strip() for item in selectors if str(item).strip()}
-    if not selector_set:
-        return []
-    return [tool for tool in all_plugin_host_tools if any(_tool_selector_matches(tool, selector) for selector in selector_set)]
-
-
 def _extract_delegated_query(task_messages: list) -> str:
     for message in reversed(task_messages):
         if not isinstance(message, HumanMessage):
@@ -210,11 +203,6 @@ def _extract_latest_route_context(task_messages: list) -> dict[str, list[str] | 
                 for item in list(payload.get("selectedMcpTools") or [])
                 if str(item).strip()
             ],
-            "selectedPluginHostTools": [
-                str(item).strip()
-                for item in list(payload.get("selectedPluginHostTools") or [])
-                if str(item).strip()
-            ],
         }
     return {
         "query": "",
@@ -223,7 +211,6 @@ def _extract_latest_route_context(task_messages: list) -> dict[str, list[str] | 
         "selectedSkillEntries": [],
         "skillRootDescriptors": [],
         "selectedMcpTools": [],
-        "selectedPluginHostTools": [],
     }
 
 
@@ -683,10 +670,10 @@ def _build_agent_system_content(
 
 def _resolve_inherited_route_context(state: dict, task_messages: list, *, agent_id: str) -> dict[str, list[str] | str]:
     delegated = latest_delegation_context(list(state.get("delegation_contexts") or []), agent_id=agent_id)
-    if any(delegated.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
+    if any(delegated.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedBaselineTools", "query")):
         return delegated
     current_route_context = dict(state.get("current_route_context") or {})
-    if any(current_route_context.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedPluginHostTools", "selectedBaselineTools", "query")):
+    if any(current_route_context.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedBaselineTools", "query")):
         return current_route_context
     legacy = _extract_latest_route_context(task_messages)
     return build_delegation_context(
@@ -697,7 +684,6 @@ def _resolve_inherited_route_context(state: dict, task_messages: list, *, agent_
         selected_skill_entries=legacy.get("selectedSkillEntries"),
         skill_root_descriptors=legacy.get("skillRootDescriptors"),
         selected_mcp_tools=legacy.get("selectedMcpTools"),
-        selected_plugin_host_tools=legacy.get("selectedPluginHostTools"),
     )
 
 
@@ -715,7 +701,6 @@ def build_contextual_auto_tool_node(
     all_native_tools: list | None = None,
     static_extra_tools: list | None = None,
     all_mcp_tools: list,
-    all_plugin_host_tools: list,
     name: str,
     fallback_goto: str,
 ):
@@ -724,10 +709,6 @@ def build_contextual_auto_tool_node(
         selected_mcp_tools = _resolve_selected_mcp_tools(
             all_mcp_tools,
             list(route_context.get("selectedMcpTools") or []),
-        )
-        selected_plugin_host_tools = _resolve_selected_plugin_host_tools(
-            all_plugin_host_tools,
-            list(route_context.get("selectedPluginHostTools") or []),
         )
         task_brief = route_context.get("taskBrief") if isinstance(route_context.get("taskBrief"), dict) else {}
         runtime_access = resolve_subagent_runtime_access(
@@ -739,7 +720,7 @@ def build_contextual_auto_tool_node(
             actor="subagent",
             runtime_access=runtime_access,
         )
-        tools = _dedupe_tools(actor_base_tools + list(static_extra_tools or []) + selected_mcp_tools + selected_plugin_host_tools)
+        tools = _dedupe_tools(actor_base_tools + list(static_extra_tools or []) + selected_mcp_tools)
         routed = create_routed_tool_node(tools, name=name, fallback_goto=fallback_goto)
         return await routed(state)
 
@@ -755,7 +736,6 @@ def build_agent_node(
     agent_tool_selectors: list[str],
     agent_tool_mode: str,
     all_mcp_tools: list,
-    all_plugin_host_tools: list,
     filtered_native_tools: list,
     fetch_skill_instructions_tool,
     reflection_enabled: bool,
@@ -865,12 +845,11 @@ def build_agent_node(
                 )
             )
             selected_mcp_tools = _resolve_selected_mcp_tools(all_mcp_tools, agent_tool_selectors)
-            selected_plugin_host_tools = _resolve_selected_plugin_host_tools(all_plugin_host_tools, agent_tool_selectors)
             explicit_skill_ids, explicit_skill_names = _resolve_selected_skills(agent_tool_selectors, state=state)
 
             if agent_tool_mode == "explicit":
                 base_tools = explicit_base_tools
-                available_tools = _dedupe_tools(base_tools + selected_mcp_tools + selected_plugin_host_tools)
+                available_tools = _dedupe_tools(base_tools + selected_mcp_tools)
                 inherited_skill_ids: list[str] = explicit_skill_ids
                 inherited_skill_names: list[str] = explicit_skill_names
             else:
@@ -879,16 +858,12 @@ def build_agent_node(
                     all_mcp_tools,
                     list(inherited_route_context.get("selectedMcpTools") or []),
                 )
-                inherited_plugin_host_tools = _resolve_selected_plugin_host_tools(
-                    all_plugin_host_tools,
-                    list(inherited_route_context.get("selectedPluginHostTools") or []),
-                )
                 inherited_skill_ids = list(inherited_route_context.get("selectedSkillIds") or [])
                 inherited_skill_names = list(inherited_route_context.get("selectedSkillNames") or [])
-                if inherited_mcp_tools or inherited_plugin_host_tools or inherited_skill_ids or inherited_skill_names:
-                    available_tools = _dedupe_tools(base_tools + inherited_mcp_tools + inherited_plugin_host_tools)
+                if inherited_mcp_tools or inherited_skill_ids or inherited_skill_names:
+                    available_tools = _dedupe_tools(base_tools + inherited_mcp_tools)
                 else:
-                    available_tools = _dedupe_tools(base_tools + list(all_mcp_tools) + list(all_plugin_host_tools))
+                    available_tools = _dedupe_tools(base_tools + list(all_mcp_tools))
 
             route_context_token = extensions_runtime_service.bind_execution_context(
                 session_id=state.get("session_id"),
@@ -898,7 +873,7 @@ def build_agent_node(
                 workspace_id=state.get("workspace_id"),
                 workspace_path=state.get("workspace_path"),
                 project_id=state.get("project_id"),
-                runtime_kind="chat",
+                runtime_kind="subagent",
             )
             try:
                 route_bundle = extensions_runtime_service.build_contextual_route(
@@ -908,7 +883,6 @@ def build_agent_node(
                     inherited_skill_ids=inherited_skill_ids,
                     inherited_skill_names=inherited_skill_names,
                     mcp_limit=6,
-                    plugin_host_limit=6,
                 )
                 extensions_runtime_service.emit_route_selected(user_query=extensions_route_query, route_bundle=route_bundle)
                 combined_tools = route_bundle.filtered_tools
@@ -957,7 +931,6 @@ def build_agent_node(
                     selected_skill_entries=route_bundle.candidate_summary.get("skillEntries") or [],
                     skill_root_descriptors=route_bundle.skill_root_descriptors or [],
                     selected_mcp_tools=route_bundle.exposed_mcp_tool_names,
-                    selected_plugin_host_tools=route_bundle.candidate_summary.get("pluginHostTools") or [],
                     selected_baseline_tools=select_baseline_system_tool_names(combined_tools),
                     prompt_addition=route_bundle.prompt_addition,
                     invocation_id=inherited_route_context.get("invocationId"),
@@ -1226,7 +1199,6 @@ def build_specialist_agent_components(
     *,
     loaded_agents: list[dict],
     all_mcp_tools: list,
-    all_plugin_host_tools: list,
     filtered_native_tools: list,
     default_agent_llm,
     supervisor_model_id: str,
@@ -1262,9 +1234,10 @@ def build_specialist_agent_components(
             )
         )
         if agent_tool_mode == "contextual_auto":
-            # Contextual agents receive external MCP/PluginHost tools only after the
+            # Contextual agents receive ordinary MCP tools only after the
             # delegated task route selects them. Keep the static tool node narrow so
-            # the runtime surface does not silently retain the full external tree.
+            # the runtime surface does not silently retain the full tree. Explicitly
+            # granted plugin tools are projected separately by Plugin Manager.
             tool_node_tools = contextual_base_tools
             tool_node_func = build_contextual_auto_tool_node(
                 base_tools=contextual_base_tools,
@@ -1272,7 +1245,6 @@ def build_specialist_agent_components(
                 all_native_tools=list(filtered_native_tools) + [fetch_skill_instructions],
                 static_extra_tools=[],
                 all_mcp_tools=all_mcp_tools,
-                all_plugin_host_tools=all_plugin_host_tools,
                 name=f"{agent_id}_tools",
                 fallback_goto=agent_id,
             )
@@ -1284,16 +1256,13 @@ def build_specialist_agent_components(
                     runtime_access=[],
                 )
                 + _resolve_selected_mcp_tools(all_mcp_tools, tool_selectors)
-                + _resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors)
             )
             tool_node_func = build_contextual_auto_tool_node(
                 base_tools=tool_node_tools,
                 agent_data=agent_data,
                 all_native_tools=list(filtered_native_tools) + [fetch_skill_instructions],
-                static_extra_tools=_resolve_selected_mcp_tools(all_mcp_tools, tool_selectors)
-                + _resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors),
+                static_extra_tools=_resolve_selected_mcp_tools(all_mcp_tools, tool_selectors),
                 all_mcp_tools=_resolve_selected_mcp_tools(all_mcp_tools, tool_selectors),
-                all_plugin_host_tools=_resolve_selected_plugin_host_tools(all_plugin_host_tools, tool_selectors),
                 name=f"{agent_id}_tools",
                 fallback_goto=agent_id,
             ) if tool_node_tools else None
@@ -1307,7 +1276,6 @@ def build_specialist_agent_components(
                 agent_tool_selectors=tool_selectors,
                 agent_tool_mode=agent_tool_mode,
                 all_mcp_tools=all_mcp_tools,
-                all_plugin_host_tools=all_plugin_host_tools,
                 filtered_native_tools=filtered_native_tools,
                 fetch_skill_instructions_tool=fetch_skill_instructions,
                 reflection_enabled=reflection_enabled,

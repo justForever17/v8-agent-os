@@ -113,7 +113,7 @@ def diagnose_model_role(model: Dict[str, Any], *, role: str | None = None) -> Di
                 "message": "maxTokens is missing; output budget may be conservative.",
             }
         )
-    if role_name in {"supervisor", "subagent", "summary", "plugin_host"} and not caps.get("streaming"):
+    if role_name in {"supervisor", "subagent", "summary"} and not caps.get("streaming"):
         warnings.append(
             {
                 "code": "streaming_not_declared",

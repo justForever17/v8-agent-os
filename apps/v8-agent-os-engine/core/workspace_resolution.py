@@ -21,23 +21,10 @@ _SCOPED_WORKSPACE_RUNTIMES = {
     "automation_agent",
 }
 
-_MAIN_WORKSPACE_RUNTIMES = {
-    "plugin_host",
-    "plugin_host_push",
-}
-
-_LEGACY_MAIN_WORKSPACE_RUNTIME_ALIASES = {
-    "channel": "plugin_host",
-    "channel_chat": "plugin_host",
-    "channel_push": "plugin_host_push",
-}
-
-
 class WorkspaceResolutionService:
     @staticmethod
     def _normalize_runtime_kind(runtime_kind: str | None) -> str:
-        normalized = str(runtime_kind or "").strip().lower()
-        return _LEGACY_MAIN_WORKSPACE_RUNTIME_ALIASES.get(normalized, normalized)
+        return str(runtime_kind or "").strip().lower()
 
     @staticmethod
     def _normalize_workspace_path(value: str | None) -> str:
@@ -55,8 +42,6 @@ class WorkspaceResolutionService:
 
     def runtime_uses_scoped_workspace(self, runtime_kind: str | None) -> bool:
         normalized = self._normalize_runtime_kind(runtime_kind)
-        if normalized in _MAIN_WORKSPACE_RUNTIMES:
-            return False
         return normalized in _SCOPED_WORKSPACE_RUNTIMES
 
     def _resolve_project_workspace_binding(
@@ -172,7 +157,6 @@ class WorkspaceResolutionService:
             "pathStatus": path_status,
             "mainWorkspacePath": main_path,
             "resolvedWorkspacePath": resolved_path,
-            "pluginHostUsesMainWorkspace": not uses_scoped_workspace,
         }
 
     def resolve_workspace_path(

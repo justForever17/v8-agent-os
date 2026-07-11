@@ -28,7 +28,6 @@ _FAMILY_MAP_KEYS = {
     "canonicalFamilyParents",
 }
 _SEQUENCE_KEYS = {
-    "pluginHostQueryHints",
     "crossRuntimeEscapeTokens",
     "metaAdvisoryHints",
     "familyAdvisoryHints",
@@ -191,7 +190,6 @@ class ExtensionLexiconRegistry:
             "documentSubIntentSynonyms": {},
             "skillDocumentSubIntentSynonyms": {},
             "artifactProfileAnchors": {},
-            "pluginHostQueryHints": (),
             "crossRuntimeEscapeTokens": (),
             "metaAdvisoryHints": (),
             "familyAdvisoryHints": (),
@@ -363,7 +361,6 @@ class ExtensionLexiconRegistry:
             "artifactProfileAnchors": merged_anchor_maps["artifactProfileAnchors"],
             "canonicalFamilies": merged_family_maps["canonicalFamilies"],
             "canonicalFamilyParents": merged_family_maps["canonicalFamilyParents"],
-            "pluginHostQueryHints": merged_sequences["pluginHostQueryHints"],
             "crossRuntimeEscapeTokens": merged_sequences["crossRuntimeEscapeTokens"],
             "metaAdvisoryHints": merged_sequences["metaAdvisoryHints"],
             "familyAdvisoryHints": merged_sequences["familyAdvisoryHints"],
@@ -489,7 +486,6 @@ class ExtensionLexiconRegistry:
             "documentSubIntentSynonyms": merged_weighted_maps["documentSubIntentSynonyms"],
             "skillDocumentSubIntentSynonyms": merged_weighted_maps["skillDocumentSubIntentSynonyms"],
             "artifactProfileAnchors": merged_anchor_maps["artifactProfileAnchors"],
-            "pluginHostQueryHints": merged_sequences["pluginHostQueryHints"],
             "crossRuntimeEscapeTokens": merged_sequences["crossRuntimeEscapeTokens"],
             "metaAdvisoryHints": merged_sequences["metaAdvisoryHints"],
             "familyAdvisoryHints": merged_sequences["familyAdvisoryHints"],

@@ -134,7 +134,6 @@ def test_explicit_agent_and_reviewer_initial_models_use_subagent_factory(monkeyp
         agent_tool_selectors=[],
         agent_tool_mode="contextual_auto",
         all_mcp_tools=[],
-        all_plugin_host_tools=[],
         filtered_native_tools=[],
         fetch_skill_instructions_tool=None,
         reflection_enabled=True,
@@ -243,7 +242,6 @@ def test_default_agent_and_request_override_models_use_subagent_factory(
 
     monkeypatch.setattr("graph.supervisor_builder.create_subagent_chat_model", _create_default)
     monkeypatch.setattr("graph.supervisor_builder.extensions_runtime_service.get_mcp_tools", lambda: [])
-    monkeypatch.setattr("graph.supervisor_builder.plugin_host_tool_registry.build_supervisor_tools", lambda: [])
     monkeypatch.setattr("graph.supervisor_builder.build_external_langchain_tools", lambda _tools: [])
     monkeypatch.setattr("graph.supervisor_builder.capability_registry.filter_direct_tools", lambda _tools: [])
     monkeypatch.setattr("graph.supervisor_builder.create_robust_invoke", lambda **kwargs: object())

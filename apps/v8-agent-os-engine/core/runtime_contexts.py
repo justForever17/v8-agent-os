@@ -188,16 +188,6 @@ def build_channel_context_blocks(older_messages: Sequence[Dict[str, Any]], max_i
     ]
 
 
-def build_plugin_host_context_blocks(older_messages: Sequence[Dict[str, Any]], max_items: int = 8) -> List[Dict[str, Any]]:
-    blocks = build_channel_context_blocks(older_messages, max_items=max_items)
-    for block in blocks:
-        block["title"] = "PluginHost 历史摘要"
-        metadata = dict(block.get("metadata") or {})
-        metadata["runtime_plane"] = "plugin_host"
-        block["metadata"] = metadata
-    return blocks
-
-
 def _context_additional_kwargs(
     *,
     session_id: str,
@@ -277,21 +267,6 @@ def build_channel_context_messages(
     return lc_messages
 
 
-def build_plugin_host_context_messages(
-    *,
-    session_id: str,
-    chat_type: str,
-    recent_messages: Sequence[Dict[str, Any]],
-    context_blocks: Sequence[Dict[str, Any]] = (),
-) -> List[HumanMessage | AIMessage | SystemMessage]:
-    return build_channel_context_messages(
-        session_id=session_id,
-        chat_type=chat_type,
-        recent_messages=recent_messages,
-        context_blocks=context_blocks,
-    )
-
-
 def build_channel_runtime_metadata(
     *,
     source: str,
@@ -314,29 +289,6 @@ def build_channel_runtime_metadata(
         "mentions": mention_list,
         "wake_triggered": wake_triggered,
     }
-
-
-def build_plugin_host_runtime_metadata(
-    *,
-    source: str,
-    chat_type: str,
-    remote_id: str,
-    sender_id: Optional[str],
-    sender_name: Optional[str],
-    is_master: bool,
-    mentions: Optional[Iterable[str]] = None,
-    wake_triggered: bool = False,
-) -> Dict[str, Any]:
-    return build_channel_runtime_metadata(
-        source=source,
-        chat_type=chat_type,
-        remote_id=remote_id,
-        sender_id=sender_id,
-        sender_name=sender_name,
-        is_master=is_master,
-        mentions=mentions,
-        wake_triggered=wake_triggered,
-    )
 
 
 def _format_user_message(message: Dict[str, Any], *, chat_type: str) -> str:

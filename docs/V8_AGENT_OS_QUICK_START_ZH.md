@@ -4,7 +4,6 @@
 
 - `E:\Projects\v8chat\v8-agent-os`
 - `E:\Projects\v8chat\v8-agent-os-site`
-- `E:\Projects\v8chat\openclaw-v8-bridge`
 
 这份文档面向第一次接触 V8 Agent OS 的开发者、测试者与运维同学。目标不是讲清全部细节，而是帮助你在最短时间内建立正确心智模型，并把整套系统冷启动起来。
 
@@ -19,8 +18,6 @@ V8 Agent OS 现在不是“单仓聊天应用”，而是一套 runtime-first �
    - 包含 `engine / admin / phone / web / packages`
 2. `v8-agent-os-site`
    - 对外站点、安装入口、公开叙事
-3. `openclaw-v8-bridge`
-   - OpenClaw / `plugin_host` / channels / handoff 桥接主链
 
 当前产品角色固定为：
 
@@ -166,7 +163,7 @@ Web、桌宠、CLI 都属于本机可信入口，不走 Phone 配对票据，也
 2. 不要让 `web/phone` 直连 `engine`；它们应只依赖 `admin` broker。
 3. 不要绕过 `packages/session-realtime` 自己发明一套 snapshot/history/realtime contract。
 4. 不要从旧 JSON 或缓存文件推断当前配置是否生效。
-5. 不要把 `plugin_host`、`network_supervisor`、`desktop-live` 当成边缘功能。
+5. 不要把插件管理中心、`network_supervisor`、`desktop-live` 当成边缘功能；`@插件` 是强提示，Supervisor 也可为当前 run 创建最小插件授权，但不能自行安装、补配置、读取密钥或创建长期授权。
 6. 不要把历史兼容壳说成当前真相源。
 
 ---
@@ -180,7 +177,4 @@ Web、桌宠、CLI 都属于本机可信入口，不走 Phone 配对票据，也
 3. [V8 Agent OS 配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
 4. `docs/Govern/*` 里的治理与架构升级文档
 
-如果你要改 OpenClaw / plugin host / channels / handoff，请同时联查：
-
-- `E:\Projects\v8chat\openclaw-v8-bridge`
-- `E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\core\plugin_host`
+如果你要改插件安装、授权或能力投影，请同时联查 Engine `runtimes/plugin_manager`、Admin `/admin/plugins`、Web/Phone `@插件` 选择器和共享消息契约。

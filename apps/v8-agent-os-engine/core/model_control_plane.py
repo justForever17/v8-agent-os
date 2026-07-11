@@ -27,6 +27,22 @@ CHAT_CAPABILITY_CLASSES = [
     "vision_multimodal",
 ]
 
+PLUGIN_ONLY_MEDIA_OPERATION_KINDS = {
+    "video.action_transfer",
+    "video.lipsync",
+    "video.avatar",
+    "video.replacement",
+    "video.style_repaint",
+    "video.video_edit",
+}
+
+PLUGIN_ONLY_MEDIA_MODEL_IDS = {
+    "wan2.2-animate-mix",
+    "wan2.2-animate-move",
+    "wan2.2-s2v",
+    "wan2.7-videoedit",
+}
+
 DEFAULT_ROLE_MAP = {
     "default": "",
     "supervisor": "",
@@ -39,7 +55,6 @@ DEFAULT_ROLE_MAP = {
     "reranker": "",
     "extensions_prefilter": "",
     "extensions_reranker": "",
-    "channel": "",
     "automation": "",
     "computer_use_planner": "",
     "computer_use_visual_actor": "",
@@ -140,7 +155,6 @@ DEFAULT_ROUTING_POLICIES = {
     "chat": "supervisor",
     "planner": "planner",
     "subagent": "subagent",
-    "channel": "channel",
     "automation": "automation",
     "summary": "summary",
     "memoryExtraction": "extraction",
@@ -188,7 +202,6 @@ ROLE_DEFAULT_CATEGORY_MAP = {
     "summary": "text_generation",
     "extraction": "text_generation",
     "extensions_prefilter": "text_generation",
-    "channel": "text_generation",
     "automation": "text_generation",
     "vision": "vision_multimodal",
     "computer_use_visual_actor": "vision_multimodal",
@@ -262,15 +275,9 @@ ROLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     },
     "extensions_prefilter": {
         "label": "扩展候选预筛",
-        "description": "用廉价通用模型对 Skills、MCP 与 PluginHost 工具树做家族级预筛。",
+        "description": "用廉价通用模型对普通 Skills 与 MCP 工具树做家族级预筛。",
         "group": "extension",
         "capabilityClasses": ["chat_general", "chat_tool_calling", "chat_reasoning"],
-    },
-    "channel": {
-        "label": "渠道处理",
-        "description": "飞书与其他外部渠道消息处理。",
-        "group": "system",
-        "capabilityClasses": CHAT_CAPABILITY_CLASSES,
     },
     "automation": {
         "label": "AutomationRuntime",
@@ -386,20 +393,11 @@ MODULE_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "key": "extensions_prefilter",
         "label": "扩展候选预筛",
-        "description": "对 Skills、MCP 与 PluginHost 候选树做 LLM 预筛。",
+        "description": "对普通 Skills 与 MCP 候选树做 LLM 预筛；插件能力不进入候选池。",
         "group": "extension",
         "roles": ["extensions_prefilter"],
         "pagePath": "/admin/extensions",
         "pageLabel": "扩展生态",
-    },
-    {
-        "key": "plugin_host_runtime",
-        "label": "插件宿主链路",
-        "description": "OpenClaw sidecar/host 承接的外部插件与渠道消息处理。",
-        "group": "system",
-        "roles": ["channel"],
-        "pagePath": "/admin/plugin-host",
-        "pageLabel": "插件宿主",
     },
     {
         "key": "automation_runtime",
@@ -679,6 +677,26 @@ class ModelControlPlane:
             normalized_models: Dict[str, Any] = {}
             for model_id, model_meta_raw in models.items():
                 model_meta = dict(model_meta_raw or {})
+                if str(model_id).strip().lower() in PLUGIN_ONLY_MEDIA_MODEL_IDS:
+                    continue
+                declared_operations = list(model_meta.get("operationKinds") or [])
+                media_limits = dict(model_meta.get("mediaLimits") or {})
+                media_operations = list(media_limits.get("operationKinds") or [])
+                filtered_declared = [
+                    item for item in declared_operations
+                    if str(item) not in PLUGIN_ONLY_MEDIA_OPERATION_KINDS
+                ]
+                filtered_media = [
+                    item for item in media_operations
+                    if str(item) not in PLUGIN_ONLY_MEDIA_OPERATION_KINDS
+                ]
+                if (declared_operations or media_operations) and not (filtered_declared or filtered_media):
+                    continue
+                if declared_operations:
+                    model_meta["operationKinds"] = filtered_declared
+                if media_operations:
+                    media_limits["operationKinds"] = filtered_media
+                    model_meta["mediaLimits"] = media_limits
                 model_meta.pop("name", None)
                 model_meta.pop("temperature", None)
                 model_meta["runtimeReady"] = provider_runtime_ready

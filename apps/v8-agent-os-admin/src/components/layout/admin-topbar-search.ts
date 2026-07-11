@@ -98,13 +98,6 @@ const RUNTIME_ENTRIES: AdminTopbarSearchEntry[] = Object.entries(RUNTIME_CONTROL
   priority: 200 + index
 }));
 const MANUAL_ENTRIES: AdminTopbarSearchEntry[] = [{
-  id: "plugin-host-bridge",
-  title: "components.layout.admin.topbar.search.k03c86153",
-  subtitle: "components.layout.admin.topbar.search.k4b9cbbff",
-  href: "/admin/plugin-host",
-  aliases: ["bridge", "handoff", "inbound", "plugin host bridge"],
-  priority: 240
-}, {
   id: "runtime-ops-approvals",
   title: "components.layout.admin.topbar.search.k61329e7f",
   subtitle: "components.layout.admin.topbar.search.kd71b1ac9",
@@ -131,8 +124,8 @@ function collectNavAliases(item: AdminNavItem & {
   groupTitle?: string;
 }) {
   const aliases = [item.href];
-  if (item.href === "/admin/plugin-host") {
-    aliases.push("plugin host", "bridge", "handoff", "openclaw");
+  if (item.href === "/admin/plugins") {
+    aliases.push("plugin manager", "cli", "mcp", "skill");
   }
   if (item.href === "/admin/desktop-automation") {
     aliases.push("computer_use", "computer use", "desktop automation");

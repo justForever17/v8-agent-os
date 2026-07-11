@@ -41,7 +41,6 @@ from core.database import db  # noqa: E402
 from core.delegation_broker import choose_best_local_agent_with_diagnostics, normalize_task_brief  # noqa: E402
 from core.knowledge_db import knowledge_db  # noqa: E402
 from core.memory_store import memory_store  # noqa: E402
-from core.plugin_host.tool_registry import plugin_host_tool_registry  # noqa: E402
 from core.runtime_tool_access import filter_visible_tools_for_actor, grant_runtime_tool_groups, normalize_runtime_access  # noqa: E402
 from core.storage import storage  # noqa: E402
 from core.system_tools.native import NATIVE_TOOLS  # noqa: E402
@@ -95,13 +94,6 @@ def _safe_get_mcp_tools() -> list[Any]:
         return []
 
 
-def _safe_get_plugin_host_tools() -> list[Any]:
-    try:
-        return list(plugin_host_tool_registry.build_supervisor_tools() or [])
-    except Exception:
-        return []
-
-
 def _content_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -135,7 +127,6 @@ def _build_toolset() -> tuple[list[Any], list[dict[str, Any]], dict[str, Any]]:
         filtered_native_tools=filtered_native_tools,
         external_tools=[],
         all_mcp_tools=_safe_get_mcp_tools(),
-        plugin_host_tools=_safe_get_plugin_host_tools(),
         supervisor_allowed_tools=supervisor_config.get("allowed_tools"),
         config_allowed_tools=config.allowed_tools,
     )
@@ -765,7 +756,6 @@ def _build_scene(
             loaded_agents=agents,
             skill_limit=10,
             mcp_limit=5,
-            plugin_host_limit=8,
         )
         supervisor_context = build_supervisor_system_content(
             state=state,
@@ -820,7 +810,6 @@ def _build_scene(
                 loaded_agents=None,
                 skill_limit=6,
                 mcp_limit=4,
-                plugin_host_limit=4,
                 freshness_mode="preview_best_effort",
             )
         finally:

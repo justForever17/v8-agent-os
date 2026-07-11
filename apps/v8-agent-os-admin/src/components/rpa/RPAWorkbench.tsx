@@ -3770,7 +3770,7 @@ export function RPAWorkbench() {
                                                         <Badge variant="outline">{template.appId || "desktop"}</Badge>
                                                         <Badge variant="secondary">{template.view?.statusLabel || template.status || "unknown"}</Badge>
                                                         <Badge variant={template.view?.executionPath === "computer_use_first" ? "destructive" : "outline"}>
-                                                            {template.view?.executionPathLabel || template.view?.rolloutModeLabel || t("components.plugin.host.PluginHostWorkbench.k54745147")}
+                                                            {template.view?.executionPathLabel || template.view?.rolloutModeLabel || t("app.admin.dashboard.rpa.page.k54745147")}
                                                         </Badge>
                                                         {archived ? <Badge variant="outline">{t("components.rpa.RPAWorkbench.archived")}</Badge> : null}
                                                     </div>
@@ -3806,7 +3806,7 @@ export function RPAWorkbench() {
                                         <Badge variant="secondary">{selectedTemplate.view?.statusLabel || selectedTemplate.status || "unknown"}</Badge>
                                         <Badge variant="outline">{selectedTemplate.view?.stageLabel || selectedTemplate.governance?.stage || "unknown"}</Badge>
                                         <Badge variant={selectedTemplate.view?.executionPath === "computer_use_first" ? "destructive" : "outline"}>
-                                            {selectedTemplate.view?.executionPathLabel || selectedTemplate.view?.rolloutModeLabel || t("components.plugin.host.PluginHostWorkbench.k54745147")}
+                                            {selectedTemplate.view?.executionPathLabel || selectedTemplate.view?.rolloutModeLabel || t("app.admin.dashboard.rpa.page.k54745147")}
                                         </Badge>
                                     </div>
                                     <div>{tg(t, "3e403dc5")}<span className="text-foreground">{selectedTemplate.view?.recommendedDecisionLabel || selectedTemplate.governance?.recommendedDecision || tg(t, "9191e379")}</span></div>

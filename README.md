@@ -49,6 +49,10 @@ The Supervisor coordinates the work. It can handle simple tasks directly or rout
 - Memory: preferences, knowledge, and long-running project context.
 - Desktop Companion: follows the active session, plays actions and speech, and can send voice or snapshots as attachments.
 
+### Plugin Manager
+
+Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signed catalog while keeping credentials behind opaque references. `@plugin` is a strong user hint, not the only entry: when a task clearly benefits from an installed, configured, healthy plugin, the Supervisor may create the smallest task-scoped grant and pass only a required component subset to a direct subagent. Installation, configuration, secret access, and lasting session grants remain user-controlled. The curated catalog includes official components such as GitHub, Figma, and the AMap CLI.
+
 ## Quick Start
 
 ### Download a Preview
@@ -85,7 +89,7 @@ Phone is paired through the desktop control center. Once paired, it keeps a loca
 
 ## Safety and Boundaries
 
-V8OS is local-first by default. Desktop Web, Admin, Shell, and the companion are trusted local clients. Phone is the remote client and uses pairing. Multi-device collaboration, third-party compatibility endpoints, and plugin bridges are advanced surfaces and are kept separate from ordinary local use.
+V8OS is local-first by default. Desktop Web, Admin, Shell, and the companion are trusted local clients. Phone is the remote client and uses pairing. Multi-device collaboration, third-party plugin authorization, and network connections are advanced surfaces and are kept separate from ordinary local use.
 
 User-facing surfaces should stay clean: status, results, risks, next steps, and artifacts. Internal scheduling data, raw model responses, audit records, and recovery metadata stay in diagnostics.
 

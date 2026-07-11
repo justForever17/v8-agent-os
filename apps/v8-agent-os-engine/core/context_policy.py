@@ -27,10 +27,6 @@ DEFAULT_CONTEXT_POLICY: Dict[str, Any] = {
         "noticeable_latency_ms": 800,
     },
     "runtime_adapters": {
-        "plugin_host": {
-            "window_size": 15,
-            "max_summary_items": 8,
-        },
         "automation": {
             "recent_run_limit": 3,
             "job_memory_limit": 6,
@@ -59,7 +55,6 @@ def normalize_context_policy(raw: Dict[str, Any] | None) -> Dict[str, Any]:
     data = deepcopy(raw or {})
     compression = dict(data.get("compression") or {})
     runtime_adapters = dict(data.get("runtime_adapters") or {})
-    plugin_host_adapter = dict(runtime_adapters.get("plugin_host") or runtime_adapters.get("channel") or {})
     automation_adapter = dict(runtime_adapters.get("automation") or {})
 
     keep_recent_turns_default = compression.get("keep_recent_turns")
@@ -154,20 +149,6 @@ def normalize_context_policy(raw: Dict[str, Any] | None) -> Dict[str, Any]:
             ),
         },
         "runtime_adapters": {
-            "plugin_host": {
-                "window_size": _coerce_int(
-                    plugin_host_adapter.get("window_size", 15),
-                    15,
-                    minimum=3,
-                    maximum=100,
-                ),
-                "max_summary_items": _coerce_int(
-                    plugin_host_adapter.get("max_summary_items", 8),
-                    8,
-                    minimum=1,
-                    maximum=50,
-                ),
-            },
             "automation": {
                 "recent_run_limit": _coerce_int(
                     automation_adapter.get("recent_run_limit", 3),

@@ -15,7 +15,7 @@ _SNAPSHOT_RUNTIME_ORDER = (
     "automation",
     "extensions",
     "network_supervisor",
-    "plugin_host",
+    "plugin_manager",
     "computer_use",
     "rpa",
 )
@@ -43,7 +43,7 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
         "visibility": "secondary",
         "promptHints": [
             "用法入口：复杂媒体创作或 provider 生成任务通过 runtime_broker(mode='route', need={'kind':'creative_media', ...}) 创建 episode；输入应是 brief、modality、assetRole、referenceAssetIds、qualityTier/costLimit，而不是 provider raw request。",
-            "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；Supervisor 不直接拼图像/视频/音频 API 请求。",
+            "执行流程：Creative Media 负责 recipe/work order 编译、provider 选择、job 轮询、artifact 登记、质量/安全摘要；绑定 Agent 只使用 capabilities/plan/assets/jobs/edit/quality 六个 facade，不猜测旧工具名或 supplier 私有工具；Supervisor 不直接拼图像/视频/音频 API 请求。",
             "边界：明确 Seedance/Sora/图生视频/参考视频/首尾帧/参考音频/音乐时可主导；简单背景图、图标、封面、角色图、配音、音乐、关键帧可作为其他 runtime 的 CreativeAssetRequest 支撑能力；科普/课程/产品介绍等可编辑代码视频由 Engineering 主导。",
             "回流要求：typed handoff 必须给 artifactRefs/jobIds/modelUsed/costEstimate/safetyStatus/limitations/detailRef；provider raw response、轮询日志和内部 recipe JSON 只进 Runtime Surface。",
             "科普、课程、产品介绍、讲解类视频若需要可编辑时间线或代码合成，默认由 Engineering 走代码视频链路，Creative Media 只做素材/provider 子能力。",
@@ -67,10 +67,15 @@ _KNOWN_RUNTIME_BASELINES: dict[str, dict[str, Any]] = {
             "Skill 是方法包，不是权限包；读 skill 不会绕过 workspace、runtime 或 side-effect 边界。",
         ],
     },
-    "plugin_host": {
-        "displayName": "PluginHostRuntime",
-        "summary": "被动/通道型 runtime。负责外部插件宿主、桥接通道、入站 handoff 与宿主运行状态。",
+    "plugin_manager": {
+        "displayName": "插件管理中心",
+        "summary": "被动/支持型 runtime。负责精选官方 CLI、Skill、MCP 与 UI 适配器的安装、配置、健康和最小任务授权。",
         "visibility": "secondary",
+        "promptHints": [
+            "@插件 是强提示而非唯一入口；Supervisor 可用 plugin_broker 为当前 run 授权已就绪插件的最小组件集合。",
+            "不得自行安装、补配置、读取密钥或把任务授权升级成长期会话授权。",
+            "授权后的 Skill、MCP 和 CLI 走确定性特权投影，不参与普通 Extensions 预筛。",
+        ],
     },
     "computer_use": {
         "displayName": "ComputerUseRuntime",
@@ -487,8 +492,6 @@ class CapabilityRegistry:
 
         def _config_enabled(kind: str) -> bool:
             try:
-                if kind == "plugin_host":
-                    return bool(storage.get_plugin_host_config().get("enabled", True))
                 if kind == "network_supervisor":
                     return bool(storage.get_network_supervisor_runtime_config().get("enabled", False))
                 if kind == "engineering":
@@ -536,8 +539,6 @@ class CapabilityRegistry:
             try:
                 from core.storage import storage
 
-                if kind == "plugin_host":
-                    return bool(storage.get_plugin_host_config().get("enabled", True))
                 if kind == "network_supervisor":
                     return bool(storage.get_network_supervisor_runtime_config().get("enabled", False))
                 if kind == "engineering":

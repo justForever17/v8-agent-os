@@ -2020,8 +2020,8 @@ class RuntimeEpisodeRunner:
                         "handoffStage": "planned",
                         "requiresContinuation": not bool(work_order.get("artifactRefs")),
                         "recommendedNextAction": (
-                            "Create the required provider jobs with creative_media_create_job, poll queued jobs with "
-                            "creative_media_get_job, then pass the resulting artifact refs to Engineering."
+                            "Create the required provider jobs with creative_media_jobs(action='create'), poll with "
+                            "creative_media_jobs(action='get'), then pass artifact refs from action='artifacts' to Engineering."
                         ),
                         "providerPlan": work_order.get("providerPlan"),
                         "qualityChecks": work_order.get("qualityChecks") or [],
@@ -2046,8 +2046,8 @@ class RuntimeEpisodeRunner:
                     "handoffStage": "compiled",
                     "requiresContinuation": True,
                     "recommendedNextAction": (
-                        "Create the required provider jobs with creative_media_create_job, poll queued jobs with "
-                        "creative_media_get_job, then pass the resulting artifact refs to Engineering."
+                        "Create the required provider jobs with creative_media_jobs(action='create'), poll with "
+                        "creative_media_jobs(action='get'), then pass artifact refs from action='artifacts' to Engineering."
                     ),
                 },
             )

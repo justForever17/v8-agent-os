@@ -100,14 +100,6 @@ def _get_extensions_runtime_service():
     return _import_module("runtimes.extensions.runtime").extensions_runtime_service
 
 
-def _get_plugin_host_service():
-    return _import_module("core.plugin_host").plugin_host_service
-
-
-def _get_plugin_host_routes():
-    return _import_module("core.plugin_host.routes")
-
-
 def _get_audio_routes():
     return _import_module("core.audio.routes")
 
@@ -136,6 +128,10 @@ def _ensure_network_supervisor_runtime_registered() -> None:
     _import_module("runtimes.network_supervisor.runtime")
 
 
+def _ensure_plugin_manager_runtime_registered() -> None:
+    _import_module("runtimes.plugin_manager.runtime")
+
+
 def _get_memory_backend_health():
     return _import_module("core.memory.backend_health").inspect_memory_backend
 
@@ -148,18 +144,6 @@ def _ensure_default_workflow_memories() -> None:
             print("[Engine] Default workflow memories ensured.", result)
     except Exception as e:
         print(f"[Engine] Default workflow memory seeding error (non-fatal): {e}")
-
-
-def _get_silk_toolchain_status():
-    status = _import_module("core.plugin_host.silk_codec").silk_toolchain_status
-    return status() if callable(status) else status
-
-
-def _plugin_host_enabled() -> bool:
-    try:
-        return bool(storage.get_plugin_host_config().get("enabled", True))
-    except Exception:
-        return True
 
 
 def _network_supervisor_enabled() -> bool:
@@ -183,12 +167,6 @@ def _service_flags(profile: str = STARTUP_PROFILE) -> dict[str, bool]:
         "skills": service_enabled("skills", profile=profile),
         "extensions": service_enabled("extensions", profile=profile),
         "cron": service_enabled("cron", profile=profile),
-        "plugin_host": service_enabled(
-            "plugin_host",
-            profile=profile,
-            runtime_kind="plugin_host",
-            config_enabled=_plugin_host_enabled(),
-        ),
         "network_supervisor": service_enabled(
             "network_supervisor",
             profile=profile,
@@ -210,12 +188,6 @@ def _service_states(profile: str = STARTUP_PROFILE) -> dict[str, dict[str, objec
         "skills": service_state("skills", profile=profile),
         "extensions": service_state("extensions", profile=profile),
         "cron": service_state("cron", profile=profile),
-        "plugin_host": service_state(
-            "plugin_host",
-            profile=profile,
-            runtime_kind="plugin_host",
-            config_enabled=_plugin_host_enabled(),
-        ),
         "network_supervisor": service_state(
             "network_supervisor",
             profile=profile,
@@ -356,6 +328,7 @@ async def lifespan(app: FastAPI):
 
     app.state.storage_retention_startup_task = asyncio.create_task(_run_startup_retention_check())
 
+    _ensure_plugin_manager_runtime_registered()
     if service_flags["mcp"]:
         await _safe_initialize_mcp(app)
     if service_flags["extensions"]:
@@ -365,8 +338,6 @@ async def lifespan(app: FastAPI):
         )
     if service_flags["cron"]:
         _get_cron_manager().start()
-    if service_flags["plugin_host"]:
-        await _get_plugin_host_service().start()
     if service_flags["network_supervisor"]:
         _ensure_network_supervisor_runtime_registered()
         await _get_network_supervisor_service().start()
@@ -386,8 +357,6 @@ async def lifespan(app: FastAPI):
         await _get_network_supervisor_service().stop()
     if service_flags["extensions"]:
         await _get_extensions_runtime_service().stop()
-    if service_flags["plugin_host"]:
-        await _get_plugin_host_service().stop()
     skills_task = getattr(app.state, "skills_refresh_task", None)
     if skills_task and not skills_task.done():
         skills_task.cancel()
@@ -442,8 +411,6 @@ async def attach_engine_now_header(request, call_next):
 app.include_router(routes.router, prefix="/v1")
 if _service_flags()["audio"]:
     app.include_router(_get_audio_routes().router)
-if _service_flags()["plugin_host"]:
-    app.include_router(_get_plugin_host_routes().router)
 
 @app.get("/workspace/{file_path:path}")
 async def serve_workspace_file(file_path: str):
@@ -482,7 +449,6 @@ async def health_check():
         if service_flags["extensions"]
         else {"startupState": "disabled"}
     )
-    silk_status = _get_silk_toolchain_status() if service_flags["plugin_host"] else {"status": "disabled"}
     inspect_memory_backend = _get_memory_backend_health()
     return {
         "status": "ok",
@@ -503,7 +469,6 @@ async def health_check():
         "skillsRuntime": skills_status,
         "extensionsRuntime": extensions_status,
         "mcpRuntime": mcp_status,
-        "silk": silk_status,
         "engineRuntime": inspect_engine_runtime(),
         "memory": inspect_memory_backend(),
         "identity": storage.get_system_identity(),

@@ -843,21 +843,21 @@ def test_research_broker_does_not_reuse_unrelated_pack(monkeypatch):
                 "provider": "fake",
                 "results": [
                     {
-                        "title": "OpenClaw Plugin SDK",
-                        "url": "https://docs.example.com/openclaw",
-                        "snippet": "OpenClaw plugin SDK source.",
+                        "title": "Vendor Plugin SDK",
+                        "url": "https://docs.example.com/vendor-plugin-sdk",
+                        "snippet": "Vendor plugin SDK source.",
                     }
                 ],
             }
         )
 
     monkeypatch.setattr(research_module, "web_search", SimpleNamespace(func=fake_search))
-    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=lambda **kwargs: json.dumps({"ok": True, "text": "OpenClaw plugin SDK documentation."})))
+    monkeypatch.setattr(research_module, "web_read", SimpleNamespace(func=lambda **kwargs: json.dumps({"ok": True, "text": "Vendor plugin SDK documentation."})))
 
     first = json.loads(
         research_module.research_broker.func(
             mode="run",
-            question="OpenClaw plugin SDK patterns",
+            question="Vendor plugin SDK patterns",
             state={"run_id": "run-unrelated"},
         )
     )
@@ -915,9 +915,9 @@ def test_reuse_decision_ignores_generic_stopword_overlap():
     decision = research_module._experience_reuse_decision(
         [
             {
-                "experiencePackId": "rxp-openclaw",
-                "title": "Research the latest OpenClaw plugin SDK patterns",
-                "query": "Research the latest OpenClaw plugin SDK patterns and API exports",
+                "experiencePackId": "rxp-vendor-plugin",
+                "title": "Research the latest vendor plugin SDK patterns",
+                "query": "Research the latest vendor plugin SDK patterns and API exports",
                 "confidence": "high",
                 "sourcePolicy": "authoritative",
             }

@@ -13,7 +13,6 @@ import {
 import { normalizeRealtimeEvent } from "@/lib/realtime";
 import { clearLegacyWebConversationCache } from "@/lib/web-conversation-cache";
 import {
-    RuntimeId,
     buildRuntimeStageModel,
     buildRuntimeTimelineEntryFromEvent,
     mergeRuntimeTimeline,
@@ -45,11 +44,12 @@ import {
     PlugZap,
     TerminalSquare,
     Trash2,
-    X,
 } from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { Button } from "@/components/ui/button";
-import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPanel";
+import { WorkbenchShell } from "@/components/workbench/WorkbenchShell";
+import { createSessionOverviewDocument } from "@/lib/workbench";
+import { ingestWorkbenchRuntimeEvent, useWorkbenchStore } from "@/store/workbench-store";
 import {
     ManualTerminalPanel,
     type ManualTerminalSessionView,
@@ -77,16 +77,6 @@ const AskUserModal = dynamic(
 
 const GovernanceApprovalModal = dynamic(
     () => import("@/components/chat/GovernanceApprovalModal").then((mod) => mod.GovernanceApprovalModal),
-    { ssr: false }
-);
-
-const ArtifactsPanel = dynamic(
-    () => import("@/components/chat/ArtifactsPanel").then((mod) => mod.ArtifactsPanel),
-    { ssr: false }
-);
-
-const RuntimeTimelinePanel = dynamic(
-    () => import("@/components/chat/RuntimeTimelinePanel").then((mod) => mod.RuntimeTimelinePanel),
     { ssr: false }
 );
 
@@ -943,15 +933,9 @@ export default function ChatClient() {
     const [queuedMessageError, setQueuedMessageError] = useState("");
     const [sessionProcessSurface, setSessionProcessSurface] = useState<AdminProcessRef[]>([]);
     const lastSessionProcessSurfaceAtRef = useRef(0);
-    const [isTimelineOpen, setIsTimelineOpen] = useState(false);
-    const [selectedRuntimeId, setSelectedRuntimeId] = useState<RuntimeId | null>(null);
-    const [sidebarOpen, setSidebarOpen] = useState(() => {
-        if (typeof window !== "undefined") {
-            const val = localStorage.getItem("v8-web-sidebar-open");
-            return val !== "false";
-        }
-        return true;
-    });
+    const workbenchMode = useWorkbenchStore((state) => state.mode);
+    const bindWorkbenchSession = useWorkbenchStore((state) => state.bindSession);
+    const toggleWorkbench = useWorkbenchStore((state) => state.toggle);
     const [terminalOpen, setTerminalOpen] = useState(() => {
         if (typeof window !== "undefined") {
             const val = localStorage.getItem("v8-web-terminal-open");
@@ -969,10 +953,8 @@ export default function ChatClient() {
     const [terminalError, setTerminalError] = useState("");
 
     useEffect(() => {
-        if (typeof window !== "undefined") {
-            localStorage.setItem("v8-web-sidebar-open", String(sidebarOpen));
-        }
-    }, [sidebarOpen]);
+        bindWorkbenchSession(activeConversationId || null);
+    }, [activeConversationId, bindWorkbenchSession]);
 
     useEffect(() => {
         if (typeof window !== "undefined") {
@@ -1532,20 +1514,6 @@ export default function ChatClient() {
     }, []);
 
     useEffect(() => {
-        if (runtimeStageModel.items.length === 0) {
-            setSelectedRuntimeId(null);
-            setIsTimelineOpen(false);
-            return;
-        }
-        setSelectedRuntimeId((prev) => {
-            if (prev && runtimeStageModel.items.some((item) => item.id === prev)) {
-                return prev;
-            }
-            return runtimeStageModel.activeRuntimeId || runtimeStageModel.items[0]?.id || null;
-        });
-    }, [runtimeStageModel.activeRuntimeId, runtimeStageModel.items]);
-
-    useEffect(() => {
         if (!activeConversationId) {
             return;
         }
@@ -1727,8 +1695,13 @@ export default function ChatClient() {
 
     const openGovernanceApproval = useCallback(() => {
         if (!governancePendingApprovalId) {
-            setSelectedRuntimeId("automation");
-            setIsTimelineOpen(true);
+            const sessionId = activeConversationIdRef.current;
+            if (sessionId) {
+                useWorkbenchStore.getState().openDocument(
+                    createSessionOverviewDocument(sessionId),
+                    { activate: true, mode: "split" },
+                );
+            }
             return;
         }
         setDismissedGovernanceApprovalId("");
@@ -1752,8 +1725,13 @@ export default function ChatClient() {
             router.push(buildSpecReviewHref(governancePendingApproval as Record<string, unknown>, fallbackWorkspacePath));
             return;
         }
-        setSelectedRuntimeId("automation");
-        setIsTimelineOpen(true);
+        const sessionId = activeConversationIdRef.current;
+        if (sessionId) {
+            useWorkbenchStore.getState().openDocument(
+                createSessionOverviewDocument(sessionId),
+                { activate: true, mode: "split" },
+            );
+        }
     }, [governancePendingApproval, governancePendingApprovalId, mainWorkspacePath, router, scopeBinding?.workspacePath]);
 
     const handleGovernanceApprovalResolve = useCallback(async (answer: string, approve: boolean) => {
@@ -2416,8 +2394,12 @@ export default function ChatClient() {
         }
 
         const runtimeTimelineEntry = buildRuntimeTimelineEntryFromEvent(rawEvent);
+        const workbenchEventHandled = ingestWorkbenchRuntimeEvent(rawEvent);
         const normalizedEvent = normalizeRealtimeEvent(rawEvent);
         if (!normalizedEvent) {
+            if (workbenchEventHandled) {
+                return;
+            }
             return;
         }
         const isHumanGuidanceEvent =
@@ -3020,9 +3002,9 @@ export default function ChatClient() {
                                     type="button"
                                     className={cn(
                                         "inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px]",
-                                        sidebarOpen ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
+                                        workbenchMode !== "closed" ? "border-primary/35 bg-primary/8 text-primary" : "border-border/60",
                                     )}
-                                    onClick={() => setSidebarOpen((prev) => !prev)}
+                                    onClick={toggleWorkbench}
                                     aria-label={t("web.generated.3e0dd2a94a")}
                                     title={t("web.generated.3e0dd2a94a")}
                                 >
@@ -3210,7 +3192,7 @@ export default function ChatClient() {
                             userAvatar={chatUserAvatar}
                             userName={chatUserName}
                             shellClassName="w-full"
-                            runtimeActivities={runtimeStageModel.activities}
+                            runtimeActivities={runtimeStageModel.messageActivities}
                             hasOlderTurns={hasOlderTurns}
                             isLoadingOlderTurns={isLoadingOlderTurns}
                             onReachTop={loadOlderConversationTurn}
@@ -3339,41 +3321,16 @@ export default function ChatClient() {
             )}
         </div>
 
-        {/* 右侧可折叠的 Sidebar 栏 */}
-        {hasActiveWorkbenchSession && sidebarOpen && (
-            <aside className={cn(
-                "w-80 shrink-0 border-l border-border/60 bg-background/95 backdrop-blur-md flex flex-col overflow-hidden z-[60]",
-                // 移动端窄屏覆盖显示
-                "max-sm:absolute max-sm:right-0 max-sm:top-0 max-sm:h-full max-sm:w-[280px] max-sm:shadow-2xl"
-            )}>
-                {/* 右侧边栏头部 */}
-                <div className="flex items-center gap-2 border-b border-border/60 px-4 py-3 shrink-0">
-                    <span className="text-sm font-semibold">工作台侧边栏</span>
-                    <button
-                        type="button"
-                        className="ml-auto flex h-6 w-6 items-center justify-center rounded-lg hover:bg-muted hover:text-foreground"
-                        onClick={() => setSidebarOpen(false)}
-                        title="折叠侧边栏"
-                    >
-                        <X className="h-4 w-4" />
-                    </button>
-                </div>
-
-                {/* 右侧边栏内容滚动区 */}
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
-                    <WorkspaceWorkbenchPanel
-                        messages={messages}
-                        processes={hudProcesses}
-                        todos={projectionTodos}
-                        todoStale={projectionTodoStale}
-                        runtimeModel={runtimeStageModel}
-                        selectedRuntimeId={selectedRuntimeId}
-                        onSelectRuntime={setSelectedRuntimeId}
-                        onOpenRuntimeDetail={() => setIsTimelineOpen(true)}
-                    />
-                </div>
-            </aside>
-        )}
+        {hasActiveWorkbenchSession ? (
+            <WorkbenchShell
+                sessionId={activeConversationId || ""}
+                messages={messages}
+                processes={hudProcesses}
+                todos={projectionTodos}
+                todoStale={projectionTodoStale}
+                runtimeModel={runtimeStageModel}
+            />
+        ) : null}
 
         <QueuedMessageEditDialog
             item={editingQueuedMessage}
@@ -3398,21 +3355,6 @@ export default function ChatClient() {
             onCancel={handleGovernanceApprovalDismiss}
         />
 
-        <ArtifactsPanel sessionId={activeConversationId} />
-
-        <RuntimeTimelinePanel
-            isOpen={isTimelineOpen}
-            onClose={() => setIsTimelineOpen(false)}
-            model={runtimeStageModel}
-            selectedRuntimeId={selectedRuntimeId}
-            processes={hudProcesses}
-            overallStatus={effectiveStatus}
-            currentStepTitle={sessionProjection?.workflow?.currentStepTitle || sessionProjection?.summary?.currentStepTitle || null}
-            pendingApproval={effectivePendingApproval}
-            contextGovernance={projectionContextGovernanceRaw}
-            contextGovernanceHistory={projectionContextGovernanceHistoryRaw}
-            onSelectRuntime={setSelectedRuntimeId}
-        />
     </div>
     );
 }

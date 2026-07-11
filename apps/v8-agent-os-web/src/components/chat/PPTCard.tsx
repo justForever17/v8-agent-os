@@ -1,113 +1,34 @@
-
 "use client";
 
-import { FileText, Maximize2, Download, X } from "lucide-react";
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle, DialogTrigger, DialogClose } from "@/components/ui/dialog";
+import { Download, FileText, PanelRightOpen } from "lucide-react";
+
+import { createExternalArtifactDocument } from "@/lib/workbench";
+import { useWorkbenchStore } from "@/store/workbench-store";
 
 interface PPTCardProps {
     url: string;
     filename?: string;
-    filesize?: string; // Optional display string
+    filesize?: string;
 }
-
 export function PPTCard({ url, filename, filesize }: PPTCardProps) {
-    const [isOpen, setIsOpen] = useState(false);
-
-    // Microsoft Office Online Viewer requires encoded URL
-    // ensure the URL is absolute
-    const safeUrl = url.startsWith("http") ? url : `${window.location.origin}${url}`;
-
-    // Use new URL() which handles encoding of Chinese            // Strategy: XDOC (Domestic/China Friendly) - Verified by User
-    // XDOC requires the source URL to be encoded
-    let finalUrl = safeUrl;
-    try {
-        finalUrl = new URL(safeUrl).toString();
-    } catch (error) {
-        console.warn("PPTCard: URL normalization failed", error);
-    }
-    // Use XDOC Viewer
-    const viewerUrl = `https://view.xdocin.com/view?src=${encodeURIComponent(finalUrl)}`;
-
-    // Extract filename from URL if not provided
-    const displayFilename = filename || decodeURIComponent(url.split('/').pop()?.split('?')[0] || "Presentation.pptx");
-
-    // Fallback file size display if unknown
-    const displaySize = filesize || "PPTX";
-
+    const openDocument = useWorkbenchStore((state) => state.openDocument);
+    const displayFilename = filename || decodeURIComponent(url.split("/").pop()?.split("?")[0] || "Presentation.pptx");
+    const document = createExternalArtifactDocument({
+        id: `ppt:${url}`,
+        title: displayFilename,
+        url,
+        renderer: "download",
+        mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    });
     return (
-        <div className="group relative w-full max-w-sm mt-2">
-            {/* Card Container */}
-            <div className="flex items-center gap-3 p-3 bg-card border rounded-xl shadow-sm hover:shadow-md transition-all duration-200 group-hover:border-primary/50">
-                {/* Icon Thumbnail */}
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-orange-100 text-orange-600">
-                    <FileText className="h-6 w-6" />
-                </div>
-
-                {/* Metadata */}
-                <div className="flex-1 min-w-0 grid gap-0.5">
-                    <div className="text-sm font-medium truncate" title={displayFilename}>
-                        {displayFilename}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                        {displaySize}
-                    </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex items-center gap-1">
-                    <Dialog open={isOpen} onOpenChange={setIsOpen}>
-                        <DialogTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-primary" title="Preview">
-                                <Maximize2 className="h-4 w-4" />
-                            </Button>
-                        </DialogTrigger>
-
-                        {/* Fullscreen Preview Modal */}
-                        <DialogContent className="max-w-[90vw] h-[90vh] p-0 flex flex-col gap-0 bg-background/95 backdrop-blur-sm border-none shadow-2xl [&>button]:hidden">
-                            <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/40 shrink-0">
-                                <div className="flex items-center gap-2">
-                                    <div className="flex h-8 w-8 items-center justify-center rounded bg-orange-100 text-orange-600">
-                                        <FileText className="h-4 w-4" />
-                                    </div>
-                                    <DialogTitle className="font-medium truncate max-w-[300px] text-base">{displayFilename}</DialogTitle>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <Button variant="outline" size="sm" asChild className="gap-2 hidden sm:flex">
-                                        <a href={url} download target="_blank" rel="noopener noreferrer">
-                                            <Download className="h-4 w-4" />
-                                            Download
-                                        </a>
-                                    </Button>
-                                    <DialogClose asChild>
-                                        <Button variant="ghost" size="icon">
-                                            <X className="h-5 w-5" />
-                                        </Button>
-                                    </DialogClose>
-                                </div>
-                            </div>
-
-                            {/* Iframe Container */}
-                            <div className="flex-1 w-full h-full bg-neutral-100 relative overflow-hidden">
-                                <iframe
-                                    src={viewerUrl}
-                                    className="w-full h-full border-none"
-                                    title="Office Online Viewer"
-                                    loading="lazy"
-                                    allowFullScreen
-                                />
-                            </div>
-                        </DialogContent>
-                    </Dialog>
-
-                    <Button variant="ghost" size="icon" asChild className="h-8 w-8 text-muted-foreground hover:text-primary" title="Download">
-                        <a href={url} download target="_blank" rel="noopener noreferrer">
-                            <Download className="h-4 w-4" />
-                        </a>
-                    </Button>
-                </div>
+        <div className="mt-2 flex h-11 w-full max-w-sm items-center gap-2 rounded-[5px] border border-border/65 bg-background/70 px-2.5">
+            <FileText className="h-4 w-4 shrink-0 text-orange-600" />
+            <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium">{displayFilename}</div>
+                <div className="text-[10px] text-muted-foreground">{filesize || "PPTX · 本地无幻灯片预览时仅下载/系统打开"}</div>
             </div>
+            <button type="button" onClick={() => openDocument(document, { activate: true, mode: "split" })} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="在工作台打开"><PanelRightOpen className="h-3.5 w-3.5" /></button>
+            <a href={url} download target="_blank" rel="noreferrer" className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="下载"><Download className="h-3.5 w-3.5" /></a>
         </div>
     );
 }

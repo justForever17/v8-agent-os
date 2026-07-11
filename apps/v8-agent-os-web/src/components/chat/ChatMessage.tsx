@@ -24,7 +24,8 @@ import { cn } from "@/lib/utils";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { ArtifactCard } from "./ArtifactCard";
 import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
-import { useChatStore } from "@/store/chat-store";
+import { createArtifactDocument } from "@/lib/workbench";
+import { useWorkbenchStore } from "@/store/workbench-store";
 import { useT } from "@/components/providers/LocaleProvider";
 import { parseContentToBlocks } from "@/lib/chat/content-detector";
 import { CollaborationMicroStageScene, type CollaborationMicroStageDetailTarget } from "./collaboration/CollaborationMicroStageScene";
@@ -302,7 +303,7 @@ function MessageActionButtons({
 function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [] }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
-    const setActiveArtifactId = useChatStore((state) => state.setActiveArtifactId);
+    const openWorkbenchDocument = useWorkbenchStore((state) => state.openDocument);
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const taskPlanningModeEnabled = useMemo(() => hasTaskPlanningMode(message), [message]);
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
@@ -780,7 +781,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             title={artifact.displayLabel || artifact.title || artifact.id}
                                             subtitle={artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifactUrl || "暂无路径信息"}
                                             type={inferArtifactCardType(artifact)}
-                                            onClick={() => setActiveArtifactId(artifact.id)}
+                                            onClick={() => openWorkbenchDocument(createArtifactDocument(artifact), { activate: true, mode: "split" })}
                                             onDownload={artifactUrl ? () => window.open(artifactUrl, "_blank", "noopener,noreferrer") : undefined}
                                         />
                                     );

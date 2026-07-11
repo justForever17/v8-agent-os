@@ -8,7 +8,8 @@ import { HTMLFileCard } from "./HTMLFileCard";
 import { MermaidRenderer } from "./MermaidRenderer";
 import { VoiceCard } from "./VoiceCard";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { useChatStore } from "@/store/chat-store";
+import { createInlineArtifactDocument } from "@/lib/workbench";
+import { useWorkbenchStore } from "@/store/workbench-store";
 import { resolveTextLayoutEngine, shouldUseStreamingPlainTextRenderer } from "@/lib/text-layout-engine";
 
 const ModelViewer = dynamic(
@@ -28,7 +29,7 @@ interface MessageBlockItemProps {
 }
 
 export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
-    const setActiveArtifactId = useChatStore(s => s.setActiveArtifactId);
+    const openWorkbenchDocument = useWorkbenchStore((state) => state.openDocument);
     const textLayoutEngine = resolveTextLayoutEngine();
     if (block.type === 'file-ppt') {
         return <PPTCard url={block.data?.url || ''} filename={block.data?.filename} />;
@@ -49,7 +50,7 @@ export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
         return (
             <div className="flex flex-col gap-2 my-2">
                 <CodeBlock language={type} value={block.content} isStreaming={Boolean(block.isStreaming)} />
-                {!block.isStreaming && <ArtifactCard id={block.id} title={title} type={type} onClick={() => setActiveArtifactId(block.id)} onDownload={block.content ? handleDownload : undefined} />}
+                {!block.isStreaming && <ArtifactCard id={block.id} title={title} type={type} onClick={() => openWorkbenchDocument(createInlineArtifactDocument({ id: block.id, title, content: block.content, type, language: block.data?.language }), { activate: true, mode: "split" })} onDownload={block.content ? handleDownload : undefined} />}
             </div>
         );
     }

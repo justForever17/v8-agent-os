@@ -17,6 +17,7 @@ const localApiNamespaces = [
   "runs",
   "sessions",
   "upload",
+  "workbench",
   "workspace",
 ];
 
@@ -70,6 +71,10 @@ const createNextConfig = (phase: string): NextConfig => ({
       {
         source: "/api/terminal-ws/:path*",
         destination: `${resolveEngineOrigin(phase)}/v1/terminal/:path*`,
+      },
+      {
+        source: "/api/workbench-browser-ws/:path*",
+        destination: `${resolveEngineOrigin(phase)}/v1/workbench/:path*`,
       },
       {
         source: "/api/client/bg_processes/:path*",

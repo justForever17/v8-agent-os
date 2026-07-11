@@ -115,6 +115,7 @@ function RuntimeIconButton({
     );
 }
 
+/** @deprecated Web Runtime 状态卡已退役；事件摘要统一进入 Workbench。 */
 export function RuntimeDock({ model, selectedRuntimeId, isPanelOpen, onSelectRuntime }: RuntimeDockProps) {
     return (
         <motion.div

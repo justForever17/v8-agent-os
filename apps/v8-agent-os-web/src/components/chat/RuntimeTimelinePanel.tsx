@@ -802,6 +802,10 @@ function ContextGovernanceSection({
     );
 }
 
+/**
+ * @deprecated Runtime 细节卡已从 Web 产品面退役。保留两个迭代仅供旧调用迁移，
+ * 新入口应使用 Workbench 的阶段级运行摘要与专用审批面。
+ */
 export function RuntimeTimelinePanel({
     isOpen,
     onClose,

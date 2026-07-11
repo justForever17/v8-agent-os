@@ -3,7 +3,7 @@
 import { ArrowDown, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 // import { LoadingBubble } from "./LoadingBubble";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Message } from "@/store/chat-types";
 import { ChatMessage } from "./ChatMessage";
 import { ContextReferencesHUD } from "./ContextReferencesHUD";
@@ -20,6 +20,8 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog";
+
+const EMPTY_RUNTIME_ACTIVITIES: RuntimeStageActivity[] = [];
 
 interface ChatWindowProps {
     messages: Message[];
@@ -47,7 +49,7 @@ export function ChatWindow({
     userAvatar,
     userName,
     shellClassName,
-    runtimeActivities = [],
+    runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
     hasOlderTurns = false,
     isLoadingOlderTurns = false,
     onReachTop,
@@ -75,6 +77,12 @@ export function ChatWindow({
 
     // Delete state
     const [deleteId, setDeleteId] = useState<string | null>(null);
+    const liveRuntimeMessageIndex = useMemo(() => {
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            if (messages[index]?.role === "assistant") return index;
+        }
+        return -1;
+    }, [messages]);
 
     // Smart Auto-scroll
     const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
@@ -260,7 +268,7 @@ export function ChatWindow({
                                         isLast={index === messages.length - 1}
                                         userAvatar={userAvatar}
                                         userName={userName}
-                                        runtimeActivities={runtimeActivities}
+                                        runtimeActivities={index === liveRuntimeMessageIndex ? runtimeActivities : EMPTY_RUNTIME_ACTIVITIES}
                                     />
                                 ))
                             )}

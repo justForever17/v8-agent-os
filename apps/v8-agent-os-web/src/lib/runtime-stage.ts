@@ -14,6 +14,7 @@ import {
     type AuthoritativeRuntimeTimelineEntry,
     type SessionRuntimeId,
 } from "@v8/session-realtime";
+import { shouldProjectRuntimeSummarySignal } from "@v8/session-realtime/runtime-summary-policy";
 import type { Locale } from "@/lib/locale";
 
 export type RuntimeId = SessionRuntimeId | "context_governance";
@@ -60,6 +61,7 @@ export interface RuntimeStageModel {
     activeRuntimeId: RuntimeId | null;
     items: RuntimeStageCard[];
     activities: RuntimeStageActivity[];
+    messageActivities: RuntimeStageActivity[];
 }
 
 const CONTEXT_GOVERNANCE_DESCRIPTOR: Record<Locale, RuntimeDescriptor> = {
@@ -264,6 +266,27 @@ function runtimeActivitiesForCard(runtimeId: RuntimeId, activities: RuntimeStage
         return activities.filter((activity) => activity.runtimeId === "chat" || activity.runtimeId === "subagent_swarm");
     }
     return activities.filter((activity) => activity.runtimeId === runtimeId);
+}
+
+function compactRuntimeStatusActivities(input: RuntimeStageActivity[]) {
+    const compacted: RuntimeStageActivity[] = [];
+    const seenExact = new Set<string>();
+    const seenProgress = new Set<string>();
+    for (const activity of [...input].sort((left, right) => right.timestamp - left.timestamp)) {
+        const executionType = activity.node.kind === "execution" ? activity.node.executionType : undefined;
+        if (!shouldProjectRuntimeSummarySignal({ kind: activity.kind, topic: activity.topic, executionType })) continue;
+        const exactKey = `${activity.runtimeId}:${activity.kind}:${activity.summary.trim().toLowerCase()}`;
+        if (seenExact.has(exactKey)) continue;
+        seenExact.add(exactKey);
+        if (activity.kind === "progress") {
+            const progressKey = `${runtimeCardIdForActivity(activity)}:${activity.messageId}`;
+            if (seenProgress.has(progressKey)) continue;
+            seenProgress.add(progressKey);
+        }
+        compacted.push(activity);
+        if (compacted.length >= 80) break;
+    }
+    return compacted;
 }
 
 function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode {
@@ -553,31 +576,34 @@ export function buildRuntimeStageModel(
         });
     }
 
-    activities.sort((left, right) => right.timestamp - left.timestamp);
+    const messageActivities = [...activities]
+        .sort((left, right) => right.timestamp - left.timestamp)
+        .slice(0, 240);
+    const summaryActivities = compactRuntimeStatusActivities(messageActivities);
 
-    const realActivities = activities.filter((activity) => !activity.synthetic);
+    const realActivities = summaryActivities.filter((activity) => !activity.synthetic);
     const normalizedOwnerRuntime = normalizeRuntimeId(options?.ownerRuntime);
     const rawActiveRuntimeId = normalizedOwnerRuntime === "subagent_swarm"
         ? "chat"
         : normalizedOwnerRuntime ?? realActivities[0]?.runtimeId ?? null;
     const runtimeActivitiesById = new Map<RuntimeId, RuntimeStageActivity[]>();
+    const runtimeStatus = String(options?.status || "").trim().toLowerCase();
+    const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
     const visibleRuntimeOrder = VISIBLE_RUNTIME_ORDER.filter((runtimeId) => {
-        const runtimeActivities = runtimeActivitiesForCard(runtimeId, activities);
-        if (runtimeActivities.length === 0) {
+        const runtimeActivities = runtimeActivitiesForCard(runtimeId, summaryActivities);
+        const ownerVisible = runtimeId === rawActiveRuntimeId && (isBusy || options?.pendingApproval || options?.recoverable);
+        if (runtimeActivities.length === 0 && !ownerVisible) {
             return false;
         }
         runtimeActivitiesById.set(runtimeId, runtimeActivities);
         return true;
     });
-    const firstVisibleRuntimeWithActivity = activities
+    const firstVisibleRuntimeWithActivity = summaryActivities
         .map(runtimeCardIdForActivity)
         .find((runtimeId) => runtimeActivitiesById.has(runtimeId)) ?? null;
     const activeRuntimeId = rawActiveRuntimeId && runtimeActivitiesById.has(rawActiveRuntimeId)
         ? rawActiveRuntimeId
         : firstVisibleRuntimeWithActivity;
-    const runtimeStatus = String(options?.status || "").trim().toLowerCase();
-    const isBusy = Boolean(runtimeStatus && !["completed", "failed", "cancelled", "idle"].includes(runtimeStatus));
-
     const items = visibleRuntimeOrder.map((runtimeId) => {
         const descriptor = getRuntimeDescriptor(runtimeId, options?.locale || "zh-CN");
         const runtimeActivities = runtimeActivitiesById.get(runtimeId) || [];
@@ -612,6 +638,7 @@ export function buildRuntimeStageModel(
     return {
         activeRuntimeId,
         items,
-        activities,
+        activities: summaryActivities,
+        messageActivities,
     };
 }

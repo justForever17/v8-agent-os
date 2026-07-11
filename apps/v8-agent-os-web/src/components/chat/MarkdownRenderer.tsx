@@ -9,6 +9,9 @@ import { MediaPlayer, ImagePreview } from './MediaRenderers';
 import { CodeBlock as SharedCodeBlock } from './CodeBlock';
 import { PPTCard } from './PPTCard';
 import { useDebouncedValue } from '@/hooks/use-debounce';
+import { createExternalArtifactDocument } from '@/lib/workbench';
+import { decodeWorkbenchFileHref, resolveAndOpenWorkspaceFile } from '@/lib/workbench-actions';
+import { useWorkbenchStore } from '@/store/workbench-store';
 
 // 宽松的媒体文件扩展名检测 (允许 URL 后带有参数, 如 ?token=...)
 const MEDIA_EXTENSIONS = {
@@ -100,9 +103,12 @@ async function loadWorkspaceAssetBaseUrl() {
 }
 
 function preprocessContent(content: string, workspaceAssetBaseUrl: string): string {
+    const linkedWorkspacePaths = content
+        .replace(/workspace:\/\/([^\s<>()"'`]+)/gi, (_match, path) => `[${String(path).split(/[\\/]/).pop() || path}](#v8-workbench-file=${encodeURIComponent(path)})`)
+        .replace(/(?<![\w:/])([A-Za-z]:[\\/][^\s<>()"'`]+\.[A-Za-z0-9]{1,10})(?=$|[\s,;)])/g, (_match, path) => `[${String(path).split(/[\\/]/).pop() || path}](#v8-workbench-file=${encodeURIComponent(path)})`);
     // 0. 将本地工作区路径自动转换为引擎的 Web 访问 URL
     // 支持匹配: E:\...\workspace\file.png 或 /usr/...\workspace\file.png 或单纯的 workspace/file.png
-    let processed = content.replace(
+    let processed = linkedWorkspacePaths.replace(
         /(?:file:\/\/\/?)?(?:[a-zA-Z]:[\\/][\w.\\/-]*[\\/]workspace[\\/]|(?:\/[\w.-]+)+[\\/]workspace[\\/]|(?<![\w\/-])workspace[\\/])([^\s<>"'`\])]+)/gi,
         (match, filepath) => {
             if (!workspaceAssetBaseUrl) {
@@ -188,7 +194,15 @@ function DocumentLinkCard({
     label: string;
     type: "pdf" | "model3d";
 }) {
+    const openDocument = useWorkbenchStore((state) => state.openDocument);
     const filename = decodeFilenameFromUrl(href, label || (type === "pdf" ? "document.pdf" : "model.glb"));
+    const document = createExternalArtifactDocument({
+        id: `${type}:${href}`,
+        title: filename,
+        url: href,
+        renderer: type === "model3d" ? "model_3d" : "pdf",
+        mimeType: type === "model3d" ? "model/gltf-binary" : "application/pdf",
+    });
     const icon = type === "model3d" ? <Box className="h-5 w-5" /> : <FileText className="h-5 w-5" />;
     return (
         <div className="my-2 flex w-full max-w-sm items-center gap-3 rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
@@ -209,15 +223,14 @@ function DocumentLinkCard({
                 </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
-                <a
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                <button
+                    type="button"
+                    onClick={() => openDocument(document, { activate: true, mode: "split" })}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                    title="打开"
+                    title="在工作台打开"
                 >
                     <ExternalLink className="h-4 w-4" />
-                </a>
+                </button>
                 <a
                     href={href}
                     download
@@ -289,6 +302,7 @@ export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
     // 防抖 10ms 避免高频流式更新
     const debouncedContent = useDebouncedValue(content, 10);
     const [workspaceAssetBaseUrl, setWorkspaceAssetBaseUrl] = useState(() => cachedWorkspaceAssetBaseUrl);
+    const sessionId = useWorkbenchStore((state) => state.sessionId);
 
     useEffect(() => {
         let active = true;
@@ -317,6 +331,18 @@ export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
         code: CodeBlock,
         a: ({ href, children }: ComponentPropsWithoutRef<'a'>) => {
             if (!href) return <>{children}</>;
+            const workspacePath = decodeWorkbenchFileHref(href);
+            if (workspacePath) {
+                return (
+                    <button
+                        type="button"
+                        onClick={() => void resolveAndOpenWorkspaceFile(workspacePath, { sessionId: sessionId || undefined }).catch((error) => console.warn("[Workbench] Failed to open workspace file", error))}
+                        className="font-mono text-primary underline decoration-primary/35 underline-offset-2 hover:decoration-primary focus-visible:ring-2 focus-visible:ring-primary"
+                    >
+                        {children}
+                    </button>
+                );
+            }
             const resolvedHref = normalizeSurfaceHref(href);
             if (!resolvedHref) return <>{children}</>;
 
@@ -370,7 +396,7 @@ export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
             }
             return <ImagePreview src={resolvedSrc} alt={alt} />;
         }
-    }), []);
+    }), [sessionId]);
 
     return (
         <motion.div layout className="prose dark:prose-invert max-w-none text-sm break-words w-full overflow-x-auto leading-relaxed my-1">

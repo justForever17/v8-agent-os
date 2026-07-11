@@ -32,14 +32,9 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                             : <Link2 className="h-5 w-5" />;
 
     return (
-        <div
-            className={cn(
-                "flex items-center gap-3 p-3 my-2 rounded-lg border bg-card transition-colors select-none group",
-                className
-            )}
-        >
+        <div className={cn("group my-1.5 flex min-h-11 items-center gap-2 rounded-[5px] border border-border/65 bg-background/70 px-2.5 py-1.5 transition-colors hover:border-primary/30", className)}>
             <div className={cn(
-                "h-10 w-10 shrink-0 rounded-md flex items-center justify-center border shadow-sm",
+                "flex h-7 w-7 shrink-0 items-center justify-center rounded-[4px] border",
                 type === 'code' ? "bg-blue-100/50 text-blue-600 border-blue-200" :
                     type === 'html' ? "bg-orange-100/50 text-orange-600 border-orange-200" :
                         type === 'image' ? "bg-pink-100/50 text-pink-600 border-pink-200" :
@@ -51,9 +46,9 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                 {icon}
             </div>
 
-            <div className="flex-1 min-w-0 cursor-pointer" onClick={onClick}>
-                <div className="font-medium text-sm truncate group-hover:text-primary transition-colors">{title}</div>
-                <div className="text-xs text-muted-foreground">{subtitle || `${type} Artifact`}</div>
+            <div className="min-w-0 flex-1 cursor-pointer" onClick={onClick}>
+                <div className="truncate text-xs font-medium transition-colors group-hover:text-primary">{title}</div>
+                <div className="truncate text-[10px] text-muted-foreground">{subtitle || `${type} Artifact`}</div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -61,21 +56,21 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                     <Button
                         variant="outline"
                         size="sm"
-                        className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground hidden sm:flex"
+                        className="hidden h-7 rounded-[4px] gap-1.5 px-2 text-[10px] text-muted-foreground hover:text-foreground sm:flex"
                         onClick={(e) => {
                             e.stopPropagation();
                             onClick();
                         }}
                     >
                         <Maximize2 className="h-3.5 w-3.5" />
-                        预览
+                        在工作台打开
                     </Button>
                 )}
                 {onDownload && (
                     <Button
                         variant="outline"
                         size="sm"
-                        className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground hidden sm:flex"
+                        className="hidden h-7 rounded-[4px] gap-1.5 px-2 text-[10px] text-muted-foreground hover:text-foreground sm:flex"
                         onClick={(e) => {
                             e.stopPropagation();
                             onDownload();

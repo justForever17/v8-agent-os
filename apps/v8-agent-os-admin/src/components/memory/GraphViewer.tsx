@@ -50,6 +50,14 @@ interface CanvasSize {
   height: number;
 }
 const DEFAULT_SIZE: CanvasSize = { width: 1200, height: 620 };
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+function normalizedNodeType(node: GraphNode) {
+  return String(node.type || "other").trim().toLowerCase() || "other";
+}
+function graphClusterKey(node: GraphNode, typeCounts: Map<string, number>) {
+  const type = normalizedNodeType(node);
+  return (typeCounts.get(type) || 0) >= 3 ? type : "other";
+}
 function hashNodeId(value: string) {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -57,28 +65,51 @@ function hashNodeId(value: string) {
   }
   return hash;
 }
+function graphNodeRadius(node: GraphNode) {
+  const weight = Math.max(Number(node.val) || 3, 1);
+  return 6 + Math.sqrt(weight) * 4;
+}
 function seedGraphData(graph: GraphData): GraphData {
   const nodes = [...(graph.nodes || [])].map((node) => ({ ...node }));
   const links = [...(graph.links || [])].map((link) => ({ ...link }));
-  const orderedIds = [...nodes.map((node) => node.id)].sort((left, right) => left.localeCompare(right));
-  const indexById = new Map(orderedIds.map((id, index) => [id, index]));
+  const typeCounts = new Map<string, number>();
   nodes.forEach((node) => {
+    const type = normalizedNodeType(node);
+    typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+  });
+  const typeGroups = new Map<string, GraphNode[]>();
+  nodes.forEach((node) => {
+    const clusterKey = graphClusterKey(node, typeCounts);
+    const current = typeGroups.get(clusterKey) || [];
+    current.push(node);
+    typeGroups.set(clusterKey, current);
+  });
+  const orderedTypes = Array.from(typeGroups.keys()).sort((left, right) => {
+    const sizeOrder = (typeGroups.get(right)?.length || 0) - (typeGroups.get(left)?.length || 0);
+    return sizeOrder || left.localeCompare(right);
+  });
+  orderedTypes.forEach((type, typeIndex) => {
+    const group = [...(typeGroups.get(type) || [])].sort((left, right) => left.id.localeCompare(right.id));
+    const clusterAngle = typeIndex * GOLDEN_ANGLE - Math.PI / 2;
+    const clusterDistance = orderedTypes.length <= 1 || typeIndex === 0
+      ? 0
+      : Math.min(248, 128 + Math.sqrt(typeIndex) * 52);
+    const clusterX = Math.cos(clusterAngle) * clusterDistance;
+    const clusterY = Math.sin(clusterAngle) * clusterDistance;
+    group.forEach((node, nodeIndex) => {
     if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
       node.vx = 0;
       node.vy = 0;
       return;
     }
-    const stableIndex = indexById.get(node.id) ?? 0;
     const hash = hashNodeId(node.id);
-    const ring = Math.floor(stableIndex / 10);
-    const positionInRing = stableIndex % 10;
-    const ringSize = Math.max(1, Math.min(10, orderedIds.length - ring * 10));
-    const angle = positionInRing / ringSize * Math.PI * 2 + (hash % 37 / 37 - 0.5) * 0.16;
-    const radius = 56 + ring * 56 + hash % 13;
-    node.x = Math.cos(angle) * radius;
-    node.y = Math.sin(angle) * radius;
+    const angle = nodeIndex * GOLDEN_ANGLE + (hash % 29 / 29 - 0.5) * 0.22;
+    const radius = nodeIndex === 0 ? 0 : 34 + Math.sqrt(nodeIndex) * 38 + hash % 11;
+    node.x = clusterX + Math.cos(angle) * radius;
+    node.y = clusterY + Math.sin(angle) * radius;
     node.vx = 0;
     node.vy = 0;
+    });
   });
   return { nodes, links };
 }
@@ -97,8 +128,10 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   const [graphSize, setGraphSize] = useState<CanvasSize>(DEFAULT_SIZE);
   const [connectTarget, setConnectTarget] = useState("");
   const [connectPredicate, setConnectPredicate] = useState("RELATED_TO");
-  const [menuMode, setMenuMode] = useState<"root" | "connect" | "disconnect">("root");
+  const [menuMode, setMenuMode] = useState<"summary" | "root" | "connect" | "disconnect">("summary");
   const [mutating, setMutating] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [motionClock, setMotionClock] = useState(0);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const labelBoxesRef = useRef<Array<{
@@ -108,6 +141,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     h: number;
   }>>([]);
   const guidedFilterRef = useRef("");
+  const autoFitPendingRef = useRef(true);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fgRef = useRef<any>(null);
   const normalizedFilter = filterNode.trim().toLowerCase();
@@ -166,6 +200,11 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     });
     return degrees;
   }, [data?.links, data?.nodes]);
+  const labelDegreeThreshold = useMemo(() => {
+    const values = Array.from(nodeDegrees.values()).sort((left, right) => right - left);
+    if (values.length <= 36) return 0;
+    return values[Math.min(values.length - 1, Math.max(8, Math.floor(values.length * 0.18)))] || 1;
+  }, [nodeDegrees]);
   const getNodeScale = useCallback((nodeId: string) => {
     const isSelected = nodeId === selectedNodeId;
     const isHovered = nodeId === hoveredNodeId;
@@ -181,6 +220,43 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     return 1.02;
     return 0.94;
   }, [hoveredNodeId, matchedNodeIds, selectedNeighborhood, selectedNodeId]);
+  const getNodeMotion = useCallback((node: GraphNode) => {
+    if (reducedMotion) return { x: 0, y: 0, pulse: 1 };
+    const hash = hashNodeId(node.id);
+    const phase = motionClock * 0.00034 + hash % 360 / 57.2958;
+    const isFocused = node.id === selectedNodeId || node.id === hoveredNodeId;
+    const densityScale = (data?.nodes.length || 0) > 80 ? 0.55 : 0.9;
+    const amplitude = isFocused ? densityScale * 0.25 : densityScale;
+    return {
+      x: Math.sin(phase) * amplitude,
+      y: Math.cos(phase * 0.83) * amplitude,
+      pulse: 1 + Math.sin(phase * 1.17) * (isFocused ? 0.012 : 0.025),
+    };
+  }, [data?.nodes.length, hoveredNodeId, motionClock, reducedMotion, selectedNodeId]);
+  const focusPrimaryGraph = useCallback(() => {
+    if (!data?.nodes.length || !fgRef.current) return;
+    const positioned = data.nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
+    const denseCore = positioned.filter((node) => (nodeDegrees.get(node.id) || 0) >= 2);
+    const focusNodes = denseCore.length >= 8
+      ? denseCore
+      : positioned.filter((node) => (nodeDegrees.get(node.id) || 0) > 0);
+    const nodes = focusNodes.length ? focusNodes : positioned;
+    if (!nodes.length) return;
+    const xs = nodes.map((node) => Number(node.x));
+    const ys = nodes.map((node) => Number(node.y));
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const width = Math.max(1, maxX - minX);
+    const height = Math.max(1, maxY - minY);
+    const zoom = Math.max(0.82, Math.min(1.8, Math.min(
+      (graphSize.width - 180) / width,
+      (graphSize.height - 150) / height,
+    )));
+    fgRef.current.centerAt?.((minX + maxX) / 2, (minY + maxY) / 2, 520);
+    fgRef.current.zoom?.(zoom, 520);
+  }, [data, graphSize.height, graphSize.width, nodeDegrees]);
   const getLabelOpacity = useCallback((nodeId: string) => {
     const isSelected = nodeId === selectedNodeId;
     const isHovered = nodeId === hoveredNodeId;
@@ -197,8 +273,13 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     return 0.3;
     if (hasSearchFocus)
     return 0;
-    return 0.02;
-  }, [hoveredNeighborhood, hoveredNodeId, matchedNodeIds, selectedNeighborhood, selectedNodeId]);
+    const degree = nodeDegrees.get(nodeId) || 0;
+    if ((data?.nodes.length || 0) <= 36)
+    return 0.48;
+    if (degree >= labelDegreeThreshold)
+    return 0.36;
+    return 0.035;
+  }, [data?.nodes.length, hoveredNeighborhood, hoveredNodeId, labelDegreeThreshold, matchedNodeIds, nodeDegrees, selectedNeighborhood, selectedNodeId]);
   const targetSuggestions = useMemo(() => {
     if (!connectTarget.trim()) {
       return (data?.nodes || []).filter((node) => node.id !== selectedNodeId).slice(0, 6);
@@ -210,7 +291,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     slice(0, 6);
   }, [connectTarget, data?.nodes, selectedNodeId]);
   const closeMenu = useCallback(() => {
-    setMenuMode("root");
+    setMenuMode("summary");
     setMenuPosition(null);
     setRelations([]);
     setConnectTarget("");
@@ -225,6 +306,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
         throw new Error(`Load failed: ${res.status}`);
       }
       const json = await res.json();
+      autoFitPendingRef.current = true;
       setData(seedGraphData(json));
     }
     catch (err) {
@@ -278,37 +360,107 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
+    const media = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!media) return;
+    const update = () => setReducedMotion(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  useEffect(() => {
+    if (reducedMotion || !data?.nodes.length) return;
+    let animationFrame = 0;
+    let lastPaintAt = 0;
+    const paint = (timestamp: number) => {
+      if (timestamp - lastPaintAt >= 33 && document.visibilityState === "visible") {
+        setMotionClock(timestamp);
+        lastPaintAt = timestamp;
+      }
+      animationFrame = window.requestAnimationFrame(paint);
+    };
+    animationFrame = window.requestAnimationFrame(paint);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [data?.nodes.length, reducedMotion]);
+  useEffect(() => {
+    if (!data?.nodes.length || !autoFitPendingRef.current) return;
+    const timer = window.setTimeout(() => {
+      if (!autoFitPendingRef.current) return;
+      autoFitPendingRef.current = false;
+      focusPrimaryGraph();
+    }, 2200);
+    return () => window.clearTimeout(timer);
+  }, [data, focusPrimaryGraph]);
+  useEffect(() => {
     if (!data?.nodes.length || !fgRef.current) {
       return;
     }
+    const typeCounts = new Map<string, number>();
+    data.nodes.forEach((node) => {
+      const type = normalizedNodeType(node);
+      typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+    });
+    const clusterGroups = new Map<string, GraphNode[]>();
+    data.nodes.forEach((node) => {
+      const key = graphClusterKey(node, typeCounts);
+      const group = clusterGroups.get(key) || [];
+      group.push(node);
+      clusterGroups.set(key, group);
+    });
+    const clusterNames = Array.from(clusterGroups.keys()).sort((left, right) => {
+      const sizeOrder = (clusterGroups.get(right)?.length || 0) - (clusterGroups.get(left)?.length || 0);
+      return sizeOrder || left.localeCompare(right);
+    });
+    const centers = new Map(clusterNames.map((type, index) => {
+      const angle = index * GOLDEN_ANGLE - Math.PI / 2;
+      const distance = clusterNames.length <= 1 || index === 0
+        ? 0
+        : Math.min(380, 190 + Math.sqrt(index) * 78);
+      return [type, { x: Math.cos(angle) * distance, y: Math.sin(angle) * distance }] as const;
+    }));
+    const nodeTargets = new Map<string, { x: number; y: number }>();
+    clusterNames.forEach((clusterName) => {
+      const center = centers.get(clusterName) || { x: 0, y: 0 };
+      const group = [...(clusterGroups.get(clusterName) || [])].sort((left, right) => left.id.localeCompare(right.id));
+      group.forEach((node, index) => {
+        const hash = hashNodeId(node.id);
+        const angle = index * GOLDEN_ANGLE + (hash % 31 / 31 - 0.5) * 0.2;
+        const radius = index === 0 ? 0 : 26 + Math.sqrt(index) * 24;
+        nodeTargets.set(node.id, {
+          x: center.x + Math.cos(angle) * radius,
+          y: center.y + Math.sin(angle) * radius,
+        });
+      });
+    });
+    const nodeCount = data.nodes.length;
     fgRef.current.d3Force("charge")?.strength?.((node: GraphNode) => {
       const degree = nodeDegrees.get(node.id) || 0;
-      return -180 - Math.min(degree * 10, 120);
+      return -210 - Math.min(Math.sqrt(nodeCount) * 8, 110) - Math.min(degree * 8, 112);
     });
     fgRef.current.d3Force("link")?.distance?.((link: GraphLink) => {
       const sourceId = typeof link.source === "string" ? link.source : link.source.id;
       const targetId = typeof link.target === "string" ? link.target : link.target.id;
       const sourceDegree = nodeDegrees.get(sourceId) || 0;
       const targetDegree = nodeDegrees.get(targetId) || 0;
-      return 106 + Math.min((sourceDegree + targetDegree) * 3, 54);
+      return 118 + Math.min(Math.sqrt(nodeCount) * 3.2, 42) + Math.min((sourceDegree + targetDegree) * 2.6, 58);
     });
     fgRef.current.d3Force("link")?.strength?.((link: GraphLink) => {
       const sourceId = typeof link.source === "string" ? link.source : link.source.id;
       const targetId = typeof link.target === "string" ? link.target : link.target.id;
       const sourceDegree = nodeDegrees.get(sourceId) || 0;
       const targetDegree = nodeDegrees.get(targetId) || 0;
-      return Math.max(0.08, 0.16 - Math.min((sourceDegree + targetDegree) * 0.003, 0.06));
+      return Math.max(0.022, 0.065 - Math.min((sourceDegree + targetDegree) * 0.0016, 0.038));
     });
     fgRef.current.d3Force("collision", forceCollide().
     radius((node: GraphNode) => {
       const degree = nodeDegrees.get(node.id) || 0;
-      return Math.max((node.val || 3) * 2.25 + Math.min(degree * 1.15, 10), 20);
+      const labelAllowance = Math.min(String(node.label || node.id).length * 0.32, 8);
+      return Math.max(graphNodeRadius(node) * 1.45 + Math.min(degree * 0.45, 8) + labelAllowance, 24);
     }).
-    strength(0.96));
-    fgRef.current.d3Force("center-x", forceX(0).strength(0.14));
-    fgRef.current.d3Force("center-y", forceY(0).strength(0.14));
+    strength(0.98).
+    iterations(2));
+    fgRef.current.d3Force("center-x", forceX((node: GraphNode) => nodeTargets.get(node.id)?.x || 0).strength(0.12));
+    fgRef.current.d3Force("center-y", forceY((node: GraphNode) => nodeTargets.get(node.id)?.y || 0).strength(0.12));
     fgRef.current.d3ReheatSimulation?.();
-    fgRef.current.zoomToFit?.(520, 110);
   }, [data, graphSize.height, graphSize.width, nodeDegrees]);
   useEffect(() => {
     if (!selectedNodeId) {
@@ -491,7 +643,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   const handleNodeClick = useCallback(async (node: object, event: MouseEvent) => {
     const nextNode = node as GraphNode;
     setSelectedNodeId(nextNode.id);
-    setMenuMode("root");
+    setMenuMode("summary");
     const containerRect = containerRef.current?.getBoundingClientRect();
     const posX = containerRect ? event.clientX - containerRect.left : 24;
     const posY = containerRect ? event.clientY - containerRect.top : 24;
@@ -533,9 +685,18 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                 <div className="absolute left-1/2 top-1/2 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/10 blur-3xl" />
             </div>
 
+            <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-full border border-border/50 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
+                {t("components.memory.GraphViewer.interactionHint")}
+            </div>
 
 
-            <ForceGraph2D ref={fgRef} width={graphSize.width} height={graphSize.height} graphData={data} backgroundColor="rgba(0,0,0,0)" warmupTicks={36} cooldownTicks={150} enableNodeDrag={false} onBackgroundClick={handleBackgroundClick} onEngineStop={() => fgRef.current?.zoomToFit?.(480, 110)} onNodeHover={(node) => setHoveredNodeId(node ? (node as GraphNode).id : null)} onNodeClick={(node, event) => void handleNodeClick(node, event as MouseEvent)} nodeLabel={(node) => {
+
+            <ForceGraph2D ref={fgRef} width={graphSize.width} height={graphSize.height} graphData={data} backgroundColor="rgba(0,0,0,0)" warmupTicks={96} cooldownTicks={360} d3AlphaDecay={0.018} d3VelocityDecay={0.38} enableNodeDrag onBackgroundClick={handleBackgroundClick} onEngineStop={() => {
+      if (autoFitPendingRef.current) {
+        autoFitPendingRef.current = false;
+        focusPrimaryGraph();
+      }
+    }} onNodeHover={(node) => setHoveredNodeId(node ? (node as GraphNode).id : null)} onNodeClick={(node, event) => void handleNodeClick(node, event as MouseEvent)} nodeLabel={(node) => {
       const graphNode = node as GraphNode;
       const degree = nodeDegrees.get(graphNode.id) || 0;
       return t("components.memory.GraphViewer.nodeTooltip.links", {
@@ -572,22 +733,26 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     }} linkDirectionalArrowLength={4} linkDirectionalArrowRelPos={1} nodePointerAreaPaint={(node, color, ctx) => {
       const graphNode = node as GraphNode;
       const scale = getNodeScale(graphNode.id);
-      const radius = Math.max(((graphNode.val || 3) + 6) * Math.max(scale, 1), 10);
+      const motion = getNodeMotion(graphNode);
+      const radius = Math.max(graphNodeRadius(graphNode) * Math.max(scale, 1) * motion.pulse + 4, 10);
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(graphNode.x || 0, graphNode.y || 0, radius, 0, 2 * Math.PI, false);
+      ctx.arc((graphNode.x || 0) + motion.x, (graphNode.y || 0) + motion.y, radius, 0, 2 * Math.PI, false);
       ctx.fill();
     }} nodeCanvasObject={(node, ctx, globalScale) => {
       const graphNode = node as GraphNode;
       const label = graphNode.label || graphNode.id;
-      const baseRadius = Math.max((graphNode.val || 3) * 1.6, 7);
+      const baseRadius = graphNodeRadius(graphNode);
       const matchesFilter = !normalizedFilter || matchedNodeIds.has(graphNode.id);
       const isSelected = graphNode.id === selectedNodeId;
       const isHovered = graphNode.id === hoveredNodeId;
       const isMatched = matchedNodeIds.has(graphNode.id);
       const isRelated = selectedNeighborhood.has(graphNode.id) || hoveredNeighborhood.has(graphNode.id);
       const scale = getNodeScale(graphNode.id);
-      const radius = baseRadius * scale;
+      const motion = getNodeMotion(graphNode);
+      const drawX = (graphNode.x || 0) + motion.x;
+      const drawY = (graphNode.y || 0) + motion.y;
+      const radius = baseRadius * scale * motion.pulse;
       const hasSearchFocus = matchedNodeIds.size > 0;
       if (graphNode.id === firstRenderableNodeId) {
         labelBoxesRef.current = [];
@@ -619,20 +784,20 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
       ctx.shadowBlur = isSelected ? 30 : isHovered ? 20 : isMatched ? 18 : isRelated ? 12 : 8;
       ctx.fillStyle = matchesFilter ? graphNode.color || "#6366f1" : "rgba(148,163,184,0.46)";
       ctx.beginPath();
-      ctx.arc(graphNode.x || 0, graphNode.y || 0, radius, 0, 2 * Math.PI, false);
+      ctx.arc(drawX, drawY, radius, 0, 2 * Math.PI, false);
       ctx.fill();
       if (isSelected) {
         ctx.strokeStyle = "rgba(255,255,255,0.88)";
         ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.arc(graphNode.x || 0, graphNode.y || 0, radius + 3.5, 0, 2 * Math.PI, false);
+        ctx.arc(drawX, drawY, radius + 3.5, 0, 2 * Math.PI, false);
         ctx.stroke();
       }
       if (isHovered || isMatched) {
         ctx.strokeStyle = isHovered ? "rgba(255,255,255,0.58)" : "rgba(236,72,153,0.44)";
         ctx.lineWidth = isHovered ? 1.2 : 1;
         ctx.beginPath();
-        ctx.arc(graphNode.x || 0, graphNode.y || 0, radius + (isHovered ? 2.4 : 1.8), 0, 2 * Math.PI, false);
+        ctx.arc(drawX, drawY, radius + (isHovered ? 2.4 : 1.8), 0, 2 * Math.PI, false);
         ctx.stroke();
       }
       const labelOpacity = getLabelOpacity(graphNode.id);
@@ -641,8 +806,8 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
         ctx.font = `${isSelected ? 700 : 600} ${fontSize}px sans-serif`;
         const shouldForceLabel = isSelected || isHovered || isMatched;
         const textWidth = ctx.measureText(label).width;
-        const labelX = graphNode.x || 0;
-        const labelY = (graphNode.y || 0) + radius + 6;
+        const labelX = drawX;
+        const labelY = drawY + radius + 6;
         const labelHeight = fontSize + 4;
         const labelBox = {
           x: labelX - textWidth / 2 - 6,
@@ -685,7 +850,26 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                         </Button>
                     </div>
 
+                    {menuMode === "summary" ? <div className="mt-4 space-y-3">
+                            <p className="text-xs leading-5 text-muted-foreground">{t("components.memory.GraphViewer.summaryHint")}</p>
+                            <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1">
+                                {relations.length === 0 ? <div className="rounded-xl border border-dashed border-border/60 px-3 py-3 text-xs text-muted-foreground">{t("components.memory.GraphViewer.noRelations")}</div> : relations.slice(0, 5).map((relation, index) => {
+              const counterpart = relation.direction === "out" ? relation.object : relation.subject;
+              return <div key={`${relation.subject}-${relation.predicate}-${relation.object}-${index}`} className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2">
+                                            <div className="truncate text-xs font-medium text-foreground">{counterpart}</div>
+                                            <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{relation.predicate}</div>
+                                        </div>;
+            })}
+                            </div>
+                            <Button variant="outline" size="sm" className="w-full" onClick={() => setMenuMode("root")}>
+                                {t("components.memory.GraphViewer.manageRelations")}
+                            </Button>
+                        </div> : null}
+
                     {menuMode === "root" ? <div className="mt-4 grid gap-2">
+                            <Button variant="ghost" size="sm" className="justify-start" onClick={() => setMenuMode("summary")}>
+                                {t("components.memory.GraphViewer.backToSummary")}
+                            </Button>
                             <Button variant="outline" className="justify-start" onClick={() => setMenuMode("connect")}>
                                 <Link2 className="mr-2 h-4 w-4" />
                                 {t("components.memory.GraphViewer.k71619908")}

@@ -4,10 +4,11 @@ import Link from "next/link";
 import { PauseCircle, RotateCcw } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useRuntimeOpsData, formatWhen, formatRunStatusLabel } from "@/components/runtime/use-runtime-ops";
+import { useRuntimeOpsData, formatWhen, formatRunStatusLabel, formatRuntimeKindLabel } from "@/components/runtime/use-runtime-ops";
 
 type RecentRunsPanelProps = {
     hook?: ReturnType<typeof useRuntimeOpsData>;
@@ -69,16 +70,21 @@ export function RecentRunsPanel({ hook, focusRunId, focusSessionId }: RecentRuns
                         >
                             <div className="flex flex-wrap items-center gap-2">
                                 <Badge>{formatRunStatusLabel(status, t)}</Badge>
-                                <Badge variant="outline">{run.run_type || "chat"}</Badge>
-                                {run.trigger_source && <Badge variant="secondary">{run.trigger_source}</Badge>}
+                                <Badge variant="outline">{formatRuntimeKindLabel(run.run_type, t)}</Badge>
                             </div>
                             <div className="mt-3 space-y-1 text-sm text-muted-foreground">
-                                <div>Run ID: <span className="text-foreground/90">{run.id}</span></div>
-                                <div>{t("components.runtime.RecentRunsPanel.kdd2c7128")}: <span className="text-foreground/90">{run.session_id || "-"}</span></div>
                                 {taskName ? <div>{t("components.runtime.RecentRunsPanel.k6dc0ee58")}: <span className="text-foreground/90">{taskName}</span></div> : null}
                                 {actionTarget ? <div>{t("components.runtime.RecentRunsPanel.kbad18df9")}: <span className="text-foreground/90 break-all">{actionTarget}</span></div> : null}
                                 <div>{t("components.runtime.RecentRunsPanel.kc585d274")}: <span className="text-foreground/90">{formatWhen(run.started_at || run.created_at)}</span></div>
                             </div>
+                            <TechnicalReferenceDetails
+                                className="mt-3"
+                                items={[
+                                    { label: t("components.common.runReference"), value: run.id },
+                                    { label: t("components.common.sessionReference"), value: run.session_id },
+                                    { label: t("components.common.sourceReference"), value: run.trigger_source },
+                                ]}
+                            />
                             <div className="mt-3 flex flex-wrap gap-2 text-xs">
                                 <Button asChild type="button" variant="ghost" size="sm" className="h-8 rounded-xl px-3">
                                     <Link href={`/admin/operations-center?tab=runs&focusRun=${encodeURIComponent(run.id)}`}>

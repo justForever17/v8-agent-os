@@ -4,6 +4,7 @@ import Link from "next/link";
 import { AlertCircle, RefreshCw, SendHorizonal, ShieldAlert } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -83,8 +84,6 @@ export function PendingApprovalsPanel({ hook, focusRunId, focusSessionId }: Pend
                         >
                             <div className="flex flex-wrap items-center gap-2">
                                 <Badge variant="outline">{approvalKindLabel(approval.approval_kind)}</Badge>
-                                <Badge variant="secondary">Run {approval.run_id || "-"}</Badge>
-                                <Badge variant="secondary">Session {approval.session_id || "-"}</Badge>
                             </div>
                             <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground/90">
                                 {approval.question || t("components.runtime.PendingApprovalsPanel.k05075777")}
@@ -92,6 +91,13 @@ export function PendingApprovalsPanel({ hook, focusRunId, focusSessionId }: Pend
                             <div className="mt-2 text-xs text-muted-foreground">
                                 {t("components.runtime.PendingApprovalsPanel.k84eb0077")} {formatWhen(approval.created_at)}
                             </div>
+                            <TechnicalReferenceDetails
+                                className="mt-3"
+                                items={[
+                                    { label: t("components.common.runReference"), value: approval.run_id },
+                                    { label: t("components.common.sessionReference"), value: approval.session_id },
+                                ]}
+                            />
                             <div className="mt-3 flex flex-wrap gap-2 text-xs">
                                 {approval.run_id ? (
                                     <Button asChild type="button" variant="ghost" size="sm" className="h-8 rounded-xl px-3">

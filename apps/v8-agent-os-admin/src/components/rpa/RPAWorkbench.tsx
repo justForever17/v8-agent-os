@@ -13,6 +13,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
 import { formatRunStatusLabel, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { ag, tg, ti } from "@/i18n/admin-legacy";
 import { translateCurrentClient } from "@/lib/locale";
 type AvailabilityPayload = {
@@ -3888,9 +3889,12 @@ export function RPAWorkbench() {
                     </CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <pre className="max-h-[420px] overflow-auto rounded-xl bg-muted/30 p-4 text-xs leading-6">
-                        {latestResult ? prettyJson(latestResult) : tg(t, "e14a0bde")}
-                    </pre>
+                    <details className="rounded-xl border border-border/50 bg-muted/20 p-3">
+                        <summary className="cursor-pointer text-sm font-medium text-muted-foreground">{t("components.common.technicalDetails")}</summary>
+                        <pre className="mt-3 max-h-[420px] overflow-auto rounded-xl bg-muted/30 p-4 text-xs leading-6">
+                            {latestResult ? prettyJson(latestResult) : tg(t, "e14a0bde")}
+                        </pre>
+                    </details>
                 </CardContent>
             </Card>
 
@@ -3907,8 +3911,6 @@ export function RPAWorkbench() {
             return <div key={approval.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap gap-2">
                                             <Badge variant="outline">{approval.approval_kind || "approval"}</Badge>
-                                            {approval.run_id ? <Badge variant="secondary">Run {approval.run_id}</Badge> : null}
-                                            {approval.session_id ? <Badge variant="secondary">Session {approval.session_id}</Badge> : null}
                                         </div>
                                         <p className="mt-3 whitespace-pre-wrap text-sm leading-6">{question}</p>
                                         {approval.request?.rpa?.requiredApprovals?.length ? <div className="mt-3 flex flex-wrap gap-2">
@@ -3920,6 +3922,10 @@ export function RPAWorkbench() {
                                         <div className="mt-2 text-xs text-muted-foreground">
                                             {t("components.runtime.PendingApprovalsPanel.k84eb0077")} {formatWhen(approval.created_at)}
                                         </div>
+                                        <TechnicalReferenceDetails className="mt-3" items={[
+                                            { label: t("components.common.runReference"), value: approval.run_id },
+                                            { label: t("components.common.sessionReference"), value: approval.session_id },
+                                        ]} />
                                         <Textarea className="mt-3 min-h-[96px]" placeholder={t("components.rpa.RPAWorkbench.k5d7ae816")} value={approvalDrafts[approval.id] || ""} onChange={event => setApprovalDrafts(current => ({
                 ...current,
                 [approval.id]: event.target.value
@@ -3960,16 +3966,10 @@ export function RPAWorkbench() {
             return <div key={run.id} className="rounded-2xl border border-border/60 p-4">
                                         <div className="flex flex-wrap gap-2">
                                             <Badge>{formatRunStatusLabel(status, t)}</Badge>
-                                            {run.metadata?.mode ? <Badge variant="outline">{String(run.metadata.mode)}</Badge> : null}
-                                            {run.trigger_source ? <Badge variant="secondary">{run.trigger_source}</Badge> : null}
                                             {approvalCount > 0 ? <Badge variant="destructive">{approvalCount} {tg(t, "ad766906")}</Badge> : null}
                                             {executionState ? <Badge variant="outline">{executionState}</Badge> : null}
-                                            {templatePolicy?.executionPath ? <Badge variant="outline">route:{templatePolicy.executionPath}</Badge> : null}
-                                            {fallback?.type ? <Badge variant="secondary">fallback:{fallback.type}</Badge> : null}
                                         </div>
                                         <div className="mt-3 space-y-1 text-sm text-muted-foreground">
-                                            <div>Run ID: <span className="text-foreground">{run.id}</span></div>
-                                            {run.session_id ? <div>Session: <span className="text-foreground">{run.session_id}</span></div> : null}
                                             {scriptName ? <div>{tg(t, "e4dce09c")} <span className="text-foreground">{scriptName}</span></div> : null}
                                             {robotFile ? <div>Robot: <span className="break-all text-foreground">{robotFile}</span></div> : null}
                                             {assessment ? <div>{tg(t, "144967bc")} <span className="text-foreground">{assessment.status || "unknown"}{assessment.band ? ` · ${assessment.band}` : ""} · {formatConfidence(assessment.score)}</span></div> : null}
@@ -3977,10 +3977,15 @@ export function RPAWorkbench() {
                                             {assessment ? <div>accepted/review/excluded: <span className="text-foreground">{assessment.acceptedSteps ?? 0}/{assessment.reviewRequiredSteps ?? 0}/{assessment.excludedSteps ?? 0}</span></div> : null}
                                             {assessment?.signals ? <div>{tg(t, "a1242e26")} <span className="text-foreground">{assessment.signals.historicalScriptRuns ?? 0}</span> {tg(t, "fcdfff9f")} <span className="text-foreground">{formatRatio(assessment.signals.historicalScriptCompletedRate)}</span> {tg(t, "451d6141")} <span className="text-foreground">{formatCalibrationSource(t, assessment.signals.historicalScriptCalibrationSource)}</span></div> : null}
                                             {templatePolicy ? <div>{tg(t, "52818247")} <span className="text-foreground">{templatePolicy.executionPath || "robot"}</span> {tg(t, "ce991a38")} <span className="text-foreground">{templatePolicy.stage || "unknown"}</span> {tg(t, "4123b632")} <span className="text-foreground">{templatePolicy.recommendedDecision || "n/a"}</span></div> : null}
-                                            {fallback?.sourceTraceRunId ? <div>Fallback Trace: <span className="text-foreground">{fallback.sourceTraceRunId}</span></div> : null}
-                                            {fallback?.sourceScriptId ? <div>Fallback Script: <span className="text-foreground">{fallback.sourceScriptId}</span></div> : null}
                                             <div>{tg(t, "4c2869e5")} <span className="text-foreground">{formatWhen(run.created_at)}</span></div>
                                         </div>
+                                        <TechnicalReferenceDetails className="mt-3" items={[
+                                            { label: t("components.common.runReference"), value: run.id },
+                                            { label: t("components.common.sessionReference"), value: run.session_id },
+                                            { label: t("components.common.sourceReference"), value: run.trigger_source },
+                                            { label: t("components.common.traceReference"), value: fallback?.sourceTraceRunId },
+                                            { label: t("components.common.rawReference"), value: fallback?.sourceScriptId },
+                                        ]} />
                                         {missingLibraries.length ? <div className="mt-3 flex flex-wrap gap-2">
                                                 {missingLibraries.map(item => <Badge key={`${run.id}:${item}`} variant="outline">
                                                         {tg(t, "423b830d")} {item}

@@ -13,6 +13,8 @@ import AuditLogsPanel from "@/components/memory/AuditLogsPanel";
 import { PendingApprovalsPanel } from "@/components/runtime/PendingApprovalsPanel";
 import { RecentRunsPanel } from "@/components/runtime/RecentRunsPanel";
 import { useRuntimeOpsData } from "@/components/runtime/use-runtime-ops";
+import { formatRuntimeKindLabel } from "@/components/runtime/use-runtime-ops";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -938,10 +940,6 @@ function OperationLogsPanel() {
                             </div>
                         </div>
                         <div className="mt-1 text-foreground">{item.summary}</div>
-                        <div className="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-muted-foreground">
-                            {item.runId ? <span>run {compactId(item.runId)}</span> : null}
-                            {item.sessionId ? <span>session {compactId(item.sessionId)}</span> : null}
-                        </div>
                         {item.details ? <div className="mt-2 line-clamp-3 break-all text-muted-foreground">{item.details}</div> : null}
                     </div>)}
             </div>
@@ -1097,10 +1095,9 @@ function EvidencePanel() {
 
                             <div className="flex items-center justify-between gap-2">
                                 <span className="truncate font-semibold">{item.toolName || "unknown"}</span>
-                                <span className="shrink-0 opacity-70">{compactId(item.runtimeKind)}</span>
+                                <span className="shrink-0 opacity-70">{formatRuntimeKindLabel(item.runtimeKind, t)}</span>
                             </div>
                             <div className="mt-1 truncate opacity-70">{item.createdAt || item.created_at || "-"}</div>
-                            <div className="mt-1 truncate font-mono opacity-70">{compactId(item.rawRef)}</div>
                         </button>)}
                     {nextCursor ? <Button className="w-full" variant="outline" size="sm" onClick={() => void load("append")} disabled={loading}>
                             {t("app.admin.dashboard.operations.center.evidence.loadMore")}
@@ -1109,24 +1106,30 @@ function EvidencePanel() {
 
                 <div className="min-w-0 space-y-4 overflow-auto rounded-2xl border border-border bg-card p-4 shadow-sm xl:max-h-[680px]">
                     {selected ? <>
-                            <div className="grid gap-2 text-xs md:grid-cols-3">
-                                <div className="rounded-xl border border-border p-3">
-                                    <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.rawRef")}</div>
-                                    <div className="mt-1 break-all font-mono text-foreground">{selected.rawRef || "-"}</div>
-                                </div>
+                            <div className="grid gap-2 text-xs md:grid-cols-2">
                                 <div className="rounded-xl border border-border p-3">
                                     <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.size")}</div>
                                     <div className="mt-1 font-semibold text-foreground">{selected.rawChars || 0} / {selected.visibleChars || 0}</div>
                                 </div>
                                 <div className="rounded-xl border border-border p-3">
-                                    <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.hash")}</div>
-                                    <div className="mt-1 truncate font-mono text-foreground">{selected.rawSha256 || "-"}</div>
+                                    <div className="text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.omitted", {
+                                      omitted_chars: selected.omittedChars || 0,
+                                      redacted: selected.redacted ? "yes" : "no",
+                                    })}</div>
+                                    <div className="mt-1 font-semibold text-foreground">{selected.redacted ? t("app.admin.dashboard.operations.center.evidence.redactedYes") : t("app.admin.dashboard.operations.center.evidence.redactedNo")}</div>
                                 </div>
                             </div>
-                            <div className="grid gap-2 text-xs md:grid-cols-2">
-                                <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
-                                <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
-                            </div>
+                            <details className="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs">
+                                <summary className="cursor-pointer font-medium text-muted-foreground">{t("components.common.technicalDetails")}</summary>
+                                <TechnicalReferenceDetails className="mt-3" items={[
+                                  { label: t("components.common.rawReference"), value: selected.rawRef },
+                                  { label: t("app.admin.dashboard.operations.center.evidence.hash"), value: selected.rawSha256 },
+                                ]} />
+                                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.budget || {}, null, 2)}</pre>
+                                    <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-xl bg-slate-950 p-3 text-white">{JSON.stringify(selected.metadata || {}, null, 2)}</pre>
+                                </div>
+                            </details>
                             <div className="rounded-xl border border-border p-3 text-xs">
                                 <div className="font-semibold text-foreground">{t("app.admin.dashboard.operations.center.evidence.relatedCompactions")}</div>
                                 <div className="mt-2 space-y-1 text-muted-foreground">
@@ -1153,12 +1156,6 @@ function EvidencePanel() {
                                     </div>
                                 </div>
                                 <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all rounded-2xl border border-border bg-muted/50 p-4 text-xs leading-5 text-foreground">{selected.preview || ""}</pre>
-                                <div className="mt-2 text-xs text-muted-foreground">
-                                    {t("app.admin.dashboard.operations.center.evidence.omitted", {
-                omitted_chars: selected.omittedChars || 0,
-                redacted: selected.redacted ? "yes" : "no"
-              })}
-                                </div>
                             </div>
                         </> : <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">{t("app.admin.dashboard.operations.center.evidence.select")}</div>}
                 </div>
@@ -1224,7 +1221,7 @@ function RunLedgerPanel({
                 <AdminHoverInfo content={tg(t, "2d4b9c7f")}>
                     <div>
                         <h2 className="text-lg font-semibold text-foreground">Run Ledger</h2>
-                        <p className="mt-1 font-mono text-xs text-muted-foreground">{runId}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.runLedgerDescription")}</p>
                     </div>
                 </AdminHoverInfo>
                 <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
@@ -1232,6 +1229,9 @@ function RunLedgerPanel({
                     {ti(t, "k38108eaa1d")}
                 </Button>
             </div>
+            <TechnicalReferenceDetails className="mt-4" items={[
+              { label: t("components.common.runReference"), value: runId },
+            ]} />
             {error ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div> : null}
             {ledger ? <div className="mt-4 grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
                     <div className="space-y-2 rounded-2xl border border-border/60 bg-muted/50 p-3 text-sm text-muted-foreground">

@@ -9,6 +9,7 @@ import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { SourceMetaRow } from "@/components/admin-shell/SourceMetaRow";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { ModelSelect, type AdminModelSelectOption } from "@/components/models/ModelSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -860,7 +861,7 @@ export default function EngineeringLanePage() {
 
                         <ConfigCard title="app.admin.dashboard.engineeringLane.recentRiskTitle" description="app.admin.dashboard.engineeringLane.recentRiskDescription" bodyHeight="auto">
                             <div className="grid gap-3 md:grid-cols-3">
-                                <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryVerification")} value={selectedProof?.verificationStatus ? getStatusLabel(selectedProof.verificationStatus, t) : t("app.admin.dashboard.engineeringLane.valueNone")} hint={selectedProof?.runId || selectedProof?.createdAt || "-"} />
+                                <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryVerification")} value={selectedProof?.verificationStatus ? getStatusLabel(selectedProof.verificationStatus, t) : t("app.admin.dashboard.engineeringLane.valueNone")} hint={selectedProof?.createdAt || t("app.admin.dashboard.engineeringLane.valueNone")} />
                                 <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryWorkset")} value={getRiskLabel(selectedRisk, t)} hint={t("app.admin.dashboard.engineeringLane.changedFileCount", { count: String(selectedProof?.changedFiles?.length || 0) })} tone={selectedRisk === "outside_write_set" ? "amber" : "slate"} />
                                 <SummaryCard label={t("app.admin.dashboard.engineeringLane.summaryWorkflowMemory")} value={String(engineeringWorkflowCandidates.length)} hint={t("app.admin.dashboard.engineeringLane.workflowMemoryReadOnly")} />
                             </div>
@@ -943,8 +944,8 @@ export default function EngineeringLanePage() {
 
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div className="min-w-0">
-                                                        <div className="truncate text-sm font-medium text-foreground">{entry.patchIntent || entry.id}</div>
-                                                        <div className="mt-1 truncate text-xs text-muted-foreground">{entry.runId || entry.createdAt || ""}</div>
+                                                        <div className="truncate text-sm font-medium text-foreground">{entry.patchIntent || t("app.admin.dashboard.engineeringLane.proofTitle")}</div>
+                                                        <div className="mt-1 truncate text-xs text-muted-foreground">{entry.createdAt || ""}</div>
                                                     </div>
                                                     <StatusPill value={entry.verificationStatus} />
                                                 </div>
@@ -966,8 +967,8 @@ export default function EngineeringLanePage() {
                   <div className="space-y-4">
                                         <div className="flex flex-wrap items-center justify-between gap-3">
                                             <div>
-                                                <h3 className="text-base font-semibold text-foreground">{selectedProof.patchIntent || selectedProof.id}</h3>
-                                                <p className="mt-1 text-xs text-muted-foreground">{selectedProof.sessionId || "-"} · {selectedProof.runId || "-"}</p>
+                                                <h3 className="text-base font-semibold text-foreground">{selectedProof.patchIntent || t("app.admin.dashboard.engineeringLane.proofTitle")}</h3>
+                                                {selectedProof.createdAt ? <p className="mt-1 text-xs text-muted-foreground">{selectedProof.createdAt}</p> : null}
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <StatusPill value={selectedProof.verificationStatus} />
@@ -977,6 +978,13 @@ export default function EngineeringLanePage() {
                                                 </Button>
                                             </div>
                                         </div>
+                                        <TechnicalReferenceDetails
+                                            items={[
+                                                { label: t("components.common.sessionReference"), value: selectedProof.sessionId },
+                                                { label: t("components.common.runReference"), value: selectedProof.runId },
+                                                { label: t("components.common.rawReference"), value: selectedProof.id },
+                                            ]}
+                                        />
                                         <div className="grid gap-4">
                                             <div>
                                                 <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground/80">{t("app.admin.dashboard.engineeringLane.changedFiles")}</h4>

@@ -6,6 +6,7 @@ import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { ConfigCard } from "@/components/admin-shell/ConfigCard";
 import { DocumentationGuideDialog } from "@/components/admin-shell/DocumentationGuideDialog";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1994,7 +1995,13 @@ env:
                                                 <span>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressPayloadTokens", { count: Number(item.payloadTokens || 0) })}</span>
                                                 <span>{t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressToolCount", { count: Number(item.clientToolCount || 0) })}</span>
                                             </div>
-                                            <div className="mt-1 break-all text-slate-500">{String(item.rawRef || "—")}</div>
+                                            <TechnicalReferenceDetails
+                                                className="mt-2 bg-white/60"
+                                                items={[{
+                                                    label: t("components.common.rawReference"),
+                                                    value: String(item.rawRef || ""),
+                                                }]}
+                                            />
                                         </div>))}
                                 </div>) : (<div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-xs text-slate-500">
                                     {t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.compatIngressNoRecent")}

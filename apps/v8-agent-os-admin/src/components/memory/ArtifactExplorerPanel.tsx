@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/components/ui/use-toast";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { tg } from "@/i18n/admin-legacy";
 
 type ArtifactKind = "all" | "image" | "video" | "audio" | "document" | "file";
@@ -428,11 +429,6 @@ export function ArtifactExplorerPanel() {
                                                         </p>
                                                         <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                                                             <span className="rounded-full border px-2 py-1">{getArtifactMime(artifact)}</span>
-                                                            {artifact.sessionId || artifact.session_id ?
-                            <span className="rounded-full border px-2 py-1 font-mono">
-                                                                    {artifact.sessionId || artifact.session_id}
-                                                                </span> :
-                            null}
                                                         </div>
                                                         <p className="mt-3 text-[11px] text-muted-foreground/80">
                                                             {formatDateTime(getArtifactCreatedAt(artifact))}
@@ -474,11 +470,6 @@ export function ArtifactExplorerPanel() {
                                                 <Badge>{artifactKindLabel(selectedKind)}</Badge>
                                                 <Badge variant="secondary">{getArtifactMime(selectedArtifact)}</Badge>
                                                 {getArtifactOrigin(selectedArtifact) ? <Badge variant="outline">{getArtifactOrigin(selectedArtifact)}</Badge> : null}
-                                                {selectedArtifact.sessionId || selectedArtifact.session_id ?
-                      <Badge variant="outline">
-                                                        {t("components.memory.ArtifactExplorerPanel.kdd2c7128")} {selectedArtifact.sessionId || selectedArtifact.session_id}
-                                                    </Badge> :
-                      null}
                                             </div>
                                         </div>
 
@@ -506,18 +497,11 @@ export function ArtifactExplorerPanel() {
                                                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.kc52804de")}</p>
                                                 <p className="mt-1 text-xs text-foreground/90">{formatDateTime(getArtifactCreatedAt(selectedArtifact))}</p>
                                             </div>
-                                            <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.kdd2c7128")}</p>
-                                                <p className="mt-1 font-mono text-xs text-foreground/90">{selectedArtifact.sessionId || selectedArtifact.session_id || "—"}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Run</p>
-                                                <p className="mt-1 font-mono text-xs text-foreground/90">{selectedArtifact.runId || selectedArtifact.run_id || "—"}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.k1f8c06c1")}</p>
-                                                <p className="mt-1 font-mono text-xs text-foreground/90">{selectedArtifact.messageId || selectedArtifact.message_id || "—"}</p>
-                                            </div>
+                                            <TechnicalReferenceDetails items={[
+                                                { label: t("components.common.sessionReference"), value: selectedArtifact.sessionId || selectedArtifact.session_id },
+                                                { label: t("components.common.runReference"), value: selectedArtifact.runId || selectedArtifact.run_id },
+                                                { label: t("components.common.messageReference"), value: selectedArtifact.messageId || selectedArtifact.message_id },
+                                            ]} />
                                             <div>
                                                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{t("components.memory.ArtifactExplorerPanel.kea7f822f")}</p>
                                                 <p className="mt-1 break-all text-xs text-foreground/90">{selectedArtifact.workspacePath || selectedArtifact.workspace_path || "—"}</p>

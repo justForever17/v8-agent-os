@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatLocalDateTime } from "@/lib/time";
+import { getRuntimeDisplayText } from "@/lib/runtime-admin";
 
 export interface ApprovalRecord {
     id: string;
@@ -63,6 +64,13 @@ export function formatRunStatusLabel(status: string | undefined, t: RuntimeStatu
     const normalized = String(status || "queued").trim().toLowerCase();
     const labelKey = RUN_LABELS[normalized];
     return labelKey ? t(labelKey) : humanizeRuntimeStatus(normalized);
+}
+
+export function formatRuntimeKindLabel(kind: string | undefined, t: RuntimeStatusTranslator) {
+    const normalized = String(kind || "chat").trim().toLowerCase();
+    const translationKey = getRuntimeDisplayText(normalized);
+    const translated = t(translationKey);
+    return translated && translated !== translationKey ? translated : humanizeRuntimeStatus(normalized);
 }
 
 export function formatWhen(value?: string) {

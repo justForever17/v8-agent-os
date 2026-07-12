@@ -13,6 +13,7 @@ import { SettingToggleCard } from "@/components/admin-shell/SettingToggleCard";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
 import { useToast } from "@/components/ui/use-toast";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 import { ApprovalRecord, RunRecord, formatRunStatusLabel, formatWhen } from "@/components/runtime/use-runtime-ops";
 import { CORE_RUNTIME_KINDS, getRuntimeControlHref, getRuntimeDisplayText, isLockedRuntimeKind } from "@/lib/runtime-admin";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
@@ -887,11 +888,13 @@ export function RuntimeGovernanceWorkbench({
                                         <div className="flex flex-wrap items-center gap-2">
                                             <Badge>{formatRunStatusLabel(run.status || "failed", t)}</Badge>
                                             <Badge variant="outline">{runtimeNameMap.get(inferRunRuntime(run)) || inferRunRuntime(run)}</Badge>
-                                            {run.trigger_source ? <Badge variant="secondary">{run.trigger_source}</Badge> : null}
                                         </div>
-                                        <div className="mt-2 text-xs text-muted-foreground">Run: {run.id}</div>
-                                        {run.session_id ? <div className="mt-1 text-xs text-muted-foreground">Session: {run.session_id}</div> : null}
                                         <div className="mt-1 text-xs text-muted-foreground">{tg(t, "32d77333")}{formatWhen(run.started_at || run.created_at)}</div>
+                                        <TechnicalReferenceDetails className="mt-3" items={[
+                                          { label: t("components.common.runReference"), value: run.id },
+                                          { label: t("components.common.sessionReference"), value: run.session_id },
+                                          { label: t("components.common.sourceReference"), value: run.trigger_source },
+                                        ]} />
                                         {run.session_id ? <Button className="mt-3" variant="outline" size="sm" onClick={() => void inspectSession(run.session_id!)}>
                                                 <Eye className="mr-2 h-4 w-4" />
                                                 {tg(t, "cc59de60")}
@@ -938,27 +941,31 @@ export function RuntimeGovernanceWorkbench({
                 {selectedSessionId ? <Card className="border-border/60 xl:col-span-2">
                         <CardHeader>
                             <CardTitle className="flex items-center gap-2 text-lg"><Eye className="h-5 w-5 text-primary" />{tg(t, "6a2ef7e7")}</CardTitle>
-                            <CardDescription>{selectedSessionId}{selectedSessionDetail?.source ? tg(t, "424cef36", {
-              value1: selectedSessionDetail.source
-            }) : ""}</CardDescription>
+                            <CardDescription>{sessionMap.get(selectedSessionId)?.title || tg(t, "6a2ef7e7")}</CardDescription>
                         </CardHeader>
                         <CardContent className="space-y-4">
                             {detailLoading ? <div className="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">{tg(t, "b337421b")}</div> : selectedSessionDetail ? <>
                                     <div className="grid gap-4 md:grid-cols-4">
-                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">workflow</div><div className="mt-2 text-sm font-medium">{selectedSessionDetail.workflow?.status || selectedSessionDetail.recoverable?.workflowStatus || "unknown"}</div></div>
-                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">owner runtime</div><div className="mt-2 text-sm font-medium">{runtimeNameMap.get(selectedSessionDetail.workflow?.ownerRuntime || "chat") || selectedSessionDetail.workflow?.ownerRuntime || "chat"}</div></div>
-                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">recoverable</div><div className="mt-2 text-sm font-medium">{t("app.admin.dashboard.operations.center.page.k2ae24b34")}</div></div>
-                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">approvals</div><div className="mt-2 text-sm font-medium">{selectedSessionDetail.approvals?.length || 0}</div></div>
+                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">{t("components.common.executionStatus")}</div><div className="mt-2 text-sm font-medium">{formatRunStatusLabel(selectedSessionDetail.workflow?.status || selectedSessionDetail.recoverable?.workflowStatus || "unknown", t)}</div></div>
+                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">{t("components.common.ownerRuntime")}</div><div className="mt-2 text-sm font-medium">{runtimeNameMap.get(selectedSessionDetail.workflow?.ownerRuntime || "chat") || selectedSessionDetail.workflow?.ownerRuntime || "chat"}</div></div>
+                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">{t("components.common.recoveryState")}</div><div className="mt-2 text-sm font-medium">{t("app.admin.dashboard.operations.center.page.k2ae24b34")}</div></div>
+                                        <div className="rounded-xl border border-border/50 p-3"><div className="text-xs text-muted-foreground">{t("components.common.pendingConfirmation")}</div><div className="mt-2 text-sm font-medium">{selectedSessionDetail.approvals?.length || 0}</div></div>
                                     </div>
+                                    <TechnicalReferenceDetails items={[
+                                      { label: t("components.common.sessionReference"), value: selectedSessionId },
+                                      { label: t("components.common.sourceReference"), value: selectedSessionDetail.source },
+                                    ]} />
                                     {plannerInspector ? <div className="rounded-xl border border-border/50 p-4">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <div className="text-sm font-medium">Planner Inspector</div>
                                                 {plannerInspector.executionStrategy ? <Badge variant="secondary">{plannerInspector.executionStrategy}</Badge> : null}
                                                 {plannerInspector.planId ? <Badge variant="outline">{plannerInspector.planId}</Badge> : null}
                                             </div>
-                                            <div className="mt-2 text-xs text-muted-foreground">
-                                                {plannerInspector.stepTitle || "planner_lane"}{plannerInspector.traceRef.runId ? ` · run ${String(plannerInspector.traceRef.runId)}` : ""}{plannerInspector.traceRef.planId ? ` · trace ${String(plannerInspector.traceRef.planId)}` : ""}
-                                            </div>
+                                            <div className="mt-2 text-xs text-muted-foreground">{plannerInspector.stepTitle || t("components.common.planningStage")}</div>
+                                            <TechnicalReferenceDetails className="mt-3" items={[
+                                              { label: t("components.common.runReference"), value: String(plannerInspector.traceRef.runId || "") },
+                                              { label: t("components.common.traceReference"), value: String(plannerInspector.traceRef.planId || "") },
+                                            ]} />
                                             <div className="mt-4 grid gap-3 md:grid-cols-4">
                                                 <div className="rounded-lg border border-border/50 p-3">
                                                     <div className="text-xs text-muted-foreground">plan summary</div>

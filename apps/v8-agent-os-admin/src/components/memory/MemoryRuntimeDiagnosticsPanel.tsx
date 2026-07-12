@@ -2,6 +2,7 @@
 import { AlertCircle, FolderTree } from "lucide-react";
 import { useLocale, useT } from "@/components/providers/LocaleProvider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 interface ExtractionRun {
     runId?: string;
     sessionId?: string;
@@ -178,12 +179,6 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                                                     <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${outcome.tone}`}>
                                                         {outcome.title}
                                                     </span>
-                                                    <span className="font-mono text-xs text-muted-foreground">
-                                                        {t("components.memory.MemoryRuntimeDiagnosticsPanel.kdd2c7128")} {run.sessionId || "—"}
-                                                    </span>
-                                                    <span className="font-mono text-xs text-muted-foreground">
-                                                        {t("components.memory.MemoryRuntimeDiagnosticsPanel.ke3cb5431")} {run.runId || "—"}
-                                                    </span>
                                                 </div>
                                                 <p className="text-sm text-foreground">{outcome.detail}</p>
                                                 {run.summary ? (<p className="rounded-lg bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
@@ -205,6 +200,10 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                                                     <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.kc4e2d04d")}：{run.persistedKnowledgeCount || 0}</span>
                                                     <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.k1d64a1e6")}：{run.persistedRelationCount || 0}</span>
                                                 </div>
+                                                <TechnicalReferenceDetails items={[
+                                                    { label: t("components.common.sessionReference"), value: run.sessionId },
+                                                    { label: t("components.common.runReference"), value: run.runId },
+                                                ]} />
                                                 {(run.rawOutputPreview || run.parserErrorPreview || run.invocationError) ? (<div className="grid gap-2 xl:grid-cols-3">
                                                         {run.rawOutputPreview ? (<div className="rounded-lg border bg-muted/20 p-3">
                                                                 <p className="mb-2 text-xs font-medium text-muted-foreground">{t("components.memory.MemoryRuntimeDiagnosticsPanel.k221baf08")}</p>
@@ -280,10 +279,12 @@ export default function MemoryRuntimeDiagnosticsPanel({ data }: {
                                         <span className="rounded-full border border-border/60 px-2.5 py-1 text-xs font-medium">
                                             {run.status || t("components.memory.MemoryRuntimeDiagnosticsPanel.k76ebff7c")}
                                         </span>
-                                        <span className="font-mono text-xs text-muted-foreground">{t("components.memory.MemoryRuntimeDiagnosticsPanel.ke3cb5431")} {run.runId || "—"}</span>
                                         <span className="text-xs text-muted-foreground">{t("components.memory.MemoryRuntimeDiagnosticsPanel.k93e56ead")}：{formatRelativeTimestamp(run.startedAt, uiLocale)}</span>
                                         <span className="text-xs text-muted-foreground">{t("components.memory.MemoryRuntimeDiagnosticsPanel.kb854ae58")}：{formatRelativeTimestamp(run.finishedAt, uiLocale)}</span>
                                     </div>
+                                    <TechnicalReferenceDetails className="mt-3" items={[
+                                        { label: t("components.common.runReference"), value: run.runId },
+                                    ]} />
                                     <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
                                         <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.k12c76d3f")}：{run.summaryMissingCountBefore || 0}</span>
                                         <span>{t("components.memory.MemoryRuntimeDiagnosticsPanel.k7b552ca4")}：{run.summaryMissingCountAfter || 0}</span>

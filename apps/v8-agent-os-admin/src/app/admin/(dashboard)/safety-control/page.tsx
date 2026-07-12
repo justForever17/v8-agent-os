@@ -22,6 +22,7 @@ import { fetchAdminJson } from "@/lib/admin-client-cache";
 import { fetchConfigDomain, saveConfigDomain, type ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { ti } from "@/i18n/admin-legacy";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 type MachinePosture = "dedicated_runtime_host" | "developer_mixed_host";
 type ModelOption = {
   id?: string;
@@ -913,9 +914,11 @@ export default function SafetyControlPage() {
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Badge variant="outline">{safetyLabel(t, "approvalKind", approval.approval_kind || "safety_review")}</Badge>
                                                 <Badge variant={approval.verdict === "block" ? "destructive" : "secondary"}>{safetyLabel(t, "risk", approval.riskCode)}</Badge>
-                                                <span className="text-xs text-muted-foreground">Run {approval.run_id || "-"}</span>
                                             </div>
                                             <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground">{approval.question || approval.reason || ti(t, "k82b3e41793")}</p>
+                                            <TechnicalReferenceDetails className="mt-3" items={[
+                                                { label: t("components.common.runReference"), value: approval.run_id },
+                                            ]} />
                                             {approval.allowlistCandidate ? <label className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
                                                     <input type="checkbox" checked={Boolean(rememberAllowlist[approval.id])} onChange={event => setRememberAllowlist(previous => ({
                     ...previous,

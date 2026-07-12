@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, MoreHorizontal, Minus, Plus, RefreshCw, RotateCcw, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -32,6 +32,9 @@ type BrowserStatus = {
     };
     limitations?: string[];
 };
+
+type BrowserViewportMode = "adaptive" | "desktop" | "mobile";
+type BrowserContextMenuState = { x: number; y: number };
 
 function recordOf(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -70,6 +73,7 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
     const socketRef = useRef<WebSocket | null>(null);
     const frameUrlRef = useRef("");
     const imageRef = useRef<HTMLImageElement | null>(null);
+    const viewportRef = useRef<HTMLDivElement | null>(null);
     const textInputRef = useRef<HTMLTextAreaElement | null>(null);
     const pointerFrameRef = useRef<number | null>(null);
     const pendingPointerRef = useRef<Record<string, unknown> | null>(null);
@@ -77,6 +81,8 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
     const composingRef = useRef(false);
     const ignoreNextInputRef = useRef(false);
     const autoControlRequestedRef = useRef(false);
+    const viewportTimerRef = useRef<number | null>(null);
+    const lastViewportRef = useRef("");
     const [status, setStatus] = useState<BrowserStatus | null>(null);
     const [connected, setConnected] = useState(false);
     const [hasControl, setHasControl] = useState(false);
@@ -89,6 +95,8 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
     const [zoom, setZoom] = useState(100);
     const [inputBuffer, setInputBuffer] = useState("");
     const [menuOpen, setMenuOpen] = useState(false);
+    const [viewportMode, setViewportMode] = useState<BrowserViewportMode>("adaptive");
+    const [contextMenu, setContextMenu] = useState<BrowserContextMenuState | null>(null);
     const markDocumentUnavailable = useWorkbenchStore((state) => state.markDocumentUnavailable);
 
     const currentPage = useMemo(
@@ -98,6 +106,7 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
             || null,
         [status],
     );
+    const pagePayload = useCallback(() => currentPage ? { pageId: currentPage.pageId } : {}, [currentPage]);
 
     useEffect(() => {
         if (currentPage?.url) setAddress(currentPage.url);
@@ -233,20 +242,62 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
         return () => window.clearInterval(interval);
     }, [connected, hasControl, sendCommand]);
 
-    const pagePayload = useCallback(() => currentPage ? { pageId: currentPage.pageId } : {}, [currentPage]);
+    useEffect(() => {
+        if (!connected || !hasControl) return;
+        const viewport = viewportRef.current;
+        if (!viewport) return;
+
+        const syncViewport = () => {
+            if (viewportTimerRef.current !== null) window.clearTimeout(viewportTimerRef.current);
+            viewportTimerRef.current = window.setTimeout(() => {
+                const rect = viewport.getBoundingClientRect();
+                const target = viewportMode === "desktop"
+                    ? { width: 1440, height: 900 }
+                    : viewportMode === "mobile"
+                        ? { width: 390, height: 844 }
+                        : {
+                            width: Math.max(320, Math.min(1920, Math.round(rect.width))),
+                            height: Math.max(360, Math.min(1400, Math.round(rect.height))),
+                        };
+                const key = `${currentPage?.pageId || "page"}:${target.width}x${target.height}`;
+                if (lastViewportRef.current === key) return;
+                lastViewportRef.current = key;
+                sendCommand("set_viewport", { ...pagePayload(), ...target });
+            }, 120);
+        };
+
+        syncViewport();
+        const observer = new ResizeObserver(syncViewport);
+        if (viewportMode === "adaptive") observer.observe(viewport);
+        return () => {
+            observer.disconnect();
+            if (viewportTimerRef.current !== null) window.clearTimeout(viewportTimerRef.current);
+            viewportTimerRef.current = null;
+        };
+    }, [connected, currentPage?.pageId, hasControl, pagePayload, sendCommand, viewportMode]);
+
+    useEffect(() => {
+        if (!contextMenu) return;
+        const closeOnEscape = (event: KeyboardEvent) => {
+            if (event.key === "Escape") setContextMenu(null);
+        };
+        window.addEventListener("keydown", closeOnEscape);
+        return () => window.removeEventListener("keydown", closeOnEscape);
+    }, [contextMenu]);
 
     const pointForEvent = useCallback((event: { clientX: number; clientY: number }) => {
         const image = imageRef.current;
         if (!image) return null;
         const rect = image.getBoundingClientRect();
         if (!rect.width || !rect.height) return null;
-        const naturalWidth = image.naturalWidth || Number(frameMetadata.deviceWidth || 0) || rect.width;
-        const naturalHeight = image.naturalHeight || Number(frameMetadata.deviceHeight || 0) || rect.height;
+        const pageScaleFactor = Math.max(0.01, Number(frameMetadata.pageScaleFactor || 1));
+        const viewportWidth = (Number(frameMetadata.deviceWidth || 0) || image.naturalWidth || rect.width) / pageScaleFactor;
+        const viewportHeight = (Number(frameMetadata.deviceHeight || 0) || image.naturalHeight || rect.height) / pageScaleFactor;
         return {
-            x: Math.max(0, Math.min(naturalWidth, (event.clientX - rect.left) * naturalWidth / rect.width)),
-            y: Math.max(0, Math.min(naturalHeight, (event.clientY - rect.top) * naturalHeight / rect.height)),
+            x: Math.max(0, Math.min(viewportWidth, (event.clientX - rect.left) * viewportWidth / rect.width)),
+            y: Math.max(0, Math.min(viewportHeight, (event.clientY - rect.top) * viewportHeight / rect.height)),
         };
-    }, [frameMetadata.deviceHeight, frameMetadata.deviceWidth]);
+    }, [frameMetadata.deviceHeight, frameMetadata.deviceWidth, frameMetadata.pageScaleFactor]);
 
     const queuePointerMove = useCallback((event: ReactPointerEvent<HTMLImageElement>) => {
         if (!hasControl) return;
@@ -302,6 +353,20 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
         });
     }, [hasControl, pagePayload, pointForEvent, sendCommand]);
 
+    const openContextMenu = useCallback((event: ReactMouseEvent<HTMLImageElement>) => {
+        event.preventDefault();
+        if (!hasControl) return;
+        const viewport = viewportRef.current;
+        if (!viewport) return;
+        const rect = viewport.getBoundingClientRect();
+        const menuWidth = 176;
+        const menuHeight = 184;
+        setContextMenu({
+            x: Math.max(8, Math.min(rect.width - menuWidth - 8, event.clientX - rect.left + viewport.scrollLeft)),
+            y: Math.max(8, Math.min(rect.height - menuHeight - 8, event.clientY - rect.top + viewport.scrollTop)),
+        });
+    }, [hasControl]);
+
     const submitAddress = (event: FormEvent) => {
         event.preventDefault();
         if (!hasControl) {
@@ -355,10 +420,37 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
                     </div>
                     <button type="button" className="w-full rounded-lg px-2 py-2 text-left hover:bg-muted" onClick={() => { setMenuOpen(false); setRevision((value) => value + 1); }}>重新连接</button>
                     <button type="button" disabled={!connected || unavailable} className="w-full rounded-lg px-2 py-2 text-left hover:bg-muted disabled:opacity-40" onClick={() => { setMenuOpen(false); sendCommand(hasControl ? "release_control" : "take_control"); }}>{hasControl ? "交还 Agent" : "重新接管"}</button>
+                    <div className="mt-1 border-t border-border/60 pt-1.5">
+                        <div className="px-2 py-1 text-[10px] text-muted-foreground">页面尺寸</div>
+                        <div className="grid grid-cols-3 gap-1">
+                            {([
+                                ["adaptive", "跟随侧栏"],
+                                ["desktop", "桌面"],
+                                ["mobile", "手机"],
+                            ] as const).map(([mode, label]) => (
+                                <button
+                                    key={mode}
+                                    type="button"
+                                    aria-pressed={viewportMode === mode}
+                                    className={cn(
+                                        "rounded-md px-1.5 py-1.5 text-[10px] transition-colors hover:bg-muted",
+                                        viewportMode === mode && "bg-muted text-foreground",
+                                    )}
+                                    onClick={() => {
+                                        lastViewportRef.current = "";
+                                        setViewportMode(mode);
+                                        setZoom(100);
+                                    }}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 </div>
             ) : null}
 
-            <div className="relative min-h-0 flex-1 overflow-auto bg-white dark:bg-zinc-950">
+            <div ref={viewportRef} className="relative min-h-0 flex-1 overflow-auto bg-white dark:bg-zinc-950">
                 {frameUrl ? (
                     <div className="flex min-h-full min-w-full items-center justify-center">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -368,11 +460,14 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
                             alt="浏览器实时画面"
                             draggable={false}
                             className={cn("max-h-full max-w-full select-none", hasControl ? "cursor-default" : "cursor-not-allowed")}
-                            style={{ transform: `scale(${zoom / 100})`, transformOrigin: "center" }}
+                            style={{ transform: `scale(${zoom / 100})`, transformOrigin: "center", touchAction: "none" }}
                             onPointerMove={queuePointerMove}
-                            onPointerDown={(event) => sendPointerButton("mousePressed", event)}
+                            onPointerDown={(event) => {
+                                if (event.button !== 2) setContextMenu(null);
+                                sendPointerButton("mousePressed", event);
+                            }}
                             onPointerUp={(event) => sendPointerButton("mouseReleased", event)}
-                            onContextMenu={(event) => event.preventDefault()}
+                            onContextMenu={openContextMenu}
                             onWheel={sendWheel}
                         />
                     </div>
@@ -433,6 +528,31 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
                     autoCorrect="off"
                     spellCheck={false}
                 />
+                {contextMenu ? (
+                    <div
+                        role="menu"
+                        aria-label="浏览器右键菜单"
+                        className="absolute z-30 w-44 overflow-hidden rounded-xl border border-border/70 bg-popover/98 p-1 text-xs text-popover-foreground shadow-xl backdrop-blur"
+                        style={{ left: contextMenu.x, top: contextMenu.y }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                    >
+                        <button type="button" role="menuitem" className="w-full rounded-lg px-3 py-2 text-left hover:bg-muted" onClick={() => { setContextMenu(null); sendCommand("back", pagePayload()); }}>后退</button>
+                        <button type="button" role="menuitem" className="w-full rounded-lg px-3 py-2 text-left hover:bg-muted" onClick={() => { setContextMenu(null); sendCommand("forward", pagePayload()); }}>前进</button>
+                        <button type="button" role="menuitem" className="w-full rounded-lg px-3 py-2 text-left hover:bg-muted" onClick={() => { setContextMenu(null); sendCommand("reload", pagePayload()); }}>刷新</button>
+                        <button type="button" role="menuitem" className="w-full rounded-lg px-3 py-2 text-left hover:bg-muted" onClick={() => { setContextMenu(null); sendCommand("new_tab", { url: "about:blank" }); }}>新建标签页</button>
+                        <button
+                            type="button"
+                            role="menuitem"
+                            className="w-full rounded-lg px-3 py-2 text-left hover:bg-muted"
+                            onClick={() => {
+                                setContextMenu(null);
+                                void navigator.clipboard?.writeText(currentPage?.url || address);
+                            }}
+                        >
+                            复制页面地址
+                        </button>
+                    </div>
+                ) : null}
             </div>
         </div>
     );

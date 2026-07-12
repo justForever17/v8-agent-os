@@ -1164,6 +1164,7 @@ class BrowserAutomationProvider:
                 raise RuntimeError(f"browser automation helper 缺失：{script_path}")
             env = os.environ.copy()
             env["CDP_PROXY_PORT"] = str(self._proxy_port)
+            env["V8_ENGINE_PARENT_PID"] = str(os.getpid())
             if target_port:
                 env["CDP_TARGET_PORT"] = str(target_port)
             driver_package = self._resolve_playwright_driver_package()

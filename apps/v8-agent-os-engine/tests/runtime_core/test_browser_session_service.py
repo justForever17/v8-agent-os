@@ -186,6 +186,33 @@ def test_page_ids_remain_stable_across_refresh_and_new_tab(service):
     assert all("cdp-target" not in item["pageId"] for item in created["result"]["pages"])
 
 
+def test_adaptive_viewport_is_bounded_and_forwarded_as_typed_command(service):
+    instance, _emitted = service
+    provider = _Provider()
+    status = _create(instance, provider)
+    browser_session_id = status["browserSessionId"]
+    page_id = status["currentPageId"]
+    instance.take_control(browser_session_id, "client-1")
+
+    resized = instance.handle_command(
+        browser_session_id,
+        "client-1",
+        {"action": "set_viewport", "pageId": page_id, "width": 412.7, "height": 860.2},
+    )
+
+    assert resized["ok"] is True
+    dispatch_calls = [call for call in provider.calls if call[1] == "/dispatch"]
+    assert dispatch_calls[-1][3] == {"action": "set_viewport", "width": 412, "height": 860}
+
+    rejected = instance.handle_command(
+        browser_session_id,
+        "client-1",
+        {"action": "set_viewport", "pageId": page_id, "width": 120, "height": 200},
+    )
+    assert rejected["ok"] is False
+    assert rejected["error"]["code"] == "invalid_input"
+
+
 def test_delete_marks_document_unavailable_without_closing_page(service):
     instance, emitted = service
     provider = _Provider()

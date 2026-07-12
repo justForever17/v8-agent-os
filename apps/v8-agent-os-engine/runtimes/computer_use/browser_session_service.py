@@ -540,6 +540,13 @@ class BrowserSessionService:
                     body: dict[str, Any] = {"action": helper_action}
                     if action == "navigate":
                         body["url"] = self._normalize_url(message.get("url"))
+                    elif action == "set_viewport":
+                        body["width"] = int(
+                            _finite_number(message.get("width"), minimum=320, maximum=2560, name="width")
+                        )
+                        body["height"] = int(
+                            _finite_number(message.get("height"), minimum=360, maximum=1800, name="height")
+                        )
                     elif action in {"mouseMoved", "mousePressed", "mouseReleased", "mouseWheel"}:
                         body["x"] = _finite_number(message.get("x", 0), minimum=0, maximum=10_000, name="x")
                         body["y"] = _finite_number(message.get("y", 0), minimum=0, maximum=10_000, name="y")

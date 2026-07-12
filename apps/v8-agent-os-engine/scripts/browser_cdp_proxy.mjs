@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 const proxyPort = Number.parseInt(process.env.CDP_PROXY_PORT || "3456", 10);
 const targetPort = Number.parseInt(process.env.CDP_TARGET_PORT || "9222", 10);
 const targetEndpoint = process.env.CDP_TARGET_ENDPOINT || `http://127.0.0.1:${targetPort}`;
+const engineParentPid = Number.parseInt(process.env.V8_ENGINE_PARENT_PID || "0", 10);
 
 let playwrightModule = null;
 let playwrightError = null;
@@ -276,6 +277,30 @@ async function dispatchStructuredCommand(page, body) {
     await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
   } else if (action === "activate") {
     await page.bringToFront();
+  } else if (action === "set_viewport") {
+    const width = Math.max(320, Math.min(2560, Math.round(Number(body.width || 0))));
+    const height = Math.max(360, Math.min(1800, Math.round(Number(body.height || 0))));
+    const landscape = width >= height;
+    await session.send("Emulation.setDeviceMetricsOverride", {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: false,
+      screenWidth: width,
+      screenHeight: height,
+      screenOrientation: {
+        type: landscape ? "landscapePrimary" : "portraitPrimary",
+        angle: landscape ? 90 : 0,
+      },
+    });
+    await page.bringToFront().catch(() => {});
+    return {
+      targetId,
+      action,
+      viewport: { width, height, orientation: landscape ? "landscape" : "portrait" },
+      url: page.url(),
+      title: await page.title().catch(() => ""),
+    };
   } else if (["mouseMoved", "mousePressed", "mouseReleased"].includes(action)) {
     await session.send("Input.dispatchMouseEvent", {
       type: action,
@@ -458,6 +483,18 @@ async function route(req, res) {
 const server = http.createServer((req, res) => {
   void route(req, res);
 });
+
+if (Number.isInteger(engineParentPid) && engineParentPid > 0) {
+  const parentWatch = setInterval(() => {
+    try {
+      process.kill(engineParentPid, 0);
+    } catch {
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 500).unref();
+    }
+  }, 1000);
+  parentWatch.unref();
+}
 
 server.listen(proxyPort, "127.0.0.1", () => {
   console.log(`browser_cdp_proxy listening on 127.0.0.1:${proxyPort}, target=${targetEndpoint}`);

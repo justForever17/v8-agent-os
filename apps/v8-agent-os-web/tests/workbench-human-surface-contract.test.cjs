@@ -37,6 +37,22 @@ test("Workbench has one compact tab row and browser prewarm", () => {
   assert.doesNotMatch(shell, /aria-label="关闭工作台"/);
 });
 
+test("Workbench browser fallback follows the panel and preserves real pointer semantics", () => {
+  const renderer = readText("apps/v8-agent-os-web/src/components/workbench/BrowserRenderer.tsx");
+  const service = readText("apps/v8-agent-os-engine/runtimes/computer_use/browser_session_service.py");
+  const proxy = readText("apps/v8-agent-os-engine/scripts/browser_cdp_proxy.mjs");
+  assert.match(renderer, /sendCommand\("set_viewport"/);
+  assert.match(renderer, /new ResizeObserver\(syncViewport\)/);
+  assert.match(renderer, /frameMetadata\.deviceWidth/);
+  assert.match(renderer, /frameMetadata\.pageScaleFactor/);
+  assert.match(renderer, /aria-label="浏览器右键菜单"/);
+  assert.match(renderer, /onContextMenu=\{openContextMenu\}/);
+  assert.match(service, /action == "set_viewport"/);
+  assert.match(proxy, /Emulation\.setDeviceMetricsOverride/);
+  assert.match(proxy, /portraitPrimary/);
+  assert.match(proxy, /V8_ENGINE_PARENT_PID/);
+});
+
 test("Web and Phone summaries hide engineering counters and raw payload bodies", () => {
   const webSummary = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
   const phoneDock = readText("apps/v8-agent-os-phone/src/components/chat/RuntimeDock.tsx");

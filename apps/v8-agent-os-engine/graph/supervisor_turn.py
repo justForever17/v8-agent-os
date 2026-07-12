@@ -116,6 +116,114 @@ def _memory_no_match_since_latest_human(state) -> bool:
     return False
 
 
+def _tool_message_payload(message, expected_name: str) -> dict:
+    """Decode one structured tool result without exposing raw payloads to prompts."""
+
+    name = ""
+    content = None
+    if isinstance(message, ToolMessage):
+        name = str(getattr(message, "name", "") or "").strip()
+        content = getattr(message, "content", None)
+    elif isinstance(message, dict):
+        role = str(message.get("role") or message.get("type") or "").strip().lower()
+        if role not in {"tool", "toolmessage"}:
+            return {}
+        name = str(message.get("name") or message.get("toolName") or "").strip()
+        content = message.get("content", message.get("result"))
+    if name != expected_name:
+        return {}
+    if isinstance(content, dict):
+        return dict(content)
+    candidates = [content]
+    if isinstance(content, list):
+        candidates = []
+        for item in content:
+            if isinstance(item, dict):
+                if isinstance(item.get("json"), dict):
+                    return dict(item["json"])
+                candidates.append(item.get("text") or item.get("content"))
+            else:
+                candidates.append(item)
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return dict(payload)
+    return {}
+
+
+def _latest_spec_revision_contract(messages) -> dict:
+    """Return only the latest unresolved Spec rewrite contract in this user turn."""
+
+    for message in reversed(list(messages or [])):
+        if isinstance(message, HumanMessage):
+            break
+        if isinstance(message, dict):
+            role = str(message.get("role") or message.get("type") or "").strip().lower()
+            if role in {"human", "user"}:
+                break
+        payload = _tool_message_payload(message, "spec_broker")
+        if not payload:
+            continue
+        if (
+            str(payload.get("kind") or "").strip() == "spec_stage_saved_needs_revision"
+            and payload.get("reviewReady") is False
+        ):
+            return payload
+        # A later Spec result supersedes any older invalid write in this turn.
+        return {}
+    return {}
+
+
+def _spec_revision_discipline_message(contract: dict, *, correction: bool = False) -> SystemMessage:
+    spec_id = str(contract.get("specId") or "current spec").strip()
+    stage = str(contract.get("stage") or "current stage").strip()
+    missing_items = []
+    for item in list(contract.get("missingConstraints") or [])[:8]:
+        if isinstance(item, dict):
+            kind = str(item.get("kind") or "constraint").strip()
+            value = str(item.get("value") or "").strip()
+            missing_items.append(f"{kind}={value}" if value else kind)
+        elif str(item or "").strip():
+            missing_items.append(str(item).strip())
+    blocker_items = []
+    for item in list(contract.get("hardBlockers") or [])[:8]:
+        if isinstance(item, dict):
+            blocker_items.append(
+                str(item.get("message") or item.get("summary") or item.get("code") or "").strip()
+            )
+        elif str(item or "").strip():
+            blocker_items.append(str(item).strip())
+    evidence_lines = []
+    if missing_items:
+        evidence_lines.append("Missing contract values: " + "; ".join(item for item in missing_items if item))
+    if blocker_items:
+        evidence_lines.append("Validation blockers: " + "; ".join(item for item in blocker_items if item))
+    correction_line = (
+        "This is the single correction opportunity for this Supervisor turn. "
+        if correction
+        else ""
+    )
+    return SystemMessage(
+        content=(
+            "[Spec Stage Repair Required]\n"
+            f"The latest durable spec_broker write for specId={spec_id}, stage={stage} was persisted, "
+            "but reviewReady=false, so no human approval exists and the stage is not complete.\n"
+            + ("\n".join(evidence_lines) + "\n" if evidence_lines else "")
+            + correction_line
+            + "You MUST now call the real tool "
+            f"`spec_broker(mode='rewrite_stage', spec_id='{spec_id}', stage='{stage}', "
+            "content='<complete corrected Markdown>')`. Preserve every missing contract value verbatim, "
+            "repair the full document rather than emitting a patch, and keep all already-valid requirements. "
+            "Do not summarize success, ask for approval, or stop until a valid spec_broker result creates the real pending review."
+        )
+    )
+
+
 def _should_force_memory_broker_first(
     *,
     user_query: str,
@@ -1204,6 +1312,36 @@ def _coerce_recoverable_failure_response(response, state):
     return response
 
 
+def _retry_spec_revision_once(
+    response,
+    *,
+    contract: dict,
+    prepared_messages,
+    invoke_llm,
+    filtered_tools,
+    robust_invoke,
+    preferred_model_id: str,
+    build_model,
+    sanitize_response_tool_calls,
+):
+    if not contract or _response_has_tool_calls(response):
+        return response
+    correction_messages = [
+        *prepared_messages,
+        response,
+        _spec_revision_discipline_message(contract, correction=True),
+    ]
+    corrected = robust_invoke(
+        invoke_llm,
+        correction_messages,
+        filtered_tools,
+        role="supervisor",
+        preferred_model_id=preferred_model_id,
+        build_model=build_model,
+    )
+    return sanitize_response_tool_calls(corrected)
+
+
 def execute_supervisor_turn(
     *,
     state,
@@ -1474,6 +1612,9 @@ def execute_supervisor_turn(
             prepared_messages.append(_session_coordination_guidance(session_coordination))
         elif explicit_coordination_send:
             prepared_messages.append(_session_coordination_outbound_guidance())
+        spec_revision_contract = _latest_spec_revision_contract(prepared_messages)
+        if spec_revision_contract:
+            prepared_messages.append(_spec_revision_discipline_message(spec_revision_contract))
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],
@@ -1526,6 +1667,22 @@ def execute_supervisor_turn(
             ),
         )
         response = sanitize_response_tool_calls(response)
+        response = _retry_spec_revision_once(
+            response,
+            contract=spec_revision_contract,
+            prepared_messages=prepared_messages,
+            invoke_llm=invoke_llm,
+            filtered_tools=filtered_supervisor_tools,
+            robust_invoke=robust_invoke,
+            preferred_model_id=sup_model_name,
+            build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                candidate_model_id,
+                streaming=False,
+                _role="supervisor",
+                **invoke_caller_kwargs,
+            ),
+            sanitize_response_tool_calls=sanitize_response_tool_calls,
+        )
         if (
             coordination_requires_reply
             and not coordination_reply_already_called

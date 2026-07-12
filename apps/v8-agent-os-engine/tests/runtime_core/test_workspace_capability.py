@@ -236,6 +236,32 @@ def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkey
     assert not (main_root / "projects" / "wrong.txt").exists()
 
 
+def test_write_native_file_enforces_delegated_task_write_set(tmp_path, monkeypatch):
+    from core import native_tools
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+
+    with bind_runtime_context(
+        runtime_kind="subagent",
+        workspace_path=str(active_root),
+        workspace_id="test2",
+        project_id="test2",
+        allowed_write_paths=["src/allowed.txt"],
+    ):
+        allowed_result = native_tools.write_native_file.func("src/allowed.txt", "ok")
+        blocked_result = native_tools.write_native_file.func("src/verify.py", "print('extra')")
+
+    assert "Successfully Created/Overwritten" in allowed_result
+    assert (active_root / "src" / "allowed.txt").read_text(encoding="utf-8") == "ok"
+    assert "write_set_scope_block" in blocked_result
+    assert "path_outside_allowed_write_set" in blocked_result
+    assert not (active_root / "src" / "verify.py").exists()
+
+
 def test_write_native_file_blocks_global_skill_root_even_with_extra_root(tmp_path, monkeypatch):
     from core import native_tools
 

@@ -8,6 +8,7 @@ from langgraph.types import Send
 
 from erc.runtime_context import bind_runtime_context
 from core.database import DatabaseManager, db
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import core.runtime_episode_runner as runtime_episode_runner_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
@@ -196,6 +197,87 @@ def test_local_delegation_passes_dependency_results_to_dependent_task(monkeypatc
     assert dependency_results[0]["taskBriefId"] == "TASK-001"
     assert dependency_results[0]["status"] == "ok"
     assert "TASK-001 finished" in dependency_results[0]["summary"]
+
+
+def test_local_delegation_retries_unsafe_verification_once_after_artifact_exists(monkeypatch, tmp_path):
+    runner = RuntimeEpisodeRunner()
+    artifact = tmp_path / "index.html"
+    artifact.write_text("<h1>ready</h1>", encoding="utf-8")
+    calls: list[dict] = []
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"worker": {"id": "worker"}})
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+
+    async def _fake_branch(arg, _agent_data):
+        calls.append(arg)
+        task_id = arg["parallel_branch"]["taskBriefId"]
+        if task_id == "TASK-001" and len(calls) == 1:
+            raise ModelGovernanceInterventionRequired(
+                "unsafe verification",
+                approval_kind="safety_review",
+                question="approve eval",
+                details={"safety": {"riskCode": "encoded_command_review"}},
+            )
+        return [], [], {"taskBriefId": task_id, "status": "ok", "summary": f"{task_id} finished"}, []
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+    write_task = {
+        "taskBriefId": "TASK-001",
+        "writeRequired": True,
+        "engineeringTaskCapsule": {"expectedArtifacts": ["index.html"]},
+        "context": {"taskId": "TASK-001"},
+    }
+    dependent_task = {
+        "taskBriefId": "TASK-002",
+        "dependency": ["TASK-001"],
+        "context": {"taskId": "TASK-002"},
+    }
+    sends = [
+        Send(
+            "parallel_delegate_task",
+            {
+                "parallel_branch": {
+                    "agentId": "worker",
+                    "agentName": "worker",
+                    "taskBriefId": "TASK-001",
+                    "taskBrief": write_task,
+                    "reason": "Run TASK-001",
+                }
+            },
+        ),
+        Send(
+            "parallel_delegate_task",
+            {
+                "parallel_branch": {
+                    "agentId": "worker",
+                    "agentName": "worker",
+                    "taskBriefId": "TASK-002",
+                    "taskBrief": dependent_task,
+                    "dependency": ["TASK-001"],
+                    "reason": "Run TASK-002",
+                }
+            },
+        ),
+    ]
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(goto=sends),
+            {"episodeId": "episode_test", "inputs": {"workspacePath": str(tmp_path)}, "need": {}},
+        )
+    )
+
+    assert len(calls) == 3
+    retry_arg = calls[1]
+    assert retry_arg["parallel_branch"]["governanceSafeRetryCount"] == 1
+    assert retry_arg["parallel_branch"]["taskBrief"]["context"]["governanceSafeVerificationRetry"]["required"] is True
+    assert "不要重试该命令" in retry_arg["messages"][-1].content
+    assert [item["status"] for item in results] == ["ok", "ok"]
+    assert results[0]["governanceSafeRetry"] is True
 
 
 def test_local_delegation_refreshes_stale_node_map_before_missing(monkeypatch):
@@ -2369,6 +2451,57 @@ def test_parallel_branch_stops_semantic_artifact_stall_even_with_varied_messages
         asyncio.run(_run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"}))
 
     assert counter > 20
+
+
+def test_parallel_branch_does_not_report_artifact_stall_after_expected_file_exists(tmp_path):
+    from graph.parallel_support import _run_parallel_agent_branch, _runtime_context_from_parallel_state
+    from langchain_core.messages import HumanMessage
+    from langgraph.types import Command
+
+    expected_path = tmp_path / ".v8" / "demo" / "README.md"
+    expected_path.parent.mkdir(parents=True)
+    expected_path.write_text("ready\n", encoding="utf-8")
+    state = {
+        "messages": [],
+        "todos": [],
+        "workspace_path": str(tmp_path),
+        "parallel_branch": {
+            "agentId": "artifact_worker",
+            "agentName": "Artifact Worker",
+            "delegationId": "delegation-artifact-ready",
+            "invocationId": "invoke-artifact-ready",
+            "taskBriefId": "TASK-ARTIFACT-READY",
+            "reason": "Verify the completed artifact.",
+            "taskBrief": {
+                "goal": "Create the expected file.",
+                "writeSet": [".v8/demo/README.md"],
+                "writeRequired": True,
+                "engineeringTaskCapsule": {
+                    "writeRequired": True,
+                    "expectedArtifacts": [".v8/demo/README.md"],
+                },
+            },
+        },
+    }
+    runtime_context = _runtime_context_from_parallel_state(state)
+    assert runtime_context["allowed_write_paths"] == [".v8/demo/README.md"]
+    counter = 0
+
+    def _node_func(_state):
+        nonlocal counter
+        counter += 1
+        return Command(
+            goto="supervisor" if counter > 85 else "artifact_worker",
+            update={"messages": [HumanMessage(content=f"checking completed artifact {counter}")]},
+        )
+
+    _messages, _todos, summary, _children = asyncio.run(
+        _run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert counter > 80
+    assert summary["status"] == "ok"
+    assert summary["missingExpectedArtifacts"] == []
 
 
 def test_parallel_branch_fails_skill_artifact_acceptance_when_skill_md_missing(tmp_path):

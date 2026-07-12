@@ -386,7 +386,13 @@ def test_spec_broker_tasks_approval_blocker_returns_repair_contract(tmp_path):
         )
     )
     assert written["ok"] is True
+    assert written["reviewReady"] is False
+    assert written["documentPersisted"] is True
+    assert written["transitionHint"]["state"] == "stage_needs_revision"
     assert written["stageContract"]["stage"] == "tasks"
+    persisted_control = spec_service.build_brief(workspace_path=str(workspace), spec_id=spec_id)["pipelineControl"]
+    assert persisted_control["blockedByApproval"] is None
+    assert persisted_control["blockedReason"] == "stage_analysis_invalid"
 
     approval = _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="tasks"))
 
@@ -396,6 +402,104 @@ def test_spec_broker_tasks_approval_blocker_returns_repair_contract(tmp_path):
     assert "mvpSlice" in approval["stageContract"]["minimalMarkdown"]
     codes = {item["code"] for item in approval["hardBlockers"]}
     assert {"large_task_missing_mvp_slice", "large_task_missing_independent_acceptance"}.issubset(codes)
+
+
+def test_spec_broker_does_not_open_human_approval_for_tasks_that_need_repair(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="Deliver a delegated workflow.",
+            feature_name="approval-readiness-demo",
+            content="# Requirements\n\n- REQ-001: Deliver the workflow with proof.\n",
+        )
+    )
+    spec_id = started["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+    assert _payload(
+        spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content="# Design\n\n- DES-001: Engineering coordinates delegated execution.\n",
+        )
+    )["ok"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="design"))["ok"]
+
+    requested = []
+    monkeypatch.setattr("core.tools.native.spec.command_service.request_approval", lambda request: requested.append(request) or {})
+    with bind_runtime_context(
+        runtime_kind="chat",
+        session_id="session_tasks_repair",
+        run_id="run_tasks_repair",
+        workspace_path=str(workspace),
+    ):
+        payload = _payload(
+            spec_broker.func(
+                mode="write_stage",
+                workspace_path=str(workspace),
+                spec_id=spec_id,
+                stage="tasks",
+                content=(
+                    "# Tasks\n\n"
+                    "### TASK-001: Implement parallel subagent delivery\n\n"
+                    "- runtimeLane: Engineering + subagent worker\n"
+                    "- specRefs: REQ-001, DES-001\n"
+                    "- expectedOutput: `src/runtime.ts`, `tests/runtime.test.ts`\n"
+                    "- acceptance: targeted tests pass\n"
+                    "- proofRequired: changed files and test output\n"
+                ),
+            )
+        )
+
+    assert payload["ok"] is True
+    assert payload["reviewReady"] is False
+    assert payload["transitionHint"]["state"] == "stage_needs_revision"
+    assert requested == []
+
+
+def test_spec_broker_does_not_open_review_when_explicit_target_directory_drifted(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = ".v8/live-audit/spec-mode-v2/example"
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request=f"Target output directory: {target}. Deliver index.html.",
+            feature_name="target-contract-demo",
+            content=f"# Requirements\n\n- REQ-001: Deliver `{target}/index.html`.\n",
+        )
+    )
+    spec_id = started["specId"]
+    assert _payload(spec_broker.func(mode="approve", workspace_path=str(workspace), spec_id=spec_id, stage="requirements"))["ok"]
+
+    requested = []
+    monkeypatch.setattr("core.tools.native.spec.command_service.request_approval", lambda request: requested.append(request) or {})
+    with bind_runtime_context(
+        runtime_kind="chat",
+        session_id="session_target_contract",
+        run_id="run_target_contract",
+        workspace_path=str(workspace),
+    ):
+        payload = _payload(
+            spec_broker.func(
+                mode="write_stage",
+                workspace_path=str(workspace),
+                spec_id=spec_id,
+                stage="design",
+                content="# Design\n\n- DES-001: Write index.html at the workspace root.\n",
+            )
+        )
+
+    assert payload["ok"] is True
+    assert payload["reviewReady"] is False
+    assert payload["pipelineControl"]["blockedReason"] == "stage_contract_invalid"
+    assert payload["missingConstraints"] == [{"kind": "target_output_directory", "value": target}]
+    assert requested == []
 
 
 def test_spec_broker_rejects_supervisor_self_approval(tmp_path):
@@ -439,6 +543,7 @@ def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     approvals = []
+    workbench_events = []
 
     def fake_request_approval(request):
         approvals.append(request)
@@ -449,6 +554,10 @@ def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_
         }
 
     monkeypatch.setattr("core.tools.native.spec.command_service.request_approval", fake_request_approval)
+    monkeypatch.setattr(
+        "core.tools.native.spec.emit_workbench_document_event",
+        lambda topic, **kwargs: workbench_events.append((topic, kwargs)),
+    )
 
     with bind_runtime_context(session_id="session_spec", run_id="run_spec", workspace_path=str(workspace)):
         blocked = _payload(spec_broker.func(
@@ -494,6 +603,130 @@ def test_spec_broker_runtime_stage_creates_governance_approval(monkeypatch, tmp_
     assert payload["approvalKind"] == "spec_stage_approval"
     assert payload["approvalStatus"] == "pending"
     assert payload["specBrief"]["clarificationSummary"]["count"] == 1
+    assert workbench_events
+    assert workbench_events[0][0] == "workbench.document.opened"
+    assert workbench_events[0][1]["document"]["title"] == "requirements.md"
+    assert workbench_events[0][1]["document"]["subjectRef"]["workspacePath"].endswith("requirements.md")
+
+
+def test_downstream_spec_stage_does_not_require_redundant_ask_user(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="生成一个最小静态页面",
+            feature_name="downstream-no-reask",
+            content="# Requirements\n\n- REQ-001: 交付一个静态页面。\n",
+        )
+    )
+    spec_id = started["specId"]
+    assert _payload(
+        spec_broker.func(
+            mode="approve",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="requirements",
+        )
+    )["ok"]
+
+    monkeypatch.setattr(
+        "core.tools.native.spec.command_service.request_approval",
+        lambda request: {
+            "approval_id": "approval_design",
+            "approval_kind": request.approval_kind,
+            "status": "pending",
+        },
+    )
+    monkeypatch.setattr("core.tools.native.spec.db.list_ask_user_interactions", lambda **_kwargs: [])
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        session_id="session_downstream_no_reask",
+        run_id="run_downstream_no_reask",
+        workspace_path=str(workspace),
+    ):
+        result = spec_broker.func(
+            mode="write_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="design",
+            content=(
+                "# Design\n\n"
+                "- DES-001: 使用单文件 HTML 实现 REQ-001。\n\n"
+                "## Verification Strategy\n\n"
+                "- DES-002: 在浏览器中打开并检查页面。\n"
+            ),
+            tool_call_id="call_design",
+        )
+
+    assert isinstance(result, Command)
+    payload = _payload(result.update["messages"][0].content)
+    assert payload["kind"] == "spec_stage_waiting_user_approval"
+    assert payload["stage"] == "design"
+    assert payload["approvalId"] == "approval_design"
+
+
+def test_spec_approval_waits_until_active_ask_user_is_resolved(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started = _payload(
+        spec_broker.func(
+            mode="start",
+            workspace_path=str(workspace),
+            user_request="生成一个最小静态页面",
+            feature_name="pending-question-first",
+            content="# Requirements\n\n- REQ-001: 交付一个静态页面。\n",
+        )
+    )
+    spec_id = started["specId"]
+    spec_service.record_clarification(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        question="页面是否保持纯静态？",
+        answer="是。",
+        source_run_id="run_previous",
+        tool_call_id="call_previous",
+        interaction_id="ask_previous",
+        feature_name="pending-question-first",
+    )
+    approvals = []
+    monkeypatch.setattr(
+        "core.tools.native.spec.command_service.request_approval",
+        lambda request: approvals.append(request),
+    )
+    monkeypatch.setattr(
+        "core.tools.native.spec.db.list_ask_user_interactions",
+        lambda **kwargs: [{
+            "id": "ask_active",
+            "run_id": kwargs.get("run_id"),
+            "status": "pending",
+            "request": {"question": "还需要确认一个问题。"},
+        }] if kwargs.get("status") == "pending" else [],
+    )
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        session_id="session_pending_question",
+        run_id="run_pending_question",
+        workspace_path=str(workspace),
+    ):
+        result = spec_broker.func(
+            mode="rewrite_stage",
+            workspace_path=str(workspace),
+            spec_id=spec_id,
+            stage="requirements",
+            content="# Requirements\n\n- REQ-001: 交付一个最小纯静态页面。\n",
+            tool_call_id="call_requirements_rewrite",
+        )
+
+    assert isinstance(result, Command)
+    payload = _payload(result.update["messages"][0].content)
+    assert payload["kind"] == "spec_stage_waiting_active_question"
+    assert payload["activeInteractionId"] == "ask_active"
+    assert approvals == []
 
 
 def test_spec_broker_edit_alias_rewrites_stage_with_inferred_spec_id(tmp_path):

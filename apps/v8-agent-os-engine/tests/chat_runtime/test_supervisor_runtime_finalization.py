@@ -1,10 +1,11 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 import graph.supervisor_turn as supervisor_turn_module
@@ -23,12 +24,15 @@ from graph.supervisor_turn import (
     _runtime_recoverable_failure_message,
     _message_session_coordination_reply,
     _looks_like_session_coordination_request,
+    _latest_spec_revision_contract,
+    _retry_spec_revision_once,
     _session_context_broker_first_response,
     _session_coordination_guidance,
     _session_coordination_outbound_guidance,
     _session_coordination_reply_called_since_injection,
     _session_coordination_requires_reply,
     _should_hide_todo_tools_for_direct_writing,
+    _spec_revision_discipline_message,
     execute_supervisor_turn,
 )
 from runtimes.chat.supervisor_completion_gate import ACTIVE_EPISODE_STATES, evaluate_supervisor_completion
@@ -174,6 +178,98 @@ def test_session_coordination_second_hop_cannot_request_third_reply():
     guidance = str(_session_coordination_guidance(coordination).content)
     assert "do not create a third hop" in guidance
     assert "Do not call session_message_broker" in guidance
+
+
+def test_latest_spec_revision_contract_tracks_only_the_latest_unresolved_spec_result():
+    invalid = {
+        "ok": True,
+        "kind": "spec_stage_saved_needs_revision",
+        "specId": "spec_demo",
+        "stage": "requirements",
+        "reviewReady": False,
+        "missingConstraints": [
+            {"kind": "target_output_directory", "value": ".v8/live-audit/spec-mode-v2/demo"}
+        ],
+    }
+    messages = [
+        HumanMessage(content="write requirements"),
+        ToolMessage(content=json.dumps(invalid), tool_call_id="call-invalid", name="spec_broker"),
+    ]
+
+    assert _latest_spec_revision_contract(messages) == invalid
+    guidance = str(_spec_revision_discipline_message(invalid).content)
+    assert "rewrite_stage" in guidance
+    assert ".v8/live-audit/spec-mode-v2/demo" in guidance
+    assert "no human approval exists" in guidance
+
+    valid = {
+        "ok": True,
+        "kind": "spec_stage_written",
+        "specId": "spec_demo",
+        "stage": "requirements",
+        "reviewReady": True,
+    }
+    messages.append(ToolMessage(content=json.dumps(valid), tool_call_id="call-valid", name="spec_broker"))
+    assert _latest_spec_revision_contract(messages) == {}
+
+
+def test_spec_revision_discipline_retries_once_when_supervisor_stops_without_tool_call():
+    contract = {
+        "kind": "spec_stage_saved_needs_revision",
+        "specId": "spec_demo",
+        "stage": "requirements",
+        "reviewReady": False,
+    }
+    calls = []
+    corrected = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call-rewrite",
+                "name": "spec_broker",
+                "args": {
+                    "mode": "rewrite_stage",
+                    "spec_id": "spec_demo",
+                    "stage": "requirements",
+                    "content": "# Requirements",
+                },
+            }
+        ],
+    )
+
+    def robust_invoke(_llm, messages, _tools, **_kwargs):
+        calls.append(messages)
+        return corrected
+
+    response = _retry_spec_revision_once(
+        AIMessage(content="requirements are done"),
+        contract=contract,
+        prepared_messages=[HumanMessage(content="write requirements")],
+        invoke_llm=object(),
+        filtered_tools=[SimpleNamespace(name="spec_broker")],
+        robust_invoke=robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda value: value,
+    )
+
+    assert response is corrected
+    assert len(calls) == 1
+    assert "single correction opportunity" in str(calls[0][-1].content)
+
+    calls.clear()
+    assert _retry_spec_revision_once(
+        corrected,
+        contract=contract,
+        prepared_messages=[],
+        invoke_llm=object(),
+        filtered_tools=[],
+        robust_invoke=robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda value: value,
+    ) is corrected
+    assert calls == []
 
 
 def test_natural_language_session_coordination_request_keeps_brokers_visible():
@@ -657,7 +753,15 @@ def test_completion_gate_allows_fast_approval_continuation_window():
     assert decision.reason == "eligible"
 
 
-def test_completion_gate_does_not_wait_for_invalid_spec_stage():
+@pytest.mark.parametrize(
+    ("blocked_reason", "expected_reason"),
+    [
+        ("stage_format_invalid", "spec_stage_format_invalid"),
+        ("stage_analysis_invalid", "spec_stage_analysis_invalid"),
+        ("stage_contract_invalid", "spec_stage_contract_invalid"),
+    ],
+)
+def test_completion_gate_does_not_wait_for_invalid_spec_stage(blocked_reason, expected_reason):
     decision = evaluate_supervisor_completion(
         spec_mode=True,
         spec_brief={
@@ -666,7 +770,7 @@ def test_completion_gate_does_not_wait_for_invalid_spec_stage():
             "pipelineControl": {
                 "runtimeExecutionAllowed": False,
                 "blockedByApproval": "",
-                "blockedReason": "stage_format_invalid",
+                "blockedReason": blocked_reason,
                 "nextStage": "runtime_execution",
             },
         },
@@ -674,7 +778,7 @@ def test_completion_gate_does_not_wait_for_invalid_spec_stage():
     )
 
     assert decision.action == "fail"
-    assert decision.reason == "spec_stage_format_invalid"
+    assert decision.reason == expected_reason
 
 
 def test_completion_gate_fails_runtime_allowed_spec_without_episode():

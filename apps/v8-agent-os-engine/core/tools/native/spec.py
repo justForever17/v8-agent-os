@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from core.database import db
 from core.spec_service import spec_service
+from core.workbench_events import emit_workbench_document_event
 from erc.command_service import command_service
 from erc.models import ApprovalRequest
 from erc.runtime_context import get_runtime_context
@@ -41,6 +42,75 @@ def _spec_compact_dict(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _spec_broker_payload(**payload: Any) -> str:
     return json.dumps(_spec_compact_dict(payload), ensure_ascii=False, indent=2)
+
+
+def _emit_spec_workbench_document(
+    *,
+    result: dict[str, Any],
+    workspace: str,
+    topic: str,
+) -> None:
+    """Project a durable Spec stage as a normal Workbench workspace document."""
+
+    runtime_context = get_runtime_context() or {}
+    if not isinstance(runtime_context, dict):
+        return
+    session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
+    run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
+    spec_id = str(result.get("specId") or "").strip()
+    stage = str(result.get("stage") or "").strip().lower()
+    if not session_id or not spec_id or stage not in _SPEC_STAGES:
+        return
+
+    brief = result.get("specBrief") if isinstance(result.get("specBrief"), dict) else {}
+    if not brief:
+        try:
+            brief = spec_service.build_brief(workspace_path=workspace, spec_id=spec_id)
+        except Exception:
+            brief = {}
+    documents = brief.get("documents") if isinstance(brief.get("documents"), dict) else {}
+    document_meta = documents.get(stage) if isinstance(documents.get(stage), dict) else {}
+    relative_path = str(document_meta.get("relativePath") or document_meta.get("relative_path") or "").strip()
+    if not relative_path:
+        for item in list(brief.get("linkedSections") or []):
+            if not isinstance(item, dict) or str(item.get("stage") or "").strip().lower() != stage:
+                continue
+            relative_path = str(item.get("relativePath") or item.get("relative_path") or "").strip()
+            if relative_path:
+                break
+    if not relative_path:
+        return
+    file_name = relative_path.replace("\\", "/").rsplit("/", 1)[-1] or "spec.md"
+
+    document = {
+        "kind": "workspace_file",
+        "documentId": f"spec-document:{spec_id}:{stage}",
+        "title": file_name,
+        "renderer": "markdown",
+        "lifecycle": "session",
+        "status": "available",
+        "capabilities": ["read", "search", "copy", "download", "focus"],
+        "subjectRef": {
+            "sessionId": session_id,
+            "workspacePath": relative_path,
+        },
+        **({"updatedAt": str(document_meta.get("updatedAt"))} if document_meta.get("updatedAt") else {}),
+    }
+    try:
+        emit_workbench_document_event(
+            topic,
+            session_id=session_id,
+            run_id=run_id or None,
+            runtime_id="chat",
+            source_component="spec_broker",
+            document=document,
+            focus_requested=False,
+            user_initiated=False,
+        )
+    except Exception:
+        # Workbench projection is a presentation concern and must not roll back
+        # a successfully persisted Spec contract document.
+        return
 
 
 def _spec_stage_contract_hint(stage: str) -> dict[str, Any]:
@@ -192,7 +262,7 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
     next_stage = str(control.get("nextStage") or "").strip().lower()
     blocked = str(control.get("blockedByApproval") or "").strip().lower()
     blocked_reason = str(control.get("blockedReason") or "").strip().lower()
-    if blocked_reason == "stage_format_invalid":
+    if blocked_reason in {"stage_format_invalid", "stage_analysis_invalid", "stage_contract_invalid"}:
         return {
             "state": "stage_needs_revision",
             "specId": spec_id,
@@ -283,6 +353,81 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
     }
 
 
+def _prepare_spec_stage_for_review(*, result: dict[str, Any], workspace: str) -> dict[str, Any]:
+    """Keep invalid Spec contracts out of the human approval surface."""
+
+    stage = str(result.get("stage") or "").strip().lower()
+    if not bool(result.get("ok")) or stage not in _SPEC_STAGES:
+        return result
+    spec_id = str(result.get("specId") or "").strip()
+    if not spec_id:
+        return result
+    try:
+        readiness = spec_service.validate_stage_approval(
+            workspace_path=workspace,
+            spec_id=spec_id,
+            stage=stage,
+        )
+    except Exception as exc:
+        readiness = {
+            "ok": False,
+            "kind": "spec_stage_validation_failed",
+            "summary": f"Spec stage '{stage}' could not be validated before review.",
+            "error": f"{type(exc).__name__}: {exc}",
+            "recommendedNextAction": f"Read the current {stage} stage and repair it before requesting approval.",
+        }
+    if bool(readiness.get("ok")):
+        try:
+            result["pipelineControl"] = spec_service.set_stage_review_readiness(
+                workspace_path=workspace,
+                spec_id=spec_id,
+                stage=stage,
+                ready=True,
+            )
+        except Exception:
+            pass
+        if isinstance(readiness.get("analysis"), dict):
+            result["analysis"] = readiness["analysis"]
+        return result
+
+    readiness_kind = str(readiness.get("kind") or "").strip().lower()
+    blocked_reason = "stage_analysis_invalid" if readiness_kind == "spec_stage_analysis_blocked" else "stage_contract_invalid"
+    try:
+        pipeline = spec_service.set_stage_review_readiness(
+            workspace_path=workspace,
+            spec_id=spec_id,
+            stage=stage,
+            ready=False,
+            reason=blocked_reason,
+            summary=str(readiness.get("summary") or ""),
+            analysis=readiness.get("analysis") if isinstance(readiness.get("analysis"), dict) else None,
+        )
+    except Exception:
+        pipeline = dict(result.get("pipelineControl") or {})
+        pipeline.update(
+            {
+                "blockedByApproval": None,
+                "blockedReason": blocked_reason,
+                "runtimeExecutionAllowed": False,
+            }
+        )
+    result.update(
+        {
+            "kind": "spec_stage_saved_needs_revision",
+            "summary": readiness.get("summary") or f"Spec stage '{stage}' needs another repair pass before user review.",
+            "analysis": readiness.get("analysis") or {},
+            "hardBlockers": list(readiness.get("hardBlockers") or []),
+            "missingConstraints": list(readiness.get("missingConstraints") or []),
+            "pipelineControl": pipeline,
+            "documentPersisted": True,
+            "reviewReady": False,
+            "recommendedNextAction": readiness.get("recommendedNextAction")
+            or f"Repair {stage}.md before requesting the dedicated document confirmation.",
+        }
+    )
+    return result
+
+
 def _request_spec_stage_approval(
     *,
     session_id: str,
@@ -332,6 +477,8 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
     harness then approves the stage and resumes a fresh Supervisor turn.
     """
     if not bool(result.get("ok")):
+        return None
+    if result.get("reviewReady") is False:
         return None
     pipeline = result.get("pipelineControl") if isinstance(result.get("pipelineControl"), dict) else {}
     blocked_stage = str(pipeline.get("blockedByApproval") or "").strip().lower()
@@ -630,6 +777,13 @@ def _spec_clarification_ready(*, workspace: str, spec_id: str, stage: str, featu
     normalized_stage = str(stage or "").strip().lower()
     if normalized_stage not in _SPEC_STAGES:
         return True
+    # Human clarification establishes product intent at the first requirements
+    # or bugfix boundary. Design and tasks are downstream derivations of an
+    # approved contract; forcing another ask_user at every stage can deadlock a
+    # valid continuation and violates Supervisor First. The Supervisor may
+    # still ask when a real ambiguity exists, but the tool no longer mandates it.
+    if normalized_stage in {"design", "tasks"}:
+        return True
     if spec_id and spec_service.has_stage_clarification(workspace_path=workspace, spec_id=spec_id, stage=normalized_stage):
         return True
     return bool(_spec_resolved_clarification_interactions(spec_id=spec_id, stage=normalized_stage, feature_name=feature_name))
@@ -917,7 +1071,7 @@ def spec_broker(
     Write flow:
     - `mode='write_stage'`, `stage='requirements'|'bugfix'|'design'|'tasks'`,
       `content='<complete markdown document>'`.
-    - In a live chat run, the first write of each main stage requires a
+    - In a live chat run, the first requirements/bugfix write requires a
       resolved `ask_user` clarification with
       `specContext.kind='spec_clarification'`; if missing, this tool returns
       `spec_clarification_required`.
@@ -1096,6 +1250,7 @@ def spec_broker(
                     result["linkedSections"] = result["specBrief"].get("linkedSections")
                 except Exception:
                     pass
+            result = _prepare_spec_stage_for_review(result=result, workspace=workspace)
             result.setdefault(
                 "transitionHint",
                 _spec_transition_hint(
@@ -1109,6 +1264,11 @@ def spec_broker(
                 _spec_stage_contract_hint(str(result.get("stage") or requested_stage or stage or clarification_stage)),
             )
             result.setdefault("recommendedNextAction", "Show the current stage to the user for approval before moving downstream.")
+            _emit_spec_workbench_document(
+                result=result,
+                workspace=workspace,
+                topic="workbench.document.opened",
+            )
             stop_command = _maybe_stop_for_spec_stage_approval(result, tool_call_id=tool_call_id)
             if stop_command is not None:
                 return stop_command
@@ -1249,6 +1409,7 @@ def spec_broker(
                 stage=str(result.get("stage") or clarification_stage or resolved_stage),
                 feature_name=str(feature_name or user_request or "").strip(),
             )
+            result = _prepare_spec_stage_for_review(result=result, workspace=workspace)
             result.setdefault(
                 "transitionHint",
                 _spec_transition_hint(
@@ -1262,6 +1423,11 @@ def spec_broker(
                 _spec_stage_contract_hint(str(result.get("stage") or resolved_stage or clarification_stage or "")),
             )
             result.setdefault("recommendedNextAction", "Show the edited stage to the user for approval before moving downstream.")
+            _emit_spec_workbench_document(
+                result=result,
+                workspace=workspace,
+                topic="workbench.document.updated",
+            )
             stop_command = _maybe_stop_for_spec_stage_approval(result, tool_call_id=tool_call_id)
             if stop_command is not None:
                 return stop_command

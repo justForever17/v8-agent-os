@@ -9,10 +9,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from langchain_core.messages import SystemMessage
+
 from core.database import db
 from core.delegation_broker import normalize_task_briefs
 from core.delegation_result_contract import build_delegation_result_contract
 from core.json_safe import to_jsonable
+from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
 from core.workspace_state_digest import build_workspace_state_digest_context
@@ -1773,6 +1776,81 @@ class RuntimeEpisodeRunner:
         return bool(summary.get("artifacts") or summary.get("proofRefs") or summary.get("changedFiles"))
 
     @classmethod
+    def _governance_safe_verification_retry_arg(
+        cls,
+        arg: dict[str, Any],
+        exc: Exception,
+        *,
+        workspace_path: str | None,
+    ) -> dict[str, Any] | None:
+        """Build one bounded retry after unsafe verification was rejected.
+
+        The safety review remains authoritative.  A retry is allowed only when
+        the task's declared artifacts already exist, so the worker can replace
+        an unsafe proof command without repeating the write or widening scope.
+        """
+
+        if not isinstance(exc, ModelGovernanceInterventionRequired):
+            return None
+        if str(exc.approval_kind or "").strip() != "safety_review":
+            return None
+        safety = exc.details.get("safety") if isinstance(exc.details, dict) else {}
+        risk_code = str((safety or {}).get("riskCode") or (safety or {}).get("risk_code") or "").strip()
+        if risk_code != "encoded_command_review" or not workspace_path:
+            return None
+
+        branch = dict(arg.get("parallel_branch") or {})
+        if int(branch.get("governanceSafeRetryCount") or 0) >= 1:
+            return None
+        task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+        expected = cls._engineering_expected_artifact_values([task_brief])
+        if not expected:
+            return None
+        if cls._engineering_missing_expected_artifacts(
+            workspace_path=str(workspace_path),
+            worker_briefs=[task_brief],
+        ):
+            return None
+        if cls._engineering_unready_expected_artifacts(
+            workspace_path=str(workspace_path),
+            worker_briefs=[task_brief],
+        ):
+            return None
+
+        retry_arg = dict(arg)
+        retry_branch = dict(branch)
+        retry_task_brief = dict(task_brief)
+        retry_context = dict(retry_task_brief.get("context") or {})
+        retry_context["governanceSafeVerificationRetry"] = {
+            "required": True,
+            "riskCode": risk_code,
+            "artifactContractReady": True,
+            "instruction": (
+                "The declared artifact already exists. Do not repeat the rejected command and do not execute "
+                "artifact content through eval, exec, encoded commands, or reflective loaders. Use read-only "
+                "static checks or an already-approved browser/runtime tool. If exact behavior cannot be proven "
+                "safely, return the remaining verification limitation without claiming success for that proof."
+            ),
+        }
+        retry_task_brief["context"] = retry_context
+        retry_branch["taskBrief"] = retry_task_brief
+        retry_branch["governanceSafeRetryCount"] = 1
+        retry_arg["parallel_branch"] = retry_branch
+        retry_messages = list(retry_arg.get("messages") or [])
+        retry_messages.append(
+            SystemMessage(
+                content=(
+                    "[V8OS 安全纠偏] 上一条验证命令被 Safety Guardian 拒绝，因为它通过 eval/exec 或编码/反射方式执行了产物内容。"
+                    "产物已按声明路径落盘；不要重试该命令、不要扩大写入范围。改用只读静态检查或当前已获准的浏览器/运行时工具；"
+                    "如果无法安全证明动态行为，明确回传剩余验证限制，不得伪造验证成功。"
+                )
+            )
+        )
+        retry_arg["messages"] = retry_messages
+        retry_branch["initialMessageCount"] = len(retry_messages)
+        return retry_arg
+
+    @classmethod
     def _dependency_results_for_delegation(
         cls,
         deps: list[str],
@@ -2714,12 +2792,32 @@ class RuntimeEpisodeRunner:
                     completed_by_task_id[task_id] = summary
                 return
             try:
-                _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
-                    str(episode.get("episodeId") or ""),
-                    _run_parallel_agent_branch(arg, agent_data),
-                    progress=f"delegation: running subagent {agent_id or 'worker'}",
-                    interval_seconds=8.0,
-                )
+                try:
+                    _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
+                        str(episode.get("episodeId") or ""),
+                        _run_parallel_agent_branch(arg, agent_data),
+                        progress=f"delegation: running subagent {agent_id or 'worker'}",
+                        interval_seconds=8.0,
+                    )
+                except ModelGovernanceInterventionRequired as exc:
+                    retry_arg = self._governance_safe_verification_retry_arg(
+                        arg,
+                        exc,
+                        workspace_path=workspace_path,
+                    )
+                    if retry_arg is None:
+                        raise
+                    _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
+                        str(episode.get("episodeId") or ""),
+                        _run_parallel_agent_branch(retry_arg, agent_data),
+                        progress=f"delegation: retry safe verification for {agent_id or 'worker'}",
+                        interval_seconds=8.0,
+                    )
+                    summary = {
+                        **dict(summary or {}),
+                        "governanceSafeRetry": True,
+                        "governanceRiskCode": "encoded_command_review",
+                    }
                 if not child_requests and self._summary_indicates_unrouted_child_delegation(summary):
                     if not bool(branch.get("allowChildDelegation")):
                         summary = {

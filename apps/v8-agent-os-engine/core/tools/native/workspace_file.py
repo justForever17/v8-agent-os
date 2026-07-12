@@ -78,6 +78,59 @@ def _global_skill_write_block_payload(target_path: Path | str) -> dict[str, Any]
     }
 
 
+def _task_write_scope_values(runtime_context: dict[str, Any]) -> list[str]:
+    raw_values = runtime_context.get("allowed_write_paths") or runtime_context.get("allowedWritePaths") or []
+    values = [raw_values] if isinstance(raw_values, str) else list(raw_values or [])
+    return [str(value or "").strip() for value in values if str(value or "").strip()]
+
+
+def _task_write_scope_allows(runtime_context: dict[str, Any], target_path: Path) -> bool:
+    allowed_values = _task_write_scope_values(runtime_context)
+    if not allowed_values:
+        return True
+    workspace_root = Path(
+        str(runtime_context.get("workspace_path") or runtime_context.get("workspacePath") or "")
+    ).expanduser()
+    try:
+        workspace_root = workspace_root.resolve()
+        target = target_path.expanduser().resolve()
+    except Exception:
+        return False
+    for allowed_value in allowed_values:
+        candidate_path = Path(allowed_value).expanduser()
+        candidate = candidate_path if candidate_path.is_absolute() else workspace_root / candidate_path
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            continue
+        if target == candidate:
+            return True
+        directory_scope = (
+            allowed_value.endswith(("/", "\\"))
+            or candidate == workspace_root
+            or (candidate.exists() and candidate.is_dir())
+        )
+        if directory_scope:
+            try:
+                target.relative_to(candidate)
+                return True
+            except ValueError:
+                continue
+    return False
+
+
+def _task_write_scope_block_payload(runtime_context: dict[str, Any], target_path: Path) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "kind": "write_set_scope_block",
+        "summary": "目标文件不在当前委派任务的允许写集内，已阻止写入。",
+        "error": "path_outside_allowed_write_set",
+        "path": str(target_path),
+        "allowedWritePaths": _task_write_scope_values(runtime_context),
+        "recommendedNextAction": "仅写入任务合同列出的产物；如确需新增文件，由 Supervisor 重新划定任务写集。",
+    }
+
+
 TEXT_EXTENSIONS = {'.txt', '.md', '.py', '.json', '.yaml', '.yml', '.csv', '.log', '.sh', '.bat', '.ps1', '.html', '.css', '.js', '.ts', '.tsx', '.jsx'}
 _READ_BEFORE_WRITE_TTL_SECONDS = 30 * 60
 _READ_BEFORE_WRITE_MAX_RECEIPTS = 4096
@@ -541,6 +594,12 @@ def write_native_file(
         target_path = Path(str(path_preflight.get("resolvedPath") or path))
         if is_global_skill_path(target_path):
             return json.dumps(_global_skill_write_block_payload(target_path), ensure_ascii=False, indent=2)
+        if not _task_write_scope_allows(runtime_context, target_path):
+            return json.dumps(
+                _task_write_scope_block_payload(runtime_context, target_path),
+                ensure_ascii=False,
+                indent=2,
+            )
         inventory_status = _workspace_inventory_status_compat(runtime_context)
         if (
             not inventory_status.get("hasInventoryToken")

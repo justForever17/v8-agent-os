@@ -316,7 +316,7 @@ def _extract_task_field(excerpt: str, labels: tuple[str, ...]) -> str:
 def _extract_task_block(excerpt: str, labels: tuple[str, ...], *, limit: int = 1200) -> str:
     label_pattern = "|".join(re.escape(label) for label in labels)
     match = re.search(
-        rf"(?ims)^\s*\*\*(?:{label_pattern})\*\*\s*[:：]?\s*\n(?P<body>.*?)(?=\n\s*\*\*[^*\n]+?\*\*\s*[:：]|\n---|\n###\s+|\Z)",
+        rf"(?ims)^\s*(?:[-*]\s*)?\*\*(?:{label_pattern})\*\*\s*[:：]?\s*\n(?P<body>.*?)(?=\n\s*(?:[-*]\s*)?\*\*[^*\n]+?\*\*\s*[:：]|\n---|\n###\s+|\Z)",
         excerpt,
     )
     if not match:
@@ -430,17 +430,15 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
             "expected artifacts",
             "expectedOutput",
             "expected output",
+            "expected output path",
+            "output path",
             "output",
             "输出",
             "产物",
             "预期输出",
             "预期输出路径",
         )
-        output_file = _extract_task_block(
-            excerpt,
-            ("输出文件", "预期输出路径", "预期输出", "输出路径"),
-            limit=900,
-        )
+        output_file = _extract_task_block(excerpt, output_labels, limit=900)
         if not output_file:
             output_file = _extract_task_field(
             excerpt,
@@ -453,7 +451,11 @@ def _task_sections_from_markdown(markdown: str, task_ids: list[str]) -> list[dic
             )
             if output_match:
                 output_file = _safe_compact_text(output_match.group("body"), limit=900)
-        acceptance = _extract_task_block(excerpt, ("acceptance", "验收", "验收标准"), limit=1200)
+        acceptance = _extract_task_block(
+            excerpt,
+            ("acceptance", "acceptance / proof", "acceptance proof", "验收", "验收标准"),
+            limit=1200,
+        )
         if not acceptance:
             acceptance = _extract_task_field(excerpt, ("acceptance", "验收"))
         if not acceptance:
@@ -560,13 +562,14 @@ def _approved_spec_execution_bundle(
             for item in parsed_task_sections
             if str(item.get("taskId") or "").strip()
         }
-        task_sections = [
-            {
-                **dict(parsed_by_id.get(str(item.get("taskId") or "").strip()) or {}),
-                **item,
-            }
-            for item in task_sections
-        ]
+        merged_sections: list[dict[str, Any]] = []
+        for item in task_sections:
+            parsed = dict(parsed_by_id.get(str(item.get("taskId") or "").strip()) or {})
+            for key, value in item.items():
+                if value not in (None, "", [], {}):
+                    parsed[key] = value
+            merged_sections.append(parsed)
+        task_sections = merged_sections
     else:
         task_sections = parsed_task_sections
     return {
@@ -576,6 +579,8 @@ def _approved_spec_execution_bundle(
         "featureName": spec_brief.get("featureName"),
         "workspacePath": workspace_path,
         "specDir": spec_brief.get("specDir"),
+        "targetOutputDirectories": list(spec_brief.get("targetOutputDirectories") or [])[:8],
+        "explicitDeliverableFiles": list(spec_brief.get("explicitDeliverableFiles") or [])[:16],
         "approvedStages": list(spec_brief.get("approvedStages") or []),
         "pipelineControl": dict(spec_brief.get("pipelineControl") or {}),
         "qualityEvidence": spec_brief.get("qualityEvidence") if isinstance(spec_brief.get("qualityEvidence"), dict) else {},
@@ -715,6 +720,30 @@ def _spec_task_deliverable_kind(family: str) -> str:
     return "artifact"
 
 
+def _spec_task_is_verification_intent(task: dict[str, Any]) -> bool:
+    probe = " ".join(
+        str(task.get(key) or "")
+        for key in ("title", "runtimeLane")
+    ).lower()
+    return any(
+        marker in probe
+        for marker in (
+            "验收",
+            "验证",
+            "测试",
+            "检查",
+            "校验",
+            "审计",
+            "verify",
+            "verification",
+            "test",
+            "validate",
+            "audit",
+            "quality check",
+        )
+    )
+
+
 def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
     if family == "creative_media":
         return True
@@ -748,10 +777,9 @@ def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
         str(task.get(key) or "")
         for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
     ).lower()
-    verification_markers = ("验收", "验证", "测试", "检查", "verify", "verification", "test", "validate")
     if (
-        any(marker in text for marker in verification_markers)
-        and not _spec_task_expected_paths(expected_output)
+        _spec_task_is_verification_intent(task)
+        and not _spec_task_has_explicit_output_path(expected_output)
     ):
         return False
     # Verification/checkpoint/final-summary tasks may inspect artifacts or produce
@@ -811,6 +839,26 @@ _SPEC_OUTPUT_PATH_PATTERN = re.compile(
 )
 
 
+def _spec_task_has_explicit_output_path(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if any(_spec_task_expected_paths(match.group(1)) for match in re.finditer(r"`([^`]+)`", text)):
+        return True
+    path_token = r"[\w@.$~][\w@.$~\-/\\]*\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml|png|jpg|jpeg|webp|svg|mp3|wav|mp4|mov)"
+    for raw_line in text.splitlines():
+        line = re.sub(r"^\s*[-*]\s*", "", raw_line).strip().strip("'\"")
+        if re.fullmatch(rf"{path_token}(?:\s*(?:,|、|\band\b|\bor\b|和|及)\s*{path_token})*", line, flags=re.IGNORECASE):
+            return True
+        path_match = re.search(path_token, line, flags=re.IGNORECASE)
+        if path_match and re.fullmatch(
+            r"(?i)(?:single\s+file|output\s+file|report\s+file|单文件|输出文件|报告文件|日志文件)?\s*",
+            line[: path_match.start()],
+        ):
+            return True
+    return False
+
+
 def _spec_task_expected_paths(*values: Any) -> list[str]:
     """Extract likely artifact paths from a compact task section.
 
@@ -840,6 +888,38 @@ def _spec_task_expected_paths(*values: Any) -> list[str]:
             if candidate not in paths:
                 paths.append(candidate)
     return paths[:16]
+
+
+def _resolve_spec_expected_paths(
+    expected_paths: list[str],
+    target_output_directories: list[Any],
+) -> list[str]:
+    """Resolve bare output filenames against one authoritative Spec target.
+
+    The output filenames have already been extracted from explicit task output
+    fields.  The target directory comes from the human contract stored in the
+    Spec manifest.  We deliberately do not guess when either side is
+    ambiguous.
+    """
+
+    targets = [
+        str(value or "").strip().strip("`'\"").replace("\\", "/").rstrip("/")
+        for value in target_output_directories
+        if str(value or "").strip()
+    ]
+    targets = list(dict.fromkeys(target for target in targets if target))
+    if len(targets) != 1:
+        return list(expected_paths)
+
+    target = targets[0]
+    resolved: list[str] = []
+    for value in expected_paths:
+        candidate = str(value or "").strip().replace("\\", "/")
+        if candidate and "/" not in candidate:
+            candidate = f"{target}/{candidate}"
+        if candidate and candidate not in resolved:
+            resolved.append(candidate)
+    return resolved
 
 
 def _spec_stage_slice(markdown: Any, refs: list[str], *, stage: str, limit: int = 5200) -> str:
@@ -954,8 +1034,7 @@ def _preferred_agent_for_spec_task(
             str(task.get(key) or "")
             for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
         ).lower()
-        verification_markers = ("验收", "验证", "测试", "检查", "verify", "verification", "test", "validate")
-        if not writes_artifact and any(marker in text for marker in verification_markers):
+        if not writes_artifact and _spec_task_is_verification_intent(task):
             return "verification-engineer"
         return "web-research-architect"
     if family != "engineering":
@@ -965,8 +1044,7 @@ def _preferred_agent_for_spec_task(
         for key in ("taskId", "title", "excerpt", "expectedOutput", "acceptance", "proofRequired")
     ).lower()
     suffixes = {Path(path.rstrip("/\\")).suffix.lower() for path in expected_paths if path.rstrip("/\\")}
-    verification_markers = ("验收", "验证", "测试", "检查", "verify", "verification", "test", "validate")
-    if not writes_artifact and any(marker in text for marker in verification_markers):
+    if not writes_artifact and _spec_task_is_verification_intent(task):
         return "verification-engineer"
     if suffixes.intersection({".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte"}):
         return "frontend-product-engineer"
@@ -1037,6 +1115,10 @@ def _spec_task_engineering_execution_contract(
             "Do not read/write outside the Active Workspace Root unless another root is explicitly granted.",
             "Do not edit files outside allowedWorkset when concrete expected artifacts are listed.",
             "Do not use older specs, memory, or chat history to override the approved current Spec.",
+            (
+                "Do not execute generated or workspace file contents through eval, exec, encoded commands, or reflective "
+                "loaders for verification; use read-only static checks or an already-approved browser/runtime tool."
+            ),
             "Do not perform destructive commands or cross-project changes without approval.",
         ],
     }
@@ -1121,6 +1203,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
     docs = dict(bundle.get("documents") or {})
     traceability = dict(bundle.get("traceability") or {}) if isinstance(bundle.get("traceability"), dict) else {}
     framework_digest = str(traceability.get("frameworkDigest") or "").strip()
+    target_output_directories = list(bundle.get("targetOutputDirectories") or [])
     requirement_doc = dict(docs.get("requirements") or docs.get("bugfix") or {})
     design_doc = dict(docs.get("design") or {})
     task_doc = dict(docs.get("tasks") or {})
@@ -1171,6 +1254,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
             spec_refs = list(requirement_doc.get("ids") or [])[:8] + list(design_doc.get("ids") or [])[:8]
         writes_artifact = _spec_task_writes_artifact(task, family)
         expected_paths = _spec_task_expected_paths(*explicit_output_values) if writes_artifact else []
+        expected_paths = _resolve_spec_expected_paths(expected_paths, target_output_directories)
         if not output and expected_paths:
             output = "; ".join(expected_paths)
         validates_skill_artifact = _spec_task_validates_skill_artifact(task, family, writes_artifact=writes_artifact)

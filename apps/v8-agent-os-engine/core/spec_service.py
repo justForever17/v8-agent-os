@@ -459,12 +459,68 @@ def _task_is_large(task: dict[str, Any]) -> bool:
         str(task.get(key) or "")
         for key in ("runtimeLane", "title", "taskExcerpt")
     ).lower()
-    output_count = len(re.findall(r"(?:^|\n)\s*[-*]\s+|`[^`]+`|[A-Za-z]:\\|/[\w.-]+", expected))
+    # Count deliverables, not path segments. The previous `/foo` matcher
+    # classified a single nested directory as several outputs and therefore
+    # turned tiny setup tasks into "large" work.
+    file_outputs = {
+        match.lower()
+        for match in re.findall(r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,10}", expected)
+    }
+    listed_outputs = len(re.findall(r"(?m)^\s*[-*]\s+\S", expected))
     return (
-        len(excerpt) > 1100
-        or output_count >= 2
+        len(file_outputs) >= 2
+        or listed_outputs >= 2
         or any(token in lane_blob for token in ("subagent", "sub-agent", "worker", "parallel", "fanout", "子agent", "孙agent", "并行"))
     )
+
+
+def _explicit_target_directories(manifest: dict[str, Any]) -> list[str]:
+    """Read only explicitly labelled output directories from the human contract."""
+
+    texts = [str(manifest.get("sourceRequest") or "")]
+    for item in list(manifest.get("clarifications") or []):
+        if not isinstance(item, dict):
+            continue
+        texts.extend([str(item.get("question") or ""), str(item.get("answer") or "")])
+    patterns = (
+        r"(?:target\s+output\s+director(?:y|ies)|目标输出目录)\s*[:：]\s*[`'\"]([^`'\"\r\n]+)[`'\"]",
+        r"(?:target\s+output\s+director(?:y|ies)|目标输出目录)\s*[:：]\s*([^\s,，;；]+)",
+        r"(?:only\s+under|只在目标目录)\s*[`'\"]([^`'\"\r\n]+)[`'\"]",
+    )
+    results: list[str] = []
+    for blob in texts:
+        for pattern in patterns:
+            for match in re.finditer(pattern, blob, re.IGNORECASE):
+                value = str(match.group(1) or "").strip().strip("`'\"").replace("\\", "/").rstrip("/.")
+                if value and value not in results:
+                    results.append(value)
+    return results[:8]
+
+
+_EXPLICIT_DELIVERABLE_FILE_RE = re.compile(
+    r"(?i)(?<![\w.-])([A-Za-z0-9_@.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml|png|jpg|jpeg|webp|svg|mp3|wav|mp4|mov))(?![\w.-])"
+)
+
+
+def _explicit_deliverable_files(manifest: dict[str, Any]) -> list[str]:
+    """Read only explicitly labelled final deliverable filenames."""
+
+    texts = [str(manifest.get("sourceRequest") or "")]
+    for item in list(manifest.get("clarifications") or []):
+        if not isinstance(item, dict):
+            continue
+        texts.extend([str(item.get("question") or ""), str(item.get("answer") or "")])
+    label_pattern = re.compile(
+        r"(?im)(?:final\s+(?:deliverable|output)\s+files?|最终交付文件(?:必须是)?|最终文件(?:必须是)?|交付文件必须是)\s*[:：为]?\s*([^\r\n]+)"
+    )
+    results: list[str] = []
+    for blob in texts:
+        for match in label_pattern.finditer(blob):
+            for file_match in _EXPLICIT_DELIVERABLE_FILE_RE.finditer(str(match.group(1) or "")):
+                value = str(file_match.group(1) or "").strip()
+                if value and value.lower() not in {item.lower() for item in results}:
+                    results.append(value)
+    return results[:16]
 
 
 def _tasks_quality_diagnostics(tasks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -710,17 +766,23 @@ def _task_slices(markdown: str, requirement_index: dict[str, dict[str, Any]], de
     task_style = "checkbox"
     if not matches:
         task_re = re.compile(
-            r"(?m)^#{2,6}\s+((?:TASK|TSK|T)-\d{2,})\s*[:：.-]?\s*(.*?)\s*$",
+            r"(?m)^(#{2,6})\s+((?:TASK|TSK|T)-\d{2,})\s*[:：.-]?\s*(.*?)\s*$",
             re.IGNORECASE,
         )
         matches = list(task_re.finditer(text))
         task_style = "heading"
     slices: list[dict[str, Any]] = []
     for index, match in enumerate(matches):
-        raw_id = match.group(2 if task_style == "checkbox" else 1).strip()
-        title = match.group(3 if task_style == "checkbox" else 2).strip()
+        raw_id = match.group(2).strip()
+        title = match.group(3).strip()
         start = match.start()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        if task_style == "heading":
+            task_heading_level = len(match.group(1))
+            for following_heading in re.finditer(r"(?m)^(#{1,6})\s+", text[match.end():]):
+                if len(following_heading.group(1)) <= task_heading_level:
+                    end = min(end, match.end() + following_heading.start())
+                    break
         block = text[start:end].strip()
         body_for_refs = "\n".join(block.splitlines()[1:]).strip()
         if re.match(r"^(?:TASK|TSK|T)-", raw_id, re.IGNORECASE):
@@ -1021,6 +1083,8 @@ class SpecService:
             "currentStage": manifest.get("currentStage"),
             "workspacePath": manifest.get("workspacePath") or str(paths.workspace),
             "specDir": str(paths.spec_dir),
+            "targetOutputDirectories": _explicit_target_directories(manifest),
+            "explicitDeliverableFiles": _explicit_deliverable_files(manifest),
             "createdAt": manifest.get("createdAt"),
             "updatedAt": manifest.get("updatedAt"),
             "pipelineControl": self._pipeline_control(manifest),
@@ -1700,9 +1764,17 @@ class SpecService:
             if isinstance(current_doc, dict) and isinstance(current_doc.get("formatDiagnostics"), dict)
             else {}
         )
+        current_review = (
+            current_doc.get("reviewReadiness")
+            if isinstance(current_doc, dict) and isinstance(current_doc.get("reviewReadiness"), dict)
+            else {}
+        )
+        current_review_blocking = current_review.get("ready") is False
         current_format_blocking = bool(current_diagnostics.get("approvalBlocking"))
         if current and current in docs and approvals.get(current) is not True:
-            if current_format_blocking:
+            if current_review_blocking:
+                blocked_reason = str(current_review.get("reason") or "stage_analysis_invalid")
+            elif current_format_blocking:
                 blocked_reason = "stage_format_invalid"
             else:
                 blocked_by = current
@@ -1869,6 +1941,170 @@ class SpecService:
                     }
                 )
         return warnings[:8]
+
+    def validate_stage_approval(self, *, workspace_path: str, spec_id: str, stage: str) -> dict[str, Any]:
+        """Validate a Spec stage without changing approval or run state."""
+
+        paths = self.resolve_paths(workspace_path, spec_id=spec_id)
+        manifest = self._load_manifest(paths)
+        if not manifest:
+            raise ValueError(f"spec_not_found:{spec_id}")
+        normalized_stage = str(stage or manifest.get("currentStage") or "").strip().lower()
+        if normalized_stage not in SPEC_DOCS:
+            raise ValueError(f"unsupported_spec_stage:{normalized_stage}")
+        if normalized_stage not in dict(manifest.get("documents") or {}):
+            raise ValueError(f"spec_document_not_found:{normalized_stage}")
+        doc_path = paths.spec_dir / SPEC_DOCS[normalized_stage]
+        content = doc_path.read_text(encoding="utf-8", errors="ignore") if doc_path.exists() else ""
+        diagnostics = _stage_format_diagnostics(normalized_stage, content)
+        if diagnostics.get("approvalBlocking"):
+            return {
+                "ok": False,
+                "kind": "spec_stage_format_invalid",
+                "stage": normalized_stage,
+                "specId": spec_id,
+                "summary": f"Spec stage '{normalized_stage}' is not ready for approval.",
+                "formatDiagnostics": diagnostics,
+                "pipelineControl": self._pipeline_control(manifest),
+                "recommendedNextAction": "Repair the current document before asking the user to review it.",
+            }
+        normalized_content = content.replace("\\", "/").lower()
+        missing_target_directories = [
+            target
+            for target in _explicit_target_directories(manifest)
+            if target.lower() not in normalized_content
+        ]
+        if missing_target_directories:
+            return {
+                "ok": False,
+                "kind": "spec_stage_contract_drift",
+                "stage": normalized_stage,
+                "specId": spec_id,
+                "summary": "The Spec stage dropped an explicit target output directory from the user contract.",
+                "missingConstraints": [
+                    {"kind": "target_output_directory", "value": target}
+                    for target in missing_target_directories
+                ],
+                "formatDiagnostics": diagnostics,
+                "pipelineControl": self._pipeline_control(manifest),
+                "recommendedNextAction": (
+                    "Rewrite the current stage so every explicit target output directory is preserved verbatim before user review."
+                ),
+            }
+        explicit_deliverables = _explicit_deliverable_files(manifest)
+        missing_deliverables = [
+            name
+            for name in explicit_deliverables
+            if name.lower() not in normalized_content
+        ]
+        if missing_deliverables:
+            return {
+                "ok": False,
+                "kind": "spec_stage_contract_drift",
+                "stage": normalized_stage,
+                "specId": spec_id,
+                "summary": "The Spec stage dropped explicitly named final deliverables from the user contract.",
+                "missingConstraints": [
+                    {"kind": "final_deliverable_file", "value": name}
+                    for name in missing_deliverables
+                ],
+                "formatDiagnostics": diagnostics,
+                "pipelineControl": self._pipeline_control(manifest),
+                "recommendedNextAction": (
+                    "Rewrite the current stage so every explicitly named final deliverable remains visible before user review."
+                ),
+            }
+        if normalized_stage == "tasks" and explicit_deliverables:
+            allowed_names = {name.lower() for name in explicit_deliverables}
+            task_outputs: list[str] = []
+            for task in _task_slices(content, {}, []):
+                for file_match in _EXPLICIT_DELIVERABLE_FILE_RE.finditer(str(task.get("expectedOutput") or "")):
+                    name = str(file_match.group(1) or "").strip()
+                    if name and name.lower() not in {item.lower() for item in task_outputs}:
+                        task_outputs.append(name)
+            unexpected_outputs = [name for name in task_outputs if name.lower() not in allowed_names]
+            if unexpected_outputs:
+                return {
+                    "ok": False,
+                    "kind": "spec_stage_contract_drift",
+                    "stage": normalized_stage,
+                    "specId": spec_id,
+                    "summary": "The Spec tasks added final output files that the user did not authorize.",
+                    "unexpectedOutputs": [
+                        {"kind": "final_deliverable_file", "value": name}
+                        for name in unexpected_outputs
+                    ],
+                    "allowedFinalDeliverables": explicit_deliverables,
+                    "formatDiagnostics": diagnostics,
+                    "pipelineControl": self._pipeline_control(manifest),
+                    "recommendedNextAction": (
+                        "Rewrite tasks so file outputs are limited to the explicitly named final deliverables. "
+                        "Keep verification evidence in the handoff/proof ledger unless the user authorized another file."
+                    ),
+                }
+        analysis: dict[str, Any] | None = None
+        if normalized_stage == "tasks":
+            analysis = self.analyze_spec(workspace_path=workspace_path, spec_id=spec_id)
+            if list(analysis.get("hardBlockers") or []):
+                return {
+                    "ok": False,
+                    "kind": "spec_stage_analysis_blocked",
+                    "stage": normalized_stage,
+                    "specId": spec_id,
+                    "summary": "Spec tasks need another repair pass before user review.",
+                    "analysis": analysis,
+                    "hardBlockers": list(analysis.get("hardBlockers") or []),
+                    "formatDiagnostics": diagnostics,
+                    "pipelineControl": self._pipeline_control(manifest),
+                    "recommendedNextAction": (
+                        "Repair the task contract, then request the dedicated document confirmation again."
+                    ),
+                }
+        return {
+            "ok": True,
+            "kind": "spec_stage_approval_ready",
+            "stage": normalized_stage,
+            "specId": spec_id,
+            "formatDiagnostics": diagnostics,
+            **({"analysis": analysis} if analysis else {}),
+        }
+
+    def set_stage_review_readiness(
+        self,
+        *,
+        workspace_path: str,
+        spec_id: str,
+        stage: str,
+        ready: bool,
+        reason: str = "",
+        summary: str = "",
+        analysis: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist whether a stage is ready to enter the human review surface."""
+
+        paths = self.resolve_paths(workspace_path, spec_id=spec_id)
+        manifest = self._load_manifest(paths)
+        if not manifest:
+            raise ValueError(f"spec_not_found:{spec_id}")
+        normalized_stage = str(stage or manifest.get("currentStage") or "").strip().lower()
+        documents = manifest.setdefault("documents", {})
+        document = documents.get(normalized_stage)
+        if not isinstance(document, dict):
+            raise ValueError(f"spec_document_not_found:{normalized_stage}")
+        if ready:
+            document.pop("reviewReadiness", None)
+        else:
+            document["reviewReadiness"] = {
+                "ready": False,
+                "reason": _safe_text(reason, limit=80) or "stage_analysis_invalid",
+                "summary": _safe_text(summary, limit=600),
+                "hardBlockerCount": len(list((analysis or {}).get("hardBlockers") or [])),
+                "updatedAt": _now_iso(),
+            }
+        documents[normalized_stage] = document
+        manifest["updatedAt"] = _now_iso()
+        self._write_manifest(paths, manifest)
+        return self._pipeline_control(manifest)
 
     def approve_stage(self, *, workspace_path: str, spec_id: str, stage: str, approver: str = "user", comment: str = "") -> dict[str, Any]:
         paths = self.resolve_paths(workspace_path, spec_id=spec_id)
@@ -2248,6 +2484,8 @@ class SpecService:
             "pipelineControl": self._pipeline_control(manifest),
             "workspacePath": manifest.get("workspacePath"),
             "specDir": str(paths.spec_dir),
+            "targetOutputDirectories": _explicit_target_directories(manifest),
+            "explicitDeliverableFiles": _explicit_deliverable_files(manifest),
             "linkedSections": self._linked_sections(manifest),
             "qualityEvidence": manifest.get("qualityEvidence") or {"checklists": {}},
             "annexDocuments": manifest.get("annexDocuments") or {},

@@ -263,10 +263,10 @@ def evaluate_supervisor_completion(
         pipeline = brief.get("pipelineControl") if isinstance(brief.get("pipelineControl"), Mapping) else {}
         blocked_reason = str(pipeline.get("blockedReason") or "").strip()
         blocked_stage = str(pipeline.get("blockedByApproval") or "").strip()
-        if blocked_reason == "stage_format_invalid":
+        if blocked_reason in {"stage_format_invalid", "stage_analysis_invalid", "stage_contract_invalid"}:
             return SupervisorCompletionDecision(
                 action="fail",
-                reason="spec_stage_format_invalid",
+                reason=f"spec_{blocked_reason}",
                 details={
                     "specId": brief.get("specId"),
                     "currentStage": brief.get("currentStage"),

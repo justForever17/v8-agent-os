@@ -992,7 +992,7 @@ def _stage_quality(stage: str, content: str, *, marker: str, target_rel: str) ->
     elif stage == "design":
         if "index.html" not in lower or "readme" not in lower:
             findings.append("design_files_missing")
-        if "验证" not in content and "verification" not in lower:
+        if not any(token in lower for token in ("验证", "验收", "verification", "acceptance", "test")):
             findings.append("verification_strategy_missing")
     elif stage == "tasks":
         if "task-" not in lower and "tsk-" not in lower:
@@ -1434,6 +1434,7 @@ def _run(args: argparse.Namespace) -> SpecLiveResult:
         spec_id=result.spec_id,
         stage="requirements",
         comment="live audit approved requirements",
+        timeout_s=args.max_wait,
     )
     result.stages[-1].approved = bool(approved.get("ok"))
     result.key_events.append({"requirementsApproval": approved})
@@ -1501,6 +1502,7 @@ def _run(args: argparse.Namespace) -> SpecLiveResult:
             spec_id=result.spec_id,
             stage=stage,
             comment=f"live audit approved {stage}",
+            timeout_s=args.max_wait,
         )
         observation.approved = bool(approved.get("ok"))
         result.key_events.append({f"{stage}Approval": approved})

@@ -240,6 +240,62 @@ def test_spec_approval_resume_schedules_same_run(monkeypatch):
     assert approved_stages[0]["stage"] == "requirements"
 
 
+def test_spec_approval_preflight_keeps_invalid_document_pending(monkeypatch):
+    router = RuntimeCommandRouter()
+    approval = {
+        "id": "approval_tasks_invalid",
+        "approval_kind": "spec_stage_approval",
+        "run_id": "run_tasks_invalid",
+        "status": "pending",
+        "request": {
+            "approvalKind": "spec_stage_approval",
+            "specId": "spec_tasks_invalid",
+            "stage": "tasks",
+            "workspacePath": "E:/Projects/test2",
+        },
+    }
+    run_record = {
+        "id": "run_tasks_invalid",
+        "session_id": "session_tasks_invalid",
+        "run_type": "chat",
+        "status": "waiting_approval",
+        "metadata": {},
+    }
+    approvals = []
+    emitted = []
+    monkeypatch.setattr("erc.command_router.db.get_pending_approval", lambda _approval_id: approval)
+    monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: run_record)
+    monkeypatch.setattr(
+        "erc.command_router.spec_service.validate_stage_approval",
+        lambda **_kwargs: {
+            "ok": False,
+            "kind": "spec_stage_analysis_blocked",
+            "stage": "tasks",
+            "hardBlockers": [{"code": "large_task_missing_mvp_slice"}],
+        },
+    )
+    monkeypatch.setattr(
+        "erc.command_router.erc_kernel.approve",
+        lambda *_args, **_kwargs: approvals.append(True) or {"approval": approval},
+    )
+    monkeypatch.setattr(router, "_emit_resume_event", lambda *args, **kwargs: emitted.append((args, kwargs)))
+
+    result = router.dispatch_approval_command(
+        RuntimeCommand(
+            topic="approval.approve",
+            approval_id="approval_tasks_invalid",
+            response={"decision": "approved"},
+        )
+    )
+
+    assert result is not None
+    assert result["resume_scheduled"] is False
+    assert result["resume_error"] == "spec_stage_approval_preflight_failed"
+    assert result["approval"]["status"] == "pending"
+    assert approvals == []
+    assert emitted and emitted[0][0][1] == "approval.blocked"
+
+
 @pytest.mark.parametrize("terminal_state", ["completed", "degraded", "failed", "cancelled"])
 def test_runtime_episode_handoff_resume_schedules_same_run(monkeypatch, terminal_state):
     router = RuntimeCommandRouter()

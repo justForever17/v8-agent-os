@@ -34,6 +34,24 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
     state = dict(state or {})
     route_context = dict(state.get("current_route_context") or {})
     branch = dict(branch or state.get("parallel_branch") or {})
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    task_capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    execution_contract = (
+        task_context.get("engineeringExecutionContract")
+        if isinstance(task_context.get("engineeringExecutionContract"), dict)
+        else {}
+    )
+    allowed_write_paths: list[str] = []
+    for source in (task_brief, task_capsule, execution_contract):
+        for key in ("writeSet", "write_set", "allowedWorkset", "allowed_workset"):
+            raw_values = source.get(key)
+            values = [raw_values] if isinstance(raw_values, str) else list(raw_values or [])
+            for raw_value in values:
+                value = raw_value.get("path") if isinstance(raw_value, dict) else raw_value
+                normalized = str(value or "").strip()
+                if normalized and normalized not in allowed_write_paths:
+                    allowed_write_paths.append(normalized)
     context = {
         "runtime_kind": "subagent",
         "trigger_source": "delegation_broker",
@@ -43,6 +61,7 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
         "goal": branch.get("reason") or branch.get("taskGoal") or branch.get("taskBrief"),
         "delegation_id": branch.get("delegationId"),
         "subagent_id": branch.get("agentId"),
+        "allowed_write_paths": allowed_write_paths or None,
     }
     return {key: value for key, value in context.items() if value is not None and str(value).strip()}
 
@@ -972,16 +991,19 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                     )
         if expected_artifact_paths:
             next_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
-            if next_snapshot != artifact_snapshot:
+            missing_artifacts = [path for path in expected_artifact_paths if not path.exists()]
+            if not missing_artifacts:
+                artifact_snapshot = next_snapshot
+                artifact_stall_rounds = 0
+            elif next_snapshot != artifact_snapshot:
                 artifact_snapshot = next_snapshot
                 artifact_stall_rounds = 0
             else:
                 artifact_stall_rounds += 1
                 if artifact_stall_rounds > artifact_stall_limit:
-                    missing = [str(path) for path in expected_artifact_paths if not path.exists()]
                     raise RuntimeError(
                         f"{agent_id} 并发分支声明了产物但长期没有文件进展，已停止语义无进展循环。"
-                        f" missingArtifacts={missing[:6]}"
+                        f" missingArtifacts={[str(path) for path in missing_artifacts[:6]]}"
                     )
         goto = getattr(result, "goto", None)
         if isinstance(goto, str):

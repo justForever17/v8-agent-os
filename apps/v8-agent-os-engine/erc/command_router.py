@@ -119,6 +119,29 @@ class RuntimeCommandRouter:
             raise ValueError(f"{topic} requires approval_id")
 
         if topic == "approval.approve":
+            pending_approval = db.get_pending_approval(approval_id)
+            if pending_approval and self._approval_kind(pending_approval) == "spec_stage_approval":
+                preflight = self._preflight_spec_stage_approval(pending_approval)
+                if isinstance(preflight, dict) and preflight.get("ok") is False:
+                    run_record = db.get_run_record(str(pending_approval.get("run_id") or ""))
+                    if run_record:
+                        self._emit_resume_event(
+                            run_record,
+                            "approval.blocked",
+                            {
+                                "approvalKind": "spec_stage_approval",
+                                "approvalId": approval_id,
+                                "reason": str(preflight.get("kind") or "spec_stage_not_ready"),
+                                "stage": preflight.get("stage"),
+                            },
+                        )
+                    return {
+                        "approval": pending_approval,
+                        "spec_stage_approval": preflight,
+                        "resume_mode": "chat",
+                        "resume_scheduled": False,
+                        "resume_error": "spec_stage_approval_preflight_failed",
+                    }
             result = erc_kernel.approve(approval_id, response=command.response)
             if result:
                 approval = result.get("approval") or {}
@@ -1272,6 +1295,40 @@ class RuntimeCommandRouter:
             or ""
         ).strip()
 
+    def _preflight_spec_stage_approval(self, approval: Dict[str, Any]) -> Dict[str, Any]:
+        request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        run_record = db.get_run_record(str(approval.get("run_id") or ""))
+        if not run_record:
+            return {"ok": False, "kind": "run_not_found"}
+        scope_payload = self._scope_payload_for_session(str(run_record.get("session_id") or ""))
+        workspace_path = (
+            str(request.get("workspacePath") or request.get("workspace_path") or "").strip()
+            or self._workspace_path_for_run(run_record, scope_payload)
+        )
+        spec_id = str(request.get("specId") or request.get("spec_id") or "").strip()
+        stage = str(request.get("stage") or request.get("specStage") or request.get("spec_stage") or "").strip().lower()
+        if not workspace_path:
+            return {"ok": False, "kind": "workspace_path_missing", "stage": stage, "specId": spec_id}
+        if not spec_id:
+            return {"ok": False, "kind": "spec_id_missing", "stage": stage}
+        if not stage:
+            return {"ok": False, "kind": "spec_stage_missing", "specId": spec_id}
+        try:
+            return spec_service.validate_stage_approval(
+                workspace_path=workspace_path,
+                spec_id=spec_id,
+                stage=stage,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "kind": "spec_stage_validation_failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "specId": spec_id,
+                "stage": stage,
+                "workspacePath": workspace_path,
+            }
+
     def _apply_spec_stage_approval(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any]:
         request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
         run_record = db.get_run_record(str(approval.get("run_id") or ""))
@@ -1309,6 +1366,18 @@ class RuntimeCommandRouter:
                 "stage": stage,
                 "workspacePath": workspace_path,
             }
+        if not isinstance(approved, dict) or approved.get("ok") is False:
+            payload = dict(approved or {})
+            payload.update(
+                {
+                    "ok": False,
+                    "specId": spec_id,
+                    "stage": stage,
+                    "workspacePath": workspace_path,
+                    "approvalId": approval_id,
+                }
+            )
+            return payload
         return {
             "ok": True,
             "specId": spec_id,

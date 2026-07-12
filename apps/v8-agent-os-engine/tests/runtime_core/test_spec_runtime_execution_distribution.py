@@ -3,6 +3,7 @@ import core.tools.native.runtime as runtime_tool_module
 from core.tools.native.runtime import (
     _approved_spec_execution_bundle,
     _enrich_route_need_for_episode,
+    _resolve_spec_expected_paths,
     _task_briefs_from_spec_bundle,
     _task_sections_from_markdown,
 )
@@ -111,6 +112,10 @@ def test_spec_task_distribution_selects_execution_specialists_and_injects_stage_
         [".v8/demo/README.md"],
         [],
     ]
+    assert any(
+        "Do not execute generated" in item
+        for item in briefs[0]["context"]["engineeringExecutionContract"]["forbiddenScopes"]
+    )
 
 
 def test_engineering_expected_artifact_check_requires_every_declared_file(tmp_path):
@@ -166,6 +171,83 @@ def test_backtick_table_fields_and_noisy_prose_do_not_expand_spec_write_set():
     assert bundle["workspacePath"] not in flattened
 
 
+def test_markdown_list_blocks_preserve_output_paths_and_keep_audit_read_only():
+    tasks = _task_sections_from_markdown(
+        """
+## TASK-001 Author `index.html`
+
+- **runtimeLane**: Engineering
+- **expected output path**:
+  - `.v8/live/index.html`
+  - Single self-contained HTML file.
+- **acceptance / proof**:
+  - File exists and the counter works.
+
+## TASK-002 Author `README.md`
+
+- **runtimeLane**: Engineering
+- **expected output path**:
+  - `.v8/live/README.md`
+- **acceptance / proof**:
+  - File explains how to open the page.
+
+## TASK-003 Live marker audit
+
+- **runtimeLane**: Engineering static audit
+- **expected output**:
+  - A short audit note with grep evidence for index.html and README.md.
+- **acceptance / proof**:
+  - Existing files contain the marker; do not create another file.
+""",
+        ["TASK-001", "TASK-002", "TASK-003"],
+    )
+    bundle = _bundle()
+    bundle["tasks"] = tasks
+
+    briefs = _task_briefs_from_spec_bundle(bundle, "engineering")
+
+    assert [brief["writeRequired"] for brief in briefs] == [True, True, False]
+    assert [brief["writeSet"] for brief in briefs] == [
+        [".v8/live/index.html"],
+        [".v8/live/README.md"],
+        [],
+    ]
+    assert briefs[2]["preferredAgentId"] == "verification-engineer"
+
+
+def test_bare_spec_outputs_resolve_under_single_authoritative_target_directory():
+    bundle = _bundle()
+    bundle["targetOutputDirectories"] = [".v8/live-audit/spec-mode-v2/demo"]
+    bundle["tasks"] = [
+        {
+            "taskId": "TASK-001",
+            "title": "Build page",
+            "runtimeLane": "Engineering",
+            "expectedOutput": "`index.html`",
+            "acceptance": "The page works.",
+        },
+        {
+            "taskId": "TASK-002",
+            "title": "Write docs",
+            "runtimeLane": "Engineering",
+            "expectedOutput": "`README.md`",
+            "acceptance": "The documentation is complete.",
+        },
+    ]
+
+    briefs = _task_briefs_from_spec_bundle(bundle, "engineering")
+
+    assert [brief["writeSet"] for brief in briefs] == [
+        [".v8/live-audit/spec-mode-v2/demo/index.html"],
+        [".v8/live-audit/spec-mode-v2/demo/README.md"],
+    ]
+
+
+def test_spec_output_resolution_does_not_guess_with_ambiguous_targets():
+    assert _resolve_spec_expected_paths(["index.html"], ["dist/a", "dist/b"]) == ["index.html"]
+    assert _resolve_spec_expected_paths(["custom/index.html"], ["dist"]) == ["custom/index.html"]
+
+
 def test_approved_spec_workspace_ignores_model_supplied_output_subdirectory(monkeypatch):
     captured = {}
 
@@ -175,6 +257,8 @@ def test_approved_spec_workspace_ignores_model_supplied_output_subdirectory(monk
             "specBrief": {
                 "specId": spec_id,
                 "workspacePath": "E:/Projects/product-root",
+                "targetOutputDirectories": ["dist/release"],
+                "explicitDeliverableFiles": ["index.html", "README.md"],
                 "approvedStages": ["requirements", "design", "tasks"],
                 "pipelineControl": {"runtimeExecutionAllowed": True},
             },
@@ -199,6 +283,61 @@ def test_approved_spec_workspace_ignores_model_supplied_output_subdirectory(monk
 
     assert captured["workspace_path"] == "E:/Projects/product-root"
     assert bundle["workspacePath"] == "E:/Projects/product-root"
+    assert bundle["targetOutputDirectories"] == ["dist/release"]
+    assert bundle["explicitDeliverableFiles"] == ["index.html", "README.md"]
+
+
+def test_execution_bundle_keeps_markdown_fields_when_traceability_values_are_blank(monkeypatch):
+    tasks_markdown = """
+## TASK-001 Author page
+
+- **runtimeLane**: Engineering
+- **expected output path**:
+  - `.v8/live/index.html`
+- **acceptance / proof**:
+  - File exists.
+
+## TASK-002 Audit page
+
+- **runtimeLane**: Engineering static audit
+- **expected output**:
+  - A short audit note about index.html.
+"""
+
+    def read_spec(*, workspace_path, spec_id, max_chars):
+        return {
+            "specBrief": {
+                "specId": spec_id,
+                "workspacePath": workspace_path,
+                "approvedStages": ["requirements", "design", "tasks"],
+                "pipelineControl": {"runtimeExecutionAllowed": True},
+                "traceability": {
+                    "tasks": [
+                        {"taskId": "TASK-001", "expectedOutput": "", "runtimeLane": "Engineering"},
+                        {"taskId": "TASK-002", "expectedOutput": "", "runtimeLane": "Engineering static audit"},
+                    ]
+                },
+            },
+            "stages": {
+                "tasks": {
+                    "relativePath": ".v8/specs/demo/tasks.md",
+                    "ids": ["TASK-001", "TASK-002"],
+                    "content": tasks_markdown,
+                }
+            },
+        }
+
+    monkeypatch.setattr(runtime_tool_module.spec_service, "read_spec", read_spec)
+    bundle = _approved_spec_execution_bundle(
+        {"specId": "spec_demo"},
+        {"workspacePath": "E:/Projects/product-root"},
+        state={"workspace_path": "E:/Projects/product-root"},
+    )
+    briefs = _task_briefs_from_spec_bundle(bundle, "engineering")
+
+    assert [brief["writeRequired"] for brief in briefs] == [True, False]
+    assert briefs[0]["writeSet"] == [".v8/live/index.html"]
+    assert briefs[1]["writeSet"] == []
 
 
 def test_spec_write_task_without_explicit_artifact_is_blocked_before_dispatch(monkeypatch):

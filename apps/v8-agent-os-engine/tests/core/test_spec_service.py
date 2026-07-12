@@ -2,7 +2,66 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.spec_service import spec_service
+from core.spec_service import _task_is_large, _task_slices, spec_service
+
+
+def test_single_nested_directory_is_not_counted_as_multiple_task_outputs():
+    assert _task_is_large(
+        {
+            "runtimeLane": "Engineering",
+            "title": "Confirm deliverable directory and baseline",
+            "expectedOutput": ".v8/live-audit/spec-mode-v2/demo/ ready with a baseline note.",
+            "taskExcerpt": "Confirm one target directory before writing files.",
+        }
+    ) is False
+
+    assert _task_is_large(
+        {
+            "runtimeLane": "Engineering",
+            "title": "Implement runtime and tests",
+            "expectedOutput": "src/runtime.ts and tests/runtime.test.ts",
+            "taskExcerpt": "Implement two independently reviewable files.",
+        }
+    ) is True
+
+
+def test_verbose_single_artifact_task_is_not_large_without_explicit_complexity_signal():
+    assert _task_is_large(
+        {
+            "runtimeLane": "Engineering",
+            "title": "Build one static page",
+            "expectedOutput": "`.v8/demo/index.html`",
+            "taskExcerpt": (
+                "Describe the HTML structure, accessibility checks, static inspection, and acceptance evidence. "
+                * 80
+            ),
+        }
+    ) is False
+
+
+def test_last_heading_task_does_not_absorb_following_document_sections():
+    tasks = _task_slices(
+        """
+### TASK-003: Verify delivery
+- runtimeLane: Engineering
+- dependsOn: [TASK-001, TASK-002]
+- specRefs: REQ-001, DES-001
+- expectedOutput: `.v8/demo/_audit/acceptance.md`
+- acceptance: Record pass or blocked for each requirement.
+- proofRequired: The report itself.
+
+## Execution order
+
+TASK-001 and TASK-002 may run in parallel before TASK-003.
+""",
+        {"REQ-001": {"summary": "Requirement", "detailRef": "spec://requirements#REQ-001"}},
+        [],
+    )
+
+    assert len(tasks) == 1
+    assert "Execution order" not in tasks[0]["taskExcerpt"]
+    assert "parallel" not in tasks[0]["taskExcerpt"]
+    assert _task_is_large(tasks[0]) is False
 
 
 def test_spec_service_blocks_downstream_until_approved(tmp_path: Path):
@@ -45,6 +104,99 @@ def test_spec_service_blocks_downstream_until_approved(tmp_path: Path):
     assert design["specBrief"]["linkedSections"]
     assert design["specBrief"]["documents"]["design"]["detailRef"] == f"spec://{spec_id}/design"
     assert (workspace / ".v8" / "specs" / Path(design["specDir"]).name / "design.md").exists()
+
+
+def test_spec_brief_projects_explicit_target_output_directory(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request=(
+            "实现一个静态页面。\n"
+            "目标输出目录：`.v8/live-audit/spec-mode-v2/demo`"
+        ),
+        feature_name="Static Page",
+        stage="requirements",
+    )
+
+    brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=created["specId"])
+
+    assert brief["targetOutputDirectories"] == [".v8/live-audit/spec-mode-v2/demo"]
+
+
+def test_spec_tasks_cannot_add_unapproved_final_deliverable_file(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request=(
+            "实现一个静态页面。\n"
+            "目标输出目录：`.v8/live-audit/spec-mode-v2/demo`\n"
+            "最终交付文件必须是：index.html 和 README.md"
+        ),
+        feature_name="Static Page",
+        stage="requirements",
+    )
+    spec_id = created["specId"]
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content=(
+            "# Requirements\n\n- REQ-001: Deliver index.html and README.md under "
+            "`.v8/live-audit/spec-mode-v2/demo`.\n"
+        ),
+    )
+    assert spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="requirements")["ok"]
+    spec_service.create_stage(workspace_path=str(workspace), user_request="continue", spec_id=spec_id, stage="design")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="design",
+        action="rewrite_stage",
+        content=(
+            "# Design\n\n- DES-001: Build index.html and README.md under "
+            "`.v8/live-audit/spec-mode-v2/demo`.\n"
+        ),
+    )
+    assert spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="design")["ok"]
+    spec_service.create_stage(workspace_path=str(workspace), user_request="continue", spec_id=spec_id, stage="tasks")
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="tasks",
+        action="rewrite_stage",
+        content=(
+            "# Tasks\n\n"
+            "### TASK-001: Build page\n"
+            "- runtimeLane: Engineering\n"
+            "- specRefs: REQ-001, DES-001\n"
+            "- expectedOutput: `.v8/live-audit/spec-mode-v2/demo/index.html`\n"
+            "- acceptance: page exists\n"
+            "- proofRequired: file proof\n\n"
+            "### TASK-002: Write docs\n"
+            "- runtimeLane: Engineering\n"
+            "- specRefs: REQ-001, DES-001\n"
+            "- expectedOutput: `.v8/live-audit/spec-mode-v2/demo/README.md`\n"
+            "- acceptance: docs exist\n"
+            "- proofRequired: file proof\n\n"
+            "### TASK-003: Write audit\n"
+            "- runtimeLane: Engineering\n"
+            "- specRefs: REQ-001, DES-001\n"
+            "- expectedOutput: `.v8/live-audit/spec-mode-v2/demo/acceptance.md`\n"
+            "- acceptance: audit exists\n"
+            "- proofRequired: file proof\n"
+        ),
+    )
+
+    review = spec_service.validate_stage_approval(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
+
+    assert review["ok"] is False
+    assert review["kind"] == "spec_stage_contract_drift"
+    assert review["allowedFinalDeliverables"] == ["index.html", "README.md"]
+    assert review["unexpectedOutputs"] == [{"kind": "final_deliverable_file", "value": "acceptance.md"}]
 
 
 def test_spec_service_read_section_returns_detail_ref(tmp_path: Path):
@@ -188,7 +340,11 @@ def test_spec_service_delivered_spec_exits_active_list_but_remains_readable(tmp_
 
     first = spec_service.create_stage(
         workspace_path=str(workspace),
-        user_request="生成第一份已交付 Spec。",
+        user_request=(
+            "生成第一份已交付 Spec。\n"
+            "目标输出目录：`.v8/output/demo`\n"
+            "最终交付文件必须是：index.html 和 README.md"
+        ),
         feature_name="Delivered Spec",
         stage="requirements",
     )
@@ -215,6 +371,9 @@ def test_spec_service_delivered_spec_exits_active_list_but_remains_readable(tmp_
 
     full_listing = spec_service.list_specs(workspace_path=str(workspace), include_archived=True)
     assert {item["specId"] for item in full_listing["specs"]} == {delivered_id, current_id}
+    delivered_summary = next(item for item in full_listing["specs"] if item["specId"] == delivered_id)
+    assert delivered_summary["targetOutputDirectories"] == [".v8/output/demo"]
+    assert delivered_summary["explicitDeliverableFiles"] == ["index.html", "README.md"]
     brief = spec_service.build_brief(workspace_path=str(workspace), spec_id=delivered_id)
     assert brief["lifecycle"] == "delivered"
     assert brief["specId"] == delivered_id
@@ -593,6 +752,49 @@ def test_spec_service_tasks_analysis_blocks_large_task_without_mvp_and_independe
     approval = spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
     assert approval["ok"] is False
     assert approval["kind"] == "spec_stage_analysis_blocked"
+
+
+def test_spec_stage_review_preserves_explicit_target_output_directory(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = ".v8/live-audit/spec-mode-v2/example"
+    created = spec_service.create_stage(
+        workspace_path=str(workspace),
+        user_request=f"Target output directory: {target}. Deliver index.html.",
+        feature_name="Explicit target contract",
+        stage="requirements",
+    )
+    spec_id = created["specId"]
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content="# Requirements\n\n- REQ-001: Deliver index.html at the workspace root.\n",
+    )
+
+    blocked = spec_service.validate_stage_approval(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+    )
+
+    assert blocked["ok"] is False
+    assert blocked["kind"] == "spec_stage_contract_drift"
+    assert blocked["missingConstraints"] == [{"kind": "target_output_directory", "value": target}]
+
+    spec_service.edit_stage(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+        action="rewrite_stage",
+        content=f"# Requirements\n\n- REQ-001: Deliver `{target}/index.html`.\n",
+    )
+    assert spec_service.validate_stage_approval(
+        workspace_path=str(workspace),
+        spec_id=spec_id,
+        stage="requirements",
+    )["ok"] is True
 
 
 def test_spec_service_tasks_analysis_accepts_task_level_mvp_and_acceptance_annex(tmp_path: Path):

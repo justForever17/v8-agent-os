@@ -296,9 +296,60 @@ CodeBlock.displayName = 'CodeBlock';
 
 interface MarkdownRendererProps {
     content: string;
+    searchQuery?: string;
 }
 
-export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
+type MarkdownAstNode = {
+    type?: string;
+    tagName?: string;
+    value?: string;
+    properties?: Record<string, unknown>;
+    children?: MarkdownAstNode[];
+};
+
+function createSearchHighlightPlugin(query: string) {
+    const needle = query.trim().toLowerCase();
+    return () => (tree: MarkdownAstNode) => {
+        if (!needle) return;
+        const visit = (node: MarkdownAstNode, blocked = false) => {
+            const nextBlocked = blocked || node.tagName === "code" || node.tagName === "pre";
+            if (!Array.isArray(node.children)) return;
+            const nextChildren: MarkdownAstNode[] = [];
+            for (const child of node.children) {
+                if (!nextBlocked && child.type === "text" && typeof child.value === "string") {
+                    const source = child.value;
+                    const lower = source.toLowerCase();
+                    let cursor = 0;
+                    let matchAt = lower.indexOf(needle, cursor);
+                    while (matchAt >= 0) {
+                        if (matchAt > cursor) nextChildren.push({ type: "text", value: source.slice(cursor, matchAt) });
+                        nextChildren.push({
+                            type: "element",
+                            tagName: "mark",
+                            properties: {
+                                "data-workbench-search-match": "true",
+                                className: ["rounded-sm", "bg-amber-300/35", "px-0.5", "data-[active=true]:bg-amber-400/80"],
+                            },
+                            children: [{ type: "text", value: source.slice(matchAt, matchAt + needle.length) }],
+                        });
+                        cursor = matchAt + needle.length;
+                        matchAt = lower.indexOf(needle, cursor);
+                    }
+                    if (cursor > 0) {
+                        if (cursor < source.length) nextChildren.push({ type: "text", value: source.slice(cursor) });
+                        continue;
+                    }
+                }
+                visit(child, nextBlocked);
+                nextChildren.push(child);
+            }
+            node.children = nextChildren;
+        };
+        visit(tree);
+    };
+}
+
+export const MarkdownRenderer = memo(({ content, searchQuery = "" }: MarkdownRendererProps) => {
     // 防抖 10ms 避免高频流式更新
     const debouncedContent = useDebouncedValue(content, 10);
     const [workspaceAssetBaseUrl, setWorkspaceAssetBaseUrl] = useState(() => cachedWorkspaceAssetBaseUrl);
@@ -321,6 +372,10 @@ export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
     const processedContent = useMemo(
         () => preprocessContent(debouncedContent, workspaceAssetBaseUrl),
         [debouncedContent, workspaceAssetBaseUrl]
+    );
+    const rehypePlugins = useMemo(
+        () => searchQuery.trim() ? [createSearchHighlightPlugin(searchQuery)] : [],
+        [searchQuery],
     );
 
     const components = useMemo(() => ({
@@ -402,13 +457,14 @@ export const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
         <motion.div layout className="prose dark:prose-invert max-w-none text-sm break-words w-full overflow-x-auto leading-relaxed my-1">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
+                rehypePlugins={rehypePlugins}
                 components={components}
             >
                 {processedContent}
             </ReactMarkdown>
         </motion.div>
     );
-}, (prev, next) => prev.content === next.content);
+}, (prev, next) => prev.content === next.content && prev.searchQuery === next.searchQuery);
 
 MarkdownRenderer.displayName = 'MarkdownRenderer';
 

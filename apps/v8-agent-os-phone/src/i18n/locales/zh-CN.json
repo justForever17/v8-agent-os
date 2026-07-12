@@ -877,5 +877,19 @@
   "src.components.chat.messageblockitem.session_coordination_reply_accepted": "已接收",
   "src.components.chat.messageblockitem.session_coordination_reply_conflict": "存在冲突",
   "src.components.chat.messageblockitem.session_coordination_reply_blocked": "无法继续",
-  "src.components.chat.messageblockitem.session_coordination_reply_completed": "已完成"
+  "src.components.chat.messageblockitem.session_coordination_reply_completed": "已完成",
+  "src.lib.phone_api.workbench_file": "无法读取任务文件",
+  "src.components.chat.sessionoverviewpanel.title": "概览",
+  "src.components.chat.sessionoverviewpanel.close": "关闭概览",
+  "src.components.chat.sessionoverviewpanel.files": "个文件",
+  "src.components.chat.sessionoverviewpanel.running": "任务进行中",
+  "src.components.chat.sessionoverviewpanel.waiting": "等待你的确认",
+  "src.components.chat.sessionoverviewpanel.needs_attention": "任务需要处理",
+  "src.components.chat.sessionoverviewpanel.completed": "任务已结束",
+  "src.components.chat.sessionoverviewpanel.spec_document": "规格文档",
+  "src.components.chat.sessionoverviewpanel.artifact": "产物",
+  "src.components.chat.sessionoverviewpanel.changed_file": "修改文件",
+  "src.components.chat.sessionoverviewpanel.binary_unavailable": "该文件不能在手机端展开。",
+  "src.components.chat.sessionoverviewpanel.empty_file": "文件没有可显示的文本。",
+  "src.components.chat.sessionoverviewpanel.no_files": "暂时没有可查看的文件。"
 }

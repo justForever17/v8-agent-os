@@ -161,7 +161,7 @@ interface InputAreaProps {
     input: string;
     handleInputChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    handleSubmit: (e: FormEvent<HTMLFormElement>, options?: { data?: any }) => void | Promise<void>;
+    handleSubmit: (e: FormEvent<HTMLFormElement>, options?: { data?: any }) => void | boolean | Promise<void | boolean>;
     onVoiceTranscript?: (text: string) => void;
     onVoiceAudioMessage?: (data: VoiceAudioMessageData) => void | Promise<void>;
     isLoading: boolean;

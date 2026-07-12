@@ -1,8 +1,7 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, FileCode2, Globe2, LayoutPanelTop, LoaderCircle, Maximize2, Minimize2, Plus, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
@@ -13,13 +12,8 @@ import type { TodoHudItem } from "@/components/chat/TodosHUD";
 import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPanel";
 import { McpAppRenderer } from "@/components/chat/McpAppFrame";
 import { ArtifactRenderer } from "./ArtifactRenderer";
-import { WorkspaceFileRenderer } from "./WorkspaceFileRenderer";
-import { createBrowserDocument } from "@/lib/workbench";
-
-const BrowserRenderer = dynamic(() => import("./BrowserRenderer").then((mod) => mod.BrowserRenderer), {
-    ssr: false,
-    loading: () => <div className="flex h-full items-center justify-center text-xs text-muted-foreground">正在连接浏览器画面…</div>,
-});
+import { WorkspaceFileRenderer, type WorkspaceFileLineComment } from "./WorkspaceFileRenderer";
+import type { WorkbenchTab } from "@/lib/workbench";
 
 type WorkbenchShellProps = {
     sessionId: string;
@@ -28,13 +22,151 @@ type WorkbenchShellProps = {
     todos: TodoHudItem[];
     todoStale?: boolean;
     runtimeModel: RuntimeStageModel;
+    workspacePath?: string;
+    onSendFileLineComment?: (comment: WorkspaceFileLineComment) => Promise<boolean> | boolean;
 };
 
 function documentIcon(kind: string) {
     if (kind === "workspace_file") return FileCode2;
     if (kind === "artifact") return Box;
-    if (kind === "browser") return Globe2;
     return LayoutPanelTop;
+}
+
+type WorkbenchTabStripProps = {
+    tabs: WorkbenchTab[];
+    activeDocumentId: string | null;
+    activateDocument: (documentId: string) => void;
+    closeDocument: (documentId: string) => void;
+};
+
+function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocument }: WorkbenchTabStripProps) {
+    const scrollerRef = useRef<HTMLDivElement | null>(null);
+    const autoScrollFrameRef = useRef<number | null>(null);
+    const lastFrameAtRef = useRef(0);
+    const [scrollState, setScrollState] = useState({ left: false, right: false });
+
+    const updateScrollState = useCallback(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller) return;
+        const maxScrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+        setScrollState({
+            left: scroller.scrollLeft > 1,
+            right: scroller.scrollLeft < maxScrollLeft - 1,
+        });
+    }, []);
+
+    const stopAutoScroll = useCallback(() => {
+        if (autoScrollFrameRef.current !== null) cancelAnimationFrame(autoScrollFrameRef.current);
+        autoScrollFrameRef.current = null;
+        lastFrameAtRef.current = 0;
+    }, []);
+
+    const startAutoScroll = useCallback((direction: -1 | 1) => {
+        stopAutoScroll();
+        const tick = (timestamp: number) => {
+            const scroller = scrollerRef.current;
+            if (!scroller) return stopAutoScroll();
+            const elapsed = lastFrameAtRef.current ? Math.min(32, timestamp - lastFrameAtRef.current) : 16;
+            lastFrameAtRef.current = timestamp;
+            scroller.scrollLeft += direction * elapsed * 0.24;
+            updateScrollState();
+            const maxScrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+            const atBoundary = direction < 0 ? scroller.scrollLeft <= 0 : scroller.scrollLeft >= maxScrollLeft - 1;
+            if (atBoundary) return stopAutoScroll();
+            autoScrollFrameRef.current = requestAnimationFrame(tick);
+        };
+        autoScrollFrameRef.current = requestAnimationFrame(tick);
+    }, [stopAutoScroll, updateScrollState]);
+
+    const scrollByPage = useCallback((direction: -1 | 1) => {
+        const scroller = scrollerRef.current;
+        if (!scroller) return;
+        scroller.scrollBy({ left: direction * Math.max(120, scroller.clientWidth * 0.6), behavior: "smooth" });
+    }, []);
+
+    useEffect(() => {
+        const scroller = scrollerRef.current;
+        if (!scroller) return;
+        updateScrollState();
+        const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateScrollState);
+        observer?.observe(scroller);
+        const content = scroller.firstElementChild;
+        if (content instanceof HTMLElement) observer?.observe(content);
+        scroller.addEventListener("scroll", updateScrollState, { passive: true });
+        return () => {
+            observer?.disconnect();
+            scroller.removeEventListener("scroll", updateScrollState);
+        };
+    }, [tabs, updateScrollState]);
+
+    useEffect(() => {
+        const activeTab = scrollerRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+        activeTab?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+        const timeout = window.setTimeout(updateScrollState, 180);
+        return () => window.clearTimeout(timeout);
+    }, [activeDocumentId, updateScrollState]);
+
+    useEffect(() => stopAutoScroll, [stopAutoScroll]);
+
+    const edgeButton = (direction: -1 | 1) => {
+        const visible = direction < 0 ? scrollState.left : scrollState.right;
+        const Icon = direction < 0 ? ChevronLeft : ChevronRight;
+        return (
+            <button
+                type="button"
+                onPointerEnter={() => startAutoScroll(direction)}
+                onPointerLeave={stopAutoScroll}
+                onBlur={stopAutoScroll}
+                onClick={() => scrollByPage(direction)}
+                className={cn(
+                    "absolute inset-y-0 z-10 flex w-6 items-center justify-center text-muted-foreground opacity-0 transition-opacity duration-150 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary group-hover/tabstrip:opacity-100 group-focus-within/tabstrip:opacity-100",
+                    direction < 0 ? "left-0 bg-gradient-to-r from-background via-background/95 to-transparent" : "right-0 bg-gradient-to-l from-background via-background/95 to-transparent",
+                    visible ? "pointer-events-auto" : "pointer-events-none !opacity-0",
+                )}
+                aria-label={direction < 0 ? "向左浏览标签" : "向右浏览标签"}
+            >
+                <Icon className="h-3.5 w-3.5" />
+            </button>
+        );
+    };
+
+    return (
+        <div className="group/tabstrip relative min-w-0 flex-1 overflow-hidden" data-workbench-tab-strip>
+            {edgeButton(-1)}
+            <div
+                ref={scrollerRef}
+                role="tablist"
+                aria-label="工作台文档"
+                className="scrollbar-hide min-w-0 overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden"
+                style={{ scrollbarWidth: "none" }}
+                data-workbench-tab-scroller
+            >
+                <div className="flex w-max min-w-full items-center gap-1 px-0.5">
+                    {tabs.map((tab) => {
+                        const Icon = documentIcon(tab.document.kind);
+                        const active = tab.document.documentId === activeDocumentId;
+                        return (
+                            <div key={tab.document.documentId} className={cn("group flex h-8 min-w-[112px] max-w-[220px] items-center rounded-xl", active ? "bg-muted/70 text-foreground" : "text-muted-foreground hover:bg-muted/35")}>
+                                <button
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={active}
+                                    onClick={() => activateDocument(tab.document.documentId)}
+                                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-xl px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                                >
+                                    <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                    <span className="min-w-0 flex-1 truncate">{tab.document.title}</span>
+                                    {tab.unread ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-label="未读" /> : null}
+                                </button>
+                                <button type="button" onClick={() => closeDocument(tab.document.documentId)} className="mr-1 hidden rounded-md p-1 text-muted-foreground hover:bg-background/80 hover:text-foreground focus:block group-hover:block" aria-label={`关闭 ${tab.document.title}`}><X className="h-3 w-3" /></button>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+            {edgeButton(1)}
+        </div>
+    );
 }
 
 export function WorkbenchShell(props: WorkbenchShellProps) {
@@ -45,14 +177,10 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const activeDocumentId = useWorkbenchStore((state) => state.activeDocumentId);
     const activateDocument = useWorkbenchStore((state) => state.activateDocument);
     const closeDocument = useWorkbenchStore((state) => state.closeDocument);
-    const openDocument = useWorkbenchStore((state) => state.openDocument);
     const setMode = useWorkbenchStore((state) => state.setMode);
     const setWidth = useWorkbenchStore((state) => state.setWidth);
     const panelRef = useRef<HTMLElement | null>(null);
-    const preparedSessionRef = useRef("");
     const [containerWidth, setContainerWidth] = useState(() => typeof window === "undefined" ? 1200 : window.innerWidth);
-    const [creatingBrowser, setCreatingBrowser] = useState(false);
-    const [browserError, setBrowserError] = useState("");
 
     useEffect(() => {
         const parent = panelRef.current?.parentElement;
@@ -62,21 +190,6 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         setContainerWidth(parent.getBoundingClientRect().width);
         return () => observer.disconnect();
     }, [mode]);
-
-    useEffect(() => {
-        if (mode === "closed" || boundSessionId !== props.sessionId || preparedSessionRef.current === props.sessionId) return;
-        preparedSessionRef.current = props.sessionId;
-        const controller = new AbortController();
-        void fetch(`/api/workbench/sessions/${encodeURIComponent(props.sessionId)}/browser/prepare`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ browserKind: "chrome" }),
-            signal: controller.signal,
-        }).catch(() => {
-            if (!controller.signal.aborted) preparedSessionRef.current = "";
-        });
-        return () => controller.abort();
-    }, [boundSessionId, mode, props.sessionId]);
 
     const activeTab = useMemo(
         () => tabs.find((tab) => tab.document.documentId === activeDocumentId) || tabs.at(-1) || null,
@@ -91,57 +204,15 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const panelWidth = Math.min(maximumPanelWidth, Math.max(minimumPanelWidth, desiredPanelWidth));
     const document = activeTab.document;
 
-    const createBrowser = async () => {
-        if (creatingBrowser) return;
-        setCreatingBrowser(true);
-        setBrowserError("");
-        try {
-            const response = await fetch(`/api/workbench/sessions/${encodeURIComponent(props.sessionId)}/browser-sessions`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ url: "about:blank", focusRequested: true, userInitiated: true }),
-            });
-            const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-            const browserSessionId = String(payload.browserSessionId || "").trim();
-            if (!response.ok || !browserSessionId) {
-                const detail = payload.detail && typeof payload.detail === "object" ? payload.detail as Record<string, unknown> : {};
-                throw new Error(String(detail.message || payload.error || "无法创建浏览器会话。"));
-            }
-            openDocument(createBrowserDocument({ browserSessionId, sessionId: props.sessionId }), { activate: true, mode: "split" });
-        } catch (reason) {
-            setBrowserError(reason instanceof Error ? reason.message : String(reason));
-        } finally {
-            setCreatingBrowser(false);
-        }
-    };
-
     const content = (() => {
-        if (creatingBrowser) {
-            return (
-                <div className="flex h-full min-h-0 flex-col bg-background">
-                    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-2">
-                        <button type="button" disabled className="rounded-lg p-1.5 text-muted-foreground/35" aria-label="后退">←</button>
-                        <div className="mx-1 h-7 min-w-0 flex-1 rounded-lg bg-muted/55" />
-                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                    </div>
-                    <div className="flex min-h-0 flex-1 items-center justify-center bg-background">
-                        <div className="text-center text-muted-foreground">
-                            <Globe2 className="mx-auto h-8 w-8 opacity-55" />
-                            <div className="mt-3 text-sm text-foreground">正在打开浏览器</div>
-                            <div className="mt-1 text-xs">浏览器就绪后会自动进入可控制页面。</div>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
         if (document.status === "unavailable") {
             return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{document.unavailableReason || "该内容当前不可用。"}</div>;
         }
         if (document.kind === "session_overview") return <WorkspaceWorkbenchPanel {...props} />;
-        if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} />;
+        if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "artifact") return <ArtifactRenderer document={document} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;
-        return <BrowserRenderer document={document} />;
+        return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">Agent 浏览器已在独立窗口中运行。</div>;
     })();
 
     const panel = (
@@ -155,40 +226,12 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
             aria-label="工作台"
         >
             <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border/60 px-1.5">
-                <div role="tablist" aria-label="工作台文档" className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-                    {tabs.map((tab) => {
-                    const Icon = documentIcon(tab.document.kind);
-                    const active = tab.document.documentId === document.documentId;
-                    return (
-                        <div key={tab.document.documentId} className={cn("group flex h-8 min-w-[112px] max-w-[220px] items-center rounded-xl", active ? "bg-muted/70 text-foreground" : "text-muted-foreground hover:bg-muted/35")}>
-                            <button
-                                type="button"
-                                role="tab"
-                                aria-selected={active}
-                                onClick={() => activateDocument(tab.document.documentId)}
-                                className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-xl px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                            >
-                                <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                <span className="min-w-0 flex-1 truncate">{tab.document.title}</span>
-                                {tab.unread ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-label="未读" /> : null}
-                            </button>
-                            <button type="button" onClick={() => closeDocument(tab.document.documentId)} className="mr-1 hidden rounded-md p-1 text-muted-foreground hover:bg-background/80 hover:text-foreground focus:block group-hover:block" aria-label={`关闭 ${tab.document.title}`}><X className="h-3 w-3" /></button>
-                        </div>
-                    );
-                    })}
-                </div>
-                <button
-                    type="button"
-                    onClick={() => void createBrowser()}
-                    className={cn("inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl px-2.5 text-[11px] text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary", browserError && "text-destructive")}
-                    aria-label="打开浏览器"
-                    title={browserError || "打开浏览器"}
-                    disabled={creatingBrowser}
-                >
-                    {creatingBrowser ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Globe2 className="h-3.5 w-3.5" />}
-                    <span>浏览器</span>
-                    <Plus className="h-3 w-3" />
-                </button>
+                <WorkbenchTabStrip
+                    tabs={tabs}
+                    activeDocumentId={document.documentId}
+                    activateDocument={activateDocument}
+                    closeDocument={closeDocument}
+                />
                 <button
                     type="button"
                     onClick={() => setMode(mode === "focus" ? "split" : "focus")}

@@ -179,7 +179,9 @@ export const useWorkbenchStore = create<WorkbenchStoreState>((set, get) => {
             const persisted = readPersistedState(normalizedSessionId);
             const overview = createSessionOverviewDocument(normalizedSessionId);
             const tabs = persisted?.tabs.length
-                ? persisted.tabs
+                ? persisted.tabs.map((tab) => tab.document.kind === "session_overview"
+                    ? { ...tab, document: overview }
+                    : tab)
                 : [{ document: overview, unread: false, openedAt: Date.now(), lastActivatedAt: Date.now() }];
             set({
                 sessionId: normalizedSessionId,
@@ -337,9 +339,11 @@ export function ingestWorkbenchRuntimeEvent(value: unknown) {
     if (!source) return false;
     const normalizedDocument = normalizeWorkbenchDocument(source.document || source.workbenchDocument || source.workbench_document);
     if (!normalizedDocument) return false;
-    const document: WorkbenchDocument = normalizedDocument.kind === "browser"
-        ? { ...normalizedDocument, lifecycle: "runtime" }
-        : normalizedDocument;
+    // Agent Browser owns a real external Chrome window. Workbench consumes
+    // documents and governed app/canvas surfaces only; it must not turn the
+    // browser screencast into a second, lower-fidelity interaction surface.
+    if (normalizedDocument.kind === "browser") return true;
+    const document: WorkbenchDocument = normalizedDocument;
     const topic = String(source.topic || source.name || root.topic || root.name || "").trim();
     const focusRequested = Boolean(source.focusRequested ?? source.focus_requested);
     const userInitiated = Boolean(source.userInitiated ?? source.user_initiated);
@@ -358,27 +362,10 @@ export function ingestWorkbenchRuntimeEvent(value: unknown) {
     }
     const alreadyOpen = store.tabs.some((tab) => tab.document.documentId === document.documentId);
     if (topic.endsWith("unavailable") || document.status === "unavailable") {
-        if (document.kind === "browser" && !alreadyOpen) {
-            return true;
-        }
         if (!alreadyOpen) {
             store.openDocument(document, { activate: false, markUnread: true });
         }
         store.markDocumentUnavailable(document.documentId, document.unavailableReason);
-        return true;
-    }
-    const rawTimestamp = candidates
-        .map((candidate) => candidate.ts || candidate.eventTs || candidate.event_ts || candidate.timestamp || candidate.createdAt || candidate.created_at)
-        .find((candidate) => candidate !== undefined && candidate !== null && candidate !== "")
-        || document.createdAt;
-    const eventTimestamp = typeof rawTimestamp === "number" ? rawTimestamp : Date.parse(String(rawTimestamp || ""));
-    if (
-        document.kind === "browser"
-        && topic.endsWith("opened")
-        && !alreadyOpen
-        && Number.isFinite(eventTimestamp)
-        && eventTimestamp < store.boundAt - 1_000
-    ) {
         return true;
     }
     const requestedActivation = focusRequested || userInitiated;

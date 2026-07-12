@@ -877,5 +877,19 @@
   "src.components.chat.messageblockitem.session_coordination_reply_accepted": "Accepted",
   "src.components.chat.messageblockitem.session_coordination_reply_conflict": "Conflict",
   "src.components.chat.messageblockitem.session_coordination_reply_blocked": "Blocked",
-  "src.components.chat.messageblockitem.session_coordination_reply_completed": "Completed"
+  "src.components.chat.messageblockitem.session_coordination_reply_completed": "Completed",
+  "src.lib.phone_api.workbench_file": "Unable to read task file",
+  "src.components.chat.sessionoverviewpanel.title": "Overview",
+  "src.components.chat.sessionoverviewpanel.close": "Close overview",
+  "src.components.chat.sessionoverviewpanel.files": "files",
+  "src.components.chat.sessionoverviewpanel.running": "Task in progress",
+  "src.components.chat.sessionoverviewpanel.waiting": "Waiting for your confirmation",
+  "src.components.chat.sessionoverviewpanel.needs_attention": "Task needs attention",
+  "src.components.chat.sessionoverviewpanel.completed": "Task finished",
+  "src.components.chat.sessionoverviewpanel.spec_document": "Spec document",
+  "src.components.chat.sessionoverviewpanel.artifact": "Artifact",
+  "src.components.chat.sessionoverviewpanel.changed_file": "Changed file",
+  "src.components.chat.sessionoverviewpanel.binary_unavailable": "This file cannot be expanded on Phone.",
+  "src.components.chat.sessionoverviewpanel.empty_file": "This file has no displayable text.",
+  "src.components.chat.sessionoverviewpanel.no_files": "No files are available yet."
 }

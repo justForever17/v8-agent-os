@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, net, session } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, net, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('node:url');
@@ -557,6 +557,23 @@ ipcMain.on('v8os-shell:open-admin', () => {
 
 ipcMain.on('v8os-shell:active-session', (_event, sessionId) => {
   reportActiveSession(sessionId);
+});
+
+ipcMain.handle('v8os-shell:open-workspace-folder', async (_event, workspacePath) => {
+  const requestedPath = String(workspacePath || '').trim();
+  if (!requestedPath || requestedPath.length > 4096 || !path.isAbsolute(requestedPath)) {
+    return { ok: false, error: 'invalid_workspace_path' };
+  }
+  const resolvedPath = path.resolve(requestedPath);
+  try {
+    if (!fs.statSync(resolvedPath).isDirectory()) {
+      return { ok: false, error: 'workspace_path_not_directory' };
+    }
+  } catch {
+    return { ok: false, error: 'workspace_path_not_found' };
+  }
+  const error = await shell.openPath(resolvedPath);
+  return error ? { ok: false, error } : { ok: true };
 });
 
 ipcMain.handle('v8os-shell:get-desktop-pet-state', async () => {

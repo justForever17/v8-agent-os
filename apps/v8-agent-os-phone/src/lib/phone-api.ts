@@ -38,6 +38,7 @@ import type {
     MusicTrack,
     UploadedWorkspaceFile,
     DevicePairingManifest,
+    WorkbenchFilePage,
 } from "@/src/types/admin";
 import { orderAdminBaseUrlCandidates } from "@/src/lib/admin-connection-profiles";
 
@@ -808,7 +809,7 @@ export async function approvePendingItem(
 export async function listSpecs(authorizedFetch: AuthorizedFetch, workspacePath: string) {
     const query = new URLSearchParams({
         workspace_path: workspacePath,
-        include_archived: "false",
+        include_archived: "true",
         limit: "120",
     });
     const payload = await authorizedJson<SpecListResponse>(
@@ -939,6 +940,26 @@ export async function getRealtimeSnapshot(authorizedFetch: AuthorizedFetch, conv
         authorizedFetch,
         `/api/client/realtime/sessions/${encodeURIComponent(conversationId)}/snapshot?surface=phone&compact=1`,
         translateCurrent("src.lib.phone_api.text_32"),
+        { cache: "no-store" },
+    );
+}
+
+export async function readSessionWorkbenchFile(
+    authorizedFetch: AuthorizedFetch,
+    sessionId: string,
+    path: string,
+    startLine = 1,
+    lineCount = 160,
+) {
+    const query = new URLSearchParams({
+        path,
+        startLine: String(Math.max(1, startLine)),
+        lineCount: String(Math.max(1, Math.min(300, lineCount))),
+    });
+    return authorizedJson<WorkbenchFilePage>(
+        authorizedFetch,
+        `/api/client/sessions/${encodeURIComponent(sessionId)}/workbench/files/read?${query.toString()}`,
+        translateCurrent("src.lib.phone_api.workbench_file"),
         { cache: "no-store" },
     );
 }

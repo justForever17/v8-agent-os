@@ -57,10 +57,6 @@ const createNextConfig = (phase: string): NextConfig => ({
           destination: `${resolveEngineOrigin(phase)}/v1/terminal/:path*`,
         },
         {
-          source: "/api/workbench-browser-ws/:path*",
-          destination: `${resolveEngineOrigin(phase)}/v1/workbench/:path*`,
-        },
-        {
           source: "/api/client/bg_processes/:path*",
           destination: `${resolveEngineOrigin(phase)}/v1/bg_processes/:path*`,
         },

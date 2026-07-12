@@ -1,6 +1,5 @@
 import type {
     ArtifactWorkbenchDocumentRef,
-    BrowserWorkbenchDocumentRef,
     McpAppViewRef,
     SessionOverviewWorkbenchDocumentRef,
     UiAppWorkbenchDocumentRef,
@@ -23,7 +22,6 @@ export type SessionOverviewWorkbenchDocument = SessionOverviewWorkbenchDocumentR
 export type WorkspaceFileWorkbenchDocument = WorkspaceFileWorkbenchDocumentRef;
 export type ArtifactWorkbenchDocument = ArtifactWorkbenchDocumentRef;
 export type UiAppWorkbenchDocument = UiAppWorkbenchDocumentRef;
-export type BrowserWorkbenchDocument = BrowserWorkbenchDocumentRef;
 
 export type WorkbenchDocumentPayload = {
     artifact?: RuntimeArtifact;
@@ -186,7 +184,7 @@ export function createSessionOverviewDocument(sessionId: string): SessionOvervie
     return {
         kind: "session_overview",
         documentId: `session-overview:${sessionId}`,
-        title: "会话概览",
+        title: "概览",
         renderer: "session_overview",
         lifecycle: "session",
         status: "ready",
@@ -319,26 +317,6 @@ export function createWorkspaceFileDocument(input: {
             sessionId: input.sessionId,
             workspacePath,
             ...(input.line ? { line: input.line } : {}),
-        },
-    };
-}
-
-export function createBrowserDocument(input: {
-    browserSessionId: string;
-    sessionId: string;
-    title?: string;
-}): BrowserWorkbenchDocument {
-    return {
-        kind: "browser",
-        documentId: `browser:${input.browserSessionId}`,
-        title: input.title || "浏览器",
-        renderer: "browser",
-        lifecycle: "runtime",
-        status: "available",
-        capabilities: ["navigate", "control", "focus"],
-        subjectRef: {
-            browserSessionId: input.browserSessionId,
-            sessionId: input.sessionId,
         },
     };
 }

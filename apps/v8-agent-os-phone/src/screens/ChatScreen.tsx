@@ -42,6 +42,7 @@ import { GovernanceApprovalModal } from "@/src/components/chat/GovernanceApprova
 import { ProcessesHUD } from "@/src/components/chat/ProcessesHUD";
 import { RunControlBar } from "@/src/components/chat/RunControlBar";
 import { RuntimeTimelinePanel } from "@/src/components/chat/RuntimeTimelinePanel";
+import { SessionOverviewPanel } from "@/src/components/chat/SessionOverviewPanel";
 import { TodosHUD } from "@/src/components/chat/TodosHUD";
 import { WorkspaceFolderExplorer } from "@/src/components/chat/WorkspaceFolderExplorer";
 import { GlassCard } from "@/src/components/common/GlassCard";
@@ -2191,6 +2192,7 @@ export default function ChatScreen() {
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
     const runtimeTimelineRef = useRef<PhoneRuntimeTimelineEntry[]>([]);
     const [runtimePanelOpen, setRuntimePanelOpen] = useState(false);
+    const [overviewPanelOpen, setOverviewPanelOpen] = useState(false);
     const [governanceApprovalOpen, setGovernanceApprovalOpen] = useState(false);
     const [governanceApprovalBusy, setGovernanceApprovalBusy] = useState(false);
     const [dismissedGovernanceApprovalId, setDismissedGovernanceApprovalId] = useState("");
@@ -5022,6 +5024,10 @@ export default function ChatScreen() {
     }, [activeConversationId]);
 
     useEffect(() => {
+        setOverviewPanelOpen(false);
+    }, [activeConversationId]);
+
+    useEffect(() => {
         if (speakingId && ttsStatus.didJustFinish) {
             setSpeakingId("");
         }
@@ -5653,7 +5659,7 @@ export default function ChatScreen() {
     const isSessionRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeRunStatus);
     const isSessionFailed = ["failed", "cancelled"].includes(activeRunStatus);
     const hasRuntimeItems = projection.runtimeStageModel.items.length > 0;
-    const showPulseLine = hasRuntimeItems && (isSessionRunning || isSessionFailed);
+    const showOverviewRail = Boolean(activeConversationId);
 
     useEffect(() => {
         if (isSessionRunning) {
@@ -5670,11 +5676,11 @@ export default function ChatScreen() {
 
     useEffect(() => {
         Animated.timing(neonOpacity, {
-            toValue: showPulseLine ? 1 : 0,
+            toValue: showOverviewRail ? 1 : 0,
             duration: 400,
             useNativeDriver: true,
         }).start();
-    }, [showPulseLine, neonOpacity]);
+    }, [showOverviewRail, neonOpacity]);
 
     const handleScroll = useCallback((event: any) => {
         const currentY = event.nativeEvent.contentOffset.y;
@@ -5713,8 +5719,7 @@ export default function ChatScreen() {
         onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 10 && gesture.dx < 0,
         onPanResponderRelease: (_, gesture) => {
             if (gesture.dx < -18) {
-                setSelectedRuntimeId("chat");
-                setRuntimePanelOpen(true);
+                setOverviewPanelOpen(true);
             }
         },
     }), []);
@@ -7021,7 +7026,7 @@ export default function ChatScreen() {
                                 </Pressable>
                             </Animated.View>
 
-                            {showPulseLine ? (
+                            {showOverviewRail ? (
                                 <View style={[styles.rightNeonLineContainer, { top: safeAreaInsets.top + 100, bottom: 120 }]} pointerEvents="box-none">
                                     <Animated.View
                                         style={[
@@ -7034,7 +7039,9 @@ export default function ChatScreen() {
                                     />
                                     <Pressable
                                         style={StyleSheet.absoluteFill}
-                                        onPress={() => setRuntimePanelOpen(true)}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t("src.components.chat.sessionoverviewpanel.title")}
+                                        onPress={() => setOverviewPanelOpen(true)}
                                         {...neonPanResponder.panHandlers}
                                     />
                                 </View>
@@ -7061,6 +7068,17 @@ export default function ChatScreen() {
                     currentStepTitle={projection.currentStepTitle}
                     onClose={() => setRuntimePanelOpen(false)}
                     onSelectRuntime={setSelectedRuntimeId}
+                />
+
+                <SessionOverviewPanel
+                    visible={overviewPanelOpen}
+                    sessionId={activeConversationId || ""}
+                    workspacePath={effectiveWorkspacePath}
+                    messages={projection.projectedMessages}
+                    runStatus={projection.runControlState.status}
+                    currentStepTitle={projection.currentStepTitle || undefined}
+                    authorizedFetch={authorizedFetch}
+                    onClose={() => setOverviewPanelOpen(false)}
                 />
 
                 <GovernanceApprovalModal

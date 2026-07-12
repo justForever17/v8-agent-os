@@ -36,7 +36,6 @@ import {
     ChevronDown,
     CornerDownRight,
     Edit3,
-    FolderTree,
     GripVertical,
     Loader2,
     MoreHorizontal,
@@ -280,10 +279,6 @@ function normalizeScopeBinding(raw: unknown): ScopeBindingView | null {
         scopeSource: (record.scope_source || record.scopeSource) as string | undefined,
         scopeConfidence: Number(record.scope_confidence || record.scopeConfidence || 0) || undefined,
     };
-}
-
-function normalizeWorkspacePathForCompare(value?: string | null) {
-    return String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
 }
 
 function normalizeWorkflowStatusForRunBar(status?: string | null): string | undefined {
@@ -915,7 +910,7 @@ export default function ChatClient() {
     const [workspaceChooserBusy, setWorkspaceChooserBusy] = useState(false);
     const [newProjectPath, setNewProjectPath] = useState("");
     const [scopeBinding, setScopeBinding] = useState<ScopeBindingView | null>(null);
-    const [scopeLoading, setScopeLoading] = useState(false);
+    const [, setScopeLoading] = useState(false);
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
     const [supervisorReasoningEffortControl, setSupervisorReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
@@ -986,7 +981,6 @@ export default function ChatClient() {
         localStorage.setItem(terminalHiddenStorageKey(activeConversationId), JSON.stringify(Array.from(hiddenTerminalTabIds)));
     }, [activeConversationId, hiddenTerminalTabIds]);
 
-    const [isContextExpanded, setIsContextExpanded] = useState(false);
     const [localHour, setLocalHour] = useState<number>(9);
     const viewportBaselineRef = useRef(0);
     const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
@@ -1336,28 +1330,6 @@ export default function ChatClient() {
     const historyPagingModeRef = useRef(false);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
-    const boundProject = useMemo(
-        () => projects.find((project) => project.id === scopeBinding?.projectId) || null,
-        [projects, scopeBinding?.projectId],
-    );
-    const workspaceKindLabel = useMemo(() => {
-        if (boundProject) {
-            return boundProject.name || t("web.generated.599fe73fe8");
-        }
-        const resolvedScope = String(scopeBinding?.resolvedScope || "").trim();
-        const boundPath = normalizeWorkspacePathForCompare(scopeBinding?.workspacePath);
-        const mainPath = normalizeWorkspacePathForCompare(mainWorkspacePath);
-        if (resolvedScope === "workspace:main" && (!boundPath || !mainPath || boundPath === mainPath)) {
-            return t("web.generated.291993dda9");
-        }
-        if (resolvedScope.startsWith("workspace:external:")) {
-            return t("web.generated.7273393e9c");
-        }
-        if (resolvedScope.startsWith("workspace:")) {
-            return t("web.generated.7f1bc76123");
-        }
-        return t("web.generated.b4f93aa760");
-    }, [boundProject, mainWorkspacePath, scopeBinding?.resolvedScope, scopeBinding?.workspacePath, t]);
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
@@ -2671,39 +2643,43 @@ export default function ChatClient() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleSend = async (e: React.FormEvent<HTMLFormElement>, options?: { data?: any }) => {
         e.preventDefault();
-        const hasText = input.trim().length > 0;
-        const hasCommandPreset = Boolean(options?.data?.commandPreset?.name);
-        const hasSkillReferences = Array.isArray(options?.data?.skillReferences) && options.data.skillReferences.length > 0;
-        const hasFiles = Array.isArray(options?.data?.fileUrls) && options.data.fileUrls.length > 0;
-        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasSkillReferences && !hasFiles)) return;
+        const optionData = { ...(options?.data || {}) };
+        const messageOverride = typeof optionData.messageOverride === "string" ? optionData.messageOverride : null;
+        delete optionData.messageOverride;
+        const currentInput = messageOverride ?? input;
+        const hasText = currentInput.trim().length > 0;
+        const hasCommandPreset = Boolean(optionData.commandPreset?.name);
+        const hasSkillReferences = Array.isArray(optionData.skillReferences) && optionData.skillReferences.length > 0;
+        const hasFiles = Array.isArray(optionData.fileUrls) && optionData.fileUrls.length > 0;
+        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasSkillReferences && !hasFiles)) return false;
         if (!activeConversationIdRef.current) {
             setWorkspaceChooserVisible(true);
             if (!newConversationIntent) {
                 clearNewConversationIntent();
             }
-            return;
+            return false;
         }
 
-        const currentInput = input;
         const submissionData = {
-            ...(options?.data || {}),
+            ...optionData,
             ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
-        setInput(""); // Clear immediately (Optimistic)
+        if (messageOverride === null) setInput(""); // Clear the visible Composer only for Composer submissions.
         if (isLoading) {
             try {
                 await submitQueuedMessage(currentInput, submissionData);
                 clearPendingContextSessionRefs();
+                return true;
             } catch (error) {
                 console.error("[ChatClient] Failed to queue message:", error);
                 const errorMessage = error instanceof Error && error.message ? error.message : t("web.generated.38c9a5e21f");
                 if (isWorkspaceBindingErrorMessage(errorMessage)) {
                     setWorkspaceChooserVisible(true);
                 }
-                setInput(currentInput);
+                if (messageOverride === null) setInput(currentInput);
                 setQueuedMessageError(errorMessage);
+                return false;
             }
-            return;
         }
 
         historyPagingModeRef.current = false;
@@ -2725,8 +2701,9 @@ export default function ChatClient() {
             if (accepted) {
                 clearPendingContextSessionRefs();
             } else {
-                setInput(currentInput);
+                if (messageOverride === null) setInput(currentInput);
             }
+            return Boolean(accepted);
         } catch (error) {
             console.error("[ChatClient] Failed to send initial message:", error);
             const errorMessage = error instanceof Error && error.message ? error.message : "";
@@ -2734,8 +2711,21 @@ export default function ChatClient() {
                 setWorkspaceChooserVisible(true);
                 setQueuedMessageError(errorMessage);
             }
-            setInput(currentInput);
+            if (messageOverride === null) setInput(currentInput);
+            return false;
         }
+    };
+
+    const handleFileLineComment = async (reference: { path: string; line: number; lineText: string; comment: string }) => {
+        const quotedLine = String(reference.lineText || "").replace(/\r?\n/g, " ").trim() || "（空行）";
+        const message = [
+            reference.comment.trim(),
+            "",
+            `文件定位：\`${reference.path}:${reference.line}\``,
+            `第 ${reference.line} 行：\`${quotedLine.replace(/`/g, "\\`")}\``,
+        ].join("\n");
+        const syntheticEvent = { preventDefault() {} } as React.FormEvent<HTMLFormElement>;
+        return Boolean(await handleSend(syntheticEvent, { data: { messageOverride: message } }));
     };
 
     const handleVoiceAudioMessage = (data: { fileUrls: string[]; attachments: Array<Record<string, unknown>>; safetyApprovalMode?: "manual" | "reduced" | "minimal" }) => {
@@ -2969,22 +2959,6 @@ export default function ChatClient() {
                 <div className={cn("mx-auto flex h-full min-h-0 w-full flex-1 flex-col px-2 pt-0.5 sm:px-4 sm:pt-1 lg:px-6", contentShellClassName)}>
                 <div className="shrink-0 flex flex-col gap-1">
                     <div className="scrollbar-none flex flex-nowrap items-center gap-1 overflow-x-auto overflow-y-hidden pb-0.5 sm:gap-1">
-                        {activeConversationId && (
-                            <button
-                                type="button"
-                                className={`inline-flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-xl border bg-background/78 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground sm:h-[30px] sm:w-[30px] ${
-                                    isContextExpanded
-                                        ? "border-primary/35 bg-primary/8 text-primary"
-                                        : "border-border/60"
-                                }`}
-                                onClick={() => setIsContextExpanded((current) => !current)}
-                                aria-expanded={isContextExpanded}
-                                aria-label={t("web.generated.701d52ad56")}
-                                title={isContextExpanded ? t("web.generated.f1560c41fc") : t("web.generated.2e31a72a4d")}
-                            >
-                                <FolderTree className="h-[11px] w-[11px] shrink-0 sm:h-[13px] sm:w-[13px]" />
-                            </button>
-                        )}
                         {hasActiveWorkbenchSession && (
                             <div className="ml-auto flex shrink-0 justify-end gap-1">
                                 {/* 终端开关 */}
@@ -3018,47 +2992,6 @@ export default function ChatClient() {
                         )}
                     </div>
 
-                    {activeConversationId && isContextExpanded && (
-                        <div className="rounded-[24px] border border-border/50 bg-background/82 px-3 py-3 shadow-sm backdrop-blur-xl sm:px-4">
-                            <div className="space-y-3">
-                                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                    <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-2 text-sm font-medium">
-                                            <FolderTree className="h-4 w-4 shrink-0 text-primary" />
-                                            {t("web.generated.325f034a5b")}
-                                        </div>
-                                        <p className="mt-1 text-xs text-muted-foreground">
-                                            {t("web.generated.ff252529d3")}
-                                        </p>
-                                    </div>
-                                    <div className="text-xs text-muted-foreground">
-                                        {scopeLoading ? t("web.generated.49b930d439") : t("web.generated.5acd929048")}
-                                    </div>
-                                </div>
-
-                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                    <span className="rounded-full bg-primary/10 px-2.5 py-1 text-primary">
-                                        {t("web.generated.fbb027d89e")}: {
-                                            (sessionProjection?.summary
-                                                && typeof (sessionProjection.summary as Record<string, unknown>).title === "string"
-                                                ? String((sessionProjection.summary as Record<string, unknown>).title)
-                                                : "")
-                                            || t("web.generated.bc38ec82e9")
-                                        }
-                                    </span>
-                                    <span className="rounded-full bg-accent px-2.5 py-1 text-accent-foreground">
-                                        {t("web.generated.a20a3d0baf")}: {workspaceKindLabel}
-                                    </span>
-                                    <span className="rounded-full bg-secondary px-2.5 py-1 text-secondary-foreground">
-                                        Scope: {scopeBinding?.resolvedScope || "global"}
-                                    </span>
-                                    <span className="max-w-[340px] truncate rounded-full bg-muted px-2.5 py-1 text-muted-foreground sm:max-w-none">
-                                        {t("web.generated.f0bf5c7e81")}: {scopeBinding?.workspacePath || mainWorkspacePath || t("web.generated.b4f93aa760")}
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-                    )}
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-hidden py-1 sm:py-1.5">
@@ -3333,6 +3266,8 @@ export default function ChatClient() {
                 todos={projectionTodos}
                 todoStale={projectionTodoStale}
                 runtimeModel={runtimeStageModel}
+                workspacePath={scopeBinding?.workspacePath || mainWorkspacePath || ""}
+                onSendFileLineComment={handleFileLineComment}
             />
         ) : null}
 

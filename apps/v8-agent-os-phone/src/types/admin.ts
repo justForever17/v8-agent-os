@@ -480,6 +480,8 @@ export type SpecSummary = {
     createdAt?: string;
     updatedAt?: string;
     pipelineControl?: SpecPipelineControl;
+    targetOutputDirectories?: string[];
+    explicitDeliverableFiles?: string[];
     linkedSections?: Array<{ stage?: string; detailRef?: string; ids?: string[]; relativePath?: string }>;
     documents?: Record<string, SpecDocumentSummary>;
     openComments?: Array<Record<string, unknown>>;
@@ -505,6 +507,28 @@ export type SpecDetailResponse = {
     spec?: SpecSummary;
     stages?: Record<string, SpecStageContent>;
     specBrief?: Record<string, unknown>;
+};
+
+export type WorkbenchFileLine = {
+    number: number;
+    text: string;
+};
+
+export type WorkbenchFilePage = {
+    workspacePath: string;
+    name: string;
+    mimeType?: string;
+    language?: string;
+    encoding?: string;
+    binary?: boolean;
+    size?: number;
+    startLine?: number;
+    endLine?: number;
+    lineCount?: number;
+    totalLines?: number | null;
+    hasMore?: boolean;
+    content?: string | null;
+    lines?: WorkbenchFileLine[];
 };
 
 export type AskUserInteraction = {

@@ -13,6 +13,7 @@ type ShellWindowApi = {
     close: () => void;
     openWeb: () => void;
     openAdmin: () => void;
+    openWorkspaceFolder: (workspacePath: string) => Promise<{ ok?: boolean; error?: string }>;
     reportActiveSession: (sessionId: string | null) => void;
 };
 

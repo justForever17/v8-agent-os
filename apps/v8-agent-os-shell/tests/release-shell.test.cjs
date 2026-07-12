@@ -72,7 +72,10 @@ test('desktop traffic lights follow Windows action order and reflect maximize st
   const mainSource = fs.readFileSync(path.join(shellRoot, 'electron', 'main.cjs'), 'utf8');
   assert.match(preloadSource, /getWindowState/);
   assert.match(preloadSource, /onWindowStateChange/);
+  assert.match(preloadSource, /openWorkspaceFolder/);
   assert.match(mainSource, /v8os-shell:get-window-state/);
+  assert.match(mainSource, /v8os-shell:open-workspace-folder/);
+  assert.match(mainSource, /shell\.openPath\(resolvedPath\)/);
   assert.match(mainSource, /mainWindow\.on\('maximize', emitWindowState\)/);
 });
 

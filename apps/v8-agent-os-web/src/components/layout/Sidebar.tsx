@@ -17,6 +17,7 @@ import {
     Pencil,
     Pin,
     PinOff,
+    FolderOpen,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { cn } from "@/lib/utils";
@@ -126,7 +127,7 @@ export function Sidebar() {
     const handleNavigation = (id: string) => {
         setContextMenu(null);
         setIsMobileOpen(false);
-        router.push(`/chat?id=${id}`);
+        router.push(`/chat?id=${encodeURIComponent(id)}`);
     };
 
     const openConversationMenu = (event: MouseEvent<HTMLDivElement>, sessionId: string) => {
@@ -145,7 +146,7 @@ export function Sidebar() {
         event.preventDefault();
         event.stopPropagation();
         const width = 192;
-        const height = 104;
+        const height = 148;
         const x = Math.min(event.clientX, Math.max(8, window.innerWidth - width - 8));
         const y = Math.min(event.clientY, Math.max(8, window.innerHeight - height - 8));
         setContextMenu(null);
@@ -249,6 +250,25 @@ export function Sidebar() {
         event?.stopPropagation();
         setGroupContextMenu(null);
         await updateGroupPresentation(group, { pinned: !group.pinned });
+    };
+
+    const openGroupInExplorer = async (group: ConversationWorkspaceGroup) => {
+        setGroupContextMenu(null);
+        if (!group.workspacePath) return;
+        const shell = window.v8osShell;
+        if (!shell?.isShell || !shell.openWorkspaceFolder) {
+            setCreateError(t("web.sidebar.openProjectFolderUnavailable"));
+            return;
+        }
+        try {
+            const result = await shell.openWorkspaceFolder(group.workspacePath);
+            if (!result?.ok) {
+                throw new Error(result?.error || "open_workspace_folder_failed");
+            }
+        } catch (error) {
+            console.error("Failed to open workspace folder", error);
+            setCreateError(t("web.sidebar.openProjectFolderFailed"));
+        }
     };
 
     const confirmDelete = async () => {
@@ -560,11 +580,11 @@ export function Sidebar() {
         <>
             <div
                 className={cn(
-                    "group/sidebar relative hidden h-[calc(100vh-3.5rem)] flex-shrink-0 flex-col glass-panel transition-all duration-500 z-20 md:flex",
-                    isCollapsed ? "w-[60px]" : "w-[280px]",
+                    "group/sidebar relative hidden h-[calc(100vh-3.5rem)] flex-shrink-0 flex-col transition-[width] duration-300 z-20 md:flex",
+                    isCollapsed ? "w-0 overflow-visible" : "w-[280px] glass-panel",
                 )}
             >
-                <div className="absolute -right-3 top-8 z-50 hidden transition-opacity duration-300 md:block">
+                <div className={cn("absolute top-8 z-50 hidden transition-all duration-300 md:block", isCollapsed ? "left-3" : "-right-3")}>
                     <Button
                         variant="outline"
                         size="icon"
@@ -576,7 +596,7 @@ export function Sidebar() {
                     </Button>
                 </div>
 
-                {renderSidebarBody(isCollapsed)}
+                {!isCollapsed ? renderSidebarBody(false) : null}
             </div>
 
             <Button
@@ -678,6 +698,14 @@ export function Sidebar() {
                     >
                         {contextGroup.pinned ? <PinOff className="h-4 w-4 text-muted-foreground" /> : <Pin className="h-4 w-4 text-muted-foreground" />}
                         <span>{t(contextGroup.pinned ? "web.sidebar.unpinProject" : "web.sidebar.pinProject")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
+                        onClick={() => void openGroupInExplorer(contextGroup)}
+                    >
+                        <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                        <span>{t("web.sidebar.openProjectFolder")}</span>
                     </button>
                 </div>
             )}

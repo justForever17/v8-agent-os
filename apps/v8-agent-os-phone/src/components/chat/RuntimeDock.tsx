@@ -1,5 +1,5 @@
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
+import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Pressable, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
 import { Blocks, Bot, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Search, Shield, Sparkles, TerminalSquare, Workflow } from "lucide-react-native";
 import { ScrollView as GestureScrollView } from "react-native-gesture-handler";
@@ -79,56 +79,6 @@ function RuntimeDockItem({
 }) {
     const Icon = getRuntimeDockIcon(item.id);
     const tone = toneColors(item.status, colors, dark);
-    const pulse = useRef(new Animated.Value(0.2)).current;
-    const wiggle = useRef(new Animated.Value(0)).current;
-    const pulsing = item.status === "active" || item.status === "attention";
-    const attention = item.status === "attention";
-
-    useEffect(() => {
-        if (!pulsing) {
-            pulse.stopAnimation();
-            pulse.setValue(0);
-            return;
-        }
-        const loop = Animated.loop(
-            Animated.sequence([
-                Animated.timing(pulse, {
-                    toValue: 0.72,
-                    duration: 900,
-                    easing: Easing.inOut(Easing.ease),
-                    useNativeDriver: true,
-                }),
-                Animated.timing(pulse, {
-                    toValue: 0.18,
-                    duration: 900,
-                    easing: Easing.inOut(Easing.ease),
-                    useNativeDriver: true,
-                }),
-            ]),
-        );
-        loop.start();
-        return () => loop.stop();
-    }, [pulse, pulsing]);
-
-    useEffect(() => {
-        if (!attention) {
-            wiggle.stopAnimation();
-            wiggle.setValue(0);
-            return;
-        }
-        const loop = Animated.loop(
-            Animated.sequence([
-                Animated.timing(wiggle, { toValue: -4, duration: 90, easing: Easing.linear, useNativeDriver: true }),
-                Animated.timing(wiggle, { toValue: 4, duration: 90, easing: Easing.linear, useNativeDriver: true }),
-                Animated.timing(wiggle, { toValue: -3, duration: 80, easing: Easing.linear, useNativeDriver: true }),
-                Animated.timing(wiggle, { toValue: 3, duration: 80, easing: Easing.linear, useNativeDriver: true }),
-                Animated.timing(wiggle, { toValue: 0, duration: 90, easing: Easing.linear, useNativeDriver: true }),
-                Animated.delay(2400),
-            ]),
-        );
-        loop.start();
-        return () => loop.stop();
-    }, [attention, wiggle]);
 
     return (
         <Pressable
@@ -147,37 +97,10 @@ function RuntimeDockItem({
                 },
             ]}
         >
-            {pulsing ? (
-                <Animated.View
-                    pointerEvents="none"
-                    style={[
-                        styles.pulseFill,
-                        {
-                            backgroundColor: attention ? "rgba(244,63,94,0.12)" : "rgba(245,158,11,0.12)",
-                            opacity: pulse,
-                            transform: [{
-                                scale: pulse.interpolate({
-                                    inputRange: [0, 1],
-                                    outputRange: [0.96, 1.04],
-                                }),
-                            }],
-                        },
-                    ]}
-                />
-            ) : null}
-
-            <Animated.View style={{ transform: [{ rotate: attention ? wiggle.interpolate({
-                inputRange: [-4, 4],
-                outputRange: ["-4deg", "4deg"],
-            }) : "0deg" }] }}>
+            <View>
                 <Icon size={20} color={tone.icon} strokeWidth={2.2} />
-            </Animated.View>
+            </View>
             <View style={[styles.dot, { backgroundColor: tone.dot, borderColor: dark ? "rgba(24,24,27,0.92)" : "#FFFFFF" }]} />
-            {item.eventCount > 0 ? (
-                <View style={[styles.badge, { backgroundColor: dark ? "#F8FAFC" : "#0F172A", borderColor: dark ? "rgba(15,23,42,0.88)" : "#FFFFFF" }]}>
-                    <Text style={[styles.badgeText, { color: dark ? "#0F172A" : "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
-                </View>
-            ) : null}
         </Pressable>
     );
 }
@@ -313,10 +236,6 @@ const styles = StyleSheet.create({
         shadowOffset: { width: 0, height: 0 },
         elevation: 2,
     },
-    pulseFill: {
-        ...StyleSheet.absoluteFillObject,
-        borderRadius: 9,
-    },
     dot: {
         position: "absolute",
         top: -3,
@@ -325,25 +244,5 @@ const styles = StyleSheet.create({
         height: 6,
         borderRadius: 999,
         borderWidth: 1,
-    },
-    badge: {
-        position: "absolute",
-        right: -4.5,
-        bottom: -4.5,
-        minWidth: 18,
-        height: 18,
-        borderRadius: 999,
-        alignItems: "center",
-        justifyContent: "center",
-        paddingHorizontal: 2.25,
-        borderWidth: 1,
-        zIndex: 5,
-        elevation: 5,
-    },
-    badgeText: {
-        color: "#FFFFFF",
-        fontSize: 10.5,
-        fontWeight: "800",
-        lineHeight: 13.5,
     },
 });

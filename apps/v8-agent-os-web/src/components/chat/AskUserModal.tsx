@@ -147,7 +147,7 @@ function mediaPlaybackUrl(item: AskUserMedia) {
     const direct = asText(item.contentUrl) || asText(item.url) || asText(item.href) || asText(item.previewUrl);
     if (direct) return direct;
     const artifactId = asText(item.artifactId) || asText(item.id);
-    return artifactId ? `/api/client/artifacts/${encodeURIComponent(artifactId)}/content` : "";
+    return artifactId ? `/api/artifacts/${encodeURIComponent(artifactId)}/content` : "";
 }
 
 function mediaLabel(item: AskUserMedia, index: number) {
@@ -412,9 +412,9 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
 
     return (
         <TooltipProvider delayDuration={180}>
-            <div className="w-full animate-in fade-in slide-in-from-bottom-1 duration-150">
+            <div className="h-[clamp(220px,34dvh,320px)] w-full animate-in fade-in slide-in-from-bottom-1 duration-150">
                 <section
-                    className="w-full overflow-hidden rounded-2xl border border-border/45 bg-background/96 shadow-sm backdrop-blur"
+                    className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-border/45 bg-background/96 shadow-sm backdrop-blur"
                     role="dialog"
                     aria-modal="false"
                     aria-label={title}
@@ -472,7 +472,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                         </div>
                     </div>
 
-                    <div className="max-h-[min(42vh,360px)] overflow-y-auto px-3 py-2.5 sm:px-4">
+                    <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2.5 sm:px-4">
                         {mediaItems.length ? (
                             <div className="mb-2.5 flex gap-2 overflow-x-auto pb-1">
                                 {mediaItems.map((item, index) => {

@@ -19,7 +19,7 @@ export async function POST(
     const body = await req.json().catch(() => ({}));
     const result = await safeAdminProxyFetch(
         contextResult.context,
-        `/ask-user/${encodeURIComponent(id)}/respond`,
+        `/client/ask-user/${encodeURIComponent(id)}/respond`,
         {
             method: "POST",
             headers: {
@@ -27,7 +27,7 @@ export async function POST(
             },
             body: JSON.stringify(body ?? {}),
         },
-        `/ask-user/${encodeURIComponent(id)}/respond`,
+        `/client/ask-user/${encodeURIComponent(id)}/respond`,
     );
 
     if (result.errorResponse) {

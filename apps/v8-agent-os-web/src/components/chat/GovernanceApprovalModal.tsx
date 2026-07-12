@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useT } from "@/components/providers/LocaleProvider";
+import { SpecDocumentConfirmationDialog } from "@/components/chat/SpecDocumentConfirmationDialog";
 import type { SessionApprovalView } from "@v8/session-realtime";
 
 function readFirstString(...values: unknown[]) {
@@ -188,6 +189,20 @@ export function GovernanceApprovalModal({
 
     if (!approval || !details) {
         return null;
+    }
+
+    if (specDetails.isSpecApproval) {
+        return (
+            <SpecDocumentConfirmationDialog
+                isOpen={isOpen}
+                approval={approval}
+                busy={busy}
+                onApprove={onApprove}
+                onReject={onReject}
+                onViewDetails={onViewDetails}
+                onCancel={onCancel}
+            />
+        );
     }
 
     return (

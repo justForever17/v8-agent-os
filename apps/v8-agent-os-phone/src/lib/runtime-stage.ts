@@ -19,11 +19,12 @@ import {
     normalizeSessionRuntimeEvent,
     normalizeRuntimeId as normalizeSharedRuntimeId,
     SESSION_RUNTIME_ORDER,
+    humanizeRuntimeSummaryText,
+    shouldProjectRuntimeSummarySignal,
     VISIBLE_SESSION_RUNTIME_ORDER,
     type AuthoritativeRuntimeTimelineEntry,
     type SessionRuntimeId,
 } from "@v8/session-realtime";
-import { shouldProjectRuntimeSummarySignal } from "@v8/session-realtime/runtime-summary-policy";
 
 export type PhoneRuntimeId =
     SessionRuntimeId | "context_governance";
@@ -578,7 +579,7 @@ export function buildPhoneRuntimeStageModel(
                 id: node.id,
                 runtimeId,
                 timestamp: getNodeTimestamp(message, node),
-                summary: summarized.summary,
+                summary: humanizeRuntimeSummaryText(summarized.summary, locale),
                 topic: node.kind === "execution" ? node.topic : node.kind === "governance" ? node.topic : undefined,
                 actorLabel: node.agentName || node.agentRoleLabel,
                 messageId: message.id,
@@ -606,7 +607,7 @@ export function buildPhoneRuntimeStageModel(
             id: entry.id,
             runtimeId: remappedRuntimeId,
             timestamp: entry.timestamp,
-            summary: entry.summary,
+            summary: humanizeRuntimeSummaryText(entry.summary, locale),
             topic: entry.topic,
             actorLabel: entry.actorLabel,
             messageId: entry.runId || entry.id,

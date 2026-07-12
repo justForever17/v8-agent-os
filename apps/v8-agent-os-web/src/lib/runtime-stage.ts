@@ -10,11 +10,12 @@ import {
     normalizeSessionRuntimeEvent,
     normalizeRuntimeId as normalizeSharedRuntimeId,
     SESSION_RUNTIME_ORDER,
+    humanizeRuntimeSummaryText,
+    shouldProjectRuntimeSummarySignal,
     VISIBLE_SESSION_RUNTIME_ORDER,
     type AuthoritativeRuntimeTimelineEntry,
     type SessionRuntimeId,
 } from "@v8/session-realtime";
-import { shouldProjectRuntimeSummarySignal } from "@v8/session-realtime/runtime-summary-policy";
 import type { Locale } from "@/lib/locale";
 
 export type RuntimeId = SessionRuntimeId | "context_governance";
@@ -459,7 +460,7 @@ export function buildRuntimeStageModel(
                 id: node.id,
                 runtimeId,
                 timestamp: getNodeTimestamp(message, node),
-                summary: summarized.summary,
+                summary: humanizeRuntimeSummaryText(summarized.summary, options?.locale || "zh-CN"),
                 topic: node.kind === "execution" ? node.topic : node.kind === "governance" ? node.topic : undefined,
                 actorLabel: node.agentName || node.agentRoleLabel,
                 messageId: message.id,
@@ -484,7 +485,7 @@ export function buildRuntimeStageModel(
             id: entry.id,
             runtimeId: remappedRuntimeId,
             timestamp: entry.timestamp,
-            summary: entry.summary,
+            summary: humanizeRuntimeSummaryText(entry.summary, options?.locale || "zh-CN"),
             topic: entry.topic,
             actorLabel: entry.actorLabel,
             messageId: entry.runId || entry.id,

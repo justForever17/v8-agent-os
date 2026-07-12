@@ -1233,6 +1233,21 @@ export default function ChatClient() {
         };
     }, []);
 
+    const loadRuns = useCallback(async (conversationId: string) => {
+        try {
+            const res = await fetch(`/api/runs?session_id=${encodeURIComponent(conversationId)}&limit=8`, { cache: "no-store" });
+            if (!res.ok) {
+                setRunEntries([]);
+                return;
+            }
+            const data = await res.json().catch(() => ({}));
+            setRunEntries(Array.isArray(data?.runs) ? data.runs : []);
+        } catch (error) {
+            console.warn("[ChatClient] Failed to load runs:", error);
+            setRunEntries([]);
+        }
+    }, []);
+
     // Initialize Hook
     const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
@@ -1789,7 +1804,7 @@ export default function ChatClient() {
         if (before) {
             params.set("before", before);
         }
-        const turnsRes = await fetch(`/api/client/conversations/${conversationId}/turns?${params.toString()}`, {
+        const turnsRes = await fetch(`/api/conversations/${conversationId}/turns?${params.toString()}`, {
             cache: "no-store",
         });
         if (!turnsRes.ok) {
@@ -1847,7 +1862,7 @@ export default function ChatClient() {
     }, []);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
-        const detailRes = await fetch(`/api/client/conversations/${conversationId}?omitMessages=1`, { cache: "no-store" });
+        const detailRes = await fetch(`/api/conversations/${conversationId}/detail?omitMessages=1`, { cache: "no-store" });
         if (!detailRes.ok) {
             if (detailRes.status === 404) {
                 router.replace("/chat");
@@ -1964,24 +1979,9 @@ export default function ChatClient() {
         }
     }, []);
 
-    const loadRuns = useCallback(async (conversationId: string) => {
-        try {
-            const res = await fetch(`/api/runs?session_id=${encodeURIComponent(conversationId)}&limit=8`, { cache: "no-store" });
-            if (!res.ok) {
-                setRunEntries([]);
-                return;
-            }
-            const data = await res.json().catch(() => ({}));
-            setRunEntries(Array.isArray(data?.runs) ? data.runs : []);
-        } catch (error) {
-            console.warn("[ChatClient] Failed to load runs:", error);
-            setRunEntries([]);
-        }
-    }, []);
-
     const loadSessionProcesses = useCallback(async (conversationId: string) => {
         try {
-            const res = await fetch(`/api/client/sessions/${encodeURIComponent(conversationId)}/processes`, { cache: "no-store" });
+            const res = await fetch(`/api/sessions/${encodeURIComponent(conversationId)}/processes`, { cache: "no-store" });
             if (!res.ok) {
                 applySessionProcessSurface([]);
                 return;

@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, FileCode2, Globe2, LayoutPanelTop, LoaderCircle, Maximize2, PanelRight, X } from "lucide-react";
+import { Box, FileCode2, Globe2, LayoutPanelTop, LoaderCircle, Maximize2, Minimize2, Plus, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
@@ -49,6 +49,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const setMode = useWorkbenchStore((state) => state.setMode);
     const setWidth = useWorkbenchStore((state) => state.setWidth);
     const panelRef = useRef<HTMLElement | null>(null);
+    const preparedSessionRef = useRef("");
     const [containerWidth, setContainerWidth] = useState(() => typeof window === "undefined" ? 1200 : window.innerWidth);
     const [creatingBrowser, setCreatingBrowser] = useState(false);
     const [browserError, setBrowserError] = useState("");
@@ -61,6 +62,21 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         setContainerWidth(parent.getBoundingClientRect().width);
         return () => observer.disconnect();
     }, [mode]);
+
+    useEffect(() => {
+        if (mode === "closed" || boundSessionId !== props.sessionId || preparedSessionRef.current === props.sessionId) return;
+        preparedSessionRef.current = props.sessionId;
+        const controller = new AbortController();
+        void fetch(`/api/workbench/sessions/${encodeURIComponent(props.sessionId)}/browser/prepare`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ browserKind: "chrome" }),
+            signal: controller.signal,
+        }).catch(() => {
+            if (!controller.signal.aborted) preparedSessionRef.current = "";
+        });
+        return () => controller.abort();
+    }, [boundSessionId, mode, props.sessionId]);
 
     const activeTab = useMemo(
         () => tabs.find((tab) => tab.document.documentId === activeDocumentId) || tabs.at(-1) || null,
@@ -100,6 +116,24 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     };
 
     const content = (() => {
+        if (creatingBrowser) {
+            return (
+                <div className="flex h-full min-h-0 flex-col bg-background">
+                    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-2">
+                        <button type="button" disabled className="rounded-lg p-1.5 text-muted-foreground/35" aria-label="后退">←</button>
+                        <div className="mx-1 h-7 min-w-0 flex-1 rounded-lg bg-muted/55" />
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    </div>
+                    <div className="flex min-h-0 flex-1 items-center justify-center bg-background">
+                        <div className="text-center text-muted-foreground">
+                            <Globe2 className="mx-auto h-8 w-8 opacity-55" />
+                            <div className="mt-3 text-sm text-foreground">正在打开浏览器</div>
+                            <div className="mt-1 text-xs">浏览器就绪后会自动进入可控制页面。</div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
         if (document.status === "unavailable") {
             return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{document.unavailableReason || "该内容当前不可用。"}</div>;
         }
@@ -120,34 +154,49 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
             style={effectiveMode === "split" ? { width: panelWidth } : undefined}
             aria-label="工作台"
         >
-            <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-1.5">
-                <span className="min-w-0 flex-1 truncate px-1 text-[11px] font-medium">{document.title}</span>
-                <button type="button" onClick={() => void createBrowser()} className={cn("rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary", browserError && "text-destructive")} aria-label="打开工作台浏览器" title={browserError || "打开工作台浏览器"} disabled={creatingBrowser}>{creatingBrowser ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Globe2 className="h-3.5 w-3.5" />}</button>
-                <button type="button" onClick={() => setMode("split")} className={cn("rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary", mode === "split" && "bg-muted text-foreground")} aria-label="分栏显示"><PanelRight className="h-3.5 w-3.5" /></button>
-                <button type="button" onClick={() => setMode("focus")} className={cn("rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary", mode === "focus" && "bg-muted text-foreground")} aria-label="聚焦显示"><Maximize2 className="h-3.5 w-3.5" /></button>
-                <button type="button" onClick={() => setMode("closed")} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label="关闭工作台"><X className="h-3.5 w-3.5" /></button>
-            </div>
-            <div role="tablist" aria-label="工作台文档" className="scrollbar-none flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-border/60 bg-muted/15">
-                {tabs.map((tab) => {
+            <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border/60 px-1.5">
+                <div role="tablist" aria-label="工作台文档" className="scrollbar-none flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+                    {tabs.map((tab) => {
                     const Icon = documentIcon(tab.document.kind);
                     const active = tab.document.documentId === document.documentId;
                     return (
-                        <div key={tab.document.documentId} className={cn("group flex min-w-[118px] max-w-[220px] items-center border-r border-border/50", active && "bg-background")}>
+                        <div key={tab.document.documentId} className={cn("group flex h-8 min-w-[112px] max-w-[220px] items-center rounded-xl", active ? "bg-muted/70 text-foreground" : "text-muted-foreground hover:bg-muted/35")}>
                             <button
                                 type="button"
                                 role="tab"
                                 aria-selected={active}
                                 onClick={() => activateDocument(tab.document.documentId)}
-                                className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                                className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-xl px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                             >
                                 <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                                 <span className="min-w-0 flex-1 truncate">{tab.document.title}</span>
                                 {tab.unread ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-label="未读" /> : null}
                             </button>
-                            <button type="button" onClick={() => closeDocument(tab.document.documentId)} className="mr-1 hidden rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus:block group-hover:block" aria-label={`关闭 ${tab.document.title}`}><X className="h-3 w-3" /></button>
+                            <button type="button" onClick={() => closeDocument(tab.document.documentId)} className="mr-1 hidden rounded-md p-1 text-muted-foreground hover:bg-background/80 hover:text-foreground focus:block group-hover:block" aria-label={`关闭 ${tab.document.title}`}><X className="h-3 w-3" /></button>
                         </div>
                     );
-                })}
+                    })}
+                </div>
+                <button
+                    type="button"
+                    onClick={() => void createBrowser()}
+                    className={cn("inline-flex h-8 shrink-0 items-center gap-1.5 rounded-xl px-2.5 text-[11px] text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary", browserError && "text-destructive")}
+                    aria-label="打开浏览器"
+                    title={browserError || "打开浏览器"}
+                    disabled={creatingBrowser}
+                >
+                    {creatingBrowser ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Globe2 className="h-3.5 w-3.5" />}
+                    <span>浏览器</span>
+                    <Plus className="h-3 w-3" />
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setMode(mode === "focus" ? "split" : "focus")}
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
+                    aria-label={mode === "focus" ? "退出聚焦" : "聚焦工作台"}
+                >
+                    {mode === "focus" ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                </button>
             </div>
             <div role="tabpanel" className="min-h-0 flex-1 overflow-hidden">{content}</div>
         </aside>

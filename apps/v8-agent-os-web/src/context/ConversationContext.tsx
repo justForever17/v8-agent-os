@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import { useSession } from "next-auth/react";
 import {
     SessionHistoryItem,
@@ -57,22 +57,41 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     const { status } = useSession();
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const authenticatedRef = useRef(false);
+    const hasLoadedRef = useRef(false);
+    const refreshInFlightRef = useRef<Promise<void> | null>(null);
 
-    const fetchConversations = useCallback(async () => {
-        setIsLoading(true);
-        try {
-            const res = await fetch(`/api/conversations`);
-            if (res.ok) {
-                const data = await res.json();
-                const sessionList = Array.isArray(data) ? data : (data.sessions || []);
-                const normalized = normalizeSessionHistoryList(sessionList);
-                setConversations((prev) => (isSameConversationList(prev, normalized) ? prev : normalized));
-            }
-        } catch (error) {
-            console.error("Failed to fetch conversations", error);
-        } finally {
-            setIsLoading(false);
+    const fetchConversations = useCallback((): Promise<void> => {
+        if (refreshInFlightRef.current) {
+            return refreshInFlightRef.current;
         }
+
+        const showInitialLoading = !hasLoadedRef.current;
+        if (showInitialLoading) {
+            setIsLoading(true);
+        }
+
+        const request = (async () => {
+            try {
+                const res = await fetch(`/api/conversations`, { cache: "no-store" });
+                if (res.ok && authenticatedRef.current) {
+                    const data = await res.json();
+                    const sessionList = Array.isArray(data) ? data : (data.sessions || []);
+                    const normalized = normalizeSessionHistoryList(sessionList);
+                    setConversations((prev) => (isSameConversationList(prev, normalized) ? prev : normalized));
+                }
+            } catch (error) {
+                console.error("Failed to fetch conversations", error);
+            } finally {
+                hasLoadedRef.current = true;
+                refreshInFlightRef.current = null;
+                if (authenticatedRef.current) {
+                    setIsLoading(false);
+                }
+            }
+        })();
+        refreshInFlightRef.current = request;
+        return request;
     }, []);
 
     const createConversation = useCallback(async (payload?: CreateConversationPayload) => {
@@ -175,14 +194,35 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     }, []);
 
     useEffect(() => {
-        if (status === "authenticated") {
-            void fetchConversations();
-            return;
-        }
+        authenticatedRef.current = status === "authenticated";
         if (status === "unauthenticated") {
+            hasLoadedRef.current = false;
             setConversations([]);
             setIsLoading(false);
         }
+    }, [status]);
+
+    useEffect(() => {
+        if (status !== "authenticated") {
+            return;
+        }
+
+        const refreshWhenVisible = () => {
+            if (document.visibilityState === "visible") {
+                void fetchConversations();
+            }
+        };
+
+        void fetchConversations();
+        window.addEventListener("focus", refreshWhenVisible);
+        document.addEventListener("visibilitychange", refreshWhenVisible);
+        const intervalId = window.setInterval(refreshWhenVisible, 3500);
+
+        return () => {
+            window.clearInterval(intervalId);
+            window.removeEventListener("focus", refreshWhenVisible);
+            document.removeEventListener("visibilitychange", refreshWhenVisible);
+        };
     }, [fetchConversations, status]);
 
     const contextValue = useMemo(() => ({

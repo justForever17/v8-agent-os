@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowLeft, ArrowRight, Bot, Hand, LoaderCircle, Plus, RefreshCw, RotateCcw, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Globe2, LoaderCircle, MoreHorizontal, Minus, Plus, RefreshCw, RotateCcw, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { BrowserWorkbenchDocument } from "@/lib/workbench";
@@ -76,10 +76,11 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
     const requestCounterRef = useRef(0);
     const composingRef = useRef(false);
     const ignoreNextInputRef = useRef(false);
+    const autoControlRequestedRef = useRef(false);
     const [status, setStatus] = useState<BrowserStatus | null>(null);
     const [connected, setConnected] = useState(false);
     const [hasControl, setHasControl] = useState(false);
-    const [streamMode, setStreamMode] = useState("connecting");
+    const [, setStreamMode] = useState("connecting");
     const [frameUrl, setFrameUrl] = useState("");
     const [frameMetadata, setFrameMetadata] = useState<Record<string, unknown>>({});
     const [address, setAddress] = useState("about:blank");
@@ -87,6 +88,7 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
     const [revision, setRevision] = useState(0);
     const [zoom, setZoom] = useState(100);
     const [inputBuffer, setInputBuffer] = useState("");
+    const [menuOpen, setMenuOpen] = useState(false);
     const markDocumentUnavailable = useWorkbenchStore((state) => state.markDocumentUnavailable);
 
     const currentPage = useMemo(
@@ -119,10 +121,17 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
         setConnected(false);
         setHasControl(false);
         setStreamMode("connecting");
+        autoControlRequestedRef.current = false;
 
         const connect = async () => {
             try {
-                const statusResponse = await fetch(`/api/workbench/browser-sessions/${encodeURIComponent(browserSessionId)}`, { cache: "no-store" });
+                const [statusResponse, ticketResponse] = await Promise.all([
+                    fetch(`/api/workbench/browser-sessions/${encodeURIComponent(browserSessionId)}`, { cache: "no-store" }),
+                    fetch(`/api/workbench/browser-sessions/${encodeURIComponent(browserSessionId)}/ws-ticket`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                    }),
+                ]);
                 const initialStatus = await statusResponse.json().catch(() => ({})) as BrowserStatus;
                 if (!statusResponse.ok) {
                     const message = errorText(initialStatus, "无法读取浏览器会话。");
@@ -133,11 +142,6 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
                 }
                 if (cancelled) return;
                 setStatus(initialStatus);
-
-                const ticketResponse = await fetch(`/api/workbench/browser-sessions/${encodeURIComponent(browserSessionId)}/ws-ticket`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                });
                 const ticketPayload = await ticketResponse.json().catch(() => ({})) as Record<string, unknown>;
                 const ticket = String(ticketPayload.ticket || "").trim();
                 if (!ticketResponse.ok || !ticket) throw new Error(errorText(ticketPayload, "无法取得浏览器连接票据。"));
@@ -167,6 +171,10 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
                         const type = String(payload.type || "");
                         if (type === "hello") {
                             setStatus(recordOf(payload.status) as BrowserStatus);
+                            if (!autoControlRequestedRef.current) {
+                                autoControlRequestedRef.current = true;
+                                sendCommand("take_control");
+                            }
                         } else if (type === "status") {
                             setStatus(recordOf(payload.status) as BrowserStatus);
                         } else if (type === "stream_status") {
@@ -217,7 +225,7 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
             if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
             frameUrlRef.current = "";
         };
-    }, [browserSessionId, document.documentId, markDocumentUnavailable, revision]);
+    }, [browserSessionId, document.documentId, markDocumentUnavailable, revision, sendCommand]);
 
     useEffect(() => {
         if (!hasControl || !connected) return;
@@ -306,46 +314,51 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
     const unavailable = status?.status === "unavailable" || document.status === "unavailable";
 
     return (
-        <div className="flex h-full min-h-0 flex-col bg-background">
-            <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-1.5">
+        <div className="relative flex h-full min-h-0 flex-col bg-background">
+            <div className="scrollbar-none flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-border/60 px-1.5">
+                {(status?.pages || []).map((page) => (
+                    <div key={page.pageId} className={cn("group flex h-7 min-w-[118px] max-w-[210px] items-center rounded-xl", page.pageId === currentPage?.pageId ? "bg-muted/70 text-foreground" : "text-muted-foreground hover:bg-muted/35")}>
+                        <button type="button" disabled={!hasControl} onClick={() => sendCommand("activate", { pageId: page.pageId })} className="min-w-0 flex-1 truncate px-2 text-left text-[10px] disabled:cursor-default" title={page.title || page.url}>{page.title || "新标签页"}</button>
+                        <button type="button" disabled={!hasControl || (status?.pages.length || 0) <= 1} onClick={() => sendCommand("close_page", { pageId: page.pageId })} className="mr-1 hidden rounded-md p-1 text-muted-foreground hover:bg-background disabled:hidden group-hover:block" aria-label={`关闭 ${page.title || "标签页"}`}><X className="h-3 w-3" /></button>
+                    </div>
+                ))}
+                <button type="button" disabled={!hasControl} onClick={() => sendCommand("new_tab", { url: "about:blank" })} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label="新建标签页"><Plus className="h-3.5 w-3.5" /></button>
+            </div>
+
+            <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border/60 px-1.5">
                 <button type="button" disabled={!hasControl} onClick={() => sendCommand("back", pagePayload())} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label="后退"><ArrowLeft className="h-3.5 w-3.5" /></button>
                 <button type="button" disabled={!hasControl} onClick={() => sendCommand("forward", pagePayload())} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label="前进"><ArrowRight className="h-3.5 w-3.5" /></button>
                 <button type="button" disabled={!hasControl} onClick={() => sendCommand("reload", pagePayload())} className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label="刷新"><RefreshCw className="h-3.5 w-3.5" /></button>
-                <form onSubmit={submitAddress} className="mx-1 flex min-w-0 flex-1 items-center border-b border-border/80 focus-within:border-primary">
-                    <input value={address} onChange={(event) => setAddress(event.target.value)} className="h-6 min-w-0 flex-1 bg-transparent px-1.5 text-[11px] outline-none" aria-label="浏览器地址" spellCheck={false} />
+                <form onSubmit={submitAddress} className="mx-1 flex min-w-0 flex-1 items-center rounded-xl bg-muted/55 focus-within:ring-2 focus-within:ring-primary/20">
+                    <input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="输入 URL" className="h-7 min-w-0 flex-1 bg-transparent px-2.5 text-[11px] outline-none" aria-label="浏览器地址" spellCheck={false} />
                 </form>
-                <select value={zoom} onChange={(event) => setZoom(Number(event.target.value))} className="h-6 bg-transparent text-[10px] text-muted-foreground outline-none" aria-label="显示缩放">
-                    <option value={80}>80%</option><option value={100}>100%</option><option value={125}>125%</option><option value={150}>150%</option>
-                </select>
                 <button
                     type="button"
-                    onClick={() => {
-                        if (hasControl) sendCommand("release_control");
-                        else sendCommand("take_control");
-                    }}
-                    disabled={!connected || unavailable}
-                    className={cn("inline-flex h-6 items-center gap-1 rounded-sm px-2 text-[10px] disabled:opacity-40", hasControl ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground")}
+                    onClick={() => setMenuOpen((value) => !value)}
+                    className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="浏览器菜单"
                 >
-                    {hasControl ? <Hand className="h-3 w-3" /> : <Bot className="h-3 w-3" />}
-                    {hasControl ? "交还 Agent" : "接管"}
+                    <MoreHorizontal className="h-4 w-4" />
                 </button>
             </div>
-
-            <div className="scrollbar-none flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-border/60 bg-muted/10">
-                {(status?.pages || []).map((page) => (
-                    <div key={page.pageId} className={cn("flex min-w-[120px] max-w-[210px] items-center border-r border-border/50", page.pageId === currentPage?.pageId && "bg-background")}>
-                        <button type="button" disabled={!hasControl} onClick={() => sendCommand("activate", { pageId: page.pageId })} className="min-w-0 flex-1 truncate px-2 text-left text-[10px] disabled:cursor-default" title={page.title || page.url}>{page.title || "新标签页"}</button>
-                        <button type="button" disabled={!hasControl || (status?.pages.length || 0) <= 1} onClick={() => sendCommand("close_page", { pageId: page.pageId })} className="mr-1 rounded-sm p-1 text-muted-foreground hover:bg-muted disabled:hidden" aria-label={`关闭 ${page.title || "标签页"}`}><X className="h-3 w-3" /></button>
-                    </div>
-                ))}
-                <button type="button" disabled={!hasControl} onClick={() => sendCommand("new_tab", { url: "about:blank" })} className="px-2 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30" aria-label="新建标签页"><Plus className="h-3.5 w-3.5" /></button>
-            </div>
-
-            {status?.externalWindow ? <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-amber-500/25 bg-amber-500/8 px-2 text-[10px] text-amber-700 dark:text-amber-300"><AlertTriangle className="h-3 w-3" />附着的是已有可见浏览器；外部窗口仍在运行。</div> : null}
-            {streamMode === "screenshot_fallback" ? <div className="h-6 shrink-0 border-b border-border/60 px-2 text-[10px] leading-6 text-muted-foreground">CDP Screencast 不可用，已降级为约 2fps 截图流。</div> : null}
             {error ? <div className="flex min-h-7 shrink-0 items-center gap-2 border-b border-destructive/20 bg-destructive/5 px-2 text-[10px] text-destructive"><span className="min-w-0 flex-1 truncate">{error}</span><button type="button" onClick={() => setRevision((value) => value + 1)} className="rounded-sm p-1 hover:bg-destructive/10" aria-label="重新连接"><RotateCcw className="h-3 w-3" /></button></div> : null}
 
-            <div className="relative min-h-0 flex-1 overflow-auto bg-[#111]">
+            {menuOpen ? (
+                <div className="absolute right-2 top-[76px] z-20 w-52 rounded-xl border border-border bg-popover p-2 text-xs text-popover-foreground shadow-lg">
+                    <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+                        <span>显示比例</span>
+                        <div className="flex items-center rounded-lg bg-muted/60">
+                            <button type="button" className="p-1.5" onClick={() => setZoom((value) => Math.max(50, value - 10))} aria-label="缩小"><Minus className="h-3 w-3" /></button>
+                            <span className="w-10 text-center tabular-nums">{zoom}%</span>
+                            <button type="button" className="p-1.5" onClick={() => setZoom((value) => Math.min(200, value + 10))} aria-label="放大"><Plus className="h-3 w-3" /></button>
+                        </div>
+                    </div>
+                    <button type="button" className="w-full rounded-lg px-2 py-2 text-left hover:bg-muted" onClick={() => { setMenuOpen(false); setRevision((value) => value + 1); }}>重新连接</button>
+                    <button type="button" disabled={!connected || unavailable} className="w-full rounded-lg px-2 py-2 text-left hover:bg-muted disabled:opacity-40" onClick={() => { setMenuOpen(false); sendCommand(hasControl ? "release_control" : "take_control"); }}>{hasControl ? "交还 Agent" : "重新接管"}</button>
+                </div>
+            ) : null}
+
+            <div className="relative min-h-0 flex-1 overflow-auto bg-white dark:bg-zinc-950">
                 {frameUrl ? (
                     <div className="flex min-h-full min-w-full items-center justify-center">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -364,7 +377,13 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
                         />
                     </div>
                 ) : (
-                    <div className="flex h-full items-center justify-center gap-2 text-xs text-white/55"><LoaderCircle className="h-4 w-4 animate-spin" />正在等待浏览器画面…</div>
+                    <div className="flex h-full items-center justify-center">
+                        <div className="text-center text-muted-foreground">
+                            {connected ? <Globe2 className="mx-auto h-8 w-8 opacity-55" /> : <LoaderCircle className="mx-auto h-5 w-5 animate-spin" />}
+                            <div className="mt-3 text-sm text-foreground">{connected ? "开始浏览" : "正在连接浏览器"}</div>
+                            <div className="mt-1 text-xs">{connected ? "在上方输入 URL 以打开页面" : "连接完成后即可直接控制"}</div>
+                        </div>
+                    </div>
                 )}
                 <textarea
                     ref={textInputRef}
@@ -414,10 +433,6 @@ export function BrowserRenderer({ document }: { document: BrowserWorkbenchDocume
                     autoCorrect="off"
                     spellCheck={false}
                 />
-            </div>
-            <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-t border-border/60 px-2 text-[9px] text-muted-foreground">
-                <span>{connected ? (hasControl ? "你正在控制；5 秒心跳，15 秒租约" : "Agent 控制；点击“接管”后可交互") : "未连接"}</span>
-                <span className="truncate">首期不支持文件选择器、下载管理器、Passkey、硬件密钥、媒体权限、扩展、DevTools 与 DRM。</span>
             </div>
         </div>
     );

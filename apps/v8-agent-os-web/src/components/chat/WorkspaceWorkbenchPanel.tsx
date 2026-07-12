@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Box, CircleDot, Code2, FileText, ListTodo, Route, TerminalSquare } from "lucide-react";
+import { Box, CircleDot, Code2, FileText, ListTodo, TerminalSquare } from "lucide-react";
 import type { AdminProcessRef } from "@v8/session-realtime";
 
 import { createArtifactDocument } from "@/lib/workbench";
@@ -64,13 +64,12 @@ function collectFileHints(messages: Message[]) {
     return Array.from(hints.values()).slice(-24).reverse();
 }
 
-function Section({ title, icon: Icon, count, children }: { title: string; icon: typeof Box; count?: number; children: React.ReactNode }) {
+function Section({ title, icon: Icon, children }: { title: string; icon: typeof Box; children: React.ReactNode }) {
     return (
         <section className="border-b border-border/55 last:border-b-0">
             <div className="flex h-8 items-center gap-2 px-2 text-[11px] font-medium text-foreground/85">
                 <Icon className="h-3.5 w-3.5 text-muted-foreground" />
                 <span>{title}</span>
-                {typeof count === "number" ? <span className="text-[10px] tabular-nums text-muted-foreground">{count}</span> : null}
             </div>
             <div className="border-t border-border/35">{children}</div>
         </section>
@@ -79,13 +78,6 @@ function Section({ title, icon: Icon, count, children }: { title: string; icon: 
 
 function EmptyRow({ children }: { children: React.ReactNode }) {
     return <div className="px-3 py-3 text-[11px] leading-5 text-muted-foreground">{children}</div>;
-}
-
-function runtimeStatusLabel(status: RuntimeStageModel["items"][number]["status"]) {
-    if (status === "active") return "正在处理当前任务";
-    if (status === "attention") return "需要你处理";
-    if (status === "recent") return "本会话已参与";
-    return "待命";
 }
 
 export function WorkspaceWorkbenchPanel({
@@ -101,25 +93,26 @@ export function WorkspaceWorkbenchPanel({
     const fileHints = useMemo(() => collectFileHints(messages), [messages]);
     const activeProcesses = useMemo(() => processes.filter(activeProcess), [processes]);
     const visibleTodos = useMemo(() => todos.filter((item) => text(item.content || item.text)), [todos]);
+    const currentRuntime = useMemo(
+        () => runtimeModel.items.find((item) => item.status === "attention")
+            || runtimeModel.items.find((item) => item.status === "active")
+            || null,
+        [runtimeModel.items],
+    );
     const hasSecondaryContent = visibleTodos.length > 0 || artifacts.length > 0 || fileHints.length > 0 || activeProcesses.length > 0;
 
     return (
         <div className="h-full min-h-0 overflow-auto bg-background">
             <div className="mx-auto w-full max-w-[760px]">
-            <Section title="运行摘要" icon={Route} count={runtimeModel.items.length}>
-                {runtimeModel.items.length ? runtimeModel.items.slice(0, 10).map((item) => (
-                    <div
-                        key={item.id}
-                        className="flex min-h-9 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0"
-                    >
-                        <CircleDot className={`h-3 w-3 shrink-0 ${item.status === "active" ? "text-emerald-500" : item.status === "attention" ? "text-rose-500" : "text-muted-foreground"}`} />
-                        <span className="w-20 shrink-0 truncate font-medium">{item.shortLabel || item.label}</span>
-                        <span className="min-w-0 flex-1 truncate text-muted-foreground">{runtimeStatusLabel(item.status)}</span>
-                    </div>
-                )) : <EmptyRow>当前没有运行中的任务。</EmptyRow>}
-            </Section>
+            {currentRuntime ? (
+                <div className="flex min-h-10 items-center gap-2 border-b border-border/55 px-3 py-2 text-[11px]">
+                    <CircleDot className={`h-3 w-3 shrink-0 ${currentRuntime.status === "attention" ? "text-amber-500" : "text-emerald-500"}`} />
+                    <span className="font-medium text-foreground">{currentRuntime.status === "attention" ? "等待你的确认" : "任务进行中"}</span>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground">{currentRuntime.lastActivity || currentRuntime.stepTitle || currentRuntime.shortLabel || currentRuntime.label}</span>
+                </div>
+            ) : null}
 
-            {visibleTodos.length ? <Section title="任务" icon={ListTodo} count={visibleTodos.length}>
+            {visibleTodos.length ? <Section title="任务" icon={ListTodo}>
                 {visibleTodos.slice(0, 20).map((todo, index) => {
                     const status = text(todo.status || "pending").toLowerCase();
                     return (
@@ -131,7 +124,7 @@ export function WorkspaceWorkbenchPanel({
                 })}
             </Section> : null}
 
-            {artifacts.length ? <Section title="产物" icon={Box} count={artifacts.length}>
+            {artifacts.length ? <Section title="产物" icon={Box}>
                 {artifacts.map((artifact) => (
                     <button
                         key={artifact.id}
@@ -146,7 +139,7 @@ export function WorkspaceWorkbenchPanel({
                 ))}
             </Section> : null}
 
-            {fileHints.length || fileError ? <Section title="文件线索" icon={Code2} count={fileHints.length}>
+            {fileHints.length || fileError ? <Section title="文件变更" icon={Code2}>
                 {fileError ? <div className="border-b border-destructive/25 bg-destructive/5 px-3 py-2 text-[10px] text-destructive">{fileError}</div> : null}
                 {fileHints.map((hint) => (
                     <button
@@ -159,23 +152,22 @@ export function WorkspaceWorkbenchPanel({
                         className="flex min-h-9 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                     >
                         <Code2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate font-mono">{hint.path}</span>
-                        <span className="max-w-24 truncate text-[10px] text-muted-foreground">{hint.tool}</span>
+                        <span className="min-w-0 flex-1 truncate">{hint.path}</span>
                     </button>
                 ))}
             </Section> : null}
 
-            {activeProcesses.length ? <Section title="进程" icon={TerminalSquare} count={activeProcesses.length}>
+            {activeProcesses.length ? <Section title="后台任务" icon={TerminalSquare}>
                 {activeProcesses.map((process) => (
                     <div key={process.processId} className="flex min-h-9 items-center gap-2 border-b border-border/30 px-3 py-1.5 text-[11px] last:border-b-0">
                         <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate font-mono">{process.title || process.commandPreview || process.processId}</span>
-                        <span className="text-[10px] text-muted-foreground">{process.status || "running"}</span>
+                        <span className="min-w-0 flex-1 truncate">{process.title || "后台任务"}</span>
+                        <span className="text-[10px] text-muted-foreground">运行中</span>
                     </div>
                 ))}
             </Section> : null}
 
-            {!hasSecondaryContent ? <EmptyRow>{todoStale ? "任务摘要可能已过期；" : ""}文件、产物和活动进程出现后会在这里集中列出。</EmptyRow> : null}
+            {!hasSecondaryContent && !currentRuntime ? <EmptyRow>{todoStale ? "任务信息正在更新。" : "当前没有需要关注的内容。"}</EmptyRow> : null}
             </div>
         </div>
     );

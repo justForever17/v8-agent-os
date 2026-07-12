@@ -7,6 +7,7 @@ import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 const ALLOWED_PATHS = [
     /^sessions\/[A-Za-z0-9_-]+\/files\/(?:resolve|read)$/,
     /^sessions\/[A-Za-z0-9_-]+\/browser-sessions$/,
+    /^sessions\/[A-Za-z0-9_-]+\/browser\/prepare$/,
     /^browser-sessions\/[A-Za-z0-9_-]+(?:\/ws-ticket)?$/,
 ];
 

@@ -20,19 +20,17 @@ import {
     type PhoneRuntimeStageActivity,
     type PhoneRuntimeStageCard,
 } from "@/src/lib/runtime-stage";
-import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 import {
     buildRuntimeEpisodeGraph,
     isRuntimeEpisodeGraphActivity,
-    type AdminProcessRef,
     type RuntimeEpisodeGraphActivity,
 } from "@v8/session-realtime";
 
 const CHAT_RUNTIME_ACTIVITY_WINDOW = 80;
-const RUNTIME_ACTIVITY_FEED_LIMIT = 40;
+const RUNTIME_ACTIVITY_FEED_LIMIT = 12;
 type ChatExecutionSection = "episodes" | "swarm";
 
 function getKindTone(kind: PhoneRuntimeStageActivity["kind"], colors: ReturnType<typeof useUiPrefs>["colors"]) {
@@ -563,115 +561,10 @@ export function RuntimeEpisodeBoard({ activities }: { activities: PhoneRuntimeSt
     );
 }
 
-function BroadcastRail({ activities }: { activities: PhoneRuntimeStageActivity[] }) {
-    const { colors, t, locale } = useUiPrefs();
-    const { getEngineNowMs } = useAppSession();
-    const [index, setIndex] = useState(0);
-
-    useEffect(() => {
-        setIndex((current) => {
-            if (activities.length === 0) {
-                return 0;
-            }
-            return Math.min(current, activities.length - 1);
-        });
-    }, [activities.length]);
-
-    useEffect(() => {
-        if (activities.length <= 1) {
-            return undefined;
-        }
-        const timer = setInterval(() => {
-            setIndex((current) => (current + 1) % activities.length);
-        }, 2600);
-        return () => clearInterval(timer);
-    }, [activities.length]);
-
-    if (activities.length === 0) {
-        return null;
-    }
-
-    const active = activities[Math.min(index, activities.length - 1)] || activities[0];
-    const tone = getKindTone(active.kind, colors);
-    const iconName = getKindIconName(active.kind);
-    const queue = activities.slice(0, 3);
-
-    return (
-        <LinearGradient
-            colors={["#151515", "#1F1B17"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.broadcastCard}
-        >
-            <View style={styles.broadcastHeader}>
-                <View style={styles.broadcastLive}>
-                    <View style={styles.broadcastDotWrap}>
-                        <View style={styles.broadcastDotPulse} />
-                        <View style={[styles.broadcastDot, { backgroundColor: "#FBBF24" }]} />
-                    </View>
-                    <Text style={styles.broadcastLabel}>{t("src.components.chat.runtimetimelinepanel.broadcast")}</Text>
-                </View>
-                <Text style={styles.broadcastCount}>
-                    {index + 1}/{activities.length}
-                </Text>
-            </View>
-            <View style={styles.broadcastHero}>
-                <View style={styles.broadcastBody}>
-                    <View style={styles.broadcastIcon}>
-                        <MaterialCommunityIcons name={iconName} size={16} color={tone.tint} />
-                    </View>
-                    <View style={styles.broadcastTextWrap}>
-                        <Text style={styles.broadcastTitle} numberOfLines={2}>
-                            {active.summary || t("src.components.chat.runtimetimelinepanel.runtime_activity_is_updating")}
-                        </Text>
-                        <Text style={styles.broadcastSubtitle} numberOfLines={1}>
-                            {(active.actorLabel || t(tone.labelKey))} · {formatPhoneRelativeRuntimeTime(active.timestamp, locale, getEngineNowMs())}
-                        </Text>
-                    </View>
-                </View>
-                <Text style={styles.broadcastTopic} numberOfLines={3}>
-                    {active.topic || t("src.components.chat.runtimetimelinepanel.runtime_activity_is_streaming_here_while_you_stay_in_chat")}
-                </Text>
-            </View>
-            {queue.length > 1 ? (
-                <View style={styles.broadcastQueue}>
-                    {queue.map((item, itemIndex) => {
-                        const itemTone = getKindTone(item.kind, colors);
-                        const itemActive = item.id === active.id || itemIndex === index;
-                        return (
-                            <View
-                                key={item.id}
-                                style={[
-                                    styles.broadcastQueueItem,
-                                    itemActive && styles.broadcastQueueItemActive,
-                                ]}
-                            >
-                                <MaterialCommunityIcons
-                                    name={getKindIconName(item.kind)}
-                                    size={12}
-                                    color={itemTone.tint}
-                                />
-                                <Text style={styles.broadcastQueueText} numberOfLines={1}>
-                                    {item.summary}
-                                </Text>
-                            </View>
-                        );
-                    })}
-                </View>
-            ) : null}
-            <View style={styles.broadcastFooter}>
-                <Text style={styles.broadcastFooterText}>{t("src.components.chat.runtimetimelinepanel.now_broadcasting")}</Text>
-            </View>
-        </LinearGradient>
-    );
-}
-
 function ActivityFeedItem({
     activity,
-    processes,
 }: {
     activity: PhoneRuntimeStageActivity;
-    processes: AdminProcessRef[];
 }) {
     const { colors, locale, t } = useUiPrefs();
     const { getEngineNowMs } = useAppSession();
@@ -694,26 +587,12 @@ function ActivityFeedItem({
                     <MaterialCommunityIcons name={iconName} size={12} color={tone.tint} />
                     <Text style={[styles.feedKindText, { color: tone.tint }]}>{t(tone.labelKey)}</Text>
                 </View>
-                {activity.actorLabel ? (
-                    <View style={[styles.feedActorPill, { backgroundColor: colors.surface }]}>
-                        <Text style={[styles.feedActorText, { color: colors.textMuted }]}>{activity.actorLabel}</Text>
-                    </View>
-                ) : null}
-                {activity.compactedCount && activity.compactedCount > 1 ? (
-                    <View style={[styles.feedActorPill, { backgroundColor: colors.surface }]}>
-                        <Text style={[styles.feedActorText, { color: colors.textMuted }]}>×{activity.compactedCount}</Text>
-                    </View>
-                ) : null}
                 <Text style={[styles.feedTimeText, { color: colors.textSoft }]}>
                     {formatPhoneRelativeRuntimeTime(activity.timestamp, locale, getEngineNowMs())}
                 </Text>
             </View>
 
             <Text style={[styles.feedSummary, { color: colors.text }]}>{activity.summary}</Text>
-
-            <View style={[styles.feedBody, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                <ContentDispatcher node={activity.node} processes={processes} />
-            </View>
         </View>
     );
 }
@@ -724,7 +603,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     selectedRuntimeId,
     selectedRuntimeDockItem,
     activities,
-    processes,
     currentRunLabel,
     currentStepTitle,
     onClose,
@@ -735,7 +613,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
     selectedRuntimeId: PhoneRuntimeId | null;
     selectedRuntimeDockItem?: PhoneRuntimeStageCard;
     activities: PhoneRuntimeStageActivity[];
-    processes: AdminProcessRef[];
     currentRunLabel: string;
     currentStepTitle?: string | null;
     onClose: () => void;
@@ -911,11 +788,11 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                             </Text>
                         </View>
                     ) : null}
-                    <ActivityFeedItem activity={item} processes={processes} />
+                    <ActivityFeedItem activity={item} />
                 </View>
             );
         },
-        [colors.border, colors.surfaceStrong, colors.text, colors.textMuted, effectiveSelectedRuntimeId, processes, visibleActivities],
+        [colors.border, colors.surfaceStrong, colors.text, colors.textMuted, effectiveSelectedRuntimeId, visibleActivities],
     );
     const renderEmptyState = useCallback(
         () => (
@@ -1040,19 +917,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                                 const Icon = getRuntimeDockIcon(item.id);
                                                 return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
                                             })()}
-                                            {item.eventCount > 0 ? (
-                                                <View
-                                                    style={[
-                                                        styles.tabBadge,
-                                                        {
-                                                            backgroundColor: themeMode === "dark" ? "#F8FAFC" : "#0F172A",
-                                                            borderColor: themeMode === "dark" ? "rgba(15,23,42,0.88)" : "#FFFFFF",
-                                                        },
-                                                    ]}
-                                                >
-                                                    <Text style={[styles.tabBadgeText, { color: themeMode === "dark" ? "#0F172A" : "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
-                                                </View>
-                                            ) : null}
                                         </Pressable>
                                     ))}
                                 </GestureScrollView>
@@ -1084,19 +948,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                                 const Icon = getRuntimeDockIcon(item.id);
                                                 return <Icon size={14} color={item.id === effectiveSelectedRuntimeId ? "#B45309" : colors.textMuted} strokeWidth={2} />;
                                             })()}
-                                            {item.eventCount > 0 ? (
-                                                <View
-                                                    style={[
-                                                        styles.tabBadge,
-                                                        {
-                                                            backgroundColor: themeMode === "dark" ? "#F8FAFC" : "#0F172A",
-                                                            borderColor: themeMode === "dark" ? "rgba(15,23,42,0.88)" : "#FFFFFF",
-                                                        },
-                                                    ]}
-                                                >
-                                                    <Text style={[styles.tabBadgeText, { color: themeMode === "dark" ? "#0F172A" : "#FFFFFF" }]}>{Math.min(item.eventCount, 9)}</Text>
-                                                </View>
-                                            ) : null}
                                         </Pressable>
                                     ))}
                                 </View>
@@ -1150,11 +1001,6 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
                                         resetScrollTop();
                                     }
                                 }}
-                                ListHeaderComponent={visibleActivities.length > 0 ? (
-                                    <>
-                                        {visibleActivities.length > 0 ? <BroadcastRail activities={visibleActivities} /> : null}
-                                    </>
-                                ) : undefined}
                                 ListEmptyComponent={renderEmptyState}
                             />
                         )}

@@ -7057,7 +7057,6 @@ export default function ChatScreen() {
                     selectedRuntimeId={projection.selectedRuntimeId}
                     selectedRuntimeDockItem={projection.selectedRuntimeDockItem}
                     activities={projection.runtimeStageModel.activities}
-                    processes={hudProcesses}
                     currentRunLabel={projection.currentRunLabel}
                     currentStepTitle={projection.currentStepTitle}
                     onClose={() => setRuntimePanelOpen(false)}

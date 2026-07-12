@@ -4,23 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import { PHASE_PRODUCTION_BUILD } from "next/constants";
 
-const localApiNamespaces = [
-  "approvals",
-  "artifacts",
-  "auth",
-  "chat",
-  "chat-queue",
-  "conversations",
-  "projects",
-  "realtime",
-  "rpa",
-  "runs",
-  "sessions",
-  "upload",
-  "workbench",
-  "workspace",
-];
-
 function isProductionBuildPhase(phase: string) {
   return phase === PHASE_PRODUCTION_BUILD || process.env.V8_NEXT_BUILD === "1";
 }
@@ -67,32 +50,32 @@ const createNextConfig = (phase: string): NextConfig => ({
     externalDir: true,
   },
   async rewrites() {
-    return [
-      {
-        source: "/api/terminal-ws/:path*",
-        destination: `${resolveEngineOrigin(phase)}/v1/terminal/:path*`,
-      },
-      {
-        source: "/api/workbench-browser-ws/:path*",
-        destination: `${resolveEngineOrigin(phase)}/v1/workbench/:path*`,
-      },
-      {
-        source: "/api/client/bg_processes/:path*",
-        destination: `${resolveEngineOrigin(phase)}/v1/bg_processes/:path*`,
-      },
-      {
-        source: "/api/bg_processes/:path*",
-        destination: `${resolveEngineOrigin(phase)}/v1/bg_processes/:path*`,
-      },
-      ...localApiNamespaces.map((namespace) => ({
-        source: `/api/${namespace}/:path*`,
-        destination: `/api/${namespace}/:path*`,
-      })),
-      {
-        source: '/api/:path*',
-        destination: `${resolveAdminApiBaseUrl(phase)}/:path*`,
-      },
-    ];
+    return {
+      beforeFiles: [
+        {
+          source: "/api/terminal-ws/:path*",
+          destination: `${resolveEngineOrigin(phase)}/v1/terminal/:path*`,
+        },
+        {
+          source: "/api/workbench-browser-ws/:path*",
+          destination: `${resolveEngineOrigin(phase)}/v1/workbench/:path*`,
+        },
+        {
+          source: "/api/client/bg_processes/:path*",
+          destination: `${resolveEngineOrigin(phase)}/v1/bg_processes/:path*`,
+        },
+        {
+          source: "/api/bg_processes/:path*",
+          destination: `${resolveEngineOrigin(phase)}/v1/bg_processes/:path*`,
+        },
+      ],
+      fallback: [
+        {
+          source: "/api/:path*",
+          destination: `${resolveAdminApiBaseUrl(phase)}/:path*`,
+        },
+      ],
+    };
   },
 });
 

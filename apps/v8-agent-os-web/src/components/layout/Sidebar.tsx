@@ -282,10 +282,10 @@ export function Sidebar() {
         const isOpen = openGroups[group.key] ?? (index === 0 || hasActiveConversation);
 
         return (
-            <div key={group.key} className="mb-3">
+            <div key={group.key} className="mb-2">
                 {!collapsed && (
                     <div
-                        className="group/header mb-1 flex cursor-pointer items-center rounded-md px-3 py-1.5 transition-colors hover:bg-accent/40"
+                        className="group/header mb-1 flex cursor-pointer items-center rounded-lg px-2.5 py-1.5 transition-colors duration-150 hover:bg-muted/35 focus-within:bg-muted/35"
                         onClick={() => toggleGroup(group.key)}
                         onContextMenu={(event) => openGroupMenu(event, group)}
                     >
@@ -320,12 +320,19 @@ export function Sidebar() {
                             <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</span>
                         )}
                         {group.workspacePath ? (
-                            <div className="ml-auto flex shrink-0 items-center">
+                            <div
+                                className={cn(
+                                    "pointer-events-none ml-auto flex shrink-0 translate-x-1 items-center opacity-0 transition-[opacity,transform] duration-150",
+                                    "group-hover/header:pointer-events-auto group-hover/header:translate-x-0 group-hover/header:opacity-100",
+                                    "group-focus-within/header:pointer-events-auto group-focus-within/header:translate-x-0 group-focus-within/header:opacity-100",
+                                    presentationBusyKey === `group:${group.key}` && "pointer-events-auto translate-x-0 opacity-100",
+                                )}
+                            >
                                 <button
                                     type="button"
                                     className={cn(
-                                        "inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60",
-                                        group.pinned ? "text-primary hover:bg-primary/12" : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
+                                        "inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60",
+                                        group.pinned ? "text-primary hover:bg-primary/10" : "text-muted-foreground hover:bg-muted hover:text-foreground",
                                     )}
                                     onClick={(event) => void toggleGroupPin(event, group)}
                                     disabled={Boolean(presentationBusyKey)}
@@ -342,7 +349,7 @@ export function Sidebar() {
                                 {group.creationBinding ? (
                                     <button
                                         type="button"
-                                        className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60"
+                                        className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60"
                                         onClick={(event) => void createConversationInGroup(event, group)}
                                         disabled={Boolean(creatingGroupKey)}
                                         aria-label={t("web.sidebar.createInWorkspace", { value0: group.label })}
@@ -366,10 +373,10 @@ export function Sidebar() {
                                 <div
                                     key={canonicalSessionId}
                                     className={cn(
-                                        "group relative flex cursor-pointer flex-col justify-center overflow-hidden rounded-xl transition-all duration-200",
-                                        collapsed ? "mx-auto h-10 w-10 items-center" : "w-full py-2.5 pl-3 pr-9 hover:bg-accent/60",
+                                        "group/task relative flex cursor-pointer flex-col justify-center overflow-hidden rounded-lg transition-colors duration-150",
+                                        collapsed ? "mx-auto h-10 w-10 items-center" : "w-full py-2 pl-3 pr-[4.25rem] hover:bg-muted/45",
                                         currentId === canonicalSessionId
-                                            ? "bg-accent/80 font-medium text-accent-foreground shadow-sm"
+                                            ? "bg-muted/60 font-medium text-foreground"
                                             : "text-muted-foreground hover:text-foreground",
                                     )}
                                     onClick={() => handleNavigation(canonicalSessionId)}
@@ -422,18 +429,53 @@ export function Sidebar() {
                                                     </span>
                                                 </div>
 
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 scale-90 text-muted-foreground opacity-0 transition-all duration-200 hover:bg-destructive/10 hover:text-destructive group-hover:scale-100 group-hover:opacity-100"
-                                                    onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        setContextMenu(null);
-                                                        setDeleteId(canonicalSessionId);
-                                                    }}
+                                                <div
+                                                    className={cn(
+                                                        "pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 translate-x-1 items-center opacity-0 transition-[opacity,transform] duration-150",
+                                                        "group-hover/task:pointer-events-auto group-hover/task:translate-x-0 group-hover/task:opacity-100",
+                                                        "group-focus-within/task:pointer-events-auto group-focus-within/task:translate-x-0 group-focus-within/task:opacity-100",
+                                                        presentationBusyKey === `session:${canonicalSessionId}` && "pointer-events-auto translate-x-0 opacity-100",
+                                                    )}
                                                 >
-                                                    <Trash2 className="h-3.5 w-3.5" />
-                                                </Button>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className={cn(
+                                                            "h-7 w-7 rounded-md text-muted-foreground hover:bg-background/80 hover:text-foreground",
+                                                            conv.pinned && "text-primary",
+                                                        )}
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            void toggleSessionPin(canonicalSessionId);
+                                                        }}
+                                                        disabled={Boolean(presentationBusyKey)}
+                                                        aria-pressed={Boolean(conv.pinned)}
+                                                        aria-label={t(conv.pinned ? "web.sidebar.unpinTask" : "web.sidebar.pinTask")}
+                                                        title={t(conv.pinned ? "web.sidebar.unpinTask" : "web.sidebar.pinTask")}
+                                                    >
+                                                        {presentationBusyKey === `session:${canonicalSessionId}` ? (
+                                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                        ) : conv.pinned ? (
+                                                            <PinOff className="h-3.5 w-3.5" />
+                                                        ) : (
+                                                            <Pin className="h-3.5 w-3.5" />
+                                                        )}
+                                                    </Button>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="h-7 w-7 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            setContextMenu(null);
+                                                            setDeleteId(canonicalSessionId);
+                                                        }}
+                                                        aria-label={t("web.sidebar.deleteConversation")}
+                                                        title={t("web.sidebar.deleteConversation")}
+                                                    >
+                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                    </Button>
+                                                </div>
                                             </>
                                         )}
                                     </div>

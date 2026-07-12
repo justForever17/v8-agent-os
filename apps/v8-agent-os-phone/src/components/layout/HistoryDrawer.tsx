@@ -113,11 +113,16 @@ export function HistoryDrawer({
     };
 
     const openWorkspaceActions = (group: ConversationWorkspaceGroup) => {
-        if (!group.workspacePath) return;
-        Alert.alert(
-            group.label,
-            t("shared.workspace.project_actions"),
-            [
+        if (!group.workspacePath && !group.creationBinding) return;
+        const actions = [];
+        if (group.creationBinding) {
+            actions.push({
+                text: t("src.components.layout.historydrawer.create_in_workspace", { value0: group.label }),
+                onPress: () => onCreateConversationInGroup(group),
+            });
+        }
+        if (group.workspacePath) {
+            actions.push(
                 {
                     text: t("shared.workspace.rename_project"),
                     onPress: () => {
@@ -129,6 +134,13 @@ export function HistoryDrawer({
                     text: t(group.pinned ? "shared.workspace.unpin_project" : "shared.workspace.pin_project"),
                     onPress: () => void toggleWorkspacePin(group),
                 },
+            );
+        }
+        Alert.alert(
+            group.label,
+            t("shared.workspace.project_actions"),
+            [
+                ...actions,
                 { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
             ],
         );
@@ -249,43 +261,12 @@ export function HistoryDrawer({
                                                     ) : (
                                                         <Text style={[styles.groupTitle, { color: colors.textMuted }]} numberOfLines={1}>{group.label}</Text>
                                                     )}
+                                                    {group.pinned && editingGroupKey !== group.key ? (
+                                                        <MaterialCommunityIcons name="pin" size={14} color={colors.primary} />
+                                                    ) : null}
                                                 </Pressable>
-                                                {group.workspacePath ? (
-                                                    <Pressable
-                                                        style={styles.groupCreateButton}
-                                                        onPress={() => void toggleWorkspacePin(group)}
-                                                        disabled={Boolean(presentationBusyKey)}
-                                                        accessibilityRole="button"
-                                                        accessibilityState={{ selected: group.pinned, disabled: Boolean(presentationBusyKey) }}
-                                                        accessibilityLabel={t(group.pinned ? "shared.workspace.unpin_project" : "shared.workspace.pin_project")}
-                                                        hitSlop={4}
-                                                    >
-                                                        {presentationBusyKey === `group:${group.key}` ? (
-                                                            <ActivityIndicator size="small" color={colors.primary} />
-                                                        ) : (
-                                                            <MaterialCommunityIcons
-                                                                name={group.pinned ? "pin" : "pin-outline"}
-                                                                size={19}
-                                                                color={group.pinned ? colors.primary : colors.textMuted}
-                                                            />
-                                                        )}
-                                                    </Pressable>
-                                                ) : null}
-                                                {group.creationBinding ? (
-                                                    <Pressable
-                                                        style={styles.groupCreateButton}
-                                                        onPress={() => onCreateConversationInGroup(group)}
-                                                        disabled={Boolean(creatingGroupKey)}
-                                                        accessibilityRole="button"
-                                                        accessibilityLabel={t("src.components.layout.historydrawer.create_in_workspace", { value0: group.label })}
-                                                        hitSlop={4}
-                                                    >
-                                                        {creatingGroupKey === group.key ? (
-                                                            <ActivityIndicator size="small" color={colors.primary} />
-                                                        ) : (
-                                                            <MaterialCommunityIcons name="plus" size={19} color={colors.textMuted} />
-                                                        )}
-                                                    </Pressable>
+                                                {creatingGroupKey === group.key || presentationBusyKey === `group:${group.key}` ? (
+                                                    <ActivityIndicator size="small" color={colors.primary} style={styles.groupBusy} />
                                                 ) : null}
                                             </View>
 
@@ -353,16 +334,6 @@ export function HistoryDrawer({
                                                                     {formatRelativeTime(item.historySortAt || item.createdAt || "", locale, getEngineNowMs())}
                                                                 </Text>
                                                             </View>
-                                                            <Pressable
-                                                                hitSlop={8}
-                                                                style={styles.deleteButton}
-                                                                onPress={(event) => {
-                                                                    event.stopPropagation();
-                                                                    onDeleteConversation(item);
-                                                                }}
-                                                            >
-                                                                <MaterialCommunityIcons name="trash-can-outline" size={15} color={colors.textSoft} />
-                                                            </Pressable>
                                                         </Pressable>
                                                     );
                                                     })}
@@ -499,12 +470,8 @@ const styles = StyleSheet.create({
         minHeight: 34,
         fontSize: 12,
     },
-    groupCreateButton: {
-        width: 44,
-        height: 44,
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: 14,
+    groupBusy: {
+        marginHorizontal: 12,
     },
     items: {
         gap: 4,
@@ -529,14 +496,6 @@ const styles = StyleSheet.create({
     itemMeta: {
         fontSize: 11,
         marginTop: 2,
-    },
-    deleteButton: {
-        width: 28,
-        height: 28,
-        borderRadius: 14,
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: 0.82,
     },
     itemTitleRow: {
         flexDirection: "row",

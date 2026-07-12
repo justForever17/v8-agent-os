@@ -31,6 +31,9 @@ test("web history items expose a lightweight V8OS session ID context menu", () =
   assert.match(source, /editingSessionId === canonicalSessionId/);
   assert.match(source, /editingGroupKey === group\.key/);
   assert.match(source, /\/api\/workspace-presentations/);
+  assert.match(source, /group-hover\/header:pointer-events-auto/);
+  assert.match(source, /group-hover\/task:pointer-events-auto/);
+  assert.match(source, /pointer-events-none ml-auto flex shrink-0/);
   assert.doesNotMatch(source, /codex:\/\/threads/);
 });
 
@@ -49,6 +52,10 @@ test("phone history entries expose long-press V8OS session ID actions", () => {
   assert.match(historyDrawer, /shared\.conversation\.pin_task/);
   assert.match(historyDrawer, /shared\.workspace\.rename_project/);
   assert.match(historyDrawer, /shared\.workspace\.pin_project/);
+  assert.match(historyDrawer, /openWorkspaceActions\(group\)/);
+  assert.match(historyDrawer, /onCreateConversationInGroup\(group\)/);
+  assert.doesNotMatch(historyDrawer, /style=\{styles\.groupCreateButton\}/);
+  assert.doesNotMatch(historyDrawer, /style=\{styles\.deleteButton\}/);
   assert.match(historyDrawer, /<TextInput/);
   assert.doesNotMatch(combined, /codex:\/\/threads/);
 });

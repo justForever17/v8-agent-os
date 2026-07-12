@@ -198,6 +198,7 @@ def evaluate_supervisor_completion(
     final_text: str = "",
     spec_mode: bool = False,
     spec_brief: Mapping[str, Any] | None = None,
+    spec_has_pending_approval: bool | None = None,
 ) -> SupervisorCompletionDecision:
     normalized_episodes = [dict(item) for item in episodes if isinstance(item, Mapping)]
     normalized_handoffs = {
@@ -273,6 +274,16 @@ def evaluate_supervisor_completion(
                 },
             )
         if blocked_stage or blocked_reason == "approval_required":
+            if spec_has_pending_approval is False:
+                return SupervisorCompletionDecision(
+                    action="fail",
+                    reason="spec_stage_blocked_without_pending_approval",
+                    details={
+                        "specId": brief.get("specId"),
+                        "currentStage": brief.get("currentStage"),
+                        "blockedByApproval": blocked_stage,
+                    },
+                )
             return SupervisorCompletionDecision(
                 action="waiting_approval",
                 reason=blocked_reason or "approval_required",

@@ -344,6 +344,43 @@ def _maybe_stop_for_spec_stage_approval(result: dict[str, Any], *, tool_call_id:
     workspace_path = str(runtime_context.get("workspace_path") or runtime_context.get("workspacePath") or "").strip()
     if not run_id or not session_id:
         return None
+    try:
+        pending_questions = db.list_ask_user_interactions(
+            session_id=session_id,
+            run_id=run_id,
+            status="pending",
+        )
+    except Exception:
+        pending_questions = []
+    active_question = next(
+        (
+            item
+            for item in pending_questions
+            if isinstance(item, dict) and str(item.get("status") or "pending").strip().lower() == "pending"
+        ),
+        None,
+    )
+    if active_question is not None:
+        payload = _spec_broker_payload(
+            ok=False,
+            kind="spec_stage_waiting_active_question",
+            specId=str(result.get("specId") or "").strip(),
+            stage=stage,
+            summary="当前任务仍在等待用户回答一个问题，Spec 文档确认会在回答后再发起。",
+            activeInteractionId=active_question.get("id"),
+            recommendedNextAction="Wait for the active ask_user response, then retry the Spec stage confirmation.",
+        )
+        return Command(
+            goto=END,
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=payload,
+                        tool_call_id=str(tool_call_id or f"spec_broker:{result.get('specId') or ''}:{stage}"),
+                    )
+                ],
+            },
+        )
     spec_id = str(result.get("specId") or "").strip()
     summary = str(result.get("summary") or f"Spec stage '{stage}' is ready for review.").strip()
     spec_brief = result.get("specBrief") if isinstance(result.get("specBrief"), dict) else {}
@@ -866,6 +903,11 @@ def spec_broker(
     It writes and reads Spec contract documents only: `requirements.md` or
     `bugfix.md`, then `design.md`, then `tasks.md`. It never writes final
     deliverables such as source files, SKILL.md, images, or README.md.
+
+    Stage Markdown is a user-facing contract, not an execution log. Do not put
+    absolute workspace paths, internal ids, literal tool-call syntax, approval
+    mechanics, system instructions, or Agent progress narration in the body.
+    Relative project paths are allowed only when the contract needs them.
 
     Engine creates the canonical `specId`; never invent one. If the current run
     is already bound to a Spec, omit `spec_id` or reuse the provided/current

@@ -50,6 +50,37 @@ def test_ask_user_blocks_when_same_session_has_pending_interaction() -> None:
     interrupt_mock.assert_not_called()
 
 
+def test_ask_user_blocks_when_same_run_has_pending_approval() -> None:
+    approval = {
+        "id": "approval-active",
+        "session_id": "session-1",
+        "run_id": "run-1",
+        "approval_kind": "spec_stage_approval",
+        "status": "pending",
+    }
+
+    with patch.object(
+        native_tools,
+        "get_runtime_context",
+        return_value={"session_id": "session-1", "run_id": "run-1"},
+    ), patch.object(
+        native_tools.db,
+        "list_pending_approvals",
+        return_value=[approval],
+    ), patch.object(
+        native_tools.db,
+        "list_ask_user_interactions",
+        return_value=[],
+    ), patch.object(native_tools, "interrupt") as interrupt_mock:
+        result = native_tools.ask_user.func("再问一个问题", tool_call_id="call-new")
+
+    payload = json.loads(result)
+    assert payload["status"] == "blocked_waiting_for_active_approval"
+    assert payload["error"] == "ask_user_blocked_by_active_approval"
+    assert payload["approvalKind"] == "spec_stage_approval"
+    interrupt_mock.assert_not_called()
+
+
 def test_ask_user_reports_existing_pending_for_same_tool_call() -> None:
     pending = {
         "id": "ask_same",

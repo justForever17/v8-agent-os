@@ -137,7 +137,7 @@ class WorkflowLedgerService:
             "queued": "created",
             "running": "running",
             "waiting_approval": "waiting_approval",
-            "waiting_input": "recoverable_failed",
+            "waiting_input": "waiting_input",
             "waiting_external_tool": "waiting_external_tool",
             "paused": "paused",
             "interrupted": "recoverable_failed",
@@ -157,7 +157,7 @@ class WorkflowLedgerService:
             "cancelled": "cancelled",
             "abandoned": "abandoned",
             "interrupted": "interrupted",
-            "waiting_input": "repair_pending",
+            "waiting_input": "waiting_input",
         }.get(run_status, "running")
 
         db.update_workflow_ledger(
@@ -575,7 +575,7 @@ class WorkflowLedgerService:
                 if workflow:
                     db.update_workflow_ledger(
                         workflow["id"],
-                        status=status if status != "waiting_input" else "recoverable_failed",
+                        status=status,
                         recoverable=True,
                         metadata={
                             "reconciledAt": utc_now_iso(),

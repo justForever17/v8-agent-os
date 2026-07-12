@@ -162,7 +162,9 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         )
 
         self.assertIn("Artifact Write Discipline:", content)
-        self.assertIn("Use `write_native_file` for content-bearing project files", content)
+        self.assertIn("Use `write_native_file` for assigned final project artifacts", content)
+        self.assertIn("Spec contract documents", content)
+        self.assertIn("belong exclusively to `spec_broker`", content)
         self.assertIn("Do NOT use `run_system_command`, shell redirection", content)
         self.assertIn("New-Item", content)
         self.assertIn("Empty placeholder files", content)

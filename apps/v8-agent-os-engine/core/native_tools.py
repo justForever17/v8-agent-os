@@ -351,6 +351,35 @@ def ask_user(
     normalized_tool_call_id = str(tool_call_id or "").strip()
 
     if session_id:
+        if run_id:
+            try:
+                pending_approvals = db.list_pending_approvals(
+                    session_id=session_id,
+                    run_id=run_id,
+                    status="pending",
+                )
+            except Exception:
+                pending_approvals = []
+            active_approval = next(
+                (
+                    item
+                    for item in pending_approvals
+                    if isinstance(item, dict) and str(item.get("status") or "pending").strip().lower() == "pending"
+                ),
+                None,
+            )
+            if active_approval is not None:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "status": "blocked_waiting_for_active_approval",
+                        "error": "ask_user_blocked_by_active_approval",
+                        "summary": "当前任务已有一项需要用户确认的内容；请先等待该确认完成。",
+                        "approvalKind": active_approval.get("approval_kind") or active_approval.get("approvalKind"),
+                        "recommendedNextAction": "Wait for the active user confirmation before asking another question.",
+                    },
+                    ensure_ascii=False,
+                )
         if normalized_tool_call_id:
             try:
                 resolved_interactions = db.list_ask_user_interactions(

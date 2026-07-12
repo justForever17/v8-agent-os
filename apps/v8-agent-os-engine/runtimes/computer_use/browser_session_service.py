@@ -140,6 +140,19 @@ class BrowserSessionService:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             raise BrowserSessionError("invalid_session", "sessionId is required")
+        with self._lock:
+            existing_ids = [
+                item.browser_session_id
+                for item in self._sessions.values()
+                if item.session_id == normalized_session_id and item.status != "unavailable"
+            ]
+        for existing_id in existing_ids:
+            try:
+                existing_status = self.public_status(existing_id)
+                if existing_status.get("status") != "unavailable":
+                    return {**existing_status, "reused": True}
+            except Exception:
+                continue
         opened = _record(provider.open_workbench_browser(browser_kind=browser_kind, url=url))
         target_id = str(opened.get("targetId") or "").strip()
         target_port = int(opened.get("targetPort") or 0)

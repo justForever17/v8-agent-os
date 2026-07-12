@@ -2747,10 +2747,10 @@ class StorageManager:
     def get_context_config(self) -> Dict[str, Any]:
         self._ensure_legacy_model_bindings_migrated()
         raw = self.read_json("context_config.json")
-        normalized = normalize_context_policy(raw)
-        if raw != normalized:
-            self.write_json("context_config.json", normalized)
-        return normalized
+        # Runtime reads must remain side-effect free. Historical or unknown
+        # adapter fields are tolerated in storage and are only removed when a
+        # user explicitly saves the supported context policy.
+        return normalize_context_policy(raw)
         
     def save_context_config(self, data: Dict[str, Any]):
         self.write_json("context_config.json", normalize_context_policy(data))

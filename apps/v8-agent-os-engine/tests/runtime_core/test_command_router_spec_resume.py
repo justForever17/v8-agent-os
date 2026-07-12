@@ -672,3 +672,104 @@ def test_spec_approval_resume_failure_restore_is_conditional(monkeypatch):
     assert transitions[0]["status"] == "waiting_approval"
     assert workflow_updates == []
     assert emitted == []
+
+
+def test_spec_rejection_with_feedback_resumes_same_run_for_revision(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+
+    def fake_schedule(request, *, transport, run_id=None):
+        scheduled.append({"request": request, "transport": transport, "run_id": run_id})
+        return run_id
+
+    router.configure(schedule_chat_run=fake_schedule)
+    approval = {
+        "id": "approval_spec_revision",
+        "approval_kind": "spec_stage_approval",
+        "run_id": "run_spec_revision",
+        "request": {
+            "approvalKind": "spec_stage_approval",
+            "specId": "spec_revision",
+            "stage": "requirements",
+            "detailRef": "spec://spec_revision/requirements",
+        },
+    }
+    run_record = {
+        "id": "run_spec_revision",
+        "session_id": "session_spec_revision",
+        "conversation_id": "session_spec_revision",
+        "user_id": "user_demo",
+        "run_type": "chat",
+        "status": "waiting_input",
+        "metadata": {"provider": "doubao", "model": "doubao-seed-2.0-pro"},
+    }
+    monkeypatch.setattr(
+        "erc.command_router.erc_kernel.reject",
+        lambda *_args, **_kwargs: {"approval": approval, "transition_event": {}, "command_event": {}},
+    )
+    monkeypatch.setattr("erc.command_router.db.get_run_record", lambda _run_id: run_record)
+    monkeypatch.setattr(
+        "erc.command_router.erc_kernel.resume_run",
+        lambda *_args, **_kwargs: {"transition_event": {"topic": "run.state.changed"}, "command_event": {"topic": "run.resumed"}},
+    )
+    monkeypatch.setattr(
+        router,
+        "_scope_payload_for_session",
+        lambda _session_id: {
+            "workspace_path": "E:/Projects/test2",
+            "scope_hint": "workspace",
+            "scope_mode": "explicit",
+        },
+    )
+
+    result = router.dispatch_approval_command(
+        RuntimeCommand(
+            topic="approval.reject",
+            approval_id="approval_spec_revision",
+            response={"answer": "删除内部路径和工具语法。", "approved": False},
+        )
+    )
+
+    assert result is not None
+    assert result["resume_scheduled"] is True
+    assert result["spec_revision"] is True
+    assert result["resumed_run_id"] == "run_spec_revision"
+    assert scheduled and scheduled[0]["transport"] == "system_resume"
+    assert scheduled[0]["run_id"] == "run_spec_revision"
+    request = scheduled[0]["request"]
+    assert request.resume_run_id == "run_spec_revision"
+    assert request.data is not None
+    assert request.data.spec_mode is True
+    assert request.data.spec_id == "spec_revision"
+    assert request.resume_value["specRevision"]["feedback"] == "删除内部路径和工具语法。"
+    assert "do not call ask_user again" in request.messages[0].content
+    assert "mode='rewrite_stage'" in request.messages[0].content
+    assert "absolute local paths" in request.messages[0].content
+
+
+def test_spec_rejection_without_feedback_stays_waiting_for_user(monkeypatch):
+    router = RuntimeCommandRouter()
+    scheduled = []
+    router.configure(schedule_chat_run=lambda *args, **kwargs: scheduled.append((args, kwargs)) or "run_spec")
+    approval = {
+        "id": "approval_spec",
+        "approval_kind": "spec_stage_approval",
+        "run_id": "run_spec",
+        "request": {"approvalKind": "spec_stage_approval", "specId": "spec_demo", "stage": "requirements"},
+    }
+    monkeypatch.setattr(
+        "erc.command_router.erc_kernel.reject",
+        lambda *_args, **_kwargs: {"approval": approval, "transition_event": {}, "command_event": {}},
+    )
+
+    result = router.dispatch_approval_command(
+        RuntimeCommand(
+            topic="approval.reject",
+            approval_id="approval_spec",
+            response={"answer": "", "approved": False},
+        )
+    )
+
+    assert result is not None
+    assert "resume_scheduled" not in result
+    assert scheduled == []

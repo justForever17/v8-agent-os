@@ -31,6 +31,7 @@ from core.runtime_projection import (
     project_runtime_timeline_from_events,
     project_pending_approvals,
 )
+from core.time_truth import latest_utc_iso
 from erc.capability_registry import capability_registry
 from erc.chat_canonical_transcript import (
     build_canonical_chat_messages,
@@ -65,7 +66,7 @@ router = APIRouter()
 _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 _NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
 _WEB_SESSION_INDEX_PATH = Path.home() / ".v8-agent-os" / "cache" / "web_session_index.json"
-_WEB_SESSION_INDEX_VERSION = 3
+_WEB_SESSION_INDEX_VERSION = 4
 
 
 def _now_perf_ms() -> float:
@@ -412,6 +413,57 @@ def _web_session_index_payload(records: list[dict]) -> dict:
     }
 
 
+def _overlay_active_run_status(payload: dict) -> dict:
+    """Overlay volatile run truth without rebuilding the durable navigation index."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
+        return payload
+
+    active_by_session: dict[str, dict] = {}
+    for run_record in db.list_active_run_records():
+        session_id = str(run_record.get("session_id") or "").strip()
+        if not session_id:
+            continue
+        current = active_by_session.get(session_id)
+        if current is None or str(run_record.get("started_at") or "") >= str(current.get("started_at") or ""):
+            active_by_session[session_id] = run_record
+
+    if not active_by_session:
+        return payload
+
+    sessions: list[dict] = []
+    for record in payload.get("sessions") or []:
+        if not isinstance(record, dict):
+            continue
+        session_id = str(record.get("sessionId") or record.get("id") or "").strip()
+        run_record = active_by_session.get(session_id)
+        if not run_record:
+            sessions.append(record)
+            continue
+
+        run_status = str(run_record.get("status") or "running").strip().lower() or "running"
+        run_id = str(run_record.get("id") or "").strip() or None
+        run_started_at = run_record.get("started_at")
+        workflow_summary = dict(record.get("workflowSummary") or {})
+        workflow_summary["workflowStatus"] = run_status
+        sessions.append(
+            {
+                **record,
+                "status": run_status,
+                "workflowStatus": run_status,
+                "currentRunId": run_id,
+                "lastRunId": run_id,
+                "startedAt": run_started_at or record.get("startedAt"),
+                "endedAt": None,
+                "lastActivityAt": latest_utc_iso(record.get("lastActivityAt"), run_started_at),
+                "recoverable": run_status in {"waiting_input", "waiting_approval", "waiting_external_tool", "paused"},
+                "hasPendingApproval": bool(record.get("hasPendingApproval")) or run_status == "waiting_approval",
+                "workflowSummary": workflow_summary,
+            }
+        )
+
+    return {**payload, "sessions": sessions}
+
+
 def _projects_registry_stamp() -> str:
     stamps: list[str] = []
     for filename in ("projects.json", "config.json"):
@@ -478,7 +530,7 @@ async def get_sessions_quick_index(force: int = Query(default=0)):
         payload = None if force else _read_web_session_index_payload()
         if payload is None:
             payload = _rebuild_web_session_index()
-        return payload
+        return _overlay_active_run_status(payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

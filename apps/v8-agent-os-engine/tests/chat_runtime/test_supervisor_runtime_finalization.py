@@ -617,6 +617,26 @@ def test_completion_gate_keeps_spec_stage_waiting_for_approval():
     assert decision.reason == "approval_required"
 
 
+def test_completion_gate_rejects_blocked_spec_without_real_pending_approval():
+    decision = evaluate_supervisor_completion(
+        spec_mode=True,
+        spec_has_pending_approval=False,
+        spec_brief={
+            "specId": "spec_demo",
+            "currentStage": "requirements",
+            "pipelineControl": {
+                "runtimeExecutionAllowed": False,
+                "blockedByApproval": "requirements",
+                "blockedReason": "approval_required",
+            },
+        },
+        final_text="我会继续修改。",
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "spec_stage_blocked_without_pending_approval"
+
+
 def test_completion_gate_allows_fast_approval_continuation_window():
     decision = evaluate_supervisor_completion(
         spec_mode=True,
@@ -802,6 +822,10 @@ def test_finalize_success_waits_for_spec_stage_approval_from_command_tool_messag
         patch("runtimes.chat.runtime.db.list_runtime_episode_handoffs", return_value=[]),
         patch.object(ChatRuntime, "_completion_final_text", return_value="需求文档已准备好，等待审批。"),
         patch.object(ChatRuntime, "_completion_spec_brief", return_value=completion_brief),
+        patch(
+            "runtimes.chat.runtime.db.list_pending_approvals",
+            return_value=[{"approval_kind": "spec_stage_approval", "status": "pending"}],
+        ),
         patch("runtimes.chat.runtime.spec_service.mark_delivered") as mark_delivered,
     ):
         result = ChatRuntime().finalize_success_run(chat_run)

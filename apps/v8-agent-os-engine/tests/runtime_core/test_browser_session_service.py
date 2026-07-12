@@ -10,11 +10,13 @@ from runtimes.computer_use.runtime import ComputerUseRuntime
 class _Provider:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict, dict | None]] = []
+        self.open_calls = 0
         self.targets = [
             {"targetId": "cdp-target-1", "title": "Example", "url": "https://example.com"},
         ]
 
     def open_workbench_browser(self, **_kwargs):
+        self.open_calls += 1
         return {
             "targetId": "cdp-target-1",
             "targetPort": 9222,
@@ -74,6 +76,19 @@ def test_public_status_uses_opaque_ids_and_emits_workbench_document(service):
     document = emitted[0][1]["document"]
     assert document["subjectRef"]["browserSessionId"] == status["browserSessionId"]
     assert document["lifecycle"] == "runtime"
+
+
+def test_create_session_reuses_ready_browser_for_same_v8_session(service):
+    instance, emitted = service
+    provider = _Provider()
+
+    first = _create(instance, provider)
+    second = _create(instance, provider)
+
+    assert second["browserSessionId"] == first["browserSessionId"]
+    assert second["reused"] is True
+    assert provider.open_calls == 1
+    assert len(emitted) == 1
 
 
 def test_ws_ticket_is_one_time_and_bound_to_browser_session(service):

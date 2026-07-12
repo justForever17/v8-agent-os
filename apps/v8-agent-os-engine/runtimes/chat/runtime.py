@@ -1748,6 +1748,110 @@ class ChatRuntime:
         )
         return any(marker in normalized for marker in markers)
 
+    @staticmethod
+    def _detect_explicit_spec_mode_opt_out(text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if not normalized:
+            return False
+        patterns = (
+            r"(?:不要|不需要|无需|禁止|禁用|关闭|退出)\s*(?:开启|打开|进入|启用|使用)?\s*(?:spec\s*mode|spec\s*模式|规格模式)",
+            r"\b(?:disable|without|no)\s+(?:the\s+)?spec(?:ification)?\s+mode\b",
+            r"\bdo\s+not\s+(?:enable|start|enter|use|open)\s+(?:the\s+)?spec(?:ification)?\s+mode\b",
+            r"\bdon't\s+(?:enable|start|enter|use|open)\s+(?:the\s+)?spec(?:ification)?\s+mode\b",
+        )
+        return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+
+    @classmethod
+    def _detect_explicit_spec_mode_request(cls, text: str) -> bool:
+        normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if not normalized or cls._detect_explicit_spec_mode_opt_out(normalized):
+            return False
+        patterns = (
+            r"(?:开启|打开|进入|启用|使用|切换到|按)\s*(?:spec\s*mode|spec\s*模式|规格模式)",
+            r"(?:开启|进入|使用)\s*规格文档(?:流程|模式)?",
+            r"\b(?:enable|start|enter|use|open|turn on)\s+(?:the\s+)?spec(?:ification)?\s+mode\b",
+        )
+        return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+
+    @classmethod
+    def _should_continue_recent_spec_mode(cls, session_id: str, text: str) -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        normalized = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if (
+            not normalized_session_id
+            or not normalized
+            or cls._detect_explicit_spec_mode_opt_out(normalized)
+        ):
+            return False
+        continuation_markers = (
+            "继续",
+            "接着",
+            "恢复",
+            "刚才",
+            "此前",
+            "上一阶段",
+            "已信任",
+            "已经信任",
+            "已确认",
+            "continue",
+            "resume",
+        )
+        spec_markers = (
+            "spec",
+            "规格",
+            "requirements",
+            "design",
+            "tasks",
+            "需求文档",
+            "设计文档",
+            "任务文档",
+        )
+        if not any(marker in normalized for marker in continuation_markers):
+            return False
+        if not any(marker in normalized for marker in spec_markers):
+            return False
+        try:
+            rows = db.get_chat_canonical_messages(normalized_session_id)
+        except Exception:
+            return False
+        recent_user_rows = [
+            row
+            for row in reversed(list(rows or []))
+            if isinstance(row, dict) and str(row.get("role") or "").strip().lower() == "user"
+        ][:6]
+        for row in recent_user_rows:
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if metadata.get("specMode") is True:
+                return True
+        return False
+
+    @staticmethod
+    def _resume_run_spec_session_id(resume_run_id: str) -> str:
+        normalized_run_id = str(resume_run_id or "").strip()
+        if not normalized_run_id:
+            return ""
+        try:
+            run_record = db.get_run_record(normalized_run_id) or {}
+        except Exception:
+            return ""
+        session_id = str(run_record.get("session_id") or run_record.get("sessionId") or "").strip()
+        if not session_id:
+            return ""
+        try:
+            rows = db.get_chat_canonical_messages(session_id)
+        except Exception:
+            return ""
+        for row in reversed(list(rows or [])):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("run_id") or row.get("runId") or "").strip() != normalized_run_id:
+                continue
+            if str(row.get("role") or "").strip().lower() != "user":
+                continue
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            return session_id if metadata.get("specMode") is True else ""
+        return ""
+
     def _normalize_spec_command(self, request: ChatRequest) -> dict[str, Any]:
         request_data = request.data
         selection = getattr(request_data, "spec_command", None) if request_data else None
@@ -1780,6 +1884,8 @@ class ChatRuntime:
         planner_mode = self._normalize_planner_mode(requested_planner_mode, task_planning_mode=task_planning_mode)
         engineering_mode = self._normalize_engineering_mode(getattr(request_data, "engineering_mode", None) if request_data else None)
         latest_user = self._latest_user_content(request)
+        if not spec_mode and self._detect_explicit_spec_mode_request(latest_user):
+            spec_mode = True
         explicit_engineering_requested = self._detect_explicit_engineering_runtime_request(latest_user)
         planner_diagnostics = self._detect_planner_intent(latest_user)
         if explicit_engineering_requested:
@@ -1937,6 +2043,7 @@ class ChatRuntime:
                             "Spec approval is a blocking user/client governance event, not a Supervisor decision. Never self-approve a Spec stage.",
                             "Before the first write of each main stage, ask at least one user-facing clarification with `ask_user` using `specContext.kind='spec_clarification'`; reuse same-stage clarification records only for simple revisions.",
                             "When drafting a Spec stage, pass the actual Markdown document in `spec_broker(content=...)`; a scaffold without content is not enough for approval-quality delivery.",
+                            "The Markdown body is a user-facing contract, not an execution diary. Do not include absolute workspace paths, internal IDs, literal tool-call syntax, approval mechanics, system instructions, or narration about what the Agent is doing. Use relative project paths only when the document itself needs them.",
                             "Spec documents MUST be written by a real `spec_broker` tool call. Do not use `write_native_file`, `run_system_command`, shell commands, or textual pseudo tool syntax such as DSML/XML blocks for Spec documents.",
                             "If a real `spec_broker` tool call is unavailable or fails, report `recoverable_failed` with the exact reason instead of pretending a file was written.",
                             "SpecBrief linkedSections may include checklist/annex evidence; summarize those for the user instead of dumping raw JSON.",
@@ -4187,6 +4294,39 @@ class ChatRuntime:
             explicit_subagent_families,
             spec_mode,
         ) = self._resolve_request_context(request)
+        resume_spec_session_id = ""
+        if not spec_mode and request.resume_run_id:
+            resume_spec_session_id = self._resume_run_spec_session_id(request.resume_run_id)
+            if resume_spec_session_id:
+                spec_mode = True
+                planner_intent_diagnostics = {
+                    **planner_intent_diagnostics,
+                    "matched": True,
+                    "signals": list(
+                        dict.fromkeys(
+                            [
+                                *list(planner_intent_diagnostics.get("signals") or []),
+                                "spec_mode_resume",
+                            ]
+                        )
+                    ),
+                    "reason": "spec_mode_governance_resume",
+                }
+        if not spec_mode and self._should_continue_recent_spec_mode(session_id, self._latest_user_content(request)):
+            spec_mode = True
+            planner_intent_diagnostics = {
+                **planner_intent_diagnostics,
+                "matched": True,
+                "signals": list(
+                    dict.fromkeys(
+                        [
+                            *list(planner_intent_diagnostics.get("signals") or []),
+                            "spec_mode_continuation",
+                        ]
+                    )
+                ),
+                "reason": "recent_spec_mode_continuation",
+            }
         plugin_references = self._normalize_plugin_references(request)
         spec_command = self._normalize_spec_command(request)
         live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
@@ -4255,8 +4395,11 @@ class ChatRuntime:
             spec_continuation = request.resume_value.get("specContinuation")
             if isinstance(spec_continuation, dict):
                 spec_id = str(spec_continuation.get("specId") or spec_continuation.get("spec_id") or "").strip()
+            spec_revision = request.resume_value.get("specRevision")
+            if not spec_id and isinstance(spec_revision, dict):
+                spec_id = str(spec_revision.get("specId") or spec_revision.get("spec_id") or "").strip()
         if spec_mode and not spec_id:
-            spec_id = self._latest_session_spec_id(session_id)
+            spec_id = self._latest_session_spec_id(resume_spec_session_id or session_id)
 
         return ChatPreparedRequest(
             request=request,
@@ -5321,6 +5464,17 @@ class ChatRuntime:
                 "specContinuation": spec_continuation,
                 **({"specNextStage": next_stage, "spec_next_stage": next_stage} if next_stage else {}),
             }
+        spec_revision = (
+            dict(resume_value.get("specRevision") or {})
+            if isinstance(resume_value.get("specRevision"), dict)
+            else {}
+        )
+        if spec_revision:
+            current_route_context = {
+                **current_route_context,
+                "specRevision": spec_revision,
+                "spec_revision": spec_revision,
+            }
         runtime_handoff_resume = (
             dict(resume_value.get("runtimeEpisodeHandoff") or {})
             if isinstance(resume_value.get("runtimeEpisodeHandoff"), dict)
@@ -5737,6 +5891,37 @@ class ChatRuntime:
         continuation = resume_value.get("specContinuation")
         return isinstance(continuation, dict) and str(continuation.get("specId") or "").strip() != ""
 
+    @staticmethod
+    def _is_spec_revision_resume(chat_run: ChatRunContext) -> bool:
+        if not chat_run.is_resume_request:
+            return False
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        revision = resume_value.get("specRevision")
+        return (
+            isinstance(revision, dict)
+            and str(revision.get("specId") or "").strip() != ""
+            and str(revision.get("stage") or "").strip() != ""
+            and str(revision.get("feedback") or "").strip() != ""
+        )
+
+    @staticmethod
+    def _has_pending_spec_stage_approval(chat_run: ChatRunContext) -> bool:
+        try:
+            rows = db.list_pending_approvals(run_id=chat_run.active_run_id, status="pending")
+        except Exception:
+            return False
+        for row in list(rows or []):
+            request = row.get("request") if isinstance(row.get("request"), dict) else {}
+            kind = str(
+                row.get("approval_kind")
+                or request.get("approvalKind")
+                or request.get("approval_kind")
+                or ""
+            ).strip().lower()
+            if kind == "spec_stage_approval":
+                return True
+        return False
+
     async def create_guidance_bundle(
         self,
         *,
@@ -5860,9 +6045,72 @@ class ChatRuntime:
         runner_bundle.diagnostics = diagnostics
         return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
 
+    async def create_spec_revision_discipline_bundle(
+        self,
+        *,
+        chat_run: ChatRunContext,
+        previous_bundle: ChatExecutionBundle,
+    ) -> ChatExecutionBundle | None:
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        revision = resume_value.get("specRevision") if isinstance(resume_value.get("specRevision"), dict) else {}
+        spec_id = str(revision.get("specId") or "").strip()
+        stage = str(revision.get("stage") or "").strip()
+        if not spec_id or not stage:
+            return None
+        snapshot = await supervisor_runner.get_state_snapshot(previous_bundle.runner_bundle)
+        snapshot_dict = snapshot if isinstance(snapshot, dict) else {}
+        state_messages = list(snapshot_dict.get("messages") or [])
+        if not state_messages:
+            state_messages = list(chat_run.lc_messages or [])
+        if not state_messages:
+            return None
+        state_messages.append(
+            HumanMessage(
+                content=(
+                    "[Spec Revision Discipline Correction]\n"
+                    "The prior Supervisor turn ended without creating a real pending Spec approval. "
+                    "Do not narrate another plan and do not stop at the old blocked stage. "
+                    "The user already supplied the revision feedback, so do not call ask_user. "
+                    "Call the required tools now: if the active Memory Recall Gate still requires a first call, "
+                    "perform one bounded memory_broker recall, then immediately call the real "
+                    f"spec_broker(mode='rewrite_stage', spec_id='{spec_id}', stage='{stage}', "
+                    f"content='<complete revised {stage}.md markdown>'). "
+                    "A successful turn must create a new pending approval record."
+                ),
+                id=f"spec_revision_discipline_{uuid.uuid4().hex}",
+                additional_kwargs={"v8os_spec_revision_discipline": dict(revision)},
+            )
+        )
+        runner_bundle = await supervisor_runner.create_execution_bundle(
+            config=chat_run.request.config,
+            messages=state_messages,
+            session_id=chat_run.session_id,
+            planner_plan=snapshot_dict.get("planner_plan") if isinstance(snapshot_dict.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
+            planner_dispatch_status=snapshot_dict.get("planner_dispatch_status") if isinstance(snapshot_dict.get("planner_dispatch_status"), dict) else None,
+            engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
+            task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
+            explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
+            context_mentions=snapshot_dict.get("context_mentions") if isinstance(snapshot_dict.get("context_mentions"), list) else chat_run.prepared.context_mentions,
+            context_session_refs=snapshot_dict.get("context_session_refs") if isinstance(snapshot_dict.get("context_session_refs"), list) else list(getattr(chat_run.prepared, "context_session_refs", None) or []),
+            session_coordination=snapshot_dict.get("session_coordination") if isinstance(snapshot_dict.get("session_coordination"), dict) else dict(getattr(chat_run.prepared, "session_coordination_message", None) or {}),
+            recursion_limit=self._recursion_limit(),
+            transport=chat_run.transport,
+        )
+        diagnostics = dict(runner_bundle.diagnostics or {})
+        diagnostics.update(
+            {
+                "specRevisionDiscipline": True,
+                "specId": spec_id,
+                "stage": stage,
+                "messageCount": len(state_messages),
+            }
+        )
+        runner_bundle.diagnostics = diagnostics
+        return ChatExecutionBundle(run_handle=chat_run.run_handle, runner_bundle=runner_bundle)
+
     async def resolve_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         if chat_run.is_resume_request:
-            if self._is_spec_continuation_resume(chat_run):
+            if self._is_spec_continuation_resume(chat_run) or self._is_spec_revision_resume(chat_run):
                 return await self.create_execution_bundle(chat_run=chat_run)
             return await self.create_resume_bundle(chat_run=chat_run)
         return await self.create_execution_bundle(chat_run=chat_run)
@@ -10391,6 +10639,11 @@ class ChatRuntime:
             final_text=self._completion_final_text(chat_run, stream_state),
             spec_mode=bool(getattr(chat_run.prepared, "spec_mode", False)),
             spec_brief=completion_spec_brief,
+            spec_has_pending_approval=(
+                self._has_pending_spec_stage_approval(chat_run)
+                if bool(getattr(chat_run.prepared, "spec_mode", False))
+                else None
+            ),
         )
         if decision.action in {"waiting_input", "waiting_approval"}:
             wait_status = "waiting_approval" if decision.action == "waiting_approval" else "waiting_input"
@@ -10750,6 +11003,10 @@ class ChatRuntime:
         continuation_spec_id = str(spec_continuation.get("specId") or spec_continuation.get("spec_id") or "").strip()
         if continuation_spec_id and not spec_id:
             spec_id = continuation_spec_id
+        spec_revision = resume_value.get("specRevision") if isinstance(resume_value.get("specRevision"), dict) else {}
+        revision_spec_id = str(spec_revision.get("specId") or spec_revision.get("spec_id") or "").strip()
+        if revision_spec_id and not spec_id:
+            spec_id = revision_spec_id
         if spec_id:
             context["spec_id"] = spec_id
             context["specId"] = spec_id
@@ -10761,6 +11018,8 @@ class ChatRuntime:
             if next_stage:
                 context["spec_next_stage"] = next_stage
                 context["specNextStage"] = next_stage
+        if spec_revision:
+            context["specRevision"] = dict(spec_revision)
         if chat_run.prepared.live_audit_context:
             context["live_audit"] = dict(chat_run.prepared.live_audit_context)
         context["workspace_binding"] = build_workspace_binding(context, runtime_kind="chat").as_dict()
@@ -10991,6 +11250,7 @@ class ChatRuntime:
             continuation_reason = ""
             continuation_bundle: ChatExecutionBundle | None = None
             last_execution_bundle: ChatExecutionBundle | None = None
+            spec_revision_discipline_count = 0
             max_continuations = self._max_graph_continuations()
             while True:
                 execution_bundle = continuation_bundle or await self.resolve_execution_bundle(chat_run=chat_run)
@@ -11164,6 +11424,29 @@ class ChatRuntime:
                             break
                         continuation_bundle = coordination_bundle
                         continue
+                    if (
+                        self._is_spec_revision_resume(chat_run)
+                        and not self._has_pending_spec_stage_approval(chat_run)
+                        and spec_revision_discipline_count < 1
+                    ):
+                        discipline_bundle = await self.create_spec_revision_discipline_bundle(
+                            chat_run=chat_run,
+                            previous_bundle=execution_bundle,
+                        )
+                        if discipline_bundle is not None:
+                            spec_revision_discipline_count += 1
+                            continuation_bundle = discipline_bundle
+                            chat_run.emit_runtime_event(
+                                "run.spec_revision_discipline.scheduled",
+                                {
+                                    "attempt": spec_revision_discipline_count,
+                                    "reason": "spec_revision_missing_pending_approval",
+                                    "summary": "文档修改回合没有生成新的待确认文档，Supervisor 正在受控纠正一次。",
+                                },
+                                agent_id=None,
+                                node="spec_revision_discipline",
+                            )
+                            continue
                     break
                 except GraphStreamIdleTimeoutError as exc:
                     if str(getattr(exc, "phase", "") or "") != "tool_wait":

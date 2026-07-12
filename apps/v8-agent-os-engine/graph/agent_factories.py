@@ -377,7 +377,8 @@ def _artifact_write_discipline_lines(task_brief: dict | None) -> list[str]:
     lines = [
         "",
         "Artifact Write Discipline:",
-        "- Use `write_native_file` for content-bearing project files, including Markdown, source code, Spec-derived artifacts, SKILL.md, and references/** documents.",
+        "- Use `write_native_file` for assigned final project artifacts, including Markdown, source code, SKILL.md, and references/** documents.",
+        "- Never author the canonical Spec contract documents (`requirements.md`, `design.md`, or `tasks.md`) with `write_native_file`; those stages belong exclusively to `spec_broker` before runtime execution is approved.",
         "- Do NOT use `run_system_command`, shell redirection, `echo`, `New-Item`, `Set-Content`, or `Out-File` to create or populate artifact content files.",
         "- `run_system_command` is allowed for directory creation, listing, and verification commands only; it is not an artifact authoring tool.",
         "- Empty placeholder files, one-line stubs, or files without required source markers do not satisfy the acceptance contract.",

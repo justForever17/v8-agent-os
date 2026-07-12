@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 from uuid import uuid4
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 from core.database import db
@@ -16,6 +16,97 @@ from runtimes.chat.runtime import ChatRuntime, PlannerPlanPayload
 
 
 class ChatPlannerModeTests(unittest.TestCase):
+    def test_spec_revision_resume_starts_a_fresh_supervisor_turn(self):
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(
+            is_resume_request=True,
+            request=ChatRequest(
+                messages=[ChatMessage(role="user", content="[Spec Document Revision]")],
+                data=ChatRequestData(specMode=True, specId="spec_revision"),
+                resume_run_id="run_revision",
+                resume_value={
+                    "specRevision": {
+                        "specId": "spec_revision",
+                        "stage": "requirements",
+                        "feedback": "删除内部路径。",
+                    }
+                },
+            ),
+        )
+        expected = object()
+        runtime.create_execution_bundle = AsyncMock(return_value=expected)
+        runtime.create_resume_bundle = AsyncMock()
+
+        resolved = asyncio.run(runtime.resolve_execution_bundle(chat_run=chat_run))
+
+        self.assertIs(resolved, expected)
+        runtime.create_execution_bundle.assert_awaited_once_with(chat_run=chat_run)
+        runtime.create_resume_bundle.assert_not_awaited()
+
+    def test_spec_revision_discipline_bundle_injects_one_required_tool_correction(self):
+        runtime = ChatRuntime()
+        runtime._recursion_limit = lambda: 50
+        chat_run = SimpleNamespace(
+            request=ChatRequest(
+                messages=[ChatMessage(role="user", content="[Spec Document Revision]")],
+                config=EngineConfig(provider="openai", model_name="gpt-test"),
+                resume_value={
+                    "specRevision": {
+                        "specId": "spec_revision",
+                        "stage": "requirements",
+                        "feedback": "删除内部路径。",
+                    }
+                },
+            ),
+            lc_messages=[ChatMessage(role="user", content="revision")],
+            session_id="session_revision",
+            transport="system_resume",
+            run_handle=object(),
+            prepared=SimpleNamespace(
+                planner_plan=None,
+                engineering_context_pack=None,
+                task_shape_hint=None,
+                explicit_subagent_families=[],
+                context_mentions=[],
+                context_session_refs=[],
+                session_coordination_message=None,
+            ),
+        )
+        runner_bundle = SimpleNamespace(diagnostics={})
+        with (
+            patch(
+                "runtimes.chat.runtime.supervisor_runner.get_state_snapshot",
+                new=AsyncMock(return_value={"messages": [ChatMessage(role="assistant", content="I will revise.")]}),
+            ),
+            patch(
+                "runtimes.chat.runtime.supervisor_runner.create_execution_bundle",
+                new=AsyncMock(return_value=runner_bundle),
+            ) as create_bundle,
+        ):
+            result = asyncio.run(
+                runtime.create_spec_revision_discipline_bundle(
+                    chat_run=chat_run,
+                    previous_bundle=SimpleNamespace(runner_bundle=object()),
+                )
+            )
+
+        self.assertIsNotNone(result)
+        correction = create_bundle.await_args.kwargs["messages"][-1]
+        self.assertIn("without creating a real pending Spec approval", correction.content)
+        self.assertIn("mode='rewrite_stage'", correction.content)
+        self.assertTrue(runner_bundle.diagnostics["specRevisionDiscipline"])
+
+    def test_pending_spec_approval_truth_ignores_rejected_rows(self):
+        runtime = ChatRuntime()
+        chat_run = SimpleNamespace(active_run_id="run_spec")
+        with patch(
+            "runtimes.chat.runtime.db.list_pending_approvals",
+            return_value=[{"approval_kind": "spec_stage_approval", "status": "pending"}],
+        ):
+            self.assertTrue(runtime._has_pending_spec_stage_approval(chat_run))
+        with patch("runtimes.chat.runtime.db.list_pending_approvals", return_value=[]):
+            self.assertFalse(runtime._has_pending_spec_stage_approval(chat_run))
+
     def test_model_profile_data_resolves_per_run_engine_config(self):
         runtime = ChatRuntime()
         request = ChatRequest(
@@ -852,6 +943,101 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("spec_mode", diagnostics.get("signals") or [])
         self.assertTrue(rest[-1])
 
+    def test_explicit_natural_language_activates_spec_mode(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="开启 Spec Mode，为当前工作区编写需求文档。")],
+        )
+
+        resolved = runtime._resolve_request_context(request)
+
+        self.assertTrue(resolved[-1])
+        self.assertIn("spec_mode", resolved[4].get("signals") or [])
+
+    def test_natural_language_spec_mode_negation_does_not_activate(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            messages=[ChatMessage(role="user", content="不要开启 Spec Mode，直接解释现有代码即可。")],
+        )
+
+        resolved = runtime._resolve_request_context(request)
+
+        self.assertFalse(resolved[-1])
+
+    def test_recent_spec_mode_is_inherited_only_for_bounded_continuation(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            session_id="session-spec-trust-continuation",
+            messages=[ChatMessage(role="user", content="工作区已信任，请继续刚才的 requirements 阶段。")],
+        )
+        canonical_rows = [
+            {
+                "role": "user",
+                "metadata": {"specMode": True},
+                "content_text": "开启 Spec Mode，为当前工作区编写需求文档。",
+            }
+        ]
+
+        with (
+            patch("runtimes.chat.runtime.db.get_chat_canonical_messages", return_value=canonical_rows),
+            patch.object(ChatRuntime, "_latest_session_spec_id", return_value=""),
+        ):
+            prepared = runtime.prepare_request(request)
+
+        self.assertTrue(prepared.spec_mode)
+        self.assertIn("spec_mode_continuation", prepared.planner_intent_diagnostics.get("signals") or [])
+
+    def test_recent_spec_mode_is_not_inherited_for_unrelated_new_task(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            session_id="session-spec-unrelated-task",
+            messages=[ChatMessage(role="user", content="解释一下这个函数的返回值。")],
+        )
+        canonical_rows = [
+            {
+                "role": "user",
+                "metadata": {"specMode": True},
+                "content_text": "开启 Spec Mode，为当前工作区编写需求文档。",
+            }
+        ]
+
+        with patch("runtimes.chat.runtime.db.get_chat_canonical_messages", return_value=canonical_rows):
+            prepared = runtime.prepare_request(request)
+
+        self.assertFalse(prepared.spec_mode)
+
+    def test_governance_resume_preserves_spec_mode_and_current_spec(self):
+        runtime = ChatRuntime()
+        request = ChatRequest(
+            session_id="session-spec-resume",
+            resume_run_id="run-spec-resume",
+            messages=[ChatMessage(role="assistant", content="等待用户确认")],
+            resume_value={"answer": "是，直接起草"},
+        )
+        canonical_rows = [
+            {
+                "role": "user",
+                "run_id": "run-spec-resume",
+                "metadata": {"specMode": True},
+                "content_text": "开启 Spec Mode。",
+            }
+        ]
+
+        with (
+            patch(
+                "runtimes.chat.runtime.db.get_run_record",
+                return_value={"id": "run-spec-resume", "session_id": "session-spec-resume"},
+            ),
+            patch("runtimes.chat.runtime.db.get_chat_canonical_messages", return_value=canonical_rows),
+            patch.object(ChatRuntime, "_latest_session_spec_id", return_value="spec-resume-current") as latest_spec,
+        ):
+            prepared = runtime.prepare_request(request)
+
+        self.assertTrue(prepared.spec_mode)
+        self.assertEqual(prepared.spec_id, "spec-resume-current")
+        self.assertIn("spec_mode_resume", prepared.planner_intent_diagnostics.get("signals") or [])
+        latest_spec.assert_called_once_with("session-spec-resume")
+
     def test_spec_broker_hidden_until_spec_mode(self):
         tools = [
             SimpleNamespace(name="ask_user"),
@@ -1047,6 +1233,8 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertIn("fetch_skill_instructions(skill_name='skill-creator'", content)
         self.assertIn("spec_broker", content)
         self.assertIn("mode='write_stage'", content)
+        self.assertIn("clean user-facing contract", content)
+        self.assertIn("absolute workspace paths", content)
         self.assertIn("You may use `memory_broker`, `research_broker`, or `web_broker`", content)
         self.assertIn("do not call Delegation or assume subagents can spawn grandchildren", content)
         self.assertIn("Do not call `runtime_broker`", content)

@@ -177,6 +177,70 @@ def test_run_transition_to_non_terminal_clears_terminal_error_state():
         assert resumed["finished_at"] is None
 
 
+def test_terminal_run_transition_cancels_only_its_pending_human_actions():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = DatabaseManager(Path(temp_dir) / "state.db")
+        db.create_or_update_session("s1", "demo", user_id="user")
+        db.create_run_record("run-terminal", "s1", run_type="chat", status="running")
+        db.create_run_record("run-other", "s1", run_type="chat", status="running")
+        db.add_pending_approval(
+            "approval-terminal",
+            "s1",
+            "run-terminal",
+            "spec_stage_approval",
+            "pending",
+            {"stage": "requirements"},
+        )
+        db.add_pending_approval(
+            "approval-other",
+            "s1",
+            "run-other",
+            "spec_stage_approval",
+            "pending",
+            {"stage": "design"},
+        )
+        db.add_ask_user_interaction(
+            interaction_id="ask-terminal",
+            session_id="s1",
+            run_id="run-terminal",
+            question="需要确认",
+            status="pending",
+        )
+        db.add_ask_user_interaction(
+            interaction_id="ask-other",
+            session_id="s1",
+            run_id="run-other",
+            question="另一个运行的问题",
+            status="pending",
+        )
+
+        db.update_run_record("run-terminal", status="cancelled")
+
+        assert db.get_pending_approval("approval-terminal")["status"] == "cancelled"
+        assert db.get_ask_user_interaction("ask-terminal")["status"] == "cancelled"
+        assert db.get_pending_approval("approval-other")["status"] == "pending"
+        assert db.get_ask_user_interaction("ask-other")["status"] == "pending"
+
+
+def test_completed_run_transition_does_not_erase_pending_governance():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db = DatabaseManager(Path(temp_dir) / "state.db")
+        db.create_or_update_session("s1", "demo", user_id="user")
+        db.create_run_record("run-completed", "s1", run_type="chat", status="running")
+        db.add_pending_approval(
+            "approval-completed",
+            "s1",
+            "run-completed",
+            "spec_stage_approval",
+            "pending",
+            {"stage": "requirements"},
+        )
+
+        db.update_run_record("run-completed", status="completed")
+
+        assert db.get_pending_approval("approval-completed")["status"] == "pending"
+
+
 def test_retention_prunes_old_checkpoints_but_keeps_active_thread(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)

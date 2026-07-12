@@ -132,6 +132,30 @@ async def create_workbench_browser_session(session_id: str, body: dict[str, Any]
         raise _browser_session_http_error(exc) from exc
 
 
+@router.post("/sessions/{session_id}/workbench/browser/prepare")
+async def prepare_workbench_browser(session_id: str, body: dict[str, Any] = Body(default={})):
+    try:
+        if not str(session_id or "").strip():
+            raise ValueError("sessionId is required")
+        runtime = _computer_use_runtime()
+        provider_factory = getattr(runtime, "workbench_browser_provider", None)
+        provider = provider_factory() if callable(provider_factory) else None
+        if provider is None:
+            raise RuntimeError("Computer Use browser automation provider is unavailable")
+        result = await asyncio.to_thread(
+            provider.prepare_workbench_browser,
+            browser_kind=str(body.get("browserKind") or "chrome"),
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "ready": bool(result.get("ready")),
+            "browserKind": str(result.get("browserKind") or "chromium"),
+            "managedHeadless": bool(result.get("managedHeadless")),
+        }
+    except Exception as exc:
+        raise _browser_session_http_error(exc) from exc
+
+
 @router.get("/workbench/browser-sessions/{browser_session_id}")
 async def get_workbench_browser_session(browser_session_id: str):
     try:

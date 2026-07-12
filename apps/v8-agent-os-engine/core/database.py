@@ -2621,6 +2621,45 @@ class DatabaseManager:
 
         self._run_write_with_retry(_write)
 
+    @staticmethod
+    def _cancel_pending_human_actions_for_run(conn: sqlite3.Connection, run_id: str) -> None:
+        """Close unresolved human actions when their owning run is aborted.
+
+        This is intentionally scoped to the exact run. Historical rows from
+        other runs remain untouched. A completed transition deliberately does
+        not erase pending governance; completion gates must first resolve or
+        move the run into a waiting state.
+        """
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return
+        cancelled_response = json.dumps(
+            {
+                "status": "cancelled",
+                "reason": "owning_run_terminal",
+            },
+            ensure_ascii=False,
+        )
+        conn.execute(
+            '''
+            UPDATE pending_approvals
+            SET status = 'cancelled',
+                response_json = COALESCE(response_json, ?),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE run_id = ? AND status = 'pending'
+            ''',
+            (cancelled_response, normalized_run_id),
+        )
+        conn.execute(
+            '''
+            UPDATE ask_user_interactions
+            SET status = 'cancelled',
+                resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP)
+            WHERE run_id = ? AND status = 'pending'
+            ''',
+            (normalized_run_id,),
+        )
+
     def update_run_record(
         self,
         run_id: str,
@@ -2660,6 +2699,8 @@ class DatabaseManager:
                         run_id,
                     ),
                 )
+                if status in {"failed", "cancelled"}:
+                    self._cancel_pending_human_actions_for_run(conn, run_id)
                 conn.commit()
 
         self._run_write_with_retry(_write)
@@ -2721,6 +2762,8 @@ class DatabaseManager:
                         run_id,
                     ),
                 )
+                if status in {"failed", "cancelled"}:
+                    self._cancel_pending_human_actions_for_run(conn, run_id)
                 conn.commit()
                 refreshed = dict(conn.execute("SELECT * FROM run_records WHERE id = ?", (run_id,)).fetchone() or {})
                 return {"updated": True, "run_record": refreshed, "previousStatus": current_status}

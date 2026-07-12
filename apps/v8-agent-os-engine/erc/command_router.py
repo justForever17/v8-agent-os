@@ -144,7 +144,14 @@ class RuntimeCommandRouter:
                     result["resume_error"] = reason
             return result
         if topic == "approval.reject":
-            return erc_kernel.reject(approval_id, response=command.response)
+            result = erc_kernel.reject(approval_id, response=command.response)
+            if result:
+                approval = result.get("approval") or {}
+                if self._approval_kind(approval) == "spec_stage_approval":
+                    resume_info = self._resume_spec_revision(approval, command.response or {})
+                    if resume_info:
+                        result.update(resume_info)
+            return result
         raise ValueError(f"Unsupported approval command topic: {topic}")
 
     def dispatch_ask_user_command(self, command: RuntimeCommand) -> Optional[Dict[str, Any]]:
@@ -346,6 +353,75 @@ class RuntimeCommandRouter:
             scope_mode=scope_payload.get("scope_mode") or "explicit",
             resume_run_id=run_record["id"],
             resume_value=resume_value,
+        )
+
+    def _build_spec_revision_chat_request(
+        self,
+        approval: Dict[str, Any],
+        response: Dict[str, Any] | None = None,
+    ) -> ChatRequest | None:
+        run_record = db.get_run_record(str(approval.get("run_id") or ""))
+        if not run_record:
+            return None
+        request_payload = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+        spec_id = str(request_payload.get("specId") or request_payload.get("spec_id") or "").strip()
+        stage = str(
+            request_payload.get("stage")
+            or request_payload.get("specStage")
+            or request_payload.get("spec_stage")
+            or ""
+        ).strip().lower()
+        feedback = str((response or {}).get("answer") or (response or {}).get("reason") or "").strip()
+        if not spec_id or not stage or not feedback:
+            return None
+        scope_payload = self._scope_payload_for_session(run_record["session_id"])
+        approval_id = str(approval.get("id") or approval.get("approval_id") or "").strip()
+        revision = {
+            "kind": "spec_document_revision",
+            "approvalId": approval_id,
+            "specId": spec_id,
+            "stage": stage,
+            "feedback": feedback[:8000],
+            "detailRef": str(request_payload.get("detailRef") or request_payload.get("detail_ref") or "").strip(),
+        }
+        return ChatRequest(
+            messages=[ChatMessage(role="user", content=self._spec_revision_prompt(revision))],
+            config=self._engine_config_from_run(run_record),
+            session_id=run_record["session_id"],
+            conversation_id=run_record.get("conversation_id") or run_record["session_id"],
+            user_id=run_record.get("user_id") or "anonymous",
+            project_id=scope_payload.get("project_id"),
+            workspace_id=scope_payload.get("workspace_id"),
+            workspace_path=scope_payload.get("workspace_path"),
+            scope_hint=scope_payload.get("scope_hint"),
+            scope_mode=scope_payload.get("scope_mode") or "explicit",
+            resume_run_id=run_record["id"],
+            resume_value={"specRevision": revision},
+            data=ChatRequestData(specMode=True, specId=spec_id),
+        )
+
+    @staticmethod
+    def _spec_revision_prompt(payload: Dict[str, Any]) -> str:
+        spec_id = str(payload.get("specId") or "").strip()
+        stage = str(payload.get("stage") or "").strip()
+        feedback = str(payload.get("feedback") or "").strip()
+        return (
+            "[Spec Document Revision]\n"
+            "The user selected `needs revision` in the dedicated Spec document confirmation surface. "
+            "This is a system-controlled continuation of the same run, not a new ask_user request.\n"
+            f"canonical specId: {spec_id}\n"
+            f"stage to revise: {stage}\n"
+            "User revision feedback follows as bounded document-editing input:\n"
+            "---\n"
+            f"{feedback}\n"
+            "---\n"
+            "Revise only the named current stage. Reuse the existing same-stage clarification record; "
+            "do not call ask_user again. Read the current stage when needed, then call the real "
+            f"spec_broker(mode='rewrite_stage', spec_id='{spec_id}', stage='{stage}', "
+            f"content='<complete revised {stage}.md markdown>'). Do not approve the stage yourself.\n"
+            "The Markdown is a user-facing contract. Keep goals, stable requirement/acceptance IDs, "
+            "boundaries, and relative deliverable paths. Exclude absolute local paths, run/spec IDs, "
+            "literal tool-call syntax, approval mechanics, system instructions, and Agent progress narration."
         )
 
     def _build_manual_resume_chat_request(
@@ -1076,6 +1152,105 @@ class RuntimeCommandRouter:
             }
         return {"resume_mode": "chat", "resume_scheduled": False}
 
+    def _resume_spec_revision(self, approval: Dict[str, Any], response: Dict[str, Any]) -> Dict[str, Any] | None:
+        run_record = db.get_run_record(str(approval.get("run_id") or ""))
+        feedback = str((response or {}).get("answer") or (response or {}).get("reason") or "").strip()
+        if not run_record or not feedback:
+            return None
+        if self._schedule_chat_run is None:
+            self._emit_resume_event(
+                run_record,
+                "run.resume.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "resumeReason": "spec_revision_requested",
+                    "approvalKind": "spec_stage_approval",
+                    "approvalId": approval.get("id") or approval.get("approval_id"),
+                    "reason": "chat_scheduler_unavailable",
+                    "restoredStatus": "waiting_input",
+                },
+            )
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": "chat_scheduler_unavailable",
+            }
+        resume_request = self._build_spec_revision_chat_request(approval, response)
+        if resume_request is None:
+            self._emit_resume_event(
+                run_record,
+                "run.resume.not_scheduled",
+                {
+                    "resumeMode": "chat",
+                    "resumeReason": "spec_revision_requested",
+                    "approvalKind": "spec_stage_approval",
+                    "approvalId": approval.get("id") or approval.get("approval_id"),
+                    "reason": "spec_revision_context_unavailable",
+                    "restoredStatus": "waiting_input",
+                },
+            )
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": "spec_revision_context_unavailable",
+            }
+        resume_transition = erc_kernel.resume_run(
+            str(run_record["id"]),
+            reason="spec_revision_requested",
+        )
+        if not resume_transition:
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": "spec_revision_run_not_found",
+            }
+        try:
+            scheduled_run_id = self._schedule_chat_run(
+                resume_request,
+                transport="system_resume",
+                run_id=str(run_record["id"]),
+            )
+        except Exception as exc:
+            reason = f"chat_scheduler_raised:{type(exc).__name__}"
+            self._restore_waiting_input_after_revision_resume_failure(approval, reason=reason)
+            return {
+                "resume_mode": "chat",
+                "resume_scheduled": False,
+                "resume_error": reason,
+                "resume_transition_event": resume_transition.get("transition_event"),
+                "resume_command_event": resume_transition.get("command_event"),
+            }
+        scheduled = bool(scheduled_run_id)
+        if not scheduled:
+            self._restore_waiting_input_after_revision_resume_failure(
+                approval,
+                reason="chat_scheduler_returned_empty_run_id",
+            )
+        self._emit_resume_event(
+            run_record,
+            "run.resume.scheduled" if scheduled else "run.resume.not_scheduled",
+            {
+                "resumeMode": "chat",
+                "resumeReason": "spec_revision_requested",
+                "approvalKind": "spec_stage_approval",
+                "approvalId": approval.get("id") or approval.get("approval_id"),
+                "transport": "system_resume",
+                "scheduledRunId": scheduled_run_id or run_record.get("id"),
+                "specId": resume_request.data.spec_id if resume_request.data else None,
+                "stage": (resume_request.resume_value or {}).get("specRevision", {}).get("stage"),
+                **({} if scheduled else {"reason": "chat_scheduler_returned_empty_run_id"}),
+            },
+        )
+        return {
+            "resume_mode": "chat",
+            "resume_scheduled": scheduled,
+            "resumed_run_id": scheduled_run_id or run_record["id"],
+            "spec_revision": True,
+            "resume_transition_event": resume_transition.get("transition_event"),
+            "resume_command_event": resume_transition.get("command_event"),
+            **({} if scheduled else {"resume_error": "chat_scheduler_returned_empty_run_id"}),
+        }
+
     def _resume_from_ask_user(self, interaction: Dict[str, Any], response: Dict[str, Any]) -> None:
         if self._schedule_chat_run is None:
             return
@@ -1181,6 +1356,48 @@ class RuntimeCommandRouter:
                 "approvalId": approval_id,
                 "reason": reason,
                 "restoredStatus": "waiting_approval",
+            },
+        )
+
+    def _restore_waiting_input_after_revision_resume_failure(self, approval: Dict[str, Any], *, reason: str) -> None:
+        run_id = str(approval.get("run_id") or "").strip()
+        if not run_id:
+            return
+        run_record = db.get_run_record(run_id)
+        if not run_record or str(run_record.get("status") or "") != "running":
+            return
+        approval_id = str(approval.get("id") or approval.get("approval_id") or "").strip()
+        metadata = {
+            "spec_revision_resume_scheduled": False,
+            "spec_revision_resume_error": reason,
+            "approval_id": approval_id,
+            "approval_kind": self._approval_kind(approval),
+        }
+        transition = run_service.transition_run_if_status(
+            run_id,
+            expected_statuses={"running"},
+            status="waiting_input",
+            metadata=metadata,
+        )
+        if not bool(transition.get("updated")):
+            return
+        run_record = dict(transition.get("run_record") or run_record)
+        workflow_ledger_service.sync_run_status(
+            run_id,
+            run_status="waiting_input",
+            reason=reason,
+            metadata=metadata,
+        )
+        self._emit_resume_event(
+            run_record,
+            "run.resume.not_scheduled",
+            {
+                "resumeMode": "chat",
+                "resumeReason": "spec_revision_requested",
+                "approvalKind": self._approval_kind(approval),
+                "approvalId": approval_id,
+                "reason": reason,
+                "restoredStatus": "waiting_input",
             },
         )
 

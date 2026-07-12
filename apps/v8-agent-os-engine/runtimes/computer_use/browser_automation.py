@@ -876,6 +876,48 @@ class BrowserAutomationProvider:
         self._managed_launches.pop(app_key, None)
         return None
 
+    def prepare_workbench_browser(self, *, browser_kind: str | None = None) -> Dict[str, Any]:
+        """Warm the dedicated Workbench browser without opening a page."""
+
+        kind = normalize_agent_browser_kind(browser_kind)
+        if not self._enabled:
+            raise RuntimeError("Computer Use browser lane is disabled")
+        if not self._node_path:
+            raise RuntimeError("Node.js is required for Workbench browser sessions")
+        if not self._helper_script_path().exists():
+            raise RuntimeError("Computer Use browser automation helper is missing")
+        if not self._probe_playwright_dependency().get("available"):
+            raise RuntimeError("Playwright is required for Workbench browser sessions")
+
+        with self._lock:
+            target_port = self._target_port
+            managed_started = False
+            external_window = False
+            if not self._is_debug_port_reachable(target_port):
+                decision = self._start_managed_chromium_debug_browser(
+                    app_id=kind,
+                    app_name=kind,
+                    headless=True,
+                )
+                if decision is None or not decision.available:
+                    raise RuntimeError("Unable to start the dedicated Workbench browser")
+                target_port = int(decision.target_port or target_port)
+                managed_started = True
+            else:
+                managed_state = self._managed_launches.get(kind) or {}
+                existing_headless = bool(managed_state.get("headless")) or self._debug_browser_is_headless(target_port)
+                external_window = not existing_headless
+
+        return {
+            "ok": True,
+            "ready": True,
+            "browserKind": kind,
+            "targetPort": target_port,
+            "managedStarted": managed_started,
+            "managedHeadless": not bool(external_window),
+            "externalWindow": bool(external_window),
+        }
+
     def open_workbench_browser(
         self,
         *,
@@ -886,32 +928,10 @@ class BrowserAutomationProvider:
 
         kind = normalize_agent_browser_kind(browser_kind)
         target_url = str(url or "").strip() or "about:blank"
-        if not self._enabled:
-            raise RuntimeError("Computer Use browser lane is disabled")
-        if not self._node_path:
-            raise RuntimeError("Node.js is required for Workbench browser sessions")
-        if not self._helper_script_path().exists():
-            raise RuntimeError("Computer Use browser automation helper is missing")
-        if not self._probe_playwright_dependency().get("available"):
-            raise RuntimeError("Playwright is required for Workbench browser sessions")
-
-        target_port = self._target_port
-        managed_started = False
-        external_window = False
-        if not self._is_debug_port_reachable(target_port):
-            decision = self._start_managed_chromium_debug_browser(
-                app_id=kind,
-                app_name=kind,
-                headless=True,
-            )
-            if decision is None or not decision.available:
-                raise RuntimeError("Unable to start the dedicated Workbench browser")
-            target_port = int(decision.target_port or target_port)
-            managed_started = True
-        else:
-            managed_state = self._managed_launches.get(kind) or {}
-            existing_headless = bool(managed_state.get("headless")) or self._debug_browser_is_headless(target_port)
-            external_window = not existing_headless
+        prepared = self.prepare_workbench_browser(browser_kind=kind)
+        target_port = int(prepared.get("targetPort") or self._target_port)
+        managed_started = bool(prepared.get("managedStarted"))
+        external_window = bool(prepared.get("externalWindow"))
 
         lane = BrowserLaneDecision(
             enabled=True,

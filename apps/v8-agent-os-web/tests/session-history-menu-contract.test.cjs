@@ -24,6 +24,13 @@ test("web history items expose a lightweight V8OS session ID context menu", () =
   assert.match(source, /web\.sidebar\.copySessionId/);
   assert.match(source, /web\.sidebar\.deleteConversation/);
   assert.match(source, /web\.sidebar\.continueInNewSession/);
+  assert.match(source, /web\.sidebar\.renameTask/);
+  assert.match(source, /web\.sidebar\.pinTask/);
+  assert.match(source, /web\.sidebar\.renameProject/);
+  assert.match(source, /web\.sidebar\.pinProject/);
+  assert.match(source, /editingSessionId === canonicalSessionId/);
+  assert.match(source, /editingGroupKey === group\.key/);
+  assert.match(source, /\/api\/workspace-presentations/);
   assert.doesNotMatch(source, /codex:\/\/threads/);
 });
 
@@ -38,6 +45,11 @@ test("phone history entries expose long-press V8OS session ID actions", () => {
   assert.match(combined, /shared\.conversation\.copy_session_id/);
   assert.match(combined, /shared\.conversation\.continue_in_new_session/);
   assert.match(combined, /suppressNextPressRef/);
+  assert.match(historyDrawer, /shared\.conversation\.rename_task/);
+  assert.match(historyDrawer, /shared\.conversation\.pin_task/);
+  assert.match(historyDrawer, /shared\.workspace\.rename_project/);
+  assert.match(historyDrawer, /shared\.workspace\.pin_project/);
+  assert.match(historyDrawer, /<TextInput/);
   assert.doesNotMatch(combined, /codex:\/\/threads/);
 });
 
@@ -58,6 +70,28 @@ test("session history action labels are localized", () => {
   assert.equal(phoneZh["shared.conversation.history_actions"], "会话操作");
   assert.equal(phoneZh["shared.conversation.continue_in_new_session"], "在新会话中继续");
   assert.equal(phoneEn["shared.conversation.copy_session_id"], "Copy session ID");
+  assert.equal(webZh["web.sidebar.renameProject"], "重命名项目");
+  assert.equal(webZh["web.sidebar.pinTask"], "置顶任务");
+  assert.equal(phoneZh["shared.workspace.rename_project"], "重命名项目");
+  assert.equal(phoneZh["shared.conversation.pin_task"], "置顶任务");
+});
+
+test("workspace and task presentation changes use durable shared routes", () => {
+  const engineRoutes = readText("apps/v8-agent-os-engine/api/session_workflow_routes.py");
+  const knowledgeRoutes = readText("apps/v8-agent-os-engine/api/knowledge_routes.py");
+  const adminConversationRoute = readText("apps/v8-agent-os-admin/src/app/api/conversations/[id]/route.ts");
+  const historyContract = readText("packages/session-realtime/src/history.ts");
+  const pet = readText("apps/v8-agent-os-desktop-pet/src/components/CyberPet.tsx");
+
+  assert.match(engineRoutes, /@router\.patch\("\/sessions\/\{session_id\}"\)/);
+  assert.match(knowledgeRoutes, /@router\.put\("\/workspace-presentations"\)/);
+  assert.match(adminConversationRoute, /export async function PATCH/);
+  assert.match(historyContract, /workspaceDisplayName/);
+  assert.match(historyContract, /workspacePinned/);
+  assert.match(historyContract, /pinnedAt/);
+  assert.match(pet, /workspacePinned/);
+  assert.match(pet, /Boolean\(left\.pinned\)/);
+  assert.match(pet, /Boolean\(right\.pinned\)/);
 });
 
 test("web and phone preserve contextSessionRefs through the first submitted user message", () => {

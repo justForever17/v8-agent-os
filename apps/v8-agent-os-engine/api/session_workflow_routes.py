@@ -17,6 +17,7 @@ from core.context_governance import (
     extract_latest_context_governance,
 )
 from core.database import db
+from core.storage import storage
 from core.artifact_store import artifact_store
 from core.multimodal_payload_adapter import normalize_artifact_record
 from core.scoped_workspace_resource import resolve_scoped_workspace_resource
@@ -57,13 +58,14 @@ from runtimes.memory.scope_resolution import (
     scope_resolution_service,
     session_scope_binding_service,
 )
+from runtimes.memory.project_registry import project_registry_service
 
 
 router = APIRouter()
 _NETWORK_COMPAT_TRANSPORTS = {"network_supervisor_openai", "network_supervisor_anthropic"}
 _NETWORK_COMPAT_SESSION_PREFIXES = ("network_openai_", "network_anthropic_")
 _WEB_SESSION_INDEX_PATH = Path.home() / ".v8-agent-os" / "cache" / "web_session_index.json"
-_WEB_SESSION_INDEX_VERSION = 1
+_WEB_SESSION_INDEX_VERSION = 3
 
 
 def _now_perf_ms() -> float:
@@ -286,8 +288,73 @@ def _is_hidden_compat_session(session_row: dict, metadata: dict) -> bool:
     )
 
 
+def _parse_session_metadata(session_row: dict) -> dict:
+    metadata = session_row.get("metadata")
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    if isinstance(metadata, str):
+        try:
+            parsed = json.loads(metadata)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _workspace_path_key(value: str) -> str:
+    try:
+        return str(Path(str(value or "")).expanduser().resolve(strict=False)).rstrip("\\/").lower()
+    except Exception:
+        return str(value or "").strip().rstrip("\\/").lower()
+
+
+def _session_navigation_context() -> dict:
+    projects = project_registry_service.list_projects()
+    presentations = project_registry_service.list_workspace_presentations()
+    return {
+        "projects": {project.project_id: project for project in projects},
+        "presentations": {
+            str(item.get("pathKey") or ""): item
+            for item in presentations
+            if str(item.get("pathKey") or "")
+        },
+    }
+
+
+def _enrich_session_navigation(session_row: dict, context: dict | None = None) -> dict:
+    context = context or _session_navigation_context()
+    metadata = _parse_session_metadata(session_row)
+    project_id = str(
+        session_row.get("projectId")
+        or session_row.get("project_id")
+        or metadata.get("projectId")
+        or metadata.get("project_id")
+        or ""
+    ).strip()
+    project = (context.get("projects") or {}).get(project_id)
+    workspace_path = str(
+        session_row.get("workspacePath")
+        or session_row.get("workspace_path")
+        or metadata.get("workspacePath")
+        or metadata.get("workspace_path")
+        or (getattr(project, "workspace_path", None) if project else None)
+        or ""
+    ).strip()
+    presentation = (context.get("presentations") or {}).get(_workspace_path_key(workspace_path)) if workspace_path else None
+    project_name = str(getattr(project, "name", "") or "").strip()
+    display_name = str((presentation or {}).get("displayName") or project_name).strip()
+    return {
+        **session_row,
+        "workspaceDisplayName": display_name or None,
+        "workspacePinned": bool((presentation or {}).get("pinned")),
+        "workspacePinnedAt": (presentation or {}).get("pinnedAt"),
+        "projectName": display_name or project_name or None,
+    }
+
+
 def _build_web_session_index_records() -> list[dict]:
     sessions: list[dict] = []
+    navigation_context = _session_navigation_context()
     for row in db.get_sessions():
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         if _is_hidden_compat_session(row, metadata):
@@ -313,7 +380,7 @@ def _build_web_session_index_records() -> list[dict]:
         controls = build_projection_controls(workflow_view, approvals)
         sessions.append(
             build_session_history_materialized_record(
-                session_row={**row, "controls": controls},
+                session_row={**_enrich_session_navigation(row, navigation_context), "controls": controls},
                 workflow_view=workflow_view,
                 approvals=approvals,
                 snapshot=None,
@@ -340,8 +407,20 @@ def _web_session_index_payload(records: list[dict]) -> dict:
     return {
         "version": _WEB_SESSION_INDEX_VERSION,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "projectsRegistryStamp": _projects_registry_stamp(),
         "sessions": sanitized,
     }
+
+
+def _projects_registry_stamp() -> str:
+    stamps: list[str] = []
+    for filename in ("projects.json", "config.json"):
+        try:
+            stat = (storage.base_dir / filename).stat()
+            stamps.append(f"{filename}:{stat.st_mtime_ns}:{stat.st_size}")
+        except OSError:
+            continue
+    return "|".join(stamps) or "missing"
 
 
 def _read_web_session_index_payload() -> dict | None:
@@ -352,6 +431,8 @@ def _read_web_session_index_payload() -> dict | None:
         if not isinstance(payload, dict):
             return None
         if int(payload.get("version") or 0) != _WEB_SESSION_INDEX_VERSION:
+            return None
+        if str(payload.get("projectsRegistryStamp") or "") != _projects_registry_stamp():
             return None
         if not isinstance(payload.get("sessions"), list):
             return None
@@ -443,7 +524,7 @@ async def create_session(data: dict = Body(...)):
         session_source = _derive_session_source(session or {"id": session_id, "metadata": {}}, None)
         _refresh_web_session_index_safely()
         return build_session_history_materialized_record(
-            session_row={**(session or {}), "controls": controls},
+            session_row={**_enrich_session_navigation(session or {}), "controls": controls},
             workflow_view=workflow_view,
             approvals=approvals,
             snapshot=None,
@@ -451,6 +532,60 @@ async def create_session(data: dict = Body(...)):
             source=session_source,
             run_record=None,
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/sessions/{session_id}")
+async def patch_session_presentation(session_id: str, data: dict = Body(...)):
+    try:
+        current = db.get_session(session_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        requested_user_id = str(data.get("userId") or data.get("user_id") or "").strip()
+        session_user_id = str(current.get("user_id") or current.get("userId") or "").strip()
+        if requested_user_id and session_user_id and requested_user_id != session_user_id:
+            raise HTTPException(status_code=403, detail="session_owner_mismatch")
+
+        updates: dict = {}
+        if "title" in data:
+            title = str(data.get("title") or "").strip()
+            if not title:
+                raise HTTPException(status_code=400, detail="session_title_required")
+            if len(title) > 80:
+                raise HTTPException(status_code=400, detail="session_title_too_long")
+            if any(ord(char) < 32 for char in title):
+                raise HTTPException(status_code=400, detail="session_title_invalid")
+            updates["title"] = title
+        if "pinned" in data:
+            if not isinstance(data.get("pinned"), bool):
+                raise HTTPException(status_code=400, detail="session_pinned_must_be_boolean")
+            updates["pinned"] = data.get("pinned")
+        if not updates:
+            raise HTTPException(status_code=400, detail="session_presentation_update_required")
+
+        session = db.update_session_presentation(session_id, updates)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        workflow_view = workflow_ledger_service.get_session_workflow_view(session_id)
+        approvals = project_pending_approvals(db.list_pending_approvals(session_id=session_id, status="pending"))
+        controls = build_projection_controls(workflow_view, approvals)
+        root_run_id = str((workflow_view or {}).get("rootRunId") or "").strip()
+        run_record = db.get_run_record(root_run_id) if root_run_id else None
+        session_source = _derive_session_source(session, run_record)
+        record = build_session_history_materialized_record(
+            session_row={**_enrich_session_navigation(session), "controls": controls},
+            workflow_view=workflow_view,
+            approvals=approvals,
+            snapshot=None,
+            latest_seq=0,
+            source=session_source,
+            run_record=run_record,
+        )
+        _refresh_web_session_index_safely()
+        return record
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

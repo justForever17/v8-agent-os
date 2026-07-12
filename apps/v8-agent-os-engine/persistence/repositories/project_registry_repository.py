@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.storage import storage
 from runtimes.memory.models import ProjectDescriptor
@@ -60,3 +60,33 @@ class ProjectRegistryRepository:
         registry["defaultProjectId"] = project_id
         storage.save_projects_registry(registry)
 
+    def list_workspace_presentations(self) -> List[Dict[str, Any]]:
+        registry = storage.get_projects_registry()
+        items = registry.get("workspacePresentations", [])
+        return [dict(item) for item in items if isinstance(item, dict)]
+
+    def save_workspace_presentation(self, path_key: str, presentation: Dict[str, Any]) -> Dict[str, Any]:
+        registry = storage.get_projects_registry()
+        items = self.list_workspace_presentations()
+        serialized = dict(presentation)
+        replaced = False
+        for index, item in enumerate(items):
+            if str(item.get("pathKey") or "") == path_key:
+                items[index] = serialized
+                replaced = True
+                break
+        if not replaced:
+            items.append(serialized)
+        registry["workspacePresentations"] = items
+        storage.save_projects_registry(registry)
+        return serialized
+
+    def delete_workspace_presentation(self, path_key: str) -> bool:
+        registry = storage.get_projects_registry()
+        items = self.list_workspace_presentations()
+        filtered = [item for item in items if str(item.get("pathKey") or "") != path_key]
+        if len(filtered) == len(items):
+            return False
+        registry["workspacePresentations"] = filtered
+        storage.save_projects_registry(registry)
+        return True

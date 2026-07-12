@@ -9,6 +9,11 @@ export type V8Conversation = {
   id: string;
   title?: string;
   workspacePath?: string | null;
+  workspaceDisplayName?: string | null;
+  workspacePinned?: boolean;
+  workspacePinnedAt?: string | null;
+  pinned?: boolean;
+  pinnedAt?: string | null;
   [key: string]: unknown;
 };
 

@@ -11,6 +11,7 @@ class _FakeProjectRepo:
     def __init__(self):
         self.projects = {}
         self.default_project_id = None
+        self.workspace_presentations = {}
 
     def list_projects(self):
         return list(self.projects.values())
@@ -30,6 +31,16 @@ class _FakeProjectRepo:
 
     def delete_project(self, project_id: str):
         return self.projects.pop(project_id, None) is not None
+
+    def list_workspace_presentations(self):
+        return list(self.workspace_presentations.values())
+
+    def save_workspace_presentation(self, path_key: str, presentation):
+        self.workspace_presentations[path_key] = dict(presentation)
+        return dict(presentation)
+
+    def delete_workspace_presentation(self, path_key: str):
+        return self.workspace_presentations.pop(path_key, None) is not None
 
 
 class _FakeScopeRepo:
@@ -65,6 +76,29 @@ def test_save_project_requires_explicit_trust_for_user_external_workspace(tmp_pa
 
     with pytest.raises(WorkspaceTrustRequiredError, match="workspace_trust_required"):
         service.save_project({"workspacePath": str(external_root)})
+
+
+def test_workspace_presentation_is_keyed_by_path_without_renaming_directory(tmp_path, monkeypatch):
+    main_root = tmp_path / "main"
+    workspace = main_root / "project-alpha"
+    workspace.mkdir(parents=True)
+    service = _service(monkeypatch, main_root)
+
+    saved = service.patch_workspace_presentation(
+        str(workspace),
+        {"displayName": "Alpha 展示名", "pinned": True},
+    )
+
+    assert saved["workspacePath"] == str(workspace)
+    assert saved["displayName"] == "Alpha 展示名"
+    assert saved["pinned"] is True
+    assert workspace.name == "project-alpha"
+    assert service.get_workspace_presentation(str(workspace).upper())["displayName"] == "Alpha 展示名"
+
+    reset = service.patch_workspace_presentation(str(workspace), {"displayName": "", "pinned": False})
+    assert reset["displayName"] == ""
+    assert reset["pinned"] is False
+    assert service.get_workspace_presentation(str(workspace)) is None
 
 
 def test_save_project_allows_user_confirmed_external_workspace(tmp_path, monkeypatch):
@@ -114,4 +148,3 @@ def test_patch_changed_external_workspace_requires_fresh_trust(tmp_path, monkeyp
 
     with pytest.raises(WorkspaceTrustRequiredError, match="workspace_trust_required"):
         service.patch_project(project.project_id, {"workspacePath": str(second_root)})
-

@@ -114,6 +114,8 @@ import {
     cancelQueuedChatMessage,
     promoteQueuedChatMessage,
     updateQueuedChatMessage,
+    updateConversationPresentation,
+    updateWorkspacePresentation,
     submitChatMessage,
     sendDesktopLiveCandidate,
     speechToText,
@@ -5151,6 +5153,45 @@ export default function ChatScreen() {
         ]);
     }, [activeConversationId, authorizedFetch, conversations, setActiveConversationId, t]);
 
+    const handleUpdateConversationPresentation = useCallback(async (
+        item: ConversationSummary,
+        patch: { title?: string; pinned?: boolean },
+    ) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        try {
+            const updated = await updateConversationPresentation(authorizedFetch, canonicalSessionId, patch);
+            setConversations((current) => sortSessionHistory([
+                updated,
+                ...current.filter((conversation) => (conversation.sessionId || conversation.id) !== canonicalSessionId),
+            ]));
+            return true;
+        } catch (error) {
+            Alert.alert(
+                t("shared.conversation.update_failed"),
+                error instanceof Error ? error.message : t("shared.conversation.update_failed_detail"),
+            );
+            return false;
+        }
+    }, [authorizedFetch, t]);
+
+    const handleUpdateWorkspacePresentation = useCallback(async (
+        group: ConversationWorkspaceGroup,
+        patch: { displayName?: string; pinned?: boolean },
+    ) => {
+        if (!group.workspacePath) return false;
+        try {
+            await updateWorkspacePresentation(authorizedFetch, { workspacePath: group.workspacePath, ...patch });
+            setConversations(await listConversations(authorizedFetch));
+            return true;
+        } catch (error) {
+            Alert.alert(
+                t("shared.workspace.update_failed"),
+                error instanceof Error ? error.message : t("shared.workspace.update_failed_detail"),
+            );
+            return false;
+        }
+    }, [authorizedFetch, t]);
+
     const handleDeleteMessage = useCallback((message: ChatMessage) => {
         Alert.alert(t("src.screens.chatscreen.delete_message"), t("src.screens.chatscreen.delete_this_message"), [
             { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
@@ -7249,6 +7290,8 @@ export default function ChatScreen() {
                     onNewConversation={() => void handleNewConversation()}
                     onCreateConversationInGroup={(group) => void createConversationInHistoryGroup(group)}
                     creatingGroupKey={historyCreatingGroupKey}
+                    onUpdateConversationPresentation={handleUpdateConversationPresentation}
+                    onUpdateWorkspacePresentation={handleUpdateWorkspacePresentation}
                     onDeleteConversation={(item) => handleDeleteConversation(item)}
                 />
             </SafeAreaView>

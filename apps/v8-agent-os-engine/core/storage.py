@@ -871,7 +871,12 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
             "knownListeningPorts": ["tcp:9527", "tcp:9528", "tcp:9530"],
         },
     },
-    "projects": {"version": 1, "defaultProjectId": None, "projects": []},
+    "projects": {
+        "version": 2,
+        "defaultProjectId": None,
+        "projects": [],
+        "workspacePresentations": [],
+    },
     "desktopPet": {
         "eventVoice": {
             "enabled": True,
@@ -2991,17 +2996,19 @@ class StorageManager:
     def get_projects_registry(self) -> Dict[str, Any]:
         data = self.read_json("projects.json")
         if not data:
-            data = {"version": 1, "defaultProjectId": None, "projects": []}
-        data.setdefault("version", 1)
+            data = {"version": 2, "defaultProjectId": None, "projects": [], "workspacePresentations": []}
+        data.setdefault("version", 2)
         data.setdefault("defaultProjectId", None)
         data.setdefault("projects", [])
+        data.setdefault("workspacePresentations", [])
         return data
 
     def save_projects_registry(self, data: Dict[str, Any]):
         payload = {
-            "version": data.get("version", 1),
+            "version": 2,
             "defaultProjectId": data.get("defaultProjectId"),
             "projects": data.get("projects", []),
+            "workspacePresentations": data.get("workspacePresentations", []),
         }
         self.write_json("projects.json", payload)
 

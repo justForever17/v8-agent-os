@@ -528,6 +528,46 @@ export async function createConversation(
     return normalizeSessionHistoryItem(payload);
 }
 
+export async function updateConversationPresentation(
+    authorizedFetch: AuthorizedFetch,
+    id: string,
+    input: { title?: string; pinned?: boolean },
+) {
+    const payload = await authorizedJson<ConversationSummary>(
+        authorizedFetch,
+        `/api/client/conversations/${encodeURIComponent(id)}`,
+        translateCurrent("src.lib.phone_api.conversation_presentation"),
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+        },
+    );
+    return normalizeSessionHistoryItem(payload);
+}
+
+export async function updateWorkspacePresentation(
+    authorizedFetch: AuthorizedFetch,
+    input: { workspacePath: string; displayName?: string; pinned?: boolean },
+) {
+    return authorizedJson<{
+        workspacePath: string;
+        displayName?: string;
+        pinned?: boolean;
+        pinnedAt?: string | null;
+        updatedAt?: string | null;
+    }>(
+        authorizedFetch,
+        "/api/client/workspace-presentations",
+        translateCurrent("src.lib.phone_api.workspace_presentation"),
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(input),
+        },
+    );
+}
+
 export async function deleteConversation(authorizedFetch: AuthorizedFetch, id: string) {
     return authorizedJson<{ success: boolean }>(
         authorizedFetch,

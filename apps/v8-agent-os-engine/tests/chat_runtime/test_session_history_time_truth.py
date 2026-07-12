@@ -121,6 +121,34 @@ class SessionHistoryTimeTruthTests(unittest.TestCase):
             gc.collect()
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_manual_session_title_and_pin_survive_runtime_updates(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            db = DatabaseManager(temp_dir / "state.db")
+            db.create_or_update_session("sess_manual_title", "自动标题", user_id="user")
+            updated = db.update_session_presentation(
+                "sess_manual_title",
+                {"title": "用户命名的任务", "pinned": True},
+            )
+            self.assertIsNotNone(updated)
+
+            db.create_or_update_session("sess_manual_title", "后续消息生成的标题", user_id="user")
+            session = db.get_session("sess_manual_title")
+
+            self.assertEqual(session["title"], "用户命名的任务")
+            self.assertTrue(session["metadata"]["manualTitle"])
+            self.assertTrue(session["metadata"]["pinned"])
+            self.assertTrue(session["metadata"]["pinnedAt"])
+
+            db.update_session_presentation("sess_manual_title", {"pinned": False})
+            session = db.get_session("sess_manual_title")
+            self.assertNotIn("pinned", session["metadata"])
+            self.assertNotIn("pinnedAt", session["metadata"])
+        finally:
+            del db
+            gc.collect()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_materialized_record_keeps_history_sort_at_stable_when_runtime_is_newer(self):
         record = build_session_history_materialized_record(
             session_row={

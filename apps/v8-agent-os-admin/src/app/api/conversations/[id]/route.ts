@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { normalizeAuthoritativeSessionHistoryRecord } from "@v8/session-realtime/history";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 import { resolveAuthorizedUserEmail, unauthorizedJson } from "@/lib/server/request-auth";
 import { normalizeSnapshotForRealtimeSurface } from "@/lib/server/session-realtime-resource";
@@ -95,6 +96,38 @@ export async function DELETE(
         return NextResponse.json({ success: true });
     } catch (error) {
         console.error("Error communicating with Python engine:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+}
+
+export async function PATCH(
+    req: NextRequest,
+    { params }: { params: Promise<{ id: string }> },
+) {
+    const userEmail = await resolveAuthorizedUserEmail(req);
+    if (!userEmail) {
+        return unauthorizedJson();
+    }
+
+    const { id } = await params;
+    const body = await req.json().catch(() => ({}));
+    try {
+        const response = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...(typeof body?.title === "string" ? { title: body.title } : {}),
+                ...(typeof body?.pinned === "boolean" ? { pinned: body.pinned } : {}),
+                userId: userEmail,
+            }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        return NextResponse.json(
+            response.ok ? normalizeAuthoritativeSessionHistoryRecord(payload) : payload,
+            { status: response.status },
+        );
+    } catch (error) {
+        console.error("Error updating session presentation in Python engine:", error);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

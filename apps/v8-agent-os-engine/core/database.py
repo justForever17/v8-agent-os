@@ -1633,7 +1633,8 @@ class DatabaseManager:
                 current_meta.update(merged_metadata)
                 meta_str = json.dumps(current_meta, ensure_ascii=False)
                 now_iso = utc_now_iso()
-                if title and title not in ("New Chat", "新对话") and not self._is_internal_runtime_title(title):
+                manual_title_locked = current_meta.get("manualTitle") is True
+                if title and title not in ("New Chat", "新对话") and not self._is_internal_runtime_title(title) and not manual_title_locked:
                     cursor.execute('''
                         UPDATE sessions 
                         SET updated_at = ?, title = ?, agent_id = COALESCE(?, agent_id), metadata = ?
@@ -1653,6 +1654,45 @@ class DatabaseManager:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (session_id, title or "新对话", user_id, agent_id, meta_str, now_iso, now_iso))
             conn.commit()
+
+    def update_session_presentation(self, session_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT title, metadata FROM sessions WHERE id = ?", (session_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            metadata: Dict[str, Any] = {}
+            if row["metadata"]:
+                try:
+                    metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+                except Exception:
+                    metadata = {}
+
+            title = str(row["title"] or "新对话")
+            if "title" in updates:
+                title = str(updates.get("title") or "").strip()
+                metadata["manualTitle"] = True
+            if "pinned" in updates:
+                pinned = bool(updates.get("pinned"))
+                if pinned:
+                    metadata["pinned"] = True
+                    metadata["pinnedAt"] = str(metadata.get("pinnedAt") or "").strip() or utc_now_iso()
+                else:
+                    metadata.pop("pinned", None)
+                    metadata.pop("pinnedAt", None)
+
+            conn.execute(
+                """
+                UPDATE sessions
+                SET title = ?, metadata = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (title, json.dumps(metadata, ensure_ascii=False), utc_now_iso(), session_id),
+            )
+            conn.commit()
+        return self.get_session(session_id)
 
     def _is_internal_runtime_title(self, title: str | None) -> bool:
         normalized = str(title or "").strip()

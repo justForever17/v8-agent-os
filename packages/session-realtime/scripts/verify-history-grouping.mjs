@@ -17,6 +17,9 @@ const records = normalizeAuthoritativeSessionHistoryList([
     id: "session-project-explicit",
     title: "Project",
     createdAt: "2026-07-10T10:00:00Z",
+    workspaceDisplayName: "Alpha custom",
+    workspacePinned: true,
+    workspacePinnedAt: "2026-07-10T11:00:00Z",
     metadata: {
       project_id: "project-alpha",
       workspace_id: "workspace-alpha",
@@ -24,6 +27,20 @@ const records = normalizeAuthoritativeSessionHistoryList([
       scope_hint: "project",
       resolved_scope: "project:project-alpha",
     },
+  },
+  {
+    id: "session-project-pinned-task",
+    title: "Pinned task",
+    pinned: true,
+    pinnedAt: "2026-07-10T12:00:00Z",
+    createdAt: "2026-07-10T08:30:00Z",
+    projectId: "project-alpha",
+    workspaceId: "workspace-alpha",
+    workspacePath: "E:\\Projects\\alpha",
+    workspaceDisplayName: "Alpha custom",
+    workspacePinned: true,
+    workspacePinnedAt: "2026-07-10T11:00:00Z",
+    resolvedScope: "project:project-alpha",
   },
   {
     id: "session-project-legacy",
@@ -45,10 +62,11 @@ const records = normalizeAuthoritativeSessionHistoryList([
   },
 ]);
 
-assert.equal(records[0].projectId, "project-alpha");
-assert.equal(records[0].workspaceId, "workspace-alpha");
-assert.equal(records[0].workspacePath, "E:\\Projects\\alpha");
-assert.equal(records[0].scopeHint, "project");
+const explicitRecord = records.find((record) => record.id === "session-project-explicit");
+assert.equal(explicitRecord?.projectId, "project-alpha");
+assert.equal(explicitRecord?.workspaceId, "workspace-alpha");
+assert.equal(explicitRecord?.workspacePath, "E:\\Projects\\alpha");
+assert.equal(explicitRecord?.scopeHint, "project");
 
 const groups = groupSessionHistoryByWorkspace(records, labels);
 const explicitProject = groups.find((group) => group.key === "project:project-alpha");
@@ -56,6 +74,10 @@ const legacyProject = groups.find((group) => group.key === "project:project:lega
 const mainWorkspace = groups.find((group) => group.label === labels.mainWorkspace);
 const unbound = groups.find((group) => group.kind === "unbound");
 
+assert.equal(groups[0]?.key, "project:project-alpha");
+assert.equal(explicitProject?.label, "Alpha custom");
+assert.equal(explicitProject?.pinned, true);
+assert.equal(explicitProject?.items[0]?.id, "session-project-pinned-task");
 assert.deepEqual(explicitProject?.creationBinding, {
   projectId: "project-alpha",
   workspaceId: "workspace-alpha",

@@ -197,3 +197,32 @@ export async function DELETE(
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
+
+export async function PATCH(
+    req: NextRequest,
+    { params }: { params: Promise<{ id: string }> },
+) {
+    const userEmail = await resolveClientUserEmail(req);
+    if (!userEmail) {
+        return unauthorizedClientJson();
+    }
+
+    const { id } = await params;
+    const body = await req.json().catch(() => ({}));
+    try {
+        const response = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ...(typeof body?.title === "string" ? { title: body.title } : {}),
+                ...(typeof body?.pinned === "boolean" ? { pinned: body.pinned } : {}),
+                userId: userEmail,
+            }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        return NextResponse.json(payload, { status: response.status });
+    } catch (error) {
+        console.error("[Client Conversations] Update session presentation failed:", error);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+}

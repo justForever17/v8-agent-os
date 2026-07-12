@@ -61,7 +61,18 @@ interface CyberPetProps {
     loading?: boolean;
     status: string;
     error?: string;
-    conversations: Array<{ id: string; title?: string; projectName?: string | null; workspacePath?: string | null; running?: boolean; status?: string | null }>;
+    conversations: Array<{
+      id: string;
+      title?: string;
+      projectName?: string | null;
+      workspacePath?: string | null;
+      workspacePinned?: boolean;
+      workspacePinnedAt?: string | null;
+      pinned?: boolean;
+      pinnedAt?: string | null;
+      running?: boolean;
+      status?: string | null;
+    }>;
     projects: Array<{ id?: string; name?: string; workspacePath?: string }>;
     activeConversationId: string;
     onSelectConversation: (id: string) => void;
@@ -79,6 +90,8 @@ type V8MenuConversation = NonNullable<CyberPetProps['v8Connection']>['conversati
 type V8MenuConversationGroup = {
   id: string;
   label: string;
+  pinned: boolean;
+  pinnedAt?: string | null;
   conversations: V8MenuConversation[];
 };
 
@@ -97,11 +110,33 @@ function groupV8MenuConversations(conversations: V8MenuConversation[]) {
       ? `workspace:${workspacePath.toLowerCase()}`
       : `project:${label.toLowerCase()}`;
     if (!groups.has(id)) {
-      groups.set(id, { id, label, conversations: [] });
+      groups.set(id, {
+        id,
+        label,
+        pinned: Boolean(conversation.workspacePinned),
+        pinnedAt: conversation.workspacePinnedAt || null,
+        conversations: [],
+      });
     }
-    groups.get(id)!.conversations.push(conversation);
+    const group = groups.get(id)!;
+    if (conversation.workspacePinned && !group.pinned) {
+      group.pinned = true;
+      group.pinnedAt = conversation.workspacePinnedAt || null;
+    }
+    group.conversations.push(conversation);
   }
-  return Array.from(groups.values());
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      conversations: [...group.conversations].sort((left, right) => {
+        if (Boolean(left.pinned) !== Boolean(right.pinned)) return left.pinned ? -1 : 1;
+        return String(right.pinnedAt || '').localeCompare(String(left.pinnedAt || ''));
+      }),
+    }))
+    .sort((left, right) => {
+      if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+      return String(right.pinnedAt || '').localeCompare(String(left.pinnedAt || ''));
+    });
 }
 
 function colorWithAlpha(color: string, alpha: number) {

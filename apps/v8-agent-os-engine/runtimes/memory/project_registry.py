@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from core.v8_agent_os_paths import WORKSPACE_HOME
 from core.database import db
+from core.time_truth import utc_now_iso
 from persistence.repositories.project_registry_repository import ProjectRegistryRepository
 from persistence.repositories.scope_binding_repository import ScopeBindingRepository
 from runtimes.memory.models import ChannelBinding, ProjectDescriptor, WorkflowBinding, WorkspaceProjectBinding
@@ -136,6 +137,82 @@ class ProjectRegistryService:
 
     def set_default_project(self, project_id: Optional[str]):
         self.project_repo.set_default_project(project_id)
+
+    def list_workspace_presentations(self) -> List[Dict[str, Any]]:
+        presentations: List[Dict[str, Any]] = []
+        for item in self.project_repo.list_workspace_presentations():
+            workspace_path = str(item.get("workspacePath") or "").strip()
+            if not workspace_path:
+                continue
+            path_key = self._normalize_path_key(workspace_path)
+            display_name = str(item.get("displayName") or "").strip()
+            presentations.append(
+                {
+                    "workspacePath": workspace_path,
+                    "pathKey": path_key,
+                    "displayName": display_name,
+                    "pinned": bool(item.get("pinned")),
+                    "pinnedAt": str(item.get("pinnedAt") or "").strip() or None,
+                    "updatedAt": str(item.get("updatedAt") or "").strip() or None,
+                }
+            )
+        return presentations
+
+    def get_workspace_presentation(self, workspace_path: str) -> Optional[Dict[str, Any]]:
+        path_key = self._normalize_path_key(workspace_path)
+        if not path_key:
+            return None
+        return next(
+            (item for item in self.list_workspace_presentations() if item.get("pathKey") == path_key),
+            None,
+        )
+
+    def patch_workspace_presentation(self, workspace_path: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        raw_path = str(workspace_path or "").strip()
+        if not raw_path:
+            raise ValueError("workspace_path_required")
+        if len(raw_path) > 4096:
+            raise ValueError("workspace_path_too_long")
+
+        path_key = self._normalize_path_key(raw_path)
+        current = self.get_workspace_presentation(raw_path) or {
+            "workspacePath": raw_path,
+            "pathKey": path_key,
+            "displayName": "",
+            "pinned": False,
+            "pinnedAt": None,
+        }
+        next_value = dict(current)
+        if "displayName" in updates or "display_name" in updates:
+            display_name = str(updates.get("displayName") or updates.get("display_name") or "").strip()
+            if len(display_name) > 80:
+                raise ValueError("workspace_display_name_too_long")
+            next_value["displayName"] = display_name
+        if "pinned" in updates:
+            pinned = bool(updates.get("pinned"))
+            next_value["pinned"] = pinned
+            next_value["pinnedAt"] = (
+                str(current.get("pinnedAt") or "").strip() or utc_now_iso()
+            ) if pinned else None
+
+        next_value.update(
+            {
+                "workspacePath": raw_path,
+                "pathKey": path_key,
+                "updatedAt": utc_now_iso(),
+            }
+        )
+        if not next_value.get("displayName") and not next_value.get("pinned"):
+            self.project_repo.delete_workspace_presentation(path_key)
+            return {
+                "workspacePath": raw_path,
+                "pathKey": path_key,
+                "displayName": "",
+                "pinned": False,
+                "pinnedAt": None,
+                "updatedAt": next_value["updatedAt"],
+            }
+        return self.project_repo.save_workspace_presentation(path_key, next_value)
 
     def bind_workspace(
         self,

@@ -27,6 +27,7 @@ interface ConversationContextType {
     isLoading: boolean;
     refreshConversations: () => Promise<void>;
     createConversation: (payload?: CreateConversationPayload) => Promise<Conversation | null>;
+    updateConversationPresentation: (id: string, patch: { title?: string; pinned?: boolean }) => Promise<Conversation | null>;
     patchConversationSummary: (id: string, patch: Partial<Conversation>) => void;
     deleteConversation: (id: string) => Promise<boolean>;
     clearConversations: () => Promise<boolean>;
@@ -117,6 +118,32 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         });
     }, []);
 
+    const updateConversationPresentation = useCallback(async (id: string, patch: { title?: string; pinned?: boolean }) => {
+        try {
+            const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(patch),
+            });
+            if (!response.ok) {
+                return null;
+            }
+            const updated = normalizeSessionHistoryItem(await response.json().catch(() => ({})));
+            const sessionId = getConversationSessionId(updated);
+            setConversations((current) => {
+                const next = sortSessionHistory([
+                    updated,
+                    ...current.filter((item) => getConversationSessionId(item) !== sessionId),
+                ]);
+                return isSameConversationList(current, next) ? current : next;
+            });
+            return updated;
+        } catch (error) {
+            console.error("Failed to update conversation presentation", error);
+            return null;
+        }
+    }, []);
+
     const deleteConversation = useCallback(async (id: string) => {
         try {
             const res = await fetch(`/api/conversations/${id}`, {
@@ -163,6 +190,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         isLoading,
         refreshConversations: fetchConversations,
         createConversation,
+        updateConversationPresentation,
         patchConversationSummary,
         deleteConversation,
         clearConversations,
@@ -174,6 +202,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         fetchConversations,
         isLoading,
         patchConversationSummary,
+        updateConversationPresentation,
     ]);
 
     return (

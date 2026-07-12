@@ -3,7 +3,7 @@ import { auth } from "@/lib/auth";
 
 import { getAdminProxyConfig } from "@/lib/server/runtime-config";
 
-async function proxyToAdmin(path: string, method: string) {
+async function proxyToAdmin(path: string, method: string, body?: unknown) {
     const session = await auth();
     if (!session?.user?.email) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -21,7 +21,8 @@ async function proxyToAdmin(path: string, method: string) {
                 "Content-Type": "application/json",
                 "x-v8-agent-os-secret": internalSecret,
                 "x-v8-agent-os-user-email": session.user.email
-            }
+            },
+            body: body === undefined ? undefined : JSON.stringify(body),
         });
 
         const data = await res.json().catch(() => ({}));
@@ -46,4 +47,13 @@ export async function DELETE(
 ) {
     const { id } = await params;
     return proxyToAdmin(`/conversations/${id}`, "DELETE");
+}
+
+export async function PATCH(
+    req: NextRequest,
+    { params }: { params: Promise<{ id: string }> }
+) {
+    const { id } = await params;
+    const body = await req.json().catch(() => ({}));
+    return proxyToAdmin(`/conversations/${id}`, "PATCH", body);
 }

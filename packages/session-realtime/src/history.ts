@@ -34,9 +34,15 @@ export type AuthoritativeSessionHistoryRecord = {
   id: string;
   sessionId?: string;
   title: string;
+  pinned?: boolean;
+  pinnedAt?: string;
   projectId?: string;
+  projectName?: string;
   workspaceId?: string;
   workspacePath?: string;
+  workspaceDisplayName?: string;
+  workspacePinned?: boolean;
+  workspacePinnedAt?: string;
   scopeHint?: string;
   scopeMode?: string;
   resolvedScope?: string;
@@ -102,6 +108,9 @@ export type SessionHistoryWorkspaceGroup<T extends AuthoritativeSessionHistoryRe
   kind: "project" | "workspace" | "unbound";
   items: T[];
   creationBinding: SessionHistoryCreationBinding | null;
+  workspacePath?: string;
+  pinned: boolean;
+  pinnedAt?: string;
 };
 
 export type SessionHistoryLedgerEntry = {
@@ -236,6 +245,13 @@ function deriveChannelSubdocument(record: Record<string, unknown>, parsedMetadat
 
 function sortHistoryItems(items: AuthoritativeSessionHistoryRecord[]) {
   return [...items].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+      return left.pinned ? -1 : 1;
+    }
+    const pinnedOrder = String(right.pinnedAt || "").localeCompare(String(left.pinnedAt || ""));
+    if (pinnedOrder !== 0) {
+      return pinnedOrder;
+    }
     const leftTs = left.historySortAt || left.createdAt || "";
     const rightTs = right.historySortAt || right.createdAt || "";
     return rightTs.localeCompare(leftTs);
@@ -297,9 +313,15 @@ export function normalizeAuthoritativeSessionHistoryRecord(raw: unknown): Author
     id: canonicalSessionId,
     sessionId: canonicalSessionId,
     title: coerceString(record.title) || "新对话",
+    pinned: Boolean(record.pinned ?? parsedMetadata.pinned),
+    pinnedAt: normalizeUtcTimestamp(record.pinnedAt || record.pinned_at || parsedMetadata.pinnedAt || parsedMetadata.pinned_at),
     projectId: readBindingString(record, parsedMetadata, "projectId", "project_id"),
+    projectName: readBindingString(record, parsedMetadata, "projectName", "project_name"),
     workspaceId: readBindingString(record, parsedMetadata, "workspaceId", "workspace_id"),
     workspacePath: readBindingString(record, parsedMetadata, "workspacePath", "workspace_path"),
+    workspaceDisplayName: readBindingString(record, parsedMetadata, "workspaceDisplayName", "workspace_display_name"),
+    workspacePinned: Boolean(record.workspacePinned ?? record.workspace_pinned ?? parsedMetadata.workspacePinned ?? parsedMetadata.workspace_pinned),
+    workspacePinnedAt: normalizeUtcTimestamp(record.workspacePinnedAt || record.workspace_pinned_at || parsedMetadata.workspacePinnedAt || parsedMetadata.workspace_pinned_at),
     scopeHint: readBindingString(record, parsedMetadata, "scopeHint", "scope_hint"),
     scopeMode: readBindingString(record, parsedMetadata, "scopeMode", "scope_mode"),
     resolvedScope: readBindingString(record, parsedMetadata, "resolvedScope", "resolved_scope"),
@@ -418,14 +440,20 @@ function workspaceGroupIdentity(
     .find((tag) => tag.startsWith("project:") || tag.startsWith("workspace:")) || "";
   const scope = item.resolvedScope || scopeTag;
   const creationBinding = explicitCreationBinding(item);
+  const displayLabel = item.workspaceDisplayName || item.projectName;
+  const workspacePinned = Boolean(item.workspacePinned);
+  const workspacePinnedAt = item.workspacePinnedAt;
 
   if (item.projectId || scope.startsWith("project:")) {
     const id = item.projectId || scope;
     return {
       key: `project:${id}`,
-      label: labelFromProjectId(id),
+      label: displayLabel || labelFromProjectId(id),
       kind: "project",
       creationBinding: item.projectId ? creationBinding : null,
+      workspacePath: item.workspacePath,
+      pinned: workspacePinned,
+      pinnedAt: workspacePinnedAt,
     };
   }
 
@@ -434,9 +462,12 @@ function workspaceGroupIdentity(
     const fallback = scope.startsWith("workspace:external:") ? labels.externalWorkspace : labels.workspace;
     return {
       key: `workspace:path:${key}`,
-      label: scope === "workspace:main" ? labels.mainWorkspace : basenameFromPath(item.workspacePath) || fallback,
+      label: displayLabel || (scope === "workspace:main" ? labels.mainWorkspace : basenameFromPath(item.workspacePath) || fallback),
       kind: "workspace",
       creationBinding,
+      workspacePath: item.workspacePath,
+      pinned: workspacePinned,
+      pinnedAt: workspacePinnedAt,
     };
   }
 
@@ -444,9 +475,12 @@ function workspaceGroupIdentity(
     const id = item.workspaceId || scope.replace(/^workspace:/i, "");
     return {
       key: `workspace:${id || scope}`,
-      label: id === "main" || scope === "workspace:main" ? labels.mainWorkspace : id || labels.workspace,
+      label: displayLabel || (id === "main" || scope === "workspace:main" ? labels.mainWorkspace : id || labels.workspace),
       kind: "workspace",
       creationBinding: item.workspaceId ? creationBinding : null,
+      workspacePath: item.workspacePath,
+      pinned: workspacePinned,
+      pinnedAt: workspacePinnedAt,
     };
   }
 
@@ -455,6 +489,7 @@ function workspaceGroupIdentity(
     label: labels.unbound,
     kind: "unbound",
     creationBinding: null,
+    pinned: false,
   };
 }
 
@@ -468,14 +503,40 @@ export function groupSessionHistoryByWorkspace<T extends AuthoritativeSessionHis
     const existing = groups.get(identity.key);
     if (existing) {
       existing.items.push(item);
-      if (!existing.creationBinding && identity.creationBinding) {
-        existing.creationBinding = identity.creationBinding;
+      if (identity.creationBinding) {
+        existing.creationBinding = existing.creationBinding
+          ? {
+              ...identity.creationBinding,
+              ...existing.creationBinding,
+              scopeMode: "explicit",
+            }
+          : identity.creationBinding;
+      }
+      if (!existing.workspacePath && identity.workspacePath) {
+        existing.workspacePath = identity.workspacePath;
+      }
+      if (identity.pinned && !existing.pinned) {
+        existing.pinned = true;
+        existing.pinnedAt = identity.pinnedAt;
+      }
+      if (!existing.label && identity.label) {
+        existing.label = identity.label;
       }
     } else {
       groups.set(identity.key, { ...identity, items: [item] });
     }
   }
-  return Array.from(groups.values()).sort((left, right) => {
+  return Array.from(groups.values()).map((group) => ({
+    ...group,
+    items: sortHistoryItems(group.items) as T[],
+  })).sort((left, right) => {
+    if (left.pinned !== right.pinned) {
+      return left.pinned ? -1 : 1;
+    }
+    const pinnedOrder = String(right.pinnedAt || "").localeCompare(String(left.pinnedAt || ""));
+    if (pinnedOrder !== 0) {
+      return pinnedOrder;
+    }
     const leftTime = left.items[0]?.historySortAt || left.items[0]?.createdAt || "";
     const rightTime = right.items[0]?.historySortAt || right.items[0]?.createdAt || "";
     return rightTime.localeCompare(leftTime);

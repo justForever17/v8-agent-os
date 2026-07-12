@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -24,6 +24,8 @@ export function HistoryDrawer({
     onNewConversation,
     onCreateConversationInGroup,
     creatingGroupKey,
+    onUpdateConversationPresentation,
+    onUpdateWorkspacePresentation,
     onDeleteConversation,
 }: {
     visible: boolean;
@@ -37,6 +39,8 @@ export function HistoryDrawer({
     onNewConversation: () => void;
     onCreateConversationInGroup: (group: ConversationWorkspaceGroup) => void;
     creatingGroupKey?: string | null;
+    onUpdateConversationPresentation: (item: ConversationSummary, patch: { title?: string; pinned?: boolean }) => Promise<boolean>;
+    onUpdateWorkspacePresentation: (group: ConversationWorkspaceGroup, patch: { displayName?: string; pinned?: boolean }) => Promise<boolean>;
     onDeleteConversation: (item: ConversationSummary) => void;
 }) {
     const insets = useSafeAreaInsets();
@@ -46,6 +50,11 @@ export function HistoryDrawer({
     const panelWidth = Math.min(width * 0.86, 352);
     const groups = useMemo(() => groupedItems || groupConversationsByWorkspace(items, locale), [groupedItems, items, locale]);
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+    const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+    const [sessionTitleDraft, setSessionTitleDraft] = useState("");
+    const [editingGroupKey, setEditingGroupKey] = useState<string | null>(null);
+    const [groupNameDraft, setGroupNameDraft] = useState("");
+    const [presentationBusyKey, setPresentationBusyKey] = useState<string | null>(null);
     const suppressNextPressRef = useRef<string | null>(null);
 
     useEffect(() => {
@@ -84,12 +93,85 @@ export function HistoryDrawer({
             item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) }),
             t("shared.conversation.history_actions"),
             [
+                {
+                    text: t("shared.conversation.rename_task"),
+                    onPress: () => {
+                        setSessionTitleDraft(item.title || "");
+                        setEditingSessionId(canonicalSessionId);
+                    },
+                },
+                {
+                    text: t(item.pinned ? "shared.conversation.unpin_task" : "shared.conversation.pin_task"),
+                    onPress: () => void toggleConversationPin(item),
+                },
                 { text: t("shared.conversation.continue_in_new_session"), onPress: () => onContinueConversation(item) },
                 { text: t("shared.conversation.copy_session_id"), onPress: () => void copySessionId(item) },
                 { text: t("src.screens.chatscreen.delete_conversation"), style: "destructive", onPress: () => onDeleteConversation(item) },
                 { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
             ],
         );
+    };
+
+    const openWorkspaceActions = (group: ConversationWorkspaceGroup) => {
+        if (!group.workspacePath) return;
+        Alert.alert(
+            group.label,
+            t("shared.workspace.project_actions"),
+            [
+                {
+                    text: t("shared.workspace.rename_project"),
+                    onPress: () => {
+                        setGroupNameDraft(group.label);
+                        setEditingGroupKey(group.key);
+                    },
+                },
+                {
+                    text: t(group.pinned ? "shared.workspace.unpin_project" : "shared.workspace.pin_project"),
+                    onPress: () => void toggleWorkspacePin(group),
+                },
+                { text: t("src.components.chat.mediaviewerlightbox.cancel"), style: "cancel" },
+            ],
+        );
+    };
+
+    const saveConversationRename = async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        const title = sessionTitleDraft.trim();
+        if (!title || title === item.title) {
+            setEditingSessionId(null);
+            return;
+        }
+        setPresentationBusyKey(`session:${canonicalSessionId}`);
+        const saved = await onUpdateConversationPresentation(item, { title });
+        setPresentationBusyKey(null);
+        if (saved) setEditingSessionId(null);
+    };
+
+    const toggleConversationPin = async (item: ConversationSummary) => {
+        const canonicalSessionId = item.sessionId || item.id;
+        if (presentationBusyKey) return;
+        setPresentationBusyKey(`session:${canonicalSessionId}`);
+        await onUpdateConversationPresentation(item, { pinned: !item.pinned });
+        setPresentationBusyKey(null);
+    };
+
+    const saveWorkspaceRename = async (group: ConversationWorkspaceGroup) => {
+        const displayName = groupNameDraft.trim();
+        if (!displayName || displayName === group.label) {
+            setEditingGroupKey(null);
+            return;
+        }
+        setPresentationBusyKey(`group:${group.key}`);
+        const saved = await onUpdateWorkspacePresentation(group, { displayName });
+        setPresentationBusyKey(null);
+        if (saved) setEditingGroupKey(null);
+    };
+
+    const toggleWorkspacePin = async (group: ConversationWorkspaceGroup) => {
+        if (presentationBusyKey) return;
+        setPresentationBusyKey(`group:${group.key}`);
+        await onUpdateWorkspacePresentation(group, { pinned: !group.pinned });
+        setPresentationBusyKey(null);
     };
 
     return (
@@ -142,6 +224,7 @@ export function HistoryDrawer({
                                                 <Pressable
                                                     style={styles.groupToggle}
                                                     onPress={() => toggleGroup(group.key)}
+                                                    onLongPress={() => openWorkspaceActions(group)}
                                                     accessibilityRole="button"
                                                     accessibilityState={{ expanded: Boolean(isOpen) }}
                                                 >
@@ -150,8 +233,44 @@ export function HistoryDrawer({
                                                         size={16}
                                                         color={colors.textMuted}
                                                     />
-                                                    <Text style={[styles.groupTitle, { color: colors.textMuted }]} numberOfLines={1}>{group.label}</Text>
+                                                    {editingGroupKey === group.key ? (
+                                                        <TextInput
+                                                            autoFocus
+                                                            value={groupNameDraft}
+                                                            maxLength={80}
+                                                            returnKeyType="done"
+                                                            selectTextOnFocus
+                                                            style={[styles.inlineInput, styles.groupInlineInput, { color: colors.text, borderColor: colors.primary, backgroundColor: colors.surfaceStrong }]}
+                                                            onChangeText={setGroupNameDraft}
+                                                            onSubmitEditing={() => void saveWorkspaceRename(group)}
+                                                            onBlur={() => setEditingGroupKey(null)}
+                                                            accessibilityLabel={t("shared.workspace.rename_project")}
+                                                        />
+                                                    ) : (
+                                                        <Text style={[styles.groupTitle, { color: colors.textMuted }]} numberOfLines={1}>{group.label}</Text>
+                                                    )}
                                                 </Pressable>
+                                                {group.workspacePath ? (
+                                                    <Pressable
+                                                        style={styles.groupCreateButton}
+                                                        onPress={() => void toggleWorkspacePin(group)}
+                                                        disabled={Boolean(presentationBusyKey)}
+                                                        accessibilityRole="button"
+                                                        accessibilityState={{ selected: group.pinned, disabled: Boolean(presentationBusyKey) }}
+                                                        accessibilityLabel={t(group.pinned ? "shared.workspace.unpin_project" : "shared.workspace.pin_project")}
+                                                        hitSlop={4}
+                                                    >
+                                                        {presentationBusyKey === `group:${group.key}` ? (
+                                                            <ActivityIndicator size="small" color={colors.primary} />
+                                                        ) : (
+                                                            <MaterialCommunityIcons
+                                                                name={group.pinned ? "pin" : "pin-outline"}
+                                                                size={19}
+                                                                color={group.pinned ? colors.primary : colors.textMuted}
+                                                            />
+                                                        )}
+                                                    </Pressable>
+                                                ) : null}
                                                 {group.creationBinding ? (
                                                     <Pressable
                                                         style={styles.groupCreateButton}
@@ -184,13 +303,16 @@ export function HistoryDrawer({
                                                                 { backgroundColor: active ? colors.primarySoft : "transparent" },
                                                             ]}
                                                             onPress={() => {
+                                                                if (editingSessionId === canonicalSessionId) {
+                                                                    return;
+                                                                }
                                                                 if (suppressNextPressRef.current === canonicalSessionId) {
                                                                     suppressNextPressRef.current = null;
                                                                     return;
                                                                 }
                                                                 onSelectConversation(item);
                                                             }}
-                                                            onLongPress={() => openConversationActions(item)}
+                                                            onLongPress={() => editingSessionId !== canonicalSessionId && openConversationActions(item)}
                                                         >
                                                             <MaterialCommunityIcons
                                                                 name="message-outline"
@@ -199,9 +321,27 @@ export function HistoryDrawer({
                                                             />
                                                             <View style={styles.itemBody}>
                                                                 <View style={styles.itemTitleRow}>
-                                                                    <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text, flex: 1 }]} numberOfLines={1}>
-                                                                        {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
-                                                                    </Text>
+                                                                    {editingSessionId === canonicalSessionId ? (
+                                                                        <TextInput
+                                                                            autoFocus
+                                                                            value={sessionTitleDraft}
+                                                                            maxLength={80}
+                                                                            returnKeyType="done"
+                                                                            selectTextOnFocus
+                                                                            style={[styles.inlineInput, { color: colors.text, borderColor: colors.primary, backgroundColor: colors.surfaceStrong }]}
+                                                                            onChangeText={setSessionTitleDraft}
+                                                                            onSubmitEditing={() => void saveConversationRename(item)}
+                                                                            onBlur={() => setEditingSessionId(null)}
+                                                                            accessibilityLabel={t("shared.conversation.rename_task")}
+                                                                        />
+                                                                    ) : (
+                                                                        <Text style={[styles.itemTitle, { color: active ? colors.primaryDeep : colors.text, flex: 1 }]} numberOfLines={1}>
+                                                                            {item.title || t("shared.conversation.fallback_title", { id: canonicalSessionId.slice(0, 8) })}
+                                                                        </Text>
+                                                                    )}
+                                                                    {item.pinned && editingSessionId !== canonicalSessionId ? (
+                                                                        <MaterialCommunityIcons name="pin" size={14} color={colors.primary} />
+                                                                    ) : null}
                                                                     {activityState === "active" ? (
                                                                         <ActivityIndicator size="small" color={colors.primary} style={styles.itemTitleSpinner} />
                                                                     ) : null}
@@ -344,6 +484,20 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: "800",
         flex: 1,
+    },
+    inlineInput: {
+        flex: 1,
+        minHeight: 36,
+        borderWidth: 1,
+        borderRadius: 10,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        fontSize: 14,
+        fontWeight: "800",
+    },
+    groupInlineInput: {
+        minHeight: 34,
+        fontSize: 12,
     },
     groupCreateButton: {
         width: 44,

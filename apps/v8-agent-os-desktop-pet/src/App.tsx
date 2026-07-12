@@ -108,7 +108,7 @@ function latestRunningConversation(conversations: V8Conversation[]) {
 
 function projectNameForConversation(conversation: unknown) {
   const record = conversation && typeof conversation === 'object' ? conversation as Record<string, unknown> : {};
-  const direct = String(record.projectName || record.projectId || '').trim();
+  const direct = String(record.workspaceDisplayName || record.projectName || record.projectId || '').trim();
   if (direct) return direct;
   const workspacePath = String(record.workspacePath || '').trim();
   if (!workspacePath) return 'V8OS';
@@ -2040,6 +2040,10 @@ If the user uploaded an image representation (which represents what you 'see' th
               title: String(conversation.title || '未命名会话'),
               projectName: projectNameForConversation(conversation),
               workspacePath: conversation.workspacePath || null,
+              workspacePinned: Boolean(conversation.workspacePinned),
+              workspacePinnedAt: conversation.workspacePinnedAt || null,
+              pinned: Boolean(conversation.pinned),
+              pinnedAt: conversation.pinnedAt || null,
               running: isConversationRunning(conversation),
               status: conversation.status || null,
             })),

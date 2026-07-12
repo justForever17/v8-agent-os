@@ -14,8 +14,11 @@ import {
     ChevronRight,
     Loader2,
     AlertCircle,
+    Pencil,
+    Pin,
+    PinOff,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { cn } from "@/lib/utils";
 import {
     Dialog,
@@ -32,7 +35,14 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/lib/conversation-groups";
 
 export function Sidebar() {
-    const { conversations, createConversation, deleteConversation } = useConversationContext();
+    const {
+        conversations,
+        createConversation,
+        deleteConversation,
+        patchConversationSummary,
+        refreshConversations,
+        updateConversationPresentation,
+    } = useConversationContext();
     const router = useRouter();
     const searchParams = useSearchParams();
     const currentId = searchParams.get("id");
@@ -44,13 +54,24 @@ export function Sidebar() {
     const [creatingGroupKey, setCreatingGroupKey] = useState<string | null>(null);
     const [createError, setCreateError] = useState("");
     const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
+    const [groupContextMenu, setGroupContextMenu] = useState<{ groupKey: string; x: number; y: number } | null>(null);
     const [copiedSessionId, setCopiedSessionId] = useState<string | null>(null);
+    const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+    const [sessionTitleDraft, setSessionTitleDraft] = useState("");
+    const [editingGroupKey, setEditingGroupKey] = useState<string | null>(null);
+    const [groupNameDraft, setGroupNameDraft] = useState("");
+    const [presentationBusyKey, setPresentationBusyKey] = useState<string | null>(null);
+    const sessionTitleInputRef = useRef<HTMLInputElement | null>(null);
+    const groupNameInputRef = useRef<HTMLInputElement | null>(null);
 
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
     useEffect(() => {
-        if (!contextMenu) return;
-        const close = () => setContextMenu(null);
+        if (!contextMenu && !groupContextMenu) return;
+        const close = () => {
+            setContextMenu(null);
+            setGroupContextMenu(null);
+        };
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
                 close();
@@ -64,7 +85,21 @@ export function Sidebar() {
             window.removeEventListener("scroll", close, true);
             window.removeEventListener("keydown", handleKeyDown);
         };
-    }, [contextMenu]);
+    }, [contextMenu, groupContextMenu]);
+
+    useEffect(() => {
+        if (editingSessionId) {
+            sessionTitleInputRef.current?.focus();
+            sessionTitleInputRef.current?.select();
+        }
+    }, [editingSessionId]);
+
+    useEffect(() => {
+        if (editingGroupKey) {
+            groupNameInputRef.current?.focus();
+            groupNameInputRef.current?.select();
+        }
+    }, [editingGroupKey]);
 
     useEffect(() => {
         if (!copiedSessionId) return;
@@ -98,10 +133,23 @@ export function Sidebar() {
         event.preventDefault();
         event.stopPropagation();
         const width = 184;
-        const height = 132;
+        const height = 220;
         const x = Math.min(event.clientX, Math.max(8, window.innerWidth - width - 8));
         const y = Math.min(event.clientY, Math.max(8, window.innerHeight - height - 8));
+        setGroupContextMenu(null);
         setContextMenu({ sessionId, x, y });
+    };
+
+    const openGroupMenu = (event: MouseEvent<HTMLDivElement>, group: ConversationWorkspaceGroup) => {
+        if (!group.workspacePath) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const width = 192;
+        const height = 104;
+        const x = Math.min(event.clientX, Math.max(8, window.innerWidth - width - 8));
+        const y = Math.min(event.clientY, Math.max(8, window.innerHeight - height - 8));
+        setContextMenu(null);
+        setGroupContextMenu({ groupKey: group.key, x, y });
     };
 
     const copySessionId = async (sessionId: string) => {
@@ -117,6 +165,90 @@ export function Sidebar() {
         setContextMenu(null);
         setIsMobileOpen(false);
         router.push(`/chat?new=1&contextSessionId=${encodeURIComponent(sessionId)}`);
+    };
+
+    const beginSessionRename = (sessionId: string) => {
+        const conversation = conversations.find((item) => (item.sessionId || item.id) === sessionId);
+        if (!conversation) return;
+        setContextMenu(null);
+        setSessionTitleDraft(conversation.title || "");
+        setEditingSessionId(sessionId);
+    };
+
+    const saveSessionRename = async (sessionId: string, requestedTitle: string) => {
+        const title = requestedTitle.trim();
+        const current = conversations.find((item) => (item.sessionId || item.id) === sessionId);
+        setEditingSessionId(null);
+        if (!title || !current || title === current.title || presentationBusyKey) return;
+        const previousTitle = current.title;
+        patchConversationSummary(sessionId, { title });
+        setPresentationBusyKey(`session:${sessionId}`);
+        const updated = await updateConversationPresentation(sessionId, { title });
+        setPresentationBusyKey(null);
+        if (!updated) {
+            patchConversationSummary(sessionId, { title: previousTitle });
+            setCreateError(t("web.sidebar.taskUpdateFailed"));
+        }
+    };
+
+    const toggleSessionPin = async (sessionId: string) => {
+        const current = conversations.find((item) => (item.sessionId || item.id) === sessionId);
+        if (!current || presentationBusyKey) return;
+        setContextMenu(null);
+        setPresentationBusyKey(`session:${sessionId}`);
+        const updated = await updateConversationPresentation(sessionId, { pinned: !current.pinned });
+        setPresentationBusyKey(null);
+        if (!updated) {
+            setCreateError(t("web.sidebar.taskUpdateFailed"));
+        }
+    };
+
+    const beginGroupRename = (group: ConversationWorkspaceGroup) => {
+        if (!group.workspacePath) return;
+        setGroupContextMenu(null);
+        setGroupNameDraft(group.label);
+        setEditingGroupKey(group.key);
+    };
+
+    const updateGroupPresentation = async (group: ConversationWorkspaceGroup, patch: { displayName?: string; pinned?: boolean }) => {
+        if (!group.workspacePath || presentationBusyKey) return false;
+        setPresentationBusyKey(`group:${group.key}`);
+        try {
+            const response = await fetch("/api/workspace-presentations", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ workspacePath: group.workspacePath, ...patch }),
+            });
+            if (!response.ok) {
+                throw new Error(`workspace presentation update failed: ${response.status}`);
+            }
+            await refreshConversations();
+            return true;
+        } catch (error) {
+            console.error("Failed to update workspace presentation", error);
+            setCreateError(t("web.sidebar.projectUpdateFailed"));
+            return false;
+        } finally {
+            setPresentationBusyKey(null);
+        }
+    };
+
+    const saveGroupRename = async (group: ConversationWorkspaceGroup, requestedName: string) => {
+        const displayName = requestedName.trim();
+        if (!displayName || displayName === group.label) {
+            setEditingGroupKey(null);
+            return;
+        }
+        if (await updateGroupPresentation(group, { displayName })) {
+            setEditingGroupKey(null);
+        }
+    };
+
+    const toggleGroupPin = async (event: MouseEvent<HTMLButtonElement> | null, group: ConversationWorkspaceGroup) => {
+        event?.preventDefault();
+        event?.stopPropagation();
+        setGroupContextMenu(null);
+        await updateGroupPresentation(group, { pinned: !group.pinned });
     };
 
     const confirmDelete = async () => {
@@ -155,24 +287,71 @@ export function Sidebar() {
                     <div
                         className="group/header mb-1 flex cursor-pointer items-center rounded-md px-3 py-1.5 transition-colors hover:bg-accent/40"
                         onClick={() => toggleGroup(group.key)}
+                        onContextMenu={(event) => openGroupMenu(event, group)}
                     >
                         {isOpen ? (
                             <ChevronDown className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
                         ) : (
                             <ChevronRight className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
                         )}
-                        <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</span>
-                        {group.creationBinding ? (
-                            <button
-                                type="button"
-                                className="ml-auto inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60"
-                                onClick={(event) => void createConversationInGroup(event, group)}
-                                disabled={Boolean(creatingGroupKey)}
-                                aria-label={t("web.sidebar.createInWorkspace", { value0: group.label })}
-                                title={t("web.sidebar.createInWorkspace", { value0: group.label })}
-                            >
-                                {creatingGroupKey === group.key ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                            </button>
+                        {editingGroupKey === group.key ? (
+                            <input
+                                ref={groupNameInputRef}
+                                value={groupNameDraft}
+                                maxLength={80}
+                                className="h-7 min-w-0 flex-1 rounded-md border border-primary/40 bg-background px-2 text-xs font-semibold text-foreground outline-none ring-2 ring-primary/15"
+                                onClick={(event) => event.stopPropagation()}
+                                onChange={(event) => setGroupNameDraft(event.target.value)}
+                                onBlur={() => setEditingGroupKey(null)}
+                                onKeyDown={(event) => {
+                                    event.stopPropagation();
+                                    if (event.key === "Enter") {
+                                        event.preventDefault();
+                                        void saveGroupRename(group, groupNameDraft);
+                                    }
+                                    if (event.key === "Escape") {
+                                        event.preventDefault();
+                                        setEditingGroupKey(null);
+                                    }
+                                }}
+                                aria-label={t("web.sidebar.renameProject")}
+                            />
+                        ) : (
+                            <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">{group.label}</span>
+                        )}
+                        {group.workspacePath ? (
+                            <div className="ml-auto flex shrink-0 items-center">
+                                <button
+                                    type="button"
+                                    className={cn(
+                                        "inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60",
+                                        group.pinned ? "text-primary hover:bg-primary/12" : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
+                                    )}
+                                    onClick={(event) => void toggleGroupPin(event, group)}
+                                    disabled={Boolean(presentationBusyKey)}
+                                    aria-pressed={group.pinned}
+                                    aria-label={t(group.pinned ? "web.sidebar.unpinProject" : "web.sidebar.pinProject")}
+                                    title={t(group.pinned ? "web.sidebar.unpinProject" : "web.sidebar.pinProject")}
+                                >
+                                    {presentationBusyKey === `group:${group.key}` ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                        <Pin className={cn("h-4 w-4", group.pinned && "fill-current")} />
+                                    )}
+                                </button>
+                                {group.creationBinding ? (
+                                    <button
+                                        type="button"
+                                        className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60"
+                                        onClick={(event) => void createConversationInGroup(event, group)}
+                                        disabled={Boolean(creatingGroupKey)}
+                                        aria-label={t("web.sidebar.createInWorkspace", { value0: group.label })}
+                                        title={t("web.sidebar.createInWorkspace", { value0: group.label })}
+                                    >
+                                        {creatingGroupKey === group.key ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                                    </button>
+                                ) : null}
+                            </div>
                         ) : null}
                     </div>
                 )}
@@ -212,7 +391,32 @@ export function Sidebar() {
                                             <>
                                                 <div className="min-w-0 flex-1">
                                                     <span className="flex min-w-0 items-center gap-2">
-                                                        <span className="block min-w-0 flex-1 truncate text-sm">{conv.title || t("web.generated.fca06b0605")}</span>
+                                                        {editingSessionId === canonicalSessionId ? (
+                                                            <input
+                                                                ref={sessionTitleInputRef}
+                                                                value={sessionTitleDraft}
+                                                                maxLength={80}
+                                                                className="h-7 min-w-0 flex-1 rounded-md border border-primary/40 bg-background px-2 text-sm text-foreground outline-none ring-2 ring-primary/15"
+                                                                onClick={(event) => event.stopPropagation()}
+                                                                onChange={(event) => setSessionTitleDraft(event.target.value)}
+                                                                onBlur={() => setEditingSessionId(null)}
+                                                                onKeyDown={(event) => {
+                                                                    event.stopPropagation();
+                                                                    if (event.key === "Enter") {
+                                                                        event.preventDefault();
+                                                                        void saveSessionRename(canonicalSessionId, sessionTitleDraft);
+                                                                    }
+                                                                    if (event.key === "Escape") {
+                                                                        event.preventDefault();
+                                                                        setEditingSessionId(null);
+                                                                    }
+                                                                }}
+                                                                aria-label={t("web.sidebar.renameTask")}
+                                                            />
+                                                        ) : (
+                                                            <span className="block min-w-0 flex-1 truncate text-sm">{conv.title || t("web.generated.fca06b0605")}</span>
+                                                        )}
+                                                        {conv.pinned && editingSessionId !== canonicalSessionId ? <Pin className="h-3.5 w-3.5 shrink-0 fill-current text-primary/75" /> : null}
                                                         {activityState === "active" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
                                                         {activityState === "failed" && <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
                                                     </span>
@@ -303,6 +507,13 @@ export function Sidebar() {
         </div>
     );
 
+    const contextConversation = contextMenu
+        ? conversations.find((item) => (item.sessionId || item.id) === contextMenu.sessionId) || null
+        : null;
+    const contextGroup = groupContextMenu
+        ? groupedConvs.find((group) => group.key === groupContextMenu.groupKey) || null
+        : null;
+
     return (
         <>
             <div
@@ -361,6 +572,22 @@ export function Sidebar() {
                     <button
                         type="button"
                         className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
+                        onClick={() => beginSessionRename(contextMenu.sessionId)}
+                    >
+                        <Pencil className="h-4 w-4 text-muted-foreground" />
+                        <span>{t("web.sidebar.renameTask")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
+                        onClick={() => void toggleSessionPin(contextMenu.sessionId)}
+                    >
+                        {contextConversation?.pinned ? <PinOff className="h-4 w-4 text-muted-foreground" /> : <Pin className="h-4 w-4 text-muted-foreground" />}
+                        <span>{t(contextConversation?.pinned ? "web.sidebar.unpinTask" : "web.sidebar.pinTask")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
                         onClick={() => void copySessionId(contextMenu.sessionId)}
                     >
                         <Copy className="h-4 w-4 text-muted-foreground" />
@@ -384,6 +611,31 @@ export function Sidebar() {
                     >
                         <Trash2 className="h-4 w-4" />
                         <span>{t("web.sidebar.deleteConversation")}</span>
+                    </button>
+                </div>
+            )}
+
+            {groupContextMenu && contextGroup && (
+                <div
+                    className="fixed z-[80] w-[192px] overflow-hidden rounded-xl border border-border/70 bg-background/95 p-1 text-sm shadow-2xl backdrop-blur-xl"
+                    style={{ left: groupContextMenu.x, top: groupContextMenu.y }}
+                    onClick={(event) => event.stopPropagation()}
+                >
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
+                        onClick={() => beginGroupRename(contextGroup)}
+                    >
+                        <Pencil className="h-4 w-4 text-muted-foreground" />
+                        <span>{t("web.sidebar.renameProject")}</span>
+                    </button>
+                    <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-foreground transition hover:bg-accent"
+                        onClick={() => void toggleGroupPin(null, contextGroup)}
+                    >
+                        {contextGroup.pinned ? <PinOff className="h-4 w-4 text-muted-foreground" /> : <Pin className="h-4 w-4 text-muted-foreground" />}
+                        <span>{t(contextGroup.pinned ? "web.sidebar.unpinProject" : "web.sidebar.pinProject")}</span>
                     </button>
                 </div>
             )}

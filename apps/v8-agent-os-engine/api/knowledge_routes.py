@@ -822,7 +822,36 @@ async def list_projects():
             "defaultProjectId": storage.get_projects_registry().get("defaultProjectId"),
             "mainWorkspacePath": workspace_resolution_service.get_main_workspace_path(),
             "projects": [item.model_dump(by_alias=True, exclude_none=True) for item in project_registry_service.list_projects()],
+            "workspacePresentations": project_registry_service.list_workspace_presentations(),
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workspace-presentations")
+async def list_workspace_presentations():
+    try:
+        return {"items": project_registry_service.list_workspace_presentations()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/workspace-presentations")
+async def update_workspace_presentation(payload: dict = Body(...)):
+    try:
+        workspace_path = str(payload.get("workspacePath") or payload.get("workspace_path") or "").strip()
+        updates = {
+            key: payload[key]
+            for key in ("displayName", "display_name", "pinned")
+            if key in payload
+        }
+        if not updates:
+            raise HTTPException(status_code=400, detail="workspace_presentation_update_required")
+        return project_registry_service.patch_workspace_presentation(workspace_path, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

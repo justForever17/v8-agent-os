@@ -3,9 +3,8 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { Download, ExternalLink, FileWarning } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
+import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { getWorkbenchDocumentPayload, type ArtifactWorkbenchDocument } from "@/lib/workbench";
 import { normalizeRuntimeArtifact, resolveRuntimeArtifactUrl, type RuntimeArtifact } from "@/lib/artifacts";
 
@@ -88,7 +87,7 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
         if (document.renderer === "pdf" && resourceUrl) return <iframe title={document.title} src={resourceUrl} className="h-full w-full border-0 bg-white" />;
         if (document.renderer === "model_3d" && resourceUrl) return <ModelViewer src={resourceUrl} className="h-full min-h-[420px] w-full rounded-none border-0" />;
         if (document.renderer === "html" && text) return <iframe title={document.title} srcDoc={safeHtmlPreview(text)} sandbox="" className="h-full w-full border-0 bg-white" />;
-        if (document.renderer === "markdown" && text) return <article className="prose prose-sm dark:prose-invert mx-auto max-w-3xl px-6 py-5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown></article>;
+        if (document.renderer === "markdown" && text) return <article className="mx-auto max-w-3xl px-6 py-5"><MarkdownRenderer content={text} surface="document" /></article>;
         if ((document.renderer === "code" || document.renderer === "text") && text) return <pre className="min-h-full overflow-auto whitespace-pre p-4 font-mono text-[12px] leading-5"><code>{text}</code></pre>;
         return (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center text-sm text-muted-foreground">

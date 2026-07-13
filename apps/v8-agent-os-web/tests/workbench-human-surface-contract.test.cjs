@@ -85,7 +85,7 @@ test("Workbench file reading reuses Markdown rendering, locates search matches, 
   const renderer = readText("apps/v8-agent-os-web/src/components/workbench/WorkspaceFileRenderer.tsx");
   const markdown = readText("apps/v8-agent-os-web/src/components/chat/MarkdownRenderer.tsx");
   const chat = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
-  assert.match(renderer, /<MarkdownRenderer content=\{content\} searchQuery=\{query\}/);
+  assert.match(renderer, /<MarkdownRenderer content=\{content\} searchQuery=\{query\} surface="document"/);
   assert.match(renderer, /data-workbench-search-match/);
   assert.match(renderer, /focusMatch/);
   assert.match(renderer, /WorkspaceFileLineComment/);
@@ -94,6 +94,9 @@ test("Workbench file reading reuses Markdown rendering, locates search matches, 
   assert.doesNotMatch(renderer, /allow-same-origin/);
   assert.match(renderer, /MessageSquarePlus/);
   assert.match(markdown, /data-workbench-search-match/);
+  assert.match(markdown, /surface === "document"/);
+  assert.match(markdown, /whitespace-pre-wrap/);
+  assert.match(markdown, /w-max min-w-full/);
   assert.match(chat, /messageOverride/);
   assert.match(chat, /handleFileLineComment/);
   assert.match(chat, /reference\.path/);

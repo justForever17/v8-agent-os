@@ -274,7 +274,7 @@ export function WorkspaceFileRenderer({
                         {document.renderer === "html" && showPreview ? (
                             <iframe title={payload.name} srcDoc={safeHtmlPreview(content)} sandbox="allow-scripts" className="h-full min-h-[360px] w-full border-0 bg-white" />
                         ) : document.renderer === "markdown" && showPreview ? (
-                            <article className="mx-auto max-w-3xl px-6 py-5"><MarkdownRenderer content={content} searchQuery={query} /></article>
+                            <article className="mx-auto max-w-3xl px-6 py-5"><MarkdownRenderer content={content} searchQuery={query} surface="document" /></article>
                         ) : (
                             <div className="min-w-max py-2 font-mono text-[12px] leading-5">
                                 {(payload.lines || []).map((item) => (

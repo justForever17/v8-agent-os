@@ -297,6 +297,7 @@ CodeBlock.displayName = 'CodeBlock';
 interface MarkdownRendererProps {
     content: string;
     searchQuery?: string;
+    surface?: "message" | "document";
 }
 
 type MarkdownAstNode = {
@@ -349,13 +350,14 @@ function createSearchHighlightPlugin(query: string) {
     };
 }
 
-export const MarkdownRenderer = memo(({ content, searchQuery = "" }: MarkdownRendererProps) => {
+export const MarkdownRenderer = memo(({ content, searchQuery = "", surface = "message" }: MarkdownRendererProps) => {
     // 防抖 10ms 避免高频流式更新
     const debouncedContent = useDebouncedValue(content, 10);
     const [workspaceAssetBaseUrl, setWorkspaceAssetBaseUrl] = useState(() => cachedWorkspaceAssetBaseUrl);
     const sessionId = useWorkbenchStore((state) => state.sessionId);
 
     useEffect(() => {
+        if (surface === "document") return;
         let active = true;
         void loadWorkspaceAssetBaseUrl().then((next) => {
             if (!active || !next || next === workspaceAssetBaseUrl) {
@@ -366,12 +368,14 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "" }: MarkdownRen
         return () => {
             active = false;
         };
-    }, [workspaceAssetBaseUrl]);
+    }, [surface, workspaceAssetBaseUrl]);
 
     // 预处理：将纯 URL 转换为 Markdown 链接
     const processedContent = useMemo(
-        () => preprocessContent(debouncedContent, workspaceAssetBaseUrl),
-        [debouncedContent, workspaceAssetBaseUrl]
+        () => surface === "document"
+            ? debouncedContent
+            : preprocessContent(debouncedContent, workspaceAssetBaseUrl),
+        [debouncedContent, surface, workspaceAssetBaseUrl]
     );
     const rehypePlugins = useMemo(
         () => searchQuery.trim() ? [createSearchHighlightPlugin(searchQuery)] : [],
@@ -381,8 +385,21 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "" }: MarkdownRen
     const components = useMemo(() => ({
         pre: ({ children }: ComponentPropsWithoutRef<'pre'>) => <>{children}</>,
         p: ({ children }: ComponentPropsWithoutRef<'p'>) => (
-            <div className="mb-2 last:mb-0">{children}</div>
+            surface === "document"
+                ? <p className="whitespace-pre-wrap">{children}</p>
+                : <div className="mb-2 last:mb-0">{children}</div>
         ),
+        table: ({ children }: ComponentPropsWithoutRef<'table'>) => surface === "document" ? (
+            <div className="my-4 w-full overflow-x-auto rounded-xl border border-border/70 bg-card/60">
+                <table className="m-0 w-max min-w-full border-collapse text-left text-xs">{children}</table>
+            </div>
+        ) : <table>{children}</table>,
+        th: ({ children }: ComponentPropsWithoutRef<'th'>) => surface === "document"
+            ? <th className="whitespace-nowrap border-b border-border bg-muted/55 px-3 py-2 align-top font-semibold text-foreground">{children}</th>
+            : <th>{children}</th>,
+        td: ({ children }: ComponentPropsWithoutRef<'td'>) => surface === "document"
+            ? <td className="whitespace-nowrap border-b border-border/60 px-3 py-2 align-top last:border-b-0">{children}</td>
+            : <td>{children}</td>,
         code: CodeBlock,
         a: ({ href, children }: ComponentPropsWithoutRef<'a'>) => {
             if (!href) return <>{children}</>;
@@ -451,10 +468,16 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "" }: MarkdownRen
             }
             return <ImagePreview src={resolvedSrc} alt={alt} />;
         }
-    }), [sessionId]);
+    }), [sessionId, surface]);
 
     return (
-        <motion.div layout className="prose dark:prose-invert max-w-none text-sm break-words w-full overflow-x-auto leading-relaxed my-1">
+        <motion.div
+            layout={surface !== "document"}
+            className={cn(
+                "prose dark:prose-invert max-w-none text-sm break-words w-full leading-relaxed my-1",
+                surface === "document" ? "prose-sm overflow-visible" : "overflow-x-auto",
+            )}
+        >
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 rehypePlugins={rehypePlugins}
@@ -464,7 +487,7 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "" }: MarkdownRen
             </ReactMarkdown>
         </motion.div>
     );
-}, (prev, next) => prev.content === next.content && prev.searchQuery === next.searchQuery);
+}, (prev, next) => prev.content === next.content && prev.searchQuery === next.searchQuery && prev.surface === next.surface);
 
 MarkdownRenderer.displayName = 'MarkdownRenderer';
 

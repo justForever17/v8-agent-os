@@ -35,6 +35,16 @@ async def prune_storage_retention(payload: dict[str, Any] | None = Body(default=
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.post("/compact")
+async def compact_storage(payload: dict[str, Any] | None = Body(default=None)):
+    try:
+        return storage_retention_service.compact_physical(
+            reason=str((payload or {}).get("reason") or "manual_idle_compaction")
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.post("/config")
 async def save_storage_retention_config(payload: dict[str, Any] = Body(...)):
     try:

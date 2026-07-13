@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import shutil
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from core.observability_db import observability_db
 from core.storage import storage
+from core.storage_backup import StorageBackupService
 from core.v8_agent_os_paths import (
     CHECKPOINT_DB_PATH,
     OBSERVABILITY_DB_PATH,
@@ -20,7 +25,9 @@ from core.v8_agent_os_paths import (
 )
 
 
-ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_approval", "waiting_input", "waiting_external_tool", "paused"}
+RUNNING_RUN_STATUSES = {"queued", "running"}
+RECOVERABLE_RUN_STATUSES = {"waiting_approval", "waiting_input", "waiting_external_tool", "paused", "interrupted"}
+ACTIVE_RUN_STATUSES = RUNNING_RUN_STATUSES | RECOVERABLE_RUN_STATUSES
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 LOG_FILE_SUFFIXES = {".log", ".jsonl", ".html", ".txt"}
 IMAGE_FILE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -46,6 +53,8 @@ STATE_LOG_DELETE_TABLES = (
 )
 DEFAULT_LOG_BUDGET_BYTES = 1 * 1024 * 1024 * 1024
 DEFAULT_CHECKPOINT_BUDGET_BYTES = 4 * 1024 * 1024 * 1024
+RECOVERY_CHECKPOINT_MAX_COUNT = 8
+RECOVERY_CHECKPOINT_MAX_BYTES = 256 * 1024 * 1024
 
 
 def _file_size(path: Path) -> int:
@@ -75,6 +84,27 @@ def _directory_size(path: Path) -> int:
     return total
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _atomic_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _retention_journal_path() -> Path:
+    return V8_AGENT_OS_HOME / "runtime" / "storage-retention-journal.json"
+
+
 @contextmanager
 def _connect(path: Path) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(path, timeout=30)
@@ -90,6 +120,69 @@ class StorageRetentionService:
 
     def get_config(self) -> Dict[str, Any]:
         return storage.get_storage_retention_config()
+
+    @staticmethod
+    def _sqlite_payload_bytes(path: Path, tables: Optional[Iterable[str]] = None) -> int:
+        if not path.exists():
+            return 0
+        total = 0
+        try:
+            with _connect(path) as conn:
+                table_names = list(tables or [])
+                if not table_names:
+                    table_names = [
+                        str(row["name"])
+                        for row in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                        ).fetchall()
+                    ]
+                for table in table_names:
+                    if not StorageRetentionService._table_exists(conn, table):
+                        continue
+                    columns = [row["name"] for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+                    if not columns:
+                        continue
+                    expression = "+".join(
+                        f'COALESCE(length(CAST("{column}" AS BLOB)),0)' for column in columns
+                    )
+                    row = conn.execute(
+                        f'SELECT COALESCE(SUM({expression}),0) AS bytes FROM "{table}"'
+                    ).fetchone()
+                    total += int(row["bytes"] or 0) if row else 0
+        except sqlite3.DatabaseError:
+            return _sqlite_family_size(path)
+        return total
+
+    @staticmethod
+    def _checkpoint_payload_bytes() -> int:
+        return StorageRetentionService._sqlite_payload_bytes(CHECKPOINT_DB_PATH, ("checkpoints", "writes"))
+
+    @staticmethod
+    def _disk_health() -> Dict[str, Any]:
+        V8_AGENT_OS_HOME.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(V8_AGENT_OS_HOME)
+        free_ratio = usage.free / max(1, usage.total)
+        emergency = usage.free < 2 * 1024 * 1024 * 1024 or free_ratio < 0.05
+        return {
+            "totalBytes": int(usage.total),
+            "freeBytes": int(usage.free),
+            "freeRatio": free_ratio,
+            "emergencySafeMode": emergency,
+        }
+
+    @staticmethod
+    def _journal() -> Dict[str, Any]:
+        path = _retention_journal_path()
+        if not path.exists():
+            return {"state": "idle"}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"state": "degraded", "error": "journal_unreadable"}
+
+    @staticmethod
+    def _write_journal(payload: Dict[str, Any]) -> None:
+        _atomic_json(_retention_journal_path(), payload)
 
     def _estimate_state_log_payload_bytes(self) -> int:
         if not STATE_DB_PATH.exists():
@@ -204,17 +297,43 @@ class StorageRetentionService:
 
     def _vector_db_bytes(self) -> int:
         candidates = [
-            V8_AGENT_OS_HOME / "memory" / ".index",
+            V8_AGENT_OS_HOME / "memory" / ".index" / "chroma_db",
             V8_AGENT_OS_HOME / "vector",
             V8_AGENT_OS_HOME / "vectors",
         ]
         return sum(_directory_size(path) for path in candidates if path.exists())
+
+    @staticmethod
+    def _knowledge_db_bytes() -> int:
+        return _sqlite_family_size(V8_AGENT_OS_HOME / "memory" / ".index" / "knowledge.db")
 
     def _governed_total_bytes(self) -> int:
         return (
             _sqlite_family_size(OBSERVABILITY_DB_PATH)
             + _sqlite_family_size(CHECKPOINT_DB_PATH)
             + self._estimate_state_log_payload_bytes()
+            + self._log_files_size()
+        )
+
+    def _governed_logical_bytes(self) -> int:
+        observability_payload = self._sqlite_payload_bytes(
+            OBSERVABILITY_DB_PATH,
+            (
+                "execution_logs",
+                "model_invocation_logs",
+                "provider_health_logs",
+                "prompt_cache_events",
+                "prompt_cache_segments",
+                "llm_response_cache",
+                "tool_observation_records",
+                "conversation_compaction_records",
+                "system_audit_log",
+            ),
+        )
+        return (
+            observability_payload
+            + self._estimate_state_log_payload_bytes()
+            + self._checkpoint_payload_bytes()
             + self._log_files_size()
         )
 
@@ -225,19 +344,70 @@ class StorageRetentionService:
         artifact_bytes = self._artifact_file_bytes()
         screenshot_bytes = self._screenshot_file_bytes()
         vector_db_bytes = self._vector_db_bytes()
+        knowledge_db_bytes = self._knowledge_db_bytes()
+        memory_daily_bytes = _directory_size(V8_AGENT_OS_HOME / "memory" / "daily")
+        memory_workflow_export_bytes = _directory_size(V8_AGENT_OS_HOME / "memory" / "workflows")
+        memory_workflow_db_bytes = self._sqlite_payload_bytes(
+            STATE_DB_PATH,
+            (
+                "memory_workflow_episodes",
+                "memory_workflow_candidates",
+                "memory_workflow_hint_events",
+                "memory_workflow_guide_states",
+            ),
+        )
+        research_experience_bytes = _directory_size(RUNTIME_DATA_HOME / "research")
+        memory_auxiliary_bytes = (
+            memory_daily_bytes
+            + memory_workflow_export_bytes
+            + memory_workflow_db_bytes
+            + research_experience_bytes
+        )
+        state_log_payload_bytes = self._estimate_state_log_payload_bytes()
+        observability_physical = _sqlite_family_size(OBSERVABILITY_DB_PATH)
+        checkpoint_physical = _sqlite_family_size(CHECKPOINT_DB_PATH)
+        checkpoint_logical = self._checkpoint_payload_bytes()
+        try:
+            checkpoint_policy_actions = self._prune_old_checkpoints(dry_run=True)
+        except Exception:
+            checkpoint_policy_actions = []
+        checkpoint_policy = next(
+            (item for item in checkpoint_policy_actions if item.get("action") == "prune_old_checkpoints"),
+            {},
+        )
+        checkpoint_safe_reclaimable = int(checkpoint_policy.get("estimatedLogicalBytes") or 0)
+        checkpoint_fragmentation = max(0, checkpoint_physical - checkpoint_logical)
+        state_physical = _sqlite_family_size(STATE_DB_PATH)
         components = {
-            "observabilityDbBytes": _sqlite_family_size(OBSERVABILITY_DB_PATH),
-            "checkpointDbBytes": _sqlite_family_size(CHECKPOINT_DB_PATH),
-            "stateLogPayloadBytes": self._estimate_state_log_payload_bytes(),
+            "observabilityDbBytes": observability_physical,
+            "checkpointDbBytes": checkpoint_physical,
+            "checkpointLogicalBytes": checkpoint_logical,
+            "checkpointReclaimableBytes": max(checkpoint_fragmentation, checkpoint_safe_reclaimable),
+            "checkpointSafePruneBytes": checkpoint_safe_reclaimable,
+            "checkpointSafePruneCount": int(checkpoint_policy.get("checkpoints") or 0),
+            "stateLogPayloadBytes": state_log_payload_bytes,
             "pluginRuntimeLogBytes": self._log_files_size(),
-            "stateDbBytes": _sqlite_family_size(STATE_DB_PATH),
+            "stateDbBytes": state_physical,
             "protectedUserTranscriptBytes": self._protected_payload_bytes(),
             "rawEvidenceBytes": raw_evidence_bytes,
             "artifactFileBytes": artifact_bytes,
             "screenshotFileBytes": screenshot_bytes,
             "vectorDbBytes": vector_db_bytes,
+            "knowledgeDbBytes": knowledge_db_bytes,
+            "memoryDailyBytes": memory_daily_bytes,
+            "memoryWorkflowExportBytes": memory_workflow_export_bytes,
+            "memoryWorkflowDbBytes": memory_workflow_db_bytes,
+            "researchExperienceBytes": research_experience_bytes,
+            "memoryAuxiliaryBytes": memory_auxiliary_bytes,
         }
         total = self._governed_total_bytes()
+        logical_total = (
+            checkpoint_logical
+            + state_log_payload_bytes
+            + self._log_files_size()
+            + min(observability_physical, self._raw_evidence_bytes() + self._sqlite_payload_bytes(OBSERVABILITY_DB_PATH, ("execution_logs", "model_invocation_logs", "provider_health_logs", "prompt_cache_events", "prompt_cache_segments", "llm_response_cache", "tool_observation_records", "conversation_compaction_records", "system_audit_log")))
+        )
+        disk_health = self._disk_health()
         budget_components = {
             "logs": {
                 "label": "Logs",
@@ -248,7 +418,7 @@ class StorageRetentionService:
             },
             "checkpoints": {
                 "label": "Checkpoints",
-                "usedBytes": _sqlite_family_size(CHECKPOINT_DB_PATH),
+                "usedBytes": checkpoint_logical,
                 "maxBytes": int((budgets.get("checkpoints") or {}).get("maxBytes") or DEFAULT_CHECKPOINT_BUDGET_BYTES),
                 "mode": str((budgets.get("checkpoints") or {}).get("mode") or config.get("mode") or "hard_rolling"),
                 "autoPrune": True,
@@ -284,12 +454,30 @@ class StorageRetentionService:
                 "mode": str((budgets.get("vectorDb") or {}).get("mode") or "warn_only"),
                 "autoPrune": False,
             },
+            "knowledgeTruth": {
+                "label": "Canonical knowledge",
+                "usedBytes": knowledge_db_bytes,
+                "maxBytes": int((budgets.get("knowledgeTruth") or {}).get("maxBytes") or 2 * 1024 * 1024 * 1024),
+                "mode": str((budgets.get("knowledgeTruth") or {}).get("mode") or "warn_only"),
+                "autoPrune": False,
+            },
+            "memoryAuxiliary": {
+                "label": "Memory auxiliary records",
+                "usedBytes": memory_auxiliary_bytes,
+                "maxBytes": int((budgets.get("memoryAuxiliary") or {}).get("maxBytes") or 2 * 1024 * 1024 * 1024),
+                "mode": str((budgets.get("memoryAuxiliary") or {}).get("mode") or "warn_only"),
+                "autoPrune": False,
+            },
         }
         budget_findings = self._budget_findings(budget_components)
         return {
             "config": config,
             "maxBytes": int(config.get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES + DEFAULT_CHECKPOINT_BUDGET_BYTES),
             "totalGovernedBytes": total,
+            "physicalBytes": total,
+            "logicalBytes": logical_total,
+            "reclaimableBytes": max(0, total - logical_total - checkpoint_fragmentation)
+            + max(checkpoint_fragmentation, checkpoint_safe_reclaimable),
             "overCapBytes": max(0, total - int(config.get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES + DEFAULT_CHECKPOINT_BUDGET_BYTES)),
             "components": components,
             "budgets": budgets,
@@ -297,6 +485,10 @@ class StorageRetentionService:
             "budgetFindings": budget_findings,
             "recommendations": self._budget_recommendations(budget_findings),
             "recentRetentionEvents": observability_db.recent_retention_events(limit=10),
+            "disk": disk_health,
+            "retentionJournal": self._journal(),
+            "backupState": self._journal().get("backupState") or "not_started",
+            "recoverability": "protected" if self._journal().get("backupManifestPath") else "plan_only",
         }
 
     @staticmethod
@@ -338,6 +530,12 @@ class StorageRetentionService:
             if key == "vectorDb":
                 action = "manual_vector_cleanup"
                 message = "Vector DB is over budget; recommend manual knowledge cleanup or re-index compaction."
+            elif key == "knowledgeTruth":
+                action = "review_knowledge_growth"
+                message = "Canonical knowledge is over budget; review revisions and observations before any advanced purge."
+            elif key == "memoryAuxiliary":
+                action = "review_memory_auxiliary_growth"
+                message = "Memory journals, workflow guides, or experience packs are over budget; review their lifecycle before pruning."
             elif key == "checkpoints":
                 action = "run_checkpoint_retention"
                 message = "Checkpoints are over budget; inactive graph checkpoints can be pruned while active runs stay protected."
@@ -407,7 +605,6 @@ class StorageRetentionService:
                     if self._table_exists(state_conn, table):
                         state_conn.execute(f"DELETE FROM {table}")
                 state_conn.commit()
-                state_conn.execute("VACUUM")
         return actions
 
     @staticmethod
@@ -442,16 +639,141 @@ class StorageRetentionService:
                     obs_conn.execute("DETACH DATABASE knowledge_db")
                 knowledge_conn.execute("DELETE FROM execution_logs")
                 knowledge_conn.commit()
-                knowledge_conn.execute("VACUUM")
             return [{"action": "migrate_knowledge_execution_logs", "rows": count, "dryRun": dry_run}]
 
     def enforce(self, *, dry_run: bool = False, reason: str = "manual") -> Dict[str, Any]:
+        if dry_run:
+            return self._execute_retention(dry_run=True, reason=reason)
+        plan = self._execute_retention(dry_run=True, reason=reason)
+        digest_payload = {
+            "reason": reason,
+            "maxBytes": plan.get("maxBytes"),
+            "beforeBytes": plan.get("beforeBytes"),
+            "actions": plan.get("actions") or [],
+        }
+        plan_digest = hashlib.sha256(
+            json.dumps(digest_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        operation_id = f"retention-{uuid.uuid4().hex[:12]}"
+        journal = {
+            "operationId": operation_id,
+            "state": "plan",
+            "reason": reason,
+            "planDigest": plan_digest,
+            "createdAt": _utc_now_iso(),
+            "backupState": "not_started",
+        }
+        self._write_journal(journal)
+        if not plan.get("actions"):
+            journal.update({"state": "completed", "completedAt": _utc_now_iso(), "backupState": "not_required"})
+            self._write_journal(journal)
+            return {**plan, "mode": "prune", "status": "completed", "planDigest": plan_digest}
+        disk_health = self._disk_health()
+        if disk_health["emergencySafeMode"]:
+            # Low-space recovery may clear disposable caches/logs, but must not
+            # touch checkpoints, transcripts, artifacts, or knowledge truth.
+            safe_actions: List[Dict[str, Any]] = []
+            safe_actions.extend(self._prune_expired_response_cache(dry_run=False))
+            safe_actions.extend(self._prune_observability_logs(dry_run=False))
+            safe_actions.extend(self._prune_log_files(dry_run=False))
+            journal.update({"state": "blocked", "backupState": "blocked_low_space", "disk": disk_health, "safeActions": safe_actions})
+            self._write_journal(journal)
+            return {
+                **plan,
+                "mode": "prune",
+                "status": "blocked",
+                "errorCode": "emergency_safe_mode",
+                "planDigest": plan_digest,
+                "disk": disk_health,
+                "safeActions": safe_actions,
+            }
+        journal.update({"state": "backup_preflight", "backupState": "running"})
+        self._write_journal(journal)
+        try:
+            backup = StorageBackupService(root=V8_AGENT_OS_HOME / "backups").create_backup(
+                purpose="storage-retention",
+                sqlite_paths=(STATE_DB_PATH, CHECKPOINT_DB_PATH, OBSERVABILITY_DB_PATH),
+                plan_digest=plan_digest,
+                backup_id=operation_id,
+            )
+        except Exception as exc:
+            journal.update({"state": "blocked", "backupState": "failed", "error": str(exc)})
+            self._write_journal(journal)
+            return {
+                **plan,
+                "mode": "prune",
+                "status": "blocked",
+                "errorCode": "backup_failed",
+                "error": str(exc),
+                "planDigest": plan_digest,
+            }
+        journal.update(
+            {
+                "state": "applying",
+                "backupState": "ready",
+                "backupManifestPath": str(Path(str(backup["path"])) / "manifest.json"),
+                "updatedAt": _utc_now_iso(),
+            }
+        )
+        self._write_journal(journal)
+        try:
+            result = self._execute_retention(dry_run=False, reason=reason)
+            journal.update({"state": "verifying", "updatedAt": _utc_now_iso()})
+            self._write_journal(journal)
+            checks = {
+                str(path): self._quick_check(path)
+                for path in (STATE_DB_PATH, CHECKPOINT_DB_PATH, OBSERVABILITY_DB_PATH)
+                if path.exists()
+            }
+            if any(value != "ok" for value in checks.values()):
+                raise RuntimeError(f"retention verification failed: {checks}")
+            journal.update({"state": "completed", "completedAt": _utc_now_iso(), "quickChecks": checks})
+            self._write_journal(journal)
+            return {**result, "planDigest": plan_digest, "backup": backup, "quickChecks": checks}
+        except Exception as exc:
+            journal.update({"state": "failed", "error": str(exc), "updatedAt": _utc_now_iso()})
+            self._write_journal(journal)
+            raise
+
+    def startup_check(self) -> Dict[str, Any]:
+        journal = self._journal()
+        if journal.get("state") in {"applying", "verifying", "backup_preflight"}:
+            journal.update({"state": "recovery_required", "updatedAt": _utc_now_iso()})
+            self._write_journal(journal)
+        plan = self._execute_retention(dry_run=True, reason="engine_startup")
+        return {"status": "planned", "journal": journal, "plan": plan}
+
+    @staticmethod
+    def _quick_check(path: Path) -> str:
+        with _connect(path) as conn:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        return str(row[0] if row else "unknown")
+
+    def compact_physical(self, *, reason: str = "idle_maintenance") -> Dict[str, Any]:
+        paths = [path for path in (STATE_DB_PATH, CHECKPOINT_DB_PATH, OBSERVABILITY_DB_PATH) if path.exists()]
+        if not paths:
+            return {"status": "completed", "before": {}, "after": {}, "backup": None}
+        plan_digest = hashlib.sha256(f"physical:{reason}:{_utc_now_iso()}".encode("utf-8")).hexdigest()
+        backup = StorageBackupService(root=V8_AGENT_OS_HOME / "backups").create_backup(
+            purpose="storage-compaction",
+            sqlite_paths=paths,
+            plan_digest=plan_digest,
+        )
+        before = {str(path): _sqlite_family_size(path) for path in paths}
+        for path in paths:
+            self._vacuum_db(path)
+            if self._quick_check(path) != "ok":
+                raise RuntimeError(f"physical compaction quick_check failed: {path}")
+        after = {str(path): _sqlite_family_size(path) for path in paths}
+        return {"status": "completed", "before": before, "after": after, "backup": backup}
+
+    def _execute_retention(self, *, dry_run: bool, reason: str) -> Dict[str, Any]:
         config = self.get_config()
         budgets = dict(config.get("budgets") or {})
         log_budget = int((budgets.get("logs") or {}).get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES)
         checkpoint_budget = int((budgets.get("checkpoints") or {}).get("maxBytes") or DEFAULT_CHECKPOINT_BUDGET_BYTES)
         max_bytes = int(config.get("maxBytes") or log_budget + checkpoint_budget)
-        before = self._governed_total_bytes()
+        before = self._governed_logical_bytes()
         actions = self.migrate_legacy_logs(dry_run=dry_run)
         log_total = self._structured_log_bytes()
         if log_total > log_budget:
@@ -470,7 +792,19 @@ class StorageRetentionService:
                 if dry_run:
                     break
                 log_total = self._structured_log_bytes()
-        checkpoint_total = _sqlite_family_size(CHECKPOINT_DB_PATH)
+        # Session/thread lifecycle retention is a safety invariant, not merely
+        # a budget response. Run one complete dry-run plan or drain bounded
+        # apply batches before checking whether additional budget pruning is
+        # necessary.
+        checkpoint_actions = self._prune_old_checkpoints(dry_run=dry_run)
+        actions.extend(checkpoint_actions)
+        if not dry_run:
+            for _ in range(20):
+                if not checkpoint_actions:
+                    break
+                checkpoint_actions = self._prune_old_checkpoints(dry_run=False)
+                actions.extend(checkpoint_actions)
+        checkpoint_total = self._checkpoint_payload_bytes()
         while checkpoint_total > checkpoint_budget:
             step_actions = self._prune_old_checkpoints(dry_run=dry_run)
             if not step_actions:
@@ -478,8 +812,8 @@ class StorageRetentionService:
             actions.extend(step_actions)
             if dry_run:
                 break
-            checkpoint_total = _sqlite_family_size(CHECKPOINT_DB_PATH)
-        total = self._governed_total_bytes()
+            checkpoint_total = self._checkpoint_payload_bytes()
+        total = self._governed_logical_bytes()
         for step in (
             self._prune_observability_logs,
             self._prune_runtime_snapshots,
@@ -494,8 +828,8 @@ class StorageRetentionService:
                 actions.extend(step_actions)
                 if dry_run:
                     break
-                total = self._governed_total_bytes()
-        after = self._governed_total_bytes()
+                total = self._governed_logical_bytes()
+        after = self._governed_logical_bytes()
         status = "dry_run" if dry_run else ("over_cap" if after > max_bytes else "completed")
         result = {
             "mode": "dry_run" if dry_run else "prune",
@@ -563,7 +897,8 @@ class StorageRetentionService:
                     conn.commit()
                 break
         if not dry_run and actions:
-            self._vacuum_db(OBSERVABILITY_DB_PATH)
+            # Physical compaction is a separate idle maintenance operation.
+            pass
         return actions
 
     def _prune_runtime_snapshots(self, *, dry_run: bool) -> List[Dict[str, Any]]:
@@ -572,15 +907,16 @@ class StorageRetentionService:
         with _connect(STATE_DB_PATH) as conn:
             rows = conn.execute(
                 """
-                SELECT id FROM runtime_snapshots rs
-                WHERE EXISTS (
-                    SELECT 1 FROM runtime_snapshots newer
-                    WHERE newer.session_id = rs.session_id
-                      AND newer.snapshot_type = rs.snapshot_type
-                      AND newer.latest_seq > rs.latest_seq
-                )
-                ORDER BY created_at ASC
-                LIMIT 200
+                SELECT id FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY session_id, snapshot_type
+                               ORDER BY latest_seq DESC, created_at DESC, id DESC
+                           ) AS rank_no
+                    FROM runtime_snapshots
+                ) ranked
+                WHERE rank_no > 1
+                LIMIT 1000
                 """
             ).fetchall()
             ids = [row["id"] for row in rows]
@@ -589,7 +925,6 @@ class StorageRetentionService:
             if not dry_run:
                 conn.execute(f"DELETE FROM runtime_snapshots WHERE id IN ({','.join('?' for _ in ids)})", ids)
                 conn.commit()
-                conn.execute("VACUUM")
             return [{"action": "prune_runtime_snapshots", "rows": len(ids), "dryRun": dry_run}]
 
     def _prune_completed_runtime_events(self, *, dry_run: bool) -> List[Dict[str, Any]]:
@@ -617,26 +952,190 @@ class StorageRetentionService:
             if not dry_run:
                 conn.execute(f"DELETE FROM runtime_events WHERE id IN ({','.join('?' for _ in ids)})", ids)
                 conn.commit()
-                conn.execute("VACUUM")
             return [{"action": "prune_completed_runtime_events", "rows": len(ids), "dryRun": dry_run}]
 
     def _prune_old_checkpoints(self, *, dry_run: bool) -> List[Dict[str, Any]]:
         if not CHECKPOINT_DB_PATH.exists():
             return []
-        protected = self._active_checkpoint_threads()
+        policies = self._checkpoint_thread_policies()
         with _connect(CHECKPOINT_DB_PATH) as conn:
-            rows = conn.execute("SELECT DISTINCT thread_id FROM checkpoints ORDER BY checkpoint_id ASC LIMIT 200").fetchall()
-            candidates = [str(row["thread_id"]) for row in rows if str(row["thread_id"]) not in protected]
-            if not candidates:
+            rows = conn.execute(
+                """
+                SELECT c.thread_id, c.checkpoint_ns, c.checkpoint_id, c.parent_checkpoint_id,
+                       COALESCE(length(c.checkpoint), 0) + COALESCE(length(c.metadata), 0)
+                       + COALESCE((
+                           SELECT SUM(COALESCE(length(w.value), 0)) FROM writes w
+                           WHERE w.thread_id = c.thread_id
+                             AND w.checkpoint_ns = c.checkpoint_ns
+                             AND w.checkpoint_id = c.checkpoint_id
+                       ), 0) AS logical_bytes
+                FROM checkpoints c
+                ORDER BY c.thread_id, c.checkpoint_ns, c.checkpoint_id DESC
+                """
+            ).fetchall()
+            grouped: Dict[tuple[str, str], List[sqlite3.Row]] = {}
+            for row in rows:
+                grouped.setdefault((str(row["thread_id"]), str(row["checkpoint_ns"])), []).append(row)
+            delete_keys: List[tuple[str, str, str]] = []
+            delete_sizes: Dict[tuple[str, str, str], int] = {}
+            retained: Dict[tuple[str, str], List[str]] = {}
+            policy_counts = {"running": 0, "recoverable": 0, "idle": 0, "orphan": 0}
+            for key, checkpoints in grouped.items():
+                thread_id, checkpoint_ns = key
+                policy = policies.get(thread_id, "orphan")
+                policy_counts[policy] = policy_counts.get(policy, 0) + 1
+                if policy == "running":
+                    retained[key] = [str(row["checkpoint_id"]) for row in checkpoints]
+                    continue
+                keep_ids: List[str] = []
+                if policy == "recoverable":
+                    kept_bytes = 0
+                    for index, row in enumerate(checkpoints):
+                        size = int(row["logical_bytes"] or 0)
+                        if index == 0 or (
+                            len(keep_ids) < RECOVERY_CHECKPOINT_MAX_COUNT
+                            and kept_bytes + size <= RECOVERY_CHECKPOINT_MAX_BYTES
+                        ):
+                            keep_ids.append(str(row["checkpoint_id"]))
+                            kept_bytes += size
+                elif policy == "idle":
+                    keep_ids = [str(checkpoints[0]["checkpoint_id"])] if checkpoints else []
+                retained[key] = keep_ids
+                keep_set = set(keep_ids)
+                for row in checkpoints:
+                    checkpoint_id = str(row["checkpoint_id"])
+                    if checkpoint_id in keep_set:
+                        continue
+                    delete_key = (thread_id, checkpoint_ns, checkpoint_id)
+                    delete_keys.append(delete_key)
+                    delete_sizes[delete_key] = int(row["logical_bytes"] or 0)
+            if not delete_keys:
                 return []
-            candidates = candidates[:25]
+            total_delete_count = len(delete_keys)
+            total_estimated_bytes = sum(delete_sizes[key] for key in delete_keys)
             if not dry_run:
-                placeholders = ",".join("?" for _ in candidates)
-                conn.execute(f"DELETE FROM writes WHERE thread_id IN ({placeholders})", candidates)
-                conn.execute(f"DELETE FROM checkpoints WHERE thread_id IN ({placeholders})", candidates)
-                conn.commit()
-                conn.execute("VACUUM")
-            return [{"action": "prune_old_checkpoints", "threads": len(candidates), "dryRun": dry_run}]
+                delete_keys = delete_keys[:2000]
+            estimated_bytes = sum(delete_sizes[key] for key in delete_keys)
+            delete_set = set(delete_keys)
+            if not dry_run:
+                latest_before = {
+                    key: self._checkpoint_resume_fingerprint(conn, key[0], key[1], checkpoints[0]["checkpoint_id"])
+                    for key, checkpoints in grouped.items()
+                    if checkpoints and policies.get(key[0], "orphan") != "orphan"
+                }
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.executemany(
+                        "DELETE FROM writes WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
+                        delete_keys,
+                    )
+                    conn.executemany(
+                        "DELETE FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
+                        delete_keys,
+                    )
+                    for key, keep_ids in retained.items():
+                        if not keep_ids:
+                            continue
+                        oldest_retained = keep_ids[-1]
+                        row = conn.execute(
+                            "SELECT parent_checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
+                            (key[0], key[1], oldest_retained),
+                        ).fetchone()
+                        if row and row["parent_checkpoint_id"] and (
+                            key[0], key[1], str(row["parent_checkpoint_id"])
+                        ) in delete_set:
+                            conn.execute(
+                                "UPDATE checkpoints SET parent_checkpoint_id = NULL WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
+                                (key[0], key[1], oldest_retained),
+                            )
+                    for key, fingerprint in latest_before.items():
+                        latest_row = conn.execute(
+                            "SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ? ORDER BY checkpoint_id DESC LIMIT 1",
+                            key,
+                        ).fetchone()
+                        if not latest_row:
+                            raise RuntimeError(f"retention removed latest checkpoint for {key}")
+                        after = self._checkpoint_resume_fingerprint(
+                            conn,
+                            key[0],
+                            key[1],
+                            str(latest_row["checkpoint_id"]),
+                        )
+                        if after != fingerprint:
+                            raise RuntimeError(f"latest checkpoint resume fingerprint changed for {key}")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            return [{
+                "action": "prune_old_checkpoints",
+                "checkpoints": total_delete_count if dry_run else len(delete_keys),
+                "estimatedLogicalBytes": total_estimated_bytes if dry_run else estimated_bytes,
+                "policies": policy_counts,
+                "dryRun": dry_run,
+            }]
+
+    @staticmethod
+    def _checkpoint_resume_fingerprint(
+        conn: sqlite3.Connection,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str,
+    ) -> Dict[str, Any]:
+        row = conn.execute(
+            """
+            SELECT checkpoint_id, checkpoint, metadata
+            FROM checkpoints
+            WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?
+            """,
+            (thread_id, checkpoint_ns, checkpoint_id),
+        ).fetchone()
+        if not row:
+            return {}
+        digest = hashlib.sha256()
+        digest.update(bytes(row["checkpoint"] or b""))
+        digest.update(bytes(row["metadata"] or b""))
+        writes = conn.execute(
+            """
+            SELECT task_id, idx, channel, type, value
+            FROM writes
+            WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?
+            ORDER BY task_id, idx, channel
+            """,
+            (thread_id, checkpoint_ns, checkpoint_id),
+        ).fetchall()
+        for write in writes:
+            digest.update(str(write["task_id"]).encode("utf-8"))
+            digest.update(str(write["idx"]).encode("utf-8"))
+            digest.update(str(write["channel"]).encode("utf-8"))
+            digest.update(str(write["type"] or "").encode("utf-8"))
+            digest.update(bytes(write["value"] or b""))
+        return {"checkpointId": str(row["checkpoint_id"]), "hash": digest.hexdigest(), "pendingWrites": len(writes)}
+
+    def _checkpoint_thread_policies(self) -> Dict[str, str]:
+        policies: Dict[str, str] = {}
+        if not STATE_DB_PATH.exists():
+            return policies
+        priority = {"orphan": 0, "idle": 1, "recoverable": 2, "running": 3}
+        with _connect(STATE_DB_PATH) as conn:
+            if self._table_exists(conn, "sessions"):
+                for row in conn.execute("SELECT id FROM sessions").fetchall():
+                    policies[str(row["id"])] = "idle"
+            if self._table_exists(conn, "run_records"):
+                rows = conn.execute("SELECT id, session_id, thread_id, status FROM run_records").fetchall()
+                for row in rows:
+                    status = str(row["status"] or "").strip().lower()
+                    policy = "running" if status in RUNNING_RUN_STATUSES else (
+                        "recoverable" if status in RECOVERABLE_RUN_STATUSES else "idle"
+                    )
+                    for key in ("session_id", "thread_id"):
+                        value = str(row[key] or "").strip()
+                        if not value:
+                            continue
+                        current = policies.get(value, "orphan")
+                        if priority[policy] > priority[current]:
+                            policies[value] = policy
+        return policies
 
     def _active_checkpoint_threads(self) -> set[str]:
         protected: set[str] = set()

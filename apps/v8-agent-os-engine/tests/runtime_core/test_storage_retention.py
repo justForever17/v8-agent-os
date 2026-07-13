@@ -6,6 +6,8 @@ from contextlib import closing
 from pathlib import Path
 
 from core.database import DatabaseManager
+from erc.checkpoint_store import CheckpointStore
+from langgraph.checkpoint.base import empty_checkpoint
 from core.observability_db import ObservabilityDatabaseManager
 from core.storage_retention import StorageRetentionService
 import core.storage_retention as storage_retention_module
@@ -241,7 +243,7 @@ def test_completed_run_transition_does_not_erase_pending_governance():
         assert db.get_pending_approval("approval-completed")["status"] == "pending"
 
 
-def test_retention_prunes_old_checkpoints_but_keeps_active_thread(monkeypatch):
+def test_retention_prunes_old_checkpoints_but_keeps_active_and_idle_latest(monkeypatch):
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir)
         _patch_retention_paths(monkeypatch, root)
@@ -268,7 +270,9 @@ def test_retention_prunes_old_checkpoints_but_keeps_active_thread(monkeypatch):
             conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
             conn.execute("INSERT INTO checkpoints VALUES ('active-thread', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
             conn.execute("INSERT INTO checkpoints VALUES ('old-thread', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
+            conn.execute("INSERT INTO checkpoints VALUES ('old-thread', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
             conn.execute("INSERT INTO writes VALUES ('old-thread', '', '001', 'task', 0, 'messages', 'msgpack', zeroblob(1024))")
+            conn.execute("INSERT INTO writes VALUES ('old-thread', '', '002', 'task', 0, 'messages', 'msgpack', zeroblob(1024))")
             conn.commit()
         service = _make_service(1)
 
@@ -278,5 +282,189 @@ def test_retention_prunes_old_checkpoints_but_keeps_active_thread(monkeypatch):
         with closing(sqlite3.connect(checkpoint_path)) as conn:
             threads = {row[0] for row in conn.execute("SELECT thread_id FROM checkpoints").fetchall()}
             assert "active-thread" in threads
-            assert "old-thread" not in threads
+            assert "old-thread" in threads
+            old_rows = conn.execute(
+                "SELECT checkpoint_id, parent_checkpoint_id FROM checkpoints WHERE thread_id = 'old-thread'"
+            ).fetchall()
+            assert old_rows == [("002", None)]
+            assert conn.execute("SELECT COUNT(*) FROM writes WHERE thread_id = 'old-thread'").fetchone()[0] == 1
+
+
+def test_checkpoint_lifecycle_pruning_runs_even_when_storage_is_below_budget(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        db = DatabaseManager(root / "state.db")
+        db.create_or_update_session("idle-session", "idle", user_id="user")
+        checkpoint_path = root / "checkpoints.db"
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
+            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
+            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
+            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
+            conn.commit()
+        service = _make_service(10 * 1024 * 1024)
+
+        dry_run = service.enforce(dry_run=True, reason="below_budget_plan")
+        assert next(action for action in dry_run["actions"] if action["action"] == "prune_old_checkpoints")[
+            "checkpoints"
+        ] == 1
+
+        result = service.enforce(dry_run=False, reason="below_budget_apply")
+        assert any(action["action"] == "prune_old_checkpoints" for action in result["actions"])
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            assert conn.execute("SELECT checkpoint_id, parent_checkpoint_id FROM checkpoints").fetchall() == [
+                ("002", None)
+            ]
+
+
+def test_retention_keeps_langgraph_latest_checkpoint_resumable(monkeypatch):
+    import asyncio
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        db = DatabaseManager(root / "state.db")
+        db.create_or_update_session("resume-session", "resume", user_id="user")
+        db.create_run_record(
+            "resume-run",
+            "resume-session",
+            thread_id="resume-session",
+            run_type="chat",
+            status="completed",
+        )
+        checkpoint_path = root / "checkpoints.db"
+
+        async def seed() -> None:
+            store = CheckpointStore(checkpoint_path)
+            saver = await store.get_async_sqlite_saver()
+            config = {"configurable": {"thread_id": "resume-session", "checkpoint_ns": ""}}
+            first = empty_checkpoint()
+            first["channel_values"] = {"resume_marker": "old"}
+            config = await saver.aput(config, first, {}, {})
+            latest = empty_checkpoint()
+            latest["channel_values"] = {"resume_marker": "latest"}
+            await saver.aput(config, latest, {}, {})
+            await store.close()
+
+        asyncio.run(seed())
+        service = _make_service(1)
+        result = service.enforce(dry_run=False, reason="resume_test")
+        assert any(action["action"] == "prune_old_checkpoints" for action in result["actions"])
+
+        async def resume() -> str:
+            store = CheckpointStore(checkpoint_path)
+            saver = await store.get_async_sqlite_saver()
+            checkpoint_tuple = await saver.aget_tuple(
+                {"configurable": {"thread_id": "resume-session", "checkpoint_ns": ""}}
+            )
+            await store.close()
+            assert checkpoint_tuple is not None
+            return str(checkpoint_tuple.checkpoint["channel_values"]["resume_marker"])
+
+        assert asyncio.run(resume()) == "latest"
+
+
+def test_waiting_session_keeps_bounded_recovery_tail(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        db = DatabaseManager(root / "state.db")
+        db.create_or_update_session("waiting-session", "waiting", user_id="user")
+        db.create_run_record(
+            "waiting-run",
+            "waiting-session",
+            thread_id="waiting-session",
+            run_type="chat",
+            status="waiting_approval",
+        )
+        checkpoint_path = root / "checkpoints.db"
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
+            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
+            for index in range(12):
+                checkpoint_id = f"{index:03d}"
+                parent = f"{index - 1:03d}" if index else None
+                conn.execute(
+                    "INSERT INTO checkpoints VALUES (?, '', ?, ?, 'msgpack', zeroblob(1024), zeroblob(10))",
+                    ("waiting-session", checkpoint_id, parent),
+                )
+            conn.commit()
+        result = _make_service(1).enforce(dry_run=False, reason="waiting_tail_test")
+        assert any(action["action"] == "prune_old_checkpoints" for action in result["actions"])
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            rows = conn.execute(
+                "SELECT checkpoint_id, parent_checkpoint_id FROM checkpoints WHERE thread_id = 'waiting-session' ORDER BY checkpoint_id"
+            ).fetchall()
+        assert len(rows) == 8
+        assert rows[-1][0] == "011"
+        assert rows[0][1] is None
+
+
+def test_retention_backup_failure_blocks_checkpoint_mutation(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        db = DatabaseManager(root / "state.db")
+        db.create_or_update_session("idle-session", "idle", user_id="user")
+        checkpoint_path = root / "checkpoints.db"
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
+            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
+            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
+            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
+            conn.commit()
+
+        def fail_backup(*_args, **_kwargs):
+            raise RuntimeError("simulated backup failure")
+
+        monkeypatch.setattr(storage_retention_module.StorageBackupService, "create_backup", fail_backup)
+        result = _make_service(1).enforce(dry_run=False, reason="backup_failure_test")
+
+        assert result["status"] == "blocked"
+        assert result["errorCode"] == "backup_failed"
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 2
+
+
+def test_emergency_safe_mode_never_prunes_checkpoints(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        db = DatabaseManager(root / "state.db")
+        db.create_or_update_session("idle-session", "idle", user_id="user")
+        checkpoint_path = root / "checkpoints.db"
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
+            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
+            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
+            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
+            conn.commit()
+        service = _make_service(1)
+        monkeypatch.setattr(
+            service,
+            "_disk_health",
+            lambda: {"totalBytes": 100, "freeBytes": 1, "freeRatio": 0.01, "emergencySafeMode": True},
+        )
+
+        result = service.enforce(dry_run=False, reason="low_disk_test")
+
+        assert result["status"] == "blocked"
+        assert result["errorCode"] == "emergency_safe_mode"
+        with closing(sqlite3.connect(checkpoint_path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 2
+
+
+def test_startup_only_marks_interrupted_retention_for_recovery(monkeypatch):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        _patch_retention_paths(monkeypatch, root)
+        service = _make_service(1)
+        service._write_journal({"operationId": "interrupted", "state": "applying"})
+
+        result = service.startup_check()
+
+        assert result["status"] == "planned"
+        assert result["journal"]["state"] == "recovery_required"
+        assert service._journal()["state"] == "recovery_required"
 

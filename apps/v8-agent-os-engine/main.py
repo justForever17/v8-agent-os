@@ -47,6 +47,7 @@ from core.runtime.startup_profile import (
 from core.realtime_protocol import utc_now_iso
 from core.storage import storage
 from core.storage_retention import storage_retention_service
+from core.knowledge_projection import knowledge_projection_service
 from core.system_base import get_allowed_origins
 from core.workspace_guard import ensure_workspace_auto_create_allowed
 from core.workspace_resolution import workspace_resolution_service
@@ -307,20 +308,36 @@ async def lifespan(app: FastAPI):
         _start_skill_refresh(app)
     await _reconcile_orphaned_workflows()
     await _reconcile_session_lanes()
+    async def _recover_knowledge_projections() -> None:
+        try:
+            projection_recovery = await asyncio.to_thread(
+                knowledge_projection_service.process_outbox,
+                limit=500,
+            )
+            if projection_recovery.get("processed"):
+                print("[Engine] Knowledge projection recovery:", projection_recovery)
+        except Exception as exc:
+            print(f"[Engine] Knowledge projection recovery failed (non-fatal): {exc}")
+
+    app.state.knowledge_projection_recovery_task = asyncio.create_task(_recover_knowledge_projections())
+    app.state.knowledge_projection_recovery_task.add_done_callback(
+        lambda task: _log_background_task(task, "knowledge_projection_recovery")
+    )
+
     async def _run_startup_retention_check() -> None:
         try:
             retention_config = storage.get_storage_retention_config()
             if not retention_config.get("enabled", True):
                 return
-            result = await asyncio.to_thread(storage_retention_service.enforce, dry_run=False, reason="engine_startup")
-            if result.get("actions"):
+            result = await asyncio.to_thread(storage_retention_service.startup_check)
+            plan = dict(result.get("plan") or {})
+            if plan.get("actions"):
                 print(
-                    "[Engine] Storage retention applied:",
+                    "[Engine] Storage retention plan ready:",
                     {
                         "status": result.get("status"),
-                        "beforeBytes": result.get("beforeBytes"),
-                        "afterBytes": result.get("afterBytes"),
-                        "actions": len(result.get("actions") or []),
+                        "beforeBytes": plan.get("beforeBytes"),
+                        "actions": len(plan.get("actions") or []),
                     },
                 )
         except Exception as exc:

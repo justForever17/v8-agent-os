@@ -77,7 +77,22 @@ type StorageRetentionPayload = {
   };
   maxBytes?: number;
   totalGovernedBytes?: number;
+  physicalBytes?: number;
+  logicalBytes?: number;
+  reclaimableBytes?: number;
   overCapBytes?: number;
+  backupState?: string;
+  recoverability?: string;
+  disk?: {
+    freeBytes?: number;
+    freeRatio?: number;
+    emergencySafeMode?: boolean;
+  };
+  retentionJournal?: {
+    state?: string;
+    backupState?: string;
+    backupManifestPath?: string;
+  };
   components?: Record<string, number>;
   budgetComponents?: Record<string, {
     label?: string;
@@ -254,7 +269,9 @@ function StorageRetentionPanel() {
       setLoading(false);
     }
   };
-  const run = async (kind: "dry-run" | "prune") => {
+  const run = async (kind: "dry-run" | "prune" | "compact") => {
+    if (kind === "prune" && !window.confirm(t("app.admin.dashboard.operations.storage.confirmPrune"))) return;
+    if (kind === "compact" && !window.confirm(t("app.admin.dashboard.operations.storage.confirmCompact"))) return;
     setLoading(true);
     try {
       const response = await fetch(`/api/storage-retention/${kind}`, {
@@ -310,6 +327,38 @@ function StorageRetentionPanel() {
   const components = stats?.components || {};
   const budgetComponents = stats?.budgetComponents || {};
   const actionCount = Array.isArray(lastResult?.actions) ? lastResult.actions.length : 0;
+  const statusText = (value?: unknown) => {
+    const status = String(value || "");
+    return ({
+      completed: t("app.admin.dashboard.operations.storage.status.completed"),
+      dry_run: t("app.admin.dashboard.operations.storage.status.planned"),
+      blocked: t("app.admin.dashboard.operations.storage.status.blocked"),
+      failed: t("app.admin.dashboard.operations.storage.status.failed"),
+      ready: t("app.admin.dashboard.operations.storage.status.ready"),
+      not_started: t("app.admin.dashboard.operations.storage.status.notStarted"),
+      not_required: t("app.admin.dashboard.operations.storage.status.notRequired"),
+      protected: t("app.admin.dashboard.operations.storage.status.recoverable"),
+      plan_only: t("app.admin.dashboard.operations.storage.status.planOnly")
+    } as Record<string, string>)[status] || t("app.admin.dashboard.operations.storage.status.unknown");
+  };
+  const modeText = (value?: unknown) => {
+    const mode = String(value || "warn_only");
+    return ({
+      hard_rolling: t("app.admin.dashboard.operations.storage.mode.automatic"),
+      rolling: t("app.admin.dashboard.operations.storage.mode.rolling"),
+      manual_prune: t("app.admin.dashboard.operations.storage.mode.manual"),
+      warn_only: t("app.admin.dashboard.operations.storage.mode.warningOnly")
+    } as Record<string, string>)[mode] || t("app.admin.dashboard.operations.storage.mode.warningOnly");
+  };
+  const budgetLabel = (key: string) => t(`app.admin.dashboard.operations.storage.budget.${key}`);
+  const humanComponents = [
+    { label: t("app.admin.dashboard.operations.storage.executionHistory"), value: Number(components.checkpointDbBytes || 0) },
+    { label: t("app.admin.dashboard.operations.storage.diagnostics"), value: Number(components.observabilityDbBytes || 0) + Number(components.stateLogPayloadBytes || 0) + Number(components.pluginRuntimeLogBytes || 0) },
+    { label: t("app.admin.dashboard.operations.storage.memoryTruth"), value: Number(components.knowledgeDbBytes || 0) },
+    { label: t("app.admin.dashboard.operations.storage.memoryIndex"), value: Number(components.vectorDbBytes || 0) },
+    { label: t("app.admin.dashboard.operations.storage.memoryRecords"), value: Number(components.memoryAuxiliaryBytes || 0) },
+    { label: t("app.admin.dashboard.operations.storage.userArtifacts"), value: Number(components.artifactFileBytes || 0) + Number(components.screenshotFileBytes || 0) }
+  ];
   return <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -325,27 +374,33 @@ function StorageRetentionPanel() {
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => void run("dry-run")} disabled={loading}>{t("app.admin.dashboard.operations.center.advanced.dryRun")}</Button>
                     <Button size="sm" onClick={() => void run("prune")} disabled={loading}>{t("app.admin.dashboard.operations.center.advanced.prune")}</Button>
+                    <Button variant="outline" size="sm" onClick={() => void run("compact")} disabled={loading}>{t("app.admin.dashboard.operations.storage.compact")}</Button>
                     <Button variant="outline" size="sm" onClick={() => void saveBudgets()} disabled={loading}>{ti(t, "kf8d9ddff2f")}</Button>
                 </div>
             </div>
-            <div className="grid gap-3 md:grid-cols-4">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                 <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
-                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.governed")}</div>
-                    <div className="font-semibold text-foreground">{formatBytes(stats?.totalGovernedBytes)}</div>
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.logical")}</div>
+                    <div className="font-semibold text-foreground">{formatBytes(stats?.logicalBytes)}</div>
                 </div>
                 <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
-                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.cap")}</div>
-                    <div className="font-semibold text-foreground">{formatBytes(stats?.maxBytes)}</div>
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.physical")}</div>
+                    <div className="font-semibold text-foreground">{formatBytes(stats?.physicalBytes)}</div>
                 </div>
                 <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
-                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.overCap")}</div>
-                    <div className={Number(stats?.overCapBytes || 0) > 0 ? "font-semibold text-amber-700" : "font-semibold text-emerald-700"}>{formatBytes(stats?.overCapBytes)}</div>
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.reclaimable")}</div>
+                    <div className={Number(stats?.reclaimableBytes || 0) > 0 ? "font-semibold text-amber-700 dark:text-amber-300" : "font-semibold text-emerald-700 dark:text-emerald-300"}>{formatBytes(stats?.reclaimableBytes)}</div>
                 </div>
                 <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
-                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.lastAction")}</div>
-                    <div className="font-semibold text-foreground">{fieldText(lastResult?.status || stats?.recentRetentionEvents?.[0]?.status, "none")}</div>
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.backup")}</div>
+                    <div className="font-semibold text-foreground">{statusText(stats?.backupState)}</div>
+                </div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.recoverability")}</div>
+                    <div className="font-semibold text-foreground">{statusText(stats?.recoverability)}</div>
                 </div>
             </div>
+            {stats?.disk?.emergencySafeMode ? <StatusNotice title={t("app.admin.dashboard.operations.storage.lowSpaceTitle")} description={t("app.admin.dashboard.operations.storage.lowSpaceDescription", { free: formatBytes(stats.disk.freeBytes) })} tone="warning" /> : null}
             <div className="rounded-xl border border-border bg-card p-3">
                 <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.budgets")}</div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -356,9 +411,9 @@ function StorageRetentionPanel() {
           return <div key={key} className="rounded-xl border border-border p-3 text-xs">
                                 <div className="flex items-center justify-between gap-3">
                                     <div>
-                                        <div className="font-semibold text-foreground">{value.label || key}</div>
+                                        <div className="font-semibold text-foreground">{budgetLabel(key)}</div>
                                         <div className="text-muted-foreground">
-                                            {t("app.admin.dashboard.operations.center.advanced.used")} {formatBytes(used)} · {value.mode || "warn_only"}{value.retentionDays ? ` · ${value.retentionDays}d` : ""}
+                                            {t("app.admin.dashboard.operations.center.advanced.used")} {formatBytes(used)} · {modeText(value.mode)}{value.retentionDays ? ` · ${t("app.admin.dashboard.operations.storage.retentionDays", { count: value.retentionDays })}` : ""}
                                         </div>
                                     </div>
                                     <div className={ratio >= 1 ? "text-amber-700" : "text-muted-foreground"}>{Math.round(ratio * 100)}%</div>
@@ -376,17 +431,18 @@ function StorageRetentionPanel() {
                 </div>
             </div>
             {Array.isArray(stats?.recommendations) && stats.recommendations.length ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                    {stats.recommendations.map(item => <div key={`${item.key}-${item.action}`}>{item.message}</div>)}
+                    {stats.recommendations.map(item => <div key={`${item.key}-${item.action}`}>{t(`app.admin.dashboard.operations.storage.recommendation.${item.key || "logs"}`)}</div>)}
                 </div> : null}
             <div className="grid gap-2 md:grid-cols-2">
-                {Object.entries(components).map(([key, value]) => <div key={key} className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-xs">
-                        <span className="text-muted-foreground">{key}</span>
-                        <span className="font-mono text-foreground">{formatBytes(Number(value || 0))}</span>
+                {humanComponents.map(item => <div key={item.label} className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-xs">
+                        <span className="text-muted-foreground">{item.label}</span>
+                        <span className="font-medium text-foreground">{formatBytes(item.value)}</span>
                     </div>)}
             </div>
+            <TechnicalReferenceDetails items={Object.entries(components).map(([key, value]) => ({ label: key, value: formatBytes(Number(value || 0)) }))} />
             {lastResult ? <div className="rounded-xl border border-border bg-card p-3 text-xs leading-5 text-muted-foreground">
                     {t("app.admin.dashboard.operations.center.advanced.resultSummary", {
-            status: fieldText(lastResult.status, "unknown"),
+            status: statusText(lastResult.status),
             actionCount,
             before: formatBytes(fieldNumber(lastResult.beforeBytes)),
             after: formatBytes(fieldNumber(lastResult.afterBytes))

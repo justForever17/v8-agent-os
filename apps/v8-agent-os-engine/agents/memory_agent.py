@@ -1325,6 +1325,11 @@ def _store_knowledge(
     """Persist knowledge through the canonical transactional write contract."""
     stored = 0
     stored_items: List[KnowledgeExtraction] = []
+    evidence_refs = [
+        *[f"message:{message_id}" for message_id in list(source_message_ids or []) if str(message_id or "").strip()],
+        *([f"run:{source_run}"] if str(source_run or "").strip() else []),
+        f"session:{session_id}",
+    ]
     for fact in result.knowledge:
         if not _should_store_knowledge(fact, policy):
             continue
@@ -1351,6 +1356,7 @@ def _store_knowledge(
                 confidence=fact.confidence,
                 importance=fact.importance,
                 durability=_normalize_durability(fact.durability, default="operational"),
+                evidence_refs=evidence_refs,
             )
             fact.persisted_fact_id = str(write_result.get("canonicalFactId") or write_result.get("factId") or "")
             stored += 1

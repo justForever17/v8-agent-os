@@ -715,6 +715,21 @@ async def resolve_knowledge_resolution_candidate(candidate_id: str, body: dict =
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/memory/knowledge-cleanup-plans")
+async def create_knowledge_cleanup_plan(body: dict = Body(default={})):
+    """Create a review-only plan; this endpoint never deletes knowledge."""
+    try:
+        return memory_runtime.create_knowledge_cleanup_plan(
+            unused_days=int(body.get("unusedDays") or 180),
+            low_evidence_confidence=float(body.get("lowEvidenceConfidence") or 0.55),
+            max_candidates=int(body.get("maxCandidates") or 1000),
+        )
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/memory/graph/all")
 async def get_full_graph(limit: int = 100):
     try:

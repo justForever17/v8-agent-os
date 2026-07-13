@@ -573,8 +573,36 @@ class MemoryRuntime:
             confidence=confidence,
         )
 
-    def delete_knowledge(self, *, fact_id: str) -> bool:
-        return knowledge_service.delete_knowledge(fact_id=fact_id)
+    def delete_knowledge(
+        self,
+        *,
+        fact_id: str,
+        actor: str = "human_admin",
+        reason: str = "manual_delete",
+        evidence_refs: Optional[List[str]] = None,
+    ) -> bool:
+        return knowledge_service.delete_knowledge(
+            fact_id=fact_id,
+            actor=actor,
+            reason=reason,
+            evidence_refs=evidence_refs,
+        )
+
+    def mark_knowledge_injected(self, *, fact_ids: List[str], verified: bool = False) -> int:
+        return knowledge_service.mark_knowledge_injected(fact_ids=fact_ids, verified=verified)
+
+    def create_knowledge_cleanup_plan(
+        self,
+        *,
+        unused_days: int = 180,
+        low_evidence_confidence: float = 0.55,
+        max_candidates: int = 1000,
+    ) -> Dict[str, object]:
+        return knowledge_service.create_cleanup_plan(
+            unused_days=unused_days,
+            low_evidence_confidence=low_evidence_confidence,
+            max_candidates=max_candidates,
+        )
 
     def restore_knowledge(self, *, fact_id: str) -> bool:
         return knowledge_service.restore_knowledge(fact_id=fact_id)
@@ -637,7 +665,8 @@ class MemoryRuntime:
         predicate: str,
         object_name: str,
         scope: str,
-        source_fact_ids: List[str],
+        source_fact_ids: Optional[List[str]] = None,
+        evidence_refs: Optional[List[str]] = None,
         confidence: float = 1.0,
         maintainer_source: str = "memory_runtime",
     ) -> None:
@@ -647,6 +676,7 @@ class MemoryRuntime:
             object_name=object_name,
             scope=scope,
             source_fact_ids=source_fact_ids,
+            evidence_refs=evidence_refs,
             confidence=confidence,
             maintainer_source=maintainer_source,
         )

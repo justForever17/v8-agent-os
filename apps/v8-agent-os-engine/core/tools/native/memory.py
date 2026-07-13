@@ -648,6 +648,9 @@ def memory_broker(
             results = runtime.query_knowledge(query=search_text, scope=scope, limit=effective_limit)
             exact = [item for item in results if str(item.get("id") or "") == search_text]
             selected = exact or results[:effective_limit]
+            runtime.mark_knowledge_injected(
+                fact_ids=[str(item.get("id") or "") for item in selected if isinstance(item, dict) and item.get("id")]
+            )
             items = [_memory_broker_compact_recall_item(item) for item in selected if isinstance(item, dict)]
             return _memory_broker_response(
                 ok=True,

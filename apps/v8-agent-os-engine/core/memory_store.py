@@ -1553,8 +1553,14 @@ class MemoryStore:
         }
 
     def unified_recall(self, query: str, limit: int = 5, scope: Optional[str] = None, scopes: Optional[List[str]] = None) -> List[Dict]:
+        from core.knowledge_db import knowledge_db
+
         preview = self._execute_unified_recall(query=query, limit=limit, scope=scope, scopes=scopes)
-        return list(preview.get("accepted_items") or [])
+        accepted = list(preview.get("accepted_items") or [])
+        knowledge_db.mark_knowledge_injected(
+            [str(item.get("id") or "") for item in accepted if isinstance(item, dict) and item.get("id")]
+        )
+        return accepted
             
     # ==========================================
     # Layer 3: 时序日志 (daily/)

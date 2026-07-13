@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from core.database import db as state_db
 from core.knowledge_db import knowledge_db
 from core.knowledge_projection import knowledge_projection_service
 from core.memory.store import memory_store
@@ -163,11 +164,46 @@ class KnowledgeService:
         )
         return bool(result.get("factId"))
 
-    def delete_knowledge(self, *, fact_id: str) -> bool:
-        deleted = knowledge_db.delete_knowledge(fact_id)
+    def delete_knowledge(
+        self,
+        *,
+        fact_id: str,
+        actor: str = "human_admin",
+        reason: str = "manual_delete",
+        evidence_refs: Optional[List[str]] = None,
+    ) -> bool:
+        deleted = knowledge_db.delete_knowledge(
+            fact_id,
+            actor=actor,
+            reason=reason,
+            evidence_refs=evidence_refs,
+        )
         if deleted:
             knowledge_projection_service.process_outbox(limit=10)
         return deleted
+
+    def mark_knowledge_injected(self, *, fact_ids: List[str], verified: bool = False) -> int:
+        return knowledge_db.mark_knowledge_injected(fact_ids, verified=verified)
+
+    def create_cleanup_plan(
+        self,
+        *,
+        unused_days: int = 180,
+        low_evidence_confidence: float = 0.55,
+        max_candidates: int = 1000,
+    ) -> Dict[str, object]:
+        with state_db.get_connection() as conn:
+            existing_session_ids = {
+                str(row["id"])
+                for row in conn.execute("SELECT id FROM sessions").fetchall()
+                if str(row["id"] or "").strip()
+            }
+        return knowledge_db.create_cleanup_plan(
+            existing_session_ids=existing_session_ids,
+            unused_days=unused_days,
+            low_evidence_confidence=low_evidence_confidence,
+            max_candidates=max_candidates,
+        )
 
     def restore_knowledge(self, *, fact_id: str) -> bool:
         with knowledge_db._conn() as conn:
@@ -431,7 +467,8 @@ class KnowledgeService:
         predicate: str,
         object_name: str,
         scope: str,
-        source_fact_ids: List[str],
+        source_fact_ids: Optional[List[str]] = None,
+        evidence_refs: Optional[List[str]] = None,
         confidence: float = 1.0,
         maintainer_source: str = "memory_runtime",
     ) -> None:
@@ -441,6 +478,7 @@ class KnowledgeService:
             object_name,
             scope=scope,
             source_fact_ids=source_fact_ids,
+            evidence_refs=evidence_refs,
             confidence=confidence,
             maintainer_source=maintainer_source,
         )

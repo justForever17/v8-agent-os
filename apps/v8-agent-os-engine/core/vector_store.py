@@ -2,6 +2,7 @@ import abc
 from typing import List, Dict, Any
 import logging
 import uuid
+from pathlib import Path
 import chromadb
 
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
@@ -26,7 +27,7 @@ class BaseReranker(abc.ABC):
         pass
 
 class VectorStore:
-    def __init__(self):
+    def __init__(self, *, db_dir: Path | None = None):
         from core.memory_router import MemoryRouter
         self.router = MemoryRouter()
         
@@ -43,7 +44,7 @@ class VectorStore:
             logger.warning(f"Reranker model not loaded: {e}")
             self.reranker_model = None
             
-        self.db_dir = V8_AGENT_OS_HOME / "memory" / ".index" / "chroma_db"
+        self.db_dir = Path(db_dir) if db_dir is not None else V8_AGENT_OS_HOME / "memory" / ".index" / "chroma_db"
         self.db_dir.parent.mkdir(parents=True, exist_ok=True)
         
         # Initialize PersistentClient
@@ -51,6 +52,11 @@ class VectorStore:
         
         self.collection_name = "v8_agent_os_memory"
         self.collection = self.client.get_or_create_collection(name=self.collection_name)
+
+    def close(self) -> None:
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            close()
         
     def add_documents(self, documents: List[Dict[str, Any]]):
         """

@@ -63,21 +63,36 @@ class _Recorder:
     def upsert_preference(self, *, key: str, value: str, scope: str = "global", source: str = "memory_agent") -> None:
         self.preferences.append({"key": key, "value": value, "scope": scope, "source": source})
 
-    def add_knowledge(self, *, fact: str, category: str = "general", scope: str = "global", source_session: str | None = None) -> None:
-        self.knowledge.append(
-            {
-                "fact": fact,
-                "category": category,
-                "scope": scope,
-                "source_session": source_session,
-            }
-        )
+    def write_knowledge(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+        self.knowledge.append(dict(kwargs))
+        fact_id = f"fixture-fact-{len(self.knowledge)}"
+        return {
+            "action": str(kwargs.get("relation") or "new"),
+            "factId": fact_id,
+            "canonicalFactId": fact_id,
+        }
 
     def add_entity(self, name: str, entity_type: str = "concept") -> None:
         self.entities.append({"name": name, "type": entity_type})
 
-    def add_relation(self, subject: str, predicate: str, obj: str) -> None:
-        self.relations.append({"subject": subject, "predicate": predicate, "object": obj})
+    def add_scoped_relation(
+        self,
+        subject: str,
+        predicate: str,
+        obj: str,
+        *,
+        scope: str,
+        source_fact_ids: list[str],
+    ) -> None:
+        self.relations.append(
+            {
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+                "scope": scope,
+                "source_fact_ids": source_fact_ids,
+            }
+        )
 
     def append_daily_log_with_yaml(self, **kwargs: Any) -> None:  # noqa: ANN401
         self.daily_logs.append(kwargs)
@@ -129,7 +144,7 @@ class MemorySessionReplayTests(unittest.TestCase):
                 binding = self._binding_from_case(case)
                 expected = case["expected"]
 
-                with patch.object(memory_agent, "_load_memory_policy", return_value=_policy_with_defaults()), patch.object(memory_agent.db, "get_messages", return_value=[]), patch.object(memory_agent, "_build_canonical_session_transcript", return_value=transcript), patch.object(memory_agent, "_generate_quick_summary", return_value=f"fixture summary {case['id']}"), patch.object(memory_agent, "_build_historical_context", return_value="No prior knowledge retrieved."), patch.object(memory_agent, "_extract_with_llm", return_value=attempt), patch.object(memory_agent.memory_runtime, "query_knowledge", return_value=[]), patch.object(memory_agent.memory_runtime, "get_extraction_state", return_value=None), patch.object(memory_agent.memory_runtime, "save_extraction_state", side_effect=recorder.save_extraction_state), patch.object(memory_agent.memory_runtime, "upsert_preference", side_effect=recorder.upsert_preference), patch.object(memory_agent.memory_runtime, "add_knowledge", side_effect=recorder.add_knowledge), patch.object(memory_agent.memory_runtime, "append_daily_log_with_yaml", side_effect=recorder.append_daily_log_with_yaml), patch.object(memory_agent.knowledge_db, "add_entity", side_effect=recorder.add_entity), patch.object(memory_agent.knowledge_db, "add_relation", side_effect=recorder.add_relation), patch.object(memory_agent.audit_logger, "log", return_value=None), patch.object(memory_agent, "_run_incremental_index", return_value=None), patch.object(memory_agent.session_scope_binding_service, "get_binding", return_value=binding):
+                with patch.object(memory_agent, "_load_memory_policy", return_value=_policy_with_defaults()), patch.object(memory_agent.db, "get_messages", return_value=[]), patch.object(memory_agent, "_build_canonical_session_transcript", return_value=transcript), patch.object(memory_agent, "_generate_quick_summary", return_value=f"fixture summary {case['id']}"), patch.object(memory_agent, "_build_historical_context", return_value="No prior knowledge retrieved."), patch.object(memory_agent, "_extract_with_llm", return_value=attempt), patch.object(memory_agent.memory_runtime, "query_knowledge", return_value=[]), patch.object(memory_agent.memory_runtime, "get_extraction_state", return_value=None), patch.object(memory_agent.memory_runtime, "save_extraction_state", side_effect=recorder.save_extraction_state), patch.object(memory_agent.memory_runtime, "upsert_preference", side_effect=recorder.upsert_preference), patch.object(memory_agent.memory_runtime, "write_knowledge", side_effect=recorder.write_knowledge), patch.object(memory_agent.memory_runtime, "append_daily_log_with_yaml", side_effect=recorder.append_daily_log_with_yaml), patch.object(memory_agent.knowledge_db, "add_entity", side_effect=recorder.add_entity), patch.object(memory_agent.knowledge_db, "add_scoped_relation", side_effect=recorder.add_scoped_relation), patch.object(memory_agent.audit_logger, "log", return_value=None), patch.object(memory_agent, "_run_incremental_index", return_value=None), patch.object(memory_agent.session_scope_binding_service, "get_binding", return_value=binding):
                     result = memory_agent.analyze_session_memory(
                         case["sessionId"],
                         trigger_source="SYSTEM",
@@ -160,7 +175,7 @@ class MemorySessionReplayTests(unittest.TestCase):
         noisy_case = cases["noise_is_policy_filtered"]
         recorder = _Recorder()
 
-        with patch.object(memory_agent, "_load_memory_policy", return_value=_policy_with_defaults()), patch.object(memory_agent.db, "get_messages", return_value=[]), patch.object(memory_agent, "_build_canonical_session_transcript", return_value=self._transcript_from_case(noisy_case)), patch.object(memory_agent, "_generate_quick_summary", return_value="fixture summary noise"), patch.object(memory_agent, "_build_historical_context", return_value="No prior knowledge retrieved."), patch.object(memory_agent, "_extract_with_llm", return_value=self._attempt_from_case(noisy_case)), patch.object(memory_agent.memory_runtime, "query_knowledge", return_value=[]), patch.object(memory_agent.memory_runtime, "get_extraction_state", return_value=None), patch.object(memory_agent.memory_runtime, "save_extraction_state", side_effect=recorder.save_extraction_state), patch.object(memory_agent.memory_runtime, "upsert_preference", side_effect=recorder.upsert_preference), patch.object(memory_agent.memory_runtime, "add_knowledge", side_effect=recorder.add_knowledge), patch.object(memory_agent.memory_runtime, "append_daily_log_with_yaml", side_effect=recorder.append_daily_log_with_yaml), patch.object(memory_agent.knowledge_db, "add_entity", side_effect=recorder.add_entity), patch.object(memory_agent.knowledge_db, "add_relation", side_effect=recorder.add_relation), patch.object(memory_agent.audit_logger, "log", return_value=None), patch.object(memory_agent, "_run_incremental_index", return_value=None), patch.object(memory_agent.session_scope_binding_service, "get_binding", return_value=self._binding_from_case(noisy_case)):
+        with patch.object(memory_agent, "_load_memory_policy", return_value=_policy_with_defaults()), patch.object(memory_agent.db, "get_messages", return_value=[]), patch.object(memory_agent, "_build_canonical_session_transcript", return_value=self._transcript_from_case(noisy_case)), patch.object(memory_agent, "_generate_quick_summary", return_value="fixture summary noise"), patch.object(memory_agent, "_build_historical_context", return_value="No prior knowledge retrieved."), patch.object(memory_agent, "_extract_with_llm", return_value=self._attempt_from_case(noisy_case)), patch.object(memory_agent.memory_runtime, "query_knowledge", return_value=[]), patch.object(memory_agent.memory_runtime, "get_extraction_state", return_value=None), patch.object(memory_agent.memory_runtime, "save_extraction_state", side_effect=recorder.save_extraction_state), patch.object(memory_agent.memory_runtime, "upsert_preference", side_effect=recorder.upsert_preference), patch.object(memory_agent.memory_runtime, "write_knowledge", side_effect=recorder.write_knowledge), patch.object(memory_agent.memory_runtime, "append_daily_log_with_yaml", side_effect=recorder.append_daily_log_with_yaml), patch.object(memory_agent.knowledge_db, "add_entity", side_effect=recorder.add_entity), patch.object(memory_agent.knowledge_db, "add_scoped_relation", side_effect=recorder.add_scoped_relation), patch.object(memory_agent.audit_logger, "log", return_value=None), patch.object(memory_agent, "_run_incremental_index", return_value=None), patch.object(memory_agent.session_scope_binding_service, "get_binding", return_value=self._binding_from_case(noisy_case)):
             result = memory_agent.analyze_session_memory(noisy_case["sessionId"], trigger_source="SYSTEM", run_handle=recorder)
 
         self.assertEqual(result["persisted_knowledge_count"], 0)

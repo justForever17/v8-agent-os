@@ -836,6 +836,7 @@ class MemoryStore:
 
     def revalidate_knowledge(self, fact_id: str, maintainer_source: str = "human_admin") -> bool:
         from core.knowledge_db import knowledge_db
+        from core.knowledge_projection import knowledge_projection_service
 
         try:
             with knowledge_db._conn() as conn:
@@ -857,25 +858,7 @@ class MemoryStore:
         )
         if not ok:
             return False
-
-        path = self._get_knowledge_path(scope)
-        if path.exists():
-            try:
-                items = json.loads(path.read_text(encoding="utf-8"))
-                for item in items:
-                    if item.get("id") == fact_id:
-                        item["status"] = "active"
-                        item["lifecycle_state"] = "active"
-                        item["last_verified_at"] = _utc_now_iso()
-                        item["maintainer_source"] = maintainer_source
-                        if signature:
-                            item["agents_hash"] = signature.get("agentsHash")
-                            item["repo_signature"] = signature.get("repoSignature")
-                            item["signature_policy"] = signature.get("signaturePolicy")
-                        break
-                path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
-            except Exception as exc:
-                logger.warning(f"[MemoryStore] Could not update JSON knowledge after revalidation {fact_id}: {exc}")
+        knowledge_projection_service.process_outbox(limit=10)
         return True
     
     def add_knowledge(
@@ -888,192 +871,79 @@ class MemoryStore:
         maintainer_source: str = "memory_runtime",
         confidence: float = 1.0,
     ) -> str:
-        """添加知识到分区 JSON + SQLite DB (FTS5)"""
-        normalized_scope = self._validate_scope(scope)
-        path = self._get_knowledge_path(normalized_scope, category)
-        
-        items = []
-        if path.exists():
-            try:
-                items = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                items = []
-        
-        fact_id = f"fact-{uuid.uuid4().hex[:8]}"
-        item = {
-            "id": fact_id,
-            "fact": fact,
-            "category": category,
-            "scope": normalized_scope,
-            "status": "active",
-            "lifecycle_state": "active",
-            "timestamp": _utc_now_iso(),
-            "source_session": source_session,
-            "maintainer_source": maintainer_source,
-            "confidence": confidence,
-            "tags": [str(tag).strip() for tag in list(tags or []) if str(tag).strip()],
-        }
-        signature = self._current_soft_signature() if self._scope_uses_repo_signature(normalized_scope) else {}
-        if signature:
-            item["agents_hash"] = signature.get("agentsHash")
-            item["repo_signature"] = signature.get("repoSignature")
-            item["signature_policy"] = signature.get("signaturePolicy")
-        items.append(item)
-        
-        path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
-        
-        # 同步写入 SQLite DB (FTS5 自动索引)
-        try:
-            from core.knowledge_db import knowledge_db
-            knowledge_db.add_knowledge(
-                fact_id,
-                fact,
-                category,
-                normalized_scope,
-                source_session,
-                agents_hash=str(signature.get("agentsHash") or ""),
-                repo_signature=str(signature.get("repoSignature") or ""),
-                signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
-                maintainer_source=maintainer_source,
-                confidence=confidence,
-                metadata={
-                    "tags": item["tags"],
-                    "workspaceRoot": signature.get("workspaceRoot") if signature else "",
-                },
-            )
-        except Exception as e:
-            logger.warning(f"[MemoryStore] DB sync failed (non-fatal): {e}")
+        """Deprecated compatibility entry that writes canonical SQLite only."""
+        from core.knowledge_db import knowledge_db
+        from core.knowledge_projection import knowledge_projection_service
 
-        metadata = {"category": category, "scope": normalized_scope}
-        if item.get("tags"):
-            metadata["tags"] = ",".join(item["tags"])
-        self._sync_vector_store_document(fact_id, fact, metadata, operation="add_knowledge")
-        
-        logger.info(f"[MemoryStore] Added knowledge {fact_id} to {path.name} [{normalized_scope}]")
-        return fact_id
+        normalized_scope = self._validate_scope(scope)
+        fact_id = f"fact-{uuid.uuid4().hex[:8]}"
+        signature = self._current_soft_signature() if self._scope_uses_repo_signature(normalized_scope) else {}
+        result = knowledge_db.write_knowledge(
+            fact=fact,
+            category=category,
+            scope=normalized_scope,
+            relation="new",
+            source_session=source_session,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
+            agents_hash=str(signature.get("agentsHash") or ""),
+            repo_signature=str(signature.get("repoSignature") or ""),
+            signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
+            metadata={
+                "tags": [str(tag).strip() for tag in list(tags or []) if str(tag).strip()],
+                "workspaceRoot": signature.get("workspaceRoot") if signature else "",
+                "compatibilityEntry": "MemoryStore.add_knowledge",
+            },
+            fact_id=fact_id,
+        )
+        knowledge_projection_service.process_outbox(limit=10)
+        canonical_id = str(result["factId"])
+        logger.info("[MemoryStore] Canonical knowledge write %s [%s]", canonical_id, normalized_scope)
+        return canonical_id
     
     def update_knowledge(self, fact_id: str, new_fact: str, category: str = None, scope: str = None,
                          maintainer_source: str | None = None, confidence: float | None = None) -> bool:
-        """更新分区 JSON、SQLite 知识库及向量库"""
+        """Deprecated compatibility entry mapped to a replacement revision."""
         from core.knowledge_db import knowledge_db
-        try:
-            # 找到旧的 scope
-            with knowledge_db._conn() as conn:
-                row = conn.execute("SELECT scope FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
-                if not row:
-                    return False
-                old_scope = row[0]
-        except Exception as e:
-            logger.warning(f"[MemoryStore] Could not fetch old scope: {e}")
-            return False
-            
-        path = self._get_knowledge_path(old_scope)
-        if not path.exists():
-            return False
-            
-        try:
-            items = json.loads(path.read_text(encoding="utf-8"))
-            updated = False
-            for item in items:
-                if item.get("id") == fact_id:
-                    item["fact"] = new_fact
-                    if category: item["category"] = category
-                    if scope:
-                        item["scope"] = self._validate_scope(scope)
-                        item["timestamp"] = _utc_now_iso()
-                    updated = True
-                    break
-            if updated:
-                path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
-                # 更新 SQLite
-                next_scope = self._validate_scope(scope) if scope else None
-                signature = self._current_soft_signature() if self._scope_uses_repo_signature(next_scope or old_scope) else {}
-                knowledge_db.update_knowledge(
-                    fact_id,
-                    new_fact,
-                    category,
-                    next_scope,
-                    maintainer_source=maintainer_source,
-                    confidence=confidence,
-                    agents_hash=str(signature.get("agentsHash") or ""),
-                    repo_signature=str(signature.get("repoSignature") or ""),
-                    signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
-                )
-                
-                # 更新 Vector Store (通过覆盖同一 ID)
-                updated_item = next((i for i in items if i.get("id") == fact_id), None)
-                if updated_item:
-                    self._sync_vector_store_document(
-                        fact_id,
-                        new_fact,
-                        {
-                            "category": updated_item.get("category", "general"),
-                            "scope": updated_item.get("scope", "global"),
-                        },
-                        operation="update_knowledge",
-                    )
+        from core.knowledge_projection import knowledge_projection_service
 
-                logger.info(f"[MemoryStore] Updated knowledge {fact_id} in {path.name}")
-                return True
-        except Exception as e:
-            logger.warning(f"[MemoryStore] Error updating JSON knowledge {fact_id}: {e}")
-        return False
+        with knowledge_db._conn() as conn:
+            current = conn.execute("SELECT * FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+        if not current:
+            return False
+        normalized_scope = self._validate_scope(scope or str(current["scope"] or "global"))
+        signature = self._current_soft_signature() if self._scope_uses_repo_signature(normalized_scope) else {}
+        result = knowledge_db.write_knowledge(
+            fact=new_fact,
+            category=category or str(current["category"] or "general"),
+            scope=normalized_scope,
+            relation="replace",
+            target_fact_id=fact_id,
+            maintainer_source=maintainer_source or str(current["maintainer_source"] or "memory_runtime"),
+            confidence=confidence if confidence is not None else float(current["confidence"] or 1.0),
+            importance=int(current["importance"] or 50),
+            durability=str(current["durability"] or "operational"),
+            agents_hash=str(signature.get("agentsHash") or ""),
+            repo_signature=str(signature.get("repoSignature") or ""),
+            signature_policy=str(signature.get("signaturePolicy") or "soft_v1"),
+            metadata={
+                "deprecatedOverwriteId": fact_id,
+                "compatibilityEntry": "MemoryStore.update_knowledge",
+            },
+        )
+        knowledge_projection_service.process_outbox(limit=10)
+        return bool(result.get("factId"))
         
     def delete_knowledge(self, fact_id: str) -> bool:
-        """从 JSON、SQLite (并且级联图谱边) 和向量库中物理/逻辑删除知识项"""
+        """Tombstone canonical knowledge; projections are removed by the outbox."""
         from core.knowledge_db import knowledge_db
-        try:
-            # 找到旧的 scope
-            with knowledge_db._conn() as conn:
-                row = conn.execute("SELECT scope FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
-                if not row:
-                    return False
-                target_scope = row[0]
-        except Exception as e:
-            logger.warning(f"[MemoryStore] Could not fetch scope for deletion: {e}")
-            return False
-            
-        path = self._get_knowledge_path(target_scope)
-        if path.exists():
-            try:
-                items = json.loads(path.read_text(encoding="utf-8"))
-                original_len = len(items)
-                # Soft delete in JSON to keep history, or hard delete. Adaptive approach commonly uses soft delete in JSON:
-                for item in items:
-                    if item.get("id") == fact_id and item.get("status") == "active":
-                        item["status"] = "deleted"
-                        item["deleted_at"] = _utc_now_iso()
-                
-                path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
-            except Exception as e:
-                logger.warning(f"[MemoryStore] Error updating JSON for deletion {fact_id}: {e}")
-        
-        # 彻底执行级联删除 SQLite
-        try:
-            with knowledge_db._conn() as conn:
-                # 级联删除关联此事实的图谱关系
-                conn.execute("DELETE FROM relations WHERE source_fact_id = ?", (fact_id,))
-                # 逻辑删除知识主条目并标记
-                conn.execute(
-                    "UPDATE knowledge SET status = 'deleted', lifecycle_state = 'tombstoned', updated_at = ? WHERE id = ?",
-                    (_utc_now_iso(), fact_id),
-                )
-                # FTS表是触发器自动维护或靠重新索引维护，可以直接从FTS删以防止搜到
-                conn.execute("DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge WHERE id = ?)", (fact_id,))
-        except Exception as e:
-            logger.warning(f"[MemoryStore] DB cascade delete failed: {e}")
-            
-        # 尝试从 Vector Store 中删除 (Chroma)
-        try:
-            from core.vector_store import get_vector_store
-            vs = get_vector_store()
-            if vs.collection:
-                vs.collection.delete(ids=[fact_id])
-        except Exception as e:
-            logger.warning(f"[MemoryStore] Vector Store delete failed (non-fatal): {e}")
-            
-        logger.info(f"[MemoryStore] Deleted knowledge {fact_id} completely.")
-        return True
+        from core.knowledge_projection import knowledge_projection_service
+
+        deleted = knowledge_db.delete_knowledge(fact_id)
+        if deleted:
+            knowledge_projection_service.process_outbox(limit=10)
+            logger.info("[MemoryStore] Tombstoned canonical knowledge %s", fact_id)
+        return deleted
     
     def query_knowledge(self, query: Optional[str] = None,
                         scope: Optional[str] = None,
@@ -1413,7 +1283,7 @@ class MemoryStore:
                     graph_seed_floor,
                 ) * 0.9
                 for entity in graph_entities:
-                    relations = knowledge_db.multi_hop_query(entity, hops=2)
+                    relations = knowledge_db.multi_hop_query(entity, hops=2, scopes=scope_chain)
                     for relation in relations:
                         relation_text = f"{relation['subject']} {relation['predicate']} {relation['object']}"
                         if relation_text in extracted_relations:
@@ -1426,7 +1296,7 @@ class MemoryStore:
                                 "id": virtual_id,
                                 "fact": f"[Graph Context] {relation_text}",
                                 "category": "graph_context",
-                                "scope": "global",
+                                "scope": str(relation.get("scope") or "global"),
                                 "source": "graph",
                                 "raw_relevance_score": base_graph_score,
                             },

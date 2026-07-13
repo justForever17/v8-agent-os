@@ -151,7 +151,8 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.assertEqual(project_test1["other-scope"]["lifecycle_state"], "active")
         self.assertEqual(active_count, 2)
         self.assertIsNotNone(relation)
-        self.assertEqual(relation["source_fact_id"], "same-scope-new")
+        self.assertEqual(relation["source_fact_id"], "same-scope-old")
+        self.assertEqual(result["graph"]["rewiredRelationCount"], 0)
 
     def test_graph_maintenance_prunes_only_old_runtime_owned_isolated_entities(self):
         with tempfile.TemporaryDirectory() as temp_dir:

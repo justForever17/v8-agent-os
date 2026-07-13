@@ -21,6 +21,7 @@ import sqlite3
 import json
 import hashlib
 import logging
+import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
 from datetime import datetime, timezone
@@ -106,6 +107,40 @@ def _normalize_fact_for_compaction(value: object) -> str:
     return text
 
 
+_KNOWLEDGE_RELATIONS = {"new", "reinforce", "replace", "refine", "conflict"}
+
+
+def _normalize_knowledge_relation(value: object, *, default: str = "new") -> str:
+    normalized = str(value or default).strip().lower() or default
+    return normalized if normalized in _KNOWLEDGE_RELATIONS else default
+
+
+def _observation_hash(
+    *,
+    fact: str,
+    scope: str,
+    category: str,
+    relation: str,
+    source_session: str | None,
+    source_run: str | None,
+    transcript_hash: str | None,
+) -> str:
+    explicit = str(transcript_hash or "").strip()
+    if explicit:
+        return explicit
+    payload = "\n".join(
+        [
+            str(source_session or ""),
+            str(source_run or ""),
+            str(scope or "global"),
+            str(category or "general"),
+            relation,
+            _normalize_fact_for_compaction(fact),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class KnowledgeDB:
     """SQLite 知识数据库：FTS5 + 知识图谱 + 增量索引"""
     
@@ -169,9 +204,138 @@ class KnowledgeDB:
                 "confidence": "confidence REAL DEFAULT 1.0",
                 "effective_confidence": "effective_confidence REAL DEFAULT 1.0",
                 "metadata_json": "metadata_json TEXT",
+                "lineage_id": "lineage_id TEXT",
+                "revision_no": "revision_no INTEGER DEFAULT 1",
+                "importance": "importance INTEGER DEFAULT 50",
+                "durability": "durability TEXT DEFAULT 'operational'",
+                "valid_from": "valid_from TEXT",
+                "valid_to": "valid_to TEXT",
             }.items():
                 if column_name not in knowledge_columns:
                     conn.execute(f"ALTER TABLE knowledge ADD COLUMN {column_sql}")
+
+            conn.execute(
+                """
+                UPDATE knowledge
+                SET lineage_id = COALESCE(NULLIF(lineage_id, ''), id),
+                    revision_no = COALESCE(revision_no, 1),
+                    valid_from = COALESCE(valid_from, created_at, updated_at)
+                WHERE lineage_id IS NULL OR lineage_id = '' OR revision_no IS NULL OR valid_from IS NULL
+                """
+            )
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_observations (
+                    id TEXT PRIMARY KEY,
+                    fact_id TEXT NOT NULL,
+                    source_session TEXT,
+                    source_run TEXT,
+                    source_message_ids_json TEXT,
+                    raw_fact TEXT NOT NULL,
+                    relation TEXT NOT NULL,
+                    confidence REAL DEFAULT 1.0,
+                    importance INTEGER DEFAULT 50,
+                    durability TEXT DEFAULT 'operational',
+                    evidence_refs_json TEXT,
+                    transcript_hash TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (fact_id) REFERENCES knowledge(id),
+                    UNIQUE(fact_id, transcript_hash)
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_resolution_candidates (
+                    id TEXT PRIMARY KEY,
+                    candidate_fact_id TEXT NOT NULL,
+                    target_fact_id TEXT,
+                    proposed_relation TEXT NOT NULL,
+                    state TEXT NOT NULL DEFAULT 'pending',
+                    similarity REAL,
+                    reason TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    resolved_at TEXT,
+                    resolution TEXT,
+                    FOREIGN KEY (candidate_fact_id) REFERENCES knowledge(id),
+                    FOREIGN KEY (target_fact_id) REFERENCES knowledge(id)
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_projection_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_key TEXT NOT NULL UNIQUE,
+                    fact_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    last_error TEXT,
+                    payload_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scoped_relations (
+                    id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    predicate TEXT NOT NULL,
+                    object TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    confidence REAL DEFAULT 1.0,
+                    effective_confidence REAL DEFAULT 1.0,
+                    maintainer_source TEXT DEFAULT 'memory_runtime',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(subject, predicate, object, scope)
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scoped_relation_evidence (
+                    relation_id TEXT NOT NULL,
+                    fact_id TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (relation_id, fact_id),
+                    FOREIGN KEY (relation_id) REFERENCES scoped_relations(id),
+                    FOREIGN KEY (fact_id) REFERENCES knowledge(id)
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_migration_events (
+                    id TEXT PRIMARY KEY,
+                    migration_id TEXT NOT NULL,
+                    fact_id TEXT,
+                    event_type TEXT NOT NULL,
+                    detail_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS memory_migration_journal (
+                    migration_id TEXT PRIMARY KEY,
+                    plan_digest TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    backup_manifest_path TEXT,
+                    detail_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS deprecated_memory_api_usage (
+                    api_name TEXT PRIMARY KEY,
+                    call_count INTEGER NOT NULL DEFAULT 0,
+                    last_context TEXT,
+                    last_used_at TEXT NOT NULL
+                )
+            """)
             
             # FTS5 全文检索虚拟表
             # 注意: fact_tokenized 是 jieba 分词后的空格分隔文本
@@ -270,6 +434,15 @@ class KnowledgeDB:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_lifecycle_state ON knowledge(lifecycle_state)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_repo_signature ON knowledge(repo_signature)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_agents_hash ON knowledge(agents_hash)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_lineage_revision ON knowledge(lineage_id, revision_no)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_validity ON knowledge(valid_from, valid_to)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_observations_fact ON knowledge_observations(fact_id, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_resolution_state ON knowledge_resolution_candidates(state, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_projection_status ON knowledge_projection_outbox(status, next_attempt_at, id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scoped_relations_scope_subject ON scoped_relations(scope, subject, status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scoped_relations_scope_object ON scoped_relations(scope, object, status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scoped_relation_evidence_fact ON scoped_relation_evidence(fact_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_migration_events_migration ON knowledge_migration_events(migration_id, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_subject ON relations(subject)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_object ON relations(object)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations(predicate)")
@@ -303,7 +476,8 @@ class KnowledgeDB:
                            k.superseded_by, k.tombstone_of, k.decay_score,
                            k.agents_hash, k.repo_signature, k.signature_policy,
                            k.maintainer_source, k.confidence, k.effective_confidence,
-                           k.metadata_json,
+                           k.metadata_json, k.lineage_id, k.revision_no, k.importance,
+                           k.durability, k.valid_from, k.valid_to,
                            rank as relevance
                     FROM knowledge_fts f
                     JOIN knowledge k ON k.rowid = f.rowid
@@ -320,7 +494,8 @@ class KnowledgeDB:
                            k.superseded_by, k.tombstone_of, k.decay_score,
                            k.agents_hash, k.repo_signature, k.signature_policy,
                            k.maintainer_source, k.confidence, k.effective_confidence,
-                           k.metadata_json,
+                           k.metadata_json, k.lineage_id, k.revision_no, k.importance,
+                           k.durability, k.valid_from, k.valid_to,
                            rank as relevance
                     FROM knowledge_fts f
                     JOIN knowledge k ON k.rowid = f.rowid
@@ -348,6 +523,7 @@ class KnowledgeDB:
                            evidence_refs_json, promotion_reason, superseded_by, tombstone_of,
                            decay_score, agents_hash, repo_signature, signature_policy,
                            maintainer_source, confidence, effective_confidence, metadata_json
+                           , lineage_id, revision_no, importance, durability, valid_from, valid_to
                     FROM knowledge
                     WHERE scope IN (?, 'global') AND status = ?
                       {lifecycle_clause}
@@ -361,6 +537,7 @@ class KnowledgeDB:
                            evidence_refs_json, promotion_reason, superseded_by, tombstone_of,
                            decay_score, agents_hash, repo_signature, signature_policy,
                            maintainer_source, confidence, effective_confidence, metadata_json
+                           , lineage_id, revision_no, importance, durability, valid_from, valid_to
                     FROM knowledge
                     WHERE status = ?
                       {lifecycle_clause}
@@ -373,6 +550,609 @@ class KnowledgeDB:
     # ==========================================
     # 知识 CRUD
     # ==========================================
+
+    @staticmethod
+    def _insert_fts_row(conn: sqlite3.Connection, *, rowid: int, fact: str, category: str, scope: str) -> None:
+        conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (rowid,))
+        conn.execute(
+            "INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope) VALUES (?, ?, ?, ?)",
+            (rowid, tokenize_for_fts(fact), category, scope),
+        )
+
+    def rebuild_fts(self) -> int:
+        """Rebuild FTS exclusively from injectable canonical SQLite rows."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT rowid, fact, category, scope
+                FROM knowledge
+                WHERE status = 'active'
+                  AND COALESCE(lifecycle_state, 'active') = 'active'
+                ORDER BY rowid
+                """
+            ).fetchall()
+            conn.execute("DELETE FROM knowledge_fts")
+            for row in rows:
+                self._insert_fts_row(
+                    conn,
+                    rowid=int(row["rowid"]),
+                    fact=str(row["fact"] or ""),
+                    category=str(row["category"] or "general"),
+                    scope=str(row["scope"] or "global"),
+                )
+        return len(rows)
+
+    def record_deprecated_usage(self, api_name: str, *, context: str = "") -> None:
+        normalized = str(api_name or "").strip()
+        if not normalized:
+            return
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO deprecated_memory_api_usage (api_name, call_count, last_context, last_used_at)
+                VALUES (?, 1, ?, ?)
+                ON CONFLICT(api_name) DO UPDATE SET
+                    call_count = deprecated_memory_api_usage.call_count + 1,
+                    last_context = excluded.last_context,
+                    last_used_at = excluded.last_used_at
+                """,
+                (normalized, str(context or "")[:500], now),
+            )
+
+    @staticmethod
+    def _enqueue_projection(
+        conn: sqlite3.Connection,
+        *,
+        fact_id: str,
+        operation: str,
+        payload: Optional[Dict] = None,
+        event_key: Optional[str] = None,
+    ) -> None:
+        now = _utc_now_iso()
+        stable_key = event_key or f"{fact_id}:{operation}:{uuid.uuid4().hex}"
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO knowledge_projection_outbox (
+                event_key, fact_id, operation, status, attempts, payload_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?)
+            """,
+            (stable_key, fact_id, operation, json.dumps(payload or {}, ensure_ascii=False), now, now),
+        )
+
+    @staticmethod
+    def _deactivate_unsupported_relations(conn: sqlite3.Connection, *, fact_id: str) -> None:
+        relation_rows = conn.execute(
+            "SELECT relation_id FROM scoped_relation_evidence WHERE fact_id = ?",
+            (fact_id,),
+        ).fetchall()
+        now = _utc_now_iso()
+        for relation_row in relation_rows:
+            relation_id = str(relation_row["relation_id"])
+            still_supported = conn.execute(
+                """
+                SELECT 1
+                FROM scoped_relation_evidence evidence
+                JOIN knowledge fact ON fact.id = evidence.fact_id
+                WHERE evidence.relation_id = ?
+                  AND fact.status = 'active'
+                  AND COALESCE(fact.lifecycle_state, 'active') NOT IN (
+                      'stale', 'tombstoned', 'superseded', 'quarantined'
+                  )
+                LIMIT 1
+                """,
+                (relation_id,),
+            ).fetchone()
+            if not still_supported:
+                conn.execute(
+                    "UPDATE scoped_relations SET status = 'archived', updated_at = ? WHERE id = ?",
+                    (now, relation_id),
+                )
+
+    @staticmethod
+    def _record_observation(
+        conn: sqlite3.Connection,
+        *,
+        fact_id: str,
+        raw_fact: str,
+        relation: str,
+        source_session: Optional[str],
+        source_run: Optional[str],
+        source_message_ids: Optional[List[str]],
+        confidence: float,
+        importance: int,
+        durability: str,
+        evidence_refs: Optional[List[str]],
+        transcript_hash: str,
+        created_at: Optional[str] = None,
+    ) -> bool:
+        observation_id = f"obs-{hashlib.sha256(f'{fact_id}:{transcript_hash}'.encode('utf-8')).hexdigest()[:24]}"
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO knowledge_observations (
+                id, fact_id, source_session, source_run, source_message_ids_json,
+                raw_fact, relation, confidence, importance, durability,
+                evidence_refs_json, transcript_hash, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                observation_id,
+                fact_id,
+                source_session,
+                source_run,
+                json.dumps(list(source_message_ids or []), ensure_ascii=False),
+                raw_fact,
+                relation,
+                _bounded_confidence(confidence),
+                max(0, min(int(importance or 0), 100)),
+                str(durability or "operational"),
+                json.dumps(list(evidence_refs or []), ensure_ascii=False),
+                transcript_hash,
+                created_at or _utc_now_iso(),
+            ),
+        )
+        return cursor.rowcount > 0
+
+    def reinforce_duplicate_knowledge(
+        self,
+        fact_id: str,
+        canonical_fact_id: str,
+        *,
+        reason: str = "maintenance_exact_duplicate",
+    ) -> bool:
+        """Merge exact-duplicate evidence before retiring the duplicate row.
+
+        This path is deliberately stricter than a generic similarity merge. It
+        only accepts active facts with the same scope, category and normalized
+        text, and preserves every independent observation on the canonical fact.
+        """
+        source_id = str(fact_id or "").strip()
+        target_id = str(canonical_fact_id or "").strip()
+        if not source_id or not target_id or source_id == target_id:
+            return False
+        now = _utc_now_iso()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            source = conn.execute("SELECT rowid, * FROM knowledge WHERE id = ?", (source_id,)).fetchone()
+            target = conn.execute("SELECT rowid, * FROM knowledge WHERE id = ?", (target_id,)).fetchone()
+            if not source or not target:
+                return False
+            for row in (source, target):
+                if (
+                    str(row["status"] or "active").strip().lower() != "active"
+                    or str(row["lifecycle_state"] or "active").strip().lower() != "active"
+                ):
+                    return False
+            if (
+                str(source["scope"] or "global") != str(target["scope"] or "global")
+                or str(source["category"] or "general") != str(target["category"] or "general")
+                or _normalize_fact_for_compaction(source["fact"])
+                != _normalize_fact_for_compaction(target["fact"])
+            ):
+                return False
+
+            observations = conn.execute(
+                "SELECT * FROM knowledge_observations WHERE fact_id = ? ORDER BY created_at, id",
+                (source_id,),
+            ).fetchall()
+            if not observations:
+                observations = [
+                    {
+                        "raw_fact": str(source["fact"] or ""),
+                        "source_session": source["source_session"],
+                        "source_run": None,
+                        "source_message_ids_json": "[]",
+                        "confidence": source["confidence"],
+                        "importance": source["importance"],
+                        "durability": source["durability"],
+                        "evidence_refs_json": source["evidence_refs_json"],
+                        "transcript_hash": f"legacy-fact:{source_id}",
+                        "created_at": source["valid_from"] or source["updated_at"] or now,
+                    }
+                ]
+
+            inserted_observations = 0
+            merged_evidence: set[str] = set()
+            observed_confidence = 0.0
+            observed_importance = 0
+            for payload in (target["evidence_refs_json"], source["evidence_refs_json"]):
+                try:
+                    merged_evidence.update(str(item) for item in json.loads(payload or "[]") if str(item).strip())
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            for observation in observations:
+                try:
+                    source_message_ids = json.loads(observation["source_message_ids_json"] or "[]")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    source_message_ids = []
+                try:
+                    observation_evidence = json.loads(observation["evidence_refs_json"] or "[]")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    observation_evidence = []
+                merged_evidence.update(str(item) for item in observation_evidence if str(item).strip())
+                observed_confidence = max(observed_confidence, float(observation["confidence"] or 0.0))
+                observed_importance = max(observed_importance, int(observation["importance"] or 0))
+                if self._record_observation(
+                    conn,
+                    fact_id=target_id,
+                    raw_fact=str(observation["raw_fact"] or source["fact"] or ""),
+                    relation="reinforce",
+                    source_session=observation["source_session"],
+                    source_run=observation["source_run"],
+                    source_message_ids=source_message_ids,
+                    confidence=float(observation["confidence"] or 0.0),
+                    importance=int(observation["importance"] or 0),
+                    durability=str(observation["durability"] or "operational"),
+                    evidence_refs=observation_evidence,
+                    transcript_hash=str(observation["transcript_hash"] or f"legacy-fact:{source_id}"),
+                    created_at=str(observation["created_at"] or now),
+                ):
+                    inserted_observations += 1
+
+            target_confidence = max(
+                float(target["confidence"] or 0.0),
+                float(source["confidence"] or 0.0),
+                observed_confidence,
+            )
+            target_effective = max(
+                float(target["effective_confidence"] or 0.0),
+                float(source["effective_confidence"] or 0.0),
+            )
+            target_importance = max(
+                int(target["importance"] or 0),
+                int(source["importance"] or 0),
+                observed_importance,
+            )
+            conn.execute(
+                """
+                UPDATE knowledge
+                SET last_seen_at = ?, confidence = ?, effective_confidence = ?,
+                    importance = ?, evidence_refs_json = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    target_confidence,
+                    target_effective,
+                    target_importance,
+                    json.dumps(sorted(merged_evidence), ensure_ascii=False),
+                    target_id,
+                ),
+            )
+
+            metadata: Dict[str, object] = {}
+            try:
+                metadata = json.loads(source["metadata_json"] or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            maintenance = dict(metadata.get("maintenance") or {})
+            maintenance.update(
+                {
+                    "lastAction": "superseded",
+                    "reason": reason,
+                    "supersededBy": target_id,
+                    "mergedObservationCount": inserted_observations,
+                    "updatedAt": now,
+                }
+            )
+            metadata["maintenance"] = maintenance
+            cursor = conn.execute(
+                """
+                UPDATE knowledge
+                SET lifecycle_state = 'superseded', superseded_by = ?, valid_to = ?,
+                    metadata_json = ?, updated_at = ?
+                WHERE id = ? AND status = 'active'
+                  AND COALESCE(lifecycle_state, 'active') = 'active'
+                """,
+                (target_id, now, json.dumps(metadata, ensure_ascii=False), now, source_id),
+            )
+            if not cursor.rowcount:
+                return False
+            conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (int(source["rowid"]),))
+            self._deactivate_unsupported_relations(conn, fact_id=source_id)
+            self._enqueue_projection(
+                conn,
+                fact_id=source_id,
+                operation="remove",
+                event_key=f"{source_id}:superseded:{target_id}",
+            )
+            self._enqueue_projection(
+                conn,
+                fact_id=target_id,
+                operation="upsert",
+                event_key=f"{target_id}:reinforced-by:{source_id}",
+            )
+            return True
+
+    def write_knowledge(
+        self,
+        *,
+        fact: str,
+        category: str = "general",
+        scope: str = "global",
+        relation: str = "new",
+        target_fact_id: Optional[str] = None,
+        source_session: Optional[str] = None,
+        source_run: Optional[str] = None,
+        source_message_ids: Optional[List[str]] = None,
+        transcript_hash: Optional[str] = None,
+        maintainer_source: str = "memory_runtime",
+        confidence: float = 1.0,
+        importance: int = 50,
+        durability: str = "operational",
+        evidence_refs: Optional[List[str]] = None,
+        parent_id: Optional[str] = None,
+        agents_hash: Optional[str] = None,
+        repo_signature: Optional[str] = None,
+        signature_policy: str = "soft_v1",
+        promotion_reason: Optional[str] = None,
+        metadata: Optional[Dict] = None,
+        fact_id: Optional[str] = None,
+        lineage_id_override: Optional[str] = None,
+        revision_no_override: Optional[int] = None,
+    ) -> Dict[str, object]:
+        """Write canonical knowledge and its observation in one SQLite transaction.
+
+        Similarity heuristics never replace an existing fact here.  Only an exact
+        normalized match can be reinforced automatically; replacements require an
+        explicit target from the caller/user evidence.
+        """
+        normalized_fact = str(fact or "").strip()
+        if not normalized_fact:
+            raise ValueError("fact is required")
+        normalized_scope = str(scope or "global").strip() or "global"
+        normalized_category = str(category or "general").strip() or "general"
+        requested_relation = _normalize_knowledge_relation(relation)
+        normalized_source = str(maintainer_source or "memory_runtime").strip() or "memory_runtime"
+        bounded_confidence = _bounded_confidence(confidence)
+        bounded_importance = max(0, min(int(importance or 0), 100))
+        normalized_durability = str(durability or "operational").strip().lower() or "operational"
+        observation_hash = _observation_hash(
+            fact=normalized_fact,
+            scope=normalized_scope,
+            category=normalized_category,
+            relation=requested_relation,
+            source_session=source_session,
+            source_run=source_run,
+            transcript_hash=transcript_hash,
+        )
+        now = _utc_now_iso()
+
+        with self._conn() as conn:
+            # Serialize the read-before-write relation decision. Without an
+            # immediate writer lock, concurrent extractors can all observe no
+            # exact match and create duplicate active facts.
+            conn.execute("BEGIN IMMEDIATE")
+            target = None
+            if target_fact_id:
+                target = conn.execute("SELECT rowid, * FROM knowledge WHERE id = ?", (target_fact_id,)).fetchone()
+
+            if requested_relation == "new" and target is None:
+                target = conn.execute(
+                    """
+                    SELECT rowid, * FROM knowledge
+                    WHERE scope = ? AND category = ? AND status = 'active'
+                      AND COALESCE(lifecycle_state, 'active') = 'active'
+                    ORDER BY revision_no DESC, updated_at DESC
+                    """,
+                    (normalized_scope, normalized_category),
+                ).fetchall()
+                exact = next(
+                    (
+                        row
+                        for row in target
+                        if _normalize_fact_for_compaction(row["fact"]) == _normalize_fact_for_compaction(normalized_fact)
+                    ),
+                    None,
+                )
+                target = exact
+                if exact is not None:
+                    requested_relation = "reinforce"
+
+            if requested_relation in {"replace", "reinforce", "refine"} and target is None:
+                if requested_relation == "reinforce":
+                    requested_relation = "new"
+                else:
+                    raise ValueError(f"{requested_relation} requires an existing target fact")
+
+            if target is not None and requested_relation in {"replace", "reinforce", "refine", "conflict"}:
+                target_scope = str(target["scope"] or "global")
+                if target_scope != normalized_scope:
+                    raise ValueError("knowledge replacement/refinement cannot cross scope boundaries")
+                target_lifecycle = str(target["lifecycle_state"] or "active").strip().lower()
+                if str(target["status"] or "active").strip().lower() != "active" or target_lifecycle != "active":
+                    raise ValueError("knowledge relation target is not the current canonical fact")
+
+            if requested_relation == "reinforce" and target is not None:
+                canonical_fact_id = str(target["id"])
+                inserted = self._record_observation(
+                    conn,
+                    fact_id=canonical_fact_id,
+                    raw_fact=normalized_fact,
+                    relation="reinforce",
+                    source_session=source_session,
+                    source_run=source_run,
+                    source_message_ids=source_message_ids,
+                    confidence=bounded_confidence,
+                    importance=bounded_importance,
+                    durability=normalized_durability,
+                    evidence_refs=evidence_refs,
+                    transcript_hash=observation_hash,
+                )
+                if inserted:
+                    conn.execute(
+                        """
+                        UPDATE knowledge
+                        SET last_seen_at = ?, confidence = MAX(confidence, ?),
+                            effective_confidence = MAX(effective_confidence, ?),
+                            importance = MAX(COALESCE(importance, 0), ?)
+                        WHERE id = ?
+                        """,
+                        (
+                            now,
+                            bounded_confidence,
+                            _effective_confidence(bounded_confidence, normalized_source),
+                            bounded_importance,
+                            canonical_fact_id,
+                        ),
+                    )
+                    self._enqueue_projection(
+                        conn,
+                        fact_id=canonical_fact_id,
+                        operation="upsert",
+                        event_key=f"{canonical_fact_id}:reinforce:{observation_hash}",
+                    )
+                return {
+                    "action": "reinforce",
+                    "factId": canonical_fact_id,
+                    "canonicalFactId": canonical_fact_id,
+                    "lineageId": str(target["lineage_id"] or canonical_fact_id),
+                    "projectionState": "queued" if inserted else "ready",
+                }
+
+            new_fact_id = str(fact_id or f"fact-{uuid.uuid4().hex[:12]}").strip()
+            if not new_fact_id:
+                raise ValueError("fact_id is required")
+            existing_id = conn.execute("SELECT id FROM knowledge WHERE id = ?", (new_fact_id,)).fetchone()
+            if existing_id:
+                existing = conn.execute("SELECT * FROM knowledge WHERE id = ?", (new_fact_id,)).fetchone()
+                return {
+                    "action": "reinforce" if _normalize_fact_for_compaction(existing["fact"]) == _normalize_fact_for_compaction(normalized_fact) else "conflict",
+                    "factId": new_fact_id,
+                    "canonicalFactId": str(existing["id"]),
+                    "lineageId": str(existing["lineage_id"] or existing["id"]),
+                    "projectionState": "ready",
+                }
+
+            lineage_id = str(lineage_id_override or new_fact_id).strip() or new_fact_id
+            revision_no = max(1, int(revision_no_override or 1))
+            lifecycle_state = "quarantined" if requested_relation == "conflict" else "active"
+            status = "quarantined" if requested_relation == "conflict" else "active"
+            replaced_fact_id: Optional[str] = None
+            if requested_relation == "replace" and target is not None:
+                lineage_id = str(target["lineage_id"] or target["id"])
+                revision_no = int(target["revision_no"] or 1) + 1
+                replaced_fact_id = str(target["id"])
+            metadata_payload = dict(metadata or {})
+            if target is not None and requested_relation in {"refine", "conflict"}:
+                metadata_payload["relationTargetFactId"] = str(target["id"])
+                metadata_payload["knowledgeRelation"] = requested_relation
+
+            conn.execute(
+                """
+                INSERT INTO knowledge (
+                    id, fact, category, scope, status, source_session, parent_id,
+                    lifecycle_state, last_seen_at, agents_hash, repo_signature,
+                    signature_policy, maintainer_source, confidence, effective_confidence,
+                    evidence_refs_json, promotion_reason, metadata_json, lineage_id,
+                    revision_no, importance, durability, valid_from, valid_to, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                (
+                    new_fact_id,
+                    normalized_fact,
+                    normalized_category,
+                    normalized_scope,
+                    status,
+                    source_session,
+                    parent_id,
+                    lifecycle_state,
+                    now,
+                    agents_hash,
+                    repo_signature,
+                    signature_policy,
+                    normalized_source,
+                    bounded_confidence,
+                    _effective_confidence(bounded_confidence, normalized_source),
+                    json.dumps(list(evidence_refs or []), ensure_ascii=False),
+                    promotion_reason,
+                    json.dumps(metadata_payload, ensure_ascii=False),
+                    lineage_id,
+                    revision_no,
+                    bounded_importance,
+                    normalized_durability,
+                    now,
+                    now,
+                ),
+            )
+            rowid = int(conn.execute("SELECT rowid FROM knowledge WHERE id = ?", (new_fact_id,)).fetchone()[0])
+            if status == "active":
+                self._insert_fts_row(
+                    conn,
+                    rowid=rowid,
+                    fact=normalized_fact,
+                    category=normalized_category,
+                    scope=normalized_scope,
+                )
+
+            if replaced_fact_id:
+                conn.execute(
+                    """
+                    UPDATE knowledge
+                    SET lifecycle_state = 'superseded', superseded_by = ?, valid_to = ?
+                    WHERE id = ? AND status = 'active'
+                    """,
+                    (new_fact_id, now, replaced_fact_id),
+                )
+                old_rowid = int(target["rowid"])
+                conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (old_rowid,))
+                self._deactivate_unsupported_relations(conn, fact_id=replaced_fact_id)
+                self._enqueue_projection(
+                    conn,
+                    fact_id=replaced_fact_id,
+                    operation="remove",
+                    event_key=f"{replaced_fact_id}:superseded:{new_fact_id}",
+                )
+
+            self._record_observation(
+                conn,
+                fact_id=new_fact_id,
+                raw_fact=normalized_fact,
+                relation=requested_relation,
+                source_session=source_session,
+                source_run=source_run,
+                source_message_ids=source_message_ids,
+                confidence=bounded_confidence,
+                importance=bounded_importance,
+                durability=normalized_durability,
+                evidence_refs=evidence_refs,
+                transcript_hash=observation_hash,
+            )
+            resolution_candidate_id: Optional[str] = None
+            if requested_relation == "conflict":
+                resolution_candidate_id = f"resolution-{uuid.uuid4().hex[:16]}"
+                conn.execute(
+                    """
+                    INSERT INTO knowledge_resolution_candidates (
+                        id, candidate_fact_id, target_fact_id, proposed_relation, state, reason, created_at
+                    ) VALUES (?, ?, ?, 'conflict', 'pending', ?, ?)
+                    """,
+                    (
+                        resolution_candidate_id,
+                        new_fact_id,
+                        str(target["id"]) if target is not None else None,
+                        "explicit_or_uncertain_conflict",
+                        now,
+                    ),
+                )
+            self._enqueue_projection(
+                conn,
+                fact_id=new_fact_id,
+                operation="remove" if status != "active" else "upsert",
+                event_key=f"{new_fact_id}:create:{observation_hash}",
+            )
+            result: Dict[str, object] = {
+                "action": requested_relation,
+                "factId": new_fact_id,
+                "canonicalFactId": new_fact_id,
+                "lineageId": lineage_id,
+                "projectionState": "queued",
+            }
+            if replaced_fact_id:
+                result["replacedFactId"] = replaced_fact_id
+            if resolution_candidate_id:
+                result["resolutionCandidateId"] = resolution_candidate_id
+            return result
     
     def add_knowledge(self, fact_id: str, fact: str, category: str = "general",
                       scope: str = "global", source_session: Optional[str] = None,
@@ -387,9 +1167,13 @@ class KnowledgeDB:
                       promotion_reason: Optional[str] = None,
                       metadata: Optional[Dict] = None):
         """添加知识条目 + 同步 FTS5 索引（自动 jieba 分词）"""
-        fact_tokenized = tokenize_for_fts(fact)
         now = _utc_now_iso()
         normalized_lifecycle = str(lifecycle_state or "active").strip().lower() or "active"
+        normalized_status = (
+            "deleted"
+            if normalized_lifecycle == "tombstoned"
+            else ("quarantined" if normalized_lifecycle == "quarantined" else "active")
+        )
         normalized_source = str(maintainer_source or "memory_runtime").strip() or "memory_runtime"
         bounded_confidence = _bounded_confidence(confidence)
         effective = _effective_confidence(bounded_confidence, normalized_source)
@@ -403,27 +1187,10 @@ class KnowledgeDB:
             ).fetchone()
             
             if existing:
-                # 更新：先删 FTS 旧记录，再更新主表，最后插 FTS 新记录
-                old_rowid = existing[0]
-                conn.execute(
-                    "DELETE FROM knowledge_fts WHERE rowid = ?", (old_rowid,)
-                )
-                conn.execute("""
-                    UPDATE knowledge SET fact=?, category=?, scope=?, status='active',
-                           source_session=?, parent_id=?, lifecycle_state=?, last_seen_at=?,
-                           agents_hash=?, repo_signature=?, signature_policy=?,
-                           maintainer_source=?, confidence=?, effective_confidence=?,
-                           evidence_refs_json=?, promotion_reason=?, metadata_json=?, updated_at=?
-                    WHERE id=?
-                """, (
-                    fact, category, scope, source_session, parent_id, normalized_lifecycle, now,
-                    agents_hash, repo_signature, signature_policy, normalized_source, bounded_confidence,
-                    effective, evidence_refs_json, promotion_reason, metadata_json, now, fact_id,
-                ))
-                conn.execute("""
-                    INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope)
-                    VALUES (?, ?, ?, ?)
-                """, (old_rowid, fact_tokenized, category, scope))
+                # Legacy/import callers may replay an already projected JSON item.
+                # SQLite is canonical: an existing row is never overwritten or
+                # reactivated from a derived projection.
+                return
             else:
                 # 新增
                 conn.execute("""
@@ -431,27 +1198,50 @@ class KnowledgeDB:
                         id, fact, category, scope, status, source_session, parent_id,
                         lifecycle_state, last_seen_at, agents_hash, repo_signature,
                         signature_policy, maintainer_source, confidence, effective_confidence,
-                        evidence_refs_json, promotion_reason, metadata_json, updated_at
+                        evidence_refs_json, promotion_reason, metadata_json, lineage_id,
+                        revision_no, importance, durability, valid_from, updated_at
                     )
-                    VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 50, 'operational', ?, ?)
                 """, (
-                    fact_id, fact, category, scope, source_session, parent_id,
+                    fact_id, fact, category, scope, normalized_status, source_session, parent_id,
                     normalized_lifecycle, now, agents_hash, repo_signature,
                     signature_policy, normalized_source, bounded_confidence, effective,
-                    evidence_refs_json, promotion_reason, metadata_json, now,
+                    evidence_refs_json, promotion_reason, metadata_json, fact_id, now, now,
                 ))
                 
-                # 获取新 rowid 同步到 FTS5
                 new_rowid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                # Historical crashes or schema migrations may leave orphan FTS rows.
-                # Clear the rowid before insert so incremental re-index stays idempotent.
-                conn.execute(
-                    "DELETE FROM knowledge_fts WHERE rowid = ?", (new_rowid,)
+                injectable = normalized_status == "active" and normalized_lifecycle == "active"
+                if injectable:
+                    self._insert_fts_row(
+                        conn,
+                        rowid=int(new_rowid),
+                        fact=fact,
+                        category=category,
+                        scope=scope,
+                    )
+                transcript_hash = hashlib.sha256(
+                    f"legacy-import:{fact_id}:{scope}:{category}:{fact}".encode("utf-8")
+                ).hexdigest()
+                self._record_observation(
+                    conn,
+                    fact_id=fact_id,
+                    raw_fact=fact,
+                    relation="new",
+                    source_session=source_session,
+                    source_run=None,
+                    source_message_ids=None,
+                    confidence=bounded_confidence,
+                    importance=50,
+                    durability="operational",
+                    evidence_refs=evidence_refs,
+                    transcript_hash=transcript_hash,
                 )
-                conn.execute("""
-                    INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope)
-                    VALUES (?, ?, ?, ?)
-                """, (new_rowid, fact_tokenized, category, scope))
+                self._enqueue_projection(
+                    conn,
+                    fact_id=fact_id,
+                    operation="upsert" if injectable else "remove",
+                    event_key=f"{fact_id}:legacy-add",
+                )
     
     def get_user_documents(self) -> List[Dict]:
         """获取所有上传的用户文档列表。利用 source_session 存储 filename"""
@@ -462,17 +1252,20 @@ class KnowledgeDB:
                        MAX(created_at) as uploaded_at
                 FROM knowledge
                 WHERE category = 'user_document' AND source_session IS NOT NULL
+                  AND status = 'active'
+                  AND COALESCE(lifecycle_state, 'active') NOT IN ('tombstoned', 'superseded', 'quarantined')
                 GROUP BY source_session
                 ORDER BY uploaded_at DESC
             """).fetchall()
             return [dict(r) for r in rows]
 
     def delete_user_document(self, filename: str) -> List[str]:
-        """删除指定用户文档的所有切块（包括 FTS5 索引）。返回被删除事实的 IDs。"""
+        """Tombstone all active chunks for a document and enqueue projection removal."""
+        now = _utc_now_iso()
         with self._conn() as conn:
             # 找到要删除的记录 ID
             rows = conn.execute(
-                "SELECT rowid, id FROM knowledge WHERE category = 'user_document' AND source_session = ?", 
+                "SELECT rowid, id FROM knowledge WHERE category = 'user_document' AND source_session = ? AND status = 'active'",
                 (filename,)
             ).fetchall()
             
@@ -488,21 +1281,155 @@ class KnowledgeDB:
                 rowids
             )
             
-            # 删除主表记录
             conn.execute(
-                "DELETE FROM knowledge WHERE category = 'user_document' AND source_session = ?", 
-                (filename,)
+                """
+                UPDATE knowledge
+                SET status = 'deleted', lifecycle_state = 'tombstoned', valid_to = ?, updated_at = ?
+                WHERE category = 'user_document' AND source_session = ? AND status = 'active'
+                """,
+                (now, now, filename),
             )
+            for fact_id in fact_ids:
+                self._deactivate_unsupported_relations(conn, fact_id=fact_id)
+                self._enqueue_projection(
+                    conn,
+                    fact_id=fact_id,
+                    operation="remove",
+                    event_key=f"document-delete:{filename}:{fact_id}:{now}",
+                )
             
             return fact_ids
+
+    def replace_user_document_chunks(
+        self,
+        *,
+        filename: str,
+        chunks: List[Dict[str, object]],
+        maintainer_source: str,
+        confidence: float,
+        promotion_reason: str,
+    ) -> Dict[str, List[str]]:
+        """Replace a document's canonical chunks in one SQLite transaction."""
+        now = _utc_now_iso()
+        bounded = _bounded_confidence(confidence)
+        effective = _effective_confidence(bounded, maintainer_source)
+        with self._conn() as conn:
+            old_rows = conn.execute(
+                """
+                SELECT rowid, id FROM knowledge
+                WHERE category = 'user_document' AND source_session = ? AND status = 'active'
+                """,
+                (filename,),
+            ).fetchall()
+            old_ids = [str(row["id"]) for row in old_rows]
+            if old_rows:
+                conn.execute(
+                    f"DELETE FROM knowledge_fts WHERE rowid IN ({','.join('?' for _ in old_rows)})",
+                    [int(row["rowid"]) for row in old_rows],
+                )
+                conn.execute(
+                    """
+                    UPDATE knowledge
+                    SET status = 'deleted', lifecycle_state = 'tombstoned', valid_to = ?, updated_at = ?
+                    WHERE category = 'user_document' AND source_session = ? AND status = 'active'
+                    """,
+                    (now, now, filename),
+                )
+                for old_id in old_ids:
+                    self._enqueue_projection(
+                        conn,
+                        fact_id=old_id,
+                        operation="remove",
+                        event_key=f"document-replace:{filename}:remove:{old_id}:{now}",
+                    )
+
+            new_ids: List[str] = []
+            for chunk in chunks:
+                chunk_id = str(chunk.get("id") or f"upload-{uuid.uuid4().hex[:12]}").strip()
+                chunk_fact = str(chunk.get("fact") or "").strip()
+                if not chunk_fact:
+                    continue
+                parent_id = str(chunk.get("parent_id") or "").strip() or None
+                metadata = dict(chunk.get("metadata") or {})
+                conn.execute(
+                    """
+                    INSERT INTO knowledge (
+                        id, fact, category, scope, status, source_session, parent_id,
+                        lifecycle_state, last_seen_at, evidence_refs_json, promotion_reason,
+                        metadata_json, lineage_id, revision_no, importance, durability,
+                        valid_from, maintainer_source, confidence, effective_confidence, updated_at
+                    ) VALUES (?, ?, 'user_document', 'global', 'active', ?, ?, 'active', ?, '[]', ?, ?, ?, 1, 50, 'stable', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        chunk_id,
+                        chunk_fact,
+                        filename,
+                        parent_id,
+                        now,
+                        promotion_reason,
+                        json.dumps(metadata, ensure_ascii=False),
+                        chunk_id,
+                        now,
+                        maintainer_source,
+                        bounded,
+                        effective,
+                        now,
+                    ),
+                )
+                rowid = int(conn.execute("SELECT rowid FROM knowledge WHERE id = ?", (chunk_id,)).fetchone()[0])
+                self._insert_fts_row(
+                    conn,
+                    rowid=rowid,
+                    fact=chunk_fact,
+                    category="user_document",
+                    scope="global",
+                )
+                transcript_hash = hashlib.sha256(
+                    f"document:{filename}:{chunk_id}:{chunk_fact}".encode("utf-8")
+                ).hexdigest()
+                self._record_observation(
+                    conn,
+                    fact_id=chunk_id,
+                    raw_fact=chunk_fact,
+                    relation="new",
+                    source_session=filename,
+                    source_run=None,
+                    source_message_ids=None,
+                    confidence=bounded,
+                    importance=50,
+                    durability="stable",
+                    evidence_refs=[f"document:{filename}"],
+                    transcript_hash=transcript_hash,
+                )
+                self._enqueue_projection(
+                    conn,
+                    fact_id=chunk_id,
+                    operation="upsert",
+                    event_key=f"document-replace:{filename}:upsert:{chunk_id}",
+                )
+                new_ids.append(chunk_id)
+        return {"removed": old_ids, "created": new_ids}
     
     def delete_knowledge(self, fact_id: str) -> bool:
         """软删除知识条目"""
+        now = _utc_now_iso()
         with self._conn() as conn:
             cursor = conn.execute(
-                "UPDATE knowledge SET status = 'deleted', lifecycle_state = 'tombstoned', updated_at = ? WHERE id = ? AND status = 'active'",
-                (_utc_now_iso(), fact_id)
+                """
+                UPDATE knowledge
+                SET status = 'deleted', lifecycle_state = 'tombstoned', valid_to = ?, updated_at = ?
+                WHERE id = ?
+                  AND status != 'deleted'
+                  AND COALESCE(lifecycle_state, 'active') != 'tombstoned'
+                """,
+                (now, now, fact_id)
             )
+            if cursor.rowcount:
+                rowid = conn.execute("SELECT rowid FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+                if rowid:
+                    conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (rowid[0],))
+                self._deactivate_unsupported_relations(conn, fact_id=fact_id)
+                self._enqueue_projection(conn, fact_id=fact_id, operation="remove")
             return cursor.rowcount > 0
 
     def set_knowledge_status(self, fact_id: str, status: str) -> bool:
@@ -510,11 +1437,39 @@ class KnowledgeDB:
         if normalized_status not in {"active", "deleted", "quarantined"}:
             return False
         with self._conn() as conn:
+            current = conn.execute(
+                "SELECT rowid, fact, category, scope, lifecycle_state, superseded_by FROM knowledge WHERE id = ?",
+                (fact_id,),
+            ).fetchone()
+            if not current:
+                return False
+            if normalized_status == "active" and (
+                str(current["lifecycle_state"] or "").strip().lower() in {"superseded", "tombstoned", "quarantined"}
+                or str(current["superseded_by"] or "").strip()
+            ):
+                return False
             lifecycle_state = "active" if normalized_status == "active" else ("tombstoned" if normalized_status == "deleted" else "quarantined")
             cursor = conn.execute(
                 "UPDATE knowledge SET status = ?, lifecycle_state = ?, updated_at = ? WHERE id = ?",
                 (normalized_status, lifecycle_state, _utc_now_iso(), fact_id),
             )
+            if cursor.rowcount:
+                if normalized_status == "active":
+                    self._insert_fts_row(
+                        conn,
+                        rowid=int(current["rowid"]),
+                        fact=str(current["fact"] or ""),
+                        category=str(current["category"] or "general"),
+                        scope=str(current["scope"] or "global"),
+                    )
+                else:
+                    conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (int(current["rowid"]),))
+                    self._deactivate_unsupported_relations(conn, fact_id=fact_id)
+                self._enqueue_projection(
+                    conn,
+                    fact_id=fact_id,
+                    operation="upsert" if normalized_status == "active" else "remove",
+                )
             return cursor.rowcount > 0
 
     def quarantine_knowledge(self, fact_id: str) -> bool:
@@ -557,18 +1512,24 @@ class KnowledgeDB:
                 UPDATE knowledge
                 SET lifecycle_state = 'superseded',
                     superseded_by = ?,
+                    valid_to = ?,
                     metadata_json = ?,
                     updated_at = ?
                 WHERE id = ?
-                  AND status = 'active'
                   AND COALESCE(lifecycle_state, 'active') NOT IN ('tombstoned', 'superseded')
                 """,
-                (superseded_by, json.dumps(metadata, ensure_ascii=False), now, fact_id),
+                (superseded_by, now, json.dumps(metadata, ensure_ascii=False), now, fact_id),
             )
             if cursor.rowcount:
-                conn.execute(
-                    "UPDATE relations SET source_fact_id = ?, updated_at = ? WHERE source_fact_id = ?",
-                    (superseded_by, now, fact_id),
+                rowid = conn.execute("SELECT rowid FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+                if rowid:
+                    conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (rowid[0],))
+                self._deactivate_unsupported_relations(conn, fact_id=fact_id)
+                self._enqueue_projection(
+                    conn,
+                    fact_id=fact_id,
+                    operation="remove",
+                    event_key=f"{fact_id}:superseded:{superseded_by}",
                 )
             return cursor.rowcount > 0
 
@@ -612,6 +1573,22 @@ class KnowledgeDB:
                 """,
                 (json.dumps(metadata, ensure_ascii=False), now, fact_id),
             )
+            if cursor.rowcount:
+                candidate_id = "resolution-" + hashlib.sha256(
+                    f"{fact_id}:{target_id}:similarity".encode("utf-8")
+                ).hexdigest()[:16]
+                conn.execute(
+                    """
+                    INSERT INTO knowledge_resolution_candidates (
+                        id, candidate_fact_id, target_fact_id, proposed_relation,
+                        state, similarity, reason, created_at
+                    ) VALUES (?, ?, ?, 'reinforce', 'pending', ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        similarity = excluded.similarity,
+                        reason = excluded.reason
+                    """,
+                    (candidate_id, fact_id, target_id, float(similarity or 0.0), reason, now),
+                )
             return cursor.rowcount > 0
 
     def maintenance_compact_knowledge(
@@ -637,7 +1614,7 @@ class KnowledgeDB:
         buckets: Dict[tuple[str, str], List[Dict]] = {}
         for item in items:
             fact = _normalize_fact_for_compaction(item.get("fact"))
-            if len(fact) < 16:
+            if not fact:
                 continue
             key = (str(item.get("scope") or "global").strip(), str(item.get("category") or "general").strip())
             normalized_item = dict(item)
@@ -673,14 +1650,24 @@ class KnowledgeDB:
                     if duplicate.get("id") == keeper.get("id"):
                         continue
                     duplicate_candidates += 1
-                    if self.mark_knowledge_superseded(str(duplicate.get("id")), str(keeper.get("id")), reason="maintenance_exact_duplicate"):
+                    if self.reinforce_duplicate_knowledge(
+                        str(duplicate.get("id")),
+                        str(keeper.get("id")),
+                        reason="maintenance_exact_duplicate",
+                    ):
                         superseded_count += 1
                         superseded_pairs.append({"sourceId": str(duplicate.get("id")), "targetId": str(keeper.get("id")), "reason": "exact_duplicate"})
             if processed_clusters >= cluster_budget:
                 break
 
             candidates = sorted(
-                [item for group in by_exact.values() if len(group) == 1 for item in group],
+                [
+                    item
+                    for group in by_exact.values()
+                    if len(group) == 1
+                    for item in group
+                    if len(str(item.get("_normalized_fact") or "")) >= 16
+                ],
                 key=lambda item: str(item.get("_normalized_fact") or ""),
             )
             for index, left in enumerate(candidates):
@@ -699,33 +1686,26 @@ class KnowledgeDB:
                     processed_clusters += 1
                     duplicate_candidates += 1
                     keeper, duplicate = sorted([left, right], key=_keeper_key, reverse=True)[:2]
-                    if ratio >= threshold:
-                        if self.mark_knowledge_superseded(str(duplicate.get("id")), str(keeper.get("id")), reason="maintenance_high_similarity"):
-                            superseded_count += 1
-                            superseded_pairs.append(
-                                {
-                                    "sourceId": str(duplicate.get("id")),
-                                    "targetId": str(keeper.get("id")),
-                                    "reason": "high_similarity",
-                                }
-                            )
-                    else:
-                        if self.mark_knowledge_merge_suggestion(
-                            str(duplicate.get("id")),
-                            str(keeper.get("id")),
-                            similarity=ratio,
-                        ):
-                            merge_suggestion_count += 1
-                            merge_suggestions.append(
-                                {
-                                    "sourceId": str(duplicate.get("id")),
-                                    "targetId": str(keeper.get("id")),
-                                    "similarity": round(ratio, 4),
-                                    "reason": "similar_but_below_auto_threshold",
-                                }
-                            )
-                        if len(merge_suggestions) >= 20:
-                            break
+                    # Similarity is evidence for review, never authority to rewrite
+                    # knowledge history.  Only normalized exact duplicates above
+                    # are automatically reinforced/superseded.
+                    if self.mark_knowledge_merge_suggestion(
+                        str(duplicate.get("id")),
+                        str(keeper.get("id")),
+                        similarity=ratio,
+                        reason="maintenance_similarity_review",
+                    ):
+                        merge_suggestion_count += 1
+                        merge_suggestions.append(
+                            {
+                                "sourceId": str(duplicate.get("id")),
+                                "targetId": str(keeper.get("id")),
+                                "similarity": round(ratio, 4),
+                                "reason": "similarity_requires_review",
+                            }
+                        )
+                    if len(merge_suggestions) >= 20:
+                        break
 
         graph_result = self.maintenance_compact_graph()
         return {
@@ -751,37 +1731,42 @@ class KnowledgeDB:
         with self._conn() as conn:
             rows = conn.execute(
                 """
-                SELECT r.id, r.source_fact_id, k.superseded_by, k.lifecycle_state
-                FROM relations r
-                LEFT JOIN knowledge k ON k.id = r.source_fact_id
-                WHERE r.source_fact_id IS NOT NULL
+                SELECT relation.id
+                FROM scoped_relations relation
+                WHERE relation.status = 'active'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM scoped_relation_evidence evidence
+                    JOIN knowledge fact ON fact.id = evidence.fact_id
+                    WHERE evidence.relation_id = relation.id
+                      AND fact.status = 'active'
+                      AND COALESCE(fact.lifecycle_state, 'active') NOT IN (
+                        'stale', 'tombstoned', 'superseded', 'quarantined'
+                      )
+                  )
                 LIMIT ?
                 """,
                 (effective_limit,),
             ).fetchall()
             rewired = 0
-            orphaned = 0
-            now = _utc_now_iso()
-            for row in rows:
-                source_fact_id = str(row["source_fact_id"] or "").strip()
-                superseded_by = str(row["superseded_by"] or "").strip() if "superseded_by" in row.keys() else ""
-                lifecycle = str(row["lifecycle_state"] or "").strip().lower() if "lifecycle_state" in row.keys() else ""
-                if source_fact_id and not lifecycle:
-                    orphaned += 1
-                    continue
-                if lifecycle == "superseded" and superseded_by:
-                    cursor = conn.execute(
-                        "UPDATE relations SET source_fact_id = ?, updated_at = ? WHERE id = ?",
-                        (superseded_by, now, row["id"]),
-                    )
-                    rewired += cursor.rowcount
+            orphaned = len(rows)
+            archived = 0
+            if rows:
+                relation_ids = [str(row["id"]) for row in rows]
+                placeholders = ",".join("?" for _ in relation_ids)
+                cursor = conn.execute(
+                    f"UPDATE scoped_relations SET status = 'archived', updated_at = ? WHERE id IN ({placeholders})",
+                    [_utc_now_iso(), *relation_ids],
+                )
+                archived = cursor.rowcount
             isolated_before = conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM entities e
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM relations r
-                    WHERE r.subject = e.name OR r.object = e.name
+                    SELECT 1 FROM scoped_relations relation
+                    WHERE relation.status = 'active'
+                      AND (relation.subject = e.name OR relation.object = e.name)
                 )
                 """
             ).fetchone()[0]
@@ -791,8 +1776,9 @@ class KnowledgeDB:
                 FROM entities e
                 WHERE COALESCE(e.maintainer_source, 'memory_runtime') = 'memory_runtime'
                   AND NOT EXISTS (
-                      SELECT 1 FROM relations r
-                      WHERE r.subject = e.name OR r.object = e.name
+                      SELECT 1 FROM scoped_relations relation
+                      WHERE relation.status = 'active'
+                        AND (relation.subject = e.name OR relation.object = e.name)
                   )
                   AND datetime(COALESCE(e.updated_at, e.created_at, '1970-01-01')) <= datetime('now', ?)
                 ORDER BY datetime(COALESCE(e.updated_at, e.created_at, '1970-01-01')) ASC, e.name ASC
@@ -811,8 +1797,9 @@ class KnowledgeDB:
                 SELECT COUNT(*)
                 FROM entities e
                 WHERE NOT EXISTS (
-                    SELECT 1 FROM relations r
-                    WHERE r.subject = e.name OR r.object = e.name
+                    SELECT 1 FROM scoped_relations relation
+                    WHERE relation.status = 'active'
+                      AND (relation.subject = e.name OR relation.object = e.name)
                 )
                 """
             ).fetchone()[0]
@@ -820,6 +1807,7 @@ class KnowledgeDB:
             "relationCandidateCount": len(rows),
             "rewiredRelationCount": rewired,
             "orphanedRelationCount": orphaned,
+            "archivedRelationCount": int(archived or 0),
             "isolatedEntityCountBefore": int(isolated_before or 0),
             "isolatedEntityCount": int(isolated_after or 0),
             "prunedIsolatedEntityCount": int(pruned or 0),
@@ -849,18 +1837,33 @@ class KnowledgeDB:
             return 0
         now = _utc_now_iso()
         with self._conn() as conn:
-            cursor = conn.execute(
+            rows = conn.execute(
                 f"""
-                UPDATE knowledge
-                SET lifecycle_state = 'stale', updated_at = ?
+                SELECT id
+                FROM knowledge
                 WHERE status = 'active'
                   AND scope IN ({placeholders})
                   AND COALESCE(lifecycle_state, 'active') NOT IN ('stale', 'tombstoned', 'superseded')
                   AND ({' OR '.join(signature_conditions)})
                 """,
-                [now, *scope_values, *signature_params],
+                [*scope_values, *signature_params],
+            ).fetchall()
+            fact_ids = [str(row["id"]) for row in rows]
+            if not fact_ids:
+                return 0
+            id_placeholders = ",".join("?" for _ in fact_ids)
+            conn.execute(
+                f"UPDATE knowledge SET lifecycle_state = 'stale', updated_at = ? WHERE id IN ({id_placeholders})",
+                [now, *fact_ids],
             )
-            return cursor.rowcount
+            for fact_id in fact_ids:
+                self._deactivate_unsupported_relations(conn, fact_id=fact_id)
+                self._enqueue_projection(
+                    conn,
+                    fact_id=fact_id,
+                    operation="remove",
+                )
+            return len(fact_ids)
 
     def revalidate_knowledge(
         self,
@@ -873,8 +1876,16 @@ class KnowledgeDB:
     ) -> bool:
         now = _utc_now_iso()
         with self._conn() as conn:
-            row = conn.execute("SELECT confidence FROM knowledge WHERE id = ?", (fact_id,)).fetchone()
+            row = conn.execute(
+                "SELECT confidence, lifecycle_state, superseded_by FROM knowledge WHERE id = ?",
+                (fact_id,),
+            ).fetchone()
             if not row:
+                return False
+            if (
+                str(row["lifecycle_state"] or "").strip().lower() in {"superseded", "tombstoned", "quarantined"}
+                or str(row["superseded_by"] or "").strip()
+            ):
                 return False
             confidence = _bounded_confidence(row["confidence"] if "confidence" in row.keys() else 1.0)
             effective = _effective_confidence(confidence, maintainer_source)
@@ -890,6 +1901,8 @@ class KnowledgeDB:
                 """,
                 (now, agents_hash, repo_signature, signature_policy, maintainer_source, effective, now, fact_id),
             )
+            if cursor.rowcount:
+                self._enqueue_projection(conn, fact_id=fact_id, operation="upsert")
             return cursor.rowcount > 0
     
     def get_knowledge_count(self) -> int:
@@ -959,61 +1972,195 @@ class KnowledgeDB:
                     maintainer_source = excluded.maintainer_source,
                     updated_at = excluded.updated_at
             """, (subject_lower, predicate.upper(), obj_lower, source_fact_id, bounded, effective, source, _utc_now_iso()))
-    
-    def query_entity(self, entity: str) -> List[Dict]:
-        """查询实体的所有关系（出边 + 入边）"""
-        entity_lower = entity.lower()
+
+    def add_scoped_relation(
+        self,
+        subject: str,
+        predicate: str,
+        obj: str,
+        *,
+        scope: str,
+        source_fact_ids: List[str],
+        confidence: float = 1.0,
+        maintainer_source: str = "memory_runtime",
+    ) -> str:
+        """Add an injectable graph edge with explicit scope and fact evidence."""
+        normalized_scope = str(scope or "").strip()
+        evidence_ids = sorted({str(item or "").strip() for item in source_fact_ids if str(item or "").strip()})
+        if not normalized_scope or not evidence_ids:
+            raise ValueError("scoped relation requires scope and source fact evidence")
+        subject_lower = str(subject or "").strip().lower()
+        object_lower = str(obj or "").strip().lower()
+        predicate_upper = str(predicate or "").strip().upper()
+        if not subject_lower or not object_lower or not predicate_upper:
+            raise ValueError("subject, predicate and object are required")
+        source = str(maintainer_source or "memory_runtime").strip() or "memory_runtime"
+        bounded = _bounded_confidence(confidence)
+        effective = _effective_confidence(bounded, source)
+        relation_id = "rel-" + hashlib.sha256(
+            f"{normalized_scope}:{subject_lower}:{predicate_upper}:{object_lower}".encode("utf-8")
+        ).hexdigest()[:20]
+        now = _utc_now_iso()
         with self._conn() as conn:
-            # 出边: entity → ?
-            outgoing = conn.execute("""
-                SELECT subject, predicate, object, confidence, effective_confidence, maintainer_source
-                FROM relations
-                WHERE subject = ?
+            placeholders = ",".join("?" for _ in evidence_ids)
+            evidence = conn.execute(
+                f"""
+                SELECT id, scope, status, lifecycle_state
+                FROM knowledge
+                WHERE id IN ({placeholders})
+                """,
+                evidence_ids,
+            ).fetchall()
+            valid_ids = {
+                str(row["id"])
+                for row in evidence
+                if str(row["scope"] or "global") == normalized_scope
+                and str(row["status"] or "active") == "active"
+                and str(row["lifecycle_state"] or "active").strip().lower()
+                not in {"stale", "tombstoned", "superseded", "quarantined"}
+            }
+            if not valid_ids:
+                raise ValueError("relation evidence is missing, inactive, or outside the requested scope")
+            conn.execute(
+                "INSERT OR IGNORE INTO entities (name, type, maintainer_source, confidence, effective_confidence) VALUES (?, 'concept', ?, ?, ?)",
+                (subject_lower, source, bounded, effective),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO entities (name, type, maintainer_source, confidence, effective_confidence) VALUES (?, 'concept', ?, ?, ?)",
+                (object_lower, source, bounded, effective),
+            )
+            conn.execute(
+                """
+                INSERT INTO scoped_relations (
+                    id, subject, predicate, object, scope, status, confidence,
+                    effective_confidence, maintainer_source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+                ON CONFLICT(subject, predicate, object, scope) DO UPDATE SET
+                    status = 'active', confidence = excluded.confidence,
+                    effective_confidence = excluded.effective_confidence,
+                    maintainer_source = excluded.maintainer_source,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    relation_id,
+                    subject_lower,
+                    predicate_upper,
+                    object_lower,
+                    normalized_scope,
+                    bounded,
+                    effective,
+                    source,
+                    now,
+                    now,
+                ),
+            )
+            actual = conn.execute(
+                "SELECT id FROM scoped_relations WHERE subject = ? AND predicate = ? AND object = ? AND scope = ?",
+                (subject_lower, predicate_upper, object_lower, normalized_scope),
+            ).fetchone()
+            relation_id = str(actual["id"])
+            for fact_id in valid_ids:
+                conn.execute(
+                    "INSERT OR IGNORE INTO scoped_relation_evidence (relation_id, fact_id, created_at) VALUES (?, ?, ?)",
+                    (relation_id, fact_id, now),
+                )
+        return relation_id
+    
+    def query_entity(self, entity: str, scopes: Optional[List[str]] = None) -> List[Dict]:
+        """Query evidence-backed relations inside an explicit scope chain."""
+        entity_lower = entity.lower()
+        scope_values = [str(item).strip() for item in list(scopes or ["global"]) if str(item).strip()]
+        if not scope_values:
+            scope_values = ["global"]
+        placeholders = ",".join("?" for _ in scope_values)
+        with self._conn() as conn:
+            outgoing = conn.execute(f"""
+                SELECT subject, predicate, object, scope, confidence, effective_confidence, maintainer_source
+                FROM scoped_relations relation
+                WHERE subject = ? AND scope IN ({placeholders}) AND status = 'active'
+                  AND EXISTS (
+                    SELECT 1 FROM scoped_relation_evidence evidence
+                    JOIN knowledge fact ON fact.id = evidence.fact_id
+                    WHERE evidence.relation_id = relation.id
+                      AND fact.status = 'active'
+                      AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                  )
                 ORDER BY effective_confidence DESC, confidence DESC
-            """, (entity_lower,)).fetchall()
-            
-            # 入边: ? → entity
-            incoming = conn.execute("""
-                SELECT subject, predicate, object, confidence, effective_confidence, maintainer_source
-                FROM relations
-                WHERE object = ?
+            """, (entity_lower, *scope_values)).fetchall()
+            incoming = conn.execute(f"""
+                SELECT subject, predicate, object, scope, confidence, effective_confidence, maintainer_source
+                FROM scoped_relations relation
+                WHERE object = ? AND scope IN ({placeholders}) AND status = 'active'
+                  AND EXISTS (
+                    SELECT 1 FROM scoped_relation_evidence evidence
+                    JOIN knowledge fact ON fact.id = evidence.fact_id
+                    WHERE evidence.relation_id = relation.id
+                      AND fact.status = 'active'
+                      AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                  )
                 ORDER BY effective_confidence DESC, confidence DESC
-            """, (entity_lower,)).fetchall()
+            """, (entity_lower, *scope_values)).fetchall()
             
             results = []
             for r in outgoing:
-                results.append({"direction": "out", "subject": r[0], "predicate": r[1], "object": r[2], "confidence": r[3], "effectiveConfidence": r[4], "maintainerSource": r[5]})
+                results.append({"direction": "out", "subject": r[0], "predicate": r[1], "object": r[2], "scope": r[3], "confidence": r[4], "effectiveConfidence": r[5], "maintainerSource": r[6]})
             for r in incoming:
-                results.append({"direction": "in", "subject": r[0], "predicate": r[1], "object": r[2], "confidence": r[3], "effectiveConfidence": r[4], "maintainerSource": r[5]})
+                results.append({"direction": "in", "subject": r[0], "predicate": r[1], "object": r[2], "scope": r[3], "confidence": r[4], "effectiveConfidence": r[5], "maintainerSource": r[6]})
             
             return results
 
-    def delete_entity(self, name: str) -> bool:
-        """删除实体及其所有关联的三元组关系"""
+    def delete_entity(self, name: str, *, scope: Optional[str] = None) -> bool:
+        """Archive evidence-backed relations without destroying shared entities."""
         name_lower = name.lower()
         with self._conn() as conn:
-            # 检查实体是否存在
-            cursor = conn.execute("SELECT name FROM entities WHERE name = ?", (name_lower,))
-            if not cursor.fetchone():
+            if not conn.execute("SELECT 1 FROM entities WHERE name = ?", (name_lower,)).fetchone():
                 return False
-            # 删除相关的关系
-            conn.execute("DELETE FROM relations WHERE subject = ? OR object = ?", (name_lower, name_lower))
-            # 删除实体
-            conn.execute("DELETE FROM entities WHERE name = ?", (name_lower,))
-            return True
+            params: List[object] = [_utc_now_iso(), name_lower, name_lower]
+            scope_clause = ""
+            if scope:
+                scope_clause = " AND scope = ?"
+                params.append(str(scope).strip())
+            cursor = conn.execute(
+                f"""
+                UPDATE scoped_relations
+                SET status = 'archived', updated_at = ?
+                WHERE status = 'active' AND (subject = ? OR object = ?){scope_clause}
+                """,
+                params,
+            )
+            return cursor.rowcount > 0
 
-    def delete_relation(self, subject: str, predicate: str, obj: str) -> bool:
-        """删除指定关系三元组。"""
+    def delete_relation(
+        self,
+        subject: str,
+        predicate: str,
+        obj: str,
+        *,
+        scope: Optional[str] = None,
+    ) -> bool:
+        """Archive a scoped relation while preserving its evidence ledger."""
         subject_lower = subject.lower()
         object_lower = obj.lower()
         predicate_upper = predicate.upper()
         with self._conn() as conn:
+            params: List[object] = [
+                _utc_now_iso(),
+                subject_lower,
+                predicate_upper,
+                object_lower,
+            ]
+            scope_clause = ""
+            if scope:
+                scope_clause = " AND scope = ?"
+                params.append(str(scope).strip())
             cursor = conn.execute(
-                """
-                DELETE FROM relations
-                WHERE subject = ? AND predicate = ? AND object = ?
+                f"""
+                UPDATE scoped_relations
+                SET status = 'archived', updated_at = ?
+                WHERE status = 'active'
+                  AND subject = ? AND predicate = ? AND object = ?{scope_clause}
                 """,
-                (subject_lower, predicate_upper, object_lower),
+                params,
             )
             return cursor.rowcount > 0
 
@@ -1023,8 +2170,8 @@ class KnowledgeDB:
             cursor = conn.execute("""
                 SELECT e.name, e.type
                 FROM entities e
-                WHERE e.name NOT IN (SELECT subject FROM relations)
-                  AND e.name NOT IN (SELECT object FROM relations)
+                WHERE e.name NOT IN (SELECT subject FROM scoped_relations WHERE status = 'active')
+                  AND e.name NOT IN (SELECT object FROM scoped_relations WHERE status = 'active')
                 LIMIT ?
             """, (limit,))
             return [{"name": row[0], "type": row[1]} for row in cursor.fetchall()]
@@ -1051,7 +2198,7 @@ class KnowledgeDB:
                 for row in cursor.fetchall()
             ]
     
-    def multi_hop_query(self, start: str, hops: int = 2) -> List[Dict]:
+    def multi_hop_query(self, start: str, hops: int = 2, scopes: Optional[List[str]] = None) -> List[Dict]:
         """
         多跳查询：从起始实体出发，沿关系路径搜索 N 跳。
         
@@ -1062,6 +2209,8 @@ class KnowledgeDB:
         visited = set()
         results = []
         current_level = [start_lower]
+        scope_values = [str(item).strip() for item in list(scopes or ["global"]) if str(item).strip()] or ["global"]
+        placeholders = ",".join("?" for _ in scope_values)
         
         with self._conn() as conn:
             for hop in range(hops):
@@ -1071,18 +2220,27 @@ class KnowledgeDB:
                         continue
                     visited.add(entity)
                     
-                    rows = conn.execute("""
-                        SELECT subject, predicate, object
-                        FROM relations
-                        WHERE subject = ? OR object = ?
-                    """, (entity, entity)).fetchall()
+                    rows = conn.execute(f"""
+                        SELECT subject, predicate, object, scope
+                        FROM scoped_relations relation
+                        WHERE (subject = ? OR object = ?)
+                          AND scope IN ({placeholders}) AND status = 'active'
+                          AND EXISTS (
+                            SELECT 1 FROM scoped_relation_evidence evidence
+                            JOIN knowledge fact ON fact.id = evidence.fact_id
+                            WHERE evidence.relation_id = relation.id
+                              AND fact.status = 'active'
+                              AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                          )
+                    """, (entity, entity, *scope_values)).fetchall()
                     
                     for r in rows:
                         results.append({
                             "hop": hop + 1,
                             "subject": r[0],
                             "predicate": r[1],
-                            "object": r[2]
+                            "object": r[2],
+                            "scope": r[3],
                         })
                         # 追踪下一跳目标
                         neighbor = r[2] if r[0] == entity else r[0]
@@ -1096,13 +2254,46 @@ class KnowledgeDB:
         return results
     
     def get_graph_stats(self) -> Dict:
-        """获取图谱统计"""
+        """Return active scoped graph health and archived legacy count."""
         with self._conn() as conn:
             entities_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-            relations_count = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+            relations_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM scoped_relations relation
+                WHERE relation.status = 'active'
+                  AND EXISTS (
+                    SELECT 1 FROM scoped_relation_evidence evidence
+                    JOIN knowledge fact ON fact.id = evidence.fact_id
+                    WHERE evidence.relation_id = relation.id
+                      AND fact.status = 'active'
+                      AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                  )
+                """
+            ).fetchone()[0]
+            legacy_relations = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+            covered_relations = conn.execute(
+                """
+                SELECT COUNT(DISTINCT relation.id)
+                FROM scoped_relations relation
+                JOIN scoped_relation_evidence evidence ON evidence.relation_id = relation.id
+                JOIN knowledge fact ON fact.id = evidence.fact_id
+                WHERE relation.status = 'active'
+                  AND fact.status = 'active'
+                  AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                """
+            ).fetchone()[0]
             top_entities = conn.execute("""
                 SELECT name, type, 
-                    (SELECT COUNT(*) FROM relations WHERE subject = e.name OR object = e.name) as degree
+                    (SELECT COUNT(*) FROM scoped_relations relation
+                     WHERE relation.status = 'active'
+                       AND (relation.subject = e.name OR relation.object = e.name)
+                       AND EXISTS (
+                         SELECT 1 FROM scoped_relation_evidence evidence
+                         JOIN knowledge fact ON fact.id = evidence.fact_id
+                         WHERE evidence.relation_id = relation.id
+                           AND fact.status = 'active'
+                           AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                       )) as degree
                 FROM entities e
                 ORDER BY degree DESC
                 LIMIT 10
@@ -1111,6 +2302,8 @@ class KnowledgeDB:
             return {
                 "entities": entities_count,
                 "relations": relations_count,
+                "legacyArchivedRelations": legacy_relations,
+                "sourceCoverage": (float(covered_relations) / float(relations_count)) if relations_count else 1.0,
                 "top_entities": [{"name": r[0], "type": r[1], "degree": r[2]} for r in top_entities]
             }
     
@@ -1144,8 +2337,28 @@ class KnowledgeDB:
             # 取 Top N 实体（按关联度排序）
             entities = conn.execute("""
                 SELECT e.name, e.type, e.maintainer_source, e.confidence, e.effective_confidence,
-                    (SELECT COUNT(*) FROM relations WHERE subject = e.name OR object = e.name) as degree
+                    (SELECT COUNT(*) FROM scoped_relations relation
+                     WHERE relation.status = 'active'
+                       AND (relation.subject = e.name OR relation.object = e.name)
+                       AND EXISTS (
+                         SELECT 1 FROM scoped_relation_evidence evidence
+                         JOIN knowledge fact ON fact.id = evidence.fact_id
+                         WHERE evidence.relation_id = relation.id
+                           AND fact.status = 'active'
+                           AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                       )) as degree
                 FROM entities e
+                WHERE EXISTS (
+                    SELECT 1 FROM scoped_relations sr
+                    WHERE sr.status = 'active' AND (sr.subject = e.name OR sr.object = e.name)
+                      AND EXISTS (
+                        SELECT 1 FROM scoped_relation_evidence evidence
+                        JOIN knowledge fact ON fact.id = evidence.fact_id
+                        WHERE evidence.relation_id = sr.id
+                          AND fact.status = 'active'
+                          AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                      )
+                )
                 ORDER BY effective_confidence DESC, degree DESC
                 LIMIT ?
             """, (limit,)).fetchall()
@@ -1178,17 +2391,26 @@ class KnowledgeDB:
             # 取所有关系（两端都在 entity_names 中的）
             placeholders = ",".join("?" * len(entity_names))
             relations = conn.execute(f"""
-                SELECT subject, predicate, object, confidence, effective_confidence, maintainer_source
-                FROM relations
-                WHERE subject IN ({placeholders}) AND object IN ({placeholders})
+                SELECT subject, predicate, object, scope, confidence, effective_confidence, maintainer_source
+                FROM scoped_relations relation
+                WHERE status = 'active'
+                  AND subject IN ({placeholders}) AND object IN ({placeholders})
+                  AND EXISTS (
+                    SELECT 1 FROM scoped_relation_evidence evidence
+                    JOIN knowledge fact ON fact.id = evidence.fact_id
+                    WHERE evidence.relation_id = relation.id
+                      AND fact.status = 'active'
+                      AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                  )
             """, (*entity_names, *entity_names)).fetchall()
             
             links = []
-            for subj, pred, obj, conf, effective_conf, maintainer_source in relations:
+            for subj, pred, obj, relation_scope, conf, effective_conf, maintainer_source in relations:
                 links.append({
                     "source": subj,
                     "target": obj,
                     "label": pred,
+                    "scope": relation_scope,
                     "confidence": conf,
                     "effectiveConfidence": effective_conf,
                     "maintainerSource": maintainer_source,
@@ -1196,28 +2418,61 @@ class KnowledgeDB:
             
             return {"nodes": nodes, "links": links}
     
-    def hard_delete_knowledge(self, fact_id: str) -> bool:
+    def hard_delete_knowledge(self, fact_id: str, *, confirm: bool = False) -> bool:
         """
-        物理删除知识条目 + 同步清理 FTS5 索引。
-        
-        毒点修复: 软删除不清理 FTS5 → 本方法彻底清除。
+        Advanced physical purge. Ordinary deletion must use tombstones.
         """
+        if not confirm:
+            return False
         with self._conn() as conn:
-            # 先获取 rowid 以清理 FTS5
             row = conn.execute(
-                "SELECT rowid FROM knowledge WHERE id = ?", (fact_id,)
+                "SELECT rowid, scope, status, lifecycle_state FROM knowledge WHERE id = ?", (fact_id,)
             ).fetchone()
-            
             if not row:
                 return False
-            
-            rowid = row[0]
-            
-            # 删除 FTS5 记录
-            conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (rowid,))
-            # 删除主表记录
+            lifecycle = str(row["lifecycle_state"] or "active").strip().lower()
+            if str(row["status"] or "active") == "active" and lifecycle == "active":
+                return False
+            if conn.execute(
+                "SELECT 1 FROM knowledge WHERE superseded_by = ? LIMIT 1",
+                (fact_id,),
+            ).fetchone():
+                return False
+            if conn.execute(
+                "SELECT 1 FROM knowledge_resolution_candidates WHERE target_fact_id = ? AND state = 'pending' LIMIT 1",
+                (fact_id,),
+            ).fetchone():
+                return False
+            relation_ids = [
+                str(item["relation_id"])
+                for item in conn.execute(
+                    "SELECT relation_id FROM scoped_relation_evidence WHERE fact_id = ?",
+                    (fact_id,),
+                ).fetchall()
+            ]
+            conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (int(row["rowid"]),))
+            conn.execute("DELETE FROM knowledge_projection_outbox WHERE fact_id = ?", (fact_id,))
+            conn.execute("DELETE FROM knowledge_resolution_candidates WHERE candidate_fact_id = ?", (fact_id,))
+            conn.execute("DELETE FROM knowledge_migration_events WHERE fact_id = ?", (fact_id,))
+            conn.execute("DELETE FROM scoped_relation_evidence WHERE fact_id = ?", (fact_id,))
+            conn.execute("DELETE FROM knowledge_observations WHERE fact_id = ?", (fact_id,))
             conn.execute("DELETE FROM knowledge WHERE id = ?", (fact_id,))
-            
+            self._enqueue_projection(
+                conn,
+                fact_id=fact_id,
+                operation="remove",
+                payload={"scope": str(row["scope"] or "global")},
+            )
+            for relation_id in relation_ids:
+                supported = conn.execute(
+                    "SELECT 1 FROM scoped_relation_evidence WHERE relation_id = ? LIMIT 1",
+                    (relation_id,),
+                ).fetchone()
+                if not supported:
+                    conn.execute(
+                        "UPDATE scoped_relations SET status = 'archived', updated_at = ? WHERE id = ?",
+                        (_utc_now_iso(), relation_id),
+                    )
             return True
     
     def update_knowledge(self, fact_id: str, new_fact: str,
@@ -1227,47 +2482,31 @@ class KnowledgeDB:
                          agents_hash: str | None = None,
                          repo_signature: str | None = None,
                          signature_policy: str = "soft_v1") -> bool:
-        """
-        更新知识条目 + 重建 FTS5 索引。
-        """
+        """Deprecated compatibility entry: create a replacement revision."""
+        self.record_deprecated_usage("KnowledgeDB.update_knowledge", context=fact_id)
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT rowid, fact, category, scope, confidence, maintainer_source FROM knowledge WHERE id = ?", (fact_id,)
+                "SELECT fact, category, scope, confidence, importance, durability, maintainer_source FROM knowledge WHERE id = ?",
+                (fact_id,),
             ).fetchone()
-            
-            if not row:
-                return False
-            
-            rowid = row[0]
-            final_cat = category or row[2]
-            final_scope = scope or row[3]
-            final_source = str(maintainer_source or row[5] or "memory_runtime").strip() or "memory_runtime"
-            final_confidence = _bounded_confidence(confidence if confidence is not None else row[4])
-            effective = _effective_confidence(final_confidence, final_source)
-            fact_tokenized = tokenize_for_fts(new_fact)
-            now = _utc_now_iso()
-            
-            # 更新主表
-            conn.execute("""
-                UPDATE knowledge SET fact=?, category=?, scope=?, lifecycle_state='active',
-                    last_seen_at=?, agents_hash=COALESCE(NULLIF(?, ''), agents_hash),
-                    repo_signature=COALESCE(NULLIF(?, ''), repo_signature),
-                    signature_policy=?, maintainer_source=?, confidence=?,
-                    effective_confidence=?, updated_at=?
-                WHERE id=?
-            """, (
-                new_fact, final_cat, final_scope, now, agents_hash or "", repo_signature or "",
-                signature_policy, final_source, final_confidence, effective, now, fact_id,
-            ))
-            
-            # 重建 FTS5 记录
-            conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (rowid,))
-            conn.execute("""
-                INSERT INTO knowledge_fts(rowid, fact_tokenized, category, scope)
-                VALUES (?, ?, ?, ?)
-            """, (rowid, fact_tokenized, final_cat, final_scope))
-            
-            return True
+        if not row:
+            return False
+        result = self.write_knowledge(
+            fact=new_fact,
+            category=category or str(row["category"] or "general"),
+            scope=scope or str(row["scope"] or "global"),
+            relation="replace",
+            target_fact_id=fact_id,
+            maintainer_source=maintainer_source or str(row["maintainer_source"] or "memory_runtime"),
+            confidence=confidence if confidence is not None else float(row["confidence"] or 1.0),
+            importance=int(row["importance"] or 50),
+            durability=str(row["durability"] or "operational"),
+            agents_hash=agents_hash,
+            repo_signature=repo_signature,
+            signature_policy=signature_policy,
+            metadata={"deprecatedOverwriteId": fact_id},
+        )
+        return bool(result.get("factId"))
     
     # ==========================================
     # 增量索引
@@ -1316,44 +2555,14 @@ class KnowledgeDB:
         return stale
     
     def run_incremental_index(self):
+        """Deprecated no-op: items.json is a one-way derived projection.
+
+        Missing legacy JSON IDs are imported only by the explicit, backup-aware
+        P0 migration. Runtime indexing must never feed projection data back into
+        canonical SQLite.
         """
-        执行增量索引：扫描 knowledge/areas/ 下所有 items.json，
-        仅对变更文件重建 FTS5 索引。
-        """
-        areas_dir = V8_AGENT_OS_HOME / "memory" / "knowledge" / "areas"
-        if not areas_dir.exists():
-            return 0
-        
-        stale_files = self.get_stale_files(areas_dir, "items.json")
-        
-        if not stale_files:
-            logger.info("[KnowledgeDB] No stale files, index is up-to-date.")
-            return 0
-        
-        total_indexed = 0
-        for file_path in stale_files:
-            try:
-                items = json.loads(file_path.read_text(encoding="utf-8"))
-                active_items = [i for i in items if i.get("status") == "active"]
-                
-                for item in active_items:
-                    self.add_knowledge(
-                        fact_id=item["id"],
-                        fact=item.get("fact", ""),
-                        category=item.get("category", "general"),
-                        scope=item.get("scope", "global"),
-                        source_session=item.get("source_session")
-                    )
-                    total_indexed += 1
-                
-                self.mark_indexed(file_path, len(active_items))
-                logger.info(f"[KnowledgeDB] Indexed {len(active_items)} items from {file_path.name}")
-                
-            except Exception as e:
-                logger.error(f"[KnowledgeDB] Error indexing {file_path}: {e}")
-        
-        logger.info(f"[KnowledgeDB] Incremental index complete: {total_indexed} items from {len(stale_files)} files.")
-        return total_indexed
+        self.record_deprecated_usage("KnowledgeDB.run_incremental_index", context="derived_projection_noop")
+        return 0
 
     # ==========================================
     # 执行日志 (Execution Logs)

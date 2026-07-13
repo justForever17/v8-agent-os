@@ -495,6 +495,12 @@ class MemoryRuntime:
         source_session: Optional[str] = None,
         maintainer_source: str = "memory_runtime",
         confidence: float = 1.0,
+        importance: int = 50,
+        durability: str = "operational",
+        source_run: Optional[str] = None,
+        source_message_ids: Optional[List[str]] = None,
+        transcript_hash: Optional[str] = None,
+        evidence_refs: Optional[List[str]] = None,
     ) -> str:
         return knowledge_service.add_knowledge(
             fact=fact,
@@ -503,6 +509,49 @@ class MemoryRuntime:
             source_session=source_session,
             maintainer_source=maintainer_source,
             confidence=confidence,
+            importance=importance,
+            durability=durability,
+            source_run=source_run,
+            source_message_ids=source_message_ids,
+            transcript_hash=transcript_hash,
+            evidence_refs=evidence_refs,
+        )
+
+    def write_knowledge(
+        self,
+        *,
+        fact: str,
+        category: str = "general",
+        scope: str = "global",
+        relation: str = "new",
+        target_fact_id: Optional[str] = None,
+        source_session: Optional[str] = None,
+        source_run: Optional[str] = None,
+        source_message_ids: Optional[List[str]] = None,
+        transcript_hash: Optional[str] = None,
+        maintainer_source: str = "memory_runtime",
+        confidence: float = 1.0,
+        importance: int = 50,
+        durability: str = "operational",
+        evidence_refs: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, object]:
+        return knowledge_service.write_knowledge(
+            fact=fact,
+            category=category,
+            scope=scope,
+            relation=relation,
+            target_fact_id=target_fact_id,
+            source_session=source_session,
+            source_run=source_run,
+            source_message_ids=source_message_ids,
+            transcript_hash=transcript_hash,
+            maintainer_source=maintainer_source,
+            confidence=confidence,
+            importance=importance,
+            durability=durability,
+            evidence_refs=evidence_refs,
+            metadata=metadata,
         )
 
     def update_knowledge(
@@ -539,11 +588,26 @@ class MemoryRuntime:
     def get_full_graph(self, *, limit: int = 100) -> Dict[str, Any]:
         return knowledge_service.get_full_graph(limit=limit)
 
-    def query_entity(self, *, entity: str) -> List[Dict[str, Any]]:
-        return knowledge_service.query_entity(entity=entity)
+    def get_projection_health(self) -> Dict[str, Any]:
+        return knowledge_service.get_projection_health()
 
-    def query_multi_hop(self, *, entity: str, hops: int = 2) -> List[Dict[str, Any]]:
-        return knowledge_service.query_multi_hop(entity=entity, hops=hops)
+    def list_knowledge_resolution_candidates(self, *, limit: int = 100) -> List[Dict[str, Any]]:
+        return knowledge_service.list_resolution_candidates(limit=limit)
+
+    def resolve_knowledge_candidate(self, *, candidate_id: str, resolution: str) -> Dict[str, object]:
+        return knowledge_service.resolve_candidate(candidate_id=candidate_id, resolution=resolution)
+
+    def query_entity(self, *, entity: str, scopes: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        return knowledge_service.query_entity(entity=entity, scopes=scopes)
+
+    def query_multi_hop(
+        self,
+        *,
+        entity: str,
+        hops: int = 2,
+        scopes: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        return knowledge_service.query_multi_hop(entity=entity, hops=hops, scopes=scopes)
 
     def search_entities(self, *, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
         return knowledge_service.search_entities(keyword=keyword, limit=limit)
@@ -563,8 +627,8 @@ class MemoryRuntime:
             confidence=confidence,
         )
 
-    def delete_entity(self, *, name: str) -> bool:
-        return knowledge_service.delete_entity(name=name)
+    def delete_entity(self, *, name: str, scope: Optional[str] = None) -> bool:
+        return knowledge_service.delete_entity(name=name, scope=scope)
 
     def add_relation(
         self,
@@ -572,6 +636,8 @@ class MemoryRuntime:
         subject: str,
         predicate: str,
         object_name: str,
+        scope: str,
+        source_fact_ids: List[str],
         confidence: float = 1.0,
         maintainer_source: str = "memory_runtime",
     ) -> None:
@@ -579,12 +645,26 @@ class MemoryRuntime:
             subject=subject,
             predicate=predicate,
             object_name=object_name,
+            scope=scope,
+            source_fact_ids=source_fact_ids,
             confidence=confidence,
             maintainer_source=maintainer_source,
         )
 
-    def delete_relation(self, *, subject: str, predicate: str, object_name: str) -> bool:
-        return knowledge_service.delete_relation(subject=subject, predicate=predicate, object_name=object_name)
+    def delete_relation(
+        self,
+        *,
+        subject: str,
+        predicate: str,
+        object_name: str,
+        scope: Optional[str] = None,
+    ) -> bool:
+        return knowledge_service.delete_relation(
+            subject=subject,
+            predicate=predicate,
+            object_name=object_name,
+            scope=scope,
+        )
 
     def build_session_context(
         self,

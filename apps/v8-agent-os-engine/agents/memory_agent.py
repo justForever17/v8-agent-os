@@ -116,11 +116,14 @@ class KnowledgeExtraction(BaseModel):
     fact: str = Field(description="A concise, atomic factual knowledge about the user's project, business, or environment")
     category: str = Field(description="Category of the fact (e.g., 'Architecture', 'Business Logic')")
     scope: str = Field(description="Scope of the knowledge")
-    overwrite_id: str = Field(default="", description="If this updates an existing fact from the provided context, put its exact fact_id here. Otherwise leave empty.")
+    relation: str = Field(default="new", description="Knowledge relation: new | reinforce | replace | refine | conflict")
+    target_fact_id: str = Field(default="", description="Existing fact ID used by reinforce/replace/refine/conflict when evidence is explicit")
+    overwrite_id: str = Field(default="", description="Deprecated compatibility alias for relation=replace + target_fact_id")
     importance: int = Field(default=50, description="Importance score from 0 to 100")
     confidence: float = Field(default=0.5, description="Confidence score from 0.0 to 1.0")
     durability: str = Field(default="operational", description="Durability: stable | operational | transient")
     target_store: str = Field(default="knowledge", description="Target store: knowledge | daily_log | skip")
+    persisted_fact_id: str = Field(default="", exclude=True)
 
 class EntityExtraction(BaseModel):
     name: str = Field(description="Name of the entity, lowercase and concise (e.g., 'next.js', 'react')")
@@ -130,6 +133,7 @@ class RelationExtraction(BaseModel):
     subject: str = Field(description="Subject entity name")
     predicate: str = Field(description="Relation predicate (e.g., USES, DEPENDS_ON, PREFERS, IMPLEMENTS)")
     object: str = Field(description="Object entity name")
+    source_fact_index: int = Field(default=-1, description="Zero-based index of the emitted knowledge item that proves this relation")
 
 class WorkflowEpisodeExtraction(BaseModel):
     task_family: str = Field(description="Reusable workflow family, e.g. 'install and use a V8 skill' or 'debug desktop live bridge'")
@@ -1309,45 +1313,56 @@ def _store_preferences(result: MemoryExtractionResult, policy: Dict[str, Any]) -
             logger.warning(f"[MemoryAgent] Preference skipped due to invalid scope: {exc}")
     return stored, stored_items
 
-def _store_knowledge(result: MemoryExtractionResult, session_id: str, policy: Dict[str, Any]) -> tuple[int, List[KnowledgeExtraction]]:
-    """[专业工具] 将知识存入分区 JSON + ChromaDB，处理覆盖与新增"""
+def _store_knowledge(
+    result: MemoryExtractionResult,
+    session_id: str,
+    policy: Dict[str, Any],
+    *,
+    source_run: str | None = None,
+    source_message_ids: Optional[List[str]] = None,
+    transcript_hash: str | None = None,
+) -> tuple[int, List[KnowledgeExtraction]]:
+    """Persist knowledge through the canonical transactional write contract."""
     stored = 0
     stored_items: List[KnowledgeExtraction] = []
     for fact in result.knowledge:
         if not _should_store_knowledge(fact, policy):
             continue
+        relation = str(fact.relation or "new").strip().lower() or "new"
+        target_fact_id = str(fact.target_fact_id or fact.overwrite_id or "").strip()
         if fact.overwrite_id:
-            # 更新/覆盖旧知识
-            try:
-                success = memory_runtime.update_knowledge(
-                    fact_id=fact.overwrite_id,
-                    new_fact=fact.fact,
-                    category=fact.category,
-                    scope=fact.scope
-                )
-                if success:
-                    stored += 1
-                    stored_items.append(fact)
-                    logger.info(f"[MemoryAgent] Overwrote Knowledge: {fact.overwrite_id} -> {fact.fact}")
-                else:
-                    logger.warning(f"[MemoryAgent] Overwrite ID {fact.overwrite_id} not found, adding as new.")
-                    memory_runtime.add_knowledge(
-                        fact=fact.fact, category=fact.category, scope=fact.scope, source_session=session_id
-                    )
-                    stored += 1
-                    stored_items.append(fact)
-            except ValueError as exc:
-                logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid scope: {exc}")
-        else:
-            # 正常新增
-            try:
-                memory_runtime.add_knowledge(
-                    fact=fact.fact, category=fact.category, scope=fact.scope, source_session=session_id
-                )
-                stored += 1
-                stored_items.append(fact)
-            except ValueError as exc:
-                logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid scope: {exc}")
+            relation = "replace"
+            knowledge_db.record_deprecated_usage("MemoryAgent.overwrite_id", context=fact.overwrite_id)
+            logger.warning("[MemoryAgent] overwrite_id is deprecated; mapped to replace for %s", fact.overwrite_id)
+        if relation not in {"new", "reinforce", "replace", "refine", "conflict"}:
+            relation = "new"
+        try:
+            write_result = memory_runtime.write_knowledge(
+                fact=fact.fact,
+                category=fact.category,
+                scope=fact.scope,
+                relation=relation,
+                target_fact_id=target_fact_id or None,
+                source_session=session_id,
+                source_run=source_run,
+                source_message_ids=source_message_ids,
+                transcript_hash=transcript_hash,
+                maintainer_source="memory_agent",
+                confidence=fact.confidence,
+                importance=fact.importance,
+                durability=_normalize_durability(fact.durability, default="operational"),
+            )
+            fact.persisted_fact_id = str(write_result.get("canonicalFactId") or write_result.get("factId") or "")
+            stored += 1
+            stored_items.append(fact)
+            logger.info(
+                "[MemoryAgent] Knowledge %s [%s] -> %s",
+                write_result.get("action"),
+                fact.scope,
+                fact.persisted_fact_id,
+            )
+        except ValueError as exc:
+            logger.warning(f"[MemoryAgent] Knowledge skipped due to invalid relation/scope: {exc}")
     return stored, stored_items
 
 def _store_workflow_episodes(
@@ -1549,9 +1564,38 @@ def _build_knowledge_graph(
         subj = rel.subject.strip().lower()
         pred = rel.predicate.strip().upper()
         obj = rel.object.strip().lower()
-        if subj and pred and obj:
-            knowledge_db.add_relation(subj, pred, obj)
+        if not (subj and pred and obj):
+            continue
+        source_fact: Optional[KnowledgeExtraction] = None
+        source_fact_index = int(rel.source_fact_index if rel.source_fact_index is not None else -1)
+        if 0 <= source_fact_index < len(result.knowledge):
+            candidate = result.knowledge[source_fact_index]
+            if candidate in stored_knowledge_items:
+                source_fact = candidate
+        if source_fact is None and len(stored_knowledge_items) == 1:
+            source_fact = stored_knowledge_items[0]
+        if source_fact is None:
+            matching = [
+                item
+                for item in stored_knowledge_items
+                if subj in str(item.fact or "").lower() and obj in str(item.fact or "").lower()
+            ]
+            if len(matching) == 1:
+                source_fact = matching[0]
+        if source_fact is None or not source_fact.persisted_fact_id:
+            logger.info("[MemoryAgent] Skipped ungrounded graph relation %s %s %s", subj, pred, obj)
+            continue
+        try:
+            knowledge_db.add_scoped_relation(
+                subj,
+                pred,
+                obj,
+                scope=source_fact.scope,
+                source_fact_ids=[source_fact.persisted_fact_id],
+            )
             relations_added += 1
+        except ValueError as exc:
+            logger.info("[MemoryAgent] Skipped invalid scoped relation: %s", exc)
             
     if relations_added:
         logger.info(f"[MemoryAgent] Built {relations_added} graph relations via LLM structured extraction.")
@@ -2410,7 +2454,14 @@ def analyze_session_memory(
     graph_stats = {"entities": 0, "relations": 0}
     if memory_policy == "durable":
         stored_preferences, stored_preference_items = _store_preferences(result, policy)
-        stored_knowledge, stored_knowledge_items = _store_knowledge(result, session_id, policy)
+        stored_knowledge, stored_knowledge_items = _store_knowledge(
+            result,
+            session_id,
+            policy,
+            source_run=getattr(run_handle, "run_id", None),
+            source_message_ids=sorted(incremental_message_ids),
+            transcript_hash=hashlib.sha256(chat_history_text.encode("utf-8")).hexdigest(),
+        )
         stored_workflows, stored_workflow_records = _store_workflow_episodes(
             result,
             session_id=session_id,

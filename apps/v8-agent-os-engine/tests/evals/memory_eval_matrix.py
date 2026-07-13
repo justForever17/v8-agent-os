@@ -72,9 +72,27 @@ def seed_graph_fixture(knowledge_db: KnowledgeDB, *, scope: str = "global", fact
         category="runtime_governance",
         scope=scope,
     )
-    knowledge_db.add_relation("memory", "RELATED_TO", "graph", source_fact_id=fact_id)
-    knowledge_db.add_relation("graph", "SUPPORTS", "contextual recall", source_fact_id=fact_id)
-    knowledge_db.add_relation("contextual recall", "SUPPORTS", "supervisor context", source_fact_id=fact_id)
+    knowledge_db.add_scoped_relation(
+        "memory",
+        "RELATED_TO",
+        "graph",
+        scope=scope,
+        source_fact_ids=[fact_id],
+    )
+    knowledge_db.add_scoped_relation(
+        "graph",
+        "SUPPORTS",
+        "contextual recall",
+        scope=scope,
+        source_fact_ids=[fact_id],
+    )
+    knowledge_db.add_scoped_relation(
+        "contextual recall",
+        "SUPPORTS",
+        "supervisor context",
+        scope=scope,
+        source_fact_ids=[fact_id],
+    )
 
 
 def graph_summary_case() -> dict[str, Any]:

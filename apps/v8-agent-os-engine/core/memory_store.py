@@ -1142,9 +1142,10 @@ class MemoryStore:
         use_fts = bool(config["use_fts"])
         use_graph = bool(config["use_graph"])
 
-        allowed_scopes = set(self._normalize_scope_chain(scope=scope or "global", scope_chain=scopes))
-        if "global" not in allowed_scopes:
-            allowed_scopes.add("global")
+        scope_chain = self._normalize_scope_chain(scope=scope or "global", scope_chain=scopes)
+        if "global" not in scope_chain:
+            scope_chain.append("global")
+        allowed_scopes = set(scope_chain)
         self._mark_stale_for_signature_mismatch(list(allowed_scopes))
 
         seed_candidates: Dict[str, Dict[str, Any]] = {}

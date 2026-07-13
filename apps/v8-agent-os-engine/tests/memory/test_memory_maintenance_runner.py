@@ -109,11 +109,21 @@ class MemoryMaintenanceRunnerTests(unittest.TestCase):
             "agents.runners.maintenance_runner.memory_store_module.memory_store.quarantine_global_preference",
             side_effect=lambda key, value, reason, metadata=None: quarantined_preferences.append((key, value, reason)),
         ), patch(
-            "agents.runners.maintenance_runner.knowledge_db.get_all_knowledge",
-            return_value=[
-                {"id": "kg_global_path", "scope": "global", "fact": r"默认导出目录位于 C:\Users\sunny\Downloads", "category": "workspace"},
-                {"fact_id": "kg_project_ok", "scope": "project:v8", "fact": "项目使用 React", "category": "architecture"},
-            ],
+            "agents.runners.maintenance_runner.workflow_memory_service.maintenance_cursor",
+            return_value={"cursor_value": "", "last_batch_count": 0, "cycle_count": 0},
+        ), patch(
+            "agents.runners.maintenance_runner.workflow_memory_service.advance_maintenance_cursor",
+            return_value={"cursorValue": "", "cycleCount": 1, "lastBatchCount": 1, "wrapped": True},
+        ), patch(
+            "agents.runners.maintenance_runner.knowledge_db.get_knowledge_maintenance_page",
+            return_value={
+                "items": [
+                    {"id": "kg_global_path", "scope": "global", "fact": r"默认导出目录位于 C:\Users\sunny\Downloads", "category": "workspace"},
+                ],
+                "nextCursor": "",
+                "wrapped": True,
+                "batchCount": 1,
+            },
         ), patch(
             "agents.runners.maintenance_runner.knowledge_db.quarantine_knowledge",
             side_effect=lambda fact_id: (quarantined_knowledge.append(fact_id) or True),

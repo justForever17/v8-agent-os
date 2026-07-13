@@ -934,6 +934,9 @@ class DatabaseManager:
                     current_step_index INTEGER DEFAULT 0,
                     last_event_topic TEXT,
                     outcome TEXT,
+                    is_current INTEGER DEFAULT 1,
+                    expires_at TEXT,
+                    finalized_at TEXT,
                     metadata_json TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -1280,6 +1283,16 @@ class DatabaseManager:
                     updated_at TEXT NOT NULL
                 )
             ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS memory_maintenance_cursors (
+                    phase TEXT PRIMARY KEY,
+                    cursor_value TEXT,
+                    cycle_count INTEGER DEFAULT 0,
+                    last_batch_count INTEGER DEFAULT 0,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS plugin_components (
                     id TEXT PRIMARY KEY,
@@ -1481,9 +1494,88 @@ class DatabaseManager:
                 ):
                     if workflow_episode_columns and column_name not in workflow_episode_columns:
                         conn.execute(ddl)
+                cursor.execute("PRAGMA table_info(memory_workflow_guide_states)")
+                workflow_guide_columns = [row['name'] for row in cursor.fetchall()]
+                added_is_current = bool(workflow_guide_columns and 'is_current' not in workflow_guide_columns)
+                for column_name, ddl in (
+                    ("is_current", "ALTER TABLE memory_workflow_guide_states ADD COLUMN is_current INTEGER DEFAULT 1"),
+                    ("expires_at", "ALTER TABLE memory_workflow_guide_states ADD COLUMN expires_at TEXT"),
+                    ("finalized_at", "ALTER TABLE memory_workflow_guide_states ADD COLUMN finalized_at TEXT"),
+                ):
+                    if workflow_guide_columns and column_name not in workflow_guide_columns:
+                        conn.execute(ddl)
+                if added_is_current:
+                    conn.execute("UPDATE memory_workflow_guide_states SET is_current = 0")
+                    conn.execute(
+                        """
+                        WITH ranked AS (
+                            SELECT id,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY candidate_id,
+                                                    CASE WHEN run_id IS NOT NULL THEN 'run:' || run_id
+                                                         ELSE 'session:' || COALESCE(session_id, '') END
+                                       ORDER BY updated_at DESC, created_at DESC, id DESC
+                                   ) AS rank_no
+                            FROM memory_workflow_guide_states
+                        )
+                        UPDATE memory_workflow_guide_states
+                        SET is_current = 1
+                        WHERE id IN (SELECT id FROM ranked WHERE rank_no = 1)
+                        """
+                    )
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_episodes_class ON memory_workflow_episodes (workflow_class)')
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_class ON memory_workflow_candidates (workflow_class)')
                 conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_candidates_source_runtime ON memory_workflow_candidates (source_runtime)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_memory_workflow_guide_states_expiry ON memory_workflow_guide_states (is_current, expires_at)')
+                conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_workflow_guide_current_run
+                    ON memory_workflow_guide_states (candidate_id, run_id)
+                    WHERE run_id IS NOT NULL AND is_current = 1
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_workflow_guide_current_session
+                    ON memory_workflow_guide_states (candidate_id, session_id)
+                    WHERE run_id IS NULL AND session_id IS NOT NULL AND is_current = 1
+                    """
+                )
+                # Historical rows predate guide TTL/finalization.  Leaving the
+                # new columns NULL would make thousands of stale pending states
+                # immortal, so close non-current snapshots and give the one
+                # current pending state a deterministic migration TTL.
+                conn.execute(
+                    """
+                    UPDATE memory_workflow_guide_states
+                    SET finalized_at = COALESCE(finalized_at, updated_at, created_at, CURRENT_TIMESTAMP),
+                        expires_at = NULL
+                    WHERE is_current = 0 AND finalized_at IS NULL
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE memory_workflow_guide_states
+                    SET finalized_at = COALESCE(finalized_at, updated_at, created_at, CURRENT_TIMESTAMP),
+                        expires_at = NULL
+                    WHERE is_current = 1
+                      AND state IN ('helped', 'ignored', 'conflict', 'failed', 'verified', 'contradicted')
+                      AND finalized_at IS NULL
+                    """
+                )
+                conn.execute(
+                    """
+                    UPDATE memory_workflow_guide_states
+                    SET expires_at = strftime(
+                            '%Y-%m-%dT%H:%M:%fZ',
+                            datetime(COALESCE(updated_at, created_at, CURRENT_TIMESTAMP), '+72 hours')
+                        )
+                    WHERE is_current = 1
+                      AND state NOT IN ('helped', 'ignored', 'conflict', 'failed', 'verified', 'contradicted')
+                      AND expires_at IS NULL
+                      AND finalized_at IS NULL
+                    """
+                )
                 self._backfill_internal_computer_use_probe_sessions(conn)
                 self._backfill_manual_rpa_sessions(conn)
             except Exception as e:

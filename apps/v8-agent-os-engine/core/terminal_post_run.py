@@ -34,6 +34,11 @@ class TerminalPostRunService:
             return False
 
         dispatch_key = f"{session_id}:{run_id}"
+        self._finalize_workflow_guides(
+            session_id=session_id,
+            run_id=run_id,
+            run_status=str(run_record.get("status") or ""),
+        )
         self._schedule_engineering_proof_if_needed(
             session_id=session_id,
             run_id=run_id,
@@ -61,6 +66,19 @@ class TerminalPostRunService:
         self._schedule_memory_extraction(session_id=session_id, run_id=run_id, source_component=source_component)
         self._run_non_memory_hooks(session_id=session_id, run_id=run_id)
         return True
+
+    @staticmethod
+    def _finalize_workflow_guides(*, session_id: str, run_id: str, run_status: str) -> None:
+        try:
+            from runtimes.memory.workflow_service import workflow_memory_service
+
+            workflow_memory_service.finalize_guides_for_run(
+                session_id=session_id,
+                run_id=run_id,
+                run_status=run_status,
+            )
+        except Exception as exc:
+            logger.warning("Workflow guide finalization failed for run %s: %s", run_id, exc)
 
     def _schedule_engineering_proof_if_needed(
         self,

@@ -14,6 +14,7 @@ from erc.runtime_stability import runtime_stability_service
 from erc.session_admission_service import session_admission_service
 from core.storage import storage
 from runtimes.memory.runtime import memory_runtime
+from runtimes.memory.workflow_service import workflow_memory_service
 
 
 class MemoryAgentRunner:
@@ -39,9 +40,16 @@ class MemoryAgentRunner:
             quarantined_preferences += 1
             quarantined_preference_keys.append(str(key))
 
-        for item in knowledge_db.get_all_knowledge(scope=None, limit=500, status="active"):
-            if str(item.get("scope") or "").strip() != "global":
-                continue
+        page_size = int((workflow_memory_service.maintenance_cursor("knowledge_global_risk").get("last_batch_count") or 0) or 200)
+        page_size = max(50, min(page_size, 500))
+        cursor_state = workflow_memory_service.maintenance_cursor("knowledge_global_risk")
+        page = knowledge_db.get_knowledge_maintenance_page(
+            cursor_after=str(cursor_state.get("cursor_value") or "") or None,
+            limit=page_size,
+            scope="global",
+            status="active",
+        )
+        for item in list(page.get("items") or []):
             reason = memory_agent.classify_global_knowledge_risk(
                 str(item.get("fact") or ""),
                 str(item.get("category") or ""),
@@ -55,11 +63,19 @@ class MemoryAgentRunner:
                 quarantined_knowledge += 1
                 quarantined_knowledge_ids.append(fact_id)
 
+        cursor_result = workflow_memory_service.advance_maintenance_cursor(
+            "knowledge_global_risk",
+            cursor_value=str(page.get("nextCursor") or ""),
+            batch_count=int(page.get("batchCount") or 0),
+            wrapped=bool(page.get("wrapped")),
+        )
+
         return {
             "quarantinedPreferenceCount": quarantined_preferences,
             "quarantinedPreferenceKeys": quarantined_preference_keys,
             "quarantinedKnowledgeCount": quarantined_knowledge,
             "quarantinedKnowledgeIds": quarantined_knowledge_ids,
+            "cursor": cursor_result,
         }
 
     def _session_extraction_runtime_session_id(self, source_session_id: str) -> str:
@@ -677,10 +693,19 @@ class MemoryAgentRunner:
             legacy_summary_backfilled_count = int(backfill_result.get("updatedCount") or 0)
             global_quarantine_result = self._quarantine_global_high_risk_memory()
             compaction_options = self._maintenance_compaction_options()
+            compaction_cursor = workflow_memory_service.maintenance_cursor("knowledge_compaction")
             knowledge_compaction_result = knowledge_db.maintenance_compact_knowledge(
                 limit=int(compaction_options.get("maxCandidatesPerRun") or 500),
                 auto_supersede_threshold=float(compaction_options.get("autoSupersedeThreshold") or 0.985),
                 max_clusters=int(compaction_options.get("maxClustersPerRun") or 80),
+                cursor_after=str(compaction_cursor.get("cursor_value") or "") or None,
+            )
+            compaction_page = dict(knowledge_compaction_result.get("cursor") or {})
+            knowledge_compaction_result["cursorState"] = workflow_memory_service.advance_maintenance_cursor(
+                "knowledge_compaction",
+                cursor_value=str(compaction_page.get("nextCursor") or ""),
+                batch_count=int(compaction_page.get("batchCount") or 0),
+                wrapped=bool(compaction_page.get("wrapped")),
             )
             graph_maintenance_result = (
                 dict(knowledge_compaction_result.get("graph") or {})

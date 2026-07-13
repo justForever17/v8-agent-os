@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -40,10 +41,18 @@ WORKFLOW_MEMORY_DEFAULTS: Dict[str, Any] = {
         "learnFailedVerificationAsAntiPattern": True,
         "minVerifiedSuccessCount": 2,
     },
+    "retention": {
+        "pendingGuideTtlHours": 72,
+        "episodeDays": 365,
+        "hintDays": 180,
+        "guideDays": 365,
+        "engineeringProofDays": 730,
+        "maintenancePageSize": 200,
+    },
 }
 
 ACTIVE_WORKFLOW_STATUSES = {"active_hint", "approved"}
-TERMINAL_GUIDE_STATES = {"verified", "failed", "ignored", "contradicted"}
+TERMINAL_GUIDE_STATES = {"helped", "ignored", "conflict", "failed", "verified", "contradicted"}
 NEGATIVE_HINT_OUTCOMES = {"ignored", "contradicted", "caused_failure"}
 
 
@@ -100,6 +109,23 @@ def workflow_memory_config() -> Dict[str, Any]:
         cfg["engineering"]["minVerifiedSuccessCount"] = max(1, min(int(cfg["engineering"].get("minVerifiedSuccessCount") or 2), 10))
     except (TypeError, ValueError):
         cfg["engineering"]["minVerifiedSuccessCount"] = 2
+    retention = cfg.get("retention")
+    if not isinstance(retention, dict):
+        retention = {}
+    retention_defaults = dict(WORKFLOW_MEMORY_DEFAULTS["retention"])
+    cfg["retention"] = {**retention_defaults, **retention}
+    for key, minimum, maximum in (
+        ("pendingGuideTtlHours", 1, 24 * 30),
+        ("episodeDays", 7, 3650),
+        ("hintDays", 7, 3650),
+        ("guideDays", 7, 3650),
+        ("engineeringProofDays", 30, 3650),
+        ("maintenancePageSize", 10, 500),
+    ):
+        try:
+            cfg["retention"][key] = max(minimum, min(int(cfg["retention"].get(key) or retention_defaults[key]), maximum))
+        except (TypeError, ValueError):
+            cfg["retention"][key] = retention_defaults[key]
     return cfg
 
 
@@ -590,6 +616,73 @@ class WorkflowMemoryService:
     """Programmatic behavior memory: episodes, candidates, and progressive hints."""
 
     export_root = V8_AGENT_OS_HOME / "memory" / "workflows"
+
+    def maintenance_cursor(self, phase: str) -> Dict[str, Any]:
+        normalized_phase = str(phase or "").strip()
+        if not normalized_phase:
+            raise ValueError("maintenance cursor phase is required")
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM memory_maintenance_cursors WHERE phase = ?",
+                (normalized_phase,),
+            ).fetchone()
+        return dict(row) if row else {
+            "phase": normalized_phase,
+            "cursor_value": "",
+            "cycle_count": 0,
+            "last_batch_count": 0,
+        }
+
+    def advance_maintenance_cursor(
+        self,
+        phase: str,
+        *,
+        cursor_value: str,
+        batch_count: int,
+        wrapped: bool = False,
+    ) -> Dict[str, Any]:
+        current = self.maintenance_cursor(phase)
+        next_cycle = int(current.get("cycle_count") or 0) + (1 if wrapped else 0)
+        now = utc_now_iso()
+        with db.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_maintenance_cursors (
+                    phase, cursor_value, cycle_count, last_batch_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(phase) DO UPDATE SET
+                    cursor_value = excluded.cursor_value,
+                    cycle_count = excluded.cycle_count,
+                    last_batch_count = excluded.last_batch_count,
+                    updated_at = excluded.updated_at
+                """,
+                (str(phase), str(cursor_value or ""), next_cycle, max(0, int(batch_count or 0)), now),
+            )
+            conn.commit()
+        return {
+            "phase": str(phase),
+            "cursorValue": str(cursor_value or ""),
+            "cycleCount": next_cycle,
+            "lastBatchCount": max(0, int(batch_count or 0)),
+            "wrapped": bool(wrapped),
+            "updatedAt": now,
+        }
+
+    def _candidate_export_paths(self, candidate_id: str) -> tuple[Path, Path]:
+        safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(candidate_id or "candidate"))
+        folder = self.export_root / "candidates"
+        return folder / f"{safe_id}.json", folder / f"{safe_id}.md"
+
+    def _remove_candidate_exports(self, candidate_id: str) -> List[str]:
+        removed: List[str] = []
+        for path in self._candidate_export_paths(candidate_id):
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed.append(str(path))
+            except OSError:
+                continue
+        return removed
 
     def normalize_episode_payload(
         self,
@@ -1531,6 +1624,8 @@ class WorkflowMemoryService:
         proof_backed: Optional[bool] = None,
         verification_status: Optional[str] = None,
         source_runtime: Optional[str] = None,
+        cursor_after: Optional[str] = None,
+        order: str = "recent",
     ) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM memory_workflow_candidates WHERE 1=1"
         params: List[Any] = []
@@ -1549,8 +1644,15 @@ class WorkflowMemoryService:
         if source_runtime:
             sql += " AND source_runtime = ?"
             params.append(source_runtime)
-        sql += " ORDER BY updated_at DESC LIMIT ?"
-        params.append(max(1, min(int(limit or 50), 200)))
+        if cursor_after:
+            sql += " AND id > ?"
+            params.append(str(cursor_after))
+        if str(order or "recent").strip().lower() == "id_asc":
+            sql += " ORDER BY id ASC"
+        else:
+            sql += " ORDER BY updated_at DESC, id DESC"
+        sql += " LIMIT ?"
+        params.append(max(1, min(int(limit or 50), 500)))
         with db.get_connection() as conn:
             items = [_row_to_candidate(row) for row in conn.execute(sql, params).fetchall()]
         if query:
@@ -1643,7 +1745,10 @@ class WorkflowMemoryService:
         with db.get_connection() as conn:
             cursor = conn.execute("DELETE FROM memory_workflow_candidates WHERE id = ?", (candidate_id,))
             conn.commit()
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        if deleted:
+            self._remove_candidate_exports(candidate_id)
+        return deleted
 
     def merge_candidates(self, target_id: str, source_ids: List[str]) -> Dict[str, Any]:
         target = self.get_candidate(target_id)
@@ -1790,7 +1895,7 @@ class WorkflowMemoryService:
         if not candidate_id:
             return None
         params: List[Any] = [candidate_id]
-        sql = "SELECT * FROM memory_workflow_guide_states WHERE candidate_id = ?"
+        sql = "SELECT * FROM memory_workflow_guide_states WHERE candidate_id = ? AND is_current = 1"
         if session_id:
             sql += " AND session_id = ?"
             params.append(session_id)
@@ -1818,7 +1923,7 @@ class WorkflowMemoryService:
             return None
         terminal_states = sorted(TERMINAL_GUIDE_STATES)
         params: List[Any] = list(terminal_states)
-        sql = "SELECT * FROM memory_workflow_guide_states WHERE state IN ({})".format(
+        sql = "SELECT * FROM memory_workflow_guide_states WHERE is_current = 1 AND state IN ({})".format(
             ",".join("?" for _ in terminal_states)
         )
         if session_id:
@@ -1967,9 +2072,9 @@ class WorkflowMemoryService:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         counts = metadata.get("hintOutcomeCounts") if isinstance(metadata.get("hintOutcomeCounts"), dict) else {}
         last = str(item.get("lastHintOutcome") or item.get("last_hint_outcome") or "").strip().lower()
-        if last == "caused_failure":
+        if last in {"caused_failure", "failed"}:
             return 0.0, "caused_failure"
-        if last == "contradicted":
+        if last in {"contradicted", "conflict"}:
             return 0.0, "contradicted"
         delta = 0.0
         try:
@@ -1978,7 +2083,7 @@ class WorkflowMemoryService:
             delta -= float(counts.get("contradicted") or 0) * 0.6
         except (TypeError, ValueError):
             delta = 0.0
-        if last == "helped_success":
+        if last in {"helped_success", "helped"}:
             delta += 0.5
         if last == "ignored":
             delta -= 0.25
@@ -1998,46 +2103,393 @@ class WorkflowMemoryService:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         now = utc_now_iso()
-        state_id = f"mw_guide_{uuid.uuid4().hex}"
+        normalized_state = str(state or "matched").strip().lower() or "matched"
+        retention = dict(workflow_memory_config().get("retention") or {})
+        expires_at = None
+        finalized_at = now if normalized_state in TERMINAL_GUIDE_STATES else None
+        if finalized_at is None:
+            ttl_hours = max(1, int(retention.get("pendingGuideTtlHours") or 72))
+            expires_at = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).isoformat().replace("+00:00", "Z")
+        owner_sql = "candidate_id = ? AND is_current = 1"
+        owner_params: List[Any] = [candidate_id]
+        if run_id:
+            owner_sql += " AND run_id = ?"
+            owner_params.append(run_id)
+        elif session_id:
+            owner_sql += " AND run_id IS NULL AND session_id = ?"
+            owner_params.append(session_id)
+        else:
+            owner_sql += " AND run_id IS NULL AND session_id IS NULL"
         guide_state = {
-            "id": state_id,
+            "id": "",
             "candidateId": candidate_id,
-            "state": state,
+            "state": normalized_state,
             "currentStepIndex": current_step_index,
             "lastEventTopic": last_event_topic,
             "outcome": outcome,
+            "expiresAt": expires_at,
+            "finalizedAt": finalized_at,
             "updatedAt": now,
             "metadata": metadata or {},
         }
         with db.get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO memory_workflow_guide_states
-                (id, candidate_id, session_id, run_id, query, state, current_step_index,
-                 last_event_topic, outcome, metadata_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    state_id,
-                    candidate_id,
-                    session_id,
-                    run_id,
-                    query,
-                    state,
-                    current_step_index,
-                    last_event_topic,
-                    outcome,
-                    _json_dump(metadata or {}),
-                    now,
-                    now,
-                ),
-            )
+            existing = conn.execute(
+                f"SELECT id FROM memory_workflow_guide_states WHERE {owner_sql} ORDER BY updated_at DESC LIMIT 1",
+                owner_params,
+            ).fetchone()
+            state_id = str(existing["id"]) if existing else f"mw_guide_{uuid.uuid4().hex}"
+            guide_state["id"] = state_id
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE memory_workflow_guide_states
+                    SET session_id = ?, run_id = ?, query = ?, state = ?, current_step_index = ?,
+                        last_event_topic = ?, outcome = ?, metadata_json = ?, expires_at = ?,
+                        finalized_at = ?, is_current = 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        session_id,
+                        run_id,
+                        query,
+                        normalized_state,
+                        current_step_index,
+                        last_event_topic,
+                        outcome,
+                        _json_dump(metadata or {}),
+                        expires_at,
+                        finalized_at,
+                        now,
+                        state_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO memory_workflow_guide_states
+                    (id, candidate_id, session_id, run_id, query, state, current_step_index,
+                     last_event_topic, outcome, is_current, expires_at, finalized_at,
+                     metadata_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        state_id,
+                        candidate_id,
+                        session_id,
+                        run_id,
+                        query,
+                        normalized_state,
+                        current_step_index,
+                        last_event_topic,
+                        outcome,
+                        expires_at,
+                        finalized_at,
+                        _json_dump(metadata or {}),
+                        now,
+                        now,
+                    ),
+                )
             conn.execute(
                 "UPDATE memory_workflow_candidates SET guide_state_json = ?, updated_at = ? WHERE id = ?",
                 (_json_dump(guide_state), now, candidate_id),
             )
             conn.commit()
         return guide_state
+
+    def expire_pending_guides(self, *, limit: int = 500, dry_run: bool = False) -> Dict[str, Any]:
+        now = utc_now_iso()
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memory_workflow_guide_states
+                WHERE is_current = 1
+                  AND state NOT IN ('helped', 'ignored', 'conflict', 'failed', 'verified', 'contradicted')
+                  AND expires_at IS NOT NULL
+                  AND datetime(expires_at) <= datetime(?)
+                ORDER BY expires_at ASC
+                LIMIT ?
+                """,
+                (now, max(1, min(int(limit or 500), 2000))),
+            ).fetchall()
+            if dry_run:
+                return {
+                    "dryRun": True,
+                    "expiredCount": len(rows),
+                    "guideStateIds": [str(row["id"]) for row in rows[:50]],
+                }
+            expired_ids: List[str] = []
+            for row in rows:
+                metadata = _json_load(row["metadata_json"], {})
+                metadata.update({"terminalReason": "pending_ttl_expired", "terminalFinalizedAt": now})
+                state_payload = {
+                    "id": str(row["id"]),
+                    "candidateId": str(row["candidate_id"] or ""),
+                    "state": "ignored",
+                    "currentStepIndex": int(row["current_step_index"] or 0),
+                    "lastEventTopic": row["last_event_topic"],
+                    "outcome": "ignored",
+                    "expiresAt": None,
+                    "finalizedAt": now,
+                    "updatedAt": now,
+                    "metadata": metadata,
+                }
+                conn.execute(
+                    """
+                    UPDATE memory_workflow_guide_states
+                    SET state = 'ignored', outcome = 'ignored', expires_at = NULL,
+                        finalized_at = ?, metadata_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, _json_dump(metadata), now, row["id"]),
+                )
+                if row["candidate_id"]:
+                    conn.execute(
+                        """
+                        UPDATE memory_workflow_candidates
+                        SET guide_state_json = ?, last_hint_outcome = 'ignored', updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (_json_dump(state_payload), now, row["candidate_id"]),
+                    )
+                expired_ids.append(str(row["id"]))
+            conn.commit()
+        return {"dryRun": False, "expiredCount": len(expired_ids), "guideStateIds": expired_ids[:50]}
+
+    def finalize_guides_for_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        run_status: str,
+    ) -> Dict[str, Any]:
+        """Deterministically close each current candidate/run guide exactly once."""
+        normalized_run_status = str(run_status or "").strip().lower()
+        now = utc_now_iso()
+        finalized: List[Dict[str, Any]] = []
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memory_workflow_guide_states
+                WHERE run_id = ? AND is_current = 1
+                ORDER BY updated_at ASC, id ASC
+                """,
+                (run_id,),
+            ).fetchall()
+            for row in rows:
+                metadata = _json_load(row["metadata_json"], {})
+                if row["finalized_at"] or metadata.get("terminalFinalizedAt"):
+                    continue
+                hint_event = conn.execute(
+                    """
+                    SELECT id, outcome FROM memory_workflow_hint_events
+                    WHERE candidate_id = ? AND run_id = ?
+                    ORDER BY updated_at DESC, created_at DESC LIMIT 1
+                    """,
+                    (row["candidate_id"], run_id),
+                ).fetchone()
+                hint_outcome = str(hint_event["outcome"] or "").strip().lower() if hint_event else ""
+                if hint_outcome in {"helped_success", "accepted", "helped"}:
+                    terminal = "helped"
+                elif hint_outcome in {"contradicted", "conflict"}:
+                    terminal = "conflict"
+                elif hint_outcome in {"caused_failure", "failed"}:
+                    terminal = "failed"
+                elif normalized_run_status in {"failed", "cancelled", "abandoned"}:
+                    terminal = "failed"
+                else:
+                    terminal = "ignored"
+                metadata.update(
+                    {
+                        "terminalFinalizedAt": now,
+                        "terminalRunStatus": normalized_run_status,
+                        "terminalHintOutcome": hint_outcome or None,
+                    }
+                )
+                state_payload = {
+                    "id": str(row["id"]),
+                    "candidateId": str(row["candidate_id"] or ""),
+                    "state": terminal,
+                    "currentStepIndex": int(row["current_step_index"] or 0),
+                    "lastEventTopic": row["last_event_topic"],
+                    "outcome": terminal,
+                    "expiresAt": None,
+                    "finalizedAt": now,
+                    "updatedAt": now,
+                    "metadata": metadata,
+                }
+                conn.execute(
+                    """
+                    UPDATE memory_workflow_guide_states
+                    SET state = ?, outcome = ?, expires_at = NULL, finalized_at = ?,
+                        metadata_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (terminal, terminal, now, _json_dump(metadata), now, row["id"]),
+                )
+                if hint_event:
+                    conn.execute(
+                        "UPDATE memory_workflow_hint_events SET outcome = ?, updated_at = ? WHERE id = ?",
+                        (terminal, now, hint_event["id"]),
+                    )
+                candidate = conn.execute(
+                    "SELECT metadata_json, maturity_score, negative_feedback_count, status FROM memory_workflow_candidates WHERE id = ?",
+                    (row["candidate_id"],),
+                ).fetchone()
+                if candidate:
+                    candidate_metadata = _json_load(candidate["metadata_json"], {})
+                    counts = dict(candidate_metadata.get("terminalGuideOutcomeCounts") or {})
+                    counts[terminal] = int(counts.get(terminal) or 0) + 1
+                    candidate_metadata["terminalGuideOutcomeCounts"] = counts
+                    candidate_metadata["lastTerminalGuideOutcomeAt"] = now
+                    maturity = float(candidate["maturity_score"] or 0.0)
+                    negative = int(candidate["negative_feedback_count"] or 0)
+                    status = str(candidate["status"] or "candidate")
+                    if terminal == "helped":
+                        maturity = min(1.0, maturity + 0.08)
+                    elif terminal == "ignored":
+                        maturity = max(0.0, maturity - 0.05)
+                    elif terminal == "conflict":
+                        maturity = max(0.0, maturity - 0.15)
+                        negative += 1
+                        status = "quarantine"
+                    else:
+                        maturity = max(0.0, maturity - 0.08)
+                    conn.execute(
+                        """
+                        UPDATE memory_workflow_candidates
+                        SET guide_state_json = ?, last_hint_outcome = ?, metadata_json = ?,
+                            maturity_score = ?, negative_feedback_count = ?, status = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            _json_dump(state_payload),
+                            terminal,
+                            _json_dump(candidate_metadata),
+                            maturity,
+                            negative,
+                            status,
+                            now,
+                            row["candidate_id"],
+                        ),
+                    )
+                finalized.append({"guideStateId": str(row["id"]), "candidateId": str(row["candidate_id"] or ""), "outcome": terminal})
+            conn.commit()
+        return {"runId": run_id, "runStatus": normalized_run_status, "finalizedCount": len(finalized), "items": finalized}
+
+    def reconcile_terminal_guides(self, *, limit: int = 500) -> Dict[str, Any]:
+        """Close historical/current guides whose owning run is already terminal."""
+        effective_limit = max(1, min(int(limit or 500), 2000))
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT guide.session_id, guide.run_id, run.status
+                FROM memory_workflow_guide_states guide
+                JOIN run_records run ON run.id = guide.run_id
+                WHERE guide.is_current = 1
+                  AND guide.finalized_at IS NULL
+                  AND run.status IN ('completed', 'failed', 'cancelled', 'abandoned')
+                ORDER BY guide.updated_at ASC, guide.run_id ASC
+                LIMIT ?
+                """,
+                (effective_limit,),
+            ).fetchall()
+        finalized_count = 0
+        runs: List[Dict[str, Any]] = []
+        for row in rows:
+            result = self.finalize_guides_for_run(
+                session_id=str(row["session_id"] or ""),
+                run_id=str(row["run_id"] or ""),
+                run_status=str(row["status"] or ""),
+            )
+            finalized_count += int(result.get("finalizedCount") or 0)
+            runs.append(
+                {
+                    "runId": str(row["run_id"] or ""),
+                    "status": str(row["status"] or ""),
+                    "finalizedCount": int(result.get("finalizedCount") or 0),
+                }
+            )
+        return {"runCount": len(runs), "finalizedCount": finalized_count, "runs": runs[:50]}
+
+    def maintenance_retention(self, *, dry_run: bool = False, batch_limit: int = 500) -> Dict[str, Any]:
+        cfg = workflow_memory_config()
+        retention = dict(cfg.get("retention") or {})
+        limit = max(1, min(int(batch_limit or 500), 2000))
+        now = datetime.now(timezone.utc)
+        cutoffs = {
+            "episodes": (now - timedelta(days=int(retention.get("episodeDays") or 365))).isoformat().replace("+00:00", "Z"),
+            "hints": (now - timedelta(days=int(retention.get("hintDays") or 180))).isoformat().replace("+00:00", "Z"),
+            "guides": (now - timedelta(days=int(retention.get("guideDays") or 365))).isoformat().replace("+00:00", "Z"),
+            "proofs": (now - timedelta(days=int(retention.get("engineeringProofDays") or 730))).isoformat().replace("+00:00", "Z"),
+        }
+        expired = self.expire_pending_guides(limit=limit, dry_run=dry_run)
+        with db.get_connection() as conn:
+            candidate_rows = conn.execute(
+                "SELECT source_episode_ids_json, proof_entry_ids_json FROM memory_workflow_candidates"
+            ).fetchall()
+            protected_episodes: set[str] = set()
+            protected_proofs: set[str] = set()
+            for candidate in candidate_rows:
+                protected_episodes.update(str(item) for item in _json_load(candidate["source_episode_ids_json"], []) if str(item).strip())
+                protected_proofs.update(str(item) for item in _json_load(candidate["proof_entry_ids_json"], []) if str(item).strip())
+
+            episode_rows = conn.execute(
+                "SELECT id FROM memory_workflow_episodes WHERE datetime(created_at) < datetime(?) ORDER BY created_at ASC LIMIT ?",
+                (cutoffs["episodes"], limit * 4),
+            ).fetchall()
+            episode_ids = [str(row["id"]) for row in episode_rows if str(row["id"]) not in protected_episodes][:limit]
+            hint_rows = conn.execute(
+                """
+                SELECT id FROM (
+                    SELECT id, created_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY COALESCE(candidate_id, ''), COALESCE(run_id, ''), COALESCE(session_id, '')
+                               ORDER BY updated_at DESC, created_at DESC, id DESC
+                           ) AS rank_no
+                    FROM memory_workflow_hint_events
+                ) ranked
+                WHERE rank_no > 1 AND datetime(created_at) < datetime(?)
+                ORDER BY created_at ASC LIMIT ?
+                """,
+                (cutoffs["hints"], limit),
+            ).fetchall()
+            hint_ids = [str(row["id"]) for row in hint_rows]
+            guide_rows = conn.execute(
+                """
+                SELECT id FROM memory_workflow_guide_states
+                WHERE finalized_at IS NOT NULL AND datetime(finalized_at) < datetime(?)
+                ORDER BY finalized_at ASC LIMIT ?
+                """,
+                (cutoffs["guides"], limit),
+            ).fetchall()
+            guide_ids = [str(row["id"]) for row in guide_rows]
+            proof_rows = conn.execute(
+                "SELECT id FROM engineering_proof_entries WHERE datetime(created_at) < datetime(?) ORDER BY created_at ASC LIMIT ?",
+                (cutoffs["proofs"], limit * 4),
+            ).fetchall()
+            proof_ids = [str(row["id"]) for row in proof_rows if str(row["id"]) not in protected_proofs][:limit]
+            if not dry_run:
+                for table, ids in (
+                    ("memory_workflow_episodes", episode_ids),
+                    ("memory_workflow_hint_events", hint_ids),
+                    ("memory_workflow_guide_states", guide_ids),
+                    ("engineering_proof_entries", proof_ids),
+                ):
+                    if ids:
+                        placeholders = ",".join("?" for _ in ids)
+                        conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})", ids)
+                conn.commit()
+        return {
+            "dryRun": bool(dry_run),
+            "expiredPendingGuideCount": int(expired.get("expiredCount") or 0),
+            "retentionDays": retention,
+            "candidateCounts": {
+                "episodes": len(episode_ids),
+                "hints": len(hint_ids),
+                "guides": len(guide_ids),
+                "engineeringProofs": len(proof_ids),
+            },
+        }
 
     def dashboard_summary(self) -> Dict[str, Any]:
         cfg = workflow_memory_config()
@@ -2400,7 +2852,16 @@ class WorkflowMemoryService:
         return ranked
 
     def maintenance_consolidate(self) -> Dict[str, Any]:
-        candidates = self.list_candidates(limit=500)
+        cfg = workflow_memory_config()
+        page_size = int((cfg.get("retention") or {}).get("maintenancePageSize") or 200)
+        cursor_state = self.maintenance_cursor("workflow_candidates")
+        cursor_after = str(cursor_state.get("cursor_value") or "")
+        candidates = self.list_candidates(limit=page_size, cursor_after=cursor_after or None, order="id_asc")
+        wrapped = False
+        if not candidates and cursor_after:
+            candidates = self.list_candidates(limit=page_size, order="id_asc")
+            cursor_after = ""
+            wrapped = True
         updated = 0
         quarantined = 0
         activated = 0
@@ -2480,6 +2941,19 @@ class WorkflowMemoryService:
                     quarantined += 1
                 if next_status == "active_hint":
                     activated += 1
+        if len(candidates) < page_size:
+            next_cursor = ""
+            wrapped = True
+        else:
+            next_cursor = str(candidates[-1].get("id") or "")
+        cursor_result = self.advance_maintenance_cursor(
+            "workflow_candidates",
+            cursor_value=next_cursor,
+            batch_count=len(candidates),
+            wrapped=wrapped,
+        )
+        terminal_guide_result = self.reconcile_terminal_guides(limit=page_size)
+        retention_result = self.maintenance_retention(dry_run=False, batch_limit=page_size)
         return {
             "candidateCount": len(candidates),
             "updatedCount": updated,
@@ -2487,16 +2961,18 @@ class WorkflowMemoryService:
             "quarantinedCount": quarantined,
             "mergeSuggestionCount": merge_suggestions,
             "budgetStopped": budget_stopped,
+            "cursor": cursor_result,
+            "terminalGuides": terminal_guide_result,
+            "retention": retention_result,
         }
 
     def export_candidate(self, candidate: Dict[str, Any]) -> None:
         if not candidate:
             return
-        safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(candidate.get("id") or "candidate"))
-        folder = self.export_root / "candidates"
-        folder.mkdir(parents=True, exist_ok=True)
-        json_path = folder / f"{safe_id}.json"
-        md_path = folder / f"{safe_id}.md"
+        candidate_id = str(candidate.get("id") or "candidate")
+        safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", candidate_id)
+        json_path, md_path = self._candidate_export_paths(candidate_id)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps(to_jsonable(candidate), ensure_ascii=False, indent=2), encoding="utf-8")
         md_lines = [
             f"# {candidate.get('task_family') or safe_id}",

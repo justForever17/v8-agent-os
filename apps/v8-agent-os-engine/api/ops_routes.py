@@ -238,8 +238,8 @@ async def upload_memory_docs(
     try:
         from core.document_parser import DocumentIngestionDependencyError, document_parser
         from core.document_chunker import document_chunker
-        from core.vector_store import get_vector_store
         from core.knowledge_db import knowledge_db
+        from core.knowledge_projection import knowledge_projection_service
         from core.memory_observability import log_memory_observation
         from core.code_chunker import code_chunker
         from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -253,7 +253,6 @@ async def upload_memory_docs(
         processed_count = 0
         total_chunks = 0
         total_chars = 0
-        vs = get_vector_store()
         maintainer_source = "human_admin" if trusted_upload else "imported_document"
         confidence = 0.67 if trusted_upload else 0.60
 
@@ -263,10 +262,6 @@ async def upload_memory_docs(
                 shutil.copyfileobj(file.file, f)
 
             document_parser.ensure_document_ingestion_dependencies(file_path)
-
-            deleted_ids = knowledge_db.delete_user_document(file.filename)
-            if deleted_ids:
-                vs.delete_by_ids(deleted_ids)
 
             markdown_content = document_parser.parse_file(file_path)
             total_chars += len(markdown_content)
@@ -289,26 +284,22 @@ async def upload_memory_docs(
                 )
 
             child_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-            docs_to_add = []
+            canonical_chunks = []
             for p_idx, p_chunk in enumerate(parent_chunks):
                 parent_id = f"parent-{uuid.uuid4().hex[:8]}"
-                knowledge_db.add_knowledge(
-                    fact_id=parent_id,
-                    fact=p_chunk["text"],
-                    category="user_document",
-                    scope="global",
-                    source_session=file.filename,
-                    parent_id=None,
-                    maintainer_source=maintainer_source,
-                    confidence=confidence,
-                    promotion_reason="trusted_admin_upload" if trusted_upload else "document_upload",
-                    metadata={
+                canonical_chunks.append(
+                    {
+                        "id": parent_id,
+                        "fact": p_chunk["text"],
+                        "parent_id": None,
+                        "metadata": {
                         "ingestionSource": "memory_upload",
                         "trustedUpload": trusted_upload,
                         "chunkRole": "parent",
                         "chunkSize": chunk_size,
                         "chunkOverlap": chunk_overlap,
-                    },
+                        },
+                    }
                 )
                 child_texts = child_splitter.split_text(p_chunk["text"])
                 for c_idx, c_text in enumerate(child_texts):
@@ -323,30 +314,32 @@ async def upload_memory_docs(
                             "parent_id": parent_id,
                         }
                     )
-                    docs_to_add.append({"id": child_id, "text": c_text, "metadata": metadata})
                     total_chunks += 1
-                    knowledge_db.add_knowledge(
-                        fact_id=child_id,
-                        fact=c_text,
-                        category="user_document",
-                        scope="global",
-                        source_session=file.filename,
-                        parent_id=parent_id,
-                        maintainer_source=maintainer_source,
-                        confidence=confidence,
-                        promotion_reason="trusted_admin_upload" if trusted_upload else "document_upload",
-                        metadata={
+                    canonical_chunks.append(
+                        {
+                            "id": child_id,
+                            "fact": c_text,
+                            "parent_id": parent_id,
+                            "metadata": {
                             "ingestionSource": "memory_upload",
                             "trustedUpload": trusted_upload,
                             "chunkRole": "child",
                             "chunkSize": chunk_size,
                             "chunkOverlap": chunk_overlap,
                             "parentId": parent_id,
-                        },
+                            },
+                        }
                     )
 
-            if docs_to_add:
-                vs.add_documents(docs_to_add)
+            if canonical_chunks:
+                knowledge_db.replace_user_document_chunks(
+                    filename=file.filename,
+                    chunks=canonical_chunks,
+                    maintainer_source=maintainer_source,
+                    confidence=confidence,
+                    promotion_reason="trusted_admin_upload" if trusted_upload else "document_upload",
+                )
+                knowledge_projection_service.process_outbox(limit=max(50, len(canonical_chunks) * 2))
                 processed_count += 1
 
             file_path.unlink(missing_ok=True)
@@ -396,12 +389,11 @@ async def get_memory_documents():
 async def delete_memory_document(filename: str):
     try:
         from core.knowledge_db import knowledge_db
-        from core.vector_store import get_vector_store
+        from core.knowledge_projection import knowledge_projection_service
 
         deleted_fact_ids = knowledge_db.delete_user_document(filename)
         if deleted_fact_ids:
-            vs = get_vector_store()
-            vs.delete_by_ids(deleted_fact_ids)
+            knowledge_projection_service.process_outbox(limit=max(50, len(deleted_fact_ids) * 2))
         return {
             "status": "success",
             "message": f"Deleted {len(deleted_fact_ids)} chunks for {filename}",

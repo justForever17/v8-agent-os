@@ -680,6 +680,41 @@ async def get_all_knowledge(scope: str = None, limit: int = 50, status: str = "a
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/memory/knowledge-health")
+async def get_knowledge_health():
+    try:
+        return {
+            "projection": memory_runtime.get_projection_health(),
+            "graph": memory_runtime.get_graph_stats(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/memory/knowledge-resolution-candidates")
+async def get_knowledge_resolution_candidates(limit: int = 100):
+    try:
+        items = memory_runtime.list_knowledge_resolution_candidates(limit=limit)
+        return {"items": items, "total": len(items)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/knowledge-resolution-candidates/{candidate_id}/resolve")
+async def resolve_knowledge_resolution_candidate(candidate_id: str, body: dict = Body(...)):
+    try:
+        resolution = str(body.get("resolution") or "").strip()
+        if not resolution:
+            raise HTTPException(status_code=400, detail="resolution is required")
+        return memory_runtime.resolve_knowledge_candidate(candidate_id=candidate_id, resolution=resolution)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/memory/graph/all")
 async def get_full_graph(limit: int = 100):
     try:
@@ -713,7 +748,7 @@ async def add_graph_entity(payload: GraphEntityPayload):
 @router.delete("/memory/graph/entity")
 async def remove_graph_entity(payload: GraphEntityPayload):
     try:
-        deleted = memory_runtime.delete_entity(name=payload.name)
+        deleted = memory_runtime.delete_entity(name=payload.name, scope=payload.scope)
         return {"deleted": deleted, "name": payload.name.lower()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -722,10 +757,14 @@ async def remove_graph_entity(payload: GraphEntityPayload):
 @router.post("/memory/graph/relation")
 async def add_graph_relation(payload: GraphRelationPayload):
     try:
+        if not payload.scope or not payload.source_fact_ids:
+            raise HTTPException(status_code=400, detail="scope and sourceFactIds are required")
         memory_runtime.add_relation(
             subject=payload.subject,
             predicate=payload.predicate,
             object_name=payload.object_name,
+            scope=payload.scope,
+            source_fact_ids=payload.source_fact_ids,
             confidence=payload.confidence or 1.0,
             maintainer_source=payload.maintainer_source or "human_admin",
         )
@@ -737,6 +776,8 @@ async def add_graph_relation(payload: GraphRelationPayload):
                 "object": payload.object_name.lower(),
             },
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -748,6 +789,7 @@ async def remove_graph_relation(payload: GraphRelationPayload):
             subject=payload.subject,
             predicate=payload.predicate,
             object_name=payload.object_name,
+            scope=payload.scope,
         )
         return {
             "deleted": deleted,
@@ -1334,8 +1376,8 @@ async def memory_admin_chat(request: AdminChatRequest):
         return memory_runtime.get_recent_logs(days=days) or "No recent logs found."
 
     @lc_tool
-    def query_entity(entity: str) -> str:
-        relations = knowledge_db.query_entity(entity)
+    def query_entity(entity: str, scope: str = "global") -> str:
+        relations = memory_runtime.query_entity(entity=entity, scopes=[scope, "global"])
         if not relations:
             return f"No graph relations found for '{entity}'."
         lines = [f"Relations for '{entity}':"]
@@ -1344,19 +1386,24 @@ async def memory_admin_chat(request: AdminChatRequest):
         return "\n".join(lines)
 
     @lc_tool
-    def delete_graph_relation(subject: str, predicate: str, object: str) -> str:
-        success = knowledge_db.delete_relation(subject, predicate, object)
+    def delete_graph_relation(subject: str, predicate: str, object: str, scope: str = "global") -> str:
+        success = memory_runtime.delete_relation(
+            subject=subject,
+            predicate=predicate,
+            object_name=object,
+            scope=scope,
+        )
         if success:
             return f"Successfully deleted relation: ({subject}) -[{predicate}]-> ({object})"
         return f"Relation not found or could not be deleted: ({subject}) -[{predicate}]-> ({object})"
 
     @lc_tool
-    def delete_graph_entities(entities: Union[str, List[str]]) -> str:
+    def delete_graph_entities(entities: Union[str, List[str]], scope: str = "global") -> str:
         if isinstance(entities, str):
             entities = [entities]
         results = []
         for entity in entities:
-            success = knowledge_db.delete_entity(entity)
+            success = memory_runtime.delete_entity(name=entity, scope=scope)
             if success:
                 results.append(f"Successfully deleted entity '{entity}' and all associated relations.")
             else:
@@ -1364,8 +1411,21 @@ async def memory_admin_chat(request: AdminChatRequest):
         return "\n".join(results)
 
     @lc_tool
-    def add_graph_relation(subject: str, predicate: str, object: str) -> str:
-        knowledge_db.add_relation(subject, predicate, object, maintainer_source="human_admin")
+    def add_graph_relation(
+        subject: str,
+        predicate: str,
+        object: str,
+        scope: str,
+        source_fact_ids: List[str],
+    ) -> str:
+        memory_runtime.add_relation(
+            subject=subject,
+            predicate=predicate,
+            object_name=object,
+            scope=scope,
+            source_fact_ids=source_fact_ids,
+            maintainer_source="human_admin",
+        )
         return f"Successfully added relation: ({subject}) -[{predicate}]-> ({object})"
 
     @lc_tool

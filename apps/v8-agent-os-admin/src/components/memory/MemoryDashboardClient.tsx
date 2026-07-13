@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Brain, CheckSquare, Database, Edit2, Loader2, Network, RefreshCw, Search, Tag, Trash2, Workflow } from "lucide-react";
+import { Brain, CheckSquare, Database, Edit2, GitCompareArrows, Loader2, Network, RefreshCw, Search, Tag, Trash2, Workflow } from "lucide-react";
 import { ArtifactExplorerPanel } from "@/components/memory/ArtifactExplorerPanel";
 import DocumentUploader from "@/components/memory/DocumentUploader";
 import { EditKnowledgeDialog } from "@/components/memory/EditKnowledgeDialog";
@@ -21,6 +21,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
 import { tg } from "@/i18n/admin-legacy";
+import { TechnicalReferenceDetails } from "@/components/common/TechnicalReferenceDetails";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DashboardData = any;
 interface KnowledgeItem {
@@ -33,13 +34,82 @@ interface KnowledgeItem {
   maintainer_source?: string;
   confidence?: number;
   effective_confidence?: number;
+  lineage_id?: string;
+  revision_no?: number;
+  importance?: number;
+  durability?: string;
   [key: string]: unknown;
+}
+interface ResolutionCandidate {
+  id: string;
+  proposed_relation: string;
+  similarity?: number;
+  reason?: string;
+  candidate_fact: string;
+  candidate_scope: string;
+  candidate_category: string;
+  target_fact?: string;
+  target_scope?: string;
+  target_category?: string;
+  source_kind?: "human_edit" | "document" | "network" | "historical_migration" | "conversation";
+  source_observation_count?: number;
+  candidate_source_session?: string;
+}
+interface KnowledgeHealth {
+  projection?: {
+    state?: string;
+    backlog?: number;
+    pendingResolutionCount?: number;
+    outbox?: Record<string, number>;
+    canonical?: {
+      active?: number;
+      total?: number;
+    };
+    json?: {
+      state?: string;
+      driftScopeCount?: number;
+    };
+    vector?: {
+      state?: string;
+      missing?: number;
+      orphaned?: number;
+    };
+  };
+  graph?: {
+    relations?: number;
+    legacyArchivedRelations?: number;
+    sourceCoverage?: number;
+  };
+}
+function formatScopeLabel(scope: string | undefined, labels: { global: string; project: string; workspace: string; channel: string }) {
+  const value = String(scope || "global");
+  if (value === "global") return labels.global;
+  if (value.startsWith("project:")) return `${labels.project} · ${value.slice(8)}`;
+  if (value.startsWith("workspace:")) return `${labels.workspace} · ${value.slice(10)}`;
+  if (value.startsWith("channel:")) return `${labels.channel} · ${value.slice(8)}`;
+  return value;
+}
+function lifecycleLabel(value: string | undefined, labels: Record<string, string>) {
+  return labels[String(value || "active")] || String(value || labels.active);
 }
 const VALID_TABS = new Set(["context", "preferences", "logs", "knowledge", "workflows", "artifacts", "graph", "agent", "upload", "config", "runtime"]);
 export default function MemoryDashboardClient({ initialRequestedTab = "preferences" }: {initialRequestedTab?: string;}) {
   const { toast } = useToast();
   const t = useT();
   const requestedTab = initialRequestedTab || "preferences";
+  const scopeLabels = useMemo(() => ({
+    global: t("app.admin.dashboard.memory.scope.global"),
+    project: t("app.admin.dashboard.memory.scope.project"),
+    workspace: t("app.admin.dashboard.memory.scope.workspace"),
+    channel: t("app.admin.dashboard.memory.scope.channel")
+  }), [t]);
+  const lifecycleLabels = useMemo(() => ({
+    active: t("app.admin.dashboard.memory.lifecycle.active"),
+    stale: t("app.admin.dashboard.memory.lifecycle.stale"),
+    superseded: t("app.admin.dashboard.memory.lifecycle.superseded"),
+    tombstoned: t("app.admin.dashboard.memory.lifecycle.tombstoned"),
+    quarantined: t("app.admin.dashboard.memory.lifecycle.quarantined")
+  }), [t]);
   const activeTab = VALID_TABS.has(requestedTab) ? requestedTab : "preferences";
   const [data, setData] = useState<DashboardData>(null);
   const [loading, setLoading] = useState(true);
@@ -48,6 +118,9 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
   const [searching, setSearching] = useState(false);
   const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]);
   const [quarantinedGlobalKnowledge, setQuarantinedGlobalKnowledge] = useState<KnowledgeItem[]>([]);
+  const [resolutionCandidates, setResolutionCandidates] = useState<ResolutionCandidate[]>([]);
+  const [knowledgeHealth, setKnowledgeHealth] = useState<KnowledgeHealth | null>(null);
+  const [resolvingCandidateId, setResolvingCandidateId] = useState<string | null>(null);
   const [editTarget, setEditTarget] = useState<KnowledgeItem | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -78,9 +151,11 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
   }, [t, toast]);
   const loadKnowledge = useCallback(async () => {
     try {
-      const [activeRes, quarantinedRes] = await Promise.all([
+      const [activeRes, quarantinedRes, candidateRes, healthRes] = await Promise.all([
       fetch("/api/memory/knowledge", { cache: "no-store" }),
-      fetch("/api/memory/knowledge?scope=global&status=quarantined&limit=100", { cache: "no-store" })]
+      fetch("/api/memory/knowledge?scope=global&status=quarantined&limit=100", { cache: "no-store" }),
+      fetch("/api/memory/knowledge-resolution-candidates?limit=100", { cache: "no-store" }),
+      fetch("/api/memory/knowledge-health", { cache: "no-store" })]
       );
       if (!activeRes.ok) {
         throw new Error(`Knowledge failed: ${activeRes.status}`);
@@ -88,9 +163,16 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       if (!quarantinedRes.ok) {
         throw new Error(`Quarantined knowledge failed: ${quarantinedRes.status}`);
       }
-      const [activeJson, quarantinedJson] = await Promise.all([activeRes.json(), quarantinedRes.json()]);
+      const [activeJson, quarantinedJson, candidateJson, healthJson] = await Promise.all([
+        activeRes.json(),
+        quarantinedRes.json(),
+        candidateRes.ok ? candidateRes.json() : Promise.resolve({ items: [] }),
+        healthRes.ok ? healthRes.json() : Promise.resolve(null)
+      ]);
       setKnowledge(activeJson.items || []);
       setQuarantinedGlobalKnowledge(quarantinedJson.items || []);
+      setResolutionCandidates(candidateJson?.items || []);
+      setKnowledgeHealth(healthJson);
     }
     catch (err) {
       console.error("Failed to load knowledge:", err);
@@ -101,6 +183,24 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       });
     }
   }, [t, toast]);
+  const handleResolveCandidate = useCallback(async (candidateId: string, resolution: "reinforce" | "replace" | "refine" | "discard") => {
+    setResolvingCandidateId(candidateId);
+    try {
+      const response = await fetch(`/api/memory/knowledge-resolution-candidates/${candidateId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolution })
+      });
+      if (!response.ok) throw new Error(`Resolve failed: ${response.status}`);
+      await loadKnowledge();
+      toast({ title: t("app.admin.dashboard.memory.pendingUpdates.resolvedTitle"), description: t("app.admin.dashboard.memory.pendingUpdates.resolvedDescription") });
+    } catch (error) {
+      console.error("Resolve knowledge candidate failed:", error);
+      toast({ title: t("app.admin.dashboard.memory.pendingUpdates.failedTitle"), description: t("app.admin.dashboard.memory.pendingUpdates.failedDescription"), variant: "destructive" });
+    } finally {
+      setResolvingCandidateId(null);
+    }
+  }, [loadKnowledge, t, toast]);
   useEffect(() => {
     void loadDashboard();
     void loadKnowledge();
@@ -139,7 +239,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       await loadKnowledge();
       toast({
         title: tg(t, "8564783d"),
-        description: tg(t, "76752b5b", { value1: item.id })
+        description: t("app.admin.dashboard.memory.restoreCreatedRevision")
       });
     }
     catch (err) {
@@ -160,7 +260,7 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
       await loadKnowledge();
       toast({
         title: tg(t, "ec481ba6"),
-        description: tg(t, "b93d054c", { value1: item.id })
+        description: t("app.admin.dashboard.memory.revalidated")
       });
     }
     catch (err) {
@@ -185,15 +285,12 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
     if (!res.ok) {
       throw new Error(`Save failed: ${res.status}`);
     }
-    setKnowledge((prev) => prev.map((item) => item.id === id ? { ...item, ...updated } : item));
-    setSearchResults((prev) => prev.map((item) => item.id === id ? { ...item, ...updated } : item));
+    await loadKnowledge();
     toast({
       title: t("app.admin.dashboard.memory.page.kddf0235b"),
-      description: t("app.admin.dashboard.memory.page.k9409cebf", {
-        id: id
-      })
+      description: t("app.admin.dashboard.memory.knowledgeVersionCreated")
     });
-  }, [t, toast]);
+  }, [loadKnowledge, t, toast]);
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -434,6 +531,86 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                         </CardContent>
                     </Card>
 
+                    <Card className="border-border/60">
+                        <CardHeader className="pb-3">
+                            <CardTitle className="flex items-center gap-2 text-lg">
+                                <GitCompareArrows className="h-5 w-5" /> {t("app.admin.dashboard.memory.knowledgeHealth.title")}
+                            </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                <div className="rounded-xl border border-border bg-muted/30 p-3">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.memory.knowledgeHealth.canonical")}</div>
+                                    <div className="mt-1 text-sm font-semibold text-foreground">
+                                        {t("app.admin.dashboard.memory.knowledgeHealth.canonicalCount", {
+                                          active: knowledgeHealth?.projection?.canonical?.active || 0,
+                                          total: knowledgeHealth?.projection?.canonical?.total || 0
+                                        })}
+                                    </div>
+                                </div>
+                                <div className="rounded-xl border border-border bg-muted/30 p-3">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.memory.knowledgeHealth.projection")}</div>
+                                    <div className="mt-1 text-sm font-semibold text-foreground">
+                                        {knowledgeHealth?.projection?.state === "ready" ? t("app.admin.dashboard.memory.knowledgeHealth.synced") : knowledgeHealth?.projection?.state === "degraded" ? t("app.admin.dashboard.memory.knowledgeHealth.degraded", { count: knowledgeHealth?.projection?.backlog || 0 }) : t("app.admin.dashboard.memory.knowledgeHealth.syncing", { count: knowledgeHealth?.projection?.backlog || 0 })}
+                                    </div>
+                                </div>
+                                <div className="rounded-xl border border-border bg-muted/30 p-3">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.memory.knowledgeHealth.pending")}</div>
+                                    <div className="mt-1 text-sm font-semibold text-foreground">{resolutionCandidates.length}</div>
+                                </div>
+                                <div className="rounded-xl border border-border bg-muted/30 p-3">
+                                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.memory.knowledgeHealth.graphCoverage")}</div>
+                                    <div className="mt-1 text-sm font-semibold text-foreground">{Math.round(Number(knowledgeHealth?.graph?.sourceCoverage ?? 1) * 100)}%</div>
+                                    {Number(knowledgeHealth?.graph?.legacyArchivedRelations || 0) > 0 ? <div className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.memory.knowledgeHealth.legacyArchived", { count: knowledgeHealth?.graph?.legacyArchivedRelations || 0 })}</div> : null}
+                                </div>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    {resolutionCandidates.length > 0 ? <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
+                        <CardHeader>
+                            <CardTitle className="text-lg">{t("app.admin.dashboard.memory.pendingUpdates.title", { count: resolutionCandidates.length })}</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                            {resolutionCandidates.map(candidate => <div key={candidate.id} className="rounded-xl border border-amber-500/20 bg-background/90 p-4">
+                                <div className="grid gap-3 lg:grid-cols-2">
+                                    <div>
+                                        <div className="mb-1 text-xs font-medium text-muted-foreground">{t("app.admin.dashboard.memory.pendingUpdates.current")}</div>
+                                        <p className="text-sm leading-6 text-foreground">{candidate.target_fact || t("app.admin.dashboard.memory.pendingUpdates.noTarget")}</p>
+                                        <div className="mt-2 text-xs text-muted-foreground">{formatScopeLabel(candidate.target_scope, scopeLabels)} · {candidate.target_category || "general"}</div>
+                                    </div>
+                                    <div>
+                                        <div className="mb-1 text-xs font-medium text-muted-foreground">{t("app.admin.dashboard.memory.pendingUpdates.observed")}</div>
+                                        <p className="text-sm leading-6 text-foreground">{candidate.candidate_fact}</p>
+                                        <div className="mt-2 text-xs text-muted-foreground">{formatScopeLabel(candidate.candidate_scope, scopeLabels)} · {candidate.candidate_category || "general"}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                            {t("app.admin.dashboard.memory.pendingUpdates.source", {
+                                              source: t(`app.admin.dashboard.memory.pendingUpdates.source.${candidate.source_kind || "conversation"}`),
+                                              count: candidate.source_observation_count || 1
+                                            })}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="mt-4 flex flex-wrap gap-2">
+                                    <Button variant="outline" size="sm" disabled={resolvingCandidateId === candidate.id} onClick={() => void handleResolveCandidate(candidate.id, "reinforce")}>{t("app.admin.dashboard.memory.pendingUpdates.same")}</Button>
+                                    <Button size="sm" disabled={resolvingCandidateId === candidate.id} onClick={() => void handleResolveCandidate(candidate.id, "replace")}>{t("app.admin.dashboard.memory.pendingUpdates.replace")}</Button>
+                                    <Button variant="outline" size="sm" disabled={resolvingCandidateId === candidate.id} onClick={() => void handleResolveCandidate(candidate.id, "refine")}>{t("app.admin.dashboard.memory.pendingUpdates.refine")}</Button>
+                                    <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={resolvingCandidateId === candidate.id} onClick={() => void handleResolveCandidate(candidate.id, "discard")}>{t("app.admin.dashboard.memory.pendingUpdates.discard")}</Button>
+                                    {resolvingCandidateId === candidate.id ? <Loader2 className="h-4 w-4 animate-spin self-center text-muted-foreground" /> : null}
+                                </div>
+                                <TechnicalReferenceDetails
+                                  items={[
+                                    { label: "candidate", value: candidate.id },
+                                    { label: "suggestion", value: candidate.proposed_relation },
+                                    { label: "similarity", value: typeof candidate.similarity === "number" ? candidate.similarity.toFixed(3) : "-" },
+                                    { label: "reason", value: candidate.reason || "-" },
+                                    { label: "sourceSession", value: candidate.candidate_source_session || "-" }
+                                  ]}
+                                />
+                            </div>)}
+                        </CardContent>
+                    </Card> : null}
+
                     {quarantinedGlobalKnowledge.length > 0 ?
         <Card className="border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10">
                             <CardHeader>
@@ -448,8 +625,8 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                                                 <div className="mt-1 flex items-center gap-2">
                                                     <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-xs text-amber-700 dark:text-amber-300">{item.scope}</span>
                                                     <span className="text-xs text-muted-foreground">{item.category}</span>
-                                                    <span className="font-mono text-[10px] text-muted-foreground/40">{item.id}</span>
                                                 </div>
+                                                <TechnicalReferenceDetails items={[{ label: "knowledge", value: item.id }, { label: "lineage", value: String(item.lineage_id || "-") }]} />
                                             </div>
                                             <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                                                 <Button variant="outline" size="sm" onClick={() => void handleRestoreKnowledge(item)}>
@@ -488,19 +665,21 @@ export default function MemoryDashboardClient({ initialRequestedTab = "preferenc
                                             <div className="min-w-0 flex-1">
                                                 <p className="text-sm">{item.fact}</p>
                                                 <div className="mt-1 flex items-center gap-2">
-                                                    <span className="rounded bg-blue-500/10 px-1.5 py-0.5 font-mono text-xs text-blue-600">{item.scope}</span>
+                                                    <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-xs text-blue-600 dark:text-blue-300">{formatScopeLabel(item.scope, scopeLabels)}</span>
                                                     <span className="text-xs text-muted-foreground">{item.category}</span>
                                                     {item.lifecycle_state && item.lifecycle_state !== "active" ?
-                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-xs text-amber-700">{item.lifecycle_state}</span> :
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-700 dark:text-amber-300">{lifecycleLabel(item.lifecycle_state, lifecycleLabels)}</span> :
                     null}
-                                                    {item.maintainer_source ?
-                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-xs text-emerald-700">{item.maintainer_source}</span> :
-                    null}
-                                                    {typeof item.effective_confidence === "number" ?
-                    <span className="font-mono text-[10px] text-muted-foreground">eff {item.effective_confidence.toFixed(2)}</span> :
-                    null}
-                                                    <span className="font-mono text-[10px] text-muted-foreground/40">{item.id}</span>
                                                 </div>
+                                                <TechnicalReferenceDetails
+                                                  items={[
+                                                    { label: "knowledge", value: item.id },
+                                                    { label: "lineage", value: String(item.lineage_id || "-") },
+                                                    { label: "revision", value: String(item.revision_no || 1) },
+                                                    { label: "source", value: String(item.maintainer_source || "-") },
+                                                    { label: "confidence", value: typeof item.effective_confidence === "number" ? item.effective_confidence.toFixed(2) : "-" }
+                                                  ]}
+                                                />
                                             </div>
                                             <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                                                 {item.lifecycle_state === "stale" ?

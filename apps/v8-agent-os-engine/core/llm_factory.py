@@ -377,7 +377,34 @@ class OpenAICompatibleEmbedding(BaseEmbedding):
         if res.status_code != 200:
             res.raise_for_status()
         
-        data = res.json().get("data", [])
+        response_payload = res.json()
+        data = response_payload.get("data") if isinstance(response_payload, dict) else None
+        valid_data = (
+            isinstance(data, list)
+            and len(data) == len(texts)
+            and all(isinstance(item, dict) and isinstance(item.get("embedding"), list) for item in data)
+        )
+        if not valid_data:
+            model_telemetry_service.record_aux_model_invocation(
+                model_id=self.model_name,
+                provider_id=self.provider_id,
+                provider_name=self.provider_name,
+                role=self.role,
+                capability_class=self.capability_class,
+                request_kind="embedding",
+                latency_ms=(time.perf_counter() - started) * 1000,
+                status="failed",
+                error_code="invalid_response",
+                error_message="Embedding provider returned an invalid data array",
+                metadata={
+                    "documents": len(texts),
+                    "resultCount": len(data) if isinstance(data, list) else None,
+                    "errorKind": "invalid_response",
+                },
+            )
+            raise RuntimeError(
+                f"embedding_provider_invalid_response: expected {len(texts)} vector rows"
+            )
         data = sorted(data, key=lambda x: x.get("index", 0))
         model_telemetry_service.record_aux_model_invocation(
             model_id=self.model_name,

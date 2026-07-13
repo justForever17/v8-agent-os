@@ -324,6 +324,7 @@ class GraphEntityPayload(BaseModel):
     entity_type: str = Field(default="concept", alias="entityType")
     maintainer_source: Optional[str] = Field(default=None, alias="maintainerSource")
     confidence: Optional[float] = 1.0
+    scope: Optional[str] = None
 
 
 class GraphRelationPayload(BaseModel):
@@ -332,6 +333,8 @@ class GraphRelationPayload(BaseModel):
     subject: str
     predicate: str
     object_name: str = Field(alias="object")
+    scope: Optional[str] = None
+    source_fact_ids: List[str] = Field(default_factory=list, alias="sourceFactIds")
     confidence: Optional[float] = 1.0
     maintainer_source: Optional[str] = Field(default=None, alias="maintainerSource")
 

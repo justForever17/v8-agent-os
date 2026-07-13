@@ -891,5 +891,11 @@
   "src.components.chat.sessionoverviewpanel.changed_file": "修改文件",
   "src.components.chat.sessionoverviewpanel.binary_unavailable": "该文件不能在手机端展开。",
   "src.components.chat.sessionoverviewpanel.empty_file": "文件没有可显示的文本。",
-  "src.components.chat.sessionoverviewpanel.no_files": "暂时没有可查看的文件。"
+  "src.components.chat.sessionoverviewpanel.no_files": "暂时没有可查看的文件。",
+  "src.components.chat.sessionoverviewpanel.subagents": "子 Agent",
+  "src.components.chat.sessionoverviewpanel.subagent_returned": "已回流",
+  "src.components.chat.sessionoverviewpanel.subagent_running": "进行中",
+  "src.components.chat.sessionoverviewpanel.subagent_needs_attention": "需要处理",
+  "src.components.chat.sessionoverviewpanel.subagent_self_check": "自检",
+  "src.components.chat.sessionoverviewpanel.subagent_artifacts": "已回流 {count} 个产物引用"
 }

@@ -171,6 +171,7 @@ interface InputAreaProps {
     reasoningEffortControl?: ReasoningEffortControl | null;
     contextSessionRefs?: ContextSessionReference[];
     onRemoveContextSessionRef?: (sessionId: string) => void;
+    contextUsagePercent?: number | null;
 }
 
 interface ContextSessionReference {
@@ -218,6 +219,20 @@ interface CommandPresetSummary {
     path?: string;
     contentHash?: string;
     specCommandAction?: SpecCommandAction;
+    readOnlyKind?: "context_usage";
+    usagePercent?: number;
+}
+
+function ContextUsageRing({ percent }: { percent: number }) {
+    const radius = 8;
+    const circumference = Math.PI * 2 * radius;
+    const dash = circumference * Math.max(0, Math.min(100, percent)) / 100;
+    return (
+        <svg viewBox="0 0 20 20" className="mt-0.5 h-5 w-5 shrink-0 -rotate-90" aria-hidden="true">
+            <circle cx="10" cy="10" r={radius} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-muted-foreground/25" />
+            <circle cx="10" cy="10" r={radius} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${dash} ${circumference - dash}`} className="text-primary" />
+        </svg>
+    );
 }
 
 interface SkillReferenceSummary {
@@ -264,6 +279,7 @@ export function InputArea({
     reasoningEffortControl,
     contextSessionRefs = [],
     onRemoveContextSessionRef,
+    contextUsagePercent = null,
 }: InputAreaProps) {
     const t = useT();
     const [commandPresets, setCommandPresets] = React.useState<CommandPresetSummary[]>([]);
@@ -368,6 +384,16 @@ export function InputArea({
         { name: "spec analyze", summary: "只读分析需求、设计和任务的闭环质量。", specCommandAction: "analyze" },
         { name: "spec annex", summary: "为复杂 Spec 生成或查看 research/contracts/quickstart 附录。", specCommandAction: "annex" },
     ]), []);
+    const contextUsageCommand = React.useMemo<CommandPresetSummary | null>(() => (
+        typeof contextUsagePercent === "number" && Number.isFinite(contextUsagePercent)
+            ? {
+                name: "context",
+                summary: `Current usage ${Math.max(0, Math.min(100, Math.round(contextUsagePercent)))}%`,
+                readOnlyKind: "context_usage",
+                usagePercent: Math.max(0, Math.min(100, Math.round(contextUsagePercent))),
+            }
+            : null
+    ), [contextUsagePercent]);
 
     const slashQuery = React.useMemo(() => {
         if (selectedCommandPreset) return "";
@@ -383,7 +409,7 @@ export function InputArea({
     const isCommandPickerOpen = !selectedCommandPreset && input.trimStart().startsWith("/");
     const isSkillPickerOpen = input.trimStart().startsWith("@");
     const filteredCommandPresets = React.useMemo(() => {
-        const allCommands = [...specCommandPresets, ...commandPresets];
+        const allCommands = [...(contextUsageCommand ? [contextUsageCommand] : []), ...specCommandPresets, ...commandPresets];
         if (!slashQuery) {
             return allCommands;
         }
@@ -393,7 +419,7 @@ export function InputArea({
             || String(preset.summary || "").toLowerCase().includes(keyword)
             || String(preset.filename || "").toLowerCase().includes(keyword)
         );
-    }, [commandPresets, slashQuery, specCommandPresets]);
+    }, [commandPresets, contextUsageCommand, slashQuery, specCommandPresets]);
     const filteredMentionItems = React.useMemo<MentionPickerItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}::${skill.path || ""}`));
         const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
@@ -579,6 +605,11 @@ export function InputArea({
     }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
 
     const selectCommandPreset = React.useCallback((preset: CommandPresetSummary) => {
+        if (preset.readOnlyKind === "context_usage") {
+            updateInputValue("");
+            dismissInlineNotice();
+            return;
+        }
         setSelectedCommandPreset(preset);
         updateInputValue("");
         dismissInlineNotice();
@@ -1213,7 +1244,9 @@ export function InputArea({
                                         onClick={() => selectCommandPreset(preset)}
                                         className="flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-accent/50"
                                     >
-                                        <Command className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />
+                                        {preset.readOnlyKind === "context_usage" && typeof preset.usagePercent === "number"
+                                            ? <ContextUsageRing percent={preset.usagePercent} />
+                                            : <Command className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />}
                                         <div className="min-w-0 flex-1">
                                             <div className="truncate text-sm font-medium text-foreground">
                                                 {preset.name}

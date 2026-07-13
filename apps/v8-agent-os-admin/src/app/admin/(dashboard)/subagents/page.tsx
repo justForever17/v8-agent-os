@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/use-toast";
 import { useT } from "@/components/providers/LocaleProvider";
-import { BrainCircuit, Cable, ChevronDown, Loader2, Pencil, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench } from "lucide-react";
+import { BrainCircuit, Cable, ChevronDown, ImageUp, Loader2, Pencil, Plus, RefreshCw, Save, SearchCheck, ShieldCheck, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import { useDebugMode } from "@/lib/useDebugMode";
@@ -399,11 +399,6 @@ function normalizeFamilyEntry(value: unknown): SubagentFamilySummary | null {
     memberCount: Number(raw.memberCount || 0) || 0
   };
 }
-const GLOBAL_AVATAR_STYLE: CSSProperties = {
-  backgroundColor: "#059669",
-  borderColor: "#047857",
-  color: "#FFFFFF"
-};
 function parseOptionalTemperature(value: string) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return null;
@@ -683,8 +678,10 @@ export default function SubagentsPage() {
   const [isSavingSpecialistRegistry, setIsSavingSpecialistRegistry] = useState(false);
   const [isSavingResearch, setIsSavingResearch] = useState(false);
   const [isSavingRecursiveDelegation, setIsSavingRecursiveDelegation] = useState(false);
+  const [isAvatarUploading, setIsAvatarUploading] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [form, setForm] = useState<AgentFormState>(DEFAULT_FORM_STATE);
+  const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
   const [toolPanels, setToolPanels] = useState<Record<ToolPanelKey, boolean>>({
     baseline: false,
     skills: true,
@@ -730,6 +727,31 @@ export default function SubagentsPage() {
       return acc;
     }, {});
   }, [familyOptions]);
+  const formAvatarStyle = familyColorMap[normalizeFamilyId(form.specialistFamily || FREELANCERS_FAMILY_ID)] || FAMILY_AVATAR_COLORS[0];
+
+  const handleAvatarUpload = useCallback(async (file: File | null) => {
+    if (!file || isAvatarUploading) return;
+    setIsAvatarUploading(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch("/api/avatar-upload", { method: "POST", body });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.url) {
+        throw new Error(String(payload.error || t("app.admin.dashboard.subagents.page.avatarUploadFailed")));
+      }
+      setForm(current => ({ ...current, avatar: String(payload.url) }));
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("app.admin.dashboard.subagents.page.avatarUploadFailed"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.avatarUploadFailed"),
+      });
+    } finally {
+      setIsAvatarUploading(false);
+      if (avatarFileInputRef.current) avatarFileInputRef.current.value = "";
+    }
+  }, [isAvatarUploading, t, toast]);
   const groupedMcpTools = useMemo(() => {
     return mcpTools.reduce<Record<string, MCPTool[]>>((acc, tool) => {
       const key = String(tool.serverName || "MCP").trim() || "MCP";
@@ -1542,16 +1564,20 @@ export default function SubagentsPage() {
                             const specialistFamily = String(agentFamilyValue(agent, capabilitySnapshot) || "");
                             const domainTags = Array.isArray(capabilitySnapshot.domainTags) ? capabilitySnapshot.domainTags.filter((item): item is string => typeof item === "string").slice(0, 3) : [];
                             const familyKey = normalizeFamilyId(specialistFamily || FREELANCERS_FAMILY_ID);
-                            const avatarStyle = agent.globalExposure ? GLOBAL_AVATAR_STYLE : familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
-                            const avatarLabel = agent.globalExposure ? "G" : firstGrapheme(specialistFamily || "Freelancers", "F");
+                            const avatarStyle = familyColorMap[familyKey] || FAMILY_AVATAR_COLORS[0];
+                            const avatarLabel = firstGrapheme(agent.name, "A");
                             const isBuiltin = isBuiltinAgent(agent);
                             return <Card key={agent.id} className="rounded-3xl border-border bg-card/95 shadow-sm">
                                         <CardHeader className="p-4 pb-2">
                                             <div className="flex items-start justify-between gap-3">
                                                 <div className="flex min-w-0 items-center gap-3">
-                                                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border text-lg font-bold" style={avatarStyle} title={agent.globalExposure ? "globalExposure" : `family:${familyKey}`}>
-                                                        {avatarLabel}
-                                                    </div>
+                                                    {agent.avatar ? (
+                                                        <img src={agent.avatar} alt="" className="h-11 w-11 shrink-0 rounded-2xl border border-border object-cover" />
+                                                    ) : (
+                                                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border text-lg font-bold" style={avatarStyle} title={`family:${familyKey}`}>
+                                                            {avatarLabel}
+                                                        </div>
+                                                    )}
                                                     <div className="min-w-0">
                                                         <CardTitle className="truncate text-base font-semibold">{agent.name}</CardTitle>
                                                         <CardDescription className="truncate text-xs">{resolveAgentModelDisplay(agent)}</CardDescription>
@@ -1974,6 +2000,45 @@ export default function SubagentsPage() {
                   ...current,
                   roleLabel: event.target.value
                 }))} placeholder={t("app.admin.dashboard.subagents.page.k49570350")} />
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label>{t("app.admin.dashboard.subagents.page.avatarLabel")}</Label>
+                            <div className="flex flex-col gap-3 rounded-2xl border border-border bg-muted/35 p-3 sm:flex-row sm:items-center">
+                                {form.avatar ? (
+                                    <img src={form.avatar} alt="" className="h-14 w-14 shrink-0 rounded-2xl border border-border object-cover" />
+                                ) : (
+                                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border text-xl font-bold" style={formAvatarStyle}>
+                                        {firstGrapheme(form.name, "A")}
+                                    </div>
+                                )}
+                                <div className="min-w-0 flex-1 space-y-2">
+                                    <Input
+                                        value={form.avatar}
+                                        onChange={event => setForm(current => ({ ...current, avatar: event.target.value }))}
+                                        placeholder={t("app.admin.dashboard.subagents.page.avatarPlaceholder")}
+                                    />
+                                    <div className="flex flex-wrap gap-2">
+                                        <input
+                                            ref={avatarFileInputRef}
+                                            type="file"
+                                            accept="image/png,image/jpeg,image/webp,image/gif"
+                                            className="hidden"
+                                            onChange={event => void handleAvatarUpload(event.target.files?.[0] || null)}
+                                        />
+                                        <Button type="button" variant="outline" size="sm" disabled={isAvatarUploading} onClick={() => avatarFileInputRef.current?.click()}>
+                                            {isAvatarUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImageUp className="mr-2 h-4 w-4" />}
+                                            {t("app.admin.dashboard.subagents.page.avatarUpload")}
+                                        </Button>
+                                        {form.avatar ? (
+                                            <Button type="button" variant="ghost" size="sm" onClick={() => setForm(current => ({ ...current, avatar: "" }))}>
+                                                <X className="mr-2 h-4 w-4" />
+                                                {t("app.admin.dashboard.subagents.page.avatarClear")}
+                                            </Button>
+                                        ) : null}
+                                    </div>
+                                </div>
                             </div>
                         </div>
 

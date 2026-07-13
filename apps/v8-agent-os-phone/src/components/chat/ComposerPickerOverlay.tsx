@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { FlatList as GestureFlatList } from "react-native-gesture-handler";
+import Svg, { Circle } from "react-native-svg";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -15,6 +16,29 @@ import type { CommandPresetSummary, PluginReferenceSummary, SkillReferenceSummar
 
 const PICKER_MIN_VIEWPORT_HEIGHT = 248;
 const PICKER_MAX_VIEWPORT_HEIGHT = 372;
+
+function ContextUsageRing({ percent, color, trackColor }: { percent: number; color: string; trackColor: string }) {
+    const radius = 9;
+    const circumference = Math.PI * 2 * radius;
+    const progress = circumference * Math.max(0, Math.min(100, percent)) / 100;
+    return (
+        <Svg width={24} height={24} viewBox="0 0 24 24" style={styles.contextRing}>
+            <Circle cx="12" cy="12" r={radius} fill="none" stroke={trackColor} strokeWidth={3} />
+            <Circle
+                cx="12"
+                cy="12"
+                r={radius}
+                fill="none"
+                stroke={color}
+                strokeWidth={3}
+                strokeLinecap="round"
+                strokeDasharray={`${progress} ${circumference - progress}`}
+                rotation={-90}
+                origin="12, 12"
+            />
+        </Svg>
+    );
+}
 
 type ComposerPickerOverlayProps = {
     visible: boolean;
@@ -65,11 +89,15 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
     const data: Array<CommandPresetSummary | ComposerMentionItem> = isCommand ? commands : mentions;
     const renderCommandItem = ({ item }: { item: CommandPresetSummary }) => (
         <Pressable onPress={() => onSelectCommand(item)} style={styles.row}>
-            <MaterialCommunityIcons
-                name={item.specCommandAction ? "file-document-check-outline" : "text-short"}
-                size={16}
-                color={item.specCommandAction ? colors.primary : colors.accent}
-            />
+            {item.readOnlyKind === "context_usage" && typeof item.usagePercent === "number" ? (
+                <ContextUsageRing percent={item.usagePercent} color={colors.primary} trackColor={colors.border} />
+            ) : (
+                <MaterialCommunityIcons
+                    name={item.specCommandAction ? "file-document-check-outline" : "text-short"}
+                    size={16}
+                    color={item.specCommandAction ? colors.primary : colors.accent}
+                />
+            )}
             <View style={styles.body}>
                 <Text style={[styles.title, { color: colors.text }]}>{item.name}</Text>
                 {item.summary ? (
@@ -213,6 +241,7 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
 });
 
 const styles = StyleSheet.create({
+    contextRing: { marginTop: 1 },
     overlay: {
         ...StyleSheet.absoluteFillObject,
         zIndex: 32,

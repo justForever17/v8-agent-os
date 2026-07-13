@@ -179,6 +179,8 @@ export type CommandPresetSummary = {
     summary?: string;
     filename?: string;
     specCommandAction?: "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex";
+    readOnlyKind?: "context_usage";
+    usagePercent?: number;
 };
 
 export type SkillReferenceSummary = {

@@ -1,7 +1,7 @@
 {
   "name": "@v8/session-realtime",
   "private": true,
-  "version": "0.0.7",
+  "version": "0.0.8",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -96,6 +96,10 @@
     "./runtime-summary-policy": {
       "types": "./dist/runtime-summary-policy.d.ts",
       "default": "./dist/runtime-summary-policy.js"
+    },
+    "./subagent-return-projection": {
+      "types": "./dist/subagent-return-projection.d.ts",
+      "default": "./dist/subagent-return-projection.js"
     }
   },
   "devDependencies": {

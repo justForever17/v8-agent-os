@@ -149,6 +149,7 @@ export type ContextGovernanceView = Record<string, unknown> & {
   context_window_tokens?: number;
   original_message_count?: number;
   estimated_input_tokens?: number;
+  estimated_effective_input_tokens?: number;
   trigger_reason?: string;
   compaction_applied?: boolean;
   compaction_method?: string;
@@ -181,6 +182,8 @@ export type ContextGovernanceDigest = {
   durableFlush: Record<string, unknown> | null;
   durableFlushReason: string | null;
   contextWindowTokens: number | null;
+  estimatedInputTokens: number | null;
+  effectiveInputTokens: number | null;
   modelId: string | null;
   recallAudit: ContextGovernanceRecallAuditDigest | null;
 };
@@ -390,9 +393,28 @@ export function normalizeContextGovernanceDigest(
       || asString((durableFlush as Record<string, unknown> | null)?.status)
       || null,
     contextWindowTokens: asNumber(record.context_window_tokens || record.contextWindowTokens),
+    estimatedInputTokens: asNumber(record.estimated_input_tokens || record.estimatedInputTokens),
+    effectiveInputTokens:
+      asNumber(record.estimated_effective_input_tokens)
+      ?? asNumber(record.estimatedEffectiveInputTokens),
     modelId: asString(record.resolved_model_id) || asString(record.resolvedModelId),
     recallAudit,
   };
+}
+
+export function contextUsagePercent(
+  value: ContextGovernanceDigest | ContextGovernanceView | Record<string, unknown> | null | undefined,
+): number | null {
+  const digest = value && "contextWindowTokens" in value
+    ? value as ContextGovernanceDigest
+    : normalizeContextGovernanceDigest(value as ContextGovernanceView | Record<string, unknown> | null | undefined);
+  if (!digest) return null;
+  const windowTokens = Number(digest.contextWindowTokens || 0);
+  const usedTokens = Number(digest.effectiveInputTokens ?? digest.estimatedInputTokens ?? 0);
+  if (!Number.isFinite(windowTokens) || windowTokens <= 0 || !Number.isFinite(usedTokens) || usedTokens < 0) {
+    return null;
+  }
+  return Math.max(0, Math.min(100, Math.round((usedTokens / windowTokens) * 100)));
 }
 
 export function normalizeContextGovernanceHistory(

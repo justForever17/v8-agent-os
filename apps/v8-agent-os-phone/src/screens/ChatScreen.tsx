@@ -157,6 +157,7 @@ import {
     type ContextGovernanceView,
     type ContextReferenceItem,
     deriveAuthoritativeSessionView,
+    contextUsagePercent as resolveContextUsagePercent,
     flushQueuedSessionRealtimeRuntimeEvents,
     mergeTimelineNodesByIdentity,
     queueSessionRealtimeRuntimeEvent,
@@ -2266,13 +2267,22 @@ export default function ChatScreen() {
             setReasoningEffort("auto");
         }
     }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
+    const contextUsage = useMemo(() => resolveContextUsagePercent(contextGovernance), [contextGovernance]);
     const specCommands = useMemo<CommandPresetSummary[]>(
-        () => SPEC_COMMAND_DEFS.map((item) => ({
+        () => [
+            ...(typeof contextUsage === "number" ? [{
+                name: "context",
+                summary: `Current usage ${contextUsage}%`,
+                readOnlyKind: "context_usage" as const,
+                usagePercent: contextUsage,
+            }] : []),
+            ...SPEC_COMMAND_DEFS.map((item) => ({
             name: item.name,
             summary: t(item.summaryKey),
             specCommandAction: item.specCommandAction,
-        })),
-        [t],
+            })),
+        ],
+        [contextUsage, t],
     );
     const filteredCommands = useMemo(() => {
         const allCommands = [...specCommands, ...commands];
@@ -6555,6 +6565,11 @@ export default function ChatScreen() {
     });
 
     const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
+        if (command.readOnlyKind === "context_usage") {
+            setActiveQueryMode(null);
+            setActiveQueryText("");
+            return;
+        }
         setSelectedCommand(command);
         setActiveQueryMode(null);
         setActiveQueryText("");

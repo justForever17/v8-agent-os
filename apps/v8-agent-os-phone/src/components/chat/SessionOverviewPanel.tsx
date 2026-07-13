@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
+    Image,
     Modal,
     PanResponder,
     Pressable,
@@ -11,6 +12,7 @@ import {
     useWindowDimensions,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { buildSubagentReturnProjection, type SubagentReturnProjection } from "@v8/session-realtime";
 
 import { listSpecs, readSessionWorkbenchFile } from "@/src/lib/phone-api";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -142,6 +144,66 @@ function mergeFiles(...groups: OverviewFile[][]) {
         if (!existing || existing.source === "change") byPath.set(key, file);
     }
     return Array.from(byPath.values()).slice(-40).reverse();
+}
+
+function colorForSubagent(value: string) {
+    let hash = 0;
+    for (const char of value || "subagent") hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+    return `hsl(${Math.abs(hash) % 360}, 62%, 48%)`;
+}
+
+function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProjection; nested?: boolean }) {
+    const { colors, t } = useUiPrefs();
+    const [expanded, setExpanded] = useState(false);
+    const statusLabel = ["ok", "completed", "success", "terminated"].includes(item.status)
+        ? t("src.components.chat.sessionoverviewpanel.subagent_returned")
+        : ["queued", "running", "starting", "streaming", "updated"].includes(item.status)
+            ? t("src.components.chat.sessionoverviewpanel.subagent_running")
+            : t("src.components.chat.sessionoverviewpanel.subagent_needs_attention");
+    return (
+        <View style={[styles.subagentItem, nested ? { marginLeft: spacing.lg, borderLeftColor: colors.border, borderLeftWidth: StyleSheet.hairlineWidth } : null]}>
+            <Pressable onPress={() => setExpanded((value) => !value)} style={styles.subagentHeader} accessibilityRole="button">
+                {item.avatar ? (
+                    <Image source={{ uri: item.avatar }} style={styles.subagentAvatarClip} />
+                ) : (
+                    <View style={[styles.subagentAvatar, { backgroundColor: colorForSubagent(item.family || item.name) }]}>
+                        <Text style={styles.subagentAvatarText}>{Array.from(item.name.trim())[0]?.toUpperCase() || "A"}</Text>
+                    </View>
+                )}
+                <View style={styles.subagentBody}>
+                    <Text numberOfLines={1} style={[styles.subagentName, { color: colors.text }]}>{item.name}</Text>
+                    <Text numberOfLines={1} style={[styles.subagentSummary, { color: colors.textMuted }]}>{item.taskGoal || item.summary || statusLabel}</Text>
+                </View>
+                <Text style={[styles.subagentStatus, { color: colors.textMuted }]}>{statusLabel}</Text>
+                <MaterialCommunityIcons name={expanded ? "chevron-up" : "chevron-down"} size={19} color={colors.textMuted} />
+            </Pressable>
+            {expanded ? (
+                <View style={[styles.subagentDetail, { borderTopColor: colors.border }]}>
+                    {item.summary ? <Text style={[styles.subagentDetailText, { color: colors.text }]}>{item.summary}</Text> : null}
+                    {item.selfCheck ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_self_check")}: {item.selfCheck}</Text> : null}
+                    {item.artifactRefs.length ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_artifacts", { count: item.artifactRefs.length })}</Text> : null}
+                    {item.children.map((child) => <SubagentReturnItem key={child.id} item={child} nested />)}
+                </View>
+            ) : null}
+        </View>
+    );
+}
+
+function SubagentReturnsSection({ items }: { items: SubagentReturnProjection[] }) {
+    const { colors, t } = useUiPrefs();
+    const [expanded, setExpanded] = useState(false);
+    if (!items.length) return null;
+    return (
+        <View style={[styles.subagentSection, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+            <Pressable onPress={() => setExpanded((value) => !value)} style={styles.subagentSectionHeader} accessibilityRole="button">
+                <MaterialCommunityIcons name="account-group-outline" size={19} color={colors.textMuted} />
+                <Text style={[styles.subagentSectionTitle, { color: colors.text }]}>{t("src.components.chat.sessionoverviewpanel.subagents")}</Text>
+                <Text style={[styles.subagentSectionCount, { color: colors.textMuted }]}>{items.length}</Text>
+                <MaterialCommunityIcons name={expanded ? "chevron-up" : "chevron-down"} size={20} color={colors.textMuted} />
+            </Pressable>
+            {expanded ? <View style={[styles.subagentList, { borderTopColor: colors.border }]}>{items.map((item) => <SubagentReturnItem key={item.id} item={item} />)}</View> : null}
+        </View>
+    );
 }
 
 function FileSnippetRow({
@@ -278,6 +340,7 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
     const [loading, setLoading] = useState(false);
     const messageFiles = useMemo(() => collectMessageFiles(messages), [messages]);
     const files = useMemo(() => mergeFiles(specFiles, messageFiles), [messageFiles, specFiles]);
+    const subagentReturns = useMemo(() => buildSubagentReturnProjection(messages), [messages]);
 
     useEffect(() => {
         let disposed = false;
@@ -337,6 +400,7 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
                         </View>
                     </View>
                     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+                        <SubagentReturnsSection items={subagentReturns} />
                         {loading && files.length === 0 ? <ActivityIndicator color={colors.primary} style={styles.loading} /> : null}
                         {!loading && files.length === 0 ? (
                             <View style={styles.emptyState}>
@@ -385,4 +449,21 @@ const styles = StyleSheet.create({
     errorText: { padding: spacing.md, fontSize: 12, lineHeight: 18 },
     emptyState: { minHeight: 180, alignItems: "center", justifyContent: "center", gap: spacing.sm },
     emptyText: { padding: spacing.md, textAlign: "center", fontSize: 12, lineHeight: 18 },
+    subagentSection: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radii.lg, overflow: "hidden" },
+    subagentSectionHeader: { minHeight: 52, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    subagentSectionTitle: { flex: 1, fontSize: 14, fontWeight: "700" },
+    subagentSectionCount: { fontSize: 11 },
+    subagentList: { borderTopWidth: StyleSheet.hairlineWidth },
+    subagentItem: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "transparent" },
+    subagentHeader: { minHeight: 56, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    subagentAvatar: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+    subagentAvatarClip: { width: 30, height: 30, borderRadius: 10, overflow: "hidden" },
+    subagentAvatarText: { color: "white", fontSize: 12, fontWeight: "700" },
+    subagentBody: { flex: 1, minWidth: 0, gap: 3 },
+    subagentName: { fontSize: 13, fontWeight: "700" },
+    subagentSummary: { fontSize: 11 },
+    subagentStatus: { fontSize: 10 },
+    subagentDetail: { borderTopWidth: StyleSheet.hairlineWidth, padding: spacing.md, gap: spacing.sm },
+    subagentDetailText: { fontSize: 12, lineHeight: 18 },
+    subagentDetailMuted: { fontSize: 11, lineHeight: 17 },
 });

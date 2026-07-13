@@ -64,6 +64,7 @@ import {
     flushQueuedSessionRealtimeRuntimeEvents,
     normalizeContextGovernanceDigest,
     normalizeContextGovernanceHistory,
+    contextUsagePercent as resolveContextUsagePercent,
     queueSessionRealtimeRuntimeEvent,
     syncSessionRealtimeMessageState,
     type AuthoritativeSessionView,
@@ -1455,6 +1456,10 @@ export default function ChatClient() {
     const projectionContextGovernanceHistory = useMemo(
         () => normalizeContextGovernanceHistory(projectionContextGovernanceHistoryRaw),
         [projectionContextGovernanceHistoryRaw],
+    );
+    const projectionContextUsagePercent = useMemo(
+        () => resolveContextUsagePercent(projectionContextGovernance),
+        [projectionContextGovernance],
     );
     const projectionRuntimeTimeline = useMemo(
         () => normalizeRuntimeTimeline(sessionProjection?.runtimeTimeline || []),
@@ -3216,6 +3221,7 @@ export default function ChatClient() {
                                     shellClassName="w-full"
                                     reasoningEffortControl={supervisorReasoningEffortControl}
                                     contextSessionRefs={pendingContextSessionRefs}
+                                    contextUsagePercent={projectionContextUsagePercent}
                                     onRemoveContextSessionRef={(sessionId) => {
                                         setPendingContextSessionRefs((current) => {
                                             const next = current.filter((item) => item.sessionId !== sessionId);

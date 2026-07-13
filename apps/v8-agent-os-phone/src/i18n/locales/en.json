@@ -891,5 +891,11 @@
   "src.components.chat.sessionoverviewpanel.changed_file": "Changed file",
   "src.components.chat.sessionoverviewpanel.binary_unavailable": "This file cannot be expanded on Phone.",
   "src.components.chat.sessionoverviewpanel.empty_file": "This file has no displayable text.",
-  "src.components.chat.sessionoverviewpanel.no_files": "No files are available yet."
+  "src.components.chat.sessionoverviewpanel.no_files": "No files are available yet.",
+  "src.components.chat.sessionoverviewpanel.subagents": "Subagents",
+  "src.components.chat.sessionoverviewpanel.subagent_returned": "Returned",
+  "src.components.chat.sessionoverviewpanel.subagent_running": "Running",
+  "src.components.chat.sessionoverviewpanel.subagent_needs_attention": "Needs attention",
+  "src.components.chat.sessionoverviewpanel.subagent_self_check": "Self-check",
+  "src.components.chat.sessionoverviewpanel.subagent_artifacts": "{count} artifact references returned"
 }

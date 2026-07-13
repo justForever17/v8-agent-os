@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Box, ChevronDown, ChevronRight, CircleDot, Code2, FileText, FolderOpen, ListTodo, TerminalSquare } from "lucide-react";
-import type { AdminProcessRef } from "@v8/session-realtime";
+import { Box, ChevronDown, ChevronRight, CircleDot, Code2, FileText, FolderOpen, ListTodo, TerminalSquare, Users } from "lucide-react";
+import { buildSubagentReturnProjection, type AdminProcessRef, type SubagentReturnProjection } from "@v8/session-realtime";
 
 import { createArtifactDocument } from "@/lib/workbench";
 import { resolveAndOpenWorkspaceFile } from "@/lib/workbench-actions";
@@ -187,6 +187,71 @@ function EmptyRow({ children }: { children: React.ReactNode }) {
     return <div className="px-3 py-3 text-[11px] leading-5 text-muted-foreground">{children}</div>;
 }
 
+function subagentColorSeed(value: string) {
+    let hash = 0;
+    for (const char of value || "subagent") hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+    return Math.abs(hash) % 360;
+}
+
+function SubagentAvatar({ item }: { item: SubagentReturnProjection }) {
+    if (item.avatar) {
+        return <img src={item.avatar} alt="" className="h-7 w-7 shrink-0 rounded-lg object-cover" />;
+    }
+    const hue = subagentColorSeed(item.family || item.name);
+    return (
+        <span
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border text-[11px] font-semibold"
+            style={{ backgroundColor: `hsl(${hue} 74% 92%)`, borderColor: `hsl(${hue} 58% 70%)`, color: `hsl(${hue} 62% 28%)` }}
+            aria-hidden="true"
+        >
+            {Array.from(item.name.trim())[0]?.toUpperCase() || "A"}
+        </span>
+    );
+}
+
+function subagentStatusLabel(status: string) {
+    if (["ok", "completed", "success", "terminated"].includes(status)) return "已回流";
+    if (["queued", "running", "starting", "streaming", "updated"].includes(status)) return "进行中";
+    return "需要处理";
+}
+
+function SubagentReturnRow({ item, nested = false }: { item: SubagentReturnProjection; nested?: boolean }) {
+    const [open, setOpen] = useState(false);
+    const hasDetail = Boolean(item.summary || item.selfCheck || item.children.length || item.artifactRefs.length);
+    return (
+        <div className={`${nested ? "ml-5 border-l border-border/45" : ""} border-b border-border/30 last:border-b-0`}>
+            <button
+                type="button"
+                disabled={!hasDetail}
+                onClick={() => setOpen((value) => !value)}
+                className="flex min-h-10 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-muted/35 disabled:cursor-default disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+            >
+                <SubagentAvatar item={item} />
+                <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium text-foreground">{item.name}</span>
+                    <span className="block truncate text-[10px] text-muted-foreground">{item.taskGoal || item.summary || "已返回协作结果"}</span>
+                </span>
+                <span className="shrink-0 text-[10px] text-muted-foreground">{subagentStatusLabel(item.status)}</span>
+                {hasDetail ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : null}
+            </button>
+            {open ? (
+                <div className="space-y-2 border-t border-border/25 bg-muted/[0.08] px-3 py-2 text-[11px] leading-5">
+                    {item.summary ? <p className="whitespace-pre-wrap text-foreground/90">{item.summary}</p> : null}
+                    {item.selfCheck ? <p className="whitespace-pre-wrap text-muted-foreground">自检：{item.selfCheck}</p> : null}
+                    {item.acceptanceStatus ? <p className="text-muted-foreground">主理人验收：{item.acceptanceStatus === "pending" ? "待确认" : item.acceptanceStatus}</p> : null}
+                    {item.artifactRefs.length ? <p className="text-muted-foreground">已回流 {item.artifactRefs.length} 个产物引用</p> : null}
+                    {item.children.length ? (
+                        <div className="-mx-3 -mb-2 border-t border-border/30 bg-background/30 pt-1">
+                            <div className="px-3 py-1 text-[10px] font-medium text-muted-foreground">下级协作回流</div>
+                            {item.children.map((child) => <SubagentReturnRow key={child.id} item={child} nested />)}
+                        </div>
+                    ) : null}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
 export function WorkspaceWorkbenchPanel({
     messages,
     processes,
@@ -200,6 +265,7 @@ export function WorkspaceWorkbenchPanel({
     const [fileError, setFileError] = useState("");
     const [listedSpecDocuments, setListedSpecDocuments] = useState<SpecDocumentSummary[]>([]);
     const artifacts = useMemo(() => collectArtifacts(messages), [messages]);
+    const subagentReturns = useMemo(() => buildSubagentReturnProjection(messages), [messages]);
     const fileHints = useMemo(() => collectFileHints(messages), [messages]);
     const liveSpecDocuments = useMemo(() => workbenchTabs.flatMap((tab) => {
         if (tab.document.kind !== "workspace_file") return [];
@@ -239,7 +305,7 @@ export function WorkspaceWorkbenchPanel({
             || null,
         [runtimeModel.items],
     );
-    const hasSecondaryContent = visibleTodos.length > 0 || specDocuments.length > 0 || artifacts.length > 0 || fileHints.length > 0 || activeProcesses.length > 0;
+    const hasSecondaryContent = visibleTodos.length > 0 || subagentReturns.length > 0 || specDocuments.length > 0 || artifacts.length > 0 || fileHints.length > 0 || activeProcesses.length > 0;
 
     useEffect(() => {
         const normalizedWorkspacePath = text(workspacePath);
@@ -288,6 +354,10 @@ export function WorkspaceWorkbenchPanel({
                         </div>
                     );
                 })}
+            </Section> : null}
+
+            {subagentReturns.length ? <Section title="子 Agent" icon={Users} count={subagentReturns.length} defaultOpen={false}>
+                {subagentReturns.map((item) => <SubagentReturnRow key={item.id} item={item} />)}
             </Section> : null}
 
             {specDocuments.length || artifacts.length ? <Section title="产物" icon={Box} count={specDocuments.length + artifacts.length}>

@@ -354,6 +354,7 @@ class ContextOrchestrator:
             "summary_input_budget_tokens": window_guard.get("summaryInputBudgetTokens"),
             "original_message_count": len(messages),
             "estimated_input_tokens": estimated_input_tokens,
+            "estimated_effective_input_tokens": estimated_final_tokens,
             "trigger_reason": trigger_reason,
             "compaction_applied": compaction_applied,
             "compaction_method": method,

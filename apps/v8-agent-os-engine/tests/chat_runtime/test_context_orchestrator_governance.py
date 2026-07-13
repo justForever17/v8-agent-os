@@ -296,6 +296,7 @@ class ContextOrchestratorGovernanceTests(unittest.TestCase):
             "runtime_subagent_closure_live_audit_forced_compaction",
         )
         self.assertEqual(prepared.audit["effective_context_window_tokens"], 2048)
+        self.assertGreater(prepared.audit["estimated_effective_input_tokens"], 0)
         self.assertIn("history_summary", prepared.audit["block_types"])
         self.assertTrue(persisted)
 

@@ -10370,6 +10370,30 @@ class ChatRuntime:
             invocation_id = str(item.get("invocationId") or "").strip()
             agent_id = str(item.get("agentId") or item.get("targetId") or "").strip()
             task_brief_id = str(item.get("taskBriefId") or f"{invocation_id}:{item.get('branchIndex') or 0}").strip()
+            delegation_id = str(item.get("delegationId") or "").strip()
+            parent_delegation_id = str(item.get("parentDelegationId") or "").strip()
+            parent_invocation_id = str(item.get("parentInvocationId") or "").strip()
+            try:
+                delegation_depth = max(
+                    1,
+                    int(item.get("delegationDepth") or (2 if parent_delegation_id or parent_invocation_id else 1)),
+                )
+            except (TypeError, ValueError):
+                delegation_depth = 2 if parent_delegation_id or parent_invocation_id else 1
+            configured_agent = (storage.get_agent(agent_id) or {}) if agent_id else {}
+            capability_snapshot = (
+                dict(configured_agent.get("capabilitySnapshot") or {})
+                if isinstance(configured_agent.get("capabilitySnapshot"), dict)
+                else {}
+            )
+            configured_avatar = str(configured_agent.get("avatar") or "").strip() if delegation_depth <= 1 else ""
+            specialist_family = str(
+                configured_agent.get("specialistFamily")
+                or configured_agent.get("family")
+                or capability_snapshot.get("specialistFamily")
+                or capability_snapshot.get("family")
+                or ""
+            ).strip()
             key = (invocation_id, agent_id, task_brief_id)
             if key in seen:
                 continue
@@ -10385,10 +10409,16 @@ class ChatRuntime:
                 topic,
                 {
                     "invocationId": invocation_id or None,
+                    "delegationId": delegation_id or None,
+                    "parentDelegationId": parent_delegation_id or None,
+                    "parentInvocationId": parent_invocation_id or None,
+                    "delegationDepth": delegation_depth,
                     "taskBriefId": task_brief_id,
                     "taskGoal": item.get("taskGoal"),
                     "subagentId": agent_id,
                     "subagentName": item.get("agentName") or item.get("targetLabel") or agent_id,
+                    "subagentAvatar": configured_avatar or None,
+                    "subagentFamily": specialist_family or None,
                     "status": status,
                     "lane": item.get("lane") or "subagent",
                     "workerType": item.get("workerType"),
@@ -10400,6 +10430,7 @@ class ChatRuntime:
                         "summary": "Supervisor has not accepted, retried, or ignored this subtask result yet.",
                     },
                     "compactTranscript": item.get("compactTranscript") or item.get("error") or "",
+                    "summary": item.get("summary") or item.get("compactTranscript") or item.get("taskGoal") or "",
                     "traceRef": {
                         "runId": chat_run.active_run_id,
                         "invocationId": invocation_id,

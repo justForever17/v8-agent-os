@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastCheckedAt": "2026-06-21",
+  "lastCheckedAt": "2026-07-13",
   "providers": [
     {
       "id": "openai",
@@ -21,6 +21,93 @@
       },
       "confidence": "official",
       "models": [
+        {
+          "id": "gpt-5.6-sol",
+          "contextWindow": 1050000,
+          "maxOutputTokens": 128000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": [
+              "reasoning.summary",
+              "reasoning_content",
+              "additional_kwargs.reasoning_content",
+              "response_metadata.reasoning_content"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+            ],
+            "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens. The gpt-5.6 alias routes to this model."
+          }
+        },
+        {
+          "id": "gpt-5.6-terra",
+          "contextWindow": 1050000,
+          "maxOutputTokens": 128000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": [
+              "reasoning.summary",
+              "reasoning_content",
+              "additional_kwargs.reasoning_content",
+              "response_metadata.reasoning_content"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+            ],
+            "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+          }
+        },
+        {
+          "id": "gpt-5.6-luna",
+          "contextWindow": 1050000,
+          "maxOutputTokens": 128000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "reasoning_summary",
+            "trust": "official",
+            "requestStyle": "openai_reasoning",
+            "responseFields": [
+              "reasoning.summary",
+              "reasoning_content",
+              "additional_kwargs.reasoning_content",
+              "response_metadata.reasoning_content"
+            ],
+            "displayKind": "summary",
+            "sourceRefs": [
+              "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+            ],
+            "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+          }
+        },
         {
           "id": "gpt-5.5",
           "contextWindow": 1000000,
@@ -154,6 +241,30 @@
         },
         {
           "id": "claude-opus-4-8",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "vision",
+            "streaming",
+            "multimodal"
+          ],
+          "reasoningSurface": {
+            "mode": "hidden",
+            "trust": "official",
+            "requestStyle": "none",
+            "responseFields": [],
+            "displayKind": "hidden",
+            "sourceRefs": [
+              "https://platform.claude.com/docs/en/about-claude/models/overview"
+            ],
+            "notes": "This Claude model has adaptive thinking but no display-safe extended thinking block in the public model capability table."
+          }
+        },
+        {
+          "id": "claude-sonnet-5",
           "contextWindow": 1000000,
           "maxOutputTokens": 128000,
           "capabilities": [
@@ -2666,6 +2777,80 @@
       "logoAsset": "/model-assets/providers/stepfun.png",
       "providerKind": "chat",
       "models": []
+    },
+    {
+      "id": "sensetime-sensenova",
+      "name": "SenseTime SenseNova",
+      "apiStandard": "openai",
+      "baseUrl": "https://token.sensenova.cn/v1",
+      "auth": {
+        "type": "api_key",
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "probeStrategy": "openai_models",
+      "sourceUrl": "https://platform.sensenova.cn/docs",
+      "credentialHelp": {
+        "label": "获取 API Key",
+        "kind": "api_key",
+        "url": "https://platform.sensenova.cn/console/keys"
+      },
+      "confidence": "official",
+      "logoAsset": "/model-assets/providers/sensenova.png",
+      "providerKind": "chat",
+      "models": [
+        {
+          "id": "sensenova-6.7-flash-lite",
+          "contextWindow": 262144,
+          "maxOutputTokens": 65536,
+          "logoAsset": "/model-assets/providers/sensenova.png",
+          "capabilities": [
+            "chat",
+            "tools",
+            "streaming",
+            "vision",
+            "multimodal"
+          ]
+        },
+        {
+          "id": "deepseek-v4-flash",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 65536,
+          "logoAsset": "/model-assets/providers/deepseek.ico",
+          "capabilities": [
+            "chat",
+            "reasoning",
+            "tools",
+            "streaming"
+          ]
+        }
+      ],
+      "capabilityEntries": [
+        {
+          "type": "image",
+          "mediaModality": "image",
+          "providerKind": "media_generation",
+          "apiStandard": "openai_images",
+          "baseUrl": "https://token.sensenova.cn/v1",
+          "adapter": "openai_images",
+          "request": {
+            "submitPath": "/images/generations"
+          },
+          "models": [
+            {
+              "id": "sensenova-u1-fast",
+              "type": "IMAGE",
+              "logoAsset": "/model-assets/providers/sensenova.png",
+              "capabilities": [
+                "image"
+              ],
+              "mediaLimits": {
+                "temporaryUrlTtlSeconds": 3600
+              }
+            }
+          ]
+        }
+      ]
     },
     {
       "id": "baichuan",

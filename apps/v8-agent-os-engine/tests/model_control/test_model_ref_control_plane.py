@@ -79,6 +79,24 @@ def test_model_capability_registry_contains_benchlm_scope_and_exact_aliases():
     assert gpt_5_high["canonicalModelId"] != gpt_55["canonicalModelId"]
     assert model_capability_registry.find("gpt-5") is None
     assert model_capability_registry.find("gpt-5.5-high") is None
+    sensenova_flash = model_capability_registry.find("sensenova-6.7-flash-lite")
+    gpt_56 = model_capability_registry.find("gpt-5.6")
+    gpt_56_terra = model_capability_registry.find("gpt-5.6-terra")
+    claude_opus_48 = model_capability_registry.find("claude-opus-4-8")
+    claude_sonnet_5 = model_capability_registry.find("claude-sonnet-5")
+    claude_mythos_5 = model_capability_registry.find("claude-mythos-5")
+    deepseek_v4_flash = model_capability_registry.find("deepseek-v4-flash")
+    assert sensenova_flash["contextWindowTokens"] == 262_144
+    assert sensenova_flash["maxOutputTokens"] == 65_536
+    assert gpt_56["canonicalModelId"] == "gpt-5.6-sol"
+    assert gpt_56["contextWindowTokens"] == 1_050_000
+    assert gpt_56["maxOutputTokens"] == 128_000
+    assert gpt_56_terra["maxOutputTokens"] == 128_000
+    assert claude_opus_48["contextWindowTokens"] == 1_000_000
+    assert claude_sonnet_5["contextWindowTokens"] == 1_000_000
+    assert claude_sonnet_5["maxOutputTokens"] == 128_000
+    assert claude_mythos_5["availability"] == "limited_invitation_only"
+    assert deepseek_v4_flash["maxOutputTokens"] == 65_536
 
 
 def test_catalog_contains_bigmodel_layered_models():
@@ -960,6 +978,26 @@ def test_custom_provider_overlay_roundtrip(tmp_path):
     assert providers[0]["baseUrl"] == "http://127.0.0.1:8317/v1"
     assert catalog.delete_custom_provider(saved["id"]) is True
     assert all(item["id"] != saved["id"] for item in catalog.load()["providers"])
+
+
+def test_custom_provider_persists_declared_capabilities_without_inventing_models(tmp_path):
+    catalog_path = tmp_path / "provider_catalog.json"
+    _write_catalog(catalog_path, [])
+    custom_path = tmp_path / "custom.json"
+    catalog = ModelProviderCatalog(path=catalog_path, custom_path=custom_path)
+
+    provider = catalog.build_custom_provider(
+        "Multimodal Gateway",
+        "http://127.0.0.1:8317/v1",
+        declared_capabilities=["text", "vision", "image", "video", "unknown", "image"],
+    )
+    saved = catalog.save_custom_provider(provider)
+    loaded = catalog.get_provider(saved["id"])
+
+    assert loaded is not None
+    assert loaded["declaredCapabilities"] == ["text", "vision", "image", "video"]
+    assert [item["mediaModality"] for item in loaded["capabilityEntries"]] == ["image", "video"]
+    assert all(item["models"] == [] for item in loaded["capabilityEntries"])
 
 
 def test_connect_custom_provider_does_not_seed_runtime_budget_parameters(monkeypatch):

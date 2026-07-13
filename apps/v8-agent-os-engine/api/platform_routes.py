@@ -1180,6 +1180,9 @@ async def probe_model_provider(data: dict = Body(...)):
         provider_kind = str(data.get("providerKind") or data.get("provider_kind") or "").strip()
         media_modality = str(data.get("mediaModality") or data.get("media_modality") or "").strip()
         api_standard = str(data.get("apiStandard") or data.get("api_standard") or "openai").strip()
+        declared_capabilities = data.get("declaredCapabilities") or data.get("declared_capabilities") or []
+        if not isinstance(declared_capabilities, list):
+            declared_capabilities = []
         provider = None
         if is_custom_probe:
             provider = model_provider_catalog.build_custom_provider(
@@ -1188,6 +1191,7 @@ async def probe_model_provider(data: dict = Body(...)):
                 provider_kind=provider_kind or "chat",
                 media_modality=media_modality,
                 api_standard=api_standard,
+                declared_capabilities=declared_capabilities,
             )
             provider_id = str(provider.get("id") or "")
         elif not credential:
@@ -1250,6 +1254,9 @@ async def connect_model_provider(data: dict = Body(...)):
         provider_kind = str(data.get("providerKind") or data.get("provider_kind") or "").strip()
         media_modality = str(data.get("mediaModality") or data.get("media_modality") or "").strip()
         api_standard = str(data.get("apiStandard") or data.get("api_standard") or "").strip()
+        declared_capabilities = data.get("declaredCapabilities") or data.get("declared_capabilities") or []
+        if not isinstance(declared_capabilities, list):
+            declared_capabilities = []
         requested_model_type = str(data.get("modelType") or data.get("type") or "").strip().upper()
         provider = model_provider_catalog.get_provider(provider_id)
         if not provider and provider_id in {"__custom__", "custom"}:
@@ -1261,6 +1268,7 @@ async def connect_model_provider(data: dict = Body(...)):
                 provider_kind=provider_kind or ("media_generation" if media_modality else "chat"),
                 media_modality=media_modality,
                 api_standard=api_standard or "openai",
+                declared_capabilities=declared_capabilities,
             )
             provider = model_provider_catalog.save_custom_provider(provider)
             provider_id = str(provider.get("id") or "")

@@ -13,6 +13,8 @@ const LEGACY_PROVIDER_LOGOS: Record<string, string> = {
     mureka: "/model-assets/providers/mureka.svg",
     openrouter: "/model-assets/providers/openrouter.ico",
     siliconflow: "/model-assets/providers/siliconflow.png",
+    sensenova: "/model-assets/providers/sensenova.png",
+    sensetime: "/model-assets/providers/sensenova.png",
     xai: "/model-assets/providers/xai.ico",
     "xiaomi-mimo": "/model-assets/providers/xiaomi-mimo.svg",
     "xiaomi-mimo-tokenplan": "/model-assets/providers/xiaomi-mimo.svg",
@@ -71,6 +73,7 @@ const LOCAL_MODEL_LOGOS: Record<string, string> = {
     ernie: "/model-assets/providers/baidu-qianfan.svg",
     "baichuan": "/model-assets/providers/baichuan.png",
     ideogram: "/model-assets/providers/ideogram.png",
+    sensenova: "/model-assets/providers/sensenova.png",
     leonardo: "/model-assets/providers/leonardo.png",
     vidu: "/model-assets/providers/vidu.svg",
     pika: "/model-assets/providers/pika.ico",
@@ -145,6 +148,7 @@ function providerSlugCandidates(providerId?: string | null, providerName?: strin
     if (haystack.includes("moonshot")) candidates.push("moonshot");
     if (haystack.includes("kimi")) candidates.push("kimi-color", "kimi", "moonshot");
     if (haystack.includes("modelscope")) candidates.push("modelscope-color", "modelscope");
+    if (haystack.includes("sensenova") || haystack.includes("sensetime")) candidates.push("sensenova", "sensetime");
     if (haystack.includes("comfyui")) candidates.push("comfyui-color", "comfyui");
     if (haystack.includes("fal")) candidates.push("fal-color", "fal");
     if (haystack.includes("suno")) candidates.push("suno");
@@ -218,6 +222,7 @@ function modelSlugCandidates(modelId?: string | null) {
     if (id.includes("gemini")) candidates.push("gemini-color", "gemini");
     if (id.includes("agnes")) candidates.push("agnes");
     if (id.includes("deepseek")) candidates.push("deepseek-color", "deepseek");
+    if (id.includes("sensenova")) candidates.push("sensenova", "sensetime");
     if (id.includes("qwen") || id.includes("qwq")) candidates.push("qwen-color", "qwen");
     if (id.includes("doubao") || id.includes("seedance") || id.includes("seedream") || id.includes("seed3d")) candidates.push("doubao-color", "doubao", "volcengine-color", "volcengine");
     if (id.includes("mimo")) candidates.push("mimo", "xiaomi-mimo");

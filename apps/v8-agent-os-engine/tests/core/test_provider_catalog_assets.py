@@ -29,6 +29,7 @@ def test_llm_provider_catalog_contains_new_model_providers():
         "cohere",
         "ai21",
         "agnes",
+        "sensetime-sensenova",
         "baidu-qianfan",
         "stepfun",
         "baichuan",
@@ -45,6 +46,16 @@ def test_llm_provider_catalog_contains_new_model_providers():
     assert "gemini-3.1-flash-lite-preview" not in gemini_model_ids
 
     agnes = next(item for item in payload["providers"] if item["id"] == "agnes")
+    openai = next(item for item in payload["providers"] if item["id"] == "openai")
+    anthropic = next(item for item in payload["providers"] if item["id"] == "anthropic")
+    assert [item["id"] for item in openai["models"][:3]] == [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    ]
+    assert {"claude-fable-5", "claude-opus-4-8", "claude-sonnet-5"}.issubset(
+        {item["id"] for item in anthropic["models"]}
+    )
     assert agnes["baseUrl"] == "https://apihub.agnes-ai.com/v1"
     assert agnes["probeStrategy"] == "openai_models"
     assert agnes["probeModelAllowlist"] == [
@@ -56,6 +67,13 @@ def test_llm_provider_catalog_contains_new_model_providers():
         {"type": "image"},
         {"type": "video"},
     ]
+    sensenova = next(item for item in payload["providers"] if item["id"] == "sensetime-sensenova")
+    assert sensenova["baseUrl"] == "https://token.sensenova.cn/v1"
+    assert {item["id"] for item in sensenova["models"]} == {
+        "sensenova-6.7-flash-lite",
+        "deepseek-v4-flash",
+    }
+    assert sensenova["capabilityEntries"][0]["models"][0]["id"] == "sensenova-u1-fast"
     for provider_id in [
         "openai",
         "gemini-api",
@@ -144,6 +162,7 @@ def test_new_local_provider_assets_match_manifest_hashes():
         "pika",
         "cartesia",
         "udio",
+        "sensenova",
     ]:
         entry = providers[provider_id]
         asset = ASSET_ROOT / str(entry["asset"]).lstrip("/")
@@ -174,6 +193,7 @@ def test_new_provider_hosts_are_in_trusted_network_catalog():
         "amazon-polly",
         "udio",
         "agnes",
+        "sensetime-sensenova",
     }.issubset(entry_ids)
 
 

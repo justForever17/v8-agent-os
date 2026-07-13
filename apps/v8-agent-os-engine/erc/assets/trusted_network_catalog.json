@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-06-23",
+  "updatedAt": "2026-07-13",
   "entries": [
     {
       "id": "openai",
@@ -41,6 +41,26 @@
         "POST"
       ],
       "sourceUrl": "https://agnes-ai.com/doc/agnes-20-flash",
+      "confidence": "verified_official"
+    },
+    {
+      "id": "sensetime-sensenova",
+      "category": "ai",
+      "displayName": "SenseTime SenseNova",
+      "officialHosts": [
+        "token.sensenova.cn"
+      ],
+      "allowedBaseUrls": [
+        "https://token.sensenova.cn/v1"
+      ],
+      "credentialTypes": [
+        "bearer_api_key"
+      ],
+      "allowedMethods": [
+        "GET",
+        "POST"
+      ],
+      "sourceUrl": "https://platform.sensenova.cn/docs",
       "confidence": "verified_official"
     },
     {

@@ -16,6 +16,7 @@ import { ModelCardV2 } from "@/components/models/ModelCardV2";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { HydrationSafeClientOnly } from "@/components/ui/hydration-safe-client-only";
 import { Input } from "@/components/ui/input";
@@ -143,10 +144,23 @@ type CatalogProvider = {
     };
     isCustom?: boolean;
     singleActiveModel?: boolean;
+    declaredCapabilities?: string[];
     models?: CatalogModel[];
 };
 type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
+type CustomProviderCapability = "text" | "vision" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
 type CatalogRuntimeProtocol = "default" | "anthropic";
+
+const CUSTOM_PROVIDER_CAPABILITIES: Array<{ id: CustomProviderCapability; labelKey: string }> = [
+    { id: "text", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityText" },
+    { id: "vision", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVision" },
+    { id: "image", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityImage" },
+    { id: "video", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVideo" },
+    { id: "voice", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVoice" },
+    { id: "music", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityMusic" },
+    { id: "workflow", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityWorkflow" },
+    { id: "model3d", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityModel3d" },
+];
 type AudioRuntimeConfig = {
     stt: {
         active_provider: string;
@@ -491,6 +505,12 @@ function providerMatchesPurpose(provider: CatalogProvider, purpose: CatalogPurpo
     const mediaModality = String(provider.mediaModality || "").toLowerCase();
     const providerKind = String(provider.providerKind || "").toLowerCase();
     const apiStandard = String(provider.apiStandard || "").toLowerCase();
+    const declaredCapabilities = new Set((provider.declaredCapabilities || []).map((item) => String(item).toLowerCase()));
+    if (provider.isCustom && declaredCapabilities.size > 0) {
+        return purpose === "chat"
+            ? declaredCapabilities.has("text") || declaredCapabilities.has("vision")
+            : declaredCapabilities.has(purpose);
+    }
     if (purpose === "chat") {
         return providerKind !== "media_generation";
     }
@@ -588,6 +608,7 @@ export default function ModelHubPage() {
     const [catalogModelFilter, setCatalogModelFilter] = useState("");
     const [customProviderName, setCustomProviderName] = useState("");
     const [customProviderBaseUrl, setCustomProviderBaseUrl] = useState("");
+    const [customProviderCapabilities, setCustomProviderCapabilities] = useState<CustomProviderCapability[]>(["text", "vision"]);
     const [probedCatalogProviderId, setProbedCatalogProviderId] = useState("");
     const [catalogProbeStatus, setCatalogProbeStatus] = useState<{
         ok?: boolean;
@@ -654,7 +675,6 @@ export default function ModelHubPage() {
         };
     }, [catalogPurpose, catalogRuntimeProtocol, selectedCatalogProvider]);
     const catalogPurposeLabel = t(catalogPurposeConfig.labelKey);
-    const catalogPurposeHint = t(catalogPurposeConfig.hintKey);
     const selectedCredentialHelpUrl = useMemo(() => {
         const help = selectedCatalogProvider?.credentialHelp;
         if (!help) return "";
@@ -1001,6 +1021,7 @@ export default function ModelHubPage() {
                     providerKind: isMediaPurpose ? "media_generation" : "chat",
                     mediaModality: isMediaPurpose ? catalogPurposeConfig.modality : "",
                     apiStandard: selectedCatalogProvider?.apiStandard || (catalogPurpose === "workflow" ? "comfyui" : "openai"),
+                    declaredCapabilities: isCustomProvider ? customProviderCapabilities : [],
                 }),
             });
             const data = await response.json().catch(() => ({}));
@@ -1086,6 +1107,7 @@ export default function ModelHubPage() {
                     modelType: getModelTypeForPurpose(catalogPurpose),
                     voiceAppId: requiresVolcengineVoiceConfig ? catalogVoiceAppId.trim() : "",
                     voiceResourceId: requiresVolcengineVoiceConfig ? catalogVoiceResourceId.trim() : "",
+                    declaredCapabilities: isCustomProvider ? customProviderCapabilities : [],
                 }),
             });
             const data = await response.json().catch(() => ({}));
@@ -1788,9 +1810,6 @@ export default function ModelHubPage() {
                                 <Input value={catalogVoiceResourceId} onChange={(event) => setCatalogVoiceResourceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.voiceResourceIdPlaceholder")} />
                             </div>
                         ) : null}
-                        <div className="mt-2 text-xs text-muted-foreground">
-                            {t("app.admin.dashboard.model.hub.catalog.currentPurpose", { purpose: catalogPurposeLabel, hint: catalogPurposeHint })}
-                        </div>
                         {catalogPurpose === "chat" && selectedCatalogProvider?.anthropicCompatible?.baseUrl ? (
                             <div className="mt-3 grid gap-2 rounded-xl border border-dashed px-3 py-2">
                                 <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocol")}</Label>
@@ -1816,6 +1835,27 @@ export default function ModelHubPage() {
                             <div className="mt-3 grid gap-3 md:grid-cols-2">
                                 <Input value={customProviderName} onChange={(event) => setCustomProviderName(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customNamePlaceholder")}/>
                                 <Input value={customProviderBaseUrl} onChange={(event) => setCustomProviderBaseUrl(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customBaseUrlPlaceholder")}/>
+                                <div className="md:col-span-2">
+                                    <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.capabilities")}</Label>
+                                    <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                                        {CUSTOM_PROVIDER_CAPABILITIES.map((capability) => {
+                                            const checked = customProviderCapabilities.includes(capability.id);
+                                            return (
+                                                <label key={capability.id} className="flex min-h-10 cursor-pointer items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm">
+                                                    <Checkbox
+                                                        checked={checked}
+                                                        onCheckedChange={(next) => setCustomProviderCapabilities((current) => (
+                                                            next
+                                                                ? Array.from(new Set([...current, capability.id]))
+                                                                : current.filter((item) => item !== capability.id)
+                                                        ))}
+                                                    />
+                                                    <span>{t(capability.labelKey)}</span>
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
                                 <div className="md:col-span-2 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
                                     {catalogPurpose === "chat"
                                         ? t("app.admin.dashboard.model.hub.catalog.chatCustomHint")

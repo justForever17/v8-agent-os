@@ -710,6 +710,9 @@ class ModelProviderCatalog:
             item = deepcopy(entry)
             item["isCustom"] = True
             item.setdefault("promptCachingProfileId", prompt_cache_profile_id_for_provider(str(item.get("id") or "")))
+            capability_entries = self._resolved_capability_entries(item, media_providers_by_id)
+            if capability_entries:
+                item["capabilityEntries"] = capability_entries
             providers.append(item)
             seen_provider_ids.add(str(item.get("id") or ""))
         for entry in _as_list(builtin.get("providers")):
@@ -761,6 +764,7 @@ class ModelProviderCatalog:
         provider_kind: str = "chat",
         media_modality: str = "",
         api_standard: str = "openai",
+        declared_capabilities: List[str] | None = None,
     ) -> Dict[str, Any]:
         clean_name = str(name or "").strip()
         clean_base_url = str(base_url or "").strip().rstrip("/")
@@ -773,6 +777,23 @@ class ModelProviderCatalog:
         clean_modality = _normalized_modality(media_modality)
         is_media = clean_provider_kind == "media_generation" or clean_modality in _MEDIA_MODEL_TYPES
         clean_api_standard = str(api_standard or ("media_generation" if is_media else "openai")).strip()
+        allowed_capabilities = {"text", "vision", *_MEDIA_MODEL_TYPES.keys()}
+        clean_declared_capabilities = list(dict.fromkeys(
+            str(item or "").strip().lower()
+            for item in (declared_capabilities or [])
+            if str(item or "").strip().lower() in allowed_capabilities
+        ))
+        if not clean_declared_capabilities:
+            clean_declared_capabilities = [clean_modality] if is_media and clean_modality else ["text"]
+        capability_entries = [
+            {
+                "type": capability,
+                "mediaModality": capability,
+                "models": [],
+            }
+            for capability in clean_declared_capabilities
+            if capability in _MEDIA_MODEL_TYPES
+        ]
         return {
             "id": custom_id,
             "name": clean_name,
@@ -785,6 +806,8 @@ class ModelProviderCatalog:
             "promptCachingProfileId": prompt_cache_profile_id_for_provider(custom_id),
             "confidence": "custom",
             "isCustom": True,
+            "declaredCapabilities": clean_declared_capabilities,
+            "capabilityEntries": capability_entries,
             "models": [],
         }
 
@@ -1391,7 +1414,7 @@ class ModelProviderCatalog:
             "modelId": model_id,
             "modelRef": make_model_ref(str(provider.get("id") or ""), model_id),
             "type": resolved_model_type,
-            "logoAsset": model.get("logoAsset") or online_metadata.get("logoAsset") or "",
+            "logoAsset": model.get("logoAsset") or online_metadata.get("logoAsset") or provider.get("logoAsset") or "",
             "promptCachingProfileId": provider.get("promptCachingProfileId")
             or prompt_cache_profile_id_for_provider(str(provider.get("id") or "")),
             "contextWindow": context_window,

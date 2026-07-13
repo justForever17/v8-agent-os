@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-06-21T00:00:00+00:00",
+  "generatedAt": "2026-07-13T00:00:00+00:00",
   "sourcePolicy": {
     "primaryDirectory": "https://benchlm.ai/models",
     "pricing": "https://benchlm.ai/api/data/pricing?limit=500",
@@ -9,12 +9,316 @@
     "matchingPolicy": "exact_alias_only"
   },
   "stats": {
-    "models": 237,
+    "models": 244,
     "benchlmModelsPageEntries": 228,
     "benchlmPricingModels": 189,
     "benchlmLeaderboardModels": 115
   },
   "models": [
+    {
+      "displayName": "GPT-5.6 Sol",
+      "canonicalModelId": "gpt-5.6-sol",
+      "creator": "OpenAI",
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "GPT-5.6 Sol",
+        "gpt-5.6-sol",
+        "gpt-5.6"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens. The gpt-5.6 alias routes to this model."
+      }
+    },
+    {
+      "displayName": "GPT-5.6 Terra",
+      "canonicalModelId": "gpt-5.6-terra",
+      "creator": "OpenAI",
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "GPT-5.6 Terra",
+        "gpt-5.6-terra"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
+    },
+    {
+      "displayName": "GPT-5.6 Luna",
+      "canonicalModelId": "gpt-5.6-luna",
+      "creator": "OpenAI",
+      "contextWindowTokens": 1050000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "GPT-5.6 Luna",
+        "gpt-5.6-luna"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official",
+      "reasoningSurface": {
+        "mode": "reasoning_summary",
+        "trust": "official",
+        "requestStyle": "openai_reasoning",
+        "responseFields": [
+          "reasoning.summary",
+          "reasoning_content",
+          "additional_kwargs.reasoning_content",
+          "response_metadata.reasoning_content"
+        ],
+        "displayKind": "summary",
+        "sourceRefs": [
+          "https://developers.openai.com/api/docs/guides/reasoning"
+        ],
+        "notes": "OpenAI exposes reasoning summaries, not raw hidden reasoning tokens."
+      }
+    },
+    {
+      "displayName": "Claude Opus 4.8",
+      "canonicalModelId": "claude-opus-4-8",
+      "creator": "Anthropic",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "Claude Opus 4.8",
+        "claude-opus-4-8"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "official",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8"
+        ],
+        "notes": "Claude Opus 4.8 uses adaptive thinking; V8OS does not expose hidden model reasoning as user-visible content."
+      }
+    },
+    {
+      "displayName": "Claude Mythos 5",
+      "canonicalModelId": "claude-mythos-5",
+      "creator": "Anthropic",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "availability": "limited_invitation_only",
+      "aliases": [
+        "Claude Mythos 5",
+        "claude-mythos-5"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.claude.com/docs/en/about-claude/models/overview"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "official",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/about-claude/models/overview"
+        ],
+        "notes": "Claude Mythos 5 is invitation-only; V8OS records the official model metadata but does not imply account access."
+      }
+    },
+    {
+      "displayName": "SenseNova 6.7 Flash-Lite",
+      "canonicalModelId": "sensenova-6.7-flash-lite",
+      "creator": "SenseTime",
+      "contextWindowTokens": 262144,
+      "maxOutputTokens": 65536,
+      "status": "Current",
+      "aliases": [
+        "SenseNova 6.7 Flash-Lite",
+        "sensenova-6.7-flash-lite"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.sensenova.cn/docs"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "longContext",
+        "multimodal",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official"
+    },
+    {
+      "displayName": "Claude Sonnet 5",
+      "canonicalModelId": "claude-sonnet-5",
+      "creator": "Anthropic",
+      "contextWindowTokens": 1000000,
+      "maxOutputTokens": 128000,
+      "benchlmReasoningKind": "reasoning",
+      "status": "Current",
+      "aliases": [
+        "Claude Sonnet 5",
+        "claude-sonnet-5"
+      ],
+      "sourceRefs": [
+        {
+          "source": "official_docs",
+          "url": "https://platform.claude.com/docs/en/about-claude/models/overview"
+        }
+      ],
+      "sourceType": "Proprietary",
+      "capabilities": [
+        "agentic",
+        "chat",
+        "coding",
+        "longContext",
+        "multimodal",
+        "reasoning",
+        "text",
+        "tools",
+        "vision"
+      ],
+      "confidence": "official",
+      "reasoningSurface": {
+        "mode": "hidden",
+        "trust": "official",
+        "requestStyle": "none",
+        "responseFields": [],
+        "displayKind": "hidden",
+        "sourceRefs": [
+          "https://platform.claude.com/docs/en/about-claude/models/overview"
+        ],
+        "notes": "Claude Sonnet 5 has adaptive thinking but no display-safe extended thinking block in the public model capability table."
+      }
+    },
     {
       "displayName": "Claude Mythos",
       "canonicalModelId": "claude-mythos-preview",
@@ -3061,6 +3365,10 @@
       ],
       "sourceRefs": [
         {
+          "source": "official_docs",
+          "url": "https://platform.sensenova.cn/docs"
+        },
+        {
           "source": "benchlm_pricing",
           "url": "https://benchlm.ai/api/data/pricing?limit=500"
         },
@@ -3074,6 +3382,7 @@
       "outputPricePerMillionTokens": 0.28,
       "sourceType": "Open Weight",
       "contextWindowTokens": 1000000,
+      "maxOutputTokens": 65536,
       "benchlmRank": 49,
       "overallScore": 59,
       "categoryScores": {
@@ -3091,12 +3400,11 @@
         "chat",
         "coding",
         "longContext",
-        "text"
+        "reasoning",
+        "text",
+        "tools"
       ],
-      "missingFields": [
-        "maxOutputTokens"
-      ],
-      "confidence": "benchlm_partial"
+      "confidence": "official_partial"
     },
     {
       "displayName": "o3-pro",
@@ -11711,7 +12019,6 @@
       "status": "Current",
       "aliases": [
         "Claude Fable 5",
-        "claude-fable-5",
         "claude-fable-5"
       ],
       "sourceRefs": [
@@ -11732,7 +12039,7 @@
         "tools",
         "vision"
       ],
-      "confidence": "official_partial",
+      "confidence": "official",
       "reasoningSurface": {
         "mode": "hidden",
         "trust": "official",

@@ -215,6 +215,12 @@
       "source": "official-or-whitelisted-static",
       "sha256": "34B69206516F4F999C5FD6B4E41171DD2D356248EC13F6136E098C416319AE68"
     },
+    "sensenova": {
+      "asset": "/model-assets/providers/sensenova.png",
+      "source": "official-wordmark-cropped-to-mark",
+      "sourceUrl": "https://www.sensenova.cn/images/logo.png",
+      "sha256": "A6C1F209AE612016F11D86426C2ADFA76AE30E093820B23AD8F718470C231B9F"
+    },
     "stepfun": {
       "asset": "/model-assets/providers/stepfun.png",
       "source": "official-favicon",

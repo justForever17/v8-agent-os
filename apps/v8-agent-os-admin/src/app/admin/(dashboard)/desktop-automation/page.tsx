@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Globe2, Loader2, MonitorSmartphone } from "lucide-react";
+import { Loader2, MonitorSmartphone } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -113,8 +113,6 @@ export default function DesktopAutomationPage() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [runtimeSaving, setRuntimeSaving] = useState(false);
-    const [agentBrowserOpening, setAgentBrowserOpening] = useState(false);
-    const [agentBrowserResult, setAgentBrowserResult] = useState<Record<string, unknown> | null>(null);
     const [featurePackMissing, setFeaturePackMissing] = useState(false);
 
     const loadData = async (force = false) => {
@@ -247,28 +245,6 @@ export default function DesktopAutomationPage() {
         }
     };
 
-    const openAgentBrowser = async (browserKind: "chrome" | "edge") => {
-        setAgentBrowserOpening(true);
-        setAgentBrowserResult(null);
-        try {
-            const response = await fetch("/api/computer-use/agent-browser/open", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ browserKind, url: "about:blank" }),
-            });
-            const payload = await response.json().catch(() => ({}));
-            setAgentBrowserResult({ ...(payload || {}), httpStatus: response.status });
-            await loadData(true);
-        } catch (error) {
-            setAgentBrowserResult({
-                ok: false,
-                summary: error instanceof Error ? error.message : String(error),
-            });
-        } finally {
-            setAgentBrowserOpening(false);
-        }
-    };
-
     if (loading || !envelope) {
         return (
             <div className="flex min-h-[320px] items-center justify-center">
@@ -393,41 +369,6 @@ export default function DesktopAutomationPage() {
                                         {String(capabilityTruth.browserLaneTruth.targetPort)}
                                     </p>
                                 ) : null}
-                                <div className="mt-3 space-y-2 rounded-xl border border-border bg-card/80 p-3">
-                                    <div className="text-xs font-semibold text-foreground">
-                                        {t("app.admin.dashboard.desktop.automation.agentBrowser.title")}
-                                    </div>
-                                    <p className="text-xs leading-5 text-muted-foreground">
-                                        {t("app.admin.dashboard.desktop.automation.agentBrowser.description")}
-                                    </p>
-                                    <div className="flex flex-wrap gap-2">
-                                        <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => void openAgentBrowser("chrome")}
-                                            disabled={agentBrowserOpening}
-                                        >
-                                            {agentBrowserOpening ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
-                                            {t("app.admin.dashboard.desktop.automation.agentBrowser.openChrome")}
-                                        </Button>
-                                        <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => void openAgentBrowser("edge")}
-                                            disabled={agentBrowserOpening}
-                                        >
-                                            {agentBrowserOpening ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Globe2 className="mr-2 h-4 w-4" />}
-                                            {t("app.admin.dashboard.desktop.automation.agentBrowser.openEdge")}
-                                        </Button>
-                                    </div>
-                                    {agentBrowserResult ? (
-                                        <div className={`rounded-lg px-3 py-2 text-xs leading-5 ${agentBrowserResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
-                                            {String(agentBrowserResult.summary || agentBrowserResult.failureClass || "")}
-                                        </div>
-                                    ) : null}
-                                </div>
                             </div>
                             <div className="rounded-2xl border border-border bg-muted/80 p-4">
                                 <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.desktop.automation.capabilityTruth.screenWake")}</div>

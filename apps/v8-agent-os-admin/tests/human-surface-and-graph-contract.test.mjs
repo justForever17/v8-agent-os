@@ -43,3 +43,32 @@ test("knowledge graph uses clustered spacing, drag, subtle motion, and reduced-m
     assert.doesNotMatch(graph, /enableNodeDrag=\{false\}/);
     assert.doesNotMatch(graph, /zoomToFit/);
 });
+
+test("subagent orchestration cards retain editable research and recursive budgets", () => {
+    const subagents = read("src/app/admin/(dashboard)/subagents/page.tsx");
+
+    assert.match(subagents, /globalConfigDialog/);
+    assert.match(subagents, /setGlobalConfigDialog\("research"\)/);
+    assert.match(subagents, /setGlobalConfigDialog\("recursive"\)/);
+    assert.match(subagents, /setResearchDefaultShards/);
+    assert.match(subagents, /setResearchMaxShards/);
+    assert.match(subagents, /setResearchMaxRounds/);
+    assert.match(subagents, /setRecursiveMaxDepth/);
+    assert.match(subagents, /setRecursiveMaxChildren/);
+    assert.match(subagents, /setRecursiveMaxTotalNodes/);
+    assert.match(subagents, /setRecursiveMaxConcurrent/);
+});
+
+test("Agent Browser is configured from Research without exposing Chrome and Edge choices", () => {
+    const researchPage = read("src/app/admin/(dashboard)/research-runtime/page.tsx");
+    const browserPanel = read("src/components/research/AgentBrowserPanel.tsx");
+    const desktopPage = read("src/app/admin/(dashboard)/desktop-automation/page.tsx");
+    const browserRoute = read("src/app/api/agent-browser/open/route.ts");
+
+    assert.match(researchPage, /AgentBrowserPanel/);
+    assert.match(browserPanel, /\/api\/agent-browser\/open/);
+    assert.match(browserPanel, /agentBrowser\.title/);
+    assert.doesNotMatch(browserPanel, /openChrome|openEdge|browserKind/);
+    assert.doesNotMatch(desktopPage, /openAgentBrowser|agentBrowser\.openChrome|agentBrowser\.openEdge/);
+    assert.match(browserRoute, /\/agent-browser\/open/);
+});

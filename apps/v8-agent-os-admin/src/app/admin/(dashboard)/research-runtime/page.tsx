@@ -4,6 +4,7 @@ import { Activity, ArrowRight, Search } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
+import { AgentBrowserPanel } from "@/components/research/AgentBrowserPanel";
 import { ResearchRuntimeLedgerPanel } from "@/components/research/ResearchRuntimeLedgerPanel";
 import { ResearchSourceProviderPanel } from "@/components/research/ResearchSourceProviderPanel";
 import { RuntimeConfigWorkbench } from "@/components/runtime/RuntimeConfigWorkbench";
@@ -40,6 +41,7 @@ export default async function ResearchRuntimePage() {
                     fallbackDisplayName={resolveText(locale, "lib.runtime.admin.researchRuntime")}
                     governanceHref="/admin/runtime-governance?kind=research"
                 />
+                <AgentBrowserPanel />
                 <ResearchSourceProviderPanel />
                 <ResearchRuntimeLedgerPanel />
                 <div className="grid gap-4 lg:grid-cols-2">

@@ -34,6 +34,17 @@ def _computer_use_runtime():
     return computer_use_runtime
 
 
+def _open_agent_browser(*, browser_kind: str = "chrome", url: str = "about:blank") -> dict[str, Any]:
+    runtime = _computer_use_runtime()
+    browser_automation = getattr(runtime, "browser_automation", None)
+    if browser_automation is None:
+        raise RuntimeError("Agent browser provider is unavailable.")
+    return browser_automation.open_agent_browser(
+        browser_kind=browser_kind,
+        url=url or "about:blank",
+    )
+
+
 def _browser_session_service():
     from runtimes.computer_use.browser_session_service import browser_session_service
 
@@ -96,14 +107,21 @@ async def get_computer_use_availability():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/computer-use/agent-browser/open")
+@router.post("/agent-browser/open")
+async def open_agent_browser(payload: ComputerUseAgentBrowserOpenPayload):
+    try:
+        # The product surface exposes one persistent Agent Browser. Chrome is
+        # canonical; the provider may resolve a Chromium-compatible binary on
+        # Linux, but callers do not create parallel Chrome/Edge profiles.
+        return _open_agent_browser(browser_kind="chrome", url=payload.url or "about:blank")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/computer-use/agent-browser/open", deprecated=True)
 async def open_computer_use_agent_browser(payload: ComputerUseAgentBrowserOpenPayload):
     try:
-        runtime = _computer_use_runtime()
-        browser_automation = getattr(runtime, "browser_automation", None)
-        if browser_automation is None:
-            raise RuntimeError("Computer Use browser automation provider is unavailable.")
-        return browser_automation.open_agent_browser(
+        return _open_agent_browser(
             browser_kind=payload.browser_kind,
             url=payload.url or "about:blank",
         )

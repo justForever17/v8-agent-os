@@ -57,13 +57,13 @@ def agent_browser_profile_summary(browser_kind: Any = None, *, include_security_
         "profileMode": AGENT_BROWSER_PROFILE_MODE,
         "userDataDir": str(profile_dir),
         "profilePersistent": True,
-        "sharedBy": ["computer_use.browser_dom", "rpa.browser_dom"],
+        "sharedBy": ["research.web_broker", "computer_use.browser_dom", "rpa.browser_dom"],
     }
     if include_security_note:
         payload["security"] = {
             "cookiesExportedToModel": False,
             "usesUserDefaultBrowserProfile": False,
-            "note": "登录态仅保存在 V8 Agent 专用浏览器 profile；工具输出不会导出 cookies/localStorage。",
+            "note": "登录态仅保存在 V8OS Agent 浏览器 profile；工具输出不会导出 cookies/localStorage。",
         }
     return payload
 

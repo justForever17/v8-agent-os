@@ -678,6 +678,7 @@ export default function SubagentsPage() {
   const [isSavingSpecialistRegistry, setIsSavingSpecialistRegistry] = useState(false);
   const [isSavingResearch, setIsSavingResearch] = useState(false);
   const [isSavingRecursiveDelegation, setIsSavingRecursiveDelegation] = useState(false);
+  const [globalConfigDialog, setGlobalConfigDialog] = useState<"research" | "recursive" | null>(null);
   const [isAvatarUploading, setIsAvatarUploading] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [form, setForm] = useState<AgentFormState>(DEFAULT_FORM_STATE);
@@ -1519,9 +1520,9 @@ export default function SubagentsPage() {
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "03514d16")} {researchMaxShards}</span>
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{tg(t, "d28b7ea4")} {researchMaxRounds}</span>
                                 </div>
-                                <Button size="sm" onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch} className="h-7 w-full text-xs">
-                                    {isSavingResearch ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
-                                    {tg(t, "cdd9d125")}
+                                <Button size="sm" variant="outline" onClick={() => setGlobalConfigDialog("research")} className="h-7 w-full text-xs">
+                                    <Pencil className="mr-1 h-3 w-3" />
+                                    {t("app.admin.dashboard.subagents.page.configure")}
                                 </Button>
                             </CardContent>
                         </Card>
@@ -1546,9 +1547,9 @@ export default function SubagentsPage() {
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("admin.pages.subagents.recursive.totalBadge", { value: recursiveMaxTotalNodes })}</span>
                                     <span className="truncate rounded-lg bg-muted/50 px-2 py-1 dark:bg-muted/40">{t("app.admin.dashboard.subagents.page.k150a33d0")} {recursiveMaxConcurrent}</span>
                                 </div>
-                                <Button size="sm" onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation} className="h-7 w-full text-xs">
-                                    {isSavingRecursiveDelegation ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
-                                    {t("admin.pages.subagents.recursive.save")}
+                                <Button size="sm" variant="outline" onClick={() => setGlobalConfigDialog("recursive")} className="h-7 w-full text-xs">
+                                    <Pencil className="mr-1 h-3 w-3" />
+                                    {t("app.admin.dashboard.subagents.page.configure")}
                                 </Button>
                             </CardContent>
                         </Card>
@@ -1978,6 +1979,105 @@ export default function SubagentsPage() {
 
             </div>
 
+
+            <Dialog open={globalConfigDialog === "research"} onOpenChange={(open) => setGlobalConfigDialog(open ? "research" : null)}>
+                <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle>{tg(t, "ed0fa816")}</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-5">
+                        <label className="flex items-center justify-between gap-4 rounded-2xl border border-border bg-muted/35 px-4 py-3">
+                            <span>
+                                <span className="block text-sm font-medium text-foreground">{tg(t, "2a5c9f81")}</span>
+                                <span className="mt-1 block text-xs leading-5 text-muted-foreground">{tg(t, "a1c3fdb1")}</span>
+                            </span>
+                            <Checkbox checked={researchEnabled} onCheckedChange={next => setResearchEnabled(Boolean(next))} />
+                        </label>
+                        <div className="space-y-4 rounded-2xl border border-border bg-card p-4">
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3 text-xs">
+                                    <Label>{tg(t, "d6c520d8")}</Label>
+                                    <span className="font-medium text-foreground">{researchDefaultShards}</span>
+                                </div>
+                                <Slider value={[researchDefaultShards]} min={1} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => {
+                                    const nextDefault = Math.max(1, Math.min(30, Math.round(value)));
+                                    setResearchDefaultShards(nextDefault);
+                                    setResearchMaxShards(current => Math.max(nextDefault, current));
+                                }} />
+                            </div>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3 text-xs">
+                                    <Label>{tg(t, "03514d16")}</Label>
+                                    <span className="font-medium text-foreground">{researchMaxShards}</span>
+                                </div>
+                                <Slider value={[researchMaxShards]} min={researchDefaultShards} max={30} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxShards(Math.max(researchDefaultShards, Math.min(30, Math.round(value))))} />
+                            </div>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3 text-xs">
+                                    <Label>{tg(t, "d28b7ea4")}</Label>
+                                    <span className="font-medium text-foreground">{researchMaxRounds}</span>
+                                </div>
+                                <Slider value={[researchMaxRounds]} min={1} max={5} step={1} disabled={!researchEnabled} onValueChange={([value]) => setResearchMaxRounds(Math.max(1, Math.min(5, Math.round(value))))} />
+                            </div>
+                        </div>
+                        <Button className="w-full" onClick={() => void handleSaveResearchConfig()} disabled={isSavingResearch}>
+                            {isSavingResearch ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                            {tg(t, "cdd9d125")}
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog open={globalConfigDialog === "recursive"} onOpenChange={(open) => setGlobalConfigDialog(open ? "recursive" : null)}>
+                <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle>{t("admin.pages.subagents.recursive.title")}</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-5">
+                        <label className="flex items-center justify-between gap-4 rounded-2xl border border-border bg-muted/35 px-4 py-3">
+                            <span>
+                                <span className="block text-sm font-medium text-foreground">{t("admin.pages.subagents.recursive.enableLabel")}</span>
+                                <span className="mt-1 block text-xs leading-5 text-muted-foreground">{t("admin.pages.subagents.recursive.enableTooltip")}</span>
+                            </span>
+                            <Checkbox checked={recursiveDelegationEnabled} onCheckedChange={next => setRecursiveDelegationEnabled(Boolean(next))} />
+                        </label>
+                        <div className="grid gap-4 rounded-2xl border border-border bg-card p-4 sm:grid-cols-2">
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3 text-xs">
+                                    <Label>{t("admin.pages.subagents.recursive.maxDepthLabel", { value: recursiveMaxDepth })}</Label>
+                                    <span className="font-medium text-foreground">{recursiveMaxDepth}</span>
+                                </div>
+                                <Slider value={[recursiveMaxDepth]} min={1} max={100} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxDepth(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxDelegationDepth, 1, 100))} />
+                            </div>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3 text-xs">
+                                    <Label>{t("admin.pages.subagents.recursive.maxChildrenLabel", { value: recursiveMaxChildren })}</Label>
+                                    <span className="font-medium text-foreground">{recursiveMaxChildren}</span>
+                                </div>
+                                <Slider value={[recursiveMaxChildren]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxChildren(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxChildrenPerDelegation, 1, 50))} />
+                            </div>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3 text-xs">
+                                    <Label>{t("admin.pages.subagents.recursive.maxTotalLabel", { value: recursiveMaxTotalNodes })}</Label>
+                                    <span className="font-medium text-foreground">{recursiveMaxTotalNodes}</span>
+                                </div>
+                                <Slider value={[recursiveMaxTotalNodes]} min={1} max={1000} step={10} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxTotalNodes(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxTotalDelegationNodes, 1, 1000))} />
+                            </div>
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-3 text-xs">
+                                    <Label>{t("admin.pages.subagents.recursive.maxConcurrentLabel", { value: recursiveMaxConcurrent })}</Label>
+                                    <span className="font-medium text-foreground">{recursiveMaxConcurrent}</span>
+                                </div>
+                                <Slider value={[recursiveMaxConcurrent]} min={1} max={50} step={1} disabled={!recursiveDelegationEnabled} onValueChange={([value]) => setRecursiveMaxConcurrent(clampInt(value, DEFAULT_RECURSIVE_DELEGATION.maxConcurrentDelegations, 1, 50))} />
+                            </div>
+                        </div>
+                        <Button className="w-full" onClick={() => void handleSaveRecursiveDelegationConfig()} disabled={isSavingRecursiveDelegation}>
+                            {isSavingRecursiveDelegation ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+                            {t("admin.pages.subagents.recursive.save")}
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogContent className="flex h-[min(92vh,960px)] max-w-4xl flex-col overflow-hidden p-0">

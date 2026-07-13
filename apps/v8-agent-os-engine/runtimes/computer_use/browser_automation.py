@@ -728,8 +728,9 @@ class BrowserAutomationProvider:
         app_id: str | None,
         launch_command: List[str] | str,
         environment: Dict[str, str] | None = None,
+        allow_when_disabled: bool = False,
     ) -> Tuple[List[str] | str, Dict[str, str] | None, Dict[str, Any] | None]:
-        if not self._enabled or not self._allow_managed_launch:
+        if (not self._enabled and not allow_when_disabled) or not self._allow_managed_launch:
             return launch_command, environment, None
         family = self.infer_family(app_id=app_id, launch_command=launch_command)
         if family not in {"chromium", "electron", "webview2"}:
@@ -807,6 +808,7 @@ class BrowserAutomationProvider:
         app_id: str | None,
         app_name: str | None,
         headless: bool = False,
+        allow_when_disabled: bool = False,
     ) -> BrowserLaneDecision | None:
         if not self._allow_managed_launch:
             return None
@@ -823,6 +825,7 @@ class BrowserAutomationProvider:
                 app_id=app_key,
                 launch_command=launch_command,
                 environment=None,
+                allow_when_disabled=allow_when_disabled,
             )
             if not isinstance(prepared_command, list):
                 return None
@@ -952,32 +955,30 @@ class BrowserAutomationProvider:
     def open_agent_browser(self, *, browser_kind: str | None = None, url: str = "about:blank") -> Dict[str, Any]:
         kind = normalize_agent_browser_kind(browser_kind)
         target_url = str(url or "").strip() or "about:blank"
-        if not self._enabled:
-            return {
-                "ok": False,
-                "failureClass": "browser_lane_disabled",
-                "summary": "Computer Use browser lane 未启用，无法打开 Agent 专用浏览器。",
-                "recommendedNextAction": "在 Admin / Desktop Automation 启用 Computer Use browser lane 后重试。",
-            }
+        # Manual profile setup is a trusted Admin action, not an automated
+        # Computer Use execution. Keep it available when the heavy browser
+        # lane is disabled so Research/Web Broker can still reuse a user-
+        # prepared login profile. Automated Workbench/Computer Use entry
+        # points remain gated by ``self._enabled``.
         if not self._node_path:
             return {
                 "ok": False,
                 "failureClass": "node_unavailable",
-                "summary": "当前环境缺少 node，无法打开 Agent 专用浏览器。",
+                "summary": "当前环境缺少 Node.js，无法打开 Agent 浏览器。",
                 "recommendedNextAction": "安装/配置 Node.js 后重试。",
             }
         if not self._helper_script_path().exists():
             return {
                 "ok": False,
                 "failureClass": "helper_script_missing",
-                "summary": "browser automation helper 缺失，无法打开 Agent 专用浏览器。",
+                "summary": "浏览器自动化组件缺失，无法打开 Agent 浏览器。",
                 "recommendedNextAction": "检查 Engine 安装完整性。",
             }
         if not self._probe_playwright_dependency().get("available"):
             return {
                 "ok": False,
                 "failureClass": "playwright_module_missing",
-                "summary": "Playwright 依赖不可用，无法打开 Agent 专用浏览器。",
+                "summary": "Playwright 依赖不可用，无法打开 Agent 浏览器。",
                 "recommendedNextAction": "安装 workspace 依赖或检查 Python/Node Playwright 驱动。",
             }
         profile_dir = self._dedicated_user_data_dir(kind)
@@ -985,15 +986,19 @@ class BrowserAutomationProvider:
         target_port = self._target_port
         managed_started = False
         if not self._is_debug_port_reachable(target_port):
-            decision = self._start_managed_chromium_debug_browser(app_id=kind, app_name=kind)
+            decision = self._start_managed_chromium_debug_browser(
+                app_id=kind,
+                app_name=kind,
+                allow_when_disabled=True,
+            )
             if decision is None or not decision.available:
                 return {
                     "ok": False,
                     "failureClass": "managed_browser_launch_failed",
-                    "summary": "未能拉起 Agent 专用浏览器。",
+                    "summary": "未能拉起 Agent 浏览器。",
                     "browserKind": kind,
                     "profile": self.agent_browser_profile_summary(kind),
-                    "recommendedNextAction": "确认 Chrome/Edge 已安装，或在 browserLane.userDataDir 中配置可写 profile 目录。",
+                    "recommendedNextAction": "确认 Chrome 或 Chromium 已安装，并检查 Agent 浏览器 profile 目录是否可写。",
                 }
             target_port = int(decision.target_port or target_port)
             managed_started = True
@@ -1013,7 +1018,7 @@ class BrowserAutomationProvider:
         return {
             "ok": True,
             "kind": "agent_browser_profile",
-            "summary": "Agent 专用浏览器已打开。请在弹出的浏览器里手动完成登录；登录态会保存在该 profile。",
+            "summary": "Agent 浏览器已打开。请在弹出的浏览器里手动完成登录；登录态会保存在该 profile。",
             "browserKind": kind,
             "url": target_url,
             "profile": self.agent_browser_profile_summary(kind),

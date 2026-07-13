@@ -77,6 +77,9 @@ type StorageRetentionPayload = {
   };
   maxBytes?: number;
   totalGovernedBytes?: number;
+  totalProductBytes?: number | null;
+  registeredStorageBytes?: number | null;
+  storageClassTotals?: Record<string, number>;
   physicalBytes?: number;
   logicalBytes?: number;
   reclaimableBytes?: number;
@@ -87,6 +90,7 @@ type StorageRetentionPayload = {
     freeBytes?: number;
     freeRatio?: number;
     emergencySafeMode?: boolean;
+    watermark?: string;
   };
   retentionJournal?: {
     state?: string;
@@ -126,6 +130,33 @@ type StorageRetentionPayload = {
     createdAt?: string;
     actions?: unknown[];
   }>;
+  storageRegistry?: {
+    generatedAt?: string | null;
+    stale?: boolean;
+    refreshScheduled?: boolean;
+    registeredBytes?: number | null;
+    classTotals?: Record<string, number>;
+    entries?: Array<{
+      id?: string;
+      label?: string;
+      classification?: string;
+      autoDelete?: boolean;
+      ttlDays?: number | null;
+      maxBytes?: number | null;
+      backupPolicy?: string;
+      restoreStrategy?: string;
+      cleanupMode?: string;
+      managedBy?: string;
+      bytes?: number | null;
+      fileCount?: number | null;
+      lastAccessAt?: string | null;
+      expiredBytes?: number;
+      expiredFileCount?: number;
+      overCapacityBytes?: number;
+      policyState?: string;
+      scanState?: string;
+    }>;
+  };
 };
 const VALID_TABS = new Set(["overview", "approvals", "runs", "evidence", "advanced"]);
 const OPERATION_LOG_SOURCES = ["all", "runtime", "audit", "cron", "hook", "safety", "storage"] as const;
@@ -290,6 +321,20 @@ function StorageRetentionPanel() {
       setLoading(false);
     }
   };
+  const refreshRegistry = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/storage-retention/registry/refresh", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const payload = await response.json().catch(() => null);
+      setLastResult(payload);
+      await load();
+    } finally {
+      setLoading(false);
+    }
+  };
   const saveBudgets = async () => {
     if (!stats?.config) return;
     if (!window.confirm(ti(t, "k595dde7c31"))) return;
@@ -326,6 +371,8 @@ function StorageRetentionPanel() {
   }, []);
   const components = stats?.components || {};
   const budgetComponents = stats?.budgetComponents || {};
+  const registry = stats?.storageRegistry;
+  const registryEntries = registry?.entries || [];
   const actionCount = Array.isArray(lastResult?.actions) ? lastResult.actions.length : 0;
   const statusText = (value?: unknown) => {
     const status = String(value || "");
@@ -351,6 +398,43 @@ function StorageRetentionPanel() {
     } as Record<string, string>)[mode] || t("app.admin.dashboard.operations.storage.mode.warningOnly");
   };
   const budgetLabel = (key: string) => t(`app.admin.dashboard.operations.storage.budget.${key}`);
+  const storageClassLabel = (value?: string) => t(`app.admin.dashboard.operations.storage.registry.class.${value || "derived"}`);
+  const storageEntryLabel = (entry: NonNullable<NonNullable<StorageRetentionPayload["storageRegistry"]>["entries"]>[number]) => ({
+    state_truth: t("app.admin.dashboard.operations.storage.registry.entry.stateTruth"),
+    knowledge_truth: t("app.admin.dashboard.operations.storage.registry.entry.knowledgeTruth"),
+    checkpoints: t("app.admin.dashboard.operations.storage.registry.entry.checkpoints"),
+    observability: t("app.admin.dashboard.operations.storage.registry.entry.observability"),
+    agent_browser_profile: t("app.admin.dashboard.operations.storage.registry.entry.agentBrowserProfile"),
+    cache: t("app.admin.dashboard.operations.storage.registry.entry.cache"),
+    longmemeval_reports: t("app.admin.dashboard.operations.storage.registry.entry.longMemEval"),
+    other_reports: t("app.admin.dashboard.operations.storage.registry.entry.otherReports"),
+    temporary_builds: t("app.admin.dashboard.operations.storage.registry.entry.temporaryBuilds"),
+    backups: t("app.admin.dashboard.operations.storage.registry.entry.backups"),
+    memory_daily: t("app.admin.dashboard.operations.storage.registry.entry.memoryDaily"),
+    memory_workflow_exports: t("app.admin.dashboard.operations.storage.registry.entry.workflowExports"),
+    memory_vectors: t("app.admin.dashboard.operations.storage.registry.entry.memoryVectors"),
+    research_experience: t("app.admin.dashboard.operations.storage.registry.entry.researchExperience"),
+    rpa_history: t("app.admin.dashboard.operations.storage.registry.entry.rpaHistory"),
+    toolchains: t("app.admin.dashboard.operations.storage.registry.entry.toolchains"),
+    plugins: t("app.admin.dashboard.operations.storage.registry.entry.plugins"),
+    artifacts: t("app.admin.dashboard.operations.storage.registry.entry.artifacts"),
+    configuration: t("app.admin.dashboard.operations.storage.registry.entry.configuration"),
+    runtime_control: t("app.admin.dashboard.operations.storage.registry.entry.runtimeControl"),
+    runtime_assets: t("app.admin.dashboard.operations.storage.registry.entry.runtimeAssets"),
+    unclassified: t("app.admin.dashboard.operations.storage.registry.entry.unclassified")
+  } as Record<string, string>)[String(entry.id || "")] || entry.label || t("app.admin.dashboard.operations.storage.registry.entry.unclassified");
+  const backupPolicyLabel = (value?: string) => t(`app.admin.dashboard.operations.storage.registry.backup.${value || "subsystem_managed"}`);
+  const restoreStrategyLabel = (value?: string) => t(`app.admin.dashboard.operations.storage.registry.restore.${value || "subsystem_reconcile"}`);
+  const watermarkLabel = (value?: string) => t(`app.admin.dashboard.operations.storage.registry.watermark.${value || "healthy"}`);
+  const storagePolicyLabel = (entry: NonNullable<NonNullable<StorageRetentionPayload["storageRegistry"]>["entries"]>[number]) => {
+    if (entry.policyState === "cleanup_available") {
+      return t("app.admin.dashboard.operations.storage.registry.policy.cleanup", { size: formatBytes(Math.max(Number(entry.expiredBytes || 0), Number(entry.overCapacityBytes || 0))) });
+    }
+    if (entry.policyState === "review_required") {
+      return t("app.admin.dashboard.operations.storage.registry.policy.review", { size: formatBytes(Math.max(Number(entry.expiredBytes || 0), Number(entry.overCapacityBytes || 0))) });
+    }
+    return t("app.admin.dashboard.operations.storage.registry.policy.within");
+  };
   const humanComponents = [
     { label: t("app.admin.dashboard.operations.storage.executionHistory"), value: Number(components.checkpointDbBytes || 0) },
     { label: t("app.admin.dashboard.operations.storage.diagnostics"), value: Number(components.observabilityDbBytes || 0) + Number(components.stateLogPayloadBytes || 0) + Number(components.pluginRuntimeLogBytes || 0) },
@@ -378,7 +462,7 @@ function StorageRetentionPanel() {
                     <Button variant="outline" size="sm" onClick={() => void saveBudgets()} disabled={loading}>{ti(t, "kf8d9ddff2f")}</Button>
                 </div>
             </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
                 <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
                     <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.logical")}</div>
                     <div className="font-semibold text-foreground">{formatBytes(stats?.logicalBytes)}</div>
@@ -399,8 +483,53 @@ function StorageRetentionPanel() {
                     <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.recoverability")}</div>
                     <div className="font-semibold text-foreground">{statusText(stats?.recoverability)}</div>
                 </div>
+                <div className="rounded-xl border border-border bg-muted/50 p-3 text-sm">
+                    <div className="text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.registry.totalProduct")}</div>
+                    <div className="font-semibold text-foreground">{stats?.totalProductBytes == null ? t("app.admin.dashboard.operations.storage.registry.scanning") : formatBytes(stats.totalProductBytes)}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.registry.freeSpace", { free: formatBytes(stats?.disk?.freeBytes), state: watermarkLabel(stats?.disk?.watermark) })}</div>
+                </div>
             </div>
             {stats?.disk?.emergencySafeMode ? <StatusNotice title={t("app.admin.dashboard.operations.storage.lowSpaceTitle")} description={t("app.admin.dashboard.operations.storage.lowSpaceDescription", { free: formatBytes(stats.disk.freeBytes) })} tone="warning" /> : null}
+            <div className="rounded-xl border border-border bg-card p-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <div className="text-sm font-semibold text-foreground">{t("app.admin.dashboard.operations.storage.registry.title")}</div>
+                        <div className="text-xs leading-5 text-muted-foreground">
+                            {registry?.generatedAt ? t("app.admin.dashboard.operations.storage.registry.updated", { time: registry.generatedAt }) : t("app.admin.dashboard.operations.storage.registry.pending")}
+                        </div>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => void refreshRegistry()} disabled={loading}>
+                        {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                        {t("app.admin.dashboard.operations.storage.registry.rescan")}
+                    </Button>
+                </div>
+                <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                    {Object.entries(registry?.classTotals || {}).map(([classification, bytes]) => <div key={classification} className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+                        <div className="text-muted-foreground">{storageClassLabel(classification)}</div>
+                        <div className="font-semibold text-foreground">{formatBytes(bytes)}</div>
+                    </div>)}
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                    {registryEntries.slice().sort((left, right) => Number(right.bytes || 0) - Number(left.bytes || 0)).map(entry => <div key={entry.id} className="rounded-xl border border-border p-3 text-xs leading-5">
+                        <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold text-foreground">{storageEntryLabel(entry)}</span>
+                            <span className="text-muted-foreground">{entry.bytes == null ? t("app.admin.dashboard.operations.storage.registry.scanning") : formatBytes(entry.bytes)}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-x-3 text-muted-foreground">
+                            <span>{storageClassLabel(entry.classification)}</span>
+                            <span>{entry.autoDelete ? t("app.admin.dashboard.operations.storage.registry.auto") : t("app.admin.dashboard.operations.storage.registry.review")}</span>
+                            <span>{entry.ttlDays ? t("app.admin.dashboard.operations.storage.retentionDays", { count: entry.ttlDays }) : t("app.admin.dashboard.operations.storage.registry.noTtl")}</span>
+                            <span>{entry.maxBytes ? t("app.admin.dashboard.operations.storage.registry.capacity", { size: formatBytes(entry.maxBytes) }) : t("app.admin.dashboard.operations.storage.registry.noCapacity")}</span>
+                            {entry.fileCount != null ? <span>{t("app.admin.dashboard.operations.storage.registry.fileCount", { count: entry.fileCount })}</span> : null}
+                            {entry.lastAccessAt ? <span>{t("app.admin.dashboard.operations.storage.registry.lastAccess", { time: entry.lastAccessAt })}</span> : null}
+                        </div>
+                        <div className="mt-1 text-muted-foreground">
+                            {t("app.admin.dashboard.operations.storage.registry.recovery", { backup: backupPolicyLabel(entry.backupPolicy), restore: restoreStrategyLabel(entry.restoreStrategy) })}
+                        </div>
+                        <div className={entry.policyState === "review_required" ? "mt-1 text-amber-700 dark:text-amber-300" : "mt-1 text-muted-foreground"}>{storagePolicyLabel(entry)}</div>
+                    </div>)}
+                </div>
+            </div>
             <div className="rounded-xl border border-border bg-card p-3">
                 <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{t("app.admin.dashboard.operations.center.advanced.budgets")}</div>
                 <div className="grid gap-3 md:grid-cols-2">

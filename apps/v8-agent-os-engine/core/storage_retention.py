@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 from core.observability_db import observability_db
 from core.storage import storage
 from core.storage_backup import StorageBackupService
+from core.storage_registry import storage_registry_service
 from core.v8_agent_os_paths import (
     CHECKPOINT_DB_PATH,
     OBSERVABILITY_DB_PATH,
@@ -163,10 +164,15 @@ class StorageRetentionService:
         usage = shutil.disk_usage(V8_AGENT_OS_HOME)
         free_ratio = usage.free / max(1, usage.total)
         emergency = usage.free < 2 * 1024 * 1024 * 1024 or free_ratio < 0.05
+        level = "emergency" if emergency else "critical" if free_ratio < 0.10 else "warning" if free_ratio < 0.15 else "healthy"
         return {
             "totalBytes": int(usage.total),
             "freeBytes": int(usage.free),
             "freeRatio": free_ratio,
+            "watermark": level,
+            "warningRatio": 0.15,
+            "criticalRatio": 0.10,
+            "emergencyRatio": 0.05,
             "emergencySafeMode": emergency,
         }
 
@@ -408,6 +414,11 @@ class StorageRetentionService:
             + min(observability_physical, self._raw_evidence_bytes() + self._sqlite_payload_bytes(OBSERVABILITY_DB_PATH, ("execution_logs", "model_invocation_logs", "provider_health_logs", "prompt_cache_events", "prompt_cache_segments", "llm_response_cache", "tool_observation_records", "conversation_compaction_records", "system_audit_log")))
         )
         disk_health = self._disk_health()
+        registry_snapshot = storage_registry_service.snapshot(
+            home=V8_AGENT_OS_HOME,
+            refresh=False,
+            schedule_refresh=V8_AGENT_OS_HOME.resolve(strict=False) == (Path.home() / ".v8-agent-os").resolve(strict=False),
+        )
         budget_components = {
             "logs": {
                 "label": "Logs",
@@ -474,6 +485,9 @@ class StorageRetentionService:
             "config": config,
             "maxBytes": int(config.get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES + DEFAULT_CHECKPOINT_BUDGET_BYTES),
             "totalGovernedBytes": total,
+            "totalProductBytes": registry_snapshot.get("registeredBytes"),
+            "registeredStorageBytes": registry_snapshot.get("registeredBytes"),
+            "storageClassTotals": registry_snapshot.get("classTotals") or {},
             "physicalBytes": total,
             "logicalBytes": logical_total,
             "reclaimableBytes": max(0, total - logical_total - checkpoint_fragmentation)
@@ -489,6 +503,7 @@ class StorageRetentionService:
             "retentionJournal": self._journal(),
             "backupState": self._journal().get("backupState") or "not_started",
             "recoverability": "protected" if self._journal().get("backupManifestPath") else "plan_only",
+            "storageRegistry": registry_snapshot,
         }
 
     @staticmethod
@@ -676,6 +691,9 @@ class StorageRetentionService:
             safe_actions.extend(self._prune_expired_response_cache(dry_run=False))
             safe_actions.extend(self._prune_observability_logs(dry_run=False))
             safe_actions.extend(self._prune_log_files(dry_run=False))
+            registry_plan = storage_registry_service.build_cleanup_plan(home=V8_AGENT_OS_HOME)
+            registry_result = storage_registry_service.apply_cleanup_plan(home=V8_AGENT_OS_HOME, plan=registry_plan)
+            safe_actions.append({"action": "registry_safe_cleanup", **registry_result})
             journal.update({"state": "blocked", "backupState": "blocked_low_space", "disk": disk_health, "safeActions": safe_actions})
             self._write_journal(journal)
             return {
@@ -775,6 +793,28 @@ class StorageRetentionService:
         max_bytes = int(config.get("maxBytes") or log_budget + checkpoint_budget)
         before = self._governed_logical_bytes()
         actions = self.migrate_legacy_logs(dry_run=dry_run)
+        if reason != "engine_startup":
+            registry_plan = storage_registry_service.build_cleanup_plan(home=V8_AGENT_OS_HOME)
+            if registry_plan.get("actions"):
+                if dry_run:
+                    actions.append(
+                        {
+                            "action": "registry_safe_cleanup",
+                            "dryRun": True,
+                            "candidateFiles": int(registry_plan.get("candidateFiles") or 0),
+                            "candidateBytes": int(registry_plan.get("candidateBytes") or 0),
+                            "planDigest": registry_plan.get("planDigest"),
+                            "entries": registry_plan.get("entries") or [],
+                        }
+                    )
+                else:
+                    actions.append(
+                        {
+                            "action": "registry_safe_cleanup",
+                            "dryRun": False,
+                            **storage_registry_service.apply_cleanup_plan(home=V8_AGENT_OS_HOME, plan=registry_plan),
+                        }
+                    )
         log_total = self._structured_log_bytes()
         if log_total > log_budget:
             actions.extend(self._prune_expired_response_cache(dry_run=dry_run))

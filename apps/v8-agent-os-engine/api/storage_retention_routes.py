@@ -5,7 +5,9 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException
 
 from core.storage import storage
+from core.storage_registry import storage_registry_service
 from core.storage_retention import storage_retention_service
+from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 
 router = APIRouter(prefix="/storage-retention", tags=["storage-retention"])
@@ -41,6 +43,14 @@ async def compact_storage(payload: dict[str, Any] | None = Body(default=None)):
         return storage_retention_service.compact_physical(
             reason=str((payload or {}).get("reason") or "manual_idle_compaction")
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/registry/refresh")
+async def refresh_storage_registry():
+    try:
+        return storage_registry_service.snapshot(home=V8_AGENT_OS_HOME, refresh=True, schedule_refresh=False)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

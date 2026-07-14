@@ -407,6 +407,12 @@ async def lifespan(app: FastAPI):
     if service_flags["mcp"]:
         print("[MCP] Cleaning up MCP Client connections...")
         await _safe_cleanup()
+    try:
+        from core.ui_patch import ui_patch_service
+
+        await asyncio.to_thread(ui_patch_service.shutdown)
+    except Exception as exc:
+        print(f"[Engine] UI Patch preview cleanup failed (non-fatal): {exc}")
     await _safe_close_checkpoints()
 
 app = FastAPI(

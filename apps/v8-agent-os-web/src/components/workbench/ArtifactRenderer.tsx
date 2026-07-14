@@ -2,10 +2,11 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
-import { Download, ExternalLink, FileWarning } from "lucide-react";
+import { Download, ExternalLink, FileWarning, SlidersHorizontal } from "lucide-react";
 
 import { CodeBlock } from "@/components/chat/CodeBlock";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { useT } from "@/components/providers/LocaleProvider";
 import { getWorkbenchDocumentPayload, type ArtifactWorkbenchDocument } from "@/lib/workbench";
 import { normalizeRuntimeArtifact, resolveRuntimeArtifactUrl, type RuntimeArtifact } from "@/lib/artifacts";
 
@@ -53,6 +54,7 @@ function codeLanguage(document: ArtifactWorkbenchDocument, artifact: RuntimeArti
 }
 
 export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocument }) {
+    const t = useT();
     const cached = getWorkbenchDocumentPayload(document.documentId);
     const [artifact, setArtifact] = useState<RuntimeArtifact | null>(cached?.artifact || null);
     const [text, setText] = useState(cached?.inlineContent || "");
@@ -79,6 +81,17 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
         () => cached?.resourceUrl || (artifact ? resolveRuntimeArtifactUrl(artifact) : undefined) || "",
         [artifact, cached?.resourceUrl],
     );
+    const uiPatchUrl = useMemo(() => {
+        const artifactPath = String(artifact?.workspaceRelativePath || artifact?.workspacePath || "").trim();
+        const artifactSessionId = String(document.subjectRef.sessionId || artifact?.sessionId || "").trim();
+        if (document.renderer !== "html" || !artifactPath || !artifactSessionId) return "";
+        const params = new URLSearchParams({
+            sessionId: artifactSessionId,
+            entryPath: artifactPath,
+            returnTo: `/chat?id=${encodeURIComponent(artifactSessionId)}`,
+        });
+        return `/ui-patch?${params.toString()}`;
+    }, [artifact?.sessionId, artifact?.workspacePath, artifact?.workspaceRelativePath, document.renderer, document.subjectRef.sessionId]);
 
     useEffect(() => {
         if (text || !resourceUrl || !["code", "text", "markdown", "html"].includes(document.renderer)) return;
@@ -124,6 +137,7 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
     return (
         <div className="flex h-full min-h-0 flex-col">
             <div className="flex h-8 shrink-0 items-center justify-end gap-1 border-b border-border/60 px-2">
+                {uiPatchUrl ? <a href={uiPatchUrl} className="inline-flex h-6 items-center gap-1 rounded-sm px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.uiPatch.open")}><SlidersHorizontal className="h-3.5 w-3.5" />{t("web.uiPatch.openShort")}</a> : null}
                 {resourceUrl ? <a href={resourceUrl} target="_blank" rel="noreferrer" className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="在新窗口打开"><ExternalLink className="h-3.5 w-3.5" /></a> : null}
                 {resourceUrl ? <a href={resourceUrl} download className="rounded-sm p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="下载产物"><Download className="h-3.5 w-3.5" /></a> : null}
             </div>

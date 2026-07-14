@@ -41,6 +41,7 @@ from . import spec_routes as spec_routes_module
 from . import storage_retention_routes as storage_retention_routes_module
 from . import system_doctor_routes as system_doctor_routes_module
 from . import terminal_routes as terminal_routes_module
+from . import ui_patch_routes as ui_patch_routes_module
 router = APIRouter()
 _STARTUP_PROFILE = resolve_startup_profile()
 
@@ -124,6 +125,7 @@ router.include_router(spec_routes_module.router)
 router.include_router(storage_retention_routes_module.router)
 router.include_router(system_doctor_routes_module.router)
 router.include_router(terminal_routes_module.router)
+router.include_router(ui_patch_routes_module.router)
 
 if service_enabled("extensions", profile=_STARTUP_PROFILE):
     _include_optional_router("extensions_routes")

@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, FileWarning, MessageSquarePlus, RefreshCw, Search, Send, X } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, FileWarning, MessageSquarePlus, RefreshCw, Search, Send, SlidersHorizontal, X } from "lucide-react";
 import { Prism as SyntaxHighlighter, createElement as createSyntaxElement } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 import type { WorkspaceFileWorkbenchDocument } from "@/lib/workbench";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { useT } from "@/components/providers/LocaleProvider";
 
 
 type FileLine = { number: number; text: string };
@@ -135,6 +136,7 @@ export function WorkspaceFileRenderer({
     document: WorkspaceFileWorkbenchDocument;
     onSendLineComment?: (comment: WorkspaceFileLineComment) => Promise<boolean> | boolean;
 }) {
+    const t = useT();
     const { sessionId, workspacePath, line } = document.subjectRef;
     const initialStart = Math.max(1, Number(line || 1) - 80);
     const [startLine, setStartLine] = useState(initialStart);
@@ -217,6 +219,15 @@ export function WorkspaceFileRenderer({
         const params = new URLSearchParams({ path: workspacePath, download: "true" });
         return `/api/workbench/sessions/${encodeURIComponent(sessionId)}/files/read?${params.toString()}`;
     }, [sessionId, workspacePath]);
+    const uiPatchUrl = useMemo(() => {
+        if (document.renderer !== "html") return "";
+        const params = new URLSearchParams({
+            sessionId,
+            entryPath: workspacePath,
+            returnTo: `/chat?id=${encodeURIComponent(sessionId)}`,
+        });
+        return `/ui-patch?${params.toString()}`;
+    }, [document.renderer, sessionId, workspacePath]);
 
     if (loading && !payload) {
         return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">正在读取文件…</div>;
@@ -338,6 +349,11 @@ export function WorkspaceFileRenderer({
                                 {showPreview ? "查看源码" : "查看预览"}
                             </button>
                         ) : <span className="ml-auto" />}
+                        {uiPatchUrl ? (
+                            <a href={uiPatchUrl} className="inline-flex h-6 items-center gap-1 rounded-sm px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.uiPatch.open")}>
+                                <SlidersHorizontal className="h-3.5 w-3.5" />{t("web.uiPatch.openShort")}
+                            </a>
+                        ) : null}
                         <button
                             type="button"
                             onClick={async () => {

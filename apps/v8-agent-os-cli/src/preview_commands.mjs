@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { ADMIN_DIR, DEFAULT_PORTS, LOG_DIR, REPO_ROOT, STATE_ROOT, WEB_DIR } from "./paths.mjs";
 import { startComponents, stopComponents } from "./process_manager.mjs";
 
-export const PREVIEW_REBUILD_STOP_COMPONENTS = ["shell", "admin", "web"];
+export const PREVIEW_REBUILD_STOP_COMPONENTS = ["shell", "admin", "web", "engine"];
 export const SHELL_RESTART_LEASE_PATH = path.join(STATE_ROOT, "runtime", "shell-restart.json");
 
 export const PREVIEW_NEXT_APPS = {

@@ -188,8 +188,8 @@ test("preview build logs are written to CLI logs", () => {
   assert.match(logs.err, /web\.build\.err\.log$/);
 });
 
-test("preview rebuild stops shell and Next servers before replacing standalone files", () => {
-  assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web"]);
+test("preview rebuild restarts shell, Next servers, and Engine before verification", () => {
+  assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web", "engine"]);
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
 });
 

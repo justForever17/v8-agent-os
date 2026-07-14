@@ -3268,6 +3268,7 @@ export default function ChatClient() {
             <WorkbenchShell
                 sessionId={activeConversationId || ""}
                 messages={messages}
+                outputEvidence={governanceApprovals}
                 processes={hudProcesses}
                 todos={projectionTodos}
                 todoStale={projectionTodoStale}

@@ -821,6 +821,20 @@ export async function listSpecs(authorizedFetch: AuthorizedFetch, workspacePath:
     return normalizeArray<SpecSummary>(payload.specs);
 }
 
+export async function listSessionArtifacts(authorizedFetch: AuthorizedFetch, sessionId: string, limit = 100) {
+    const query = new URLSearchParams({
+        sessionId,
+        limit: String(Math.max(1, Math.min(160, limit))),
+    });
+    const payload = await authorizedJson<{ artifacts?: ArtifactDetail[] }>(
+        authorizedFetch,
+        `/api/client/artifacts?${query.toString()}`,
+        translateCurrent("src.lib.phone_api.artifacts"),
+        { cache: "no-store" },
+    );
+    return normalizeArray<ArtifactDetail>(payload.artifacts);
+}
+
 export async function getSpecDetail(authorizedFetch: AuthorizedFetch, specId: string, workspacePath: string) {
     const query = new URLSearchParams({
         workspace_path: workspacePath,

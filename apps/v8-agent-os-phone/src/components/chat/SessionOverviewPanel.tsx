@@ -12,12 +12,19 @@ import {
     useWindowDimensions,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { buildSubagentReturnProjection, type SubagentReturnProjection } from "@v8/session-realtime";
+import {
+    buildSessionOutputProjection,
+    buildSubagentReturnProjection,
+    type SubagentReturnProjection,
+} from "@v8/session-realtime";
+import Animated, { SlideInRight } from "react-native-reanimated";
 
-import { listSpecs, readSessionWorkbenchFile } from "@/src/lib/phone-api";
+import { MarkdownRenderer } from "@/src/components/chat/MarkdownRenderer";
+import { listSessionArtifacts, readSessionWorkbenchFile } from "@/src/lib/phone-api";
+import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ChatMessage, SpecSummary, WorkbenchFilePage } from "@/src/types/admin";
+import type { ArtifactDetail, ChatMessage, WorkbenchFilePage } from "@/src/types/admin";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -25,7 +32,7 @@ type OverviewFile = {
     id: string;
     path: string;
     name: string;
-    source: "spec" | "artifact" | "change";
+    source: "spec" | "artifact" | "write";
 };
 
 const PAGE_LINES = 120;
@@ -40,110 +47,6 @@ function normalizedPath(value: unknown) {
 
 function fileNameOf(value: string) {
     return normalizedPath(value).split("/").filter(Boolean).at(-1) || value;
-}
-
-function pathFromUnknown(value: unknown, depth = 0): string {
-    if (depth > 4 || value == null) return "";
-    if (typeof value === "string") {
-        const candidate = normalizedPath(value);
-        return /(?:^|\/)[^/]+\.[A-Za-z0-9]{1,12}(?:$|[?#])/.test(candidate) ? candidate : "";
-    }
-    if (Array.isArray(value)) {
-        for (const item of value) {
-            const found = pathFromUnknown(item, depth + 1);
-            if (found) return found;
-        }
-        return "";
-    }
-    if (typeof value !== "object") return "";
-    const record = value as Record<string, unknown>;
-    for (const key of ["workspaceRelativePath", "workspace_relative_path", "sourcePath", "source_path", "targetPath", "target_path", "file", "path"]) {
-        const found = pathFromUnknown(record[key], depth + 1);
-        if (found) return found;
-    }
-    return "";
-}
-
-function collectSpecFiles(specs: SpecSummary[]) {
-    const files: OverviewFile[] = [];
-    for (const spec of specs) {
-        for (const [stage, document] of Object.entries(spec.documents || {})) {
-            const path = normalizedPath(document.relativePath);
-            if (!path) continue;
-            files.push({
-                id: `spec:${spec.specId || spec.specDir || "unknown"}:${stage}:${path}`,
-                path,
-                name: fileNameOf(path),
-                source: "spec",
-            });
-        }
-        for (const rawDirectory of spec.targetOutputDirectories || []) {
-            const directory = normalizedPath(rawDirectory).replace(/\/$/, "");
-            if (!directory) continue;
-            for (const rawFile of spec.explicitDeliverableFiles || []) {
-                const name = fileNameOf(rawFile);
-                if (!name) continue;
-                const path = normalizedPath(`${directory}/${name}`);
-                files.push({
-                    id: `spec-deliverable:${spec.specId || directory}:${path}`,
-                    path,
-                    name,
-                    source: "artifact",
-                });
-            }
-        }
-    }
-    return files;
-}
-
-function collectMessageFiles(messages: ChatMessage[]) {
-    const files: OverviewFile[] = [];
-    for (const message of messages) {
-        const specBrief = message.metadata?.specBrief && typeof message.metadata.specBrief === "object"
-            ? message.metadata.specBrief as SpecSummary
-            : message.metadata?.spec_brief && typeof message.metadata.spec_brief === "object"
-                ? message.metadata.spec_brief as SpecSummary
-                : null;
-        if (specBrief) files.push(...collectSpecFiles([specBrief]));
-        for (const artifact of message.artifacts || []) {
-            const path = normalizedPath(
-                artifact.workspaceRelativePath
-                || artifact.sourcePath
-                || artifact.canonicalPath
-                || artifact.workspacePath,
-            );
-            if (!path) continue;
-            files.push({ id: `artifact:${artifact.id || artifact.artifactId || path}`, path, name: fileNameOf(path), source: "artifact" });
-        }
-        for (const node of message.nodes || []) {
-            if (node.kind === "artifact") {
-                const artifact = node.artifact;
-                const path = normalizedPath(
-                    artifact.workspaceRelativePath
-                    || artifact.sourcePath
-                    || artifact.canonicalPath
-                    || artifact.workspacePath,
-                );
-                if (path) files.push({ id: `node-artifact:${node.id}:${path}`, path, name: fileNameOf(path), source: "artifact" });
-                continue;
-            }
-            if (node.kind !== "execution" || !/(write|edit|patch|file)/i.test(text(node.toolName))) continue;
-            const path = pathFromUnknown(node.data) || pathFromUnknown(node.args) || pathFromUnknown(node.result);
-            if (path) files.push({ id: `change:${node.id}:${path}`, path, name: fileNameOf(path), source: "change" });
-        }
-    }
-    return files;
-}
-
-function mergeFiles(...groups: OverviewFile[][]) {
-    const byPath = new Map<string, OverviewFile>();
-    for (const file of groups.flat()) {
-        const key = normalizedPath(file.path).toLowerCase();
-        if (!key) continue;
-        const existing = byPath.get(key);
-        if (!existing || existing.source === "change") byPath.set(key, file);
-    }
-    return Array.from(byPath.values()).slice(-40).reverse();
 }
 
 function colorForSubagent(value: string) {
@@ -179,7 +82,7 @@ function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProj
             </Pressable>
             {expanded ? (
                 <View style={[styles.subagentDetail, { borderTopColor: colors.border }]}>
-                    {item.summary ? <Text style={[styles.subagentDetailText, { color: colors.text }]}>{item.summary}</Text> : null}
+                    {item.summary ? <MarkdownRenderer content={item.summary} /> : null}
                     {item.selfCheck ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_self_check")}: {item.selfCheck}</Text> : null}
                     {item.artifactRefs.length ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_artifacts", { count: item.artifactRefs.length })}</Text> : null}
                     {item.children.map((child) => <SubagentReturnItem key={child.id} item={child} nested />)}
@@ -262,6 +165,14 @@ function FileSnippetRow({
             ? t("src.components.chat.sessionoverviewpanel.artifact")
             : t("src.components.chat.sessionoverviewpanel.changed_file");
 
+    const sourceLineTone = (line: string) => {
+        if (/^\+\+\+|^---/.test(line)) return { backgroundColor: "#17212B", color: "#C9D1D9" };
+        if (/^\+/.test(line)) return { backgroundColor: "#0F2A1B", color: "#7EE787" };
+        if (/^-/.test(line)) return { backgroundColor: "#3A1518", color: "#FF7B72" };
+        if (/^@@/.test(line)) return { backgroundColor: "#13233A", color: "#79C0FF" };
+        return { backgroundColor: "transparent", color: "#E6EDF3" };
+    };
+
     return (
         <View style={[styles.fileCard, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
             <Pressable
@@ -285,12 +196,15 @@ function FileSnippetRow({
                     ) : null}
                     {!payload?.binary && payload?.lines?.length ? (
                         <ScrollView style={styles.snippetScroll} nestedScrollEnabled showsVerticalScrollIndicator={false}>
-                            {payload.lines.map((line) => (
-                                <View key={line.number} style={styles.sourceLine}>
-                                    <Text style={[styles.lineNumber, { color: colors.textSoft }]}>{line.number}</Text>
-                                    <Text selectable style={[styles.lineText, { color: colors.text }]}>{line.text || " "}</Text>
-                                </View>
-                            ))}
+                            {payload.lines.map((line) => {
+                                const tone = sourceLineTone(line.text || "");
+                                return (
+                                    <View key={line.number} style={[styles.sourceLine, { backgroundColor: tone.backgroundColor }]}>
+                                        <Text style={styles.lineNumber}>{line.number}</Text>
+                                        <Text selectable style={[styles.lineText, { color: tone.color }]}>{line.text || " "}</Text>
+                                    </View>
+                                );
+                            })}
                         </ScrollView>
                     ) : null}
                     {!loading && !error && !payload?.binary && payload && !payload.lines?.length ? (
@@ -318,8 +232,9 @@ function FileSnippetRow({
 export const SessionOverviewPanel = memo(function SessionOverviewPanel({
     visible,
     sessionId,
-    workspacePath,
+    outputEvidence = [],
     messages,
+    runtimeActivities,
     runStatus,
     currentStepTitle,
     authorizedFetch,
@@ -327,8 +242,9 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
 }: {
     visible: boolean;
     sessionId: string;
-    workspacePath: string;
+    outputEvidence?: unknown[];
     messages: ChatMessage[];
+    runtimeActivities: PhoneRuntimeStageActivity[];
     runStatus?: string;
     currentStepTitle?: string;
     authorizedFetch: AuthorizedFetch;
@@ -336,31 +252,40 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
 }) {
     const { width } = useWindowDimensions();
     const { colors, t } = useUiPrefs();
-    const [specFiles, setSpecFiles] = useState<OverviewFile[]>([]);
+    const [sessionArtifacts, setSessionArtifacts] = useState<ArtifactDetail[]>([]);
     const [loading, setLoading] = useState(false);
-    const messageFiles = useMemo(() => collectMessageFiles(messages), [messages]);
-    const files = useMemo(() => mergeFiles(specFiles, messageFiles), [messageFiles, specFiles]);
-    const subagentReturns = useMemo(() => buildSubagentReturnProjection(messages), [messages]);
+    const files = useMemo<OverviewFile[]>(() => buildSessionOutputProjection(messages, sessionArtifacts, { sessionId, evidence: outputEvidence })
+        .filter((output) => Boolean(output.path))
+        .map((output) => ({
+            id: output.id,
+            path: output.path || "",
+            name: output.name || fileNameOf(output.path || ""),
+            source: output.source,
+        })), [messages, outputEvidence, sessionArtifacts, sessionId]);
+    const subagentReturns = useMemo(
+        () => buildSubagentReturnProjection(messages, runtimeActivities.map((activity) => activity.node)),
+        [messages, runtimeActivities],
+    );
 
     useEffect(() => {
         let disposed = false;
-        if (!visible || !workspacePath.trim()) {
-            if (!workspacePath.trim()) setSpecFiles([]);
+        if (!visible || !sessionId.trim()) {
+            if (!sessionId.trim()) setSessionArtifacts([]);
             return () => { disposed = true; };
         }
         setLoading(true);
-        void listSpecs(authorizedFetch, workspacePath.trim())
-            .then((specs) => {
-                if (!disposed) setSpecFiles(collectSpecFiles(specs));
+        void listSessionArtifacts(authorizedFetch, sessionId.trim())
+            .then((artifacts) => {
+                if (!disposed) setSessionArtifacts(artifacts);
             })
             .catch(() => {
-                if (!disposed) setSpecFiles([]);
+                if (!disposed) setSessionArtifacts([]);
             })
             .finally(() => {
                 if (!disposed) setLoading(false);
-            });
+        });
         return () => { disposed = true; };
-    }, [authorizedFetch, visible, workspacePath]);
+    }, [authorizedFetch, sessionId, visible]);
 
     const normalizedStatus = text(runStatus).toLowerCase();
     const statusLabel = ["running", "queued", "pending", "starting", "streaming"].includes(normalizedStatus)
@@ -382,7 +307,10 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
         <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
             <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
                 <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-                <View style={[styles.panel, { width: Math.min(440, Math.max(300, width * 0.9)), backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+                <Animated.View
+                    entering={SlideInRight.duration(220)}
+                    style={[styles.panel, { width: Math.min(440, Math.max(300, width * 0.9)), backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
+                >
                     <View style={[styles.header, { borderBottomColor: colors.border }]}>
                         <View style={styles.headerTitleWrap}>
                             <Text style={[styles.title, { color: colors.text }]}>{t("src.components.chat.sessionoverviewpanel.title")}</Text>
@@ -412,7 +340,7 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
                             <FileSnippetRow key={`${file.source}:${file.path}`} file={file} sessionId={sessionId} authorizedFetch={authorizedFetch} />
                         ))}
                     </ScrollView>
-                </View>
+                </Animated.View>
             </View>
         </Modal>
     );
@@ -437,11 +365,11 @@ const styles = StyleSheet.create({
     fileTitleWrap: { flex: 1, gap: 4 },
     fileName: { fontSize: 14, fontWeight: "700" },
     filePath: { fontSize: 11 },
-    snippetWrap: { borderTopWidth: StyleSheet.hairlineWidth },
-    snippetScroll: { maxHeight: 360, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
+    snippetWrap: { borderTopWidth: StyleSheet.hairlineWidth, backgroundColor: "#0D1117" },
+    snippetScroll: { maxHeight: 360, paddingVertical: spacing.sm, backgroundColor: "#0D1117" },
     sourceLine: { flexDirection: "row", alignItems: "flex-start", minHeight: 20 },
-    lineNumber: { width: 42, paddingRight: 8, textAlign: "right", fontSize: 11, lineHeight: 18 },
-    lineText: { flex: 1, fontSize: 12, lineHeight: 18 },
+    lineNumber: { width: 46, paddingHorizontal: 8, textAlign: "right", fontSize: 11, lineHeight: 18, color: "#7D8590", backgroundColor: "#161B22" },
+    lineText: { flex: 1, paddingHorizontal: 8, fontSize: 12, lineHeight: 18 },
     pager: { height: 44, borderTopWidth: StyleSheet.hairlineWidth, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.sm },
     pagerButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
     pageLabel: { fontSize: 11 },
@@ -464,6 +392,5 @@ const styles = StyleSheet.create({
     subagentSummary: { fontSize: 11 },
     subagentStatus: { fontSize: 10 },
     subagentDetail: { borderTopWidth: StyleSheet.hairlineWidth, padding: spacing.md, gap: spacing.sm },
-    subagentDetailText: { fontSize: 12, lineHeight: 18 },
     subagentDetailMuted: { fontSize: 11, lineHeight: 17 },
 });

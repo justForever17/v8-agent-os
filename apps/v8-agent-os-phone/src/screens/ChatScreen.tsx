@@ -5724,15 +5724,19 @@ export default function ChatScreen() {
         lastScrollY.current = currentY;
     }, [historyBtnOpacity, historyBtnTranslateY]);
 
+    const openOverviewPanel = useCallback(() => {
+        setOverviewPanelOpen(true);
+    }, []);
+
     const neonPanResponder = useMemo(() => PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 10 && gesture.dx < 0,
         onPanResponderRelease: (_, gesture) => {
             if (gesture.dx < -18) {
-                setOverviewPanelOpen(true);
+                openOverviewPanel();
             }
         },
-    }), []);
+    }), [openOverviewPanel]);
 
     const latestAutoPlayableVoice = projection.voiceCardDescriptors[projection.voiceCardDescriptors.length - 1] || null;
     const latestProjectedMessage = projection.projectedMessages[projection.projectedMessages.length - 1] || null;
@@ -7013,6 +7017,7 @@ export default function ChatScreen() {
                                     approvalBusy={sending}
                                     onResolveApproval={handleApprovalResolve}
                                     onOpenApprovalPanel={openApprovalPanel}
+                                    onOpenOverview={openOverviewPanel}
                                     isLandscape={isLandscape}
                                     bottomInset={chatBottomInset}
                                     emptyState={legacyChatEmptyState || greetingEmptyState}
@@ -7056,7 +7061,7 @@ export default function ChatScreen() {
                                         style={StyleSheet.absoluteFill}
                                         accessibilityRole="button"
                                         accessibilityLabel={t("src.components.chat.sessionoverviewpanel.title")}
-                                        onPress={() => setOverviewPanelOpen(true)}
+                                        onPress={openOverviewPanel}
                                         {...neonPanResponder.panHandlers}
                                     />
                                 </View>
@@ -7088,8 +7093,9 @@ export default function ChatScreen() {
                 <SessionOverviewPanel
                     visible={overviewPanelOpen}
                     sessionId={activeConversationId || ""}
-                    workspacePath={effectiveWorkspacePath}
+                    outputEvidence={projection.governancePendingApproval ? [projection.governancePendingApproval] : []}
                     messages={projection.projectedMessages}
+                    runtimeActivities={projection.runtimeStageModel.messageActivities}
                     runStatus={projection.runControlState.status}
                     currentStepTitle={projection.currentStepTitle || undefined}
                     authorizedFetch={authorizedFetch}

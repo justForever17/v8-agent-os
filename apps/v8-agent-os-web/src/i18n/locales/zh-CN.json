@@ -415,5 +415,6 @@
   "web.sessionCoordination.replyStatus.accepted": "已接收",
   "web.sessionCoordination.replyStatus.conflict": "存在冲突",
   "web.sessionCoordination.replyStatus.blocked": "无法继续",
-  "web.sessionCoordination.replyStatus.completed": "已完成"
+  "web.sessionCoordination.replyStatus.completed": "已完成",
+  "web.collaborationMicroStage.viewOverview": "协作已收起，查看概览"
 }

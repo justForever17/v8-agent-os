@@ -1,43 +1,35 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Box, ChevronDown, ChevronRight, CircleDot, Code2, FileText, FolderOpen, ListTodo, TerminalSquare, Users } from "lucide-react";
-import { buildSubagentReturnProjection, type AdminProcessRef, type SubagentReturnProjection } from "@v8/session-realtime";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Box, ChevronDown, ChevronRight, CircleDot, FileText, ListTodo, TerminalSquare, Users } from "lucide-react";
+import {
+    buildSessionOutputProjection,
+    buildSubagentReturnProjection,
+    type AdminProcessRef,
+    type SessionOutputProjection,
+    type SubagentReturnProjection,
+} from "@v8/session-realtime";
 
-import { createArtifactDocument } from "@/lib/workbench";
+import { createArtifactDocument, createInlineArtifactDocument } from "@/lib/workbench";
 import { resolveAndOpenWorkspaceFile } from "@/lib/workbench-actions";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
-import type { Message, UiExecutionNode } from "@/store/chat-types";
-import type { RuntimeArtifact } from "@/lib/artifacts";
+import type { Message } from "@/store/chat-types";
+import { normalizeRuntimeArtifact } from "@/lib/artifacts";
 import type { TodoHudItem } from "./TodosHUD";
 
-type WorkbenchArtifact = RuntimeArtifact & { sourceMessageId?: string };
-type FileHint = { id: string; path: string; tool: string };
-type SpecDocumentSummary = {
-    id: string;
-    path: string;
-    fileName: string;
-    groupKey: string;
-    groupLabel: string;
-    statusLabel: string;
-};
-
 interface WorkspaceWorkbenchPanelProps {
+    sessionId: string;
     messages: Message[];
+    outputEvidence?: unknown[];
     processes: AdminProcessRef[];
     todos: TodoHudItem[];
     todoStale?: boolean;
     runtimeModel: RuntimeStageModel;
-    workspacePath?: string;
 }
 
 function text(value: unknown) {
     return String(value || "").trim();
-}
-
-function recordOf(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function normalizedPath(value: unknown) {
@@ -53,119 +45,8 @@ function parentPathOf(path: string) {
     return parts.slice(0, -1).join("/");
 }
 
-function collectSpecDocuments(value: unknown): SpecDocumentSummary[] {
-    const root = recordOf(value);
-    const specs = Array.isArray(root.specs) ? root.specs : [];
-    const documents: SpecDocumentSummary[] = [];
-    for (const rawSpec of specs) {
-        const spec = recordOf(rawSpec);
-        const specId = text(spec.specId || spec.spec_id);
-        const featureName = text(spec.featureName || spec.feature_name);
-        const stageDocuments = recordOf(spec.documents);
-        const pipeline = recordOf(spec.pipelineControl || spec.pipeline_control);
-        const blockedStage = text(pipeline.blockedByApproval || pipeline.blocked_by_approval).toLowerCase();
-        const staleStages = recordOf(spec.staleStages || spec.stale_stages);
-        const appendDocument = (documentKey: string, rawDocument: unknown, fallbackStatus = "") => {
-            const document = recordOf(rawDocument);
-            const path = normalizedPath(document.relativePath || document.relative_path);
-            if (!path) return;
-            const status = text(document.status).toLowerCase();
-            const statusLabel = recordOf(staleStages[documentKey]).stale
-                ? "需更新"
-                : status === "approved"
-                    ? "已同意"
-                    : blockedStage === documentKey
-                        ? "待确认"
-                        : fallbackStatus || "可查看";
-            const groupPath = parentPathOf(path);
-            documents.push({
-                id: `spec-document:${specId || groupPath}:${documentKey}:${path}`,
-                path,
-                fileName: fileNameOf(path),
-                groupKey: specId || groupPath,
-                groupLabel: featureName || fileNameOf(groupPath) || "规格文档",
-                statusLabel,
-            });
-        };
-        for (const [stage, document] of Object.entries(stageDocuments)) {
-            appendDocument(stage, document);
-        }
-        const annexDocuments = recordOf(spec.annexDocuments || spec.annex_documents);
-        for (const [name, document] of Object.entries(annexDocuments)) {
-            appendDocument(`annex:${name}`, document, "附录");
-        }
-        const quality = recordOf(spec.qualityEvidence || spec.quality_evidence);
-        const checklists = recordOf(quality.checklists);
-        for (const [name, document] of Object.entries(checklists)) {
-            appendDocument(`checklist:${name}`, document, "检查单");
-        }
-        const rawTargetDirectories = spec.targetOutputDirectories || spec.target_output_directories;
-        const rawDeliverableFiles = spec.explicitDeliverableFiles || spec.explicit_deliverable_files;
-        const targetDirectories = Array.isArray(rawTargetDirectories) ? rawTargetDirectories : [];
-        const deliverableFiles = Array.isArray(rawDeliverableFiles) ? rawDeliverableFiles : [];
-        for (const rawDirectory of targetDirectories) {
-            const directory = normalizedPath(rawDirectory).replace(/\/$/, "");
-            if (!directory) continue;
-            for (const rawFile of deliverableFiles) {
-                const fileName = fileNameOf(text(rawFile));
-                if (!fileName) continue;
-                const path = normalizedPath(`${directory}/${fileName}`);
-                documents.push({
-                    id: `spec-deliverable:${specId || directory}:${path}`,
-                    path,
-                    fileName,
-                    groupKey: `${specId || directory}:deliverables:${directory}`,
-                    groupLabel: fileNameOf(directory) || "交付文件",
-                    statusLabel: pipeline.runtimeExecutionAllowed ? "交付文件" : "待生成",
-                });
-            }
-        }
-    }
-    return documents.slice(0, 48);
-}
-
-function collectMessageSpecDocuments(messages: Message[]) {
-    const specs = messages
-        .map((message) => recordOf(message.metadata).specBrief || recordOf(message.metadata).spec_brief)
-        .filter((value) => Object.keys(recordOf(value)).length > 0);
-    return collectSpecDocuments({ specs });
-}
-
 function activeProcess(process: AdminProcessRef) {
     return !["stopped", "terminated", "completed", "failed"].includes(text(process.status).toLowerCase());
-}
-
-function collectArtifacts(messages: Message[]) {
-    const byId = new Map<string, WorkbenchArtifact>();
-    for (const message of messages) {
-        for (const artifact of message.artifacts || []) {
-            if (artifact?.id) byId.set(artifact.id, { ...artifact, sourceMessageId: message.id });
-        }
-        for (const node of message.nodes || []) {
-            if (node.kind === "artifact" && node.artifact?.id) byId.set(node.artifact.id, { ...node.artifact, sourceMessageId: message.id });
-        }
-    }
-    return Array.from(byId.values()).slice(-30).reverse();
-}
-
-function executionPath(node: UiExecutionNode) {
-    const data = node.data && typeof node.data === "object" ? node.data as Record<string, unknown> : {};
-    return text(data.path || data.file || data.targetPath || data.target_path || data.workspacePath || data.workspace_path);
-}
-
-function collectFileHints(messages: Message[]) {
-    const hints = new Map<string, FileHint>();
-    for (const message of messages) {
-        for (const node of message.nodes || []) {
-            if (node.kind !== "execution") continue;
-            const tool = text(node.toolName);
-            if (!/(write_native_file|read_native_file|apply_patch|patch|edit|share_workspace_file)/i.test(tool)) continue;
-            const path = executionPath(node);
-            if (!path) continue;
-            hints.set(path, { id: `${node.id}:${path}`, path, tool });
-        }
-    }
-    return Array.from(hints.values()).slice(-24).reverse();
 }
 
 function Section({ title, icon: Icon, count, children, defaultOpen = true }: { title: string; icon: typeof Box; count?: number; children: React.ReactNode; defaultOpen?: boolean }) {
@@ -215,16 +96,31 @@ function subagentStatusLabel(status: string) {
     return "需要处理";
 }
 
-function SubagentReturnRow({ item, nested = false }: { item: SubagentReturnProjection; nested?: boolean }) {
-    const [open, setOpen] = useState(false);
-    const hasDetail = Boolean(item.summary || item.selfCheck || item.children.length || item.artifactRefs.length);
+function renderSubagentReturnMarkdown(item: SubagentReturnProjection, depth = 0): string {
+    const heading = "#".repeat(Math.min(6, depth + 1));
+    const sections = [
+        `${heading} ${item.name}`,
+        item.taskGoal ? `> ${item.taskGoal}` : "",
+        item.summary ? `${heading}# 回流结果\n\n${item.summary}` : "",
+        item.selfCheck ? `${heading}# 自检\n\n${item.selfCheck}` : "",
+        item.artifactRefs.length
+            ? `${heading}# 产物引用\n\n${item.artifactRefs.map((ref) => `- ${ref}`).join("\n")}`
+            : "",
+        item.acceptanceStatus && item.acceptanceStatus !== "pending"
+            ? `${heading}# 主理人验收\n\n${item.acceptanceSummary || item.acceptanceStatus}`
+            : "",
+        ...item.children.map((child) => renderSubagentReturnMarkdown(child, depth + 1)),
+    ];
+    return sections.filter(Boolean).join("\n\n");
+}
+
+function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentReturnProjection; onOpen: (item: SubagentReturnProjection) => void; nested?: boolean }) {
     return (
         <div className={`${nested ? "ml-5 border-l border-border/45" : ""} border-b border-border/30 last:border-b-0`}>
             <button
                 type="button"
-                disabled={!hasDetail}
-                onClick={() => setOpen((value) => !value)}
-                className="flex min-h-10 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-muted/35 disabled:cursor-default disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                onClick={() => onOpen(item)}
+                className="group flex min-h-11 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
             >
                 <SubagentAvatar item={item} />
                 <span className="min-w-0 flex-1">
@@ -232,71 +128,37 @@ function SubagentReturnRow({ item, nested = false }: { item: SubagentReturnProje
                     <span className="block truncate text-[10px] text-muted-foreground">{item.taskGoal || item.summary || "已返回协作结果"}</span>
                 </span>
                 <span className="shrink-0 text-[10px] text-muted-foreground">{subagentStatusLabel(item.status)}</span>
-                {hasDetail ? (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : null}
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
             </button>
-            {open ? (
-                <div className="space-y-2 border-t border-border/25 bg-muted/[0.08] px-3 py-2 text-[11px] leading-5">
-                    {item.summary ? <p className="whitespace-pre-wrap text-foreground/90">{item.summary}</p> : null}
-                    {item.selfCheck ? <p className="whitespace-pre-wrap text-muted-foreground">自检：{item.selfCheck}</p> : null}
-                    {item.acceptanceStatus ? <p className="text-muted-foreground">主理人验收：{item.acceptanceStatus === "pending" ? "待确认" : item.acceptanceStatus}</p> : null}
-                    {item.artifactRefs.length ? <p className="text-muted-foreground">已回流 {item.artifactRefs.length} 个产物引用</p> : null}
-                    {item.children.length ? (
-                        <div className="-mx-3 -mb-2 border-t border-border/30 bg-background/30 pt-1">
-                            <div className="px-3 py-1 text-[10px] font-medium text-muted-foreground">下级协作回流</div>
-                            {item.children.map((child) => <SubagentReturnRow key={child.id} item={child} nested />)}
-                        </div>
-                    ) : null}
-                </div>
-            ) : null}
         </div>
     );
 }
 
+function outputSubtitle(output: SessionOutputProjection): string {
+    if (output.path) return parentPathOf(output.path) || output.source;
+    return output.kind || output.mimeType || output.source;
+}
+
 export function WorkspaceWorkbenchPanel({
+    sessionId,
     messages,
+    outputEvidence = [],
     processes,
     todos,
     todoStale,
     runtimeModel,
-    workspacePath,
 }: WorkspaceWorkbenchPanelProps) {
     const openDocument = useWorkbenchStore((state) => state.openDocument);
-    const workbenchTabs = useWorkbenchStore((state) => state.tabs);
     const [fileError, setFileError] = useState("");
-    const [listedSpecDocuments, setListedSpecDocuments] = useState<SpecDocumentSummary[]>([]);
-    const artifacts = useMemo(() => collectArtifacts(messages), [messages]);
-    const subagentReturns = useMemo(() => buildSubagentReturnProjection(messages), [messages]);
-    const fileHints = useMemo(() => collectFileHints(messages), [messages]);
-    const liveSpecDocuments = useMemo(() => workbenchTabs.flatMap((tab) => {
-        if (tab.document.kind !== "workspace_file") return [];
-        const path = text(tab.document.subjectRef.workspacePath).replace(/\\/g, "/");
-        if (!/(?:^|\/)\.v8\/specs\//i.test(path)) return [];
-        return [{
-            id: tab.document.documentId,
-            path,
-            fileName: fileNameOf(path),
-            groupKey: parentPathOf(path),
-            groupLabel: fileNameOf(parentPathOf(path)) || "规格文档",
-            statusLabel: "可查看",
-        } satisfies SpecDocumentSummary];
-    }), [workbenchTabs]);
-    const messageSpecDocuments = useMemo(() => collectMessageSpecDocuments(messages), [messages]);
-    const specDocuments = useMemo(() => {
-        const byPath = new Map<string, SpecDocumentSummary>();
-        for (const document of liveSpecDocuments) byPath.set(document.path, document);
-        for (const document of messageSpecDocuments) byPath.set(document.path, document);
-        for (const document of listedSpecDocuments) byPath.set(document.path, document);
-        return Array.from(byPath.values());
-    }, [listedSpecDocuments, liveSpecDocuments, messageSpecDocuments]);
-    const specDocumentGroups = useMemo(() => {
-        const grouped = new Map<string, { key: string; label: string; documents: SpecDocumentSummary[] }>();
-        for (const document of specDocuments) {
-            const existing = grouped.get(document.groupKey);
-            if (existing) existing.documents.push(document);
-            else grouped.set(document.groupKey, { key: document.groupKey, label: document.groupLabel, documents: [document] });
-        }
-        return Array.from(grouped.values());
-    }, [specDocuments]);
+    const [runtimeArtifacts, setRuntimeArtifacts] = useState<Array<Record<string, unknown>>>([]);
+    const subagentReturns = useMemo(
+        () => buildSubagentReturnProjection(messages, runtimeModel.messageActivities.map((activity) => activity.node)),
+        [messages, runtimeModel.messageActivities],
+    );
+    const outputs = useMemo(
+        () => buildSessionOutputProjection(messages, runtimeArtifacts, { sessionId, evidence: outputEvidence }),
+        [messages, outputEvidence, runtimeArtifacts, sessionId],
+    );
     const activeProcesses = useMemo(() => processes.filter(activeProcess), [processes]);
     const visibleTodos = useMemo(() => todos.filter((item) => text(item.content || item.text)), [todos]);
     const currentRuntime = useMemo(
@@ -305,33 +167,52 @@ export function WorkspaceWorkbenchPanel({
             || null,
         [runtimeModel.items],
     );
-    const hasSecondaryContent = visibleTodos.length > 0 || subagentReturns.length > 0 || specDocuments.length > 0 || artifacts.length > 0 || fileHints.length > 0 || activeProcesses.length > 0;
+    const hasSecondaryContent = visibleTodos.length > 0 || subagentReturns.length > 0 || outputs.length > 0 || activeProcesses.length > 0;
+
+    const openSubagentReturn = useCallback((item: SubagentReturnProjection) => {
+        openDocument(createInlineArtifactDocument({
+            id: `subagent-return:${item.id}`,
+            title: item.name,
+            type: "markdown",
+            language: "markdown",
+            content: renderSubagentReturnMarkdown(item),
+        }), { activate: true, mode: "split" });
+    }, [openDocument]);
+
+    const openOutput = useCallback((output: SessionOutputProjection) => {
+        setFileError("");
+        if (output.path) {
+            void resolveAndOpenWorkspaceFile(output.path, { sessionId }).catch((reason) => {
+                setFileError(reason instanceof Error ? reason.message : String(reason));
+            });
+            return;
+        }
+        const artifact = output.rawArtifact ? normalizeRuntimeArtifact(output.rawArtifact) : null;
+        if (artifact) openDocument(createArtifactDocument(artifact), { activate: true, mode: "split" });
+    }, [openDocument, sessionId]);
 
     useEffect(() => {
-        const normalizedWorkspacePath = text(workspacePath);
-        if (!normalizedWorkspacePath) {
-            setListedSpecDocuments([]);
+        if (!sessionId) {
+            setRuntimeArtifacts([]);
             return;
         }
         const controller = new AbortController();
-        const query = new URLSearchParams({
-            workspace_path: normalizedWorkspacePath,
-            include_archived: "true",
-            limit: "10",
-        });
-        void fetch(`/api/specs?${query.toString()}`, { cache: "no-store", signal: controller.signal })
+        const query = new URLSearchParams({ sessionId, limit: "100" });
+        void fetch(`/api/artifacts?${query.toString()}`, { cache: "no-store", signal: controller.signal })
             .then(async (response) => {
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 return response.json();
             })
             .then((payload) => {
-                if (!controller.signal.aborted) setListedSpecDocuments(collectSpecDocuments(payload));
+                if (!controller.signal.aborted) {
+                    setRuntimeArtifacts(Array.isArray(payload?.artifacts) ? payload.artifacts : []);
+                }
             })
             .catch(() => {
-                if (!controller.signal.aborted) setListedSpecDocuments([]);
+                if (!controller.signal.aborted) setRuntimeArtifacts([]);
             });
         return () => controller.abort();
-    }, [workspacePath]);
+    }, [sessionId]);
 
     return (
         <div className="h-full min-h-0 overflow-auto bg-background">
@@ -356,67 +237,26 @@ export function WorkspaceWorkbenchPanel({
                 })}
             </Section> : null}
 
-            {subagentReturns.length ? <Section title="子 Agent" icon={Users} count={subagentReturns.length} defaultOpen={false}>
-                {subagentReturns.map((item) => <SubagentReturnRow key={item.id} item={item} />)}
+            {subagentReturns.length ? <Section title="子 Agent" icon={Users} count={subagentReturns.length}>
+                {subagentReturns.map((item) => <SubagentReturnRow key={item.id} item={item} onOpen={openSubagentReturn} />)}
             </Section> : null}
 
-            {specDocuments.length || artifacts.length ? <Section title="产物" icon={Box} count={specDocuments.length + artifacts.length}>
-                {specDocumentGroups.map((group) => (
-                    <details key={group.key} open className="group/spec border-b border-border/30 last:border-b-0">
-                        <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-[11px] text-muted-foreground hover:bg-muted/25 [&::-webkit-details-marker]:hidden">
-                            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-                            <span className="min-w-0 flex-1 truncate">{group.label}</span>
-                            <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px]">{group.documents.length}</span>
-                            <ChevronRight className="h-3.5 w-3.5 transition-transform group-open/spec:rotate-90" />
-                        </summary>
-                        <div className="border-t border-border/25 bg-muted/[0.08]">
-                            {group.documents.map((document) => (
-                                <button
-                                    key={document.id}
-                                    type="button"
-                                    onClick={() => {
-                                        setFileError("");
-                                        void resolveAndOpenWorkspaceFile(document.path).catch((reason) => setFileError(reason instanceof Error ? reason.message : String(reason)));
-                                    }}
-                                    className="flex min-h-9 w-full items-center gap-2 border-b border-border/25 py-1.5 pl-7 pr-3 text-left text-[11px] last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                                >
-                                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 flex-1 truncate font-medium">{document.fileName}</span>
-                                    <span className="shrink-0 text-[10px] text-muted-foreground">{document.statusLabel}</span>
-                                </button>
-                            ))}
-                        </div>
-                    </details>
-                ))}
-                {artifacts.map((artifact) => (
+            {outputs.length || fileError ? <Section title="产物" icon={Box} count={outputs.length}>
+                {fileError ? <div className="border-b border-destructive/25 bg-destructive/5 px-3 py-2 text-[10px] text-destructive">{fileError}</div> : null}
+                {outputs.map((output) => (
                     <button
-                        key={artifact.id}
+                        key={output.id}
                         type="button"
-                        onClick={() => openDocument(createArtifactDocument(artifact), { activate: true, mode: "split" })}
-                        className="flex min-h-9 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                        onClick={() => openOutput(output)}
+                        className="group flex min-h-10 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                     >
                         <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate font-medium">{artifact.displayLabel || artifact.title || fileNameOf(artifact.workspaceRelativePath || "") || "未命名产物"}</span>
-                        <span className="max-w-[42%] truncate text-[10px] text-muted-foreground">{artifact.workspaceRelativePath || artifact.kind}</span>
-                    </button>
-                ))}
-            </Section> : null}
-
-            {fileHints.length || fileError ? <Section title="文件变更" icon={Code2} count={fileHints.length}>
-                {fileError ? <div className="border-b border-destructive/25 bg-destructive/5 px-3 py-2 text-[10px] text-destructive">{fileError}</div> : null}
-                {fileHints.map((hint) => (
-                    <button
-                        key={hint.id}
-                        type="button"
-                        onClick={() => {
-                            setFileError("");
-                            void resolveAndOpenWorkspaceFile(hint.path).catch((reason) => setFileError(reason instanceof Error ? reason.message : String(reason)));
-                        }}
-                        className="flex min-h-9 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                    >
-                        <Code2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate font-medium">{fileNameOf(hint.path)}</span>
-                        <span className="max-w-[45%] truncate text-[10px] text-muted-foreground">{parentPathOf(hint.path)}</span>
+                        <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{output.name}</span>
+                            <span className="block truncate text-[10px] text-muted-foreground">{outputSubtitle(output)}</span>
+                        </span>
+                        {output.statusLabel ? <span className="shrink-0 text-[10px] text-muted-foreground">{output.statusLabel}</span> : null}
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                     </button>
                 ))}
             </Section> : null}

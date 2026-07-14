@@ -43,6 +43,7 @@ type ChatWindowProps = {
     approvalBusy?: boolean;
     onResolveApproval?: (approval: ChatPendingInteraction, answer: string, approve: boolean) => void | Promise<void>;
     onOpenApprovalPanel?: () => void;
+    onOpenOverview?: () => void;
     isLandscape?: boolean;
     bottomInset?: number;
     emptyState?: {
@@ -125,6 +126,7 @@ export const ChatWindow = memo(function ChatWindow({
     approvalBusy = false,
     onResolveApproval,
     onOpenApprovalPanel,
+    onOpenOverview,
     isLandscape = false,
     bottomInset = 172,
     emptyState,
@@ -267,6 +269,7 @@ export const ChatWindow = memo(function ChatWindow({
                                 userImageUri={userImageUri}
                                 userDisplayName={userDisplayName}
                                 processes={processes}
+                                onOpenOverview={onOpenOverview}
                                 runtimeActivities={
                                     index === liveRuntimeMessageIndex
                                         ? runtimeActivities

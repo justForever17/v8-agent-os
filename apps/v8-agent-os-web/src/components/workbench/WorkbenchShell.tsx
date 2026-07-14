@@ -18,6 +18,7 @@ import type { WorkbenchTab } from "@/lib/workbench";
 type WorkbenchShellProps = {
     sessionId: string;
     messages: Message[];
+    outputEvidence?: unknown[];
     processes: AdminProcessRef[];
     todos: TodoHudItem[];
     todoStale?: boolean;

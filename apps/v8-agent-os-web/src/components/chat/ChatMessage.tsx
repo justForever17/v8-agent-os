@@ -3,20 +3,23 @@
 
 import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, Orbit } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useState, memo, useMemo } from "react";
-import { groupTimelineNodes } from "@/lib/chat/timeline-grouper";
+import { useState, memo, useMemo, useCallback } from "react";
+import { groupTimelineNodes, type TimelineSegment } from "@/lib/chat/timeline-grouper";
 import { motion } from "framer-motion";
 import {
     buildCollaborationMicroStages,
-    buildCollaborationMicroStagesFromMessageBoundNodes,
-    buildMessageBoundExecutionNodes,
     coerceAdminResourceRef,
     isRuntimeEpisodeGraphActivity,
     resolveAdminResourceUrl,
     type AdminProcessRef,
     type CollaborationMicroStageActivityInput,
-    type MessageBoundExecutionMessage,
 } from "@v8/session-realtime";
+import {
+    buildMessageBoundCollaborationMicroStagePlacement,
+    buildMessageBoundExecutionNodes,
+    getMessageBoundExecutionTimelineNodeIdentityCandidates,
+    type MessageBoundExecutionMessage,
+} from "@v8/session-realtime/message-bound-execution-node";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import { Message, UiExecutionNode, UiTimelineNode } from "@/store/chat-types";
 import { ContentDispatcher } from "./ContentDispatcher";
@@ -24,7 +27,7 @@ import { cn } from "@/lib/utils";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { ArtifactCard } from "./ArtifactCard";
 import { inferArtifactCardType, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
-import { createArtifactDocument } from "@/lib/workbench";
+import { createArtifactDocument, createSessionOverviewDocument } from "@/lib/workbench";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import { useT } from "@/components/providers/LocaleProvider";
 import { parseContentToBlocks } from "@/lib/chat/content-detector";
@@ -64,6 +67,11 @@ function isExecutionNode(node: UiTimelineNode): node is UiExecutionNode {
 
 const MICRO_STAGE_TOOL_NAMES = new Set(["delegation_broker", "runtime_broker"]);
 const MICRO_STAGE_ACTIVITY_LIMIT = 80;
+
+type ChatTimelineRenderSegment = TimelineSegment | {
+    kind: "collaboration_stage";
+    id: string;
+};
 
 function hasToolCallId(node: UiTimelineNode): node is UiExecutionNode & { toolCallId: string } {
     return isExecutionNode(node) && typeof node.toolCallId === "string" && node.toolCallId.trim().length > 0;
@@ -137,8 +145,22 @@ function isRenderableTimelineNode(node: UiTimelineNode, isStreaming: boolean) {
     return true;
 }
 
-function extractSupervisorMicroStageSpeech(nodes: UiTimelineNode[]) {
-    for (const node of nodes) {
+function findMicroStageAnchorIndex(nodes: UiTimelineNode[], anchorNodeId?: string) {
+    if (!anchorNodeId) {
+        return nodes.length;
+    }
+    const index = nodes.findIndex((node) => (
+        getMessageBoundExecutionTimelineNodeIdentityCandidates(node).includes(anchorNodeId)
+    ));
+    return index >= 0 ? index : nodes.length;
+}
+
+function extractSupervisorMicroStageSpeech(nodes: UiTimelineNode[], anchorIndex: number) {
+    const orderedCandidates = [
+        ...nodes.slice(0, anchorIndex).reverse(),
+        ...nodes.slice(anchorIndex),
+    ];
+    for (const node of orderedCandidates) {
         if (node.kind !== "narrative" || node.role !== "assistant") {
             continue;
         }
@@ -152,7 +174,8 @@ function extractSupervisorMicroStageSpeech(nodes: UiTimelineNode[]) {
         if (!text) {
             continue;
         }
-        return text.length > 42 ? `${text.slice(0, 41)}...` : text;
+        const sentence = text.match(/^.*?[。！？!?](?:\s|$)/)?.[0]?.trim() || text;
+        return sentence.length > 64 ? `${sentence.slice(0, 63)}…` : sentence;
     }
     return "";
 }
@@ -388,8 +411,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         () => buildMessageBoundExecutionNodes([message as unknown as MessageBoundExecutionMessage]),
         [message],
     );
-    const messageBoundMicroStages = useMemo(
-        () => buildCollaborationMicroStagesFromMessageBoundNodes(
+    const messageBoundMicroStagePlacement = useMemo(
+        () => buildMessageBoundCollaborationMicroStagePlacement(
             messageBoundExecutionNodes,
             {
                 runId: message.runId,
@@ -412,12 +435,19 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         ),
         [bubbleExecutionActivities, message.runId],
     );
-    const visibleBubbleMicroStages = messageBoundMicroStages.length > 0
-        ? messageBoundMicroStages
+    const visibleBubbleMicroStages = messageBoundMicroStagePlacement?.stages.length
+        ? messageBoundMicroStagePlacement.stages
         : liveFallbackMicroStages;
+    const microStageAnchorIndex = useMemo(
+        () => findMicroStageAnchorIndex(
+            message.nodes || [],
+            messageBoundMicroStagePlacement?.anchorNodeId,
+        ),
+        [message.nodes, messageBoundMicroStagePlacement?.anchorNodeId],
+    );
     const microStageSupervisorSpeech = useMemo(
-        () => extractSupervisorMicroStageSpeech(message.nodes || []),
-        [message.nodes],
+        () => extractSupervisorMicroStageSpeech(message.nodes || [], microStageAnchorIndex),
+        [message.nodes, microStageAnchorIndex],
     );
     const microStageVisible = visibleBubbleMicroStages.length > 0;
     const visibleNodes = useMemo(() => {
@@ -436,16 +466,78 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         [isLast, isLoading, visibleNodes],
     );
     const [expandedTraceGroups, setExpandedTraceGroups] = useState<Record<string, boolean>>({});
-    const timelineSegments = useMemo(
-        () => groupTimelineNodes(renderableNodes, resultNodesByToolCallId),
-        [renderableNodes, resultNodesByToolCallId],
-    );
+    const timelineSegments = useMemo(() => {
+        const segments: ChatTimelineRenderSegment[] = [];
+        let traceChunk: UiTimelineNode[] = [];
+        let chunkIndex = 0;
+        let stageInserted = false;
+        const flushChunk = () => {
+            if (traceChunk.length === 0) return;
+            const grouped = groupTimelineNodes(traceChunk, resultNodesByToolCallId);
+            segments.push(...grouped.map((segment) => ({
+                ...segment,
+                id: `chunk-${chunkIndex}:${segment.id}`,
+            })));
+            traceChunk = [];
+            chunkIndex += 1;
+        };
+
+        (message.nodes || []).forEach((node, index) => {
+            if (microStageVisible && !stageInserted && index === microStageAnchorIndex) {
+                flushChunk();
+                segments.push({
+                    kind: "collaboration_stage",
+                    id: messageBoundMicroStagePlacement?.id || `collaboration-stage:${message.id}`,
+                });
+                stageInserted = true;
+            }
+            if (isMicroStageSupersededTimelineNode(node, microStageVisible)) {
+                return;
+            }
+            if (hasToolCallId(node) && node.executionType === "tool_result" && toolCallIds.has(node.toolCallId.trim())) {
+                return;
+            }
+            if (!isRenderableTimelineNode(node, Boolean(isLoading && isLast))) {
+                return;
+            }
+            traceChunk.push(node);
+        });
+        flushChunk();
+
+        if (microStageVisible && !stageInserted) {
+            segments.push({
+                kind: "collaboration_stage",
+                id: messageBoundMicroStagePlacement?.id || `collaboration-stage:${message.id}`,
+            });
+        }
+        return segments;
+    }, [
+        isLast,
+        isLoading,
+        message.id,
+        message.nodes,
+        messageBoundMicroStagePlacement?.id,
+        microStageAnchorIndex,
+        microStageVisible,
+        resultNodesByToolCallId,
+        toolCallIds,
+    ]);
     const handleOpenMicroStageDetailRef = (target: CollaborationMicroStageDetailTarget) => {
         if (typeof window === "undefined") {
             return;
         }
         window.dispatchEvent(new CustomEvent("v8:micro-stage-detail", { detail: target }));
     };
+    const handleOpenMicroStageOverview = useCallback(() => {
+        const workbench = useWorkbenchStore.getState();
+        if (!workbench.sessionId) {
+            return;
+        }
+        workbench.openDocument(createSessionOverviewDocument(workbench.sessionId), {
+            activate: true,
+            mode: "split",
+        });
+    }, []);
     const hasAssistantNarrativeNode = renderableNodes.some((node) =>
         node.kind === "narrative"
         && node.role === "assistant"
@@ -680,15 +772,19 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-violet-500/40 via-purple-400/20 to-transparent opacity-80" />
 
                 <div className="space-y-4 px-4 py-4 text-[14px] leading-relaxed text-foreground/90 sm:px-5 sm:py-[18px] sm:text-[15px]">
-                    {visibleBubbleMicroStages.length > 0 && (
-                        <CollaborationMicroStageScene
-                            stages={visibleBubbleMicroStages}
-                            supervisorSpeech={microStageSupervisorSpeech}
-                            onOpenDetailRef={handleOpenMicroStageDetailRef}
-                        />
-                    )}
-
                     {timelineSegments.map((segment, index) => {
+                        if (segment.kind === "collaboration_stage") {
+                            return (
+                                <CollaborationMicroStageScene
+                                    key={segment.id}
+                                    stages={visibleBubbleMicroStages}
+                                    supervisorSpeech={microStageSupervisorSpeech}
+                                    onOpenDetailRef={handleOpenMicroStageDetailRef}
+                                    overviewLinkLabel={t("web.collaborationMicroStage.viewOverview")}
+                                    onOpenOverview={handleOpenMicroStageOverview}
+                                />
+                            );
+                        }
                         if (segment.kind === "node") {
                             return (
                                 <ContentDispatcher 

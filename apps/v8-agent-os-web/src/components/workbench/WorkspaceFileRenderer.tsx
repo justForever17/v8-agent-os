@@ -2,12 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, FileWarning, MessageSquarePlus, RefreshCw, Search, Send, X } from "lucide-react";
+import { Prism as SyntaxHighlighter, createElement as createSyntaxElement } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 import type { WorkspaceFileWorkbenchDocument } from "@/lib/workbench";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 
 
 type FileLine = { number: number; text: string };
+type SyntaxRendererProps = {
+    rows: Array<Record<string, unknown>>;
+    stylesheet: Record<string, React.CSSProperties>;
+    useInlineStyles: boolean;
+};
 type FilePayload = {
     workspacePath: string;
     name: string;
@@ -48,6 +55,34 @@ function formatBytes(value: number) {
         unit = units[index];
     }
     return `${current.toFixed(current >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function sourceLanguage(payload: FilePayload) {
+    const explicit = String(payload.language || "").trim().toLowerCase();
+    if (explicit && explicit !== "text") return explicit;
+    const extension = payload.name.split(".").at(-1)?.toLowerCase() || "";
+    const aliases: Record<string, string> = {
+        ts: "typescript",
+        tsx: "tsx",
+        js: "javascript",
+        jsx: "jsx",
+        py: "python",
+        ps1: "powershell",
+        yml: "yaml",
+        md: "markdown",
+        patch: "diff",
+        diff: "diff",
+        sh: "bash",
+    };
+    return aliases[extension] || extension || "text";
+}
+
+function diffLineClass(value: string, language: string) {
+    if (language !== "diff") return "";
+    if (value.startsWith("+") && !value.startsWith("+++")) return "bg-emerald-500/15";
+    if (value.startsWith("-") && !value.startsWith("---")) return "bg-rose-500/15";
+    if (value.startsWith("@@")) return "bg-sky-500/12";
+    return "";
 }
 function safeHtmlPreview(content: string) {
     const csp = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
@@ -222,6 +257,52 @@ export function WorkspaceFileRenderer({
         }
     };
 
+    const openLineComment = (item: FileLine) => {
+        setCommentLine(item);
+        setCommentText("");
+    };
+
+    const renderLineCommentButton = (item: FileLine) => onSendLineComment ? (
+        <button
+            type="button"
+            onClick={() => openLineComment(item)}
+            className="sticky right-2 my-0.5 hidden h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm group-hover/line:flex focus:flex focus-visible:ring-2 focus-visible:ring-primary"
+            aria-label={`评论第 ${item.number} 行`}
+            title={`评论第 ${item.number} 行`}
+        >
+            <MessageSquarePlus className="h-3 w-3" />
+        </button>
+    ) : null;
+
+    const renderLineCommentEditor = (item: FileLine) => commentLine?.number === item.number ? (
+        <div className="sticky left-14 right-2 z-10 ml-14 mr-2 mb-2 rounded-xl border border-slate-600/70 bg-slate-900 p-2 font-sans shadow-xl">
+            <div className="mb-1 flex items-center gap-2 text-[10px] text-slate-400">
+                <span className="min-w-0 flex-1 truncate">{payload.name} · 第 {item.number} 行</span>
+                <button type="button" onClick={() => setCommentLine(null)} className="rounded p-1 hover:bg-white/10" aria-label="取消评论"><X className="h-3 w-3" /></button>
+            </div>
+            <textarea
+                value={commentText}
+                onChange={(event) => setCommentText(event.target.value)}
+                onKeyDown={(event) => {
+                    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        void submitLineComment();
+                    }
+                }}
+                autoFocus
+                rows={2}
+                placeholder="说明希望如何修改这一行…"
+                className="w-full resize-none rounded-lg border border-slate-600 bg-slate-950 px-2.5 py-2 text-xs text-slate-100 outline-none focus:border-violet-400/70 focus:ring-2 focus:ring-violet-400/15"
+            />
+            <div className="mt-2 flex justify-end gap-1.5">
+                <button type="button" onClick={() => setCommentLine(null)} className="rounded-md px-2 py-1 text-[11px] text-slate-400 hover:bg-white/10">取消</button>
+                <button type="button" disabled={!commentText.trim() || commentBusy} onClick={() => void submitLineComment()} className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] text-primary-foreground disabled:opacity-45">
+                    <Send className="h-3 w-3" />发送
+                </button>
+            </div>
+        </div>
+    ) : null;
+
     return (
         <div className="flex h-full min-h-0 flex-col bg-background">
             <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 px-2 text-[11px] text-muted-foreground">
@@ -275,56 +356,49 @@ export function WorkspaceFileRenderer({
                             <iframe title={payload.name} srcDoc={safeHtmlPreview(content)} sandbox="allow-scripts" className="h-full min-h-[360px] w-full border-0 bg-white" />
                         ) : document.renderer === "markdown" && showPreview ? (
                             <article className="mx-auto max-w-3xl px-6 py-5"><MarkdownRenderer content={content} searchQuery={query} surface="document" /></article>
+                        ) : !query.trim() ? (
+                            <SyntaxHighlighter
+                                style={vscDarkPlus}
+                                language={sourceLanguage(payload)}
+                                className="[&_.token.table]:!inline"
+                                PreTag="div"
+                                CodeTag="div"
+                                wrapLines
+                                wrapLongLines={false}
+                                customStyle={{ margin: 0, minHeight: "100%", padding: "8px 0", background: "#0d1117", fontSize: "12px", lineHeight: "20px" }}
+                                codeTagProps={{ style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" } }}
+                                renderer={({ rows, stylesheet, useInlineStyles }: SyntaxRendererProps) => (
+                                    <>
+                                        {rows.map((row: Record<string, unknown>, index: number) => {
+                                            const item = (payload.lines || [])[index] || { number: (payload.startLine || 1) + index, text: "" };
+                                            return (
+                                                <div key={`${item.number}:${index}`} id={`L${item.number}`} className={`group/line relative ${diffLineClass(item.text, sourceLanguage(payload)) || "hover:bg-white/[0.045]"}`}>
+                                                    <div className="flex min-h-5">
+                                                        <a href={`#L${item.number}`} className="sticky left-0 w-14 shrink-0 select-none border-r border-slate-700/65 bg-[#0d1117] pr-2 text-right text-slate-500">{item.number}</a>
+                                                        <div className="min-w-0 flex-1 whitespace-pre px-3 pr-10 text-slate-100">
+                                                            {createSyntaxElement({ node: row, stylesheet, useInlineStyles, key: `code-line-${item.number}` })}
+                                                        </div>
+                                                        {renderLineCommentButton(item)}
+                                                    </div>
+                                                    {renderLineCommentEditor(item)}
+                                                </div>
+                                            );
+                                        })}
+                                    </>
+                                )}
+                            >
+                                {(payload.lines || []).map((item) => item.text).join("\n")}
+                            </SyntaxHighlighter>
                         ) : (
-                            <div className="min-w-max py-2 font-mono text-[12px] leading-5">
+                            <div className="min-h-full min-w-max bg-[#0d1117] py-2 font-mono text-[12px] leading-5 text-slate-100">
                                 {(payload.lines || []).map((item) => (
-                                    <div key={item.number} id={`L${item.number}`} className="group/line relative hover:bg-muted/45">
+                                    <div key={item.number} id={`L${item.number}`} className={`group/line relative ${diffLineClass(item.text, sourceLanguage(payload)) || "hover:bg-white/[0.045]"}`}>
                                         <div className="flex min-h-5">
-                                            <a href={`#L${item.number}`} className="sticky left-0 w-14 shrink-0 select-none border-r border-border/45 bg-background/96 pr-2 text-right text-muted-foreground/65">{item.number}</a>
+                                            <a href={`#L${item.number}`} className="sticky left-0 w-14 shrink-0 select-none border-r border-slate-700/65 bg-[#0d1117] pr-2 text-right text-slate-500">{item.number}</a>
                                             <code className="min-w-0 flex-1 whitespace-pre px-3 pr-10">{highlightedSourceText(item.text, query)}</code>
-                                            {onSendLineComment ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setCommentLine(item);
-                                                        setCommentText("");
-                                                    }}
-                                                    className="sticky right-2 my-0.5 hidden h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm group-hover/line:flex focus:flex focus-visible:ring-2 focus-visible:ring-primary"
-                                                    aria-label={`评论第 ${item.number} 行`}
-                                                    title={`评论第 ${item.number} 行`}
-                                                >
-                                                    <MessageSquarePlus className="h-3 w-3" />
-                                                </button>
-                                            ) : null}
+                                            {renderLineCommentButton(item)}
                                         </div>
-                                        {commentLine?.number === item.number ? (
-                                            <div className="sticky left-14 right-2 z-10 ml-14 mr-2 mb-2 rounded-xl border border-border/70 bg-popover p-2 font-sans shadow-xl">
-                                                <div className="mb-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-                                                    <span className="min-w-0 flex-1 truncate">{payload.name} · 第 {item.number} 行</span>
-                                                    <button type="button" onClick={() => setCommentLine(null)} className="rounded p-1 hover:bg-muted" aria-label="取消评论"><X className="h-3 w-3" /></button>
-                                                </div>
-                                                <textarea
-                                                    value={commentText}
-                                                    onChange={(event) => setCommentText(event.target.value)}
-                                                    onKeyDown={(event) => {
-                                                        if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-                                                            event.preventDefault();
-                                                            void submitLineComment();
-                                                        }
-                                                    }}
-                                                    autoFocus
-                                                    rows={2}
-                                                    placeholder="说明希望如何修改这一行…"
-                                                    className="w-full resize-none rounded-lg border border-border/60 bg-background px-2.5 py-2 text-xs text-foreground outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/15"
-                                                />
-                                                <div className="mt-2 flex justify-end gap-1.5">
-                                                    <button type="button" onClick={() => setCommentLine(null)} className="rounded-md px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted">取消</button>
-                                                    <button type="button" disabled={!commentText.trim() || commentBusy} onClick={() => void submitLineComment()} className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] text-primary-foreground disabled:opacity-45">
-                                                        <Send className="h-3 w-3" />发送
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ) : null}
+                                        {renderLineCommentEditor(item)}
                                     </div>
                                 ))}
                             </div>

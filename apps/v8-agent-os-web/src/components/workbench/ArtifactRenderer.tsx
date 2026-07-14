@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { Download, ExternalLink, FileWarning } from "lucide-react";
 
+import { CodeBlock } from "@/components/chat/CodeBlock";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { getWorkbenchDocumentPayload, type ArtifactWorkbenchDocument } from "@/lib/workbench";
 import { normalizeRuntimeArtifact, resolveRuntimeArtifactUrl, type RuntimeArtifact } from "@/lib/artifacts";
@@ -22,13 +23,33 @@ function safeHtmlPreview(content: string) {
         : `<!doctype html><html><head>${meta}<meta charset="utf-8"></head><body>${withoutScripts}</body></html>`;
 }
 function ArtifactMetadata({ artifact, document }: { artifact: RuntimeArtifact | null; document: ArtifactWorkbenchDocument }) {
+    if (!artifact) return null;
     return (
         <div className="grid gap-x-6 gap-y-2 border-t border-border/60 px-3 py-2 text-[10px] text-muted-foreground sm:grid-cols-2">
-            <div className="truncate"><span className="text-foreground/70">ID</span> · {document.subjectRef.artifactId}</div>
             <div className="truncate"><span className="text-foreground/70">类型</span> · {artifact?.mimeType || artifact?.kind || document.renderer}</div>
             {artifact?.workspaceRelativePath ? <div className="truncate sm:col-span-2"><span className="text-foreground/70">工作区</span> · {artifact.workspaceRelativePath}</div> : null}
         </div>
     );
+}
+
+function codeLanguage(document: ArtifactWorkbenchDocument, artifact: RuntimeArtifact | null) {
+    const explicit = String(getWorkbenchDocumentPayload(document.documentId)?.language || "").trim().toLowerCase();
+    if (explicit) return explicit;
+    const title = String(artifact?.workspaceRelativePath || artifact?.sourcePath || document.title || "");
+    const extension = title.split(".").at(-1)?.toLowerCase() || "";
+    const aliases: Record<string, string> = {
+        ts: "typescript",
+        tsx: "tsx",
+        js: "javascript",
+        jsx: "jsx",
+        py: "python",
+        ps1: "powershell",
+        yml: "yaml",
+        patch: "diff",
+        diff: "diff",
+        sh: "bash",
+    };
+    return aliases[extension] || extension || "text";
 }
 
 export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocument }) {
@@ -88,7 +109,9 @@ export function ArtifactRenderer({ document }: { document: ArtifactWorkbenchDocu
         if (document.renderer === "model_3d" && resourceUrl) return <ModelViewer src={resourceUrl} className="h-full min-h-[420px] w-full rounded-none border-0" />;
         if (document.renderer === "html" && text) return <iframe title={document.title} srcDoc={safeHtmlPreview(text)} sandbox="" className="h-full w-full border-0 bg-white" />;
         if (document.renderer === "markdown" && text) return <article className="mx-auto max-w-3xl px-6 py-5"><MarkdownRenderer content={text} surface="document" /></article>;
-        if ((document.renderer === "code" || document.renderer === "text") && text) return <pre className="min-h-full overflow-auto whitespace-pre p-4 font-mono text-[12px] leading-5"><code>{text}</code></pre>;
+        if ((document.renderer === "code" || document.renderer === "text") && text) {
+            return <div className="min-h-full bg-[#0d1117] p-3"><CodeBlock language={codeLanguage(document, artifact)} value={text} /></div>;
+        }
         return (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center text-sm text-muted-foreground">
                 <FileWarning className="h-7 w-7" />

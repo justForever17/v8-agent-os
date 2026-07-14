@@ -415,5 +415,6 @@
   "web.sessionCoordination.replyStatus.accepted": "Accepted",
   "web.sessionCoordination.replyStatus.conflict": "Conflict",
   "web.sessionCoordination.replyStatus.blocked": "Blocked",
-  "web.sessionCoordination.replyStatus.completed": "Completed"
+  "web.sessionCoordination.replyStatus.completed": "Completed",
+  "web.collaborationMicroStage.viewOverview": "Collaboration finished · View overview"
 }

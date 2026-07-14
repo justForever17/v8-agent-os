@@ -1,8 +1,10 @@
-import { memo, useEffect, useMemo, useState, type ComponentType } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, Rect, Stop } from "react-native-svg";
 import Animated, {
+    cancelAnimation,
     Easing,
+    FadeIn,
     useAnimatedStyle,
     useSharedValue,
     withDelay,
@@ -40,6 +42,8 @@ export type CollaborationMicroStageRendererProps = {
     locale: LocaleCode;
     supervisorSpeech?: string;
     onOpenDetailRef?: (target: CollaborationMicroStageDetailTarget) => void;
+    overviewLinkLabel?: string;
+    onOpenOverview?: () => void;
 };
 
 type CollaborationMicroStageSceneProps = CollaborationMicroStageRendererProps & {
@@ -66,15 +70,15 @@ const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, number[]> = {
     celebrate: [27, 30, 31, 32, 33, 34],
 };
 
-const STAGE_HEIGHT = 156;
-const OFFICE_STAGE_HEIGHT = 236;
-const CLUSTER_STAGE_HEIGHT = 204;
+const STAGE_HEIGHT = 176;
+const OFFICE_STAGE_HEIGHT = 244;
+const CLUSTER_STAGE_HEIGHT = 218;
 const WORK_CELL_WIDTH = 98;
 const WORK_CELL_HEIGHT = 104;
 const MAX_STAGE_ACTORS = 10;
 const SUPERVISOR_BASE_TOP = 49;
 
-type MicroStageRenderPhase = "opening" | "active" | "handoff" | "settled" | "collapsed" | "exiting";
+type MicroStageRenderPhase = "entering" | "working" | "handoff" | "celebrating" | "warning" | "exiting";
 
 type RetainedMicroStage = CollaborationMicroStage & {
     renderPhase: MicroStageRenderPhase;
@@ -94,6 +98,13 @@ type PositionedStageActorItem = StageActorItem & {
     scale: number;
 };
 
+type SupervisorSceneMode = "entering" | "working" | "handoff" | "celebrating" | "warning";
+const ENTER_DURATION_MS = 1100;
+const HANDOFF_DURATION_MS = 1600;
+const FINAL_FEEDBACK_DURATION_MS = 5000;
+const EXIT_DURATION_MS = 700;
+const FINAL_REPLAY_WINDOW_MS = 12_000;
+
 function statusTone(status: CollaborationMicroStageStatus, palette: ThemeColors) {
     if (status === "completed") return palette.success;
     if (status === "failed") return palette.danger;
@@ -106,52 +117,71 @@ function isFinalStatus(status: CollaborationMicroStageStatus) {
     return status === "completed" || status === "failed" || status === "degraded";
 }
 
+function retainedStageVersion(stage: CollaborationMicroStage) {
+    return `${stage.id}:${stage.status}:${stage.timestamp}`;
+}
+
 function nextPhaseForStage(stage: CollaborationMicroStage, previous?: RetainedMicroStage): MicroStageRenderPhase {
     if (previous?.renderPhase === "exiting") return "exiting";
     if (stage.status === "completed" || stage.status === "failed" || stage.status === "degraded") {
         if (!previous || !isFinalStatus(previous.status)) return "handoff";
         if (previous.renderPhase === "handoff") return "handoff";
-        if (previous.renderPhase === "collapsed") return "collapsed";
-        return "settled";
+        if (previous.renderPhase === "celebrating" || previous.renderPhase === "warning") return previous.renderPhase;
+        return stage.status === "completed" ? "celebrating" : "warning";
     }
-    if (!previous) return "opening";
-    if (previous.renderPhase === "opening") return "opening";
-    return "active";
+    if (!previous) return "entering";
+    if (previous.renderPhase === "entering") return "entering";
+    return "working";
 }
 
 function phaseUntil(phase: MicroStageRenderPhase, now: number) {
-    if (phase === "opening") return now + 900;
-    if (phase === "handoff") return now + 1500;
-    if (phase === "settled") return now + 5200;
-    if (phase === "exiting") return now + 1800;
+    if (phase === "entering") return now + ENTER_DURATION_MS;
+    if (phase === "handoff") return now + HANDOFF_DURATION_MS;
+    if (phase === "celebrating" || phase === "warning") return now + FINAL_FEEDBACK_DURATION_MS;
+    if (phase === "exiting") return now + EXIT_DURATION_MS;
     return undefined;
 }
 
-function advancePhase(phase: MicroStageRenderPhase): MicroStageRenderPhase | null {
-    if (phase === "opening") return "active";
-    if (phase === "handoff") return "settled";
-    if (phase === "settled") return "collapsed";
+function advancePhase(stage: RetainedMicroStage): MicroStageRenderPhase | null {
+    const phase = stage.renderPhase;
+    if (phase === "entering") return "working";
+    if (phase === "handoff") return stage.status === "completed" ? "celebrating" : "warning";
+    if (phase === "celebrating" || phase === "warning") return "exiting";
     if (phase === "exiting") return null;
     return phase;
 }
 
 function useRetainedMicroStages(stages: CollaborationMicroStage[]) {
     const [retained, setRetained] = useState<RetainedMicroStage[]>([]);
+    const [initialized, setInitialized] = useState(false);
+    const dismissedFinalVersions = useRef(new Set<string>());
 
     useEffect(() => {
         const now = Date.now();
         setRetained((current) => {
             const currentById = new Map(current.map((stage) => [stage.id, stage]));
             const incomingIds = new Set(stages.map((stage) => stage.id));
-            const next: RetainedMicroStage[] = stages.map((stage) => {
+            const next: RetainedMicroStage[] = stages.flatMap((stage) => {
                 const previous = currentById.get(stage.id);
+                const version = retainedStageVersion(stage);
+                if (!previous && dismissedFinalVersions.current.has(version)) {
+                    return [];
+                }
+                if (
+                    !previous
+                    && isFinalStatus(stage.status)
+                    && (!stage.timestamp || now - stage.timestamp > FINAL_REPLAY_WINDOW_MS)
+                ) {
+                    dismissedFinalVersions.current.add(version);
+                    return [];
+                }
                 const renderPhase = nextPhaseForStage(stage, previous);
                 const previousUntil = previous?.renderPhase === renderPhase ? previous.phaseUntil : undefined;
-                return {
+                return [{
                     ...stage,
                     renderPhase,
                     phaseUntil: previousUntil ?? phaseUntil(renderPhase, now),
-                };
+                }];
             });
 
             current.forEach((stage) => {
@@ -167,6 +197,7 @@ function useRetainedMicroStages(stages: CollaborationMicroStage[]) {
 
             return next.sort((left, right) => left.timestamp - right.timestamp);
         });
+        setInitialized(true);
     }, [stages]);
 
     useEffect(() => {
@@ -184,8 +215,11 @@ function useRetainedMicroStages(stages: CollaborationMicroStage[]) {
                 if (!stage.phaseUntil || stage.phaseUntil > tick) {
                     return [stage];
                 }
-                const nextPhase = advancePhase(stage.renderPhase);
+                const nextPhase = advancePhase(stage);
                 if (!nextPhase) {
+                    if (isFinalStatus(stage.status)) {
+                        dismissedFinalVersions.current.add(retainedStageVersion(stage));
+                    }
                     return [];
                 }
                 return [{
@@ -198,7 +232,7 @@ function useRetainedMicroStages(stages: CollaborationMicroStage[]) {
         return () => clearTimeout(timer);
     }, [retained]);
 
-    return retained;
+    return { initialized, retained };
 }
 
 function stageColor(stage: CollaborationMicroStage, index: number) {
@@ -212,23 +246,23 @@ function stageColor(stage: CollaborationMicroStage, index: number) {
     return "#38BDF8";
 }
 
-function cueToSupervisorAction(stages: CollaborationMicroStage[]): SupervisorAction {
-    if (stages.some((stage) => stage.status === "failed" || stage.status === "degraded")) return "read";
-    if (stages.some((stage) => stage.cue === "handoff" || stage.cue === "completed")) return "receive";
-    if (stages.some((stage) => stage.status === "completed")) return "celebrate";
-    if (stages.some((stage) => stage.kind === "subagent" && stage.status === "active")) return "summon";
-    if (stages.some((stage) => stage.status === "active")) return "command";
-    if (stages.some((stage) => stage.status === "pending")) return "walk";
-    return "idle";
+function sceneModeForStages(stages: RetainedMicroStage[]): SupervisorSceneMode {
+    if (stages.some((stage) => stage.renderPhase === "entering")) return "entering";
+    if (stages.some((stage) => stage.renderPhase === "handoff")) return "handoff";
+    if (stages.some((stage) => stage.renderPhase === "celebrating")) return "celebrating";
+    if (stages.some((stage) => stage.renderPhase === "warning")) return "warning";
+    return "working";
 }
 
-function cueToSupervisorActionFromActors(items: StageActorItem[]): SupervisorAction {
-    if (items.some((item) => item.actor.status === "active" && item.actor.kind === "subagent")) return "summon";
+function supervisorActionForScene(mode: SupervisorSceneMode, moving: boolean, items: StageActorItem[]): SupervisorAction {
+    if (mode === "entering") return "summon";
+    if (mode === "handoff") return "receive";
+    if (mode === "celebrating") return "celebrate";
+    if (mode === "warning") return "read";
+    if (moving) return "walk";
     if (items.some((item) => item.actor.status === "active")) return "command";
-    if (items.some((item) => item.actor.status === "failed" || item.actor.status === "degraded")) return "read";
-    if (items.some((item) => item.actor.status === "completed" || item.actor.cue === "handoff" || item.actor.cue === "completed")) return "receive";
-    if (items.some((item) => item.actor.status === "pending")) return "walk";
-    return cueToSupervisorAction(items.map((item) => item.stage));
+    if (items.some((item) => item.actor.status === "pending" || item.actor.status === "attempted")) return "read";
+    return "idle";
 }
 
 function cueLabel(cue: CollaborationMicroStageCue, t: ReturnType<typeof createTranslator>) {
@@ -309,11 +343,11 @@ function positionStageActorItems(
     const canvasWidth = Math.max(300, width || 320);
     if (layout === "singleRow") {
         const count = Math.max(1, items.length);
-        const reservedSupervisorWidth = 78;
+        const supervisorLane = 82;
         const cellWidth = count <= 2 ? 100 : 88;
-        const availableWidth = Math.max(cellWidth * count, canvasWidth - reservedSupervisorWidth - 8);
-        const gap = count > 1 ? Math.max(4, Math.min(18, (availableWidth - cellWidth * count) / (count - 1))) : 0;
-        const start = reservedSupervisorWidth + Math.max(0, (availableWidth - (cellWidth * count + gap * (count - 1))) / 2);
+        const gap = count > 1 ? 12 : 0;
+        const contentWidth = supervisorLane + cellWidth * count + gap * (count - 1);
+        const start = Math.max(12, (canvasWidth - contentWidth) / 2) + supervisorLane;
         return items.map((item, index) => ({
             ...item,
             x: start + index * (cellWidth + gap),
@@ -353,37 +387,33 @@ function positionStageActorItems(
     });
 }
 
-function supervisorPatrolWaypoints(layout: CollaborationMicroStageLayout, width: number) {
+function clamp(value: number, min: number, max: number) {
+    return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+function actorIsUnfinished(item: PositionedStageActorItem) {
+    return !isFinalStatus(item.actor.status) && item.stage.renderPhase !== "exiting";
+}
+
+function supervisorWaypointForItem(item: PositionedStageActorItem, width: number) {
     const canvasWidth = Math.max(300, width || 320);
-    if (layout === "singleRow") {
-        return [
-            { x: 20, y: 0 },
-            { x: Math.max(20, Math.min(canvasWidth - 86, 138)), y: 0 },
-            { x: Math.max(20, Math.min(canvasWidth - 86, canvasWidth - 112)), y: 0 },
-        ];
-    }
-    if (layout === "officeGrid") {
-        const middleX = Math.max(24, canvasWidth / 2 - 34);
-        return [
-            { x: 18, y: 4 },
-            { x: middleX, y: 4 },
-            { x: Math.max(18, canvasWidth - 92), y: 4 },
-            { x: middleX, y: 94 },
-            { x: 18, y: 94 },
-            { x: Math.max(18, canvasWidth - 92), y: 94 },
-        ];
-    }
-    const upper = 0;
-    const lower = 78;
-    return [
-        { x: 12, y: upper },
-        { x: Math.max(12, canvasWidth * 0.32 - 34), y: upper },
-        { x: Math.max(12, canvasWidth * 0.64 - 34), y: upper },
-        { x: Math.max(12, canvasWidth - 84), y: upper },
-        { x: Math.max(12, canvasWidth - 84), y: lower },
-        { x: Math.max(12, canvasWidth * 0.52 - 34), y: lower },
-        { x: 12, y: lower },
-    ];
+    return {
+        x: clamp(item.x - 58, 58, canvasWidth - 126),
+        y: Math.max(0, item.y - 32),
+    };
+}
+
+function supervisorWaypointsForItems(items: PositionedStageActorItem[], width: number) {
+    const unfinished = items.filter(actorIsUnfinished);
+    const candidates = unfinished.length > 0 ? unfinished : items;
+    const seen = new Set<string>();
+    return candidates.flatMap((item) => {
+        const waypoint = supervisorWaypointForItem(item, width);
+        const key = `${Math.round(waypoint.x)}:${Math.round(waypoint.y)}`;
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [waypoint];
+    });
 }
 
 function SupervisorSprite({
@@ -737,7 +767,7 @@ const WorkCell = memo(function WorkCell({
     const step = latestActorStep(stage, actor);
     const cue = actor.cue || step?.cue || stage.cue;
     const actorStatus = actor.status || stage.status;
-    const active = actorStatus === "active" && phase !== "collapsed" && phase !== "exiting";
+    const active = actorStatus === "active" && phase !== "exiting";
     const isHandoff = isFinalStatus(actorStatus) || cue === "handoff" || cue === "completed";
     const appeared = useSharedValue(0);
     const shake = useSharedValue(0);
@@ -751,11 +781,7 @@ const WorkCell = memo(function WorkCell({
 
     useEffect(() => {
         if (phase === "exiting") {
-            appeared.value = withTiming(0, { duration: 1120, easing: Easing.in(Easing.cubic) });
-            return;
-        }
-        if (phase === "collapsed") {
-            appeared.value = withTiming(0.72, { duration: 420, easing: Easing.out(Easing.cubic) });
+            appeared.value = withTiming(0, { duration: EXIT_DURATION_MS, easing: Easing.in(Easing.cubic) });
             return;
         }
         appeared.value = withTiming(1, { duration: 220, easing: Easing.out(Easing.cubic) });
@@ -834,7 +860,7 @@ const WorkCell = memo(function WorkCell({
 
     return (
         <Animated.View style={[styles.workCell, { left: x, top: y }, cellStyle]}>
-            {(phase === "opening" || active || cue === "summon") && <MagicPortal color={color} />}
+            {(phase === "entering" || cue === "summon") && <MagicPortal color={color} />}
             <WorkbenchShadow />
             <Workstation
                 cue={cue}
@@ -906,9 +932,60 @@ function SupervisorSpeechBubble({ text, palette }: { text?: string; palette: The
     }
     return (
         <View style={[styles.supervisorSpeechBubble, { backgroundColor: palette.surfaceStrong, borderColor: palette.border }]}>
-            <Text style={[styles.supervisorSpeechText, { color: palette.text }]} numberOfLines={2}>
+            <Text style={[styles.supervisorSpeechText, { color: palette.text }]} numberOfLines={3}>
                 {text}
             </Text>
+            <View style={[styles.supervisorSpeechTail, { borderTopColor: palette.surfaceStrong }]} />
+        </View>
+    );
+}
+
+const CONFETTI_COLORS = ["#8B5CF6", "#EC4899", "#F59E0B", "#10B981", "#38BDF8"];
+
+function ConfettiPiece({ index }: { index: number }) {
+    const progress = useSharedValue(0);
+    const duration = 920 + (index % 4) * 140;
+    const drift = ((index % 7) - 3) * 7;
+
+    useEffect(() => {
+        progress.value = 0;
+        progress.value = withDelay(
+            (index % 5) * 90,
+            withRepeat(withTiming(1, { duration, easing: Easing.linear }), 6, false),
+        );
+        return () => cancelAnimation(progress);
+    }, [duration, index, progress]);
+
+    const animatedStyle = useAnimatedStyle(() => ({
+        opacity: progress.value < 0.12
+            ? progress.value / 0.12
+            : Math.max(0, 1 - (progress.value - 0.72) / 0.28),
+        transform: [
+            { translateX: drift * progress.value },
+            { translateY: -10 + (CLUSTER_STAGE_HEIGHT + 34) * progress.value },
+            { rotate: `${progress.value * 540}deg` },
+        ],
+    }));
+
+    return (
+        <Animated.View
+            style={[
+                styles.confettiPiece,
+                {
+                    left: `${8 + ((index * 17) % 84)}%`,
+                    backgroundColor: CONFETTI_COLORS[index % CONFETTI_COLORS.length],
+                },
+                animatedStyle,
+            ]}
+        />
+    );
+}
+
+function CelebrationConfetti({ visible }: { visible: boolean }) {
+    if (!visible) return null;
+    return (
+        <View pointerEvents="none" style={styles.confettiLayer}>
+            {Array.from({ length: 18 }, (_, index) => <ConfettiPiece key={index} index={index} />)}
         </View>
     );
 }
@@ -920,13 +997,17 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
     locale,
     supervisorSpeech,
     onOpenDetailRef,
+    overviewLinkLabel,
+    onOpenOverview,
 }: CollaborationMicroStageRendererProps) {
     const t = createTranslator(locale);
     const supervisorX = useSharedValue(26);
     const supervisorY = useSharedValue(0);
     const supervisorFacing = useSharedValue(1);
+    const sceneOpacity = useSharedValue(1);
     const [canvasWidth, setCanvasWidth] = useState(0);
-    const retainedStages = useRetainedMicroStages(stages);
+    const [supervisorMoving, setSupervisorMoving] = useState(false);
+    const { initialized, retained: retainedStages } = useRetainedMicroStages(stages);
     const actorItems = useMemo(() => buildStageActorItems(retainedStages), [retainedStages]);
     const layout = useMemo(() => selectCollaborationMicroStageLayout(retainedStages), [retainedStages]);
     const stageHeight = layoutHeight(layout);
@@ -934,33 +1015,84 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
         () => positionStageActorItems(actorItems, layout, canvasWidth),
         [actorItems, canvasWidth, layout],
     );
-    const patrolWaypoints = useMemo(() => supervisorPatrolWaypoints(layout, canvasWidth), [canvasWidth, layout]);
-    const action = useMemo(() => cueToSupervisorActionFromActors(actorItems), [actorItems]);
+    const sceneMode = useMemo(() => sceneModeForStages(retainedStages), [retainedStages]);
+    const patrolWaypoints = useMemo(
+        () => supervisorWaypointsForItems(positionedItems, canvasWidth),
+        [canvasWidth, positionedItems],
+    );
+    const focusItem = useMemo(() => {
+        if (sceneMode === "entering") {
+            return positionedItems.find(actorIsUnfinished) || positionedItems[0];
+        }
+        return positionedItems.find((item) => (
+            item.stage.renderPhase === sceneMode
+            || (sceneMode === "warning" && (item.actor.status === "failed" || item.actor.status === "degraded"))
+        )) || positionedItems[0];
+    }, [positionedItems, sceneMode]);
+    const focusPosition = focusItem
+        ? supervisorWaypointForItem(focusItem, canvasWidth)
+        : { x: 58, y: 0 };
+    const patrolSignature = patrolWaypoints.map((point) => `${Math.round(point.x)}:${Math.round(point.y)}`).join("|");
+    const action = useMemo(
+        () => supervisorActionForScene(sceneMode, supervisorMoving, actorItems),
+        [actorItems, sceneMode, supervisorMoving],
+    );
+    const celebrating = sceneMode === "celebrating";
+    const allExiting = retainedStages.every((stage) => stage.renderPhase === "exiting");
+    const hasFinalOutcome = stages.some((stage) => isFinalStatus(stage.status));
 
     useEffect(() => {
-        if (positionedItems.length === 0 || patrolWaypoints.length === 0) {
-            return;
-        }
+        if (positionedItems.length === 0) return undefined;
+        const settleTimers = new Set<ReturnType<typeof setTimeout>>();
+        const moveTo = (next: { x: number; y: number }, duration: number, walking: boolean) => {
+            supervisorFacing.value = next.x >= supervisorX.value ? 1 : -1;
+            setSupervisorMoving(walking);
+            supervisorX.value = withTiming(next.x, { duration, easing: Easing.inOut(Easing.cubic) });
+            supervisorY.value = withTiming(next.y, { duration, easing: Easing.inOut(Easing.cubic) });
+            if (walking) {
+                const settleTimer = setTimeout(() => setSupervisorMoving(false), duration);
+                settleTimers.add(settleTimer);
+            }
+        };
 
-        const first = patrolWaypoints[0];
-        supervisorFacing.value = 1;
-        supervisorX.value = withTiming(first.x, { duration: 360, easing: Easing.out(Easing.cubic) });
-        supervisorY.value = withTiming(first.y, { duration: 360, easing: Easing.out(Easing.cubic) });
+        if (sceneMode !== "working" || patrolWaypoints.length === 0) {
+            moveTo(focusPosition, sceneMode === "entering" ? 360 : 520, false);
+            return () => settleTimers.forEach((timer) => clearTimeout(timer));
+        }
 
         let waypointIndex = 0;
-        const timer = setInterval(() => {
-            waypointIndex = (waypointIndex + 1) % patrolWaypoints.length;
-            const previous = patrolWaypoints[(waypointIndex - 1 + patrolWaypoints.length) % patrolWaypoints.length];
-            const next = patrolWaypoints[waypointIndex];
-            supervisorFacing.value = next.x >= previous.x ? 1 : -1;
-            supervisorX.value = withTiming(next.x, { duration: 1450, easing: Easing.inOut(Easing.cubic) });
-            supervisorY.value = withTiming(next.y, { duration: 1450, easing: Easing.inOut(Easing.cubic) });
-        }, layout === "singleRow" ? 3200 : 2600);
+        moveTo(patrolWaypoints[0], 1100, true);
+        const timer = patrolWaypoints.length > 1
+            ? setInterval(() => {
+                waypointIndex = (waypointIndex + 1) % patrolWaypoints.length;
+                moveTo(patrolWaypoints[waypointIndex], 1250, true);
+            }, 3600)
+            : undefined;
 
         return () => {
-            clearInterval(timer);
-        }
-    }, [layout, patrolWaypoints, positionedItems.length, supervisorFacing, supervisorX, supervisorY]);
+            if (timer) clearInterval(timer);
+            settleTimers.forEach((settleTimer) => clearTimeout(settleTimer));
+            cancelAnimation(supervisorX);
+            cancelAnimation(supervisorY);
+        };
+    }, [
+        focusPosition.x,
+        focusPosition.y,
+        patrolSignature,
+        patrolWaypoints,
+        positionedItems.length,
+        sceneMode,
+        supervisorFacing,
+        supervisorX,
+        supervisorY,
+    ]);
+
+    useEffect(() => {
+        sceneOpacity.value = withTiming(allExiting ? 0 : 1, {
+            duration: allExiting ? EXIT_DURATION_MS : 180,
+            easing: allExiting ? Easing.in(Easing.cubic) : Easing.out(Easing.cubic),
+        });
+    }, [allExiting, sceneOpacity]);
 
     const supervisorStyle = useAnimatedStyle(() => ({
         transform: [
@@ -968,13 +1100,29 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
             { translateY: supervisorY.value },
         ],
     }));
+    const sceneStyle = useAnimatedStyle(() => ({ opacity: sceneOpacity.value }));
 
     if (retainedStages.length === 0 || positionedItems.length === 0) {
+        if (initialized && hasFinalOutcome && onOpenOverview) {
+            return (
+                <Animated.View entering={FadeIn.duration(180)} style={styles.overviewLinkWrap}>
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={overviewLinkLabel}
+                        onPress={onOpenOverview}
+                        style={({ pressed }) => [styles.overviewLink, { opacity: pressed ? 0.58 : 1 }]}
+                    >
+                        <Text style={[styles.overviewLinkText, { color: palette.textMuted }]}>{overviewLinkLabel}</Text>
+                        <Text accessible={false} style={[styles.overviewLinkArrow, { color: palette.textMuted }]}>→</Text>
+                    </Pressable>
+                </Animated.View>
+            );
+        }
         return null;
     }
 
     return (
-        <View style={[styles.wrap, { height: stageHeight }]}>
+        <Animated.View style={[styles.wrap, { height: stageHeight }, sceneStyle]}>
             <View
                 style={[styles.canvasScroller, { height: stageHeight }]}
                 onLayout={(event) => setCanvasWidth(event.nativeEvent.layout.width)}
@@ -1004,8 +1152,9 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
                         t={t}
                     />
                 ))}
+                <CelebrationConfetti visible={celebrating} />
             </View>
-        </View>
+        </Animated.View>
     );
 });
 
@@ -1021,6 +1170,30 @@ const styles = StyleSheet.create({
         width: "100%",
         marginVertical: 4,
         overflow: "hidden",
+    },
+    overviewLinkWrap: {
+        width: "100%",
+        minHeight: 44,
+        justifyContent: "center",
+        paddingHorizontal: 4,
+        marginVertical: 4,
+    },
+    overviewLink: {
+        minHeight: 44,
+        alignSelf: "flex-start",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        paddingHorizontal: 4,
+    },
+    overviewLinkText: {
+        fontSize: 12,
+        fontWeight: "600",
+        textDecorationLine: "underline",
+    },
+    overviewLinkArrow: {
+        fontSize: 14,
+        fontWeight: "700",
     },
     canvasScroller: {
         position: "relative",
@@ -1206,24 +1379,48 @@ const styles = StyleSheet.create({
     },
     supervisorSpeechBubble: {
         position: "absolute",
-        left: 46,
-        top: -18,
-        width: 128,
-        minHeight: 28,
-        borderRadius: 11,
+        left: -54,
+        top: -50,
+        width: 176,
+        minHeight: 34,
+        borderRadius: 14,
         borderWidth: 1,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
         shadowColor: "#020617",
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.12,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 3 },
         zIndex: 40,
     },
     supervisorSpeechText: {
-        fontSize: 9,
-        lineHeight: 12,
+        fontSize: 10,
+        lineHeight: 14,
         fontWeight: "800",
         letterSpacing: 0,
+    },
+    supervisorSpeechTail: {
+        position: "absolute",
+        left: 82,
+        bottom: -7,
+        width: 0,
+        height: 0,
+        borderLeftWidth: 6,
+        borderRightWidth: 6,
+        borderTopWidth: 7,
+        borderLeftColor: "transparent",
+        borderRightColor: "transparent",
+    },
+    confettiLayer: {
+        ...StyleSheet.absoluteFillObject,
+        zIndex: 35,
+        overflow: "hidden",
+    },
+    confettiPiece: {
+        position: "absolute",
+        top: -10,
+        width: 5,
+        height: 8,
+        borderRadius: 2,
     },
 });

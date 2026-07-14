@@ -94,6 +94,13 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         "supervisorAcceptance": supervisor_acceptance,
         "resultSchemaMatched": bool(result_schema_matched),
         "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
+        "toolPolicy": dict(item.get("toolPolicy") or task_brief.get("toolPolicy") or {})
+        if isinstance(item.get("toolPolicy") or task_brief.get("toolPolicy") or {}, dict)
+        else {},
+        "expectedOutputs": _list(item.get("expectedOutputs") or task_brief.get("expectedOutputs")),
+        "behaviorScope": _list(item.get("behaviorScope") or task_brief.get("behaviorScope")),
+        "acceptanceContract": item.get("acceptanceContract") or task_brief.get("acceptanceContract"),
+        "resultText": str(item.get("resultText") or "").strip(),
         "summary": _compact(item.get("summary") or item.get("compactTranscript") or item.get("taskGoal"), limit=900),
         "compactTranscript": _compact(item.get("compactTranscript"), limit=1200),
     }

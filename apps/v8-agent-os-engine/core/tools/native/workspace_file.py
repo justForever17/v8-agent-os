@@ -160,6 +160,51 @@ def is_binary(file_path: str) -> bool:
     return True
 
 
+def _record_agent_written_file_artifact(
+    runtime_context: dict[str, Any],
+    target_path: Path,
+    *,
+    operation: str,
+) -> dict[str, Any] | None:
+    session_id = str(runtime_context.get("session_id") or "").strip()
+    run_id = str(runtime_context.get("run_id") or "").strip()
+    if not session_id or not run_id or not target_path.is_file():
+        return None
+    workspace_root = str(runtime_context.get("workspace_path") or "").strip()
+    workspace_relative_path = ""
+    if workspace_root:
+        try:
+            workspace_relative_path = target_path.resolve().relative_to(Path(workspace_root).resolve()).as_posix()
+        except (OSError, ValueError):
+            workspace_relative_path = ""
+    try:
+        return artifact_store.record_local_file(
+            file_path=target_path,
+            session_id=session_id,
+            run_id=run_id,
+            workspace_path=str(target_path),
+            metadata={
+                "origin": "agent_file_write",
+                "source": "write_native_file",
+                "writeOperation": operation,
+                "surfaceVisible": True,
+                "storageClass": "workspace",
+                "pathPlane": "workspace_artifact",
+                "workspaceRoot": workspace_root or None,
+                "workspaceRelativePath": workspace_relative_path or None,
+                "projectId": str(runtime_context.get("project_id") or "").strip() or None,
+                "workspaceId": str(runtime_context.get("workspace_id") or "").strip() or None,
+            },
+            source_component="write_native_file",
+            node="write_native_file",
+        )
+    except Exception:
+        # The file write remains authoritative. Artifact indexing is a
+        # recoverable projection and must never turn a successful write into a
+        # false failure.
+        return None
+
+
 def _agent_preview_text(value: Any, limit: int = 700) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     if len(text) > limit:
@@ -707,6 +752,11 @@ def write_native_file(
             runtime_context,
             reason="file_append" if append else write_reason,
             subject=str(target_path),
+        )
+        _record_agent_written_file_artifact(
+            runtime_context,
+            target_path,
+            operation="append" if append else write_reason,
         )
         if patch_proof:
             return json.dumps(

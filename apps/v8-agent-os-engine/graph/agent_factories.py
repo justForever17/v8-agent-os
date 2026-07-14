@@ -18,7 +18,7 @@ from core.safety_active_defense import render_host_alerts_line
 from core.prompt_cache_segments import build_prompt_segments_from_parts
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.models.factory import llm_factory
-from core.response_normalizer import ensure_reasoning_content
+from core.response_normalizer import ensure_reasoning_content, extract_text_and_reasoning
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
 from core.runtime_tool_access import (
     filter_visible_tools_for_actor,
@@ -28,7 +28,7 @@ from core.runtime_tool_access import (
 )
 from core.time_truth import utc_now_iso
 from core.workspace_capability import build_workspace_binding
-from erc.runtime_context import get_runtime_context
+from erc.runtime_context import bind_runtime_context, build_runtime_callback_config, get_runtime_context
 from .tool_routing import create_routed_tool_node
 from .route_context import merge_route_context
 
@@ -104,6 +104,96 @@ def _exclude_supervisor_only_tools(tools: list) -> list:
     ]
 
 
+def _mark_delegated_message_owner(message: Any, *, agent_id: str, delegation_id: str = "") -> Any:
+    additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+    additional_kwargs.update(
+        {
+            "v8_owner_runtime_kind": "subagent",
+            "v8_owner_agent_kind": "subagent",
+            "v8_owner_agent_id": agent_id,
+            "v8_owner_subagent_id": agent_id,
+        }
+    )
+    if delegation_id:
+        additional_kwargs["v8_owner_delegation_id"] = delegation_id
+    model_copy = getattr(message, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update={"additional_kwargs": additional_kwargs})
+    message.additional_kwargs = additional_kwargs
+    return message
+
+
+def _delegated_message_owner_id(message: Any) -> str:
+    additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+    return str(
+        additional_kwargs.get("v8_owner_agent_id")
+        or additional_kwargs.get("v8_owner_subagent_id")
+        or ""
+    ).strip()
+
+
+def _delegated_tool_names(messages: list[Any], *, agent_id: str) -> list[str]:
+    names: set[str] = set()
+    for message in list(messages or []):
+        if _delegated_message_owner_id(message) != agent_id:
+            continue
+        if not isinstance(message, AIMessage):
+            continue
+        for tool_call in list(getattr(message, "tool_calls", None) or []):
+            if not isinstance(tool_call, dict):
+                continue
+            name = str(tool_call.get("name") or "").strip()
+            if name:
+                names.add(name)
+    return sorted(names)
+
+
+def _delegated_result_text(messages: list[Any], *, agent_id: str) -> str:
+    for message in reversed(list(messages or [])):
+        if _delegated_message_owner_id(message) != agent_id:
+            continue
+        additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+        exact_result = additional_kwargs.get("v8_subagent_result_text")
+        if exact_result is not None:
+            return str(exact_result).strip()
+        if isinstance(message, AIMessage):
+            content = getattr(message, "content", "")
+            return content.strip() if isinstance(content, str) else str(content).strip()
+    return ""
+
+
+def _delegated_visible_result_text(response: Any) -> str:
+    final_content, _reasoning = extract_text_and_reasoning(response)
+    if final_content:
+        return final_content.strip()
+    raw_content = getattr(response, "content", response)
+    return (raw_content if isinstance(raw_content, str) else str(raw_content)).strip()
+
+
+def _bounded_delegated_task_messages(messages: list[Any], task_brief: dict[str, Any] | None) -> list[Any]:
+    if not isinstance(task_brief, dict) or not task_brief:
+        return list(messages or [])
+    marked: list[Any] = []
+    for message in list(messages or []):
+        if not isinstance(message, HumanMessage):
+            continue
+        additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+        if str(additional_kwargs.get("v8_governance_type") or "").strip() == "delegated_task_instruction":
+            marked.append(message)
+    if marked:
+        return [marked[-1]]
+    query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
+    return [
+        HumanMessage(
+            content=f"[Supervisor Delegated Task]\n{query}",
+            additional_kwargs={
+                "v8_governance_type": "delegated_task_instruction",
+                "v8_task_brief_id": str(task_brief.get("taskBriefId") or "").strip(),
+            },
+        )
+    ]
+
+
 def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtime_access: list[str]) -> list:
     """Keep contextual_auto narrow while adding explicitly granted runtime tools."""
     baseline_tools = list(select_baseline_system_tools(filtered_native_tools))
@@ -114,6 +204,45 @@ def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtim
         if str(getattr(tool_ref, "name", "")).strip() in granted_runtime_tool_names
     ]
     return _dedupe_tools(baseline_tools + granted_runtime_tools)
+
+
+def _apply_task_tool_policy(tools: list, task_brief: dict[str, Any] | None) -> list:
+    task_brief = dict(task_brief or {})
+    policy = task_brief.get("toolPolicy") if isinstance(task_brief.get("toolPolicy"), dict) else {}
+    mode = str(policy.get("mode") or "default").strip().lower()
+    allowed = {
+        str(item or "").strip()
+        for item in list(policy.get("allowedTools") or task_brief.get("allowedTools") or [])
+        if str(item or "").strip()
+    }
+    forbidden = {
+        str(item or "").strip()
+        for item in list(policy.get("forbiddenTools") or task_brief.get("forbiddenTools") or [])
+        if str(item or "").strip()
+    }
+    if mode == "none":
+        return []
+
+    def _names(tool_ref: Any) -> set[str]:
+        return {
+            value
+            for value in (
+                str(getattr(tool_ref, "name", "") or "").strip(),
+                _canonical_tool_name(tool_ref),
+                _raw_tool_name(tool_ref),
+            )
+            if value
+        }
+
+    filtered: list[Any] = []
+    for tool_ref in list(tools or []):
+        names = _names(tool_ref)
+        if names & forbidden:
+            continue
+        if mode == "allowlist" and not (names & allowed):
+            continue
+        filtered.append(tool_ref)
+    return _dedupe_tools(filtered)
 
 
 def _resolved_tool_mode(agent_data: dict) -> str:
@@ -425,11 +554,16 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
         for label, key in (
             ("Task Brief ID", "taskBriefId"),
             ("Goal", "goal"),
+            ("Read Set", "readSet"),
             ("Write Set", "writeSet"),
             ("Expected Outputs", "expectedOutputs"),
             ("Behavior Scope", "behaviorScope"),
+            ("Evidence Refs", "evidenceRefs"),
+            ("Detail Refs", "detailRefs"),
+            ("Proof Expectations", "proofExpectations"),
             ("Required Capabilities", "requiredCapabilities"),
             ("Runtime Access", "runtimeAccess"),
+            ("Tool Policy", "toolPolicy"),
             ("Dependency", "dependency"),
             ("Parallel Group", "parallelGroup"),
             ("Execution Lane Hint", "executionLaneHint"),
@@ -438,6 +572,48 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
             rendered = _compact_prompt_value(task_brief.get(key))
             if rendered:
                 lines.append(f"- {label}: {rendered}")
+        tool_policy = task_brief.get("toolPolicy") if isinstance(task_brief.get("toolPolicy"), dict) else {}
+        tool_policy_mode = str(tool_policy.get("mode") or "default").strip().lower()
+        if tool_policy_mode == "none":
+            lines.append("- Tool discipline: this task has no tool authority. Return the requested result without probing tools.")
+        elif tool_policy_mode == "allowlist":
+            lines.append("- Tool discipline: only the explicit allowlist is available; do not report other tools as missing.")
+        else:
+            lines.append("- Tool discipline: call a granted tool only when it is necessary for this task's acceptance contract; do not probe unrelated capabilities.")
+        delegation_policy = (
+            task_brief.get("delegationPolicy")
+            if isinstance(task_brief.get("delegationPolicy"), dict)
+            else task_brief.get("delegation_policy")
+            if isinstance(task_brief.get("delegation_policy"), dict)
+            else {}
+        )
+        child_delegation_allowed = bool(
+            task_brief.get("allowChildDelegation")
+            or task_brief.get("allow_child_delegation")
+            or task_brief.get("childDelegationBudget")
+            or task_brief.get("child_delegation_budget")
+            or delegation_policy.get("allowChildDelegation")
+            or delegation_policy.get("allow_child_delegation")
+            or delegation_policy.get("childDelegationBudget")
+            or delegation_policy.get("child_delegation_budget")
+        )
+        lines.append("")
+        lines.append("Delegation Authority:")
+        if child_delegation_allowed:
+            lines.append(
+                "- Bounded child delegation is authorized for this task. Use `request_peer_help`; "
+                "the Supervisor-only `delegation_broker` is intentionally not projected to delegated workers."
+            )
+            lines.append(
+                "- Do not choose or spawn a child directly. State the missing capability and let the broker preserve lineage, budget, and acceptance."
+            )
+        else:
+            lines.append(
+                "- Child delegation is not authorized. The absence of `delegation_broker` and `request_peer_help` is intentional, not a missing-tool failure."
+            )
+            lines.append(
+                "- Complete the assigned slice with the tools you have, or return a concrete blocker without attempting to create another worker."
+            )
         context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
         lines.extend(_agent_visible_context_lines(context))
         writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
@@ -705,7 +881,7 @@ def build_contextual_auto_tool_node(
     name: str,
     fallback_goto: str,
 ):
-    async def contextual_tool_node(state):
+    async def contextual_tool_node(state, config=None, runtime=None):
         route_context = dict((state or {}).get("current_route_context") or {})
         selected_mcp_tools = _resolve_selected_mcp_tools(
             all_mcp_tools,
@@ -721,9 +897,12 @@ def build_contextual_auto_tool_node(
             actor="subagent",
             runtime_access=runtime_access,
         )
-        tools = _dedupe_tools(actor_base_tools + list(static_extra_tools or []) + selected_mcp_tools)
+        tools = _apply_task_tool_policy(
+            _dedupe_tools(actor_base_tools + list(static_extra_tools or []) + selected_mcp_tools),
+            task_brief,
+        )
         routed = create_routed_tool_node(tools, name=name, fallback_goto=fallback_goto)
-        return await routed(state)
+        return await routed(state, config=config, runtime=runtime)
 
     return contextual_tool_node
 
@@ -831,6 +1010,7 @@ def build_agent_node(
             extensions_route_query = task_brief_route_query_text(delegated_task_brief)
             delegated_query = full_task_brief_query or inherited_query
             extensions_route_query = extensions_route_query or delegated_query
+            task_messages = _bounded_delegated_task_messages(task_messages, delegated_task_brief)
             contextual_base_tools = _dedupe_tools(
                 filter_visible_tools_for_actor(
                     _select_contextual_subagent_native_tools(filtered_native_tools, delegated_runtime_access) + [fetch_skill_instructions_tool],
@@ -886,7 +1066,10 @@ def build_agent_node(
                     mcp_limit=6,
                 )
                 extensions_runtime_service.emit_route_selected(user_query=extensions_route_query, route_bundle=route_bundle)
-                combined_tools = route_bundle.filtered_tools
+                combined_tools = _apply_task_tool_policy(
+                    route_bundle.filtered_tools,
+                    delegated_task_brief,
+                )
             finally:
                 extensions_runtime_service.reset_execution_context(route_context_token)
 
@@ -975,24 +1158,35 @@ def build_agent_node(
                 workspace_id=state.get("workspace_id"),
                 workspace_path=state.get("workspace_path"),
                 project_id=state.get("project_id"),
-                runtime_kind="chat",
+                runtime_kind="subagent",
             )
             try:
-                response = robust_invoke(
-                    agent_specific_llm,
-                    run_messages,
-                    combined_tools,
-                    role=f"agent:{agent_id}",
-                    preferred_model_id=agent_model_id or supervisor_model_id,
-                    build_model=lambda candidate_model_id: create_subagent_chat_model(
-                        candidate_model_id,
+                with bind_runtime_context(
+                    session_id=state.get("session_id"),
+                    run_id=state.get("run_id"),
+                    workspace_path=state.get("workspace_path"),
+                    runtime_kind="subagent",
+                    trigger_source="delegation_broker",
+                    agent_id=agent_id,
+                    subagent_id=agent_id,
+                    delegation_id=inherited_route_context.get("delegationId"),
+                ):
+                    response = robust_invoke(
+                        agent_specific_llm,
+                        run_messages,
+                        combined_tools,
                         role=f"agent:{agent_id}",
-                        streaming=False,
-                        timeout=180,
-                    ),
-                )
-                extensions_runtime_service.emit_response_tool_calls(response)
-                extensions_runtime_service.emit_execution_completed(response=response)
+                        preferred_model_id=agent_model_id or supervisor_model_id,
+                        invocation_config=build_runtime_callback_config(),
+                        build_model=lambda candidate_model_id: create_subagent_chat_model(
+                            candidate_model_id,
+                            role=f"agent:{agent_id}",
+                            streaming=False,
+                            timeout=180,
+                        ),
+                    )
+                    extensions_runtime_service.emit_response_tool_calls(response)
+                    extensions_runtime_service.emit_execution_completed(response=response)
             finally:
                 extensions_runtime_service.reset_execution_context(route_context_token)
 
@@ -1024,6 +1218,11 @@ def build_agent_node(
                 )
 
             response = sanitize_response_tool_calls(response)
+            response = _mark_delegated_message_owner(
+                response,
+                agent_id=agent_id,
+                delegation_id=str(inherited_route_context.get("delegationId") or ""),
+            )
 
             if getattr(response, "tool_calls", None):
                 return Command(
@@ -1045,23 +1244,30 @@ def build_agent_node(
                     },
                 )
 
-            final_content = response.content if isinstance(response.content, str) else str(response.content)
-            sub_tools_used = set()
-            for message in state["messages"]:
-                if isinstance(message, AIMessage) and getattr(message, "tool_calls", None):
-                    for tool_call in message.tool_calls:
-                        sub_tools_used.add(tool_call.get("name", "unknown"))
+            final_content = _delegated_visible_result_text(response)
+            sub_tools_used = _delegated_tool_names(state["messages"], agent_id=agent_id)
 
             refined_parts = [f"[{agent_name} 执行完毕]"]
             if sub_tools_used:
-                refined_parts.append(f"使用工具: {', '.join(sorted(sub_tools_used))}")
+                refined_parts.append(f"使用工具: {', '.join(sub_tools_used)}")
             refined_parts.append(f"结果: {final_content}")
             refined_parts.append(
-                "\n[System Instruction]: The exact detailed output above has ALREADY been streamed and displayed "
-                "to the user in a specialized UI panel. DO NOT repeat, regurgitate, or summarize this output. "
-                "Simply acknowledge the completion of the sub-agent's task and move to your next step."
+                "\n[Supervisor Acceptance Required]: Inspect this exact result and explicitly accept, retry, or ignore it."
             )
-            refined_msg = HumanMessage(content="\n".join(refined_parts), id=str(uuid.uuid4()))
+            refined_msg = HumanMessage(
+                content="\n".join(refined_parts),
+                id=str(uuid.uuid4()),
+                additional_kwargs={
+                    "v8_governance_type": "delegation_result",
+                    "v8_owner_runtime_kind": "subagent",
+                    "v8_owner_agent_kind": "subagent",
+                    "v8_owner_agent_id": agent_id,
+                    "v8_owner_subagent_id": agent_id,
+                    "v8_owner_delegation_id": str(inherited_route_context.get("delegationId") or ""),
+                    "v8_subagent_tools_used": sub_tools_used,
+                    "v8_subagent_result_text": final_content,
+                },
+            )
             return Command(
                 goto="supervisor",
                 update={
@@ -1106,6 +1312,7 @@ def build_reviewer_node(
     def reviewer_node_func(state):
         try:
             messages = state["messages"]
+            worker_result_text = _delegated_result_text(messages, agent_id=agent_id)
             reflection_count = sum(
                 1
                 for message in reversed(messages)
@@ -1153,18 +1360,31 @@ def build_reviewer_node(
             from core.automation.hooks import hooks_manager
 
             hooks_manager.execute_hook("on_reviewer_start", agent_name=agent_name, agent_id=agent_id)
-            response = robust_invoke(
-                agent_specific_llm,
-                run_messages,
-                None,
-                role=f"reviewer:{agent_id}",
-                preferred_model_id=agent_model_id or supervisor_model_id,
-                build_model=lambda candidate_model_id: create_subagent_chat_model(
-                    candidate_model_id,
+            with bind_runtime_context(
+                runtime_kind="subagent",
+                trigger_source="delegation_reviewer",
+                agent_id=agent_id,
+                subagent_id=agent_id,
+                delegation_id=(state.get("current_route_context") or {}).get("delegationId"),
+            ):
+                response = robust_invoke(
+                    agent_specific_llm,
+                    run_messages,
+                    None,
                     role=f"reviewer:{agent_id}",
-                    streaming=False,
-                    timeout=180,
-                ),
+                    preferred_model_id=agent_model_id or supervisor_model_id,
+                    invocation_config=build_runtime_callback_config(),
+                    build_model=lambda candidate_model_id: create_subagent_chat_model(
+                        candidate_model_id,
+                        role=f"reviewer:{agent_id}",
+                        streaming=False,
+                        timeout=180,
+                    ),
+                )
+            response = _mark_delegated_message_owner(
+                response,
+                agent_id=agent_id,
+                delegation_id=str((state.get("current_route_context") or {}).get("delegationId") or ""),
             )
             hooks_manager.execute_hook("on_reviewer_end", agent_name=agent_name, agent_id=agent_id)
 
@@ -1172,13 +1392,19 @@ def build_reviewer_node(
             if "APPROVE" in content or "approve" in content.lower():
                 cap_msg = HumanMessage(
                     content=(
-                        f"[{agent_name} 执行完毕且通过审核]\n\n"
-                        "[System Instruction]: The exact detailed output of "
-                        f"{agent_name} has ALREADY been streamed and displayed to the user in a specialized UI panel. "
-                        "DO NOT repeat, regurgitate, or summarize their output. Simply acknowledge the completion "
-                        "of the sub-agent's task and move to your next step."
+                        f"[{agent_name} 执行完毕且通过本地审核]\n"
+                        "结果已回流，仍需 Supervisor 基于精确结果明确 accept、retry 或 ignore。"
                     ),
                     id=str(uuid.uuid4()),
+                    additional_kwargs={
+                        "v8_governance_type": "delegation_result",
+                        "v8_owner_runtime_kind": "subagent",
+                        "v8_owner_agent_kind": "subagent",
+                        "v8_owner_agent_id": agent_id,
+                        "v8_owner_subagent_id": agent_id,
+                        "v8_owner_delegation_id": str((state.get("current_route_context") or {}).get("delegationId") or ""),
+                        "v8_subagent_result_text": worker_result_text,
+                    },
                 )
                 return Command(goto="supervisor", update={"messages": [response, cap_msg]})
 

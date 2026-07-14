@@ -204,3 +204,41 @@ def test_request_peer_help_without_child_budget_is_blocked_not_dispatched() -> N
     assert payload["ok"] is False
     assert payload["error"] == "child_delegation_not_allowed"
     assert "pending_child_delegations" not in command.update
+
+
+def test_delegation_broker_observe_reads_local_structured_handoff() -> None:
+    command = delegation_tools.delegation_broker.func(
+        mode="observe",
+        delegation_id="delegation-local-1",
+        state={
+            "current_route_context": {
+                "lastDelegationHandoff": {
+                    "invocationId": "invocation-local-1",
+                    "results": [
+                        {
+                            "contractVersion": "delegation-result/v1",
+                            "taskBriefId": "task-local-1",
+                            "delegationId": "delegation-local-1",
+                            "invocationId": "invocation-local-1",
+                            "targetId": "reviewer-1",
+                            "targetLabel": "Reviewer",
+                            "status": "ok",
+                            "summary": "Reviewed the requested slice.",
+                            "localSelfCheck": "No blocking issue found.",
+                            "acceptanceHint": "Accept, retry, or ignore.",
+                            "supervisorAcceptance": {"status": "pending"},
+                        }
+                    ],
+                }
+            }
+        },
+        tool_call_id="call-observe-local",
+    )
+
+    payload = _payload_from_command(command)
+    assert payload["ok"] is True
+    assert payload["mode"] == "observe"
+    assert payload["recommendedNextAction"] == "accept_retry_or_ignore"
+    assert payload["items"][0]["summary"] == "Reviewed the requested slice."
+    assert payload["items"][0]["localSelfCheck"] == "No blocking issue found."
+    assert "registryVersion" not in payload

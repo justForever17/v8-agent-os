@@ -19,7 +19,16 @@ def create_robust_invoke(
     model_failover_service,
     supervisor_reasoning_effort: str = "auto",
 ):
-    def _robust_invoke(base_llm_instance, messages, tools=None, *, role="supervisor", preferred_model_id="", build_model=None):
+    def _robust_invoke(
+        base_llm_instance,
+        messages,
+        tools=None,
+        *,
+        role="supervisor",
+        preferred_model_id="",
+        build_model=None,
+        invocation_config=None,
+    ):
         import logging
 
         logger = logging.getLogger("v8chat.supervisor")
@@ -47,6 +56,7 @@ def create_robust_invoke(
             role=role,
             preferred_model_id=target_model_id,
             build_model=model_builder,
+            invocation_config=invocation_config,
         )
 
     return _robust_invoke

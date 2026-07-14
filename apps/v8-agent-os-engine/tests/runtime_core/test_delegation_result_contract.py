@@ -16,6 +16,11 @@ def test_delegation_result_contract_preserves_lineage_acceptance_and_artifact_ev
             "artifactRefs": [{"path": "README.md"}],
             "missingExpectedArtifacts": ["PROOF.json"],
             "toolsUsed": ["write_native_file"],
+            "toolPolicy": {"mode": "allowlist", "allowedTools": ["write_native_file"]},
+            "expectedOutputs": ["README.md"],
+            "behaviorScope": ["Only update README.md"],
+            "acceptanceContract": "README exists and is accurate.",
+            "resultText": "README written exactly as requested.",
             "compactTranscript": "README written and checked.",
             "localSelfCheck": "README exists; proof file still missing.",
             "acceptanceHint": "Accept README, retry proof task.",
@@ -30,3 +35,8 @@ def test_delegation_result_contract_preserves_lineage_acceptance_and_artifact_ev
     assert contract["supervisorAcceptance"]["status"] == "pending"
     assert contract["resultSchemaMatched"] is True
     assert contract["toolsUsed"] == ["write_native_file"]
+    assert contract["toolPolicy"]["mode"] == "allowlist"
+    assert contract["expectedOutputs"] == ["README.md"]
+    assert contract["behaviorScope"] == ["Only update README.md"]
+    assert contract["acceptanceContract"] == "README exists and is accurate."
+    assert contract["resultText"] == "README written exactly as requested."

@@ -1115,9 +1115,10 @@ async def get_session_snapshot(session_id: str, compact: int = 0):
             runtime_timeline = payload.get("runtimeTimeline")
             runtime_timeline_count = len(runtime_timeline) if isinstance(runtime_timeline, list) else 0
             if compact == 1:
+                compact_runtime_timeline = list(runtime_timeline[-160:]) if isinstance(runtime_timeline, list) else []
                 payload = {
                     **payload,
-                    "runtimeTimeline": [],
+                    "runtimeTimeline": compact_runtime_timeline,
                     "runtimeTimelineWindow": {
                         **(
                             payload.get("runtimeTimelineWindow")
@@ -1125,6 +1126,7 @@ async def get_session_snapshot(session_id: str, compact: int = 0):
                             else {}
                         ),
                         "sourceCount": runtime_timeline_count,
+                        "limit": 160,
                         "compacted": True,
                     },
                 }

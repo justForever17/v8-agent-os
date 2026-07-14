@@ -351,6 +351,7 @@ class ChatStreamState:
     tool_call_id_by_callback_run_id: dict[str, str] = field(default_factory=dict)
     provider_tool_call_id_to_tool_call_id: dict[str, str] = field(default_factory=dict)
     tool_call_shadow_by_tool_call_id: dict[str, dict[str, str]] = field(default_factory=dict)
+    tool_owner_by_tool_call_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     pending_ask_user_interaction_id: str | None = None
     pending_ask_user_tool_call_id: str | None = None
     delegation_claim_detected: bool = False
@@ -6496,13 +6497,64 @@ class ChatRuntime:
             return "shard"
         return "subagent"
 
-    def _resolve_event_owner(self, stream_state: ChatStreamState, *, tool_name: str | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _event_owner_agent_from_graph_node(
+        stream_state: ChatStreamState,
+        metadata: dict[str, Any],
+    ) -> str:
+        node_name = str(metadata.get("langgraph_node") or "").strip()
+        if not node_name:
+            return ""
+        if node_name == "supervisor" or node_name.startswith("supervisor_"):
+            return "supervisor"
+        for agent_id in sorted(
+            (str(item or "").strip() for item in stream_state.valid_agent_node_names),
+            key=len,
+            reverse=True,
+        ):
+            if not agent_id or agent_id == "supervisor":
+                continue
+            if node_name == agent_id or node_name.startswith(f"{agent_id}_"):
+                return agent_id
+        return ""
+
+    def _resolve_event_owner(
+        self,
+        stream_state: ChatStreamState,
+        *,
+        tool_name: str | None = None,
+        event_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         normalized_tool = str(tool_name or "").strip().lower()
+        metadata = dict(event_metadata or {})
         runtime_context = get_runtime_context()
-        context_runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
-        context_subagent_id = str(runtime_context.get("subagent_id") or runtime_context.get("subagentId") or "").strip()
-        context_delegation_id = str(runtime_context.get("delegation_id") or runtime_context.get("delegationId") or "").strip()
-        context_agent_id = str(runtime_context.get("agent_id") or runtime_context.get("agentId") or context_subagent_id or "").strip()
+        context_runtime_kind = str(
+            metadata.get("v8_owner_runtime_kind")
+            or runtime_context.get("runtime_kind")
+            or runtime_context.get("runtimeKind")
+            or ""
+        ).strip().lower()
+        context_subagent_id = str(
+            metadata.get("v8_owner_subagent_id")
+            or runtime_context.get("subagent_id")
+            or runtime_context.get("subagentId")
+            or ""
+        ).strip()
+        context_delegation_id = str(
+            metadata.get("v8_owner_delegation_id")
+            or runtime_context.get("delegation_id")
+            or runtime_context.get("delegationId")
+            or ""
+        ).strip()
+        graph_agent_id = self._event_owner_agent_from_graph_node(stream_state, metadata)
+        context_agent_id = str(
+            metadata.get("v8_owner_agent_id")
+            or graph_agent_id
+            or runtime_context.get("agent_id")
+            or runtime_context.get("agentId")
+            or context_subagent_id
+            or ""
+        ).strip()
         current_agent = str(context_agent_id or stream_state.current_agent or "supervisor").strip() or "supervisor"
         owner_kind = self._owner_kind_for_agent(current_agent)
         owner_runtime_id = "chat" if owner_kind == "supervisor" else "subagent_swarm"
@@ -6537,8 +6589,9 @@ class ChatRuntime:
                     owner_runtime_id = "rpa"
                     owner_kind = "runtime"
             elif normalized_tool in {"delegation_broker", "subagent_broker"} or normalized_tool.startswith("subagent_"):
-                owner_runtime_id = "subagent_swarm"
-                owner_kind = "subagent"
+                if owner_kind != "supervisor":
+                    owner_runtime_id = "subagent_swarm"
+                    owner_kind = "subagent"
             elif owner_kind != "supervisor":
                 owner_runtime_id = "subagent_swarm"
 
@@ -6555,6 +6608,14 @@ class ChatRuntime:
             )
             if runtime_context.get(key) is not None
         }
+        if metadata.get("v8_owner_runtime_kind"):
+            runtime_context_summary["runtime_kind"] = metadata.get("v8_owner_runtime_kind")
+        if metadata.get("v8_owner_subagent_id"):
+            runtime_context_summary["subagent_id"] = metadata.get("v8_owner_subagent_id")
+        if metadata.get("v8_owner_delegation_id"):
+            runtime_context_summary["delegation_id"] = metadata.get("v8_owner_delegation_id")
+        if metadata.get("v8_owner_trigger_source"):
+            runtime_context_summary["trigger_source"] = metadata.get("v8_owner_trigger_source")
         return {
             "ownerRuntimeId": owner_runtime_id,
             "ownerAgentKind": owner_kind,
@@ -7108,18 +7169,20 @@ class ChatRuntime:
         provider_delta_at_ms: int | None = None,
         canonical_event_at_ms: int | None = None,
         partial: bool = False,
+        owner: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if not stable_chunk:
             return None
-        profile = self._get_agent_profile(stream_state.current_agent)
+        owner = dict(owner or self._resolve_event_owner(stream_state))
+        owner_agent_id = str(owner.get("ownerAgentId") or stream_state.current_agent or "supervisor")
+        profile = self._get_agent_profile(owner_agent_id)
         run_key = self._normalized_stream_run_id(model_run_id)
-        owner = self._resolve_event_owner(stream_state)
         owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
         topic = "run.text.delta" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.text.delta"
         if bool(owner.get("displayInMessage")):
             segment_seq = int(stream_state.text_segment_seq_by_run.get(run_key) or 0) + 1
             stream_state.text_segment_seq_by_run[run_key] = segment_seq
-            stream_run_key = f"{owner_runtime_id}:{stream_state.current_agent}:text:{run_key}"
+            stream_run_key = f"{owner_runtime_id}:{owner_agent_id}:text:{run_key}"
             stream_key = f"{stream_run_key}:segment:{segment_seq}"
             node_content = stable_chunk
             stream_state.last_text_delta_at_ms = self._now_timestamp_ms()
@@ -7127,7 +7190,7 @@ class ChatRuntime:
         else:
             segment_seq = int(stream_state.text_segment_seq_by_run.get(run_key) or 0) + 1
             stream_state.text_segment_seq_by_run[run_key] = segment_seq
-            stream_run_key = f"{owner_runtime_id}:{stream_state.current_agent}:text:{run_key}"
+            stream_run_key = f"{owner_runtime_id}:{owner_agent_id}:text:{run_key}"
             stream_key = f"{stream_run_key}:segment:{segment_seq}"
             node_content = snapshot or stream_state.text_snapshots_by_run.get(run_key) or stable_chunk
         text_event = {
@@ -7247,8 +7310,9 @@ class ChatRuntime:
         stream_state: ChatStreamState,
         *,
         model_run_id: str,
+        owner: dict[str, Any] | None = None,
     ) -> None:
-        owner = self._resolve_event_owner(stream_state)
+        owner = dict(owner or self._resolve_event_owner(stream_state))
         if not bool(owner.get("displayInMessage")):
             return
         run_key = self._normalized_stream_run_id(model_run_id)
@@ -7314,14 +7378,16 @@ class ChatRuntime:
         reasoning_surface: dict[str, Any] | None = None,
         provider_delta_at_ms: int | None = None,
         canonical_event_at_ms: int | None = None,
+        owner: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if not reasoning_delta:
             return None
-        profile = self._get_agent_profile(stream_state.current_agent)
+        owner = dict(owner or self._resolve_event_owner(stream_state))
+        owner_agent_id = str(owner.get("ownerAgentId") or stream_state.current_agent or "supervisor")
+        profile = self._get_agent_profile(owner_agent_id)
         run_key = self._normalized_stream_run_id(model_run_id)
-        owner = self._resolve_event_owner(stream_state)
         owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
-        stream_key = f"{owner_runtime_id}:{stream_state.current_agent}:reasoning:{run_key}"
+        stream_key = f"{owner_runtime_id}:{owner_agent_id}:reasoning:{run_key}"
         topic = "run.reasoning.delta" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.reasoning.delta"
         node_content = snapshot or stream_state.reasoning_snapshots_by_run.get(run_key) or reasoning_delta
         reasoning_surface_payload = reasoning_surface or {}
@@ -7413,11 +7479,12 @@ class ChatRuntime:
         snapshot: str | None = None,
         provider_delta_at_ms: int | None = None,
         canonical_event_at_ms: int | None = None,
+        owner: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         emitted_events: list[dict[str, Any]] = []
         if not delta:
             return emitted_events
-        owner = self._resolve_event_owner(stream_state)
+        owner = dict(owner or self._resolve_event_owner(stream_state))
         resolved_snapshot = None if bool(owner.get("displayInMessage")) else snapshot
         if not bool(owner.get("displayInMessage")):
             text_event = await self._emit_stable_text_chunk(
@@ -7428,6 +7495,7 @@ class ChatRuntime:
                 snapshot=resolved_snapshot,
                 provider_delta_at_ms=provider_delta_at_ms,
                 canonical_event_at_ms=canonical_event_at_ms,
+                owner=owner,
             )
             return [text_event] if text_event is not None else []
         if stream_state.preserve_stream_timeline:
@@ -7440,6 +7508,7 @@ class ChatRuntime:
                 snapshot=resolved_snapshot,
                 provider_delta_at_ms=provider_delta_at_ms,
                 canonical_event_at_ms=canonical_event_at_ms,
+                owner=owner,
             )
             return [text_event] if text_event is not None else []
         for stable_chunk in stream_state.text_aggregator.push(delta):
@@ -7453,6 +7522,7 @@ class ChatRuntime:
                 snapshot=resolved_snapshot,
                 provider_delta_at_ms=provider_delta_at_ms,
                 canonical_event_at_ms=canonical_event_at_ms,
+                owner=owner,
             )
             if text_event is not None:
                 emitted_events.append(text_event)
@@ -9028,7 +9098,7 @@ class ChatRuntime:
             return None
         stream_state.current_agent = node_name
         profile = self._get_agent_profile(node_name)
-        owner = self._resolve_event_owner(stream_state)
+        owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
         stream_key = f"agent:{node_name}"
         topic_prefix = self._runtime_topic_prefix(str(owner.get("ownerRuntimeId") or "chat"))
         agent_start_node = {
@@ -9162,6 +9232,7 @@ class ChatRuntime:
             if stream_state.active_tool_call_ids:
                 return emitted_events
             provider_delta_at_ms = self._now_timestamp_ms()
+            event_owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
             model_events = canonical_model_event_adapter.normalize_chat_model_stream(
                 event,
                 text_snapshots=stream_state.text_snapshots_by_run,
@@ -9175,7 +9246,7 @@ class ChatRuntime:
                 if model_event.event_type == "text_delta":
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
-                    owner = self._resolve_event_owner(stream_state)
+                    owner = event_owner
                     display_in_message = bool(owner.get("displayInMessage"))
                     text_delta = stream_state.text_filter.process(text_delta) if display_in_message else text_delta
                     text_delta = self._suppress_neighbor_duplicate_delta(
@@ -9203,6 +9274,7 @@ class ChatRuntime:
                             snapshot=None if display_in_message else model_event.snapshot,
                             provider_delta_at_ms=provider_delta_at_ms,
                             canonical_event_at_ms=canonical_event_at_ms,
+                            owner=owner,
                         )
                     )
                 elif model_event.event_type == "reasoning_suppressed":
@@ -9241,11 +9313,13 @@ class ChatRuntime:
                     if not reasoning_delta:
                         continue
                     stream_state.watchdog.note_text_progress()
-                    stream_state.reasoning_buffer.append(reasoning_delta)
+                    if bool(event_owner.get("displayInMessage")):
+                        stream_state.reasoning_buffer.append(reasoning_delta)
                     self._maybe_fire_supervisor_thinking_start(
                         chat_run,
                         stream_state,
                         model_run_id=model_run_id,
+                        owner=event_owner,
                     )
                     reasoning_event = self._emit_reasoning_delta(
                         chat_run,
@@ -9257,6 +9331,7 @@ class ChatRuntime:
                         reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or stream_state.reasoning_surface_contract or {}),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
+                        owner=event_owner,
                     )
                     if reasoning_event is not None:
                         emitted_events.append(reasoning_event)
@@ -9266,6 +9341,7 @@ class ChatRuntime:
             if stream_state.active_tool_call_ids:
                 return emitted_events
             provider_delta_at_ms = self._now_timestamp_ms()
+            event_owner = self._resolve_event_owner(stream_state, event_metadata=metadata)
             model_run_id = (event.get("run_id") or "").strip()
             model_events = canonical_model_event_adapter.normalize_chat_model_end(
                 event,
@@ -9276,7 +9352,7 @@ class ChatRuntime:
                 reasoning_surface=stream_state.reasoning_surface_contract,
             )
             final_snapshot = stream_state.text_snapshots_by_run.get(self._normalized_stream_run_id(model_run_id))
-            if final_snapshot:
+            if final_snapshot and bool(event_owner.get("displayInMessage")):
                 stream_state.authoritative_final_text = final_snapshot
             model_end_run_ids = {model_run_id}
             for model_event in model_events:
@@ -9285,7 +9361,7 @@ class ChatRuntime:
                 if model_event.event_type == "text_delta":
                     text_delta = model_event.delta
                     stream_state.text_raw_chars += len(text_delta)
-                    owner = self._resolve_event_owner(stream_state)
+                    owner = event_owner
                     display_in_message = bool(owner.get("displayInMessage"))
                     text_delta = stream_state.text_filter.process(text_delta) if display_in_message else text_delta
                     text_delta = self._suppress_neighbor_duplicate_delta(
@@ -9321,6 +9397,7 @@ class ChatRuntime:
                             snapshot=None if display_in_message else model_event.snapshot,
                             provider_delta_at_ms=provider_delta_at_ms,
                             canonical_event_at_ms=canonical_event_at_ms,
+                            owner=owner,
                         )
                     )
                 elif model_event.event_type == "reasoning_suppressed":
@@ -9359,11 +9436,13 @@ class ChatRuntime:
                     if not reasoning_delta:
                         continue
                     stream_state.watchdog.note_text_progress()
-                    stream_state.reasoning_buffer.append(reasoning_delta)
+                    if bool(event_owner.get("displayInMessage")):
+                        stream_state.reasoning_buffer.append(reasoning_delta)
                     self._maybe_fire_supervisor_thinking_start(
                         chat_run,
                         stream_state,
                         model_run_id=model_event.model_run_id,
+                        owner=event_owner,
                     )
                     reasoning_event = self._emit_reasoning_delta(
                         chat_run,
@@ -9375,6 +9454,7 @@ class ChatRuntime:
                         reasoning_surface=dict(model_event.diagnostics.get("reasoningSurface") or stream_state.reasoning_surface_contract or {}),
                         provider_delta_at_ms=provider_delta_at_ms,
                         canonical_event_at_ms=canonical_event_at_ms,
+                        owner=event_owner,
                     )
                     if reasoning_event is not None:
                         emitted_events.append(reasoning_event)
@@ -9428,7 +9508,13 @@ class ChatRuntime:
                 stream_state.provider_tool_call_id_to_tool_call_id[provider_tool_call_id] = tool_call_id
             if tool_call_id and provider_shadow:
                 stream_state.tool_call_shadow_by_tool_call_id[tool_call_id] = dict(provider_shadow)
-            owner = self._resolve_event_owner(stream_state, tool_name=str(name or ""))
+            owner = self._resolve_event_owner(
+                stream_state,
+                tool_name=str(name or ""),
+                event_metadata=metadata,
+            )
+            if tool_call_id:
+                stream_state.tool_owner_by_tool_call_id[tool_call_id] = dict(owner)
             self._maybe_emit_supervisor_direct_scope_diagnostic(
                 chat_run,
                 stream_state,
@@ -9459,7 +9545,7 @@ class ChatRuntime:
             }
             profile = self._get_agent_profile(str(owner.get("ownerAgentId") or stream_state.current_agent))
             owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
-            stream_key = f"{owner_runtime_id}:{stream_state.current_agent}:tool:{tool_call_id or name}"
+            stream_key = f"{owner_runtime_id}:{str(owner.get('ownerAgentId') or stream_state.current_agent)}:tool:{tool_call_id or name}"
             topic = "tool.started" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.tool.started"
             tool_call_node = {
                 "id": (
@@ -9642,11 +9728,18 @@ class ChatRuntime:
                 **({"mcpApp": mcp_app_payload} if mcp_app_payload else {}),
                 "timestamp": 0,
             }
-            owner = self._resolve_event_owner(stream_state, tool_name=str(name or ""))
+            owner = dict(
+                stream_state.tool_owner_by_tool_call_id.get(tool_call_id)
+                or self._resolve_event_owner(
+                    stream_state,
+                    tool_name=str(name or ""),
+                    event_metadata=metadata,
+                )
+            )
             stream_state.watchdog.note_tool_end(tool_call_id)
             profile = self._get_agent_profile(str(owner.get("ownerAgentId") or stream_state.current_agent))
             owner_runtime_id = str(owner.get("ownerRuntimeId") or "chat")
-            stream_key = f"{owner_runtime_id}:{stream_state.current_agent}:tool:{tool_call_id or name}"
+            stream_key = f"{owner_runtime_id}:{str(owner.get('ownerAgentId') or stream_state.current_agent)}:tool:{tool_call_id or name}"
             topic = "tool.finished" if bool(owner.get("displayInMessage")) else f"{self._runtime_topic_prefix(owner_runtime_id)}.tool.finished"
             tool_result_node = {
                 "id": (
@@ -9700,6 +9793,8 @@ class ChatRuntime:
             stream_state.active_tool_call_ids.discard(active_tool_key)
             if callback_run_id:
                 stream_state.tool_call_id_by_callback_run_id.pop(callback_run_id, None)
+            if tool_call_id:
+                stream_state.tool_owner_by_tool_call_id.pop(tool_call_id, None)
             if not active_tool_key:
                 stream_state.active_tool_call_ids.clear()
             emitted_events.append(tool_result_event)
@@ -9794,6 +9889,11 @@ class ChatRuntime:
             return ""
         for message in reversed(list(state.get("messages") or [])):
             if not isinstance(message, AIMessage):
+                continue
+            additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+            if str(additional_kwargs.get("v8_owner_agent_kind") or "").strip().lower() in {"subagent", "shard"}:
+                continue
+            if str(additional_kwargs.get("v8_owner_runtime_kind") or "").strip().lower() in {"subagent", "delegation"}:
                 continue
             raw_text, raw_reasoning = extract_text_and_reasoning(message)
             if not raw_text and not raw_reasoning and isinstance(getattr(message, "content", None), str):
@@ -10431,6 +10531,11 @@ class ChatRuntime:
                     },
                     "compactTranscript": item.get("compactTranscript") or item.get("error") or "",
                     "summary": item.get("summary") or item.get("compactTranscript") or item.get("taskGoal") or "",
+                    "resultText": item.get("resultText") or "",
+                    "toolPolicy": item.get("toolPolicy") or {},
+                    "expectedOutputs": item.get("expectedOutputs") or [],
+                    "behaviorScope": item.get("behaviorScope") or [],
+                    "acceptanceContract": item.get("acceptanceContract"),
                     "traceRef": {
                         "runId": chat_run.active_run_id,
                         "invocationId": invocation_id,

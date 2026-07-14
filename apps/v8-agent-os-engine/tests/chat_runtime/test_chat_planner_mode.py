@@ -8,7 +8,7 @@ from api.models import ChatMessage, ChatRequest, ChatRequestData, EngineConfig
 from core.database import db
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
 from graph.workflow_assembly import build_planner_auto_dispatch_node, build_runtime_episode_wait_node
-from graph.parallel_support import build_parallel_delegate_join_node
+from graph.parallel_support import _compact_transcript, _subagent_result_summary, _subagent_result_text, build_parallel_delegate_join_node
 from graph.supervisor_builder import _is_request_model_override
 from graph.supervisor_turn import _filter_spec_tools_for_mode, _should_force_memory_broker_first, _spec_mode_stage_guidance
 from runtimes.chat.planner_contract_verifier import verify_and_repair_planner_contract
@@ -16,6 +16,45 @@ from runtimes.chat.runtime import ChatRuntime, PlannerPlanPayload
 
 
 class ChatPlannerModeTests(unittest.TestCase):
+    def test_subagent_handoff_summary_drops_reasoning_and_raw_observation_noise(self):
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        messages = [
+            AIMessage(content="<think>I should inspect hidden runtime state.</think>", tool_calls=[{"name": "creative_media_capabilities", "args": {}, "id": "call-1"}]),
+            ToolMessage(
+                content=(
+                    "Creative Media capabilities.describe\n"
+                    "Summary: facade list available\n"
+                    "Detail: tool_observation_detail(raw_ref='toolobs://hidden')\n"
+                    "Raw: toolobs://hidden"
+                ),
+                tool_call_id="call-1",
+                name="creative_media_capabilities",
+            ),
+            HumanMessage(content="[Reviewer 执行完毕]\n微舞台验收完成。\n本地自检：事件顺序正确。"),
+        ]
+
+        transcript = _compact_transcript(messages)
+        summary = _subagent_result_summary(messages)
+
+        self.assertIn("微舞台验收完成", transcript)
+        self.assertIn("微舞台验收完成", summary)
+        self.assertNotIn("<think>", transcript)
+        self.assertNotIn("hidden runtime state", transcript)
+        self.assertNotIn("toolobs://", transcript)
+
+    def test_subagent_handoff_keeps_exact_result_separate_from_display_copy(self):
+        from langchain_core.messages import HumanMessage
+
+        messages = [
+            HumanMessage(
+                content="[Reviewer 执行完毕]\n结果: OWNER_ISOLATION_OK",
+                additional_kwargs={"v8_subagent_result_text": "OWNER_ISOLATION_OK"},
+            )
+        ]
+
+        self.assertEqual(_subagent_result_text(messages), "OWNER_ISOLATION_OK")
+
     def test_spec_revision_resume_starts_a_fresh_supervisor_turn(self):
         runtime = ChatRuntime()
         chat_run = SimpleNamespace(
@@ -2528,6 +2567,13 @@ class ChatPlannerModeTests(unittest.TestCase):
         self.assertEqual(route_context["capabilityEpisodes"][0]["state"], "completed")
         self.assertNotIn("activeCapabilityEpisodeId", route_context)
         self.assertEqual(route_context["lastDelegationHandoff"]["handoffRefs"], [route_context["handoffRefs"][0]["handoffRefId"]])
+        self.assertEqual(route_context["lastDelegationHandoff"]["results"][0]["status"], "ok")
+        message = command.update["messages"][0]
+        self.assertIn("<delegation_handoffs>", message.content)
+        self.assertIn("Reviewed the isolated file", message.content)
+        self.assertIn("accept、retry 或 ignore", message.content)
+        self.assertNotIn("runtime card", message.content)
+        self.assertEqual(message.additional_kwargs["v8_governance_type"], "delegation_handoff")
 
 
 if __name__ == "__main__":

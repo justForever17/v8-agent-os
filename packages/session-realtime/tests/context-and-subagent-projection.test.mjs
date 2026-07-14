@@ -82,3 +82,30 @@ test("subagent projection drops raw JSON-shaped payload noise", () => {
   }] }]);
   assert.equal(projection[0].summary, null);
 });
+
+test("subagent returns can be restored from the durable runtime timeline without leaking raw reasoning", () => {
+  const projection = buildSubagentReturnProjection([], [{
+    id: "runtime-subagent-event",
+    kind: "execution",
+    topic: "subagent.task.completed",
+    timestamp: 20,
+    data: {
+      delegationId: "delegation-runtime",
+      delegationDepth: 1,
+      subagentName: "Creative Media Director",
+      subagentFamily: "creative_media",
+      taskGoal: "Check the collaboration surface",
+      resultText: "AUTHORITY_OK",
+      compactTranscript: "<think>provider reasoning</think>\ntoolobs://secret-runtime-detail",
+      localSelfCheck: "Subagent branch completed; supervisor must still accept, retry, or ignore the result.",
+      acceptanceHint: "Review the result.",
+      supervisorAcceptance: { status: "pending" },
+    },
+  }]);
+
+  assert.equal(projection.length, 1);
+  assert.equal(projection[0].name, "Creative Media Director");
+  assert.equal(projection[0].taskGoal, "Check the collaboration surface");
+  assert.equal(projection[0].summary, "AUTHORITY_OK");
+  assert.equal(projection[0].selfCheck, null);
+});

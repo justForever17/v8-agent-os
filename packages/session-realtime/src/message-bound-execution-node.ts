@@ -69,6 +69,14 @@ export type MessageBoundExecutionMessage = {
   nodes?: MessageBoundExecutionTimelineNode[] | null;
 };
 
+export type MessageBoundCollaborationMicroStagePlacement = {
+  id: string;
+  anchorNodeId: string;
+  anchorSequence: number;
+  sourceNodeIds: string[];
+  stages: CollaborationMicroStage[];
+};
+
 function readRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
@@ -84,6 +92,18 @@ function readTimestamp(value: unknown): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return 0;
+}
+
+export function getMessageBoundExecutionTimelineNodeIdentityCandidates(
+  node: MessageBoundExecutionTimelineNode | null | undefined,
+): string[] {
+  if (!node) return [];
+  return Array.from(new Set([
+    readString(node.nodeId),
+    readString(node.id),
+    readString(node.toolInvocationId),
+    readString(node.toolCallId),
+  ].filter(Boolean)));
 }
 
 function readNestedData(node: MessageBoundExecutionTimelineNode): Record<string, unknown> {
@@ -256,4 +276,29 @@ export function buildCollaborationMicroStagesFromMessageBoundNodes(
     messageBoundExecutionNodesToStageActivities(nodes),
     options,
   );
+}
+
+export function buildMessageBoundCollaborationMicroStagePlacement(
+  nodes: MessageBoundExecutionNode[] = [],
+  options: BuildCollaborationMicroStageOptions = {},
+): MessageBoundCollaborationMicroStagePlacement | null {
+  const stages = buildCollaborationMicroStagesFromMessageBoundNodes(nodes, options);
+  if (stages.length === 0) return null;
+
+  const sourceNodeIds = new Set(
+    stages.flatMap((stage) => stage.sourceActivityIds.map((value) => readString(value)).filter(Boolean)),
+  );
+  const orderedSources = nodes
+    .filter((node) => sourceNodeIds.has(node.nodeId))
+    .sort((left, right) => left.sequence - right.sequence);
+  const anchor = orderedSources[0];
+  if (!anchor) return null;
+
+  return {
+    id: `collaboration-stage:${anchor.messageId}:${anchor.nodeId}`,
+    anchorNodeId: anchor.nodeId,
+    anchorSequence: anchor.sequence,
+    sourceNodeIds: Array.from(new Set(orderedSources.map((node) => node.nodeId))),
+    stages,
+  };
 }

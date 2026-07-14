@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   buildCollaborationMicroStagesFromMessageBoundNodes,
+  buildMessageBoundCollaborationMicroStagePlacement,
   buildMessageBoundExecutionNodes,
+  getMessageBoundExecutionTimelineNodeIdentityCandidates,
 } from "../dist/message-bound-execution-node.js";
 
 const messages = [
@@ -63,5 +65,19 @@ const stages = buildCollaborationMicroStagesFromMessageBoundNodes(nodes, {
 assert.equal(stages.length, 2);
 assert.ok(stages.some((stage) => stage.kind === "runtime" && stage.runtimeId === "engineering"));
 assert.ok(stages.some((stage) => stage.kind === "subagent" && stage.dispatchGroup === "dg_quality"));
+
+const placement = buildMessageBoundCollaborationMicroStagePlacement(nodes, {
+  runId: "run_message_bound",
+  locale: "zh-CN",
+});
+assert.ok(placement);
+assert.equal(placement.anchorNodeId, "node_runtime_route");
+assert.equal(placement.anchorSequence, 0);
+assert.deepEqual(placement.sourceNodeIds, ["node_runtime_route", "node_delegation"]);
+assert.equal(placement.stages.length, 2);
+assert.deepEqual(
+  getMessageBoundExecutionTimelineNodeIdentityCandidates(messages[0].nodes[1]),
+  ["node_delegation", "call_delegate"],
+);
 
 console.log("message-bound execution nodes verified");

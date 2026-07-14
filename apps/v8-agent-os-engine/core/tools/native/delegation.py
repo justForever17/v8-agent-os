@@ -4,7 +4,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -13,6 +13,7 @@ from langgraph.types import Command, Send
 
 from core.agents import agents_from_subagent_registry_snapshot, build_subagent_registry_snapshot
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from core.delegation_result_contract import build_delegation_result_contract
 from core.delegation_broker import (
     build_workset_dispatch_decisions,
     choose_best_external_worker_with_diagnostics,
@@ -39,6 +40,46 @@ from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
 
 storage = StorageManager()
+
+
+class DelegationToolPolicyInput(TypedDict, total=False):
+    mode: str
+    allowedTools: list[str]
+    forbiddenTools: list[str]
+    noTools: bool
+
+
+class DelegationTaskInput(TypedDict, total=False):
+    taskBriefId: str
+    title: str
+    goal: str
+    context: Any
+    expectedOutput: str
+    expectedOutputs: list[str]
+    acceptanceContract: str
+    acceptanceTiers: Any
+    constraints: list[str]
+    behaviorScope: list[str]
+    toolPolicy: DelegationToolPolicyInput
+    allowedTools: list[str]
+    forbiddenTools: list[str]
+    noTools: bool
+    requiredCapabilities: list[str]
+    runtimeAccess: list[str]
+    readSet: list[str]
+    writeSet: list[str]
+    proofExpectations: list[str]
+    evidenceRefs: list[str]
+    detailRefs: list[str]
+    researchRefs: list[str]
+    pluginReferences: list[dict[str, Any]]
+    executionLaneHint: str
+    familyHint: str
+    preferredAgentId: str
+    preferredWorkerType: str
+    dependency: list[str]
+    allowChildDelegation: bool
+    childDelegationBudget: dict[str, Any]
 
 
 def _compat_native_attr(name: str, fallback: Any) -> Any:
@@ -102,6 +143,80 @@ def _delegation_broker_payload(
         {key: value for key, value in payload.items() if value not in (None, "", [], {})},
         ensure_ascii=False,
     )
+
+
+def _local_delegation_observation_items(
+    base_state: dict[str, Any],
+    route_context: dict[str, Any],
+    delegation_id: str,
+) -> list[dict[str, Any]]:
+    selector = str(delegation_id or "").strip()
+    latest = route_context.get("lastDelegationHandoff") if isinstance(route_context.get("lastDelegationHandoff"), dict) else {}
+    if not selector:
+        selector = str(latest.get("invocationId") or "").strip()
+
+    results: list[dict[str, Any]] = []
+    for item in list(latest.get("results") or []):
+        if isinstance(item, dict):
+            results.append(dict(item))
+    for handoff in list(route_context.get("handoffRefs") or []):
+        if not isinstance(handoff, dict):
+            continue
+        results.append(
+            {
+                "contractVersion": handoff.get("contractVersion") or "delegation-result/v1",
+                "taskBriefId": handoff.get("taskBriefId"),
+                "delegationId": handoff.get("delegationId") or handoff.get("producerEpisodeId"),
+                "parentDelegationId": handoff.get("parentDelegationId"),
+                "parentInvocationId": handoff.get("parentInvocationId"),
+                "delegationDepth": handoff.get("delegationDepth"),
+                "invocationId": handoff.get("invocationId"),
+                "targetId": handoff.get("targetId") or handoff.get("agentId"),
+                "targetLabel": handoff.get("targetLabel") or handoff.get("agentName"),
+                "lane": handoff.get("lane") or "subagent",
+                "status": handoff.get("workerStatus") or ("ok" if handoff.get("status") == "ready" else handoff.get("status")),
+                "error": handoff.get("error"),
+                "artifactRefs": handoff.get("artifactRefs"),
+                "missingArtifactEvidence": handoff.get("missingArtifactEvidence"),
+                "localSelfCheck": handoff.get("localSelfCheck"),
+                "acceptanceHint": handoff.get("acceptanceHint") or handoff.get("consumerHint"),
+                "supervisorAcceptance": handoff.get("supervisorAcceptance"),
+                "resultSchemaMatched": handoff.get("resultSchemaMatched"),
+                "toolsUsed": handoff.get("toolsUsed"),
+                "resultText": handoff.get("resultText"),
+                "toolPolicy": handoff.get("toolPolicy"),
+                "expectedOutputs": handoff.get("expectedOutputs"),
+                "behaviorScope": handoff.get("behaviorScope"),
+                "acceptanceContract": handoff.get("acceptanceContract"),
+                "summary": handoff.get("summary") or handoff.get("compactSummary"),
+                "compactTranscript": handoff.get("compactTranscript"),
+                "handoffRefId": handoff.get("handoffRefId"),
+            }
+        )
+    for item in list(base_state.get("parallel_results") or []):
+        if isinstance(item, dict):
+            results.append(build_delegation_result_contract(item))
+
+    matched: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in results:
+        identities = {
+            str(item.get("delegationId") or "").strip(),
+            str(item.get("invocationId") or "").strip(),
+            str(item.get("handoffRefId") or "").strip(),
+        }
+        if selector and selector not in identities:
+            continue
+        key = (
+            str(item.get("delegationId") or "").strip(),
+            str(item.get("taskBriefId") or "").strip(),
+            str(item.get("targetId") or "").strip(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        matched.append({key: value for key, value in item.items() if value not in (None, "", [], {})})
+    return matched[-20:]
 
 
 def _delegation_external_worker_descriptors() -> list[dict[str, Any]]:
@@ -382,6 +497,10 @@ def _delegation_compact_item(
         "taskGoal": str(task_brief.get("goal") or "").strip(),
         "writeSet": [str(item).strip() for item in list(task_brief.get("writeSet") or []) if str(item).strip()],
         "readSet": [str(item).strip() for item in list(task_brief.get("readSet") or []) if str(item).strip()],
+        "expectedOutputs": list(task_brief.get("expectedOutputs") or []),
+        "behaviorScope": list(task_brief.get("behaviorScope") or []),
+        "toolPolicy": dict(task_brief.get("toolPolicy") or {}) if isinstance(task_brief.get("toolPolicy"), dict) else {},
+        "acceptanceContract": task_brief.get("acceptanceContract"),
         "lane": lane,
         "targetId": target_id,
         "targetLabel": target_label,
@@ -767,9 +886,15 @@ def _delegation_missing_spec_tasks_command(*, tool_call_id: str, source: str) ->
 def delegation_broker(
     mode: str = "observe",
     family: str = "",
-    tasks: Any = None,
+    tasks: Annotated[
+        list[DelegationTaskInput] | DelegationTaskInput | str | None,
+        "Flat task briefs. Use tasks=[{taskBriefId, goal, context, expectedOutput, acceptanceContract, constraints, toolPolicy}]. Never wrap an item inside taskBrief.",
+    ] = None,
     target_count: int | None = None,
-    worker_briefs: Any = None,
+    worker_briefs: Annotated[
+        list[DelegationTaskInput] | DelegationTaskInput | str | None,
+        "Alias for a flat task-brief list; each item uses the same fields as tasks.",
+    ] = None,
     allow_child_delegation: bool = False,
     child_delegation_budget: Any = None,
     write_set_partitions: Any = None,
@@ -781,7 +906,7 @@ def delegation_broker(
     """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
-    Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit tasks/worker_briefs. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks.
+    Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit flat tasks/worker_briefs. Example: `tasks=[{"taskBriefId":"task-1","goal":"...","expectedOutput":"...","acceptanceContract":"...","constraints":["..."],"toolPolicy":{"mode":"none"}}]`. Never wrap a task inside `{taskBrief:{...}}`. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     Subagents may request child work only through their brokered path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
     Use `mode='observe'` or `mode='resume'` to collect results, degraded handoffs, or recovery hints before you synthesize a final answer. Supervisor still verifies and merges the result.
@@ -1131,7 +1256,14 @@ def delegation_broker(
                 )
                 branch_state = dict(base_state)
                 branch_state["messages"] = base_messages + [
-                    HumanMessage(content=f"[Supervisor Delegated Task to {agent_name}]:\n{task_query or task_goal}")
+                    HumanMessage(
+                        content=f"[Supervisor Delegated Task to {agent_name}]:\n{task_query or task_goal}",
+                        additional_kwargs={
+                            "v8_governance_type": "delegated_task_instruction",
+                            "v8_task_brief_id": str(branch_task_brief.get("taskBriefId") or "").strip(),
+                            "v8_delegation_id": delegation_id_value,
+                        },
+                    )
                 ]
                 branch_state["todos"] = list(base_todos)
                 branch_state["delegation_contexts"] = base_contexts + [branch_context]
@@ -1406,6 +1538,28 @@ def delegation_broker(
             update["parallel_results"] = parallel_results
         return Command(goto=sends if sends else "supervisor", update=update)
 
+    if normalized_mode == "observe":
+        local_items = _local_delegation_observation_items(base_state, inherited_context, delegation_id)
+        if local_items:
+            completed = sum(1 for item in local_items if str(item.get("status") or "").lower() == "ok")
+            failed = sum(1 for item in local_items if str(item.get("status") or "").lower() in {"error", "failed", "blocked"})
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_delegation_broker_payload(
+                                mode=normalized_mode,
+                                summary=f"Collected {len(local_items)} local subagent result(s): {completed} completed, {failed} failed.",
+                                items=local_items,
+                                recommended_next_action="accept_retry_or_ignore",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ]
+                },
+            )
+
     parsed = parse_delegation_id(delegation_id)
     if str(parsed.get("lane") or "").strip() != "external_worker":
         return Command(
@@ -1416,9 +1570,13 @@ def delegation_broker(
                         content=_delegation_broker_payload(
                             mode=normalized_mode,
                             ok=False,
-                            summary="当前 observe/resume/interrupt 仅支持 external_worker delegationId。",
-                            recommended_next_action="dispatch",
-                            error="unsupported_lane",
+                            summary=(
+                                "尚未找到该本地子代理的结构化回流。"
+                                if normalized_mode == "observe"
+                                else "当前 resume/interrupt 仅支持 external_worker delegationId。"
+                            ),
+                            recommended_next_action="wait_or_retry" if normalized_mode == "observe" else "dispatch",
+                            error="local_result_not_ready" if normalized_mode == "observe" else "unsupported_lane",
                         ),
                         tool_call_id=tool_call_id,
                     )

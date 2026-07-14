@@ -44,7 +44,11 @@ function text(value: unknown): string {
 
 function compactTruth(value: unknown, limit = 1600): string | null {
   const normalized = text(value).replace(/\n{3,}/g, "\n\n");
-  if (!normalized || (/^[\[{]/.test(normalized) && /[\]}]$/.test(normalized))) return null;
+  if (
+    !normalized
+    || (/^[\[{]/.test(normalized) && /[\]}]$/.test(normalized))
+    || /<think\b|toolobs:\/\/|rawRef\s*:/i.test(normalized)
+  ) return null;
   return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1).trimEnd()}…`;
 }
 
@@ -68,9 +72,9 @@ function normalizedStatus(topic: string, raw: unknown): string {
 }
 
 function projectionFromNode(node: SubagentReturnTimelineNode, fallbackIndex: number): SubagentReturnProjection | null {
-  if (node.kind !== "execution") return null;
   const topic = text(node.topic).toLowerCase();
   if (!topic.startsWith("subagent.task.")) return null;
+  if (node.kind && node.kind !== "execution" && node.kind !== "tool") return null;
   const outer = recordOf(node.data);
   const payload = { ...outer, ...recordOf(outer.data) };
   const delegationId = text(payload.delegationId || payload.delegation_id) || null;
@@ -80,8 +84,18 @@ function projectionFromNode(node: SubagentReturnTimelineNode, fallbackIndex: num
   const parentInvocationId = text(payload.parentInvocationId || payload.parent_invocation_id) || null;
   const depth = numberValue(payload.delegationDepth || payload.delegation_depth, parentDelegationId || parentInvocationId ? 2 : 1);
   const acceptance = recordOf(payload.supervisorAcceptance || payload.supervisor_acceptance);
-  const summary = compactTruth(payload.compactTranscript || payload.summary || payload.taskGoal || payload.task_goal);
-  const selfCheck = compactTruth(payload.localSelfCheck || payload.local_self_check, 900);
+  const summary = compactTruth(
+    payload.resultText
+      || payload.result_text
+      || payload.summary
+      || payload.compactTranscript
+      || payload.taskGoal
+      || payload.task_goal,
+  );
+  const selfCheckCandidate = compactTruth(payload.localSelfCheck || payload.local_self_check, 900);
+  const selfCheck = selfCheckCandidate?.startsWith("Subagent branch completed; supervisor must still")
+    ? null
+    : selfCheckCandidate;
   const id = delegationId || taskBriefId || invocationId || text(node.id) || `subagent-return:${fallbackIndex}`;
   return {
     id,
@@ -105,17 +119,24 @@ function projectionFromNode(node: SubagentReturnTimelineNode, fallbackIndex: num
   };
 }
 
-export function buildSubagentReturnProjection(messages: SubagentReturnMessage[] | null | undefined): SubagentReturnProjection[] {
+export function buildSubagentReturnProjection(
+  messages: SubagentReturnMessage[] | null | undefined,
+  runtimeNodes: SubagentReturnTimelineNode[] | null | undefined = [],
+): SubagentReturnProjection[] {
   const byId = new Map<string, SubagentReturnProjection>();
   let fallbackIndex = 0;
+  const collectNode = (node: SubagentReturnTimelineNode) => {
+    const item = projectionFromNode(node, fallbackIndex++);
+    if (!item) return;
+    const existing = byId.get(item.id);
+    if (!existing || item.timestamp >= existing.timestamp) byId.set(item.id, item);
+  };
   for (const message of messages || []) {
     for (const node of message.nodes || []) {
-      const item = projectionFromNode(node, fallbackIndex++);
-      if (!item) continue;
-      const existing = byId.get(item.id);
-      if (!existing || item.timestamp >= existing.timestamp) byId.set(item.id, item);
+      collectNode(node);
     }
   }
+  for (const node of runtimeNodes || []) collectNode(node);
 
   const items = Array.from(byId.values()).sort((left, right) => left.timestamp - right.timestamp);
   const byDelegationId = new Map(items.filter((item) => item.delegationId).map((item) => [item.delegationId as string, item]));

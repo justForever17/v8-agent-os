@@ -161,10 +161,16 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "context": "",
         "routeQuery": "",
         "writeSet": [],
+        "expectedOutputs": [],
         "behaviorScope": [],
         "requiredCapabilities": [],
         "runtimeAccess": [],
+        "toolPolicy": {"mode": "default", "allowedTools": [], "forbiddenTools": []},
+        "allowedTools": [],
+        "forbiddenTools": [],
         "pluginReferences": [],
+        "evidenceRefs": [],
+        "detailRefs": [],
         "acceptanceContract": "",
         "acceptanceTiers": {"must": [], "should": [], "nice": []},
         "dependency": [],
@@ -215,18 +221,61 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     acceptance_contract = _first_present(payload, ("acceptanceContract", "acceptance_contract"))
     acceptance_tiers = _first_present(payload, ("acceptanceTiers", "acceptance_tiers", "tieredAcceptance", "tiered_acceptance"))
     normalized_acceptance_tiers = _normalize_acceptance_tiers(acceptance_tiers if acceptance_tiers is not None else acceptance_contract)
+    raw_tool_policy = _first_present(payload, ("toolPolicy", "tool_policy"))
+    tool_policy = dict(raw_tool_policy or {}) if isinstance(raw_tool_policy, dict) else {}
+    allowed_tools_present = any(key in payload for key in ("allowedTools", "allowed_tools")) or any(
+        key in tool_policy for key in ("allowedTools", "allowed_tools")
+    )
+    allowed_tools = _normalize_scope_values(
+        _first_present(payload, ("allowedTools", "allowed_tools"))
+        if any(key in payload for key in ("allowedTools", "allowed_tools"))
+        else _first_present(tool_policy, ("allowedTools", "allowed_tools"))
+    )
+    forbidden_tools = _normalize_scope_values(
+        _first_present(payload, ("forbiddenTools", "forbidden_tools"))
+        or _first_present(tool_policy, ("forbiddenTools", "forbidden_tools"))
+    )
+    no_tools = _safe_bool(
+        _first_present(payload, ("noTools", "no_tools"))
+        or _first_present(tool_policy, ("noTools", "no_tools"))
+    )
+    tool_policy_mode = str(tool_policy.get("mode") or "").strip().lower()
+    if no_tools:
+        tool_policy_mode = "none"
+        allowed_tools = []
+    elif tool_policy_mode not in {"default", "allowlist", "none"}:
+        tool_policy_mode = "allowlist" if allowed_tools_present else "default"
+    behavior_scope = _normalize_scope_values(payload.get("behaviorScope") or payload.get("behavior_scope"))
+    for boundary in _normalize_scope_values(
+        _first_present(payload, ("constraints", "constraint", "boundaries", "boundary"))
+    ):
+        if boundary not in behavior_scope:
+            behavior_scope.append(boundary)
+    expected_outputs = _normalize_scope_values(
+        _first_present(payload, ("expectedOutputs", "expected_outputs", "expectedOutput", "expected_output"))
+    )
     normalized = {
         "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
         "goal": str(payload.get("goal") or "").strip(),
         "context": payload.get("context") if isinstance(payload.get("context"), dict) else str(payload.get("context") or "").strip(),
         "routeQuery": str(payload.get("routeQuery") or payload.get("route_query") or payload.get("extensionsRouteQuery") or payload.get("extensions_route_query") or "").strip(),
         "writeSet": _normalize_scope_values(payload.get("writeSet") or payload.get("write_set")),
-        "behaviorScope": _normalize_scope_values(payload.get("behaviorScope") or payload.get("behavior_scope")),
+        "expectedOutputs": expected_outputs,
+        "behaviorScope": behavior_scope,
         "requiredCapabilities": _normalize_scope_values(payload.get("requiredCapabilities") or payload.get("required_capabilities")),
         "runtimeAccess": _normalize_scope_values(payload.get("runtimeAccess") or payload.get("runtime_access")),
+        "toolPolicy": {
+            "mode": tool_policy_mode,
+            "allowedTools": allowed_tools,
+            "forbiddenTools": forbidden_tools,
+        },
+        "allowedTools": allowed_tools,
+        "forbiddenTools": forbidden_tools,
         "pluginReferences": _normalize_plugin_references(
             payload.get("pluginReferences") or payload.get("plugin_references")
         ),
+        "evidenceRefs": _normalize_scope_values(payload.get("evidenceRefs") or payload.get("evidence_refs")),
+        "detailRefs": _normalize_scope_values(payload.get("detailRefs") or payload.get("detail_refs")),
         "acceptanceContract": acceptance_contract if isinstance(acceptance_contract, dict) else str(acceptance_contract or "").strip(),
         "acceptanceTiers": normalized_acceptance_tiers,
         "dependency": _normalize_scope_values(payload.get("dependency")),
@@ -368,6 +417,14 @@ def expand_delegation_task_briefs(values: Iterable[Any] | None) -> list[dict[str
                 "required_capabilities",
                 "runtimeAccess",
                 "runtime_access",
+                "toolPolicy",
+                "tool_policy",
+                "allowedTools",
+                "allowed_tools",
+                "forbiddenTools",
+                "forbidden_tools",
+                "noTools",
+                "no_tools",
                 "pluginReferences",
                 "plugin_references",
                 "acceptanceContract",

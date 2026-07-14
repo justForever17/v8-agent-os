@@ -10,6 +10,21 @@ _TOOL_OBSERVATION_SECRET_PATTERNS = [
     re.compile(r"(?i)(bearer)\s+([A-Za-z0-9._~+/=-]{12,})"),
 ]
 
+_TOOL_OBSERVATION_INTERNAL_KEYS = {
+    "_v8ToolSurface",
+    "rawRef",
+    "raw_ref",
+    "registryVersion",
+    "registryHash",
+    "registry_version",
+    "registry_hash",
+    "macroTaskCount",
+    "requestedTaskCount",
+    "diagnosticKey",
+    "dispatchGroup",
+    "traceRef",
+}
+
 
 def _redact_tool_observation_preview(text: str) -> str:
     redacted = str(text or "")
@@ -70,10 +85,7 @@ def _render_generic_json_observation_detail(
 ) -> str:
     lines = [
         "Tool observation detail",
-        f"rawRef: {raw_ref}",
         f"tool: {record.get('tool_name') or 'unknown'}",
-        f"runtime: {record.get('runtime_kind') or 'unknown'}",
-        f"chars: raw={record.get('raw_chars') or 0}, visible={record.get('visible_chars') or 0}",
     ]
     if payload.get("ok") is False:
         lines.append("status: failed")
@@ -82,7 +94,7 @@ def _render_generic_json_observation_detail(
     elif payload.get("kind") not in (None, "", [], {}):
         lines.append(f"kind: {_tool_observation_display_value(payload.get('kind'), 100)}")
 
-    rendered_keys: set[str] = {"ok", "status", "kind", "_v8ToolSurface"}
+    rendered_keys: set[str] = {"ok", "status", "kind", *_TOOL_OBSERVATION_INTERNAL_KEYS}
     for key, label in (
         ("summary", "Summary"),
         ("message", "Message"),
@@ -111,6 +123,65 @@ def _render_generic_json_observation_detail(
         if len(remaining) > 12:
             lines.append(f"- … {len(remaining) - 12} more field(s)")
 
+    rendered = _redact_tool_observation_preview("\n".join(lines).strip())
+    if len(rendered) > max_chars:
+        rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
+    return rendered
+
+
+def _render_delegation_observation_detail(payload: dict[str, Any], *, max_chars: int) -> str:
+    mode = _tool_observation_short_text(payload.get("mode") or "observe", 40)
+    lines = [f"Delegation result ({mode})"]
+    summary = payload.get("summary") or payload.get("message") or payload.get("error")
+    if summary:
+        lines.append(f"Summary: {_tool_observation_short_text(summary, 800)}")
+    items = payload.get("items") or payload.get("results") or []
+    if isinstance(items, list) and items:
+        lines.append("Results:")
+        for item in items[:12]:
+            if not isinstance(item, dict):
+                lines.append(f"- {_tool_observation_short_text(item, 320)}")
+                continue
+            target = item.get("targetLabel") or item.get("agentName") or item.get("targetId") or item.get("agentId") or "subagent"
+            status = item.get("status") or item.get("workerStatus") or item.get("dispatchStatus") or "unknown"
+            task = item.get("taskGoal") or item.get("goal") or item.get("summary") or item.get("taskBriefId") or "delegated task"
+            lines.append(
+                f"- {_tool_observation_short_text(target, 120)} | "
+                f"{_tool_observation_short_text(status, 60)} | "
+                f"{_tool_observation_short_text(task, 420)}"
+            )
+            tool_policy = item.get("toolPolicy") if isinstance(item.get("toolPolicy"), dict) else {}
+            policy_mode = str(tool_policy.get("mode") or "").strip().lower()
+            if policy_mode == "none":
+                lines.append("  Tool authority: none")
+            elif policy_mode == "allowlist":
+                allowed = ", ".join(
+                    _tool_observation_short_text(name, 100)
+                    for name in list(tool_policy.get("allowedTools") or [])
+                )
+                lines.append(f"  Tool authority: {allowed or 'empty allowlist'}")
+            result_text = item.get("resultText")
+            if result_text:
+                lines.append(f"  Exact result: {_tool_observation_content_excerpt(result_text, 2400)}")
+            result_summary = item.get("summary") or item.get("compactTranscript")
+            if result_summary and str(result_summary) not in {str(task or ""), str(result_text or "")}:
+                lines.append(f"  Result: {_tool_observation_content_excerpt(result_summary, 900)}")
+            local_self_check = item.get("localSelfCheck")
+            if local_self_check:
+                lines.append(f"  Self-check: {_tool_observation_short_text(local_self_check, 520)}")
+            artifact_refs = item.get("artifactRefs")
+            if isinstance(artifact_refs, list) and artifact_refs:
+                refs = ", ".join(_tool_observation_short_text(ref, 160) for ref in artifact_refs[:8])
+                lines.append(f"  Evidence: {refs}")
+            acceptance = item.get("acceptanceHint")
+            if acceptance:
+                lines.append(f"  Acceptance: {_tool_observation_short_text(acceptance, 420)}")
+            error = item.get("error")
+            if error:
+                lines.append(f"  Error: {_tool_observation_short_text(error, 320)}")
+    next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
+    if next_action:
+        lines.append(f"Next: {_tool_observation_short_text(next_action, 260)}")
     rendered = _redact_tool_observation_preview("\n".join(lines).strip())
     if len(rendered) > max_chars:
         rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
@@ -196,8 +267,6 @@ def _render_research_observation_detail(payload: dict[str, Any], *, raw_ref: str
         for item in limitations[:4]:
             lines.append(f"- {_tool_observation_short_text(item, 240)}")
 
-    lines.append("")
-    lines.append(f"rawRef: {raw_ref}")
     rendered = "\n".join(line for line in lines if line is not None).strip()
     if len(rendered) > max_chars:
         rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
@@ -270,7 +339,6 @@ def _render_web_observation_detail(payload: dict[str, Any], *, raw_ref: str, max
         for item in warnings[:5]:
             lines.append(f"- {_tool_observation_short_text(item, 240)}")
 
-    lines.extend(["", f"rawRef: {raw_ref}"])
     rendered = "\n".join(line for line in lines if line is not None).strip()
     if len(rendered) > max_chars:
         rendered = rendered[: max_chars - 32].rstrip() + "\n[truncated]"
@@ -297,6 +365,8 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
 
         raw_body = str(record.get("raw_body_text") or "")
         payload = _parse_tool_observation_json(raw_body)
+        if payload and str(record.get("tool_name") or "") == "delegation_broker":
+            return _render_delegation_observation_detail(payload, max_chars=requested_chars)
         if payload and (
             str(record.get("tool_name") or "") == "research_broker"
             or str(payload.get("kind") or "").startswith("research_")
@@ -322,11 +392,7 @@ def render_tool_observation_detail(raw_ref: str, max_chars: int = 6000) -> str:
         omitted_chars = max(0, len(raw_body) - len(raw_preview))
         lines = [
             "Tool observation detail",
-            f"rawRef: {normalized_ref}",
             f"tool: {record.get('tool_name') or 'unknown'}",
-            f"runtime: {record.get('runtime_kind') or 'unknown'}",
-            f"chars: raw={record.get('raw_chars') or 0}, visible={record.get('visible_chars') or 0}",
-            f"sha256: {record.get('raw_sha256') or 'unknown'}",
             "",
             "<preview>",
             preview,

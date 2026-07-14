@@ -84,6 +84,46 @@ def test_tool_observation_detail_long_text_stays_text_when_truncated():
     assert metadata["semanticTruncationStrategy"] == "tool_observation_detail_surface"
 
 
+def test_delegation_surface_keeps_worker_result_and_hides_runtime_observation_ref():
+    message = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "mode": "observe",
+                "summary": "Collected one local subagent result.",
+                "items": [
+                    {
+                        "taskBriefId": "task-1",
+                        "targetLabel": "Reviewer",
+                        "status": "ok",
+                        "toolPolicy": {"mode": "none", "allowedTools": [], "forbiddenTools": []},
+                        "resultText": "OWNER_ISOLATION_OK",
+                        "summary": "Review complete.",
+                        "localSelfCheck": "Verified the requested slice.",
+                        "acceptanceHint": "Accept, retry, or ignore.",
+                    }
+                ],
+                "recommendedNextAction": "accept_retry_or_ignore",
+            },
+            ensure_ascii=False,
+        ),
+        tool_call_id="call-delegation",
+        name="delegation_broker",
+    )
+
+    result = apply_tool_surface_budget(message, {"agentVisibleBudget": 3000})
+
+    rendered = str(result.content)
+    assert "Reviewer" in rendered
+    assert "Tool authority: none" in rendered
+    assert "Exact result: OWNER_ISOLATION_OK" in rendered
+    assert "Review complete." in rendered
+    assert "Verified the requested slice." in rendered
+    assert "Accept, retry, or ignore." in rendered
+    assert "tool_observation_detail(raw_ref=" not in rendered
+    assert "toolobs://" not in rendered
+
+
 def test_session_coordination_surface_preserves_exact_ask_user_authorization_args():
     message = ToolMessage(
         content=json.dumps(

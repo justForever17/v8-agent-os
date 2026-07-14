@@ -526,6 +526,16 @@ class V8ChatModelAdapter(BaseChatModel):
             llm_output=dict(getattr(message, "response_metadata", {}) or {}),
         )
 
+    @staticmethod
+    def _provider_internal_config() -> dict[str, Any]:
+        # The adapter is the sole canonical model-event boundary. Provider
+        # clients still emit telemetry callbacks, but their nested LangChain
+        # model events must never be projected as a second assistant stream.
+        return {
+            "metadata": {"v8_model_scope": "runtime_internal"},
+            "tags": ["v8:provider-internal"],
+        }
+
     def _prepare_prompt_cache_request(
         self,
         messages: Sequence[BaseMessage],
@@ -567,13 +577,23 @@ class V8ChatModelAdapter(BaseChatModel):
         if prepared.cache_hit_message:
             return self._build_chat_result(self._coerce_ai_message(prepared.cache_hit_message))
         try:
-            response = self._get_runtime_model().invoke(prepared.messages, stop=stop, **prepared.kwargs)
+            response = self._get_runtime_model().invoke(
+                prepared.messages,
+                config=self._provider_internal_config(),
+                stop=stop,
+                **prepared.kwargs,
+            )
             return self._build_chat_result(self._finalize_prompt_cache_response(self._coerce_ai_message(response), prepared))
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
                     fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, **kwargs)
-                    response = self._get_base_model().invoke(fallback_prepared.messages, stop=stop, **fallback_prepared.kwargs)
+                    response = self._get_base_model().invoke(
+                        fallback_prepared.messages,
+                        config=self._provider_internal_config(),
+                        stop=stop,
+                        **fallback_prepared.kwargs,
+                    )
                     return self._build_chat_result(
                         self._finalize_prompt_cache_response(
                             self._coerce_ai_message(response, force_prompt_emulated_tools=True),
@@ -597,13 +617,23 @@ class V8ChatModelAdapter(BaseChatModel):
         if prepared.cache_hit_message:
             return self._build_chat_result(self._coerce_ai_message(prepared.cache_hit_message))
         try:
-            response = await self._get_runtime_model().ainvoke(prepared.messages, stop=stop, **prepared.kwargs)
+            response = await self._get_runtime_model().ainvoke(
+                prepared.messages,
+                config=self._provider_internal_config(),
+                stop=stop,
+                **prepared.kwargs,
+            )
             return self._build_chat_result(self._finalize_prompt_cache_response(self._coerce_ai_message(response), prepared))
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
                     fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, **kwargs)
-                    response = await self._get_base_model().ainvoke(fallback_prepared.messages, stop=stop, **fallback_prepared.kwargs)
+                    response = await self._get_base_model().ainvoke(
+                        fallback_prepared.messages,
+                        config=self._provider_internal_config(),
+                        stop=stop,
+                        **fallback_prepared.kwargs,
+                    )
                     return self._build_chat_result(
                         self._finalize_prompt_cache_response(
                             self._coerce_ai_message(response, force_prompt_emulated_tools=True),
@@ -625,7 +655,12 @@ class V8ChatModelAdapter(BaseChatModel):
             normalized_messages = self._tool_prompt_messages(normalized_messages)
         prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, streaming=True, **kwargs)
         try:
-            for chunk in self._get_runtime_model().stream(prepared.messages, stop=stop, **prepared.kwargs):
+            for chunk in self._get_runtime_model().stream(
+                prepared.messages,
+                config=self._provider_internal_config(),
+                stop=stop,
+                **prepared.kwargs,
+            ):
                 ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), prepared.diagnostics)
                 yield ChatGenerationChunk(
                     message=ai_chunk,
@@ -636,7 +671,12 @@ class V8ChatModelAdapter(BaseChatModel):
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
                     fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=True, **kwargs)
-                    for chunk in self._get_base_model().stream(fallback_prepared.messages, stop=stop, **fallback_prepared.kwargs):
+                    for chunk in self._get_base_model().stream(
+                        fallback_prepared.messages,
+                        config=self._provider_internal_config(),
+                        stop=stop,
+                        **fallback_prepared.kwargs,
+                    ):
                         ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), fallback_prepared.diagnostics)
                         yield ChatGenerationChunk(
                             message=ai_chunk,
@@ -659,7 +699,12 @@ class V8ChatModelAdapter(BaseChatModel):
             normalized_messages = self._tool_prompt_messages(normalized_messages)
         prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, streaming=True, **kwargs)
         try:
-            async for chunk in self._get_runtime_model().astream(prepared.messages, stop=stop, **prepared.kwargs):
+            async for chunk in self._get_runtime_model().astream(
+                prepared.messages,
+                config=self._provider_internal_config(),
+                stop=stop,
+                **prepared.kwargs,
+            ):
                 ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), prepared.diagnostics)
                 yield ChatGenerationChunk(
                     message=ai_chunk,
@@ -670,7 +715,12 @@ class V8ChatModelAdapter(BaseChatModel):
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
                     fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=True, **kwargs)
-                    async for chunk in self._get_base_model().astream(fallback_prepared.messages, stop=stop, **fallback_prepared.kwargs):
+                    async for chunk in self._get_base_model().astream(
+                        fallback_prepared.messages,
+                        config=self._provider_internal_config(),
+                        stop=stop,
+                        **fallback_prepared.kwargs,
+                    ):
                         ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), fallback_prepared.diagnostics)
                         yield ChatGenerationChunk(
                             message=ai_chunk,

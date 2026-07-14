@@ -1618,7 +1618,17 @@ def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> 
                 lines.append(f"- {_short_text(item, 220)}")
                 continue
             goal = item.get("taskGoal") or item.get("goal") or item.get("brief") or item.get("summary") or item.get("name")
-            target = item.get("target") or item.get("worker") or item.get("subagent") or item.get("member") or item.get("family")
+            target = (
+                item.get("targetLabel")
+                or item.get("agentName")
+                or item.get("target")
+                or item.get("worker")
+                or item.get("subagent")
+                or item.get("member")
+                or item.get("family")
+                or item.get("targetId")
+                or item.get("agentId")
+            )
             status = item.get("status") or item.get("state") or item.get("dispatchStatus")
             parts = [
                 _short_text(goal, 220),
@@ -1626,13 +1636,35 @@ def _render_delegation_broker_surface(payload: dict[str, Any], raw_ref: str) -> 
                 f"status={_short_text(status, 50)}" if status else "",
             ]
             lines.append("- " + " | ".join(part for part in parts if part))
+            tool_policy = item.get("toolPolicy") if isinstance(item.get("toolPolicy"), dict) else {}
+            policy_mode = str(tool_policy.get("mode") or "").strip().lower()
+            if policy_mode == "none":
+                lines.append("  Tool authority: none")
+            elif policy_mode == "allowlist":
+                allowed = ", ".join(_short_text(name, 80) for name in list(tool_policy.get("allowedTools") or []))
+                lines.append(f"  Tool authority: {allowed or 'empty allowlist'}")
+            result_text = item.get("resultText")
+            if result_text:
+                lines.append(f"  Exact result: {_short_text(result_text, 1600)}")
+            result_summary = item.get("summary") or item.get("compactTranscript")
+            if result_summary and str(result_summary) not in {str(goal or ""), str(result_text or "")}:
+                lines.append(f"  Result: {_short_text(result_summary, 520)}")
+            local_self_check = item.get("localSelfCheck")
+            if local_self_check:
+                lines.append(f"  Self-check: {_short_text(local_self_check, 360)}")
+            artifact_refs = item.get("artifactRefs")
+            if isinstance(artifact_refs, list) and artifact_refs:
+                rendered_refs = ", ".join(_short_text(ref, 140) for ref in artifact_refs[:6])
+                lines.append(f"  Evidence: {rendered_refs}")
+            acceptance_hint = item.get("acceptanceHint")
+            if acceptance_hint:
+                lines.append(f"  Acceptance: {_short_text(acceptance_hint, 300)}")
         if len(tasks) > 8:
             lines.append(f"- … {len(tasks) - 8} more")
 
     next_action = payload.get("recommendedNextAction") or payload.get("nextAction") or payload.get("recommendedAction")
     if next_action:
         lines.append(f"Next: {_short_text(next_action, 220)}")
-    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
     return "\n".join(line for line in lines if line).strip()
 
 

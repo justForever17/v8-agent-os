@@ -14,6 +14,7 @@ class FakeLLM:
     def __init__(self, *outcomes: Any):
         self.outcomes = list(outcomes)
         self.calls = 0
+        self.invocation_configs: list[dict[str, Any] | None] = []
 
     def bind_tools(self, _tools):
         return self
@@ -30,8 +31,9 @@ class FakeLLM:
             "runtime_ready": True,
         }
 
-    def invoke(self, _messages):
+    def invoke(self, _messages, config=None):
         self.calls += 1
+        self.invocation_configs.append(config)
         if not self.outcomes:
             raise AssertionError("unexpected fake LLM invocation")
         outcome = self.outcomes.pop(0)
@@ -154,6 +156,33 @@ def test_transient_error_retries_then_failovers_to_same_format_candidate(monkeyp
     assert primary.calls == 2
     assert backup.calls == 1
     assert built == [make_model_ref("p-openai-b", "backup")]
+
+
+def test_invocation_config_is_forwarded_to_callback_events(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = FakeLLM("ok")
+    invocation_config = {
+        "metadata": {
+            "v8_owner_runtime_kind": "subagent",
+            "v8_owner_agent_id": "worker-one",
+        },
+        "tags": ["v8:runtime-owner"],
+    }
+
+    result = service.invoke_with_failover(
+        config=_config(maxTotalAttempts=1, maxFailoverSeconds=30),
+        base_llm_instance=primary,
+        messages=[],
+        tools=None,
+        role="agent:worker-one",
+        preferred_model_id=make_model_ref("p-openai-a", "primary"),
+        build_model=lambda _model_id: FakeLLM("unused"),
+        invocation_config=invocation_config,
+    )
+
+    assert result == "ok"
+    assert primary.invocation_configs == [invocation_config]
 
 
 def test_non_transient_model_error_does_not_hidden_failover(monkeypatch: pytest.MonkeyPatch):

@@ -3,14 +3,22 @@ import sqlite3
 import threading
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
 from core.llm_chat_adapter import V8ChatModelAdapter
 from erc.checkpoint_store import CheckpointStore
 
 
 class _NativeModel:
+    def __init__(self) -> None:
+        self.last_config = None
+
     def bind_tools(self, _tools, **_kwargs):
         return self
+
+    def invoke(self, _messages, *, config=None, **_kwargs):
+        self.last_config = config
+        return AIMessage(content="ok")
 
 
 class _FlakySaver:
@@ -54,6 +62,26 @@ def test_bind_tools_does_not_deepcopy_runtime_client_locks():
 
     assert bound._base_model is None
     assert len(bound._bound_tools or []) == 1
+
+
+def test_adapter_marks_nested_provider_events_runtime_internal():
+    native = _NativeModel()
+    adapter = V8ChatModelAdapter(
+        model_id="test-model",
+        provider_standard="openai",
+        role="supervisor",
+        meta={"api_standard": "openai"},
+        model_kwargs={},
+        builder=lambda: native,
+    )
+
+    response = adapter.invoke([HumanMessage(content="hello")])
+
+    assert response.content == "ok"
+    assert native.last_config == {
+        "metadata": {"v8_model_scope": "runtime_internal"},
+        "tags": ["v8:provider-internal"],
+    }
 
 
 def test_checkpoint_store_isolates_savers_by_event_loop(tmp_path):

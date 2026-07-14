@@ -293,6 +293,7 @@ class ModelFailoverService:
         role: str,
         preferred_model_id: str,
         build_model: Callable[[str], Any],
+        invocation_config: Dict[str, Any] | None = None,
     ) -> Any:
         ctx = get_runtime_context()
         run_id = ctx.get("run_id")
@@ -392,7 +393,11 @@ class ModelFailoverService:
                     break
                 total_attempts += 1
                 try:
-                    result = bound_llm.invoke(messages)
+                    result = (
+                        bound_llm.invoke(messages, config=invocation_config)
+                        if invocation_config
+                        else bound_llm.invoke(messages)
+                    )
                     self._persist_sticky_choice(
                         config=config,
                         run_id=run_id,

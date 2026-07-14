@@ -23,11 +23,37 @@ from core.runtime_episodes import (
     transition_runtime_episode,
     upsert_runtime_episode,
 )
-from erc.runtime_context import bind_runtime_context
+from erc.runtime_context import bind_runtime_context, build_runtime_callback_config
 from .route_context import merge_route_context
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _render_delegation_handoff_message(
+    *,
+    invocation_id: str,
+    expected: int,
+    contracts: list[dict[str, Any]],
+) -> HumanMessage:
+    failures = [item for item in contracts if str(item.get("status") or "").strip().lower() != "ok"]
+    payload = json.dumps(contracts, ensure_ascii=False, separators=(",", ":"))
+    return HumanMessage(
+        content=(
+            "[V8OS 子代理结构化回流]\n"
+            f"本次已回收 {len(contracts)}/{expected or len(contracts)} 个结果，失败 {len(failures)} 个。\n"
+            "下面是可直接验收的完整协作合同；它已经剔除 runtime 调度噪声，但保留任务、lineage、结果、自检、产物和验收动作。\n"
+            f"<delegation_handoffs>{payload}</delegation_handoffs>\n"
+            "精确子 Agent 输出只读取 resultText；summary/compactTranscript 仅供展示，不得用包装文案替代结果。"
+            "你必须逐项明确 accept、retry 或 ignore；只依据上述合同验收，不要把内部 ID 当作用户说明。"
+        ),
+        id=str(uuid.uuid4()),
+        additional_kwargs={
+            "v8_governance_type": "delegation_handoff",
+            "v8_delegation_invocation_id": invocation_id,
+            "v8_delegation_handoffs": contracts,
+        },
+    )
 
 
 def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -97,10 +123,48 @@ def _compact_message_text(message: Any, *, limit: int = 900) -> str:
         text = "\n".join(part.strip() for part in parts if part.strip())
     else:
         text = str(content or "")
-    normalized = "\n".join(line.rstrip() for line in text.strip().splitlines() if line.strip())
+    text = re.sub(r"<think\b[^>]*>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<think\b[^>]*>.*$", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"</?think\b[^>]*>", "", text, flags=re.IGNORECASE)
+    visible_lines: list[str] = []
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if re.search(r"toolobs://|\brawRef\s*:|^Raw:\s*toolobs://|^Detail:\s*tool_observation_detail", stripped, re.IGNORECASE):
+            continue
+        visible_lines.append(line.rstrip())
+    normalized = "\n".join(visible_lines)
     if len(normalized) > limit:
         return normalized[: limit - 3].rstrip() + "..."
     return normalized
+
+
+def _subagent_result_summary(messages: list[Any], *, limit: int = 900) -> str:
+    for message in reversed(messages):
+        role = str(getattr(message, "type", None) or getattr(message, "role", None) or "").strip().lower()
+        if role == "tool":
+            continue
+        candidate = _compact_message_text(message, limit=limit)
+        if not candidate or candidate.startswith("[Supervisor Delegated Task"):
+            continue
+        return candidate
+    return ""
+
+
+def _subagent_result_text(messages: list[Any]) -> str:
+    for message in reversed(messages):
+        additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+        if "v8_subagent_result_text" in additional_kwargs:
+            return str(additional_kwargs.get("v8_subagent_result_text") or "").strip()
+    for message in reversed(messages):
+        role = str(getattr(message, "type", None) or getattr(message, "role", None) or "").strip().lower()
+        if role != "ai":
+            continue
+        candidate = _compact_message_text(message, limit=100_000)
+        if candidate:
+            return candidate
+    return ""
 
 
 def _compact_transcript(messages: list[Any], *, limit: int = 1800) -> str:
@@ -862,7 +926,10 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
             if tool_node is None:
                 raise RuntimeError(f"{agent_id} 没有可用的工具节点。")
             with bind_runtime_context(**_runtime_context_from_parallel_state(local_state, branch=branch)):
-                result = await tool_node(local_state)
+                result = await tool_node(
+                    local_state,
+                    config=build_runtime_callback_config(),
+                )
         elif current_node == f"{agent_id}_reviewer":
             reviewer = agent_data.get("reviewer_func")
             if reviewer is None:
@@ -1104,6 +1171,20 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
         "todoDeltaCount": len(delta_todos),
         "toolMode": agent_data.get("tool_mode"),
         "toolsUsed": _extract_tool_names(delta_messages),
+        "toolPolicy": dict((branch.get("taskBrief") or {}).get("toolPolicy") or {})
+        if isinstance(branch.get("taskBrief"), dict)
+        else {},
+        "expectedOutputs": list((branch.get("taskBrief") or {}).get("expectedOutputs") or [])
+        if isinstance(branch.get("taskBrief"), dict)
+        else [],
+        "behaviorScope": list((branch.get("taskBrief") or {}).get("behaviorScope") or [])
+        if isinstance(branch.get("taskBrief"), dict)
+        else [],
+        "acceptanceContract": (branch.get("taskBrief") or {}).get("acceptanceContract")
+        if isinstance(branch.get("taskBrief"), dict)
+        else None,
+        "resultText": _subagent_result_text(delta_messages),
+        "summary": _subagent_result_summary(delta_messages),
         "compactTranscript": _compact_transcript(delta_messages),
         "localSelfCheck": "Subagent branch completed; supervisor must still accept, retry, or ignore the result.",
         "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
@@ -1376,11 +1457,13 @@ def build_parallel_delegate_join_node():
                 },
             )
 
-        failures = [item for item in results if item.get("status") != "ok"]
         route_context = dict(state.get("current_route_context") or {})
         handoff_refs: list[dict[str, Any]] = []
+        handoff_contracts: list[dict[str, Any]] = []
         for item in results:
-            result_contract = build_delegation_result_contract(item)
+            worker_contract = build_delegation_result_contract(item)
+            handoff_contracts.append(worker_contract)
+            result_contract = dict(worker_contract)
             worker_status = result_contract.pop("status", None)
             if worker_status:
                 result_contract["workerStatus"] = worker_status
@@ -1391,7 +1474,10 @@ def build_parallel_delegate_join_node():
                 kind="subagent_result",
                 status="failed" if item.get("status") != "ok" else "ready",
                 compact_summary=compact or f"Subagent result for {producer_episode_id or invocation_id}",
-                detail_tool="delegation_broker(mode='observe')",
+                detail_tool=(
+                    "delegation_broker(mode='observe', delegation_id="
+                    f"'{str(item.get('delegationId') or invocation_id or '').strip()}')"
+                ),
                 consumer_hint=str(item.get("acceptanceHint") or "Supervisor should accept, retry, or ignore this delegated result."),
                 extra=result_contract,
             )
@@ -1409,15 +1495,10 @@ def build_parallel_delegate_join_node():
                     "runtime.episode.completed" if item.get("status") == "ok" else "runtime.episode.failed",
                     {"episode": episode, "handoffRef": handoff},
                 )
-        summary = HumanMessage(
-            content=(
-                f"[并发委派完成]\n"
-                f"Invocation: {invocation_id or 'n/a'}\n"
-                f"已回收 {len(results)}/{expected or len(results)} 个并发子任务结果。\n"
-                f"失败: {len(failures)} 个。\n"
-                "详细 compact transcript、产物引用与局部自检已投影到 subagent_swarm runtime card；最终采纳、重试或忽略仍由 supervisor 决定。"
-            ),
-            id=str(uuid.uuid4()),
+        summary = _render_delegation_handoff_message(
+            invocation_id=invocation_id,
+            expected=expected,
+            contracts=handoff_contracts,
         )
         return Command(
             goto="supervisor",
@@ -1429,6 +1510,7 @@ def build_parallel_delegate_join_node():
                         "lastDelegationHandoff": {
                             "invocationId": invocation_id,
                             "handoffRefs": [item.get("handoffRefId") for item in handoff_refs],
+                            "results": handoff_contracts,
                             "completedAt": _now_iso(),
                         }
                     },

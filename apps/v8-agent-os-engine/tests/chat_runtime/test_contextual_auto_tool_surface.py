@@ -4,9 +4,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from core.delegation_broker import task_brief_route_query_text
+from core.delegation_broker import normalize_task_brief, task_brief_route_query_text
 from graph.agent_factories import (
+    _apply_task_tool_policy,
+    _bounded_delegated_task_messages,
     _build_agent_system_content,
+    _delegated_result_text,
+    _delegated_tool_names,
+    _delegated_visible_result_text,
     _format_delegated_plan_context,
     build_specialist_agent_components,
 )
@@ -113,6 +118,131 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Task Brief ID: task-1", content)
         self.assertIn("Required Capabilities: skill_authoring", content)
         self.assertIn("Acceptance Contract: Supervisor verifies the final skill.", content)
+
+    def test_task_tool_policy_can_disable_or_allowlist_worker_tools(self):
+        tools = [_tool("read_native_file"), _tool("web_broker"), _tool("creative_media_jobs")]
+
+        self.assertEqual(
+            _apply_task_tool_policy(tools, {"toolPolicy": {"mode": "none"}}),
+            [],
+        )
+        allowlisted = _apply_task_tool_policy(
+            tools,
+            {"toolPolicy": {"mode": "allowlist", "allowedTools": ["read_native_file"]}},
+        )
+        self.assertEqual([tool.name for tool in allowlisted], ["read_native_file"])
+
+    def test_subagent_tool_receipt_excludes_supervisor_tool_calls(self):
+        from langchain_core.messages import AIMessage
+
+        supervisor = AIMessage(
+            content="",
+            tool_calls=[{"id": "sup-1", "name": "delegation_broker", "args": {}}],
+        )
+        child = AIMessage(
+            content="",
+            tool_calls=[{"id": "child-1", "name": "read_native_file", "args": {}}],
+            additional_kwargs={
+                "v8_owner_agent_kind": "subagent",
+                "v8_owner_agent_id": "worker-one",
+            },
+        )
+
+        self.assertEqual(
+            _delegated_tool_names([supervisor, child], agent_id="worker-one"),
+            ["read_native_file"],
+        )
+
+    def test_subagent_exact_result_is_preserved_separately_from_handoff_copy(self):
+        from langchain_core.messages import HumanMessage
+
+        message = HumanMessage(
+            content="[Worker 执行完毕]\n结果: OWNER_ISOLATION_OK",
+            additional_kwargs={
+                "v8_owner_agent_kind": "subagent",
+                "v8_owner_agent_id": "worker-one",
+                "v8_subagent_result_text": "OWNER_ISOLATION_OK",
+            },
+        )
+
+        self.assertEqual(
+            _delegated_result_text([message], agent_id="worker-one"),
+            "OWNER_ISOLATION_OK",
+        )
+
+    def test_subagent_exact_result_excludes_inline_provider_reasoning(self):
+        from langchain_core.messages import AIMessage
+
+        response = AIMessage(content="<think>internal reasoning</think>OWNER_ISOLATION_OK")
+
+        self.assertEqual(_delegated_visible_result_text(response), "OWNER_ISOLATION_OK")
+
+    def test_delegated_task_messages_do_not_replay_parent_user_instruction(self):
+        from langchain_core.messages import HumanMessage
+
+        parent = HumanMessage(content="最终只回复 ACCEPT 或 RETRY。")
+        delegated = HumanMessage(
+            content="[Supervisor Delegated Task]\n只输出 AUTHORITY_OK",
+            additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
+        )
+
+        selected = _bounded_delegated_task_messages(
+            [parent, delegated],
+            {"taskBriefId": "task-1", "goal": "只输出 AUTHORITY_OK"},
+        )
+
+        self.assertEqual(selected, [delegated])
+        self.assertNotIn("ACCEPT", str(selected[0].content))
+
+    def test_task_brief_normalizes_explicit_tool_policy_without_guessing_from_prose(self):
+        normalized = normalize_task_brief(
+            {
+                "taskBriefId": "task-tool-policy",
+                "goal": "Inspect one file and report.",
+                "expectedOutput": "A concise verdict.",
+                "constraints": ["Do not modify files."],
+                "evidenceRefs": ["artifact://evidence-1"],
+                "detailRefs": ["detail://task-1"],
+                "toolPolicy": {
+                    "mode": "allowlist",
+                    "allowedTools": ["read_native_file"],
+                    "forbiddenTools": ["run_system_command"],
+                },
+            }
+        )
+
+        self.assertEqual(normalized["toolPolicy"]["mode"], "allowlist")
+        self.assertEqual(normalized["allowedTools"], ["read_native_file"])
+        self.assertEqual(normalized["forbiddenTools"], ["run_system_command"])
+        self.assertEqual(normalized["expectedOutputs"], ["A concise verdict."])
+        self.assertEqual(normalized["behaviorScope"], ["Do not modify files."])
+        self.assertEqual(normalized["evidenceRefs"], ["artifact://evidence-1"])
+        self.assertEqual(normalized["detailRefs"], ["detail://task-1"])
+
+    def test_delegation_tool_schema_exposes_authority_and_acceptance_fields(self):
+        from core.tools.native.delegation import delegation_broker
+
+        schema = delegation_broker.args_schema.model_json_schema()
+        task_schema = schema["$defs"]["DelegationTaskInput"]["properties"]
+
+        self.assertIn("toolPolicy", task_schema)
+        self.assertIn("acceptanceContract", task_schema)
+        self.assertIn("expectedOutput", task_schema)
+        self.assertIn("constraints", task_schema)
+
+    def test_delegated_plan_context_explains_exact_tool_authority(self):
+        content = _format_delegated_plan_context(
+            {
+                "taskBriefId": "task-no-tools",
+                "goal": "Return a bounded textual self-check.",
+                "toolPolicy": {"mode": "none", "allowedTools": [], "forbiddenTools": []},
+            },
+            None,
+        )
+
+        self.assertIn("Tool Policy:", content)
+        self.assertIn("this task has no tool authority", content)
+        self.assertIn("absence of `delegation_broker`", content)
 
     def test_delegated_plan_context_without_planner_does_not_claim_planner_origin(self):
         content = _format_delegated_plan_context(

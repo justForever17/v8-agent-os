@@ -5,6 +5,7 @@ from typing import Any, Iterable
 
 BASELINE_SYSTEM_TOOL_NAME_ORDER = (
     "ask_user",
+    "delegation_broker",
     "read_native_file",
     "write_native_file",
     "grep_search",

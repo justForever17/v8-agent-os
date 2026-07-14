@@ -100,6 +100,10 @@
     "./subagent-return-projection": {
       "types": "./dist/subagent-return-projection.d.ts",
       "default": "./dist/subagent-return-projection.js"
+    },
+    "./session-output-projection": {
+      "types": "./dist/session-output-projection.d.ts",
+      "default": "./dist/session-output-projection.js"
     }
   },
   "devDependencies": {

@@ -76,6 +76,83 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime._extract_final_assistant_text_from_state(think_only), "")
         self.assertEqual(self.runtime._extract_final_assistant_text_from_state(mixed), "Visible answer")
 
+    def test_final_state_extractor_skips_subagent_owned_messages(self):
+        child = AIMessage(
+            content="child output must stay in the delegation handoff",
+            additional_kwargs={
+                "v8_owner_runtime_kind": "subagent",
+                "v8_owner_agent_kind": "subagent",
+                "v8_owner_agent_id": "worker-one",
+            },
+        )
+        supervisor = AIMessage(content="supervisor accepted the handoff")
+
+        self.assertEqual(
+            self.runtime._extract_final_assistant_text_from_state({"messages": [supervisor, child]}),
+            "supervisor accepted the handoff",
+        )
+
+    async def test_callback_metadata_keeps_subagent_text_out_of_supervisor_canonical_message(self):
+        self.stream_state.valid_agent_node_names = ["supervisor", "worker-one"]
+
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_chat_model_stream",
+                "run_id": "model_child",
+                "name": "V8ChatModelAdapter",
+                "metadata": {
+                    "langgraph_node": "parallel_delegate_task",
+                    "v8_owner_runtime_kind": "subagent",
+                    "v8_owner_agent_id": "worker-one",
+                    "v8_owner_subagent_id": "worker-one",
+                    "v8_owner_delegation_id": "delegation-one",
+                },
+                "data": {"chunk": "child-only narrative"},
+            },
+        )
+
+        self.assertEqual("".join(self.stream_state.output_buffer), "")
+        self.assertEqual(emitted[0]["ownerRuntimeId"], "subagent_swarm")
+        self.assertEqual(emitted[0]["ownerAgentId"], "worker-one")
+        self.assertFalse(emitted[0]["displayInMessage"])
+        self.assertEqual(self.chat_run.events[-1]["topic"], "subagent.text.delta")
+        self.assertIsNone(self.stream_state.assistant_message_id)
+
+    async def test_provider_internal_model_event_cannot_create_a_second_assistant_stream(self):
+        emitted = await self.runtime.handle_stream_event(
+            self.chat_run,
+            self.stream_state,
+            {
+                "event": "on_chat_model_end",
+                "run_id": "provider-inner-run",
+                "name": "ChatOpenAI",
+                "metadata": {
+                    "langgraph_node": "parallel_delegate_task",
+                    "v8_model_scope": "runtime_internal",
+                },
+                "tags": ["v8:provider-internal"],
+                "data": {"output": {"content": "provider duplicate must stay hidden"}},
+            },
+        )
+
+        self.assertEqual(emitted, [])
+        self.assertEqual(self.stream_state.output_buffer, [])
+        self.assertIsNone(self.stream_state.assistant_message_id)
+
+    def test_supervisor_delegation_broker_call_remains_message_owned(self):
+        owner = self.runtime._resolve_event_owner(
+            self.stream_state,
+            tool_name="delegation_broker",
+            event_metadata={"langgraph_node": "supervisor_tools"},
+        )
+
+        self.assertEqual(owner["ownerRuntimeId"], "chat")
+        self.assertEqual(owner["ownerAgentKind"], "supervisor")
+        self.assertEqual(owner["ownerAgentId"], "supervisor")
+        self.assertTrue(owner["displayInMessage"])
+
     async def test_non_monotonic_stream_text_is_not_hard_appended_and_terminal_text_stays_clean(self):
         prefix = "已在工作区中找到3张JPEG格式的图片，本地路径如下：\n"
         dirty_fragment = "文件：\n1. `C:\\Usersuny\\.v8"

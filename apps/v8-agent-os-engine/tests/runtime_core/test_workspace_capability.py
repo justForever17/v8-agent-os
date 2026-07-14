@@ -236,6 +236,46 @@ def test_write_native_file_blocks_default_workspace_when_scoped(tmp_path, monkey
     assert not (main_root / "projects" / "wrong.txt").exists()
 
 
+def test_write_native_file_records_a_session_bound_artifact(tmp_path, monkeypatch):
+    from core import native_tools
+    from core.tools.native import workspace_file as workspace_file_module
+
+    active_root = tmp_path / "active"
+    main_root = tmp_path / "main"
+    active_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
+    recorded: list[dict] = []
+
+    class _ArtifactStore:
+        def record_local_file(self, **kwargs):
+            recorded.append(kwargs)
+            return {"artifactId": "art_test"}
+
+    monkeypatch.setattr(workspace_file_module, "artifact_store", _ArtifactStore())
+    monkeypatch.setattr(workspace_file_module.safety_guardian, "assess_file_write", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workspace_file_module.safety_guardian, "observe_post_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(workspace_file_module, "_enforce_safety_decision", lambda *_args, **_kwargs: (True, None))
+    monkeypatch.setattr(workspace_file_module, "mark_workspace_state_stale", lambda *_args, **_kwargs: None)
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        session_id="session-a",
+        run_id="run-a",
+        workspace_path=str(active_root),
+        workspace_id="workspace-a",
+        project_id="project-a",
+    ):
+        result = native_tools.write_native_file.func("src/generated.ts", "export const ok = true;\n")
+
+    assert "Successfully Created/Overwritten" in result
+    assert len(recorded) == 1
+    assert recorded[0]["session_id"] == "session-a"
+    assert recorded[0]["run_id"] == "run-a"
+    assert recorded[0]["metadata"]["origin"] == "agent_file_write"
+    assert recorded[0]["metadata"]["workspaceRelativePath"] == "src/generated.ts"
+
+
 def test_write_native_file_enforces_delegated_task_write_set(tmp_path, monkeypatch):
     from core import native_tools
 

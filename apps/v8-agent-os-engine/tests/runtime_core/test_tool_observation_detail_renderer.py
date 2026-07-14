@@ -191,3 +191,62 @@ def test_renderer_web_detail_preserves_useful_content_shape(tmp_path, monkeypatc
     assert "| Field | Meaning |" in result
     assert "https://example.com/reference" in result
     assert '"debug"' not in result
+
+
+def test_renderer_delegation_detail_keeps_result_and_hides_runtime_control_noise(tmp_path, monkeypatch) -> None:
+    import core.observability_db as observability_module
+    from core.observability_db import ObservabilityDatabaseManager
+    from core.tool_observation_detail import render_tool_observation_detail
+
+    temp_db = ObservabilityDatabaseManager(tmp_path / "observability.db")
+    monkeypatch.setattr(observability_module, "observability_db", temp_db)
+    temp_db.add_tool_observation_record(
+        {
+            "id": "obs-delegation-result",
+            "raw_ref": "toolobs://obs-delegation-result",
+            "tool_name": "delegation_broker",
+            "tool_call_id": "call-delegation",
+            "runtime_kind": "subagent_swarm",
+            "surface": "tool_node",
+            "raw_chars": 1800,
+            "visible_chars": 280,
+            "raw_sha256": "internal-sha",
+            "raw_body": json.dumps(
+                {
+                    "ok": True,
+                    "mode": "observe",
+                    "summary": "Collected one local result.",
+                    "registryVersion": "subagents:internal",
+                    "registryHash": "internal-hash",
+                    "items": [
+                        {
+                            "taskBriefId": "task-1",
+                            "targetLabel": "Reviewer",
+                            "status": "ok",
+                            "toolPolicy": {"mode": "none", "allowedTools": [], "forbiddenTools": []},
+                            "resultText": "OWNER_ISOLATION_OK",
+                            "summary": "The review completed.",
+                            "localSelfCheck": "Evidence was checked.",
+                            "acceptanceHint": "Accept, retry, or ignore.",
+                        }
+                    ],
+                    "recommendedNextAction": "accept_retry_or_ignore",
+                },
+                ensure_ascii=False,
+            ),
+            "budget": {"agentVisibleBudget": 1000},
+            "metadata": {},
+        }
+    )
+
+    result = render_tool_observation_detail("toolobs://obs-delegation-result", max_chars=4000)
+
+    assert result.startswith("Delegation result (observe)")
+    assert "Tool authority: none" in result
+    assert "Exact result: OWNER_ISOLATION_OK" in result
+    assert "The review completed." in result
+    assert "Evidence was checked." in result
+    assert "registryVersion" not in result
+    assert "internal-hash" not in result
+    assert "rawRef" not in result
+    assert "raw=" not in result

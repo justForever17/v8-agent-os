@@ -550,7 +550,7 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
         ...record,
         messages: isCompactSurface(options) ? undefined : normalizeMessages(record.messages),
         artifacts: normalizeArtifacts(record.artifacts),
-        runtimeTimeline: isCompactSurface(options) ? undefined : normalizeRuntimeTimeline(record.runtimeTimeline),
+        runtimeTimeline: normalizeRuntimeTimeline(record.runtimeTimeline),
         processes: isCompactSurface(options) ? undefined : normalizeProcesses(record.processes),
         currentRun: normalizeRunForRealtimeSurface(record.currentRun, options),
         contextReferences: normalizeContextReferences(record.contextReferences),
@@ -559,13 +559,15 @@ export function normalizeSnapshotForRealtimeSurface(raw: unknown, options?: Surf
         snapshot: normalizedSnapshot,
     };
     if (isCompactSurface(options)) {
+        const sourceWindow = asRecord(record.runtimeTimelineWindow);
         normalized.runtimeTimelineWindow = {
             limit: Math.max(1, Number(options?.runtimeTimelineLimit || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT) || DEFAULT_PHONE_RUNTIME_TIMELINE_LIMIT),
-            sourceCount: Array.isArray(snapshot.runtimeTimeline)
+            sourceCount: Number(sourceWindow.sourceCount || 0) || (Array.isArray(snapshot.runtimeTimeline)
                 ? snapshot.runtimeTimeline.length
                 : Array.isArray(record.runtimeTimeline)
                     ? record.runtimeTimeline.length
-                    : 0,
+                    : 0),
+            compacted: true,
         };
     }
     return normalized;

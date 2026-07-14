@@ -31,7 +31,7 @@ from core.runtime_tool_access import (
 from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
 from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capability_registry
-from graph.agent_factories import _select_contextual_subagent_native_tools
+from graph.agent_factories import _format_delegated_plan_context, _select_contextual_subagent_native_tools
 
 
 def _set_pack_runtime_installed(monkeypatch, installed: bool) -> None:
@@ -1315,6 +1315,25 @@ def test_local_subagent_dispatch_only_adds_recursive_grant_when_child_delegation
 
     assert plain["runtimeAccess"] == []
     assert recursive["runtimeAccess"] == ["delegation.recursive"]
+
+
+def test_subagent_prompt_explains_bounded_delegation_authority_without_false_missing_tool_failure():
+    blocked = _format_delegated_plan_context(
+        {"taskBriefId": "task-1", "goal": "Review one file"},
+        None,
+    )
+    allowed = _format_delegated_plan_context(
+        {
+            "taskBriefId": "task-2",
+            "goal": "Coordinate a bounded review",
+            "delegationPolicy": {"allowChildDelegation": True},
+        },
+        None,
+    )
+
+    assert "absence of `delegation_broker` and `request_peer_help` is intentional" in blocked
+    assert "Use `request_peer_help`" in allowed
+    assert "Supervisor-only `delegation_broker`" in allowed
 
 
 def test_memory_broker_is_default_supervisor_read_only_entry_but_not_default_subagent_tool():

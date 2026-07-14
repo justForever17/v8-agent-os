@@ -18,6 +18,7 @@ class BaselineToolSurfaceTests(unittest.TestCase):
         names = [item["name"] for item in descriptors]
 
         self.assertEqual(names, list(BASELINE_SYSTEM_TOOL_NAME_ORDER))
+        self.assertIn("delegation_broker", names)
         self.assertIn("command_session_broker", names)
         self.assertIn("web_broker", names)
         self.assertIn("s3_broker", names)

@@ -8,7 +8,7 @@ def test_tool_registry_index_includes_native_runtime_and_virtual_tools():
     names = {str(item.get("canonicalToolName") or "") for item in index["items"]}
 
     assert "run_system_command" in names
-    assert "workspace_broker" in names
+    assert "workspace_broker" not in names
     assert "research_broker" in names
     assert "ask_user" in names
     assert "fetch_skill_instructions" in names
@@ -22,4 +22,3 @@ def test_tool_registry_index_has_card_metadata():
     assert command["renderKind"] == "terminal"
     assert command["schemaHash"]
     assert command["origin"] in {"native", "runtime_grant"}
-

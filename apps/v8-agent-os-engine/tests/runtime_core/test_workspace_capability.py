@@ -290,6 +290,7 @@ def test_write_native_file_enforces_delegated_task_write_set(tmp_path, monkeypat
         workspace_path=str(active_root),
         workspace_id="test2",
         project_id="test2",
+        engineering_capsule_mode="write",
         allowed_write_paths=["src/allowed.txt"],
     ):
         allowed_result = native_tools.write_native_file.func("src/allowed.txt", "ok")
@@ -339,11 +340,6 @@ def test_write_native_file_supports_line_scoped_patch(tmp_path, monkeypatch):
     active_root.mkdir()
     main_root.mkdir()
     _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
-    monkeypatch.setattr(
-        native_tools,
-        "_workspace_inventory_status",
-        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
-    )
     target = active_root / "src" / "longish.txt"
     target.parent.mkdir(parents=True)
     target.write_text("one\nold-a\nold-b\nfour\n", encoding="utf-8")
@@ -364,11 +360,6 @@ def test_write_native_file_blocks_existing_long_file_full_overwrite_without_anch
     active_root.mkdir()
     main_root.mkdir()
     _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
-    monkeypatch.setattr(
-        native_tools,
-        "_workspace_inventory_status",
-        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
-    )
     target = active_root / "src" / "very_long.txt"
     target.parent.mkdir(parents=True)
     target.write_text("".join(f"line {index}\n" for index in range(1000)), encoding="utf-8")
@@ -389,11 +380,6 @@ def test_write_native_file_requires_read_before_modifying_existing_file(tmp_path
     active_root.mkdir()
     main_root.mkdir()
     _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
-    monkeypatch.setattr(
-        native_tools,
-        "_workspace_inventory_status",
-        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
-    )
     target = active_root / "src" / "existing.txt"
     target.parent.mkdir(parents=True)
     target.write_text("before", encoding="utf-8")
@@ -431,11 +417,6 @@ def test_write_native_file_rejects_stale_read_receipt(tmp_path, monkeypatch):
     active_root.mkdir()
     main_root.mkdir()
     _patch_descriptor(monkeypatch, active_root=active_root, main_root=main_root)
-    monkeypatch.setattr(
-        native_tools,
-        "_workspace_inventory_status",
-        lambda _context: {"hasInventoryToken": True, "workspaceRoot": str(active_root)},
-    )
     target = active_root / "src" / "changed.txt"
     target.parent.mkdir(parents=True)
     target.write_text("before", encoding="utf-8")

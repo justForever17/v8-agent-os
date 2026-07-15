@@ -239,28 +239,46 @@ def build_runtime_episode_wait_node():
         return updated, merged
 
     def _compact_handoff_projection(handoff: dict) -> dict:
+        nested_handoff = handoff.get("delegationHandoff")
+        nested_handoff = dict(nested_handoff) if isinstance(nested_handoff, dict) else {}
         results = [item for item in list(handoff.get("results") or []) if isinstance(item, dict)]
+        for item in list(nested_handoff.get("results") or []):
+            if isinstance(item, dict) and item not in results:
+                results.append(item)
         compact_results: list[dict] = []
         for item in results[:8]:
+            artifact_refs = list(item.get("artifactRefs") or item.get("artifacts") or [])[:8]
+            proof_refs = list(item.get("proofRefs") or [])[:8]
+            status = _string_value(item.get("status"))
+            evidence_complete = bool(
+                status in {"ok", "completed", "ready", "success"}
+                and artifact_refs
+                and not item.get("error")
+                and not item.get("missingArtifactEvidence")
+                and not item.get("blockers")
+            )
             compact_results.append(
                 {
                     "taskBriefId": _string_value(item.get("taskBriefId"), item.get("taskId")),
                     "targetLabel": _string_value(item.get("targetLabel"), item.get("agentName"), item.get("agentId")),
-                    "status": _string_value(item.get("status")),
-                    "result": _string_value(item.get("resultText"), item.get("summary"), item.get("localSelfCheck"))[:1200],
-                    "artifactRefs": list(item.get("artifactRefs") or item.get("artifacts") or [])[:8],
-                    "proofRefs": list(item.get("proofRefs") or [])[:8],
+                    "status": status,
+                    "result": _string_value(item.get("resultText"), item.get("summary"), item.get("localSelfCheck"))[:1800],
+                    "artifactRefs": artifact_refs,
+                    "proofRefs": proof_refs,
                     "blockers": list(item.get("blockers") or item.get("residualRisks") or [])[:6],
+                    "evidenceComplete": evidence_complete,
                 }
             )
+        nested_refs = list(nested_handoff.get("refs") or nested_handoff.get("artifactRefs") or [])
+        nested_proof_refs = list(nested_handoff.get("proofRefs") or nested_handoff.get("verificationRefs") or [])
         return {
             "handoffRefId": _string_value(handoff.get("handoffRefId"), handoff.get("handoffId")),
             "producerEpisodeId": _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId")),
             "kind": _string_value(handoff.get("kind"), "runtime_handoff"),
             "status": _string_value(handoff.get("status")),
             "summary": _string_value(handoff.get("compactSummary"), handoff.get("summary"))[:1200],
-            "refs": list(handoff.get("refs") or handoff.get("artifactRefs") or [])[:10],
-            "proofRefs": list(handoff.get("proofRefs") or handoff.get("verificationRefs") or [])[:10],
+            "refs": list(handoff.get("refs") or handoff.get("artifactRefs") or nested_refs)[:10],
+            "proofRefs": list(handoff.get("proofRefs") or handoff.get("verificationRefs") or nested_proof_refs)[:10],
             "results": compact_results,
             "consumerHint": _string_value(handoff.get("consumerHint"), handoff.get("recommendedNextAction"))[:600],
         }
@@ -281,12 +299,15 @@ def build_runtime_episode_wait_node():
                     task_id = _string_value(result.get("taskBriefId"), "task")
                     target = _string_value(result.get("targetLabel"), "worker")
                     result_status = _string_value(result.get("status"), "unknown")
-                    result_text = _string_value(result.get("result"))[:500]
+                    result_text = _string_value(result.get("result"))[:1600]
                     lines.append(f"  - {task_id} · {target} · {result_status}: {result_text or '已回传结构化结果。'}")
                     artifact_count = len(list(result.get("artifactRefs") or []))
                     proof_count = len(list(result.get("proofRefs") or []))
                     if artifact_count or proof_count:
-                        lines.append(f"    evidence: artifacts={artifact_count}, proofRefs={proof_count}")
+                        evidence_state = "complete" if result.get("evidenceComplete") else "review_required"
+                        lines.append(
+                            f"    evidence: {evidence_state}; artifacts={artifact_count}, proofRefs={proof_count}"
+                        )
         else:
             lines.append("Episodes:")
             for episode in episodes[:8]:
@@ -296,6 +317,11 @@ def build_runtime_episode_wait_node():
                     f"{_string_value(episode.get('episodeId'), episode.get('id'), episode.get('needId'))} "
                     f"state={_string_value(episode.get('state'))}"
                 )
+        lines.append(
+            "A result marked evidence=complete is the governed execution proof for this acceptance step. "
+            "Consume it directly; do not re-read the same artifact or route a duplicate verification episode unless "
+            "the handoff explicitly reports missing evidence, a blocker, or contradictory values."
+        )
         lines.append("Supervisor must use these runtime facts and must not retry direct mutating tools while active episodes remain.")
         return HumanMessage(
             content="\n".join(lines),

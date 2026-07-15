@@ -87,13 +87,12 @@ def test_phase6_legacy_imports_remain_available() -> None:
         memory_broker,
         read_native_file,
         rpa_run_draft,
-        workspace_broker,
         write_native_file,
     )
 
     assert read_native_file.name == "read_native_file"
     assert write_native_file.name == "write_native_file"
-    assert workspace_broker.name == "workspace_broker"
+    assert "workspace_broker" not in native_tool_names()
     assert grep_search.name == "grep_search"
     assert manage_cron.name == "manage_cron"
     assert memory_broker.name == "memory_broker"

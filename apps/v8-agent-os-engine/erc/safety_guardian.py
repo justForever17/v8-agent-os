@@ -3958,7 +3958,12 @@ class SafetyGuardian:
             return "launchd"
         if re.search(r"\bcrontab\s+(-e|-r|[^-]\S*)", lower) and " -l" not in lower:
             return "cron"
-        if re.search(r"\b(defaults|security|dscl|sysadminctl)\b", lower):
+        # Match actual macOS administration executables, not identifiers such
+        # as PowerShell's System.Security.Cryptography namespace or a
+        # $security variable. Dots, dollar signs, and identifier characters
+        # therefore disqualify the token on its left, and a command argument
+        # must follow on the right.
+        if re.search(r"(?<![.$a-z0-9_-])(defaults|security|dscl|sysadminctl)\s+", lower):
             return "macos_admin"
         return ""
 

@@ -54,8 +54,6 @@ class WorkspaceDigestEntry:
     snapshot_at: str
     stale: bool = False
     stale_reasons: list[dict[str, str]] = field(default_factory=list)
-    inventory_token: str = ""
-    inventory_path: str = ""
 
 
 _DIGEST_CACHE: dict[str, WorkspaceDigestEntry] = {}
@@ -174,11 +172,12 @@ def _build_digest(runtime_context: dict[str, Any] | None, *, stale: bool = False
             f"top={_format_list(list(git_summary.get('topChangedFiles') or []), max_items=5)}"
         )
     text = (
-        "[WORKSPACE STATE SNAPSHOT]\n"
-        "This is an automatic lightweight snapshot. It may become stale after file writes, uploads, package installs, scaffolding, builds, or git commands. "
-        "Use workspace_broker(mode=\"inspect\") for a fresh inventory token, tree, conflicts, or full binding.\n"
+        "[WORKSPACE FACTS]\n"
+        "This automatic run-scoped snapshot is the initial workspace truth for Supervisor and delegated agents. "
+        "It is refreshed by the Engine after observed workspace mutations.\n"
         f"Snapshot: {snapshot_at}; stale={'true' if stale else 'false'}\n"
         f"Active Workspace Root: {workspace_root}\n"
+        f"Physical Path Present: {'true' if workspace_root.exists() and workspace_root.is_dir() else 'false'}\n"
         f"Binding: source={binding.source or 'unknown'} workspaceId={binding.workspace_id or 'none'} projectId={binding.project_id or 'none'}\n"
         f"{git_line}\n"
         f"Project markers: {_format_list(markers, max_items=8)}\n"
@@ -190,13 +189,14 @@ def _build_digest(runtime_context: dict[str, Any] | None, *, stale: bool = False
             for item in latest
         )
         text += f"Stale reasons: {reason_text}\n"
-    text += "[/WORKSPACE STATE SNAPSHOT]\n"
+    text += "[/WORKSPACE FACTS]\n"
     diagnostics = {
         "source": "workspace_state_digest",
         "estimatedTokens": max(1, len(text) // 4),
         "stale": stale,
         "snapshotAt": snapshot_at,
         "workspaceRoot": str(workspace_root),
+        "physicalPathPresent": bool(workspace_root.exists() and workspace_root.is_dir()),
         "repoDetected": bool(git_summary.get("repoDetected")),
         "changedCount": int(git_summary.get("changedCount") or 0),
         "projectMarkerCount": len(markers),
@@ -212,19 +212,16 @@ def _build_digest(runtime_context: dict[str, Any] | None, *, stale: bool = False
 
 def build_workspace_state_digest_context(*, state: dict[str, Any] | None = None, session_id: str | None = None) -> tuple[str, list[dict[str, Any]]]:
     runtime_context = _context_from_state(state, session_id=session_id)
-    key, _root = _cache_key(runtime_context)
+    key, root = _cache_key(runtime_context)
     with _DIGEST_LOCK:
         entry = _DIGEST_CACHE.get(key)
-        if entry is None:
+        physical_path_present = Path(root).exists() and Path(root).is_dir()
+        if entry is None or bool(entry.diagnostics.get("physicalPathPresent")) != physical_path_present:
             entry = _build_digest(runtime_context)
             _DIGEST_CACHE[key] = entry
             while len(_DIGEST_CACHE) > _DIGEST_CACHE_LIMIT:
                 _DIGEST_CACHE.pop(next(iter(_DIGEST_CACHE)), None)
-        diagnostics = dict(entry.diagnostics)
-        if entry.inventory_token:
-            diagnostics["inventoryToken"] = entry.inventory_token
-            diagnostics["inventoryPath"] = entry.inventory_path
-        return entry.text, [diagnostics]
+        return entry.text, [dict(entry.diagnostics)]
 
 
 def mark_workspace_state_stale(runtime_context: dict[str, Any] | None = None, *, reason: str = "", subject: str = "") -> None:
@@ -239,19 +236,7 @@ def mark_workspace_state_stale(runtime_context: dict[str, Any] | None = None, *,
         entry.stale = True
         entry.stale_reasons.append(marker)
         refreshed = _build_digest(context, stale=True, stale_reasons=entry.stale_reasons[-8:])
-        refreshed.inventory_token = entry.inventory_token
-        refreshed.inventory_path = entry.inventory_path
         _DIGEST_CACHE[key] = refreshed
-
-
-def record_workspace_inventory_token(runtime_context: dict[str, Any] | None, *, token: str, inspected_path: str = "") -> None:
-    context = dict(runtime_context or get_runtime_context() or {})
-    key, _root = _cache_key(context)
-    with _DIGEST_LOCK:
-        entry = _build_digest(context)
-        entry.inventory_token = str(token or "")
-        entry.inventory_path = str(inspected_path or "")
-        _DIGEST_CACHE[key] = entry
 
 
 def command_may_change_workspace(command: str) -> bool:

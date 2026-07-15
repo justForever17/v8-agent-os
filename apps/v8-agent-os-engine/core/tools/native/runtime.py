@@ -1234,7 +1234,10 @@ def _spec_task_engineering_execution_contract(
         ]
         if ref
     ]
-    allowed_workset = list(expected_paths or ([workspace_path] if workspace_path else []))
+    # A workspace root is an execution boundary, not an implicit write grant.
+    # Write authority must remain bounded to concrete output paths declared by
+    # the approved task contract.
+    allowed_workset = list(expected_paths or [])
     source_refs = {
         "specId": spec_id,
         "taskId": task_id,
@@ -2045,7 +2048,7 @@ def runtime_broker(
     Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions、插件管理中心和 Network Supervisor 是 support/discovery surfaces。@插件是强提示；Supervisor 也可通过 `plugin_broker` 为当前 run 创建最小插件授权。
     Use `mode='list'` only as a compact route menu; capability details already live in `<capability_registry>`.
     Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for execution.
-    A route result queues an episode and the graph moves to the managed runtime wait automatically. Never poll with wait_episode or repeated observe/status calls; do not claim completion until the typed handoff/proof returns.
+    A route result queues an episode and the graph moves to the managed runtime wait automatically. Never poll with wait_episode or repeated observe/status calls; do not claim completion until the typed handoff/proof returns. After a ready handoff reports status=ok/ready with concrete artifact refs and verification values, consume that governed proof directly. Do not route a duplicate verification episode for the same acceptance criteria unless the handoff explicitly reports missing evidence, a blocker, or contradictory values.
     """
     normalized_mode = str(mode or "list").strip().lower()
     need_payload_for_intent = _model_payload(need)

@@ -4,11 +4,8 @@ import json
 import mimetypes
 import os
 import re
-import sys
 import threading
 import time
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -21,20 +18,14 @@ from core.tools.native.tool_governance import (
 )
 from core.tools.native.workspace_governance import (
     _apply_scoped_text_patch,
-    _current_run_inventory_key,
     _line_count_for_guard,
-    _workspace_inventory_block_payload,
-    _workspace_inventory_gate_required,
-    _workspace_inventory_status,
-    _workspace_inventory_tokens,
 )
 from core.workspace_capability import (
-    build_workspace_binding,
     ensure_workspace_side_effect_allowed,
     is_global_skill_path,
     resolve_workspace_tool_path,
 )
-from core.workspace_state_digest import mark_workspace_state_stale, record_workspace_inventory_token
+from core.workspace_state_digest import mark_workspace_state_stale
 from erc.runtime_context import get_runtime_context
 from erc.safety_guardian import safety_guardian
 
@@ -43,25 +34,9 @@ __all__ = [
     "is_binary",
     "read_native_file",
     "share_workspace_file",
-    "workspace_broker",
     "write_native_file",
     "grep_search",
 ]
-
-
-def _compat_native_attr(name: str, local: Any) -> Any:
-    native_module = sys.modules.get("core.native_tools")
-    if native_module is None:
-        return local
-    patched = getattr(native_module, name, local)
-    if patched is not local:
-        return patched
-    return local
-
-
-def _workspace_inventory_status_compat(runtime_context: dict[str, Any]) -> dict[str, Any]:
-    fn = _compat_native_attr("_workspace_inventory_status", _workspace_inventory_status)
-    return fn(runtime_context)
 
 
 def _global_skill_write_block_payload(target_path: Path | str) -> dict[str, Any]:
@@ -85,15 +60,24 @@ def _task_write_scope_values(runtime_context: dict[str, Any]) -> list[str]:
 
 
 def _task_write_scope_allows(runtime_context: dict[str, Any], target_path: Path) -> bool:
+    runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
+    capsule_mode = str(
+        runtime_context.get("engineering_capsule_mode")
+        or runtime_context.get("engineeringCapsuleMode")
+        or ""
+    ).strip().lower()
     allowed_values = _task_write_scope_values(runtime_context)
+    if runtime_kind == "subagent" and capsule_mode != "write":
+        return False
     if not allowed_values:
-        return True
+        return runtime_kind != "subagent"
     workspace_root = Path(
         str(runtime_context.get("workspace_path") or runtime_context.get("workspacePath") or "")
     ).expanduser()
     try:
         workspace_root = workspace_root.resolve()
-        target = target_path.expanduser().resolve()
+        target_candidate = target_path.expanduser()
+        target = (target_candidate if target_candidate.is_absolute() else workspace_root / target_candidate).resolve()
     except Exception:
         return False
     for allowed_value in allowed_values:
@@ -126,6 +110,11 @@ def _task_write_scope_block_payload(runtime_context: dict[str, Any], target_path
         "summary": "目标文件不在当前委派任务的允许写集内，已阻止写入。",
         "error": "path_outside_allowed_write_set",
         "path": str(target_path),
+        "engineeringCapsuleMode": str(
+            runtime_context.get("engineering_capsule_mode")
+            or runtime_context.get("engineeringCapsuleMode")
+            or "none"
+        ),
         "allowedWritePaths": _task_write_scope_values(runtime_context),
         "recommendedNextAction": "仅写入任务合同列出的产物；如确需新增文件，由 Supervisor 重新划定任务写集。",
     }
@@ -427,163 +416,6 @@ def share_workspace_file(path: str, mode: str = "auto") -> dict[str, Any]:
         }
 
 
-def _workspace_tree_preview(root: Path, *, max_entries: int = 80, depth: int = 2) -> tuple[list[dict[str, Any]], bool]:
-    items: list[dict[str, Any]] = []
-    omitted = False
-
-    def walk(base: Path, level: int) -> None:
-        nonlocal omitted
-        if level > depth or len(items) >= max_entries:
-            omitted = True
-            return
-        try:
-            children = sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
-        except Exception:
-            return
-        for child in children:
-            if child.name in {".git", "node_modules", ".next", "dist", "build", ".turbo", ".v8-agent-os"}:
-                continue
-            if len(items) >= max_entries:
-                omitted = True
-                return
-            try:
-                relative = child.relative_to(root).as_posix()
-            except Exception:
-                relative = child.name
-            item: dict[str, Any] = {"path": relative, "type": "dir" if child.is_dir() else "file"}
-            if child.is_file():
-                try:
-                    item["size"] = child.stat().st_size
-                except Exception:
-                    pass
-            items.append(item)
-            if child.is_dir():
-                walk(child, level + 1)
-
-    walk(root, 1)
-    return items, omitted
-
-
-def _workspace_project_markers(root: Path) -> list[dict[str, Any]]:
-    markers: list[dict[str, Any]] = []
-    for pattern in ("package.json", "pyproject.toml", "Cargo.toml", "pnpm-workspace.yaml", "vite.config.*", "next.config.*"):
-        for path in root.glob(f"**/{pattern}"):
-            if any(part in {"node_modules", ".git", ".next", "dist", "build"} for part in path.parts):
-                continue
-            try:
-                relative = path.relative_to(root).as_posix()
-            except Exception:
-                relative = str(path)
-            markers.append({"path": relative, "kind": path.name})
-            if len(markers) >= 40:
-                return markers
-    return markers
-
-
-@tool
-def workspace_broker(
-    mode: str = "inspect",
-    path: str = ".",
-    depth: int = 2,
-    max_entries: int = 80,
-    detail_level: str = "summary",
-) -> str:
-    """Inspect the active workspace and mint a run-scoped inventory token before scaffold/install/bulk-write operations."""
-    normalized_mode = str(mode or "inspect").strip().lower()
-    normalized_detail = str(detail_level or "summary").strip().lower()
-    if normalized_mode != "inspect":
-        return json.dumps(
-            {
-                "ok": False,
-                "kind": "unsupported_mode",
-                "summary": "workspace_broker 当前只支持 mode=inspect。",
-                "mode": normalized_mode,
-            },
-            ensure_ascii=False,
-        )
-    runtime_context = get_runtime_context()
-    path_preflight = resolve_workspace_tool_path(path or ".", runtime_context=runtime_context)
-    if not path_preflight.get("ok"):
-        return json.dumps(
-            {
-                "ok": False,
-                "kind": "workspace_boundary_block",
-                "summary": path_preflight.get("summary"),
-                "error": path_preflight.get("error"),
-                "inputPath": path,
-                "resolvedPath": path_preflight.get("resolvedPath"),
-                "recommendedNextAction": "Use a path inside the active workspace or request an explicit extra root.",
-            },
-            ensure_ascii=False,
-        )
-    root = Path(str(path_preflight.get("resolvedPath") or path)).resolve(strict=False)
-    if root.is_file():
-        root = root.parent
-    binding = build_workspace_binding(runtime_context)
-    workspace_root = Path(binding.active_workspace_root)
-    tree_requested = normalized_detail in {"tree", "detail", "diagnostic", "full"}
-    bounded_depth = max(1, min(int(depth or 2), 4))
-    bounded_entries = max(20, min(int(max_entries or 80), 200))
-    items, omitted = _workspace_tree_preview(root, max_entries=bounded_entries, depth=bounded_depth)
-    markers = _workspace_project_markers(root)
-    token = {
-        "token": uuid.uuid4().hex[:16],
-        "createdAt": datetime.now(timezone.utc).isoformat(),
-        "workspaceRoot": str(workspace_root),
-        "inspectedPath": str(root),
-        "itemCount": len(items),
-        "projectMarkerCount": len(markers),
-        "nonEmpty": bool(items),
-    }
-    _workspace_inventory_tokens[_current_run_inventory_key(runtime_context, str(workspace_root))] = token
-    record_workspace_inventory_token(
-        runtime_context,
-        token=str(token.get("token") or ""),
-        inspected_path=str(root),
-    )
-    potential_conflicts = [
-        item
-        for item in items
-        if item.get("type") == "dir" and re.search(r"(?i)(werewolf|ai[-_]?werewolf|game|app)", str(item.get("path") or ""))
-    ][:12]
-    top_dirs = [
-        item.get("path")
-        for item in items
-        if item.get("type") == "dir" and str(item.get("path") or "").strip()
-    ][:12]
-    payload: dict[str, Any] = {
-        "ok": True,
-        "kind": "workspace_inventory",
-        "summary": "已完成当前工作区盘点；后续脚手架/依赖安装/批量写入需要基于该结果选择目标目录。",
-        "workspaceRoot": str(workspace_root),
-        "inspectedPath": str(root),
-        "token": token.get("token"),
-        "nonEmpty": bool(items),
-        "itemCount": len(items),
-        "projectMarkerCount": len(markers),
-        "topDirs": top_dirs,
-        "projectMarkers": markers[:12],
-        "potentialConflicts": potential_conflicts,
-        "recommendedNextAction": "若已有目标项目，继续该目录；若要新建，请明确子目录名；若冲突不清楚，先询问用户。",
-        "detailTool": "workspace_broker(mode='inspect', detail_level='tree')",
-    }
-    if tree_requested:
-        payload.update(
-            {
-                "detailLevel": normalized_detail,
-                "workspaceBinding": binding.as_dict(),
-                "tokenDetail": token,
-                "items": items,
-                "omitted": {"entries": omitted, "maxEntries": bounded_entries, "depth": bounded_depth},
-            }
-        )
-    return json.dumps(
-        _agent_compact_dict(payload),
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
 @tool
 def write_native_file(
     path: str,
@@ -612,6 +444,12 @@ def write_native_file(
     """
     try:
         runtime_context = get_runtime_context()
+        if not _task_write_scope_allows(runtime_context, Path(str(path or ""))):
+            return json.dumps(
+                _task_write_scope_block_payload(runtime_context, Path(str(path or ""))),
+                ensure_ascii=False,
+                indent=2,
+            )
         side_effect_preflight = ensure_workspace_side_effect_allowed(
             runtime_context,
             operation="file_write",
@@ -644,15 +482,6 @@ def write_native_file(
                 _task_write_scope_block_payload(runtime_context, target_path),
                 ensure_ascii=False,
                 indent=2,
-            )
-        inventory_status = _workspace_inventory_status_compat(runtime_context)
-        if (
-            not inventory_status.get("hasInventoryToken")
-            and _workspace_inventory_gate_required(str(target_path), workspace_root=str(inventory_status.get("workspaceRoot") or ""))
-        ):
-            return json.dumps(
-                _workspace_inventory_block_payload(runtime_context, operation="file_write", subject=str(target_path)),
-                ensure_ascii=False,
             )
         read_allowed, read_block_reason = _consume_file_read_receipt(runtime_context, target_path)
         if not read_allowed:

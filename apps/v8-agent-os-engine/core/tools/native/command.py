@@ -42,11 +42,6 @@ from core.tools.native.tool_governance import (
     _enforce_safety_decision,
     _raise_runtime_governance_exception_if_needed,
 )
-from core.tools.native.workspace_governance import (
-    _workspace_inventory_block_payload,
-    _workspace_inventory_gate_required,
-    _workspace_inventory_status,
-)
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope
 from core.workspace_capability import preflight_command_workspace
 from core.workspace_state_digest import command_may_change_workspace, mark_workspace_state_stale
@@ -140,6 +135,38 @@ __all__ = [
     "send_background_input",
     "terminate_background_command",
 ]
+
+
+def _engineering_command_scope_block(
+    runtime_context: dict[str, Any],
+    *,
+    operation: str,
+    command: str = "",
+) -> dict[str, Any] | None:
+    runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
+    if runtime_kind != "subagent":
+        return None
+    capsule_mode = str(
+        runtime_context.get("engineering_capsule_mode")
+        or runtime_context.get("engineeringCapsuleMode")
+        or "none"
+    ).strip().lower()
+    if capsule_mode == "write":
+        return None
+    if capsule_mode == "verify" and not command_may_change_workspace(command):
+        return None
+    return {
+        "ok": False,
+        "kind": "engineering_capsule_required",
+        "summary": (
+            "当前验证 Capsule 不允许执行可能修改工作区的命令。"
+            if capsule_mode == "verify"
+            else "当前子 Agent 没有可执行 Engineering Capsule，命令工具保持只读关闭。"
+        ),
+        "operation": operation,
+        "engineeringCapsuleMode": capsule_mode or "none",
+        "recommendedNextAction": "向父级返回阻塞原因；由 Supervisor 通过 Engineering episode 派发带验收与证明合同的任务。",
+    }
 
 
 _SHELL_DIALECTS = {"auto", "powershell", "pwsh", "cmd", "bash", "sh"}
@@ -236,6 +263,9 @@ def execute_governed_argv(
     timeout_seconds = max(1, min(int(timeout_seconds or 120), 900))
     command = subprocess.list2cmdline(normalized_argv) if os.name == "nt" else shlex.join(normalized_argv)
     runtime_context = get_runtime_context()
+    capsule_block = _engineering_command_scope_block(runtime_context, operation="governed_argv", command=command)
+    if capsule_block:
+        return capsule_block
     existing_extra_roots = runtime_context.get("allowed_extra_roots") or runtime_context.get("allowedExtraRoots") or []
     if isinstance(existing_extra_roots, str):
         existing_extra_roots = [existing_extra_roots]
@@ -259,14 +289,6 @@ def execute_governed_argv(
             "violations": workspace_preflight.get("violations") or [],
             "recommendedNextAction": "仅使用当前工作区文件作为脚本输入，或由用户显式授予额外 workspace/root。",
         }
-
-    inventory_status = _workspace_inventory_status(governed_context)
-    if (
-        not inventory_status.get("hasInventoryToken")
-        and inventory_status.get("nonEmpty")
-        and _workspace_inventory_gate_required(command, workspace_root=str(inventory_status.get("workspaceRoot") or ""))
-    ):
-        return _workspace_inventory_block_payload(governed_context, operation="command", subject=command)
 
     allowed, error_message = _enforce_safety_decision(
         safety_guardian.assess_system_command(command, runtime_context=governed_context),
@@ -549,7 +571,7 @@ def execute_system_command(
     2. This tool blocks execution. If the command asks for user input, it can hang and time out.
     3. For installers, scaffolding, dev servers, TUI menus, password prompts, or long-running/watch commands, use `run_system_command(mode="auto")` so V8OS can open an observable terminal session.
     4. Do not use shell writes as a shortcut for known source/text edits; read the file first and use file tools when possible.
-    5. On Windows set shell_dialect explicitly when syntax is shell-specific. Do not mix cmd (`%VAR%`, `dir /b`) and PowerShell (`$env:VAR`, `Get-ChildItem`) syntax in one command.
+    5. Follow the shell dialect published by the Engineering Kernel/environment; do not mix shell syntaxes in one command.
     
     Arguments:
         command (str): The command to execute natively.
@@ -575,6 +597,9 @@ def execute_system_command(
             )
 
         runtime_context = get_runtime_context()
+        capsule_block = _engineering_command_scope_block(runtime_context, operation="command_sync", command=command)
+        if capsule_block:
+            return json.dumps(capsule_block, ensure_ascii=False, indent=2)
         workspace_preflight = preflight_command_workspace(command, cwd=cwd or None, runtime_context=runtime_context)
         if not workspace_preflight.get("ok"):
             return json.dumps(
@@ -718,6 +743,13 @@ def _launch_background_command(
         )
 
     runtime_context = get_runtime_context()
+    capsule_block = _engineering_command_scope_block(
+        runtime_context,
+        operation="command_session_start",
+        command=command,
+    )
+    if capsule_block:
+        raise RuntimeError(json.dumps(capsule_block, ensure_ascii=False))
     workspace_preflight = preflight_command_workspace(command, cwd=cwd or None, runtime_context=runtime_context)
     if not workspace_preflight.get("ok"):
         raise RuntimeError(
@@ -736,13 +768,6 @@ def _launch_background_command(
                 ensure_ascii=False,
             )
         )
-    inventory_status = _workspace_inventory_status(runtime_context)
-    if (
-        not inventory_status.get("hasInventoryToken")
-        and inventory_status.get("nonEmpty")
-        and _workspace_inventory_gate_required(command, workspace_root=str(inventory_status.get("workspaceRoot") or ""))
-    ):
-        raise RuntimeError(json.dumps(_workspace_inventory_block_payload(runtime_context, operation="command", subject=command), ensure_ascii=False))
     suggested_command = _suggest_npx_yes_command(command)
     if suggested_command:
         raise RuntimeError(
@@ -754,7 +779,7 @@ def _launch_background_command(
                     "command": command,
                     "suggestedCommand": suggested_command,
                     "recommendedNextAction": "用 suggestedCommand 重新启动 command_session_broker(mode=\"start\")。",
-                    "workspaceBinding": inventory_status.get("binding"),
+                    "workspaceBinding": workspace_preflight.get("binding"),
                 },
                 ensure_ascii=False,
             )
@@ -2986,12 +3011,19 @@ def run_system_command(
     - shell: 普通终端模式
 
     shell_dialect:
-    - Windows 推荐显式选择 powershell、pwsh 或 cmd；auto 仅用于兼容并会返回实际选择。
-    - 不要在同一命令中混用 cmd 与 PowerShell 语法。
+    - Follow the detected shell dialect in the Engineering Kernel/environment; auto is compatibility-only and returns the resolved dialect.
+    - Do not mix syntax from different shell dialects in one command.
     """
     normalized_mode = str(mode or "auto").strip().lower()
     if normalized_mode not in {"auto", "sync", "session"}:
         return "Error: mode 必须是 auto、sync 或 session。"
+    capsule_block = _engineering_command_scope_block(
+        get_runtime_context(),
+        operation="run_system_command",
+        command=command,
+    )
+    if capsule_block:
+        return json.dumps(capsule_block, ensure_ascii=False, indent=2)
     try:
         normalized_profile = _normalize_background_command_profile(profile)
     except ValueError as exc:
@@ -3359,7 +3391,7 @@ def command_session_broker(
     - If awaitingInput=true, send follow-up text with mode=input; if hasMore=true, observe again after a short wait.
     - For TUI menus, prefer keys=["down","down","enter"]. Common shorthand like input_text="↓↓" maps to arrow keys and appends Enter by default.
     - Use debug=true only for raw terminal diagnostics such as screenPreview, rawFramePreview, render_stalled, or encodingState/mojibake.
-    - On Windows choose shell_dialect explicitly for shell-specific commands; never mix cmd and PowerShell syntax in one session.
+    - Follow the shell dialect published by the Engineering Kernel/environment; never mix shell syntaxes in one session.
     """
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"start", "observe", "input", "terminate"}:
@@ -3372,6 +3404,14 @@ def command_session_broker(
             recommended_next_action="none",
             error=f"Unsupported command_session_broker mode: {normalized_mode}",
         )
+
+    capsule_block = _engineering_command_scope_block(
+        get_runtime_context(),
+        operation=f"command_session_{normalized_mode}",
+        command=command if normalized_mode == "start" else "",
+    )
+    if capsule_block:
+        return json.dumps(capsule_block, ensure_ascii=False, indent=2)
 
     try:
         if normalized_mode == "start":

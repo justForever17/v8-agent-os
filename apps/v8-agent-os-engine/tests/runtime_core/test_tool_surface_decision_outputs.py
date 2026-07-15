@@ -52,31 +52,6 @@ def test_runtime_broker_default_is_decision_summary():
     _assert_not_json_wrapper(visible)
 
 
-def test_workspace_broker_default_hides_binding_and_tree():
-    visible = _visible(
-        "workspace_broker",
-        {
-            "ok": True,
-            "kind": "workspace_inventory",
-            "workspaceRoot": "E:\\Projects\\demo",
-            "token": "abc1234567890",
-            "nonEmpty": True,
-            "topDirs": ["src", "tests", "node_modules"],
-            "projectMarkers": [{"path": "package.json", "kind": "package.json"}],
-            "workspaceBinding": {"large": "diagnostic"},
-            "tree": [{"name": "src"}],
-            "recommendedNextAction": "Continue existing project.",
-        },
-    )
-
-    assert "Workspace inventory" in visible
-    assert "E:\\Projects\\demo" in visible
-    assert "package.json" in visible
-    assert "workspaceBinding" not in visible
-    assert '"tree"' not in visible
-    _assert_not_json_wrapper(visible)
-
-
 def test_research_plan_hides_shard_defaults():
     visible = _visible(
         "research_broker",

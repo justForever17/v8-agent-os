@@ -19,7 +19,8 @@ from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.runtime_episodes import ACTIVE_EPISODE_STATES, build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
-from core.workspace_state_digest import build_workspace_state_digest_context
+from core.engineering_capsule import ensure_engineering_task_capsule
+from core.engineering_kernel import build_engineering_kernel_context
 from erc.runtime_context import bind_runtime_context
 
 
@@ -1101,7 +1102,7 @@ class RuntimeEpisodeRunner:
         session_id = str(episode.get("session_id") or episode.get("sessionId") or "").strip() or None
         run_id = str(episode.get("run_id") or episode.get("runId") or "").strip() or None
         workspace_path = inputs.get("workspacePath") or need.get("workspacePath")
-        digest_text, _digest_refs = build_workspace_state_digest_context(
+        digest_text, _digest_refs = build_engineering_kernel_context(
             state={
                 "run_id": run_id,
                 "workspace_path": str(workspace_path) if workspace_path else None,
@@ -1165,6 +1166,7 @@ class RuntimeEpisodeRunner:
                 worker_briefs,
                 need=need,
                 inputs=inputs,
+                workspace_path=str(workspace_path) if workspace_path else "",
             )
             self._heartbeat(str(episode.get("episodeId")), "engineering: delegate executable work")
             delegation_episode = {
@@ -1602,19 +1604,6 @@ class RuntimeEpisodeRunner:
 
     @staticmethod
     def _delegation_handoff_has_write_evidence(handoff: dict[str, Any]) -> bool:
-        def _walk(value: Any) -> list[Any]:
-            if isinstance(value, dict):
-                out: list[Any] = []
-                for item in value.values():
-                    out.extend(_walk(item))
-                return out
-            if isinstance(value, list):
-                out = []
-                for item in value:
-                    out.extend(_walk(item))
-                return out
-            return [value]
-
         evidence_keys = {
             "touchedFiles",
             "touched_files",
@@ -1647,15 +1636,7 @@ class RuntimeEpisodeRunner:
                 return any(_has_non_empty_evidence(item) for item in value)
             return False
 
-        if _has_non_empty_evidence(handoff):
-            return True
-        text = "\n".join(str(item or "") for item in _walk(handoff) if isinstance(item, str)).lower()
-        empty_dir_markers = ("0 个文件", "0 files", "empty directory", "目录为空")
-        if any(marker in text for marker in empty_dir_markers):
-            return False
-        write_verbs = ("created", "wrote", "modified", "updated", "patched", "新增", "写入", "修改", "更新", "创建")
-        file_markers = (".html", ".js", ".css", ".md", ".json", ".ts", ".tsx", ".py", "index.html", "readme", "design")
-        return any(verb in text for verb in write_verbs) and any(marker in text for marker in file_markers)
+        return _has_non_empty_evidence(handoff)
 
     @staticmethod
     def _engineering_missing_expected_artifacts(
@@ -1943,6 +1924,7 @@ class RuntimeEpisodeRunner:
         *,
         need: dict[str, Any],
         inputs: dict[str, Any],
+        workspace_path: str = "",
     ) -> list[dict[str, Any]]:
         """Normalize Engineering-owned briefs before handing them to subagents.
 
@@ -1976,6 +1958,9 @@ class RuntimeEpisodeRunner:
                 item["executionLaneHint"] = "subagent"
             deliverable_kind = str(item.get("deliverableKind") or item.get("deliverable_kind") or "").strip().lower()
             context = dict(item.get("context") or {}) if isinstance(item.get("context"), dict) else {}
+            if workspace_path:
+                item["workspacePath"] = workspace_path
+                context.setdefault("workspacePath", workspace_path)
             expected_outputs = item.get("expectedOutputs") or item.get("expected_outputs") or context.get("expectedOutputs")
             write_required = item.get("writeRequired") if "writeRequired" in item else item.get("write_required")
             validate_skill_artifact = bool(item.get("validateSkillArtifact") or item.get("validate_skill_artifact"))
@@ -2085,7 +2070,7 @@ class RuntimeEpisodeRunner:
                 )
             if context:
                 item["context"] = context
-            normalized.append(item)
+            normalized.append(ensure_engineering_task_capsule(item))
         return normalized
 
     @staticmethod

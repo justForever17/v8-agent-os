@@ -6,7 +6,6 @@ from core.workspace_state_digest import (
     build_workspace_state_digest_context,
     command_may_change_workspace,
     mark_workspace_state_stale,
-    record_workspace_inventory_token,
 )
 
 
@@ -21,13 +20,15 @@ def test_workspace_state_digest_includes_snapshot_and_workspace(tmp_path: Path):
 
     text, diagnostics = build_workspace_state_digest_context(state=state, session_id="session-digest")
 
-    assert "[WORKSPACE STATE SNAPSHOT]" in text
+    assert "[WORKSPACE FACTS]" in text
     assert str(tmp_path) in text
     assert "package.json" in text
+    assert "Physical Path Present: true" in text
     assert diagnostics and diagnostics[0]["repoDetected"] is False
+    assert diagnostics[0]["physicalPathPresent"] is True
 
 
-def test_workspace_state_digest_stale_and_inventory_token(tmp_path: Path):
+def test_workspace_state_digest_marks_mutated_snapshot_stale(tmp_path: Path):
     context = {
         "session_id": "session-stale",
         "run_id": "run-stale",
@@ -41,9 +42,24 @@ def test_workspace_state_digest_stale_and_inventory_token(tmp_path: Path):
     assert "stale=true" in text
     assert diagnostics[0]["stale"] is True
 
-    record_workspace_inventory_token(context, token="abc123", inspected_path=str(tmp_path))
-    _text, diagnostics = build_workspace_state_digest_context(state=context, session_id="session-stale")
-    assert diagnostics[0]["inventoryToken"] == "abc123"
+
+def test_workspace_state_digest_does_not_cache_a_physically_deleted_workspace(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = {
+        "session_id": "session-deleted",
+        "run_id": "run-deleted",
+        "workspace_path": str(workspace),
+        "workspace_id": "workspace-deleted",
+    }
+
+    _text, diagnostics = build_workspace_state_digest_context(state=context, session_id="session-deleted")
+    assert diagnostics[0]["physicalPathPresent"] is True
+
+    workspace.rmdir()
+    text, diagnostics = build_workspace_state_digest_context(state=context, session_id="session-deleted")
+    assert "Physical Path Present: false" in text
+    assert diagnostics[0]["physicalPathPresent"] is False
 
 
 def test_command_may_change_workspace_heuristic():
@@ -52,4 +68,3 @@ def test_command_may_change_workspace_heuristic():
     assert command_may_change_workspace("New-Item -ItemType Directory src")
     assert not command_may_change_workspace("git status --short")
     assert not command_may_change_workspace("python -m pytest -q")
-

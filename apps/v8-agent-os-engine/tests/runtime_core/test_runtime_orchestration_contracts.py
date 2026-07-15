@@ -524,6 +524,73 @@ def test_non_spec_required_write_with_file_and_proof_can_complete(tmp_path) -> N
     assert decision.action == "complete"
 
 
+def test_non_spec_required_write_accepts_nested_runtime_acceptance_proof(tmp_path) -> None:
+    artifact = tmp_path / "result.txt"
+    artifact.write_text("done", encoding="utf-8")
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "delegationHandoff": {
+                        "status": "ready",
+                        "results": [
+                            {
+                                "status": "ok",
+                                "artifactRefs": [
+                                    {"path": str(artifact), "kind": "workspace_artifact"}
+                                ],
+                            }
+                        ],
+                        "acceptanceCheck": {"must": {"passed": True, "items": ["file exists"]}},
+                    },
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
+def test_non_spec_required_write_uses_parent_handoff_as_completion_boundary(tmp_path) -> None:
+    artifact = tmp_path / "result.txt"
+    artifact.write_text("done", encoding="utf-8")
+    parent = _required_write_episode(str(tmp_path))
+    child = {
+        **_required_write_episode(str(tmp_path)),
+        "episodeId": "episode-child",
+        "kind": "delegation",
+        "parentEpisodeId": "episode-write",
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[parent, child],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "delegationHandoff": {
+                        "artifactRefs": [{"path": str(artifact), "kind": "workspace_artifact"}],
+                        "acceptanceCheck": {"must": {"passed": True}},
+                    },
+                }
+            ],
+            "episode-child": [
+                {
+                    "status": "ready",
+                    "artifactRefs": [{"path": str(artifact), "kind": "workspace_artifact"}],
+                }
+            ],
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
 def test_non_spec_required_write_resolves_workspace_artifact_ref_to_real_file(tmp_path) -> None:
     artifact = tmp_path / "result.md"
     artifact.write_text("done", encoding="utf-8")

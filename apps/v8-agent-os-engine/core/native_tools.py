@@ -146,14 +146,8 @@ from core.tools.native.tool_governance import (
 )
 from core.tools.native.workspace_governance import (
     _apply_scoped_text_patch,
-    _current_run_inventory_key,
     _dominant_newline,
     _line_count_for_guard,
-    _workspace_has_existing_items,
-    _workspace_inventory_block_payload,
-    _workspace_inventory_gate_required,
-    _workspace_inventory_status,
-    _workspace_inventory_tokens,
 )
 from core.storage import StorageManager
 from runtimes.computer_use.primitives import list_computer_use_primitives, primitive_validation_matrix
@@ -166,7 +160,6 @@ from core.workspace_resolution import workspace_resolution_service
 from core.workspace_state_digest import (
     command_may_change_workspace,
     mark_workspace_state_stale,
-    record_workspace_inventory_token,
 )
 from core.tools.media_downloader import download_media_for_vision
 from core.tools.research_broker import research_broker

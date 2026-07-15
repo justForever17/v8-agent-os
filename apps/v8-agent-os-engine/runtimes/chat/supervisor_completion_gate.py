@@ -360,14 +360,19 @@ def _handoff_proof_evidence(handoffs: Iterable[Mapping[str, Any]]) -> list[str]:
             text = _ref_text(value) or str(value or "").strip()
             if text:
                 evidence.append(text[:800])
-        verification = payload.get("verification")
-        if isinstance(verification, Mapping) and verification:
+        for verification in _collect_named_values(
+            payload,
+            {"verification", "verificationResult", "verificationResults", "verification_result", "verification_results"},
+        ):
+            if not isinstance(verification, Mapping) or not verification:
+                continue
             status = str(verification.get("status") or verification.get("state") or "").strip().lower()
             passed = verification.get("passed")
             if passed is True or status in {"passed", "verified", "success", "completed"}:
                 evidence.append(f"verification:{status or 'passed'}")
-        acceptance = payload.get("acceptanceCheck")
-        if isinstance(acceptance, Mapping):
+        for acceptance in _collect_named_values(payload, {"acceptanceCheck", "acceptance_check"}):
+            if not isinstance(acceptance, Mapping):
+                continue
             must = acceptance.get("must") if isinstance(acceptance.get("must"), Mapping) else {}
             if must.get("passed") is True:
                 evidence.append("acceptance:must_passed")
@@ -379,6 +384,13 @@ def _non_spec_write_delivery_failure(
     handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
 ) -> dict[str, Any] | None:
     for episode in episodes:
+        if str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip():
+            # Child delegation episodes are implementation details of the owning
+            # runtime episode. Their artifacts and proof are merged into the
+            # parent's typed handoff; evaluating them again can reject a valid
+            # parent delivery merely because the child handoff is intentionally
+            # compact.
+            continue
         if not _required_write_episode(episode):
             continue
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()

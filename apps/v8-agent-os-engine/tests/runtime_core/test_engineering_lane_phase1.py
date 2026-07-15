@@ -180,13 +180,15 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
                 "taskBriefId": "task-1",
                 "goal": "Implement admin page",
                 "writeSet": ["apps/v8-agent-os-admin/src/page.tsx"],
-                "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-admin/src/page.tsx"]},
+                "expectedOutputs": ["apps/v8-agent-os-admin/src/page.tsx"],
+                "acceptanceContract": "The admin page renders.",
             },
             {
                 "taskBriefId": "task-2",
                 "goal": "Refactor same admin page",
                 "writeSet": ["apps/v8-agent-os-admin/src/page.tsx"],
-                "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-admin/src/page.tsx"]},
+                "expectedOutputs": ["apps/v8-agent-os-admin/src/page.tsx"],
+                "acceptanceContract": "The refactored page renders.",
             },
         ]
         decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=True)
@@ -195,8 +197,8 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
 
     def test_workset_dispatch_manual_warns_but_does_not_block(self) -> None:
         tasks = [
-            {"taskBriefId": "task-1", "goal": "Implement engine fix", "writeSet": ["apps/v8-agent-os-engine/core/foo.py"], "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-engine/core/foo.py"]}},
-            {"taskBriefId": "task-2", "goal": "Debug engine fix", "writeSet": ["apps/v8-agent-os-engine/core/"], "engineeringTaskCapsule": {"writeSet": ["apps/v8-agent-os-engine/core/"]}},
+            {"taskBriefId": "task-1", "goal": "Implement engine fix", "writeSet": ["apps/v8-agent-os-engine/core/foo.py"], "expectedOutputs": ["apps/v8-agent-os-engine/core/foo.py"], "acceptanceContract": "The focused test passes."},
+            {"taskBriefId": "task-2", "goal": "Debug engine fix", "writeSet": ["apps/v8-agent-os-engine/core/"], "expectedOutputs": ["apps/v8-agent-os-engine/core/debug.md"], "acceptanceContract": "The root cause is proven."},
         ]
         decisions = build_workset_dispatch_decisions(tasks, auto_dispatch=False)
         self.assertTrue(any(item["warning"] for item in decisions))

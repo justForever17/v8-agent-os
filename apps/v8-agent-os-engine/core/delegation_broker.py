@@ -10,6 +10,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
+from core.command_environment import default_shell_dialect
+from core.engineering_capsule import ensure_engineering_task_capsule
+
 from core.agents import normalize_specialist_family_id
 
 from core.runtime_tool_access import normalize_subagent_runtime_bindings
@@ -251,6 +254,9 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     ):
         if boundary not in behavior_scope:
             behavior_scope.append(boundary)
+    expected_artifacts = _normalize_scope_values(
+        _first_present(payload, ("expectedArtifacts", "expected_artifacts"))
+    )
     expected_outputs = _normalize_scope_values(
         _first_present(
             payload,
@@ -259,11 +265,15 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
                 "expected_outputs",
                 "expectedOutput",
                 "expected_output",
-                "expectedArtifacts",
-                "expected_artifacts",
             ),
         )
     )
+    if not expected_outputs and expected_artifacts:
+        # Historical callers used expectedArtifacts as the only output field.
+        # Preserve that minimum compatibility without erasing the distinction:
+        # expectedOutputs describes acceptance-facing results, while
+        # expectedArtifacts contains concrete artifact paths only.
+        expected_outputs = list(expected_artifacts)
     normalized = {
         "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
         "goal": str(payload.get("goal") or "").strip(),
@@ -271,6 +281,7 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "routeQuery": str(payload.get("routeQuery") or payload.get("route_query") or payload.get("extensionsRouteQuery") or payload.get("extensions_route_query") or "").strip(),
         "writeSet": _normalize_scope_values(payload.get("writeSet") or payload.get("write_set")),
         "expectedOutputs": expected_outputs,
+        "expectedArtifacts": expected_artifacts,
         "behaviorScope": behavior_scope,
         "requiredCapabilities": _normalize_scope_values(payload.get("requiredCapabilities") or payload.get("required_capabilities")),
         "runtimeAccess": _normalize_scope_values(payload.get("runtimeAccess") or payload.get("runtime_access")),
@@ -343,7 +354,10 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         normalized["executionLaneHint"] = "auto"
     if not normalized["taskBriefId"]:
         normalized["taskBriefId"] = defaults["taskBriefId"]
-    return normalized
+    return ensure_engineering_task_capsule(
+        normalized,
+        shell_dialect=default_shell_dialect(),
+    )
 
 
 def normalize_task_briefs(values: Iterable[Any] | None) -> list[dict[str, Any]]:
@@ -850,6 +864,9 @@ def _task_is_read_only_safe(task_brief: dict[str, Any] | None) -> bool:
     tokens = set(_tokenize(_task_brief_signal_text(task_brief)))
     if tokens & _WRITE_ENGINEERING_TERMS:
         return False
+    capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    if str(capsule.get("executionMode") or "").strip().lower() in {"read_only", "verify"}:
+        return True
     if tokens & _READ_ONLY_ENGINEERING_TERMS:
         return True
     if tokens & _DOC_ONLY_ENGINEERING_TERMS and not _as_string_list(task_brief.get("writeSet")):
@@ -885,6 +902,9 @@ def engineering_task_capsule(task_brief: dict[str, Any] | None) -> dict[str, Any
         return {}
     raw_capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
     capsule = {
+        "executionMode": raw_capsule.get("executionMode"),
+        "contractStatus": raw_capsule.get("contractStatus"),
+        "missingContractFields": _unique_str_list(raw_capsule.get("missingContractFields")),
         "criticalFiles": _unique_str_list(raw_capsule.get("criticalFiles") or task_brief.get("criticalFiles")),
         "readSet": _unique_str_list(raw_capsule.get("readSet") or task_brief.get("readSet")),
         "writeSet": _unique_str_list(raw_capsule.get("writeSet") or task_brief.get("writeSet")),
@@ -921,7 +941,18 @@ def build_workset_dispatch_decisions(
         reason = "task_has_no_engineering_workset_requirements"
         repair = ""
 
-        if engineering_like:
+        if engineering_like and str(capsule.get("contractStatus") or "valid") == "invalid":
+            missing_fields = _unique_str_list(capsule.get("missingContractFields"))
+            risk = "invalid_execution_contract"
+            reason = "engineering_task_capsule_incomplete"
+            repair = (
+                "Repair the task brief before dispatch. Missing: "
+                + ", ".join(missing_fields or ["writeSet", "expectedOutputs", "acceptanceContract"])
+                + "."
+            )
+            blocked = True
+            warning = True
+        elif engineering_like:
             if write_set:
                 risk = "within_write_set"
                 reason = "declared_write_set_present"
@@ -1085,6 +1116,8 @@ def score_capability_candidate(
     operations = _snapshot_value_set(snapshot, "operationCapabilities")
     runtimes = _snapshot_value_set(snapshot, "runtimeAffinities")
     agent_class = str(snapshot.get("agentClass") or "").strip().lower()
+    capsule_mode = str(engineering_task_capsule(task_brief).get("executionMode") or "").strip().lower()
+    write_execution = bool(capsule_mode == "write" or task_brief.get("writeRequired") or task_brief.get("writeSet"))
 
     for key, values, weight in (
         ("domain", domain, 6),
@@ -1118,6 +1151,14 @@ def score_capability_candidate(
         elif candidate_kind == "subagent" and agent_class != "external_worker":
             score += 2
             signals.append(f"agentClass:{agent_class}")
+
+    if write_execution and candidate_kind == "subagent":
+        if agent_class in {"executor", "implementer"}:
+            score += 12
+            signals.append("writeExecution:executor")
+        elif agent_class in {"reviewer", "verifier", "tester", "researcher", "research_coordinator"}:
+            score -= 16
+            signals.append(f"writeExecution:incompatible:{agent_class}")
 
     suitability_key = "externalWorkerSuitability" if candidate_kind == "external_worker" else "executionSuitability"
     suitability = str(snapshot.get(suitability_key) or "").strip().lower()
@@ -1269,21 +1310,33 @@ def reveal_subagent_family(family: str, agents: Iterable[dict[str, Any]], *, lim
 def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     preferred_id = str(task_brief.get("preferredAgentId") or "").strip()
     normalized_agents = [agent for agent in list(agents or []) if isinstance(agent, dict) and str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"]
+    capsule_mode = str(engineering_task_capsule(task_brief).get("executionMode") or "").strip().lower()
+    write_execution = bool(capsule_mode == "write" or task_brief.get("writeRequired") or task_brief.get("writeSet"))
+    ignored_preferred_signal = ""
     if preferred_id:
+        preferred_agent = None
         for agent in normalized_agents:
             if str(agent.get("id") or "").strip() == preferred_id:
-                return agent, {
+                preferred_agent = agent
+                break
+        if preferred_agent is None:
+            return None, {
+                "selectionReason": "preferredAgentId_not_found",
+                "selectionConfidence": 0.0,
+                "matchSignals": [f"preferredAgentId:{preferred_id}"],
+                "targetId": preferred_id,
+            }
+        snapshot = preferred_agent.get("capabilitySnapshot") if isinstance(preferred_agent.get("capabilitySnapshot"), dict) else {}
+        agent_class = str(snapshot.get("agentClass") or "").strip().lower()
+        if write_execution and agent_class in {"reviewer", "verifier", "tester", "researcher", "research_coordinator"}:
+            ignored_preferred_signal = f"preferredAgentId_incompatible_with_write:{preferred_id}"
+        else:
+            return preferred_agent, {
                     "selectionReason": "preferredAgentId",
                     "selectionConfidence": 1.0,
                     "matchSignals": [f"preferredAgentId:{preferred_id}"],
                     "targetId": preferred_id,
                 }
-        return None, {
-            "selectionReason": "preferredAgentId_not_found",
-            "selectionConfidence": 0.0,
-            "matchSignals": [f"preferredAgentId:{preferred_id}"],
-            "targetId": preferred_id,
-        }
 
     raw_family_hint = str(task_brief.get("familyHint") or "").strip()
     family_hint = normalize_specialist_family_id(raw_family_hint, default="") if raw_family_hint else ""
@@ -1328,11 +1381,16 @@ def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents:
             diagnostics = dict(diagnostics)
             diagnostics["targetFamily"] = family_hint
             diagnostics["matchSignals"] = [f"familyHint:{family_hint}", *list(diagnostics.get("matchSignals") or [])]
+        if ignored_preferred_signal:
+            diagnostics = dict(diagnostics)
+            diagnostics["matchSignals"] = [ignored_preferred_signal, *list(diagnostics.get("matchSignals") or [])]
         return None, diagnostics
     return best_agent, {
         "selectionReason": best_diagnostics.get("reason") or "capability_match",
         "selectionConfidence": best_diagnostics.get("confidence") or 0.0,
-        "matchSignals": ([f"familyHint:{family_hint}"] if family_hint else []) + list(best_diagnostics.get("matchSignals") or []),
+        "matchSignals": ([ignored_preferred_signal] if ignored_preferred_signal else [])
+        + ([f"familyHint:{family_hint}"] if family_hint else [])
+        + list(best_diagnostics.get("matchSignals") or []),
         "targetId": best_diagnostics.get("candidateId"),
         **({"targetFamily": family_hint} if family_hint else {}),
     }

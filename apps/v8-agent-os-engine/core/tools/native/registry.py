@@ -101,7 +101,6 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "read_native_file",
             "share_workspace_file",
-            "workspace_broker",
             "write_native_file",
             "grep_search",
             "download_media_for_vision",

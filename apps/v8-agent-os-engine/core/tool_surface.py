@@ -669,51 +669,6 @@ def _render_plugin_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
-def _render_workspace_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
-    lines = ["Workspace inventory"]
-    root = payload.get("workspaceRoot") or payload.get("activeWorkspaceRoot")
-    inspected = payload.get("inspectedPath") or payload.get("path")
-    if root:
-        lines.append(f"Root: {_short_text(root, 180)}")
-    if inspected and inspected != root:
-        lines.append(f"Inspected: {_short_text(inspected, 180)}")
-    token = payload.get("token") or payload.get("inventoryToken")
-    facts = []
-    if "nonEmpty" in payload:
-        facts.append(f"nonEmpty={_yes_no(payload.get('nonEmpty'))}")
-    if payload.get("itemCount") not in (None, ""):
-        facts.append(f"items={payload.get('itemCount')}")
-    if payload.get("projectMarkerCount") not in (None, ""):
-        facts.append(f"projectMarkers={payload.get('projectMarkerCount')}")
-    if token:
-        facts.append(f"token={_short_id(token, prefix=16)}")
-    if facts:
-        lines.append("State: " + " | ".join(facts))
-    top_dirs = payload.get("topDirs")
-    if isinstance(top_dirs, list) and top_dirs:
-        lines.append("Top dirs: " + ", ".join(_short_text(item, 40) for item in top_dirs[:6]))
-    markers = payload.get("projectMarkers")
-    if isinstance(markers, list) and markers:
-        lines.append("Project markers:")
-        for marker in markers[:3]:
-            if isinstance(marker, dict):
-                lines.append(f"- {_short_text(marker.get('path'), 120)} ({_short_text(marker.get('kind'), 40)})")
-            else:
-                lines.append(f"- {_short_text(marker, 140)}")
-        if len(markers) > 3:
-            lines.append(f"- … {len(markers) - 3} more")
-    conflicts = payload.get("conflicts") or payload.get("potentialConflicts")
-    if isinstance(conflicts, list) and conflicts:
-        lines.append("Conflicts:")
-        for item in conflicts[:3]:
-            lines.append(f"- {_short_text(item, 160)}")
-    next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
-    if next_action:
-        lines.append(f"Next: {_short_text(next_action, 220)}")
-    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
-    return "\n".join(line for line in lines if line).strip()
-
-
 def _render_session_context_surface(payload: dict[str, Any], raw_ref: str, *, budget: int) -> str:
     if payload.get("ok") is False:
         lines = ["Session context takeover failed"]
@@ -2070,8 +2025,6 @@ def _decision_agent_visible_surface(
         renderer_result = _render_session_context_surface(payload, raw_ref, budget=budget)
     elif tool_name == "session_message_broker":
         renderer_result = _render_session_coordination_surface(payload, raw_ref, budget=budget)
-    elif tool_name == "workspace_broker":
-        renderer_result = _render_workspace_broker_surface(payload, raw_ref)
     elif tool_name == "research_broker":
         renderer_result = _render_research_broker_surface(payload, raw_ref, budget=budget)
     elif tool_name == "web_broker" or tool_name.startswith("web_"):

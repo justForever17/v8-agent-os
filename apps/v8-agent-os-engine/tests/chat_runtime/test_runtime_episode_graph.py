@@ -283,6 +283,54 @@ def test_runtime_episode_wait_node_merges_completed_handoff() -> None:
     assert command.update["runtime_dispatch_status"]["state"] == "handoff_ready"
 
 
+def test_runtime_episode_wait_node_projects_nested_delegation_proof_without_loss() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_proof_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "engineering", "reason": "write and verify artifact"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="engineering_patch_bundle",
+        compact_summary="Engineering execution completed.",
+        status="ready",
+        extra={
+            "delegationHandoff": {
+                "status": "ready",
+                "results": [
+                    {
+                        "taskBriefId": "write-result",
+                        "targetLabel": "Implementation Engineer",
+                        "status": "ok",
+                        "artifactRefs": [{"path": "result.txt", "kind": "workspace_artifact"}],
+                        "resultText": (
+                            "byte_length=26; sha256="
+                            "2b6be405b49da69a63f3b451be6f9fc98b3f542ddb816a0d36f506e5aaa4c84b; "
+                            "bom_detected=false"
+                        ),
+                    }
+                ],
+            }
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    content = str(message.content)
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]["results"][0]
+    assert "byte_length=26" in content
+    assert "sha256=2b6be405" in content
+    assert "evidence: complete" in content
+    assert projected["evidenceComplete"] is True
+
+
 def test_runtime_episode_wait_node_reports_failed_handoff_as_recoverable_failure() -> None:
     node = build_runtime_episode_wait_node()
     episode_id = f"episode_wait_failed_{uuid4().hex}"

@@ -32,22 +32,6 @@ def test_command_governance_detects_interactive_and_session_preferred_commands()
         assert payload is None
 
 
-def test_workspace_governance_treats_cross_ecosystem_installs_as_inventory_gate(tmp_path) -> None:
-    from core.tools.native.workspace_governance import _workspace_inventory_gate_required
-
-    workspace = tmp_path / "project"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("existing", encoding="utf-8")
-
-    assert _workspace_inventory_gate_required("python -m pip install pytest", workspace_root=str(workspace))
-    assert _workspace_inventory_gate_required("uv add fastapi", workspace_root=str(workspace))
-    assert _workspace_inventory_gate_required("poetry install", workspace_root=str(workspace))
-    assert _workspace_inventory_gate_required("cargo build", workspace_root=str(workspace))
-    assert _workspace_inventory_gate_required("go mod tidy", workspace_root=str(workspace))
-    assert _workspace_inventory_gate_required("mvn package", workspace_root=str(workspace))
-    assert _workspace_inventory_gate_required(".\\gradlew installDebug", workspace_root=str(workspace))
-
-
 def test_workspace_governance_scoped_patch_line_range_and_anchor() -> None:
     from core.tools.native.workspace_governance import _apply_scoped_text_patch
 

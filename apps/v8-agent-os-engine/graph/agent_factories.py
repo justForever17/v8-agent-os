@@ -10,6 +10,8 @@ from langgraph.types import Command
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.background_context_guard import prepare_background_model_messages
 from core.delegation_broker import infer_engineering_task_role, task_brief_query_text, task_brief_route_query_text
+from core.engineering_capsule import engineering_tool_allowed
+from core.engineering_kernel import build_engineering_kernel_context, detect_command_environment
 from core.context_governance import emit_context_prepared_event
 from core.context_orchestrator import context_orchestrator
 from core.delegated_agent_charter import DELEGATED_AGENT_OPERATING_CHARTER
@@ -173,15 +175,23 @@ def _delegated_visible_result_text(response: Any) -> str:
 def _bounded_delegated_task_messages(messages: list[Any], task_brief: dict[str, Any] | None) -> list[Any]:
     if not isinstance(task_brief, dict) or not task_brief:
         return list(messages or [])
-    marked: list[Any] = []
-    for message in list(messages or []):
+    source_messages = list(messages or [])
+    marked_index = -1
+    for index, message in enumerate(source_messages):
         if not isinstance(message, HumanMessage):
             continue
         additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
         if str(additional_kwargs.get("v8_governance_type") or "").strip() == "delegated_task_instruction":
-            marked.append(message)
-    if marked:
-        return [marked[-1]]
+            marked_index = index
+    if marked_index >= 0:
+        # Preserve the complete current delegated branch. In particular, the
+        # next agent turn must see its own AI tool call and the corresponding
+        # ToolMessage; dropping either makes the worker restart the task and
+        # can trigger an infinite write/read loop. Cross-task history remains
+        # excluded by anchoring at the latest delegated instruction, while the
+        # shared context orchestrator remains responsible for model-window
+        # compaction.
+        return source_messages[marked_index:]
     query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
     return [
         HumanMessage(
@@ -237,6 +247,8 @@ def _apply_task_tool_policy(tools: list, task_brief: dict[str, Any] | None) -> l
     filtered: list[Any] = []
     for tool_ref in list(tools or []):
         names = _names(tool_ref)
+        if not all(engineering_tool_allowed(name, task_brief) for name in names):
+            continue
         if names & forbidden:
             continue
         if mode == "allowlist" and not (names & allowed):
@@ -703,6 +715,10 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             if role:
                 lines.append(f"- Engineering Role: {role}")
             for label, key in (
+                ("Execution Mode", "executionMode"),
+                ("Contract Status", "contractStatus"),
+                ("Missing Contract Fields", "missingContractFields"),
+                ("Parent Capsule", "parentCapsuleId"),
                 ("Critical Files", "criticalFiles"),
                 ("Read Set", "readSet"),
                 ("Write Set", "writeSet"),
@@ -726,7 +742,7 @@ _INTERACTIVE_CLI_RULE = (
     "[Interactive CLI Rule]\n"
     "Use `run_system_command` only for short synchronous commands.\n"
     "Use `run_system_command(mode=auto)` as the default shell entry; it returns compact final results for short commands and starts a recoverable command session for long-running commands, interactive CLIs/REPLs, and dev servers.\n"
-    "Before scaffolding, dependency installation, or bulk writing in a non-empty Active Workspace Root, call `workspace_broker(mode=\"inspect\")` and choose whether to continue an existing project, create a clearly named subdirectory, or ask the user.\n"
+    "Use the Engineering Kernel's Active Workspace Root and detected shell dialect; do not spend a tool call rediscovering the bound workspace.\n"
     "When a command prompt waits for confirmation, `command_session_broker(mode=\"input\", input_text=\"y\")` submits Enter by default; use `submit=false` only for TUI raw typing.\n"
     "Treat command stdout/stderr/exit code as the primary truth. Broker status is only for waiting input, timeout, backgrounding, or recovery; use `debug=true` only for raw terminal diagnostics.\n"
     "If terminal automation or observation is uncertain, report that uncertainty instead of inventing progress.\n\n"
@@ -881,6 +897,7 @@ def build_contextual_auto_tool_node(
         actor_base_tools = filter_visible_tools_for_actor(
             list(all_native_tools or base_tools or []),
             actor="subagent",
+            route_context=route_context,
             runtime_access=runtime_access,
         )
         tools = _apply_task_tool_policy(
@@ -934,12 +951,18 @@ def build_agent_node(
             workspace_path = str(workspace_binding.get("activeWorkspaceRoot") or workspace_binding.get("mainWorkspaceRoot") or "")
             main_workspace_path = str(workspace_binding.get("mainWorkspaceRoot") or "")
             os_name = platform.system()
+            command_environment = detect_command_environment()
             current_time = utc_now_iso()
             host_alerts_line = render_host_alerts_line()
             host_alerts_context = f"{host_alerts_line}\n" if host_alerts_line else ""
+            engineering_kernel_context, _engineering_kernel_diagnostics = build_engineering_kernel_context(
+                state=state,
+                session_id=state.get("session_id") or state.get("sessionId"),
+            )
             env_context = (
                 f"<environment>\n"
                 f"OS: {os_name}\n"
+                f"Command Shell: {command_environment['commandLanguage']} (shell_dialect={command_environment['shellDialect']})\n"
                 "Default Language: zh-CN (简体中文). If the user's current message clearly uses another language, reply in that language.\n"
                 f"Current Time: {current_time}\n"
                 f"{render_host_load_line()}\n"
@@ -950,6 +973,7 @@ def build_agent_node(
                 f"When generating visual artifacts, media, or formal reports meant to be viewed in the Web UI, you MUST save them under the Active Workspace Root above.\n"
                 "Do NOT expose raw local filesystem paths, raw /api/workspace/files links, or raw <img>/<video>/<audio> HTML in the final reply. "
                 "Reference generated media naturally in prose and rely on the runtime artifact/resource pipeline for rendering.\n"
+                f"{engineering_kernel_context}"
                 f"</environment>\n"
             )
 
@@ -995,11 +1019,12 @@ def build_agent_node(
             extensions_route_query = task_brief_route_query_text(delegated_task_brief)
             delegated_query = full_task_brief_query or inherited_query
             extensions_route_query = extensions_route_query or delegated_query
-            task_messages = _bounded_delegated_task_messages(task_messages, delegated_task_brief)
+            task_messages = _bounded_delegated_task_messages(messages, delegated_task_brief)
             contextual_base_tools = _dedupe_tools(
                 filter_visible_tools_for_actor(
                     _select_contextual_subagent_native_tools(filtered_native_tools, delegated_runtime_access) + [fetch_skill_instructions_tool],
                     actor="subagent",
+                    route_context={"taskBrief": delegated_task_brief or {}},
                     runtime_access=delegated_runtime_access,
                 )
             )
@@ -1007,6 +1032,7 @@ def build_agent_node(
                 filter_visible_tools_for_actor(
                     list(filtered_native_tools) + [fetch_skill_instructions_tool],
                     actor="subagent",
+                    route_context={"taskBrief": delegated_task_brief or {}},
                     runtime_access=delegated_runtime_access,
                 )
             )

@@ -52,6 +52,22 @@ class CrossPlatformAndNetworkSafetyTests(unittest.TestCase):
         )
         self.assertEqual(decision.verdict, "allow")
 
+    def test_powershell_sha256_namespace_is_not_macos_admin_command(self):
+        decision = safety_guardian.assess_system_command(
+            "$sha = [System.Security.Cryptography.SHA256]::Create(); $sha.ComputeHash([byte[]](1,2,3))",
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "allow")
+        self.assertNotEqual(decision.risk_code, "cross_platform_persistence_mutation")
+
+    def test_real_macos_security_mutation_still_requires_review(self):
+        decision = safety_guardian.assess_system_command(
+            "security add-generic-password -a demo -s v8os -w secret",
+            runtime_context=RUNTIME_CONTEXT,
+        )
+        self.assertEqual(decision.verdict, "review")
+        self.assertEqual(decision.risk_code, "cross_platform_persistence_mutation")
+
     def test_trusted_ai_api_with_bearer_token_is_not_exfiltration(self):
         decision = safety_guardian.assess_http_request(
             "POST",

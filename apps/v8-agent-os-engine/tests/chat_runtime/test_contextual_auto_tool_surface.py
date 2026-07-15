@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from graph.agent_factories import (
     _delegated_tool_names,
     _delegated_visible_result_text,
     _format_delegated_task_contract,
+    build_contextual_auto_tool_node,
     build_specialist_agent_components,
 )
 
@@ -65,8 +67,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         tool_names = {getattr(tool, "name", "") for tool in agent_nodes["agent-one"]["tools"]}
 
         self.assertEqual(agent_nodes["agent-one"]["tool_mode"], "contextual_auto")
-        self.assertIn("run_system_command", tool_names)
-        self.assertIn("command_session_broker", tool_names)
+        self.assertNotIn("run_system_command", tool_names)
+        self.assertNotIn("command_session_broker", tool_names)
         self.assertIn("web_broker", tool_names)
         self.assertIn("ask_user", tool_names)
         self.assertNotIn("s3_broker", tool_names)
@@ -87,7 +89,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         tool_names = {getattr(tool, "name", "") for tool in agent_nodes["agent-one"]["tools"]}
 
         self.assertEqual(agent_nodes["agent-one"]["tool_mode"], "explicit")
-        self.assertIn("run_system_command", tool_names)
+        self.assertNotIn("run_system_command", tool_names)
         self.assertIn("fetch_skill_instructions", tool_names)
         self.assertIn("docs_server.query", tool_names)
         self.assertNotIn("gateway.generate", tool_names)
@@ -168,21 +170,60 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertEqual(_delegated_visible_result_text(response), "OWNER_ISOLATION_OK")
 
     def test_delegated_task_messages_do_not_replay_parent_user_instruction(self):
-        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
         parent = HumanMessage(content="最终只回复 ACCEPT 或 RETRY。")
         delegated = HumanMessage(
             content="[Supervisor Delegated Task]\n只输出 AUTHORITY_OK",
             additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
         )
+        tool_call = AIMessage(
+            content="",
+            tool_calls=[{"id": "write-1", "name": "write_native_file", "args": {"path": "result.txt"}}],
+            additional_kwargs={"v8_owner_agent_id": "worker-one"},
+        )
+        tool_result = ToolMessage(
+            content='{"ok":true,"path":"result.txt"}',
+            tool_call_id="write-1",
+            name="write_native_file",
+        )
 
         selected = _bounded_delegated_task_messages(
-            [parent, delegated],
+            [parent, delegated, tool_call, tool_result],
             {"taskBriefId": "task-1", "goal": "只输出 AUTHORITY_OK"},
         )
 
-        self.assertEqual(selected, [delegated])
+        self.assertEqual(selected, [delegated, tool_call, tool_result])
         self.assertNotIn("ACCEPT", str(selected[0].content))
+
+    def test_delegated_task_messages_anchor_at_latest_instruction(self):
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+        stale_instruction = HumanMessage(
+            content="[Supervisor Delegated Task]\n旧任务",
+            additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
+        )
+        stale_result = AIMessage(content="旧结果")
+        current_instruction = HumanMessage(
+            content="[Supervisor Delegated Task]\n当前任务",
+            additional_kwargs={"v8_governance_type": "delegated_task_instruction"},
+        )
+        current_call = AIMessage(
+            content="",
+            tool_calls=[{"id": "read-1", "name": "read_native_file", "args": {"path": "result.txt"}}],
+        )
+        current_result = ToolMessage(
+            content="ENGINEERING_KERNEL_LIVE_OK",
+            tool_call_id="read-1",
+            name="read_native_file",
+        )
+
+        selected = _bounded_delegated_task_messages(
+            [stale_instruction, stale_result, current_instruction, current_call, current_result],
+            {"taskBriefId": "task-2", "goal": "当前任务"},
+        )
+
+        self.assertEqual(selected, [current_instruction, current_call, current_result])
 
     def test_task_brief_normalizes_explicit_tool_policy_without_guessing_from_prose(self):
         normalized = normalize_task_brief(
@@ -448,14 +489,57 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         )
 
         tools_by_name = {getattr(tool, "name", ""): tool for tool in agent_nodes["agent-one"]["tools"]}
-        for name in ("read_native_file", "write_native_file", "run_system_command", "command_session_broker", "fetch_skill_instructions"):
+        for name in ("read_native_file", "fetch_skill_instructions"):
             self.assertIn(name, tools_by_name)
             description = str(getattr(tools_by_name[name], "description", "") or "").strip()
             self.assertGreater(len(description), 60, f"{name} should expose an actionable tool description to subagents")
+        for name in ("write_native_file", "run_system_command", "command_session_broker"):
+            self.assertNotIn(name, tools_by_name)
         skill_description = str(getattr(tools_by_name["fetch_skill_instructions"], "description", "") or "")
         self.assertIn("exact skill name/path", skill_description)
         self.assertIn("complete SKILL.md", skill_description)
         self.assertIn("relative_path", skill_description)
+
+    def test_contextual_tool_node_projects_write_capsule_tools(self):
+        captured: dict[str, list[str]] = {}
+
+        def fake_create_routed_tool_node(tools, **_kwargs):
+            captured["names"] = [str(getattr(tool, "name", "") or "") for tool in tools]
+
+            async def routed(state, **_runtime_kwargs):
+                return state
+
+            return routed
+
+        task_brief = normalize_task_brief(
+            {
+                "taskBriefId": "write-task",
+                "goal": "Create result.txt.",
+                "writeRequired": True,
+                "writeSet": ["result.txt"],
+                "expectedOutputs": ["result.txt"],
+                "acceptanceContract": "result.txt exists with exact content.",
+            }
+        )
+        tools = [
+            _tool("read_native_file"),
+            _tool("write_native_file"),
+            _tool("run_system_command"),
+            _tool("command_session_broker"),
+        ]
+        with patch("graph.agent_factories.create_routed_tool_node", side_effect=fake_create_routed_tool_node):
+            node = build_contextual_auto_tool_node(
+                base_tools=tools,
+                all_native_tools=tools,
+                all_mcp_tools=[],
+                name="writer_tools",
+                fallback_goto="writer",
+            )
+            asyncio.run(node({"current_route_context": {"taskBrief": task_brief}}))
+
+        self.assertIn("write_native_file", captured["names"])
+        self.assertIn("run_system_command", captured["names"])
+        self.assertIn("command_session_broker", captured["names"])
 
     def test_task_brief_route_query_omits_acceptance_write_set_and_broad_noise(self):
         route_query = task_brief_route_query_text(

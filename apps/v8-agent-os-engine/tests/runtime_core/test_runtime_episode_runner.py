@@ -166,7 +166,7 @@ def test_engineering_plan_only_with_worker_brief_generates_real_delegated_plan(m
     monkeypatch.setattr(runner, "_execute_delegation", _fake_execute_delegation)
     monkeypatch.setattr(
         runtime_episode_runner_module,
-        "build_workspace_state_digest_context",
+        "build_engineering_kernel_context",
         lambda **_kwargs: ("workspace digest", []),
     )
     episode = build_runtime_episode(
@@ -999,6 +999,77 @@ def test_engineering_write_episode_rejects_ready_handoff_without_write_evidence(
     assert handoff["degraded"] is True
     assert handoff["recoverable"] is True
     assert handoff["degradedReason"] == "engineering_missing_write_evidence"
+
+
+def test_engineering_write_episode_rejects_claim_only_handoff_without_structured_evidence(monkeypatch):
+    async def _fake_delegation(self, _episode):
+        return {
+            "kind": "subagent_result_bundle",
+            "status": "ready",
+            "compactSummary": "Created index.html and wrote the requested project files.",
+            "results": [{"status": "ok", "resultText": "已写入 index.html，任务完成。"}],
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fake_delegation)
+    episode = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "create index.html"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "userRequest": "创建 index.html。",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "write-index",
+                        "goal": "创建 index.html。",
+                        "writeRequired": True,
+                        "deliverableKind": "artifact",
+                        "expectedOutputs": ["index.html exists"],
+                        "acceptanceContract": "Return structured artifact evidence.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["errorCode"] == "engineering_missing_write_evidence"
+
+
+def test_expected_artifact_path_preserves_absolute_windows_workspace_path(tmp_path):
+    from graph.parallel_support import _infer_expected_artifact_paths
+
+    artifact = tmp_path / "result.txt"
+    branch = {
+        "taskBrief": {
+            "writeRequired": True,
+            "engineeringTaskCapsule": {
+                "writeRequired": True,
+                "expectedArtifacts": [str(artifact)],
+            },
+        }
+    }
+
+    paths = _infer_expected_artifact_paths(branch, {"workspace_path": str(tmp_path)})
+
+    assert paths == [artifact.resolve()]
+
+
+def test_delegation_handoff_accepts_nested_structured_artifact_evidence():
+    handoff = {
+        "status": "ready",
+        "results": [
+            {
+                "status": "ok",
+                "artifactRefs": [{"path": "result.txt", "kind": "workspace_artifact"}],
+            }
+        ],
+    }
+
+    assert RuntimeEpisodeRunner._delegation_handoff_has_write_evidence(handoff) is True
 
 
 def test_engineering_skill_artifact_validation_failure_returns_degraded_handoff(monkeypatch, tmp_path):
@@ -2820,6 +2891,8 @@ def test_parallel_branch_does_not_report_artifact_stall_after_expected_file_exis
             "taskBrief": {
                 "goal": "Create the expected file.",
                 "writeSet": [".v8/demo/README.md"],
+                "expectedOutputs": [".v8/demo/README.md"],
+                "acceptanceContract": "The expected file exists and is readable.",
                 "writeRequired": True,
                 "engineeringTaskCapsule": {
                     "writeRequired": True,

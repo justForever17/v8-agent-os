@@ -14,6 +14,7 @@ from langgraph.types import Command, Send
 
 from core.agents import agents_from_subagent_registry_snapshot, build_subagent_registry_snapshot
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from core.command_environment import default_shell_dialect
 from core.delegation_broker import (
     build_workset_dispatch_decisions,
     choose_best_external_worker_with_diagnostics,
@@ -33,6 +34,7 @@ from core.delegation_broker import (
     task_brief_query_text,
     task_brief_summary,
 )
+from core.engineering_capsule import derive_grandchild_engineering_task, engineering_capsule_mode
 from core.tools.native.command import command_session_broker
 from core.runtime_episodes import (
     TERMINAL_EPISODE_STATES,
@@ -138,7 +140,14 @@ def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[
             item["targetDefaultReason"] = "preferred_worker_type_alias"
             preferred_agent_id = aliased_agent_id
         family_hint = str(item.get("familyHint") or "").strip().lower()
-        if not preferred_agent_id and family_hint in {"", "engineering"}:
+        write_execution = bool(
+            engineering_capsule_mode(item) == "write"
+            or item.get("writeRequired")
+            or item.get("write_required")
+            or item.get("writeSet")
+            or item.get("write_set")
+        )
+        if not preferred_agent_id and not write_execution and family_hint in {"", "engineering"}:
             signal = " ".join(
                 str(value or "")
                 for value in (
@@ -292,7 +301,7 @@ def _inject_inherited_handoffs_into_tasks(
                 for handoff in matched
                 if str(handoff.get("handoffRefId") or "").strip()
             ]
-        context.setdefault("shellDialect", "powershell" if sys.platform.startswith("win") else "bash")
+        context.setdefault("shellDialect", default_shell_dialect())
         item["context"] = context
         result.append(item)
     return result
@@ -851,6 +860,12 @@ def request_peer_help(
             },
         }
     )
+    parent_task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    child_task_brief = derive_grandchild_engineering_task(
+        parent_task_brief,
+        child_task_brief,
+        shell_dialect=default_shell_dialect(),
+    )
     child_branch = {
         "invocationId": f"{branch.get('invocationId') or 'peer'}:help:{request_id}",
         "delegationId": f"{branch.get('delegationId') or 'delegation'}:help:{request_id}",
@@ -860,7 +875,7 @@ def request_peer_help(
         "delegationDepth": _safe_int_range(branch.get("delegationDepth"), 0, 0, 100) + 1,
         "allowChildDelegation": False,
         "childDelegationBudget": {},
-        "runtimeAccess": ["delegation.recursive"],
+        "runtimeAccess": [],
     }
     pending = {
         "requestId": request_id,

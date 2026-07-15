@@ -118,7 +118,6 @@ BASE_SAFE_INVOCATIONS: dict[str, dict[str, Any]] = {
     "mcp_server_config": {"mode": "mcp_list"},
     "plugin_broker": {"mode": "list"},
     "spec_broker": {"mode": "brief", "workspace_path": ""},
-    "workspace_broker": {"mode": "inspect", "path": ".", "depth": 1, "max_entries": 30},
     "rpa_list_robot_scripts": {"limit": 5},
     "creative_media_capabilities": {"action": "describe", "request": {}},
     "creative_media_plan": {"action": "list_work_orders", "request": {"limit": 10}},
@@ -1514,8 +1513,6 @@ def _record_budget(record: ToolCalibrationRecord) -> int:
     if name in COMMAND_TOOL_NAMES:
         return COMMAND_VISIBLE_BUDGET
     if name == "grep_search":
-        return WORKSPACE_BROKER_VISIBLE_BUDGET
-    if name == "workspace_broker":
         return WORKSPACE_BROKER_VISIBLE_BUDGET
     if any(part in lowered for part in ("get_", "lookup", "read_", "detail")):
         return DETAIL_VISIBLE_BUDGET

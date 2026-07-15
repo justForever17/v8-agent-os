@@ -22,6 +22,7 @@ from graph.supervisor_turn import (
     _runtime_recoverable_failure_final_response,
     _runtime_recoverable_failure_final_text,
     _runtime_recoverable_failure_message,
+    _should_force_memory_broker_first,
     _message_session_coordination_reply,
     _looks_like_session_coordination_request,
     _latest_spec_revision_contract,
@@ -326,7 +327,41 @@ def test_runtime_handoff_final_message_leaves_delivery_decision_to_supervisor():
     content = str(message.content)
     assert "You are the delivery owner" in content
     assert "detail, verification, repair, or runtime tools" in content
+    assert "do not re-read the same artifact" in content
+    assert "evidence=complete" in content
     assert "Do not call tools" not in content
+
+
+def test_runtime_handoff_resume_does_not_repeat_memory_first_gate():
+    state = {
+        "runtime_dispatch_status": {
+            "mode": "runtime_episode",
+            "nextAction": "resume_supervisor",
+            "state": "handoff_ready",
+            "handoffCount": 1,
+        },
+        "messages": [],
+    }
+
+    assert not _should_force_memory_broker_first(
+        user_query="继续完成刚才的任务",
+        passive_rag_diagnostics={"has_recall_cue": True},
+        selected_tools=[SimpleNamespace(name="memory_broker")],
+        state=state,
+    )
+
+    state["runtime_dispatch_status"] = {
+        "mode": "runtime_episode",
+        "nextAction": "recoverable_failure",
+        "state": "episode_failed",
+        "reason": "delegation_worker_failed",
+    }
+    assert not _should_force_memory_broker_first(
+        user_query="继续修复刚才的任务",
+        passive_rag_diagnostics={"has_recall_cue": True},
+        selected_tools=[SimpleNamespace(name="memory_broker")],
+        state=state,
+    )
 
 
 def test_runtime_handoff_compat_response_is_review_summary_from_handoff_refs():

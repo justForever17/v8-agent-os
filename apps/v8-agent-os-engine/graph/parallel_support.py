@@ -14,6 +14,7 @@ from langgraph.types import Command, Send
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_result_contract import build_delegation_result_contract
+from core.engineering_capsule import effective_engineering_capsule, engineering_capsule_mode
 from core.runtime_episodes import (
     append_handoff_ref,
     build_handoff_ref,
@@ -98,22 +99,24 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
     branch = dict(branch or state.get("parallel_branch") or {})
     task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
     task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
-    task_capsule = task_brief.get("engineeringTaskCapsule") if isinstance(task_brief.get("engineeringTaskCapsule"), dict) else {}
+    task_capsule = effective_engineering_capsule(task_brief)
+    capsule_mode = engineering_capsule_mode(task_brief)
     execution_contract = (
         task_context.get("engineeringExecutionContract")
         if isinstance(task_context.get("engineeringExecutionContract"), dict)
         else {}
     )
     allowed_write_paths: list[str] = []
-    for source in (task_brief, task_capsule, execution_contract):
-        for key in ("writeSet", "write_set", "allowedWorkset", "allowed_workset"):
-            raw_values = source.get(key)
-            values = [raw_values] if isinstance(raw_values, str) else list(raw_values or [])
-            for raw_value in values:
-                value = raw_value.get("path") if isinstance(raw_value, dict) else raw_value
-                normalized = str(value or "").strip()
-                if normalized and normalized not in allowed_write_paths:
-                    allowed_write_paths.append(normalized)
+    if capsule_mode == "write":
+        for source in (task_brief, task_capsule, execution_contract):
+            for key in ("writeSet", "write_set", "allowedWorkset", "allowed_workset"):
+                raw_values = source.get(key)
+                values = [raw_values] if isinstance(raw_values, str) else list(raw_values or [])
+                for raw_value in values:
+                    value = raw_value.get("path") if isinstance(raw_value, dict) else raw_value
+                    normalized = str(value or "").strip()
+                    if normalized and normalized not in allowed_write_paths:
+                        allowed_write_paths.append(normalized)
     context = {
         "runtime_kind": "subagent",
         "trigger_source": "delegation_broker",
@@ -123,6 +126,9 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
         "goal": branch.get("reason") or branch.get("taskGoal") or branch.get("taskBrief"),
         "delegation_id": branch.get("delegationId"),
         "subagent_id": branch.get("agentId"),
+        "engineering_capsule_mode": capsule_mode,
+        "engineering_capsule_id": task_capsule.get("capsuleId"),
+        "engineering_task_capsule": task_capsule or None,
         "allowed_write_paths": allowed_write_paths or None,
     }
     return {key: value for key, value in context.items() if value is not None and str(value).strip()}
@@ -438,11 +444,6 @@ def _parallel_branch_progress_fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
-_ARTIFACT_PATH_PATTERN = re.compile(
-    r"(?i)(?:`([^`]+)`|(?<![\w.-])([\w@.$~][\w@.$~\-/\\]*(?:\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml|png|jpg|jpeg|webp|svg)|[\\/])))(?![\w.-])"
-)
-
-
 def _workspace_path_from_state(state: dict[str, Any]) -> Path | None:
     workspace = str(
         state.get("workspace_path")
@@ -492,23 +493,24 @@ def _infer_expected_artifact_paths(branch: dict[str, Any], state: dict[str, Any]
         return []
     paths: list[Path] = []
     for raw_value in _collect_expected_artifact_values(branch):
-        for match in _ARTIFACT_PATH_PATTERN.finditer(str(raw_value or "")):
-            candidate = str(match.group(1) or match.group(2) or "").strip().strip("`'\"，,。;；:：")
-            if (
-                not candidate
-                or candidate.startswith(("spec://", "http://", "https://", "file://"))
-                or any(marker in candidate for marker in ("<", ">", "\r", "\n"))
-            ):
-                continue
-            path = Path(candidate)
-            resolved = path if path.is_absolute() else workspace / path
-            try:
-                resolved = resolved.expanduser().resolve()
-                resolved.relative_to(workspace)
-            except Exception:
-                continue
-            if resolved not in paths:
-                paths.append(resolved)
+        if isinstance(raw_value, dict):
+            raw_value = raw_value.get("path") or raw_value.get("filePath") or raw_value.get("file_path")
+        candidate = str(raw_value or "").strip().strip("`'\"，,。;；")
+        if (
+            not candidate
+            or candidate.startswith(("spec://", "http://", "https://", "file://"))
+            or any(marker in candidate for marker in ("<", ">", "\r", "\n"))
+        ):
+            continue
+        path = Path(candidate)
+        resolved = path if path.is_absolute() else workspace / path
+        try:
+            resolved = resolved.expanduser().resolve()
+            resolved.relative_to(workspace)
+        except Exception:
+            continue
+        if resolved not in paths:
+            paths.append(resolved)
     return paths[:16]
 
 
@@ -1575,7 +1577,7 @@ def build_parallel_delegate_join_node():
                 _set_default_text("agentId", child_summary.get("childAgentId"))
                 _set_default_text("agentName", child_summary.get("childAgentName"))
                 if not worker_brief.get("runtimeAccess"):
-                    worker_brief["runtimeAccess"] = child_branch.get("runtimeAccess") or ["delegation.recursive"]
+                    worker_brief["runtimeAccess"] = child_branch.get("runtimeAccess") or []
                 worker_brief.setdefault("parentDelegationId", child_summary.get("sourceDelegationId"))
                 worker_brief.setdefault("parentInvocationId", invocation_id)
                 worker_brief.setdefault("writeSet", child_branch.get("writeSet"))
@@ -1600,7 +1602,7 @@ def build_parallel_delegate_join_node():
                     },
                     kind="delegation",
                     state="queued",
-                    required_runtime_access=["delegation.recursive"],
+                    required_runtime_access=[],
                     parent_episode_id=str(child_summary.get("sourceDelegationId") or invocation_id or ""),
                     continuation_target="runtime_episode_runner",
                     extra={

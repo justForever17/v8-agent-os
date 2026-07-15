@@ -234,6 +234,11 @@ def _should_force_memory_broker_first(
 ) -> bool:
     if not _has_tool(selected_tools, "memory_broker"):
         return False
+    if _runtime_episode_handoff_ready(state) or _runtime_episode_recoverable_failure(state):
+        # Runtime handoff resumption is an internal continuation of the same
+        # user turn. Re-running the user-facing memory gate here wastes a tool
+        # call and can distract the Supervisor from the typed execution proof.
+        return False
     if _tool_called_since_latest_human(state, "memory_broker"):
         return False
     if _is_network_supervisor_compat_transport(state) and not _compat_v8_main_chain_mode(state):
@@ -270,7 +275,7 @@ def _memory_broker_first_guidance(user_query: str) -> SystemMessage:
             "[Memory Recall Gate]\n"
             "The latest user request depends on previous context, history, memory, queue state, or same-session continuity. "
             "Your first tool call MUST be `memory_broker`, normally `memory_broker(mode=\"recall\", query=\"...\")`. "
-            "Do not call `workspace_broker`, `grep_search`, or `read_native_file` before memory_broker for this turn. "
+            "Do not call `grep_search` or `read_native_file` before memory_broker for this turn. "
             "If memory_broker returns no matching facts, say that explicitly, then use workspace/session tools only if still needed.\n"
             f"User query preview: {query_preview}"
         )
@@ -1433,9 +1438,13 @@ def _runtime_handoff_final_message() -> HumanMessage:
             "Runtime episodes are terminal and their typed handoffs are available as execution evidence. "
             "You are the delivery owner: inspect the returned artifacts, proof, warnings, and acceptance results, "
             "then decide whether the user's request is ready to deliver. "
+            "A handoff result with status=ok/ready, evidence=complete, concrete artifact refs, and verification values "
+            "is sufficient governed evidence for that acceptance step. Consume it directly; do not re-read the same "
+            "artifact or route another verification episode for the same criteria. "
             "If the evidence is sufficient, give the user a concise verified result. If it is incomplete or inconsistent, "
             "use the available detail, verification, repair, or runtime tools before delivering. "
-            "Do not treat a ready handoff, provider task ID, or worker success sentence as proof by itself."
+            "A provider task ID or a bare worker success sentence is not proof by itself; only explicit missing evidence, "
+            "a blocker, or contradictory values justify a repair/verification route."
         )
     )
 

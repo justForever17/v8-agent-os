@@ -75,7 +75,8 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     names = {tool.name for tool in visible}
 
-    assert {"runtime_broker", "delegation_broker", "read_native_file", "run_system_command", "http_request"}.issubset(names)
+    assert {"runtime_broker", "delegation_broker", "read_native_file", "http_request"}.issubset(names)
+    assert "run_system_command" not in names
     assert "spec_broker" not in names
     assert "delegate_network_task" not in names
     assert "memory_broker" in names
@@ -1467,7 +1468,7 @@ def test_automation_ops_tools_are_hidden_until_runtime_grant():
     default_visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     default_names = {tool.name for tool in default_visible}
     assert {"list_processes", "read_audit_log", "manage_cron", "manage_hook"}.isdisjoint(default_names)
-    assert "run_system_command" in default_names
+    assert "run_system_command" not in default_names
 
     visible_after_grant = filter_visible_tools_for_actor(
         tools,
@@ -1500,7 +1501,8 @@ def test_subagent_default_surface_hides_supervisor_only_and_runtime_tools():
     visible = filter_visible_tools_for_actor(tools, actor="subagent", runtime_access=[])
     names = {tool.name for tool in visible}
 
-    assert {"read_native_file", "run_system_command", "web_broker"}.issubset(names)
+    assert {"read_native_file", "web_broker"}.issubset(names)
+    assert "run_system_command" not in names
     assert "ask_user" in names
     assert "runtime_broker" not in names
     assert "delegation_broker" not in names
@@ -1902,7 +1904,8 @@ def test_contextual_auto_subagent_base_tools_include_granted_runtime_tools():
     )
     names = {tool.name for tool in selected}
 
-    assert {"run_system_command", "read_native_file"}.issubset(names)
+    assert "read_native_file" in names
+    assert "run_system_command" not in names
     assert {"creative_media_capabilities", "creative_media_jobs"}.issubset(names)
     assert "memory_recall" not in names
     assert "http_request" not in names

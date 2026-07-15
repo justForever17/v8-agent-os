@@ -4,6 +4,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from core.engineering_capsule import engineering_tool_allowed, task_brief_from_route_context
+
 
 RUNTIME_BROKER_TOOL_NAME = "runtime_broker"
 
@@ -455,6 +457,7 @@ def filter_visible_tools_for_actor(
     runtime_access: Iterable[Any] | None = None,
 ) -> list[Any]:
     normalized_actor = str(actor or "").strip().lower()
+    task_brief = task_brief_from_route_context(route_context)
     if normalized_actor == "supervisor":
         granted_groups = runtime_access_from_route_context(route_context)
     else:
@@ -500,6 +503,8 @@ def filter_visible_tools_for_actor(
         if is_runtime_managed_tool_name(name):
             if name in granted_runtime_tools:
                 visible.append(tool_ref)
+            continue
+        if not engineering_tool_allowed(name, task_brief):
             continue
         visible.append(tool_ref)
     return _dedupe_tools(visible)

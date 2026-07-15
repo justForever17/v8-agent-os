@@ -83,7 +83,7 @@ def _render_kind_for_tool(name: str) -> str:
     lowered = name.lower()
     if "command" in lowered or lowered in {"run_system_command", "execute_system_command"}:
         return "terminal"
-    if lowered in {"read_native_file", "write_native_file", "grep_search", "workspace_broker"}:
+    if lowered in {"read_native_file", "write_native_file", "grep_search"}:
         return "file"
     if lowered.startswith("web_") or lowered == "research_broker":
         return "search"

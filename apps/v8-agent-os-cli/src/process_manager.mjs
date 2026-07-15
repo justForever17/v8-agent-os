@@ -11,6 +11,71 @@ function componentHasPort(component) {
   return Number.isInteger(component?.port) && component.port > 0;
 }
 
+function normalizeProcessText(value) {
+  return String(value || "").replaceAll("/", "\\").toLowerCase();
+}
+
+function processCandidateMatchesEngine(candidate, commandSpec) {
+  if (!candidate || typeof candidate !== "object") return false;
+  const executable = normalizeProcessText(candidate.executablePath);
+  const commandLine = normalizeProcessText(candidate.commandLine);
+  const canonicalExecutable = normalizeProcessText(path.resolve(commandSpec.command));
+  const canonicalEngineDir = normalizeProcessText(path.resolve(commandSpec.cwd));
+  const engineSignature = /(?:^|\s)(?:-m\s+uvicorn\s+main:app|[^\s]*main\.py)(?:\s|$)/i.test(commandLine);
+  const ownedRuntime = executable === canonicalExecutable
+    || executable.startsWith(`${canonicalEngineDir}\\`)
+    || commandLine.includes(canonicalEngineDir);
+  return engineSignature && ownedRuntime;
+}
+
+export function verifiedComponentPortOwner(componentId, descriptor) {
+  if (componentId !== "engine" || !descriptor || typeof descriptor !== "object") return null;
+  const component = COMPONENTS[componentId];
+  if (!component) return null;
+  const commandSpec = component.command({ mode: "start" });
+  const owner = {
+    pid: Number(descriptor.pid),
+    executablePath: descriptor.executablePath,
+    commandLine: descriptor.commandLine,
+  };
+  const parent = {
+    pid: Number(descriptor.parentPid),
+    executablePath: descriptor.parentExecutablePath,
+    commandLine: descriptor.parentCommandLine,
+  };
+  const ownerMatches = Number.isInteger(owner.pid) && owner.pid > 0 && processCandidateMatchesEngine(owner, commandSpec);
+  const parentMatches = Number.isInteger(parent.pid) && parent.pid > 0 && processCandidateMatchesEngine(parent, commandSpec);
+  if (!ownerMatches && !parentMatches) return null;
+  return {
+    ownerPid: owner.pid,
+    killPid: parentMatches ? parent.pid : owner.pid,
+    matchedBy: parentMatches ? "verified_parent_runtime" : "verified_port_owner",
+  };
+}
+
+function readWindowsListeningProcessDescriptor(port) {
+  if (process.platform !== "win32" || !Number.isInteger(Number(port))) return null;
+  const script = [
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()",
+    `$connection = Get-NetTCPConnection -LocalPort ${Number(port)} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1`,
+    "if (-not $connection) { exit 0 }",
+    "$process = Get-CimInstance Win32_Process -Filter \"ProcessId = $($connection.OwningProcess)\" -ErrorAction SilentlyContinue",
+    "if (-not $process) { exit 0 }",
+    "$parent = if ($process.ParentProcessId) { Get-CimInstance Win32_Process -Filter \"ProcessId = $($process.ParentProcessId)\" -ErrorAction SilentlyContinue } else { $null }",
+    "[pscustomobject]@{ pid = [int]$process.ProcessId; parentPid = [int]$process.ParentProcessId; executablePath = [string]$process.ExecutablePath; commandLine = [string]$process.CommandLine; parentExecutablePath = [string]$parent.ExecutablePath; parentCommandLine = [string]$parent.CommandLine } | ConvertTo-Json -Compress",
+  ].join("; ");
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.status !== 0 || !String(result.stdout || "").trim()) return null;
+  try {
+    return JSON.parse(String(result.stdout).trim());
+  } catch {
+    return null;
+  }
+}
+
 const DESKTOP_PET_PROCESS_PATH = path.join(STATE_ROOT, "runtime", "desktop-pet.json");
 const SHELL_CONTROL_PATH = path.join(STATE_ROOT, "runtime", "shell-control.json");
 
@@ -150,14 +215,24 @@ function killPid(pid, options = {}) {
   return { ok: true, reason: "killed" };
 }
 
-export function stopComponents(componentIds = Object.keys(COMPONENTS)) {
+export function stopComponents(componentIds = Object.keys(COMPONENTS), options = {}) {
   const state = readProcessState();
   const results = [];
   for (const id of componentIds) {
+    const component = COMPONENTS[id];
+    if (!component) continue;
     const record = state.processes[id];
     const desktopPetDescriptor = id === "desktop-pet" ? readDesktopPetProcessDescriptor() : null;
     const shellControlDescriptor = id === "shell" ? readShellControlDescriptor() : null;
-    if (!record && !desktopPetDescriptor && !shellControlDescriptor) {
+    const recordedPidAlive = record?.pid ? isPidAlive(record.pid) : false;
+    const mayStopVerifiedPortOwner = Array.isArray(options.stopVerifiedPortOwners)
+      && options.stopVerifiedPortOwners.includes(id)
+      && componentHasPort(component)
+      && !recordedPidAlive;
+    const verifiedPortOwner = mayStopVerifiedPortOwner
+      ? verifiedComponentPortOwner(id, readWindowsListeningProcessDescriptor(component.port))
+      : null;
+    if (!record && !desktopPetDescriptor && !shellControlDescriptor && !verifiedPortOwner) {
       results.push({ id, status: "not_managed" });
       continue;
     }
@@ -165,6 +240,7 @@ export function stopComponents(componentIds = Object.keys(COMPONENTS)) {
       desktopPetDescriptor?.pid,
       shellControlDescriptor?.pid,
       record?.pid,
+      verifiedPortOwner?.killPid,
     ].filter(Boolean))];
     // Windows keeps the original parent process relationship even for detached
     // children. Killing the whole Shell tree can therefore terminate the managed
@@ -186,7 +262,9 @@ export function stopComponents(componentIds = Object.keys(COMPONENTS)) {
       id,
       status: failed ? "stop_failed" : "stopped",
       reason: failed?.reason || killResults.map((item) => item.reason).join(",") || "already_stopped",
-      pid: desktopPetDescriptor?.pid || shellControlDescriptor?.pid || record?.pid || null,
+      pid: desktopPetDescriptor?.pid || shellControlDescriptor?.pid || record?.pid || verifiedPortOwner?.ownerPid || null,
+      verifiedPortOwner: Boolean(verifiedPortOwner),
+      matchedBy: verifiedPortOwner?.matchedBy || null,
     });
   }
   writeProcessState(state);

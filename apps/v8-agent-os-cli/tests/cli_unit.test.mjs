@@ -14,6 +14,7 @@ import { buildMcpInstallPayload, extractModelRoles } from "../src/config_command
 import { filterPendingInboxItems } from "../src/inbox_commands.mjs";
 import { backupFile, readJsonFile, writeJsonFile } from "../src/json_file.mjs";
 import { getPortOwners, isPortOpen } from "../src/ports.mjs";
+import { verifiedComponentPortOwner } from "../src/process_manager.mjs";
 import { buildLocalRepairPlan, runDoctor } from "../src/doctor.mjs";
 import {
   createShellRestartLease,
@@ -191,6 +192,34 @@ test("preview build logs are written to CLI logs", () => {
 test("preview rebuild restarts shell, Next servers, and Engine before verification", () => {
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web", "engine"]);
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
+  const previewSource = fs.readFileSync(path.join(cliRoot, "src", "preview_commands.mjs"), "utf8");
+  assert.match(previewSource, /stopVerifiedPortOwners:\s*\["engine"\]/);
+});
+
+test("preview rebuild adopts only a verified current-repo Engine port owner", () => {
+  const engineDir = COMPONENTS.engine.cwd;
+  const verified = verifiedComponentPortOwner("engine", {
+    pid: 41000,
+    parentPid: 40999,
+    executablePath: "D:\\Program Files\\python\\python.exe",
+    commandLine: '"D:\\Program Files\\python\\python.exe" -m uvicorn main:app --port 9530',
+    parentExecutablePath: path.join(engineDir, ".venv", "Scripts", "python.exe"),
+    parentCommandLine: `"${path.join(engineDir, ".venv", "Scripts", "python.exe")}" -m uvicorn main:app --port 9530`,
+  });
+  const unrelated = verifiedComponentPortOwner("engine", {
+    pid: 42000,
+    parentPid: 0,
+    executablePath: "C:\\Python\\python.exe",
+    commandLine: 'python -m http.server 9530',
+  });
+
+  assert.deepEqual(verified, {
+    ownerPid: 41000,
+    killPid: 40999,
+    matchedBy: "verified_parent_runtime",
+  });
+  assert.equal(unrelated, null);
+  assert.equal(verifiedComponentPortOwner("admin", { pid: 41000 }), null);
 });
 
 test("preview rebuild lease is atomic, bounded, and removable only by its owner", () => {

@@ -140,7 +140,7 @@ export async function commandPreview(args = {}) {
     : null;
   try {
     const rebuildStopResults = rebuildStopComponentIds.length > 0
-      ? stopComponents(rebuildStopComponentIds)
+      ? stopComponents(rebuildStopComponentIds, { stopVerifiedPortOwners: ["engine"] })
       : [];
     const stopFailures = rebuildStopResults.filter((item) => item.status === "stop_failed");
     if (stopFailures.length > 0) {

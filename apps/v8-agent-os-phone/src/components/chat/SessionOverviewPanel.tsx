@@ -19,12 +19,12 @@ import {
 } from "@v8/session-realtime";
 import Animated, { SlideInRight } from "react-native-reanimated";
 
-import { MarkdownRenderer } from "@/src/components/chat/MarkdownRenderer";
+import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import { listSessionArtifacts, readSessionWorkbenchFile } from "@/src/lib/phone-api";
 import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ArtifactDetail, ChatMessage, WorkbenchFilePage } from "@/src/types/admin";
+import type { ArtifactDetail, ChatMessage, PhoneUiExecutionNode, PhoneUiTimelineNode, WorkbenchFilePage } from "@/src/types/admin";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
@@ -63,6 +63,19 @@ function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProj
         : ["queued", "running", "starting", "streaming", "updated"].includes(item.status)
             ? t("src.components.chat.sessionoverviewpanel.subagent_running")
             : t("src.components.chat.sessionoverviewpanel.subagent_needs_attention");
+    const resultByToolCall = useMemo(() => {
+        const results = new Map<string, PhoneUiExecutionNode>();
+        for (const event of item.events) {
+            const node = event.node as PhoneUiTimelineNode;
+            if (node.kind === "execution" && node.executionType === "tool_result" && node.toolCallId) results.set(node.toolCallId, node);
+        }
+        return results;
+    }, [item.events]);
+    const toolCalls = useMemo(() => new Set(item.events
+        .map((event) => event.node as PhoneUiTimelineNode)
+        .filter((node): node is PhoneUiExecutionNode => node.kind === "execution" && node.executionType === "tool_call")
+        .map((node) => String(node.toolCallId || "").trim())
+        .filter(Boolean)), [item.events]);
     return (
         <View style={[styles.subagentItem, nested ? { marginLeft: spacing.lg, borderLeftColor: colors.border, borderLeftWidth: StyleSheet.hairlineWidth } : null]}>
             <Pressable onPress={() => setExpanded((value) => !value)} style={styles.subagentHeader} accessibilityRole="button">
@@ -82,7 +95,29 @@ function SubagentReturnItem({ item, nested = false }: { item: SubagentReturnProj
             </Pressable>
             {expanded ? (
                 <View style={[styles.subagentDetail, { borderTopColor: colors.border }]}>
-                    {item.summary ? <MarkdownRenderer content={item.summary} /> : null}
+                    {item.events.map((event) => {
+                        const node = event.node as PhoneUiTimelineNode;
+                        if (!node || !["narrative", "execution", "governance", "artifact"].includes(node.kind)) return null;
+                        if (node.kind === "execution" && node.executionType === "tool_result" && node.toolCallId && toolCalls.has(node.toolCallId)) return null;
+                        const resultNode = node.kind === "execution" && node.executionType === "tool_call" && node.toolCallId
+                            ? resultByToolCall.get(node.toolCallId)
+                            : undefined;
+                        return (
+                            <ContentDispatcher
+                                key={event.eventId}
+                                node={node}
+                                resultNode={resultNode}
+                                isExecuting={!item.completedEventSeq && event === item.events.at(-1)}
+                                isStreaming={!item.completedEventSeq && (node.kind === "narrative" || (node.kind === "execution" && node.executionType === "reasoning"))}
+                            />
+                        );
+                    })}
+                    {item.summary ? (
+                        <View style={[styles.subagentSummaryCard, { borderColor: colors.border, backgroundColor: colors.surfaceStrong }]}>
+                            <Text style={[styles.subagentSummaryTitle, { color: colors.text }]}>{t("src.components.chat.sessionoverviewpanel.subagent_returned")}</Text>
+                            <ContentDispatcher node={{ id: `${item.id}:summary`, kind: "narrative", role: "assistant", content: item.summary, timestamp: item.timestamp }} />
+                        </View>
+                    ) : null}
                     {item.selfCheck ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_self_check")}: {item.selfCheck}</Text> : null}
                     {item.artifactRefs.length ? <Text style={[styles.subagentDetailMuted, { color: colors.textMuted }]}>{t("src.components.chat.sessionoverviewpanel.subagent_artifacts", { count: item.artifactRefs.length })}</Text> : null}
                     {item.children.map((child) => <SubagentReturnItem key={child.id} item={child} nested />)}
@@ -392,5 +427,7 @@ const styles = StyleSheet.create({
     subagentSummary: { fontSize: 11 },
     subagentStatus: { fontSize: 10 },
     subagentDetail: { borderTopWidth: StyleSheet.hairlineWidth, padding: spacing.md, gap: spacing.sm },
+    subagentSummaryCard: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radii.md, padding: spacing.sm, gap: spacing.xs },
+    subagentSummaryTitle: { fontSize: 11, fontWeight: "700" },
     subagentDetailMuted: { fontSize: 11, lineHeight: 17 },
 });

@@ -32,6 +32,7 @@ export interface RuntimeStageActivity {
     id: string;
     runtimeId: RuntimeId;
     timestamp: number;
+    eventSeq?: number;
     summary: string;
     topic?: string;
     actorLabel?: string;
@@ -258,7 +259,10 @@ export function mergeRuntimeTimeline(
             map.set(key, item);
         }
     }
-    return Array.from(map.values()).sort((left, right) => right.timestamp - left.timestamp);
+    return Array.from(map.values()).sort((left, right) => {
+        if (left.seq > 0 && right.seq > 0 && left.seq !== right.seq) return right.seq - left.seq;
+        return right.timestamp - left.timestamp;
+    });
 }
 
 function runtimeCardIdForActivity(activity: RuntimeStageActivity): RuntimeId {
@@ -319,6 +323,9 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
             status: entry.status,
             reason: entry.summary,
             timestamp: entry.timestamp,
+            eventSeq: entry.seq,
+            eventId: entry.id,
+            runId: entry.runId,
             agentName: entry.actorLabel,
             agentRoleLabel: entry.actorLabel,
         } satisfies UiGovernanceNode;
@@ -336,6 +343,9 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
             id: `timeline-node-${entry.id}`,
             kind: "artifact",
             timestamp: entry.timestamp,
+            eventSeq: entry.seq,
+            eventId: entry.id,
+            runId: entry.runId,
             agentName: entry.actorLabel,
             agentRoleLabel: entry.actorLabel,
             artifact: {
@@ -396,6 +406,9 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
         result: executionType === "tool_result" ? metadata?.result ?? metadata?.response ?? metadata?.result_preview : undefined,
         data: entry.metadata,
         timestamp: entry.timestamp,
+        eventSeq: entry.seq,
+        eventId: entry.id,
+        runId: entry.runId,
         agentName: entry.actorLabel,
         agentRoleLabel: entry.actorLabel,
     } satisfies UiExecutionNode;
@@ -460,6 +473,7 @@ export function buildRuntimeStageModel(
                 id: node.id,
                 runtimeId,
                 timestamp: getNodeTimestamp(message, node),
+                eventSeq: node.eventSeq,
                 summary: humanizeRuntimeSummaryText(summarized.summary, options?.locale || "zh-CN"),
                 topic: node.kind === "execution" ? node.topic : node.kind === "governance" ? node.topic : undefined,
                 actorLabel: node.agentName || node.agentRoleLabel,
@@ -485,6 +499,7 @@ export function buildRuntimeStageModel(
             id: entry.id,
             runtimeId: remappedRuntimeId,
             timestamp: entry.timestamp,
+            eventSeq: entry.seq,
             summary: humanizeRuntimeSummaryText(entry.summary, options?.locale || "zh-CN"),
             topic: entry.topic,
             actorLabel: entry.actorLabel,
@@ -582,7 +597,10 @@ export function buildRuntimeStageModel(
     }
 
     const messageActivities = [...activities]
-        .sort((left, right) => right.timestamp - left.timestamp)
+        .sort((left, right) => {
+            if (left.eventSeq && right.eventSeq && left.eventSeq !== right.eventSeq) return right.eventSeq - left.eventSeq;
+            return right.timestamp - left.timestamp;
+        })
         .slice(0, 240);
     const summaryActivities = compactRuntimeStatusActivities(messageActivities);
 

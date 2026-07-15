@@ -54,6 +54,7 @@ export type PhoneRuntimeStageActivity = {
     id: string;
     runtimeId: PhoneRuntimeId;
     timestamp: number;
+    eventSeq?: number;
     summary: string;
     topic?: string;
     actorLabel?: string;
@@ -290,6 +291,9 @@ function buildTimelineArtifactNode(entry: PhoneRuntimeTimelineEntry): PhoneUiArt
         id: `timeline-node-${entry.id}`,
         kind: "artifact",
         timestamp: entry.timestamp,
+        eventSeq: entry.seq,
+        eventId: entry.id,
+        runId: entry.runId,
         agentName: entry.actorLabel,
         agentRoleLabel: entry.actorLabel,
         artifact: {
@@ -340,6 +344,9 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
             status: entry.status,
             reason: entry.summary,
             timestamp: entry.timestamp,
+            eventSeq: entry.seq,
+            eventId: entry.id,
+            runId: entry.runId,
             agentName: entry.actorLabel,
             agentRoleLabel: entry.actorLabel,
         };
@@ -384,6 +391,9 @@ function buildNodeFromTimelineEntry(entry: PhoneRuntimeTimelineEntry): PhoneUiTi
         result: executionType === "tool_result" ? metadata?.result ?? metadata?.response ?? metadata?.result_preview : undefined,
         data: entry.metadata,
         timestamp: entry.timestamp,
+        eventSeq: entry.seq,
+        eventId: entry.id,
+        runId: entry.runId,
         agentName: entry.actorLabel,
         agentRoleLabel: entry.actorLabel,
     };
@@ -455,7 +465,10 @@ export function mergePhoneRuntimeTimeline(
         return current;
     }
     const next = Array.from(map.values())
-        .sort((left, right) => right.timestamp - left.timestamp)
+        .sort((left, right) => {
+            if (left.seq > 0 && right.seq > 0 && left.seq !== right.seq) return right.seq - left.seq;
+            return right.timestamp - left.timestamp;
+        })
         .slice(0, PHONE_RUNTIME_TIMELINE_LIMIT);
     if (
         next.length === current.length
@@ -578,6 +591,7 @@ export function buildPhoneRuntimeStageModel(
                 id: node.id,
                 runtimeId,
                 timestamp: getNodeTimestamp(message, node),
+                eventSeq: node.eventSeq,
                 summary: humanizeRuntimeSummaryText(summarized.summary, locale),
                 topic: node.kind === "execution" ? node.topic : node.kind === "governance" ? node.topic : undefined,
                 actorLabel: node.agentName || node.agentRoleLabel,
@@ -606,6 +620,7 @@ export function buildPhoneRuntimeStageModel(
             id: entry.id,
             runtimeId: remappedRuntimeId,
             timestamp: entry.timestamp,
+            eventSeq: entry.seq,
             summary: humanizeRuntimeSummaryText(entry.summary, locale),
             topic: entry.topic,
             actorLabel: entry.actorLabel,
@@ -704,7 +719,10 @@ export function buildPhoneRuntimeStageModel(
     }
 
     const messageActivities = [...activities]
-        .sort((left, right) => right.timestamp - left.timestamp)
+        .sort((left, right) => {
+            if (left.eventSeq && right.eventSeq && left.eventSeq !== right.eventSeq) return right.eventSeq - left.eventSeq;
+            return right.timestamp - left.timestamp;
+        })
         .slice(0, PHONE_RUNTIME_TIMELINE_LIMIT);
     const summaryActivities = compactPhoneRuntimeStatusActivities(messageActivities);
     const realActivities = summaryActivities.filter((activity) => !activity.synthetic);

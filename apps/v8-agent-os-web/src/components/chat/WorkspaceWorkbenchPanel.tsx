@@ -10,7 +10,7 @@ import {
     type SubagentReturnProjection,
 } from "@v8/session-realtime";
 
-import { createArtifactDocument, createInlineArtifactDocument } from "@/lib/workbench";
+import { createArtifactDocument, createSubagentActivityDocument } from "@/lib/workbench";
 import { resolveAndOpenWorkspaceFile } from "@/lib/workbench-actions";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
@@ -34,10 +34,6 @@ function text(value: unknown) {
 
 function normalizedPath(value: unknown) {
     return text(value).replace(/\\/g, "/");
-}
-
-function fileNameOf(path: string) {
-    return normalizedPath(path).split("/").filter(Boolean).at(-1) || path;
 }
 
 function parentPathOf(path: string) {
@@ -96,24 +92,6 @@ function subagentStatusLabel(status: string) {
     return "需要处理";
 }
 
-function renderSubagentReturnMarkdown(item: SubagentReturnProjection, depth = 0): string {
-    const heading = "#".repeat(Math.min(6, depth + 1));
-    const sections = [
-        `${heading} ${item.name}`,
-        item.taskGoal ? `> ${item.taskGoal}` : "",
-        item.summary ? `${heading}# 回流结果\n\n${item.summary}` : "",
-        item.selfCheck ? `${heading}# 自检\n\n${item.selfCheck}` : "",
-        item.artifactRefs.length
-            ? `${heading}# 产物引用\n\n${item.artifactRefs.map((ref) => `- ${ref}`).join("\n")}`
-            : "",
-        item.acceptanceStatus && item.acceptanceStatus !== "pending"
-            ? `${heading}# 主理人验收\n\n${item.acceptanceSummary || item.acceptanceStatus}`
-            : "",
-        ...item.children.map((child) => renderSubagentReturnMarkdown(child, depth + 1)),
-    ];
-    return sections.filter(Boolean).join("\n\n");
-}
-
 function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentReturnProjection; onOpen: (item: SubagentReturnProjection) => void; nested?: boolean }) {
     return (
         <div className={`${nested ? "ml-5 border-l border-border/45" : ""} border-b border-border/30 last:border-b-0`}>
@@ -170,14 +148,12 @@ export function WorkspaceWorkbenchPanel({
     const hasSecondaryContent = visibleTodos.length > 0 || subagentReturns.length > 0 || outputs.length > 0 || activeProcesses.length > 0;
 
     const openSubagentReturn = useCallback((item: SubagentReturnProjection) => {
-        openDocument(createInlineArtifactDocument({
-            id: `subagent-return:${item.id}`,
+        openDocument(createSubagentActivityDocument({
+            sessionId,
+            delegationId: item.delegationId || item.id,
             title: item.name,
-            type: "markdown",
-            language: "markdown",
-            content: renderSubagentReturnMarkdown(item),
         }), { activate: true, mode: "split" });
-    }, [openDocument]);
+    }, [openDocument, sessionId]);
 
     const openOutput = useCallback((output: SessionOutputProjection) => {
         setFileError("");

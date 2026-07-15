@@ -13,6 +13,7 @@ import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPan
 import { McpAppRenderer } from "@/components/chat/McpAppFrame";
 import { ArtifactRenderer } from "./ArtifactRenderer";
 import { WorkspaceFileRenderer, type WorkspaceFileLineComment } from "./WorkspaceFileRenderer";
+import { SubagentActivityRenderer } from "./SubagentActivityRenderer";
 import type { WorkbenchTab } from "@/lib/workbench";
 
 type WorkbenchShellProps = {
@@ -28,6 +29,7 @@ type WorkbenchShellProps = {
 };
 
 function documentIcon(kind: string) {
+    if (kind === "subagent_activity") return LayoutPanelTop;
     if (kind === "workspace_file") return FileCode2;
     if (kind === "artifact") return Box;
     return LayoutPanelTop;
@@ -210,6 +212,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
             return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{document.unavailableReason || "该内容当前不可用。"}</div>;
         }
         if (document.kind === "session_overview") return <WorkspaceWorkbenchPanel {...props} />;
+        if (document.kind === "subagent_activity") return <SubagentActivityRenderer document={document} messages={props.messages} runtimeModel={props.runtimeModel} processes={props.processes} />;
         if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "artifact") return <ArtifactRenderer document={document} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;

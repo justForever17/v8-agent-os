@@ -60,23 +60,19 @@ test("Agent Browser remains Engine-managed and parent-bounded outside Workbench"
 test("Spec documents are normal Workbench products and overview uses a human label", () => {
   const workbench = readText("apps/v8-agent-os-web/src/lib/workbench.ts");
   const summary = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  const projection = readText("packages/session-realtime/src/session-output-projection.ts");
   const specTool = readText("apps/v8-agent-os-engine/core/tools/native/spec.py");
   assert.match(workbench, /title: "概览"/);
   assert.doesNotMatch(workbench, /title: "会话概览"/);
-  assert.match(summary, /\/api\/specs\?/);
-  assert.match(summary, /include_archived: "true"/);
-  assert.match(summary, /fileNameOf\(path\)/);
-  assert.match(summary, /Object\.entries\(stageDocuments\)/);
-  assert.match(summary, /targetOutputDirectories/);
-  assert.match(summary, /explicitDeliverableFiles/);
-  assert.match(summary, /spec-deliverable:/);
-  assert.match(summary, /collectMessageSpecDocuments/);
-  assert.match(summary, /recordOf\(message\.metadata\)\.specBrief/);
-  assert.match(summary, /<details key=\{group\.key\}/);
+  assert.match(summary, /buildSessionOutputProjection/);
+  assert.match(summary, /\{output\.name\}/);
+  assert.match(projection, /linkedSections/);
+  assert.match(projection, /specBrief/);
+  assert.match(projection, /text\(message\.role\)\.toLowerCase\(\) === "user"/);
   assert.doesNotMatch(summary, /需求文档/);
   assert.doesNotMatch(summary, /设计文档/);
   assert.doesNotMatch(summary, /任务文档/);
-  assert.match(summary, /resolveAndOpenWorkspaceFile\(document\.path\)/);
+  assert.match(summary, /resolveAndOpenWorkspaceFile\(output\.path/);
   assert.match(specTool, /emit_workbench_document_event/);
   assert.match(specTool, /spec-document:\{spec_id\}:\{stage\}/);
 });
@@ -136,11 +132,29 @@ test("Web and Phone summaries hide engineering counters and raw payload bodies",
   assert.match(phoneOverview, /readSessionWorkbenchFile/);
   assert.match(phoneOverview, /PAGE_LINES = 120/);
   assert.match(phoneOverview, /PanResponder\.create/);
-  assert.match(phoneOverview, /message\.metadata\?\.specBrief/);
+  assert.match(phoneOverview, /buildSessionOutputProjection\(messages, sessionArtifacts, \{ sessionId/);
   assert.match(phoneApi, /include_archived: "true"/);
   assert.doesNotMatch(phoneOverview, /runId/);
   assert.match(phoneChat, /const showOverviewRail = Boolean\(activeConversationId\)/);
   assert.match(phoneChat, /<SessionOverviewPanel/);
   assert.match(phoneProxy, /workbench\/files\/read/);
   assert.match(phoneProxy, /resolveClientUserEmail/);
+});
+
+test("Subagent details stream the shared Human Surface components without exposing runtime topics", () => {
+  const projection = readText("packages/session-realtime/src/subagent-return-projection.ts");
+  const webOverview = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  const webRenderer = readText("apps/v8-agent-os-web/src/components/workbench/SubagentActivityRenderer.tsx");
+  const phoneOverview = readText("apps/v8-agent-os-phone/src/components/chat/SessionOverviewPanel.tsx");
+
+  assert.match(projection, /eventSeq: number/);
+  assert.match(projection, /ownerMessageId\?: string \| null/);
+  assert.match(projection, /runtime:\$\{delegationId\}:\$\{eventSeq\}:\$\{topic\}/);
+  assert.doesNotMatch(projection, /Date\.now\(|Math\.random\(/);
+  assert.match(webOverview, /createSubagentActivityDocument/);
+  assert.match(webRenderer, /<ContentDispatcher/);
+  assert.match(webRenderer, /<ImagePreview/);
+  assert.match(webRenderer, /<MediaPlayer/);
+  assert.match(phoneOverview, /<ContentDispatcher/);
+  assert.doesNotMatch(webRenderer, /\[runtime\.episode\./);
 });

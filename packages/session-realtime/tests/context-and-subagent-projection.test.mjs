@@ -109,3 +109,77 @@ test("subagent returns can be restored from the durable runtime timeline without
   assert.equal(projection[0].summary, "AUTHORITY_OK");
   assert.equal(projection[0].selfCheck, null);
 });
+
+test("subagent activity starts from the durable episode and keeps fine-grained eventSeq order", () => {
+  const projection = buildSubagentReturnProjection([], [
+    {
+      id: "tool-finished",
+      eventId: "tool-finished",
+      eventSeq: 14,
+      kind: "execution",
+      topic: "subagent.tool.finished",
+      data: {
+        ownerRuntimeId: "subagent_swarm",
+        ownerAgentKind: "subagent",
+        ownerAgentId: "reviewer",
+        runtimeContext: { delegation_id: "delegation-live", run_id: "run_hidden123456" },
+        tool: { toolName: "inspect", toolCallId: "tool-1", agentVisibleResult: { ok: true, run_id: "run_hidden123456", summary: "Evidence confirmed" } },
+      },
+    },
+    {
+      id: "episode-started",
+      eventId: "episode-started",
+      eventSeq: 10,
+      kind: "execution",
+      topic: "runtime.episode.started",
+      data: {
+        episode: {
+          episodeId: "delegation-live",
+          kind: "delegation",
+          targetKind: "local_agent",
+          targetLabel: "Reviewer",
+          state: "active",
+          inputs: { taskBrief: { goal: "Verify the result" } },
+        },
+      },
+    },
+    {
+      id: "reasoning",
+      eventId: "reasoning",
+      eventSeq: 12,
+      kind: "execution",
+      topic: "subagent.reasoning.delta",
+      content: "Checking the evidence.",
+      data: {
+        ownerRuntimeId: "subagent_swarm",
+        ownerAgentKind: "subagent",
+        ownerAgentId: "reviewer",
+        runtimeContext: { delegation_id: "delegation-live" },
+      },
+    },
+    {
+      id: "tool-started",
+      eventId: "tool-started",
+      eventSeq: 13,
+      kind: "execution",
+      topic: "subagent.tool.started",
+      data: {
+        ownerRuntimeId: "subagent_swarm",
+        ownerAgentKind: "subagent",
+        ownerAgentId: "reviewer",
+        runtimeContext: { delegation_id: "delegation-live" },
+        tool: { toolName: "inspect", toolCallId: "tool-1", args: { path: "README.md" } },
+      },
+    },
+  ]);
+
+  assert.equal(projection.length, 1);
+  assert.equal(projection[0].name, "Reviewer");
+  assert.equal(projection[0].taskGoal, "Verify the result");
+  assert.deepEqual(projection[0].events.map((event) => event.eventSeq), [10, 12, 13, 14]);
+  assert.equal(projection[0].events[0].kind, "started");
+  assert.equal(projection[0].events[0].node.topic, undefined);
+  assert.equal(projection[0].events[0].node.runId, undefined);
+  const result = projection[0].events.at(-1).node.result;
+  assert.deepEqual(result, { ok: true, summary: "Evidence confirmed" });
+});

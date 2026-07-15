@@ -2,6 +2,7 @@ import type {
     ArtifactWorkbenchDocumentRef,
     McpAppViewRef,
     SessionOverviewWorkbenchDocumentRef,
+    SubagentActivityWorkbenchDocumentRef,
     UiAppWorkbenchDocumentRef,
     WorkbenchDocumentCapability as SharedWorkbenchDocumentCapability,
     WorkbenchDocumentLifecycle as SharedWorkbenchDocumentLifecycle,
@@ -19,6 +20,7 @@ export type WorkbenchDocumentLifecycle = SharedWorkbenchDocumentLifecycle;
 export type WorkbenchDocumentStatus = SharedWorkbenchDocumentStatus;
 export type WorkbenchDocumentCapability = SharedWorkbenchDocumentCapability;
 export type SessionOverviewWorkbenchDocument = SessionOverviewWorkbenchDocumentRef;
+export type SubagentActivityWorkbenchDocument = SubagentActivityWorkbenchDocumentRef;
 export type WorkspaceFileWorkbenchDocument = WorkspaceFileWorkbenchDocumentRef;
 export type ArtifactWorkbenchDocument = ArtifactWorkbenchDocumentRef;
 export type UiAppWorkbenchDocument = UiAppWorkbenchDocumentRef;
@@ -56,6 +58,7 @@ export type WorkbenchTab = {
 
 const DOCUMENT_KINDS = new Set<WorkbenchDocument["kind"]>([
     "session_overview",
+    "subagent_activity",
     "workspace_file",
     "artifact",
     "ui_app",
@@ -128,6 +131,12 @@ export function normalizeWorkbenchDocument(value: unknown): WorkbenchDocument | 
         if (!sessionId || renderer !== "session_overview") return null;
         return { ...base, kind, renderer: "session_overview", subjectRef: { sessionId } };
     }
+    if (kind === "subagent_activity") {
+        const sessionId = stringOf(subjectRef.sessionId || subjectRef.session_id);
+        const delegationId = stringOf(subjectRef.delegationId || subjectRef.delegation_id);
+        if (!sessionId || !delegationId || renderer !== "subagent_activity") return null;
+        return { ...base, kind, renderer: "subagent_activity", subjectRef: { sessionId, delegationId } };
+    }
     if (kind === "workspace_file") {
         const sessionId = stringOf(subjectRef.sessionId || subjectRef.session_id);
         const workspacePath = stringOf(subjectRef.workspacePath || subjectRef.workspace_path || subjectRef.path);
@@ -190,6 +199,23 @@ export function createSessionOverviewDocument(sessionId: string): SessionOvervie
         status: "ready",
         capabilities: ["read", "focus"],
         subjectRef: { sessionId },
+    };
+}
+
+export function createSubagentActivityDocument(input: {
+    sessionId: string;
+    delegationId: string;
+    title: string;
+}): SubagentActivityWorkbenchDocument {
+    return {
+        kind: "subagent_activity",
+        documentId: `subagent-activity:${input.sessionId}:${input.delegationId}`,
+        title: input.title,
+        renderer: "subagent_activity",
+        lifecycle: "session",
+        status: "ready",
+        capabilities: ["read", "focus"],
+        subjectRef: { sessionId: input.sessionId, delegationId: input.delegationId },
     };
 }
 

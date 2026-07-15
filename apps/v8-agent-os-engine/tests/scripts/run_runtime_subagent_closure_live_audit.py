@@ -65,6 +65,11 @@ class LiveCaseResult:
     context_governance_events: int = 0
     compaction_applied: bool = False
     compaction_reason: str | None = None
+    max_delegation_depth: int = 0
+    nested_lineage_complete: bool = False
+    nested_child_count: int = 0
+    final_acceptance_observed: bool = False
+    terminal_run_status: str | None = None
 
 
 def _redact(value: Any) -> str:
@@ -145,6 +150,28 @@ def _case_specs(selected: str) -> list[LiveCaseSpec]:
         )
     )
     cases = [
+        LiveCaseSpec(
+            case_id="nested_delegation_authority",
+            title="Supervisor 直派子 Agent，子 Agent 直派孙 Agent",
+            prompt=(
+                "执行一条只读的两级委派真实验收。Supervisor 必须直接调用 delegation_broker，"
+                "不要调用 runtime_broker。派一个直接子 Agent：它先用 read_native_file 读取当前工作区 README.md，"
+                "记录首个 Markdown 标题；随后由它亲自调用 delegation_broker(mode='dispatch') 派一个孙 Agent，"
+                "让孙 Agent 独立读取同一 README.md 并返回首个标题。直接子 Agent 必须设置 "
+                "preferredAgentId='implementation-engineer'、familyHint='engineering'、"
+                "allowChildDelegation=true，childDelegationBudget={maxChildren:1,maxDepth:2}。"
+                "直接子 Agent 派孙 Agent 时必须使用扁平任务：tasks=[{taskBriefId:'grandchild-readme',"
+                "goal:'独立读取 README.md 并返回首个 Markdown 标题',expectedOutputs:['firstHeadingRaw','lineNumber'],"
+                "acceptanceContract:'标题非空且带行号',toolPolicy:{mode:'allowlist',allowedTools:['read_native_file']}}]。"
+                "禁止 tasks={} 或 worker_briefs={}。孙 Agent 只能读取，"
+                "不能继续委派。收到结构化回流后，Supervisor 对结果明确 accept/retry/ignore 一次。"
+                "本地子 Agent 结果由执行图自动回流，禁止调用 wait 或 observe 轮询。"
+            ),
+            expect_kinds=["delegation"],
+            expect_handoff_markers=["handoff_ready"],
+            allow_degraded=False,
+            data={"requireNestedDelegation": True},
+        ),
         LiveCaseSpec(
             case_id="mixed_runtime_chain",
             title="Research + Engineering + Delegation 混合长任务",
@@ -432,18 +459,22 @@ def _state_has_model_quota_block(state: dict[str, Any]) -> bool:
     return False
 
 
-def _load_durable(result: LiveCaseResult) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:
+def _load_durable(
+    result: LiveCaseResult,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], str | None]:
     try:
         from core.database import db
     except Exception as exc:  # noqa: BLE001
-        return [], [], [], f"{type(exc).__name__}: {exc}"
+        return [], [], [], [], f"{type(exc).__name__}: {exc}"
     events: list[dict[str, Any]] = []
     episodes: list[dict[str, Any]] = []
     handoffs: list[dict[str, Any]] = []
+    canonical_messages: list[dict[str, Any]] = []
     try:
         if result.session_id:
             events.extend(db.get_runtime_events(result.session_id))
             episodes.extend(db.list_runtime_episodes(session_id=result.session_id, limit=200))
+            canonical_messages.extend(db.get_chat_canonical_messages(result.session_id))
         if result.run_id:
             events.extend(db.get_runtime_events_for_run(result.run_id, session_id=result.session_id, limit=500))
             episodes.extend(db.list_runtime_episodes(run_id=result.run_id, limit=200))
@@ -456,9 +487,23 @@ def _load_durable(result: LiveCaseResult) -> tuple[list[dict[str, Any]], list[di
             seen_episodes.add(episode_id)
             unique_episodes.append(episode)
             handoffs.extend(db.list_runtime_episode_handoffs(episode_id))
-        return events, unique_episodes, handoffs, None
+        unique_events: list[dict[str, Any]] = []
+        seen_events: set[tuple[Any, ...]] = set()
+        for event in events:
+            key = (
+                event.get("id"),
+                event.get("session_id") or event.get("sessionId"),
+                event.get("run_id") or event.get("runId"),
+                event.get("seq"),
+                event.get("topic") or event.get("type") or event.get("event_type"),
+            )
+            if key in seen_events:
+                continue
+            seen_events.add(key)
+            unique_events.append(event)
+        return unique_events, unique_episodes, handoffs, canonical_messages, None
     except Exception as exc:  # noqa: BLE001
-        return events, episodes, handoffs, f"{type(exc).__name__}: {exc}"
+        return events, episodes, handoffs, canonical_messages, f"{type(exc).__name__}: {exc}"
 
 
 def _event_payload(event: dict[str, Any]) -> Any:
@@ -472,13 +517,18 @@ def _event_payload(event: dict[str, Any]) -> Any:
 
 
 def _summarize_result(result: LiveCaseResult) -> None:
-    events, episodes, handoffs, error = _load_durable(result)
+    events, episodes, handoffs, canonical_messages, error = _load_durable(result)
     # This function is called repeatedly while a live run is active.  Counts are
     # snapshot values, not cumulative polling counters.
     result.context_governance_events = 0
     result.degraded_count = 0
     result.active_episode_kinds = []
     result.top_level_episode_kinds = []
+    result.max_delegation_depth = 0
+    result.nested_lineage_complete = False
+    result.nested_child_count = 0
+    result.final_acceptance_observed = False
+    result.terminal_run_status = None
     if error:
         result.key_events.append(_redact({"durableLookupError": error}))
     topics: list[str] = []
@@ -489,6 +539,14 @@ def _summarize_result(result: LiveCaseResult) -> None:
             topics.append(topic)
         if "recoverable" in topic or topic.endswith(".failed"):
             failure_topics += 1
+        event_run_id = str(event.get("run_id") or event.get("runId") or "").strip()
+        if not result.run_id or not event_run_id or event_run_id == result.run_id:
+            if topic == "run.completed":
+                result.terminal_run_status = "completed"
+            elif topic == "run.failed":
+                result.terminal_run_status = "failed"
+            elif topic in {"run.cancelled", "run.canceled"}:
+                result.terminal_run_status = "cancelled"
         if topic == "context.prepared":
             result.context_governance_events += 1
             payload = _event_payload(event)
@@ -507,7 +565,59 @@ def _summarize_result(result: LiveCaseResult) -> None:
     result.observed_topics = topics[:200]
     result.repeated_failure_count = max(0, failure_topics - 1)
 
+    resumed_sequences = [
+        int(event.get("seq") or event.get("sequence") or 0)
+        for event in events
+        if str(event.get("topic") or event.get("type") or "").strip() == "run.execution.resumed"
+    ]
+    last_resume_sequence = max(resumed_sequences) if resumed_sequences else 0
+    post_resume_text: list[str] = []
+    for event in events:
+        topic = str(event.get("topic") or event.get("type") or "").strip()
+        sequence = int(event.get("seq") or event.get("sequence") or 0)
+        if topic != "run.text.delta" or sequence <= last_resume_sequence:
+            continue
+        payload = _event_payload(event)
+        if not isinstance(payload, dict):
+            continue
+        text_value = str(payload.get("text") or payload.get("delta") or payload.get("content") or "").strip()
+        if text_value:
+            post_resume_text.append(text_value)
+    acceptance_text = "\n".join(post_resume_text)
+    if not acceptance_text:
+        acceptance_text = "\n".join(
+            str(message.get("content_text") or message.get("content") or "")
+            for message in canonical_messages
+            if str(message.get("role") or "").strip().lower() == "assistant"
+        )
+    result.final_acceptance_observed = bool(
+        re.search(
+            r"(?:验收决定|验收结论|acceptance\s+decision|decision)\s*[:：\-—* ]{0,12}\s*(?:`|\*\*)?(accept|retry|ignore)(?:`|\*\*)?",
+            acceptance_text,
+            flags=re.IGNORECASE,
+        )
+    )
+
     active_episode_kinds: list[str] = []
+    episode_by_id = {
+        str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip(): episode
+        for episode in episodes
+        if str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+    }
+
+    def _episode_depth(episode: dict[str, Any]) -> int:
+        depth = 1
+        seen: set[str] = set()
+        parent_id = str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = episode_by_id.get(parent_id)
+            if not parent:
+                break
+            depth += 1
+            parent_id = str(parent.get("parentEpisodeId") or parent.get("parent_episode_id") or "").strip()
+        return depth
+
     for episode in episodes:
         episode_id = str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
         kind = str(episode.get("kind") or episode.get("runtimeKind") or "").strip()
@@ -516,6 +626,11 @@ def _summarize_result(result: LiveCaseResult) -> None:
         if kind and kind not in result.episode_kinds:
             result.episode_kinds.append(kind)
         parent_episode_id = str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+        if kind == "delegation":
+            result.max_delegation_depth = max(result.max_delegation_depth, _episode_depth(episode))
+            if parent_episode_id and parent_episode_id in episode_by_id:
+                result.nested_lineage_complete = True
+                result.nested_child_count += 1
         if kind and not parent_episode_id and kind not in result.top_level_episode_kinds:
             result.top_level_episode_kinds.append(kind)
         state = str(episode.get("state") or episode.get("status") or "").strip().lower()
@@ -573,6 +688,7 @@ def _evaluate(result: LiveCaseResult) -> None:
     missing_markers = [marker for marker in spec.expect_handoff_markers if marker.lower() not in marker_text]
     repeated_runtime_failure = result.repeated_failure_count >= 2
     require_context = bool(spec.data.get("requireContextGovernance"))
+    require_nested_delegation = bool(spec.data.get("requireNestedDelegation"))
     if missing_kinds or (missing_markers and not spec.allow_degraded) or repeated_runtime_failure:
         result.status = "failed"
         result.failure_reason = _redact(
@@ -581,6 +697,27 @@ def _evaluate(result: LiveCaseResult) -> None:
                 "missingMarkers": missing_markers,
                 "repeatedFailureCount": result.repeated_failure_count,
                 "contextGovernanceEvents": result.context_governance_events,
+            }
+        )
+        return
+    if require_nested_delegation and (
+        result.max_delegation_depth < 2
+        or not result.nested_lineage_complete
+        or result.nested_child_count != 1
+        or not result.final_acceptance_observed
+        or result.terminal_run_status != "completed"
+        or result.degraded_count > 0
+    ):
+        result.status = "failed"
+        result.failure_reason = _redact(
+            {
+                "reason": "nested_delegation_contract_not_met",
+                "maxDelegationDepth": result.max_delegation_depth,
+                "nestedLineageComplete": result.nested_lineage_complete,
+                "nestedChildCount": result.nested_child_count,
+                "finalAcceptanceObserved": result.final_acceptance_observed,
+                "terminalRunStatus": result.terminal_run_status,
+                "degradedCount": result.degraded_count,
             }
         )
         return
@@ -750,6 +887,11 @@ def _write_report(results: list[LiveCaseResult], *, output_dir: Path) -> Path:
                     "contextGovernanceEvents": item.context_governance_events,
                     "compactionApplied": item.compaction_applied,
                     "compactionReason": item.compaction_reason,
+                    "maxDelegationDepth": item.max_delegation_depth,
+                    "nestedLineageComplete": item.nested_lineage_complete,
+                    "nestedChildCount": item.nested_child_count,
+                    "finalAcceptanceObserved": item.final_acceptance_observed,
+                    "terminalRunStatus": item.terminal_run_status,
                     "keyEvents": item.key_events,
                 }
                 for item in results
@@ -799,6 +941,7 @@ def main() -> int:
     parser.add_argument("--live", action="store_true", help="Actually submit live sessions to Engine.")
     parser.add_argument("--case", default="all", choices=[
         "all",
+        "nested_delegation_authority",
         "mixed_runtime_chain",
         "engineering_plan_only",
         "engineering_continuation",

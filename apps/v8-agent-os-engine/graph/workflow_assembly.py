@@ -20,7 +20,11 @@ from core.runtime_episodes import (
 from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
 from erc.runtime_stability import runtime_stability_service
-from .parallel_support import build_parallel_delegate_join_node, build_parallel_delegate_task_node
+from .parallel_support import (
+    RUNTIME_EPISODE_WAIT_NODE,
+    build_parallel_delegate_join_node,
+    build_parallel_delegate_task_node,
+)
 
 
 RUNTIME_EPISODE_WAIT_SECONDS = float(os.getenv("V8_RUNTIME_EPISODE_WAIT_SECONDS", "600"))
@@ -641,7 +645,7 @@ def compile_supervisor_workflow(
     parallel_join_node = build_parallel_delegate_join_node()
 
     workflow.add_node("workflow_entry", _workflow_entry_command)
-    workflow.add_node("runtime_episode", build_runtime_episode_wait_node())
+    workflow.add_node(RUNTIME_EPISODE_WAIT_NODE, build_runtime_episode_wait_node())
     workflow.add_node("supervisor", supervisor_node)
 
     async def supervisor_tools_node(state):

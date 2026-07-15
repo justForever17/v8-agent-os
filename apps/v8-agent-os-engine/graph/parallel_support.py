@@ -12,6 +12,7 @@ from typing import Any, Callable
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command, Send
 
+from core.database import db
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_result_contract import build_delegation_result_contract
 from core.engineering_capsule import effective_engineering_capsule, engineering_capsule_mode
@@ -30,6 +31,10 @@ from core.runtime_episodes import (
 )
 from erc.runtime_context import bind_runtime_context, build_runtime_callback_config
 from .route_context import merge_route_context
+
+
+RUNTIME_EPISODE_WAIT_NODE = "runtime_episode"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -1136,56 +1141,55 @@ async def _run_parallel_agent_branch(
                     toolName=tool_name,
                 )
         delta_messages_for_guard = list(local_state.get("messages") or [])[initial_message_count:]
-        if isinstance(result_update, dict) and result_update.get("pending_child_delegations"):
+        child_requests = _extract_child_delegation_requests(
+            result,
+            source_branch=branch,
+            source_agent_id=agent_id,
+        )
+        if child_requests:
             delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
-            child_requests = _extract_child_delegation_requests(
-                {"pending_child_delegations": result_update.get("pending_child_delegations")},
-                source_branch=branch,
-                source_agent_id=agent_id,
+            _publish_parallel_progress(
+                progress_callback,
+                stage="child_requested",
+                status="waiting",
+                summary=f"{branch.get('agentName') or agent_id} 请求了 {len(child_requests)} 个子任务。",
             )
-            if child_requests:
-                _publish_parallel_progress(
-                    progress_callback,
-                    stage="child_requested",
-                    status="waiting",
-                    summary=f"{branch.get('agentName') or agent_id} 请求了 {len(child_requests)} 个子任务。",
-                )
-                block_reason = _child_delegation_block_reason(branch, child_requests)
-                if block_reason:
-                    return delta_messages_for_guard, delta_todos, _child_delegation_block_summary(
-                        branch=branch,
-                        agent_id=agent_id,
-                        child_requests=child_requests,
-                        reason=block_reason,
-                        delta_messages=delta_messages_for_guard,
-                        delta_todos=delta_todos,
-                        tool_mode=agent_data.get("tool_mode"),
-                    ), []
-                return delta_messages_for_guard, delta_todos, {
-                    "invocationId": branch.get("invocationId"),
-                    "taskBriefId": branch.get("taskBriefId"),
-                    "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
-                    "taskGoal": branch.get("reason"),
-                    "agentId": agent_id,
-                    "agentName": branch.get("agentName") or agent_id,
-                    "delegationId": branch.get("delegationId"),
-                    "lane": branch.get("lane") or "subagent",
-                    "targetId": agent_id,
-                    "targetLabel": branch.get("agentName") or agent_id,
-                    "branchIndex": branch.get("branchIndex"),
-                    "status": "waiting_child_delegation",
-                    "error": "delegation_child_requested",
-                    "childDelegationRequestIds": [item.get("requestId") for item in child_requests],
-                    "childDelegationCount": len(child_requests),
-                    "completedAt": _now_iso(),
-                    "messageCount": len(delta_messages_for_guard),
-                    "todoDeltaCount": len(delta_todos),
-                    "toolMode": agent_data.get("tool_mode"),
-                    "toolsUsed": _extract_tool_names(delta_messages_for_guard),
-                    "compactTranscript": _compact_transcript(delta_messages_for_guard),
-                    "localSelfCheck": "Subagent requested peer help through request_peer_help. The broker must choose the target; the subagent did not select a peer directly.",
-                    "acceptanceHint": "Wait for the brokered child delegation result before merging or judging this branch.",
-                }, child_requests
+            block_reason = _child_delegation_block_reason(branch, child_requests)
+            if block_reason:
+                return delta_messages_for_guard, delta_todos, _child_delegation_block_summary(
+                    branch=branch,
+                    agent_id=agent_id,
+                    child_requests=child_requests,
+                    reason=block_reason,
+                    delta_messages=delta_messages_for_guard,
+                    delta_todos=delta_todos,
+                    tool_mode=agent_data.get("tool_mode"),
+                ), []
+            return delta_messages_for_guard, delta_todos, {
+                "invocationId": branch.get("invocationId"),
+                "taskBriefId": branch.get("taskBriefId"),
+                "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+                "taskGoal": branch.get("reason"),
+                "agentId": agent_id,
+                "agentName": branch.get("agentName") or agent_id,
+                "delegationId": branch.get("delegationId"),
+                "lane": branch.get("lane") or "subagent",
+                "targetId": agent_id,
+                "targetLabel": branch.get("agentName") or agent_id,
+                "branchIndex": branch.get("branchIndex"),
+                "status": "waiting_child_delegation",
+                "error": "delegation_child_requested",
+                "childDelegationRequestIds": [item.get("requestId") for item in child_requests],
+                "childDelegationCount": len(child_requests),
+                "completedAt": _now_iso(),
+                "messageCount": len(delta_messages_for_guard),
+                "todoDeltaCount": len(delta_todos),
+                "toolMode": agent_data.get("tool_mode"),
+                "toolsUsed": _extract_tool_names(delta_messages_for_guard),
+                "compactTranscript": _compact_transcript(delta_messages_for_guard),
+                "localSelfCheck": "Subagent requested child delegation through delegation_broker. The durable router must schedule the returned Send instead of swallowing the Command goto.",
+                "acceptanceHint": "Wait for the brokered child delegation result before merging or judging this branch.",
+            }, child_requests
         for message in delta_messages_for_guard:
             for call in _tool_call_dicts_from_message(message):
                 signature = _repeat_sensitive_tool_call_signature(call)
@@ -1526,6 +1530,8 @@ def build_parallel_delegate_join_node():
                     "requestId": request_id,
                     "sourceInvocationId": invocation_id,
                     "sourceDelegationId": item.get("sourceDelegationId"),
+                    "sourceAgentId": item.get("sourceAgentId"),
+                    "sourceAgentName": item.get("sourceAgentName"),
                     "childInvocationId": child_invocation_id,
                     "childDelegationId": branch.get("delegationId") or item.get("childDelegationId"),
                     "childTaskBriefId": branch.get("taskBriefId") or item.get("childTaskBriefId"),
@@ -1599,12 +1605,19 @@ def build_parallel_delegate_join_node():
                 worker_brief.setdefault("acceptanceHint", child_branch.get("acceptanceHint"))
                 if workspace_path:
                     worker_brief.setdefault("workspacePath", workspace_path)
-                episode = build_runtime_episode(
+                child_delegation_id = str(child_summary.get("childDelegationId") or "").strip()
+                existing_episode = db.get_runtime_episode(child_delegation_id) if child_delegation_id else None
+                expected_parent_id = str(child_summary.get("sourceDelegationId") or invocation_id or "").strip()
+                if existing_episode and str(
+                    existing_episode.get("parentEpisodeId") or existing_episode.get("parent_episode_id") or ""
+                ).strip() != expected_parent_id:
+                    existing_episode = None
+                episode = existing_episode or build_runtime_episode(
                     need={
                         "kind": "delegation",
                         "source": "subagent",
                         "reason": child_summary.get("childTaskGoal") or "child delegation",
-                        "needId": child_summary.get("childDelegationId") or child_summary.get("childInvocationId"),
+                        "needId": child_delegation_id or child_summary.get("childInvocationId"),
                         "parentEpisodeId": child_summary.get("sourceDelegationId") or invocation_id,
                         "inputs": {
                             "targetCount": 1,
@@ -1618,10 +1631,12 @@ def build_parallel_delegate_join_node():
                     kind="delegation",
                     state="queued",
                     required_runtime_access=[],
-                    parent_episode_id=str(child_summary.get("sourceDelegationId") or invocation_id or ""),
+                    parent_episode_id=expected_parent_id,
                     continuation_target="runtime_episode_runner",
                     extra={
                         "sourceInvocationId": invocation_id,
+                        "sourceAgentId": child_summary.get("sourceAgentId"),
+                        "sourceAgentName": child_summary.get("sourceAgentName"),
                         "childInvocationId": child_summary.get("childInvocationId"),
                         "childTaskBriefId": child_summary.get("childTaskBriefId"),
                         "childAgentId": child_summary.get("childAgentId"),
@@ -1649,9 +1664,97 @@ def build_parallel_delegate_join_node():
                 ):
                     emit_runtime_episode_event("delegation.child.requested", {"episode": queued_episode, "childDelegation": child_summary})
                     emit_runtime_episode_event("runtime.episode.queued", {"episode": queued_episode})
+            child_episode_ids = [
+                str(item.get("episodeId") or item.get("id") or "").strip()
+                for item in child_episodes
+                if str(item.get("episodeId") or item.get("id") or "").strip()
+            ]
+            source_delegation_ids = {
+                str(item.get("sourceInvocationId") or "").strip(): str(item.get("sourceDelegationId") or "").strip()
+                for item in child_summaries
+                if str(item.get("sourceInvocationId") or "").strip()
+                and str(item.get("sourceDelegationId") or "").strip()
+            }
+            for item in results:
+                status = str(item.get("status") or "").strip().lower()
+                if status not in {"waiting", "waiting_child", "waiting_child_delegation", "waiting_dependency"}:
+                    continue
+                producer_episode_id = str(
+                    item.get("delegationId")
+                    or source_delegation_ids.get(str(item.get("invocationId") or "").strip())
+                    or item.get("invocationId")
+                    or invocation_id
+                    or ""
+                ).strip()
+                if not producer_episode_id:
+                    continue
+                worker_contract = build_delegation_result_contract(item)
+                worker_status = worker_contract.pop("status", status)
+                waiting_handoff = build_handoff_ref(
+                    producer_episode_id=producer_episode_id,
+                    kind="subagent_result",
+                    status="waiting",
+                    compact_summary=(
+                        f"{item.get('agentName') or item.get('targetLabel') or 'Direct subagent'} "
+                        f"has routed {len(child_episode_ids)} child delegation(s); final acceptance is pending child handoff."
+                    ),
+                    consumer_hint=(
+                        "This is an execution-progress handoff, not an acceptance result. "
+                        "Wait for the child episode terminal handoff; do not poll or redispatch."
+                    ),
+                    extra={
+                        **worker_contract,
+                        "workerStatus": worker_status,
+                        "childEpisodeIds": child_episode_ids,
+                        "delegationState": "waiting_child",
+                    },
+                )
+                persisted_waiting_handoff = persist_handoff_ref(
+                    waiting_handoff,
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+                if isinstance(persisted_waiting_handoff, dict):
+                    waiting_handoff = {**waiting_handoff, **persisted_waiting_handoff}
+                route_context = append_handoff_ref(route_context, waiting_handoff)
+                route_context, parent_episode = transition_runtime_episode(
+                    route_context,
+                    producer_episode_id,
+                    state="waiting_child",
+                    resultRef=waiting_handoff.get("handoffRefId"),
+                    childEpisodeIds=child_episode_ids,
+                )
+                if parent_episode:
+                    persist_runtime_episode(
+                        parent_episode,
+                        session_id=session_id,
+                        run_id=run_id,
+                        enqueue=False,
+                    )
+                    emit_runtime_episode_event(
+                        "runtime.episode.waiting",
+                        {"episode": parent_episode, "handoffRef": waiting_handoff},
+                    )
+                emit_runtime_episode_event("handoff.ref.created", {"handoffRef": waiting_handoff})
             return Command(
-                goto="supervisor",
+                goto=RUNTIME_EPISODE_WAIT_NODE,
                 update={
+                    "messages": [
+                        HumanMessage(
+                            content=(
+                                "[V8OS 孙 Agent 执行中]\n"
+                                f"直接子 Agent 已提交 {len(child_episodes)} 个孙 Agent 任务，但当前状态只是 waiting_child_delegation，"
+                                "不是可验收结果。此时不得 accept/retry/ignore，也不得根据任务说明猜测孙 Agent 输出。\n"
+                                "请结束当前执行片段，不要调用 wait 或 observe 轮询；孙 Agent 终态后系统会携带真实结构化回流恢复本任务。"
+                            ),
+                            id=str(uuid.uuid4()),
+                            additional_kwargs={
+                                "v8_governance_type": "delegation_child_pending",
+                                "v8_delegation_invocation_id": invocation_id,
+                                "v8_child_episode_ids": child_episode_ids,
+                            },
+                        )
+                    ],
                     "routed_child_delegation_request_ids": [
                         *list(state.get("routed_child_delegation_request_ids") or []),
                         *[str(item.get("requestId") or "") for item in child_summaries if item.get("requestId")],
@@ -1663,11 +1766,35 @@ def build_parallel_delegate_join_node():
                                 "parentInvocationId": invocation_id,
                                 "childCount": len(child_sends),
                                 "childDelegations": child_summaries[-10:],
-                                "childEpisodeIds": [item.get("episodeId") for item in child_episodes],
+                                "childEpisodeIds": child_episode_ids,
                                 "routedAt": _now_iso(),
                             }
                         },
                     ),
+                },
+            )
+
+        waiting_results = [
+            item
+            for item in results
+            if str(item.get("status") or "").strip().lower()
+            in {"waiting", "waiting_child", "waiting_child_delegation", "waiting_dependency"}
+        ]
+        if waiting_results:
+            return Command(
+                goto="supervisor",
+                update={
+                    "current_route_context": merge_route_context(
+                        dict(state.get("current_route_context") or {}),
+                        {
+                            "lastDelegationHandoff": {
+                                "invocationId": invocation_id,
+                                "state": "waiting_child",
+                                "pendingResultCount": len(waiting_results),
+                                "updatedAt": _now_iso(),
+                            }
+                        },
+                    )
                 },
             )
 

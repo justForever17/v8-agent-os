@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,6 +120,58 @@ def test_save_project_allows_user_confirmed_external_workspace(tmp_path, monkeyp
     assert project.workspace_trust_state == "trusted"
     assert project.workspace_trust_source == "user_confirmed"
     assert (external_root / ".agents" / "rules" / "AGENTS.md").exists()
+
+
+def test_find_project_normalizes_repeated_workspace_separators(tmp_path, monkeypatch):
+    main_root = tmp_path / "main"
+    external_root = tmp_path / "external" / "project"
+    main_root.mkdir()
+    service = _service(monkeypatch, main_root)
+    project = service.save_project(
+        {
+            "workspacePath": str(external_root),
+            "workspaceTrustState": "trusted",
+            "workspaceTrustSource": "user_confirmed",
+        }
+    )
+    service.scope_repo.bindings.clear()
+
+    raw_path = str(external_root)
+    if raw_path.startswith("/"):
+        equivalent_path = "/" + raw_path[1:].replace("/", "//")
+    else:
+        equivalent_path = raw_path.replace("\\", "\\\\")
+
+    resolved = service.find_project_for_workspace(workspace_path=equivalent_path)
+
+    assert resolved is not None
+    assert resolved.project_id == project.project_id
+
+
+def test_find_project_ignores_stale_workspace_binding(tmp_path, monkeypatch):
+    main_root = tmp_path / "main"
+    external_root = tmp_path / "external" / "project"
+    main_root.mkdir()
+    service = _service(monkeypatch, main_root)
+    project = service.save_project(
+        {
+            "workspacePath": str(external_root),
+            "workspaceTrustState": "trusted",
+            "workspaceTrustSource": "user_confirmed",
+        }
+    )
+    service.scope_repo.bindings = [
+        SimpleNamespace(
+            workspace_id="deleted-project",
+            workspace_path=str(external_root),
+            project_id="deleted-project",
+        )
+    ]
+
+    resolved = service.find_project_for_workspace(workspace_path=str(external_root))
+
+    assert resolved is not None
+    assert resolved.project_id == project.project_id
 
 
 def test_default_project_uses_configured_main_workspace_root(tmp_path, monkeypatch):

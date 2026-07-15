@@ -102,6 +102,64 @@ _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "write_todos",
 }
 
+_DELEGATION_ACCEPTANCE_PATTERN = re.compile(
+    r"(?:验收决定|acceptance\s+decision)\s*[：:]\s*[`*_~]*\s*(ACCEPT|RETRY|IGNORE)\b\s*[`*_~]*",
+    re.IGNORECASE,
+)
+
+
+def _delegation_acceptance_from_final_text(final_text: str | None) -> dict[str, Any] | None:
+    text = str(final_text or "").strip()
+    matches = list(_DELEGATION_ACCEPTANCE_PATTERN.finditer(text))
+    if len(matches) != 1:
+        return None
+    decision = str(matches[0].group(1) or "").strip().upper()
+    status = {
+        "ACCEPT": "accepted",
+        "RETRY": "retry",
+        "IGNORE": "ignored",
+    }.get(decision)
+    if not status:
+        return None
+    evidence_basis = text[matches[0].end():].strip()
+    evidence_basis = re.sub(r"^[`*\s>—–:：-]+", "", evidence_basis)
+    if len(evidence_basis) > 600:
+        evidence_basis = f"{evidence_basis[:599].rstrip()}…"
+    return {
+        "status": status,
+        "decision": decision,
+        "summary": evidence_basis or f"Supervisor recorded {decision} for the delegated result.",
+    }
+
+
+def _nested_delegation_results_from_handoffs(handoffs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def collect(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, dict):
+            return
+        for item in list(value.get("results") or []):
+            if not isinstance(item, dict):
+                continue
+            delegation_id = str(item.get("delegationId") or item.get("delegation_id") or "").strip()
+            identity = delegation_id or str(item.get("taskBriefId") or item.get("task_brief_id") or "").strip()
+            if identity and identity not in seen:
+                seen.add(identity)
+                results.append(dict(item))
+        for key in ("childHandoffs", "child_handoffs", "handoffBundle", "handoff_bundle"):
+            collect(value.get(key))
+        payload = value.get("payload")
+        if isinstance(payload, dict):
+            collect(payload)
+
+    collect(handoffs)
+    return results
+
 
 def _is_network_supervisor_compat_transport(transport: str | None) -> bool:
     return str(transport or "").strip() in _NETWORK_SUPERVISOR_COMPAT_TRANSPORTS
@@ -3624,6 +3682,14 @@ class ChatRuntime:
         )
 
     @staticmethod
+    def _is_runtime_handoff_resume(chat_run: ChatRunContext) -> bool:
+        if not chat_run.is_resume_request:
+            return False
+        resume_value = chat_run.request.resume_value if isinstance(chat_run.request.resume_value, dict) else {}
+        handoff = resume_value.get("runtimeEpisodeHandoff")
+        return isinstance(handoff, dict) and str(handoff.get("episodeId") or "").strip() != ""
+
+    @staticmethod
     def _has_pending_spec_stage_approval(chat_run: ChatRunContext) -> bool:
         try:
             rows = db.list_pending_approvals(run_id=chat_run.active_run_id, status="pending")
@@ -3829,7 +3895,11 @@ class ChatRuntime:
 
     async def resolve_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         if chat_run.is_resume_request:
-            if self._is_spec_continuation_resume(chat_run) or self._is_spec_revision_resume(chat_run):
+            if (
+                self._is_spec_continuation_resume(chat_run)
+                or self._is_spec_revision_resume(chat_run)
+                or self._is_runtime_handoff_resume(chat_run)
+            ):
                 return await self.create_execution_bundle(chat_run=chat_run)
             return await self.create_resume_bundle(chat_run=chat_run)
         return await self.create_execution_bundle(chat_run=chat_run)
@@ -8045,6 +8115,8 @@ class ChatRuntime:
         self,
         chat_run: ChatRunContext,
         execution_bundle: ChatExecutionBundle | None,
+        *,
+        final_text: str | None = None,
     ) -> None:
         if execution_bundle is None:
             return
@@ -8059,6 +8131,63 @@ class ChatRuntime:
         results = [dict(item) for item in list((state or {}).get("parallel_results") or []) if isinstance(item, dict)]
         if not results:
             return
+        acceptance = _delegation_acceptance_from_final_text(final_text)
+        expanded_results: list[dict[str, Any]] = []
+        expanded_ids: set[str] = set()
+        for raw_item in results:
+            item = dict(raw_item)
+            delegation_id = str(item.get("delegationId") or "").strip()
+            delegation_depth = int(item.get("delegationDepth") or 1) if str(item.get("delegationDepth") or "").isdigit() else 1
+            episode = db.get_runtime_episode(delegation_id) if delegation_id else None
+            handoffs = db.list_runtime_episode_handoffs(delegation_id) if delegation_id else []
+            episode_state = str((episode or {}).get("state") or "").strip().lower()
+            if episode_state in {"completed", "merged"}:
+                item["status"] = "completed"
+            elif episode_state in {"failed", "cancelled", "degraded"}:
+                item["status"] = episode_state
+            if acceptance and delegation_depth <= 1 and episode_state in TERMINAL_EPISODE_STATES:
+                item["supervisorAcceptance"] = dict(acceptance)
+                acceptance_handoff = {
+                    "handoffId": f"handoff:{delegation_id}:supervisor_acceptance:{chat_run.active_run_id}",
+                    "kind": "subagent_acceptance",
+                    "status": acceptance["status"],
+                    "confidence": "high",
+                    "compactSummary": acceptance["summary"],
+                    "consumerHint": "Use this governance record as the durable Supervisor decision for the delegated result.",
+                    "delegationId": delegation_id,
+                    "supervisorAcceptance": dict(acceptance),
+                }
+                db.add_runtime_episode_handoff(
+                    episode_id=delegation_id,
+                    handoff=acceptance_handoff,
+                    session_id=chat_run.session_id,
+                    run_id=chat_run.active_run_id,
+                )
+                episode_metadata = dict((episode or {}).get("metadata") or {})
+                episode_metadata["supervisorAcceptance"] = dict(acceptance)
+                db.complete_runtime_episode(
+                    delegation_id,
+                    state=episode_state,
+                    metadata=episode_metadata,
+                )
+            item_identity = delegation_id or str(item.get("taskBriefId") or item.get("invocationId") or "").strip()
+            if not item_identity or item_identity not in expanded_ids:
+                if item_identity:
+                    expanded_ids.add(item_identity)
+                expanded_results.append(item)
+            for nested in _nested_delegation_results_from_handoffs(handoffs):
+                nested_identity = str(
+                    nested.get("delegationId")
+                    or nested.get("taskBriefId")
+                    or nested.get("invocationId")
+                    or ""
+                ).strip()
+                if nested_identity and nested_identity in expanded_ids:
+                    continue
+                if nested_identity:
+                    expanded_ids.add(nested_identity)
+                expanded_results.append(nested)
+        results = expanded_results
         seen: set[tuple[str, str, str]] = set()
         for item in results:
             invocation_id = str(item.get("invocationId") or "").strip()
@@ -8095,7 +8224,19 @@ class ChatRuntime:
             status = str(item.get("status") or "unknown").strip().lower()
             if status in {"ok", "completed", "success", "terminated"}:
                 topic = "subagent.task.completed"
-            elif status in {"queued", "running", "starting", "waiting_input", "attached", "streaming", "observing"}:
+            elif status in {
+                "queued",
+                "running",
+                "starting",
+                "waiting",
+                "waiting_input",
+                "waiting_child",
+                "waiting_child_delegation",
+                "waiting_dependency",
+                "attached",
+                "streaming",
+                "observing",
+            }:
                 topic = "subagent.task.updated"
             else:
                 topic = "subagent.task.failed"
@@ -9272,7 +9413,11 @@ class ChatRuntime:
                 yield flushed_event
             await self.reconcile_final_assistant_message(chat_run, stream_state, last_execution_bundle)
             await self.emit_engineering_lane_projection(chat_run, last_execution_bundle)
-            await self.emit_subagent_swarm_projection(chat_run, last_execution_bundle)
+            await self.emit_subagent_swarm_projection(
+                chat_run,
+                last_execution_bundle,
+                final_text=self._completion_final_text(chat_run, stream_state),
+            )
             self.persist_final_assistant_message(chat_run, stream_state)
             yield self.finalize_success_run(chat_run, stream_state)
         except CompatExternalToolRequest as exc:

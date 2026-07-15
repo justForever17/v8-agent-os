@@ -10,6 +10,10 @@ from core.runtime_episodes import ACTIVE_EPISODE_STATES
 
 
 RUNTIME_EXECUTION_HANDOFF_STATUSES = {"ready", "degraded"}
+DELEGATION_ACCEPTANCE_DECISION_RE = re.compile(
+    r"(?:验收决定|acceptance\s+decision)\s*[：:]\s*[`*_~]*\s*(ACCEPT|RETRY|IGNORE)\b\s*[`*_~]*",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +117,43 @@ def _required_runtime_degraded_handoffs(
     return degraded
 
 
+def _delegation_acceptance_missing(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+    *,
+    final_text: str,
+) -> list[str]:
+    if DELEGATION_ACCEPTANCE_DECISION_RE.search(str(final_text or "")):
+        return []
+    pending: list[str] = []
+    for episode in episodes:
+        if _is_optional_episode(episode):
+            continue
+        if str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip():
+            continue
+        if str(episode.get("kind") or "").strip().lower() != "delegation":
+            continue
+        state = str(episode.get("state") or "").strip().lower()
+        if state not in {"completed", "merged", "degraded"}:
+            continue
+        metadata = episode.get("metadata") if isinstance(episode.get("metadata"), Mapping) else {}
+        acceptance = metadata.get("supervisorAcceptance") if isinstance(metadata.get("supervisorAcceptance"), Mapping) else {}
+        acceptance_status = str(acceptance.get("status") or "").strip().lower()
+        if acceptance_status in {"accepted", "retry", "ignored"}:
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if not episode_id:
+            continue
+        has_terminal_handoff = any(
+            str(handoff.get("status") or "").strip().lower() in RUNTIME_EXECUTION_HANDOFF_STATUSES
+            for handoff in list(handoffs_by_episode.get(episode_id, []) or [])
+            if isinstance(handoff, Mapping)
+        )
+        if has_terminal_handoff:
+            pending.append(episode_id)
+    return pending
+
+
 def _spec_tasks_need_proof(spec_brief: Mapping[str, Any]) -> list[dict[str, Any]]:
     traceability = spec_brief.get("traceability") if isinstance(spec_brief.get("traceability"), Mapping) else {}
     tasks = [dict(item) for item in list(traceability.get("tasks") or []) if isinstance(item, Mapping)]
@@ -203,13 +244,22 @@ def _episode_task_briefs(episode: Mapping[str, Any]) -> list[dict[str, Any]]:
 def _brief_requires_write(brief: Mapping[str, Any], *, episode_kind: str) -> bool:
     if bool(brief.get("readOnly") or brief.get("read_only")):
         return False
+    capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), Mapping) else {}
+    capsule_mode = str(capsule.get("executionMode") or capsule.get("execution_mode") or "").strip().lower()
+    if capsule_mode in {"read_only", "verify", "plan_only"}:
+        return False
     if bool(brief.get("writeRequired") or brief.get("write_required")):
         return True
     if list(brief.get("writeSet") or brief.get("write_set") or []):
         return True
-    family = str(brief.get("familyHint") or brief.get("family_hint") or "").strip().lower()
     capabilities = " ".join(str(item or "") for item in list(brief.get("requiredCapabilities") or [])).lower()
-    return episode_kind == "engineering" or family == "engineering" or any(
+    tool_policy = brief.get("toolPolicy") if isinstance(brief.get("toolPolicy"), Mapping) else {}
+    allowed_tools = {
+        str(item or "").strip()
+        for item in list(tool_policy.get("allowedTools") or brief.get("allowedTools") or [])
+        if str(item or "").strip()
+    }
+    return episode_kind == "engineering" or "write_native_file" in allowed_tools or any(
         marker in capabilities for marker in ("workspace_mutation", "file_write", "implementation")
     )
 
@@ -489,6 +539,21 @@ def evaluate_supervisor_completion(
                         "status": status,
                     },
                 )
+
+    missing_delegation_acceptance = _delegation_acceptance_missing(
+        normalized_episodes,
+        normalized_handoffs,
+        final_text=final_text,
+    )
+    if missing_delegation_acceptance:
+        return SupervisorCompletionDecision(
+            action="fail",
+            reason="delegation_supervisor_acceptance_missing",
+            details={
+                "episodeIds": missing_delegation_acceptance[:12],
+                "nextAction": "record_accept_retry_or_ignore",
+            },
+        )
 
     if not spec_mode:
         write_delivery_failure = _non_spec_write_delivery_failure(normalized_episodes, normalized_handoffs)

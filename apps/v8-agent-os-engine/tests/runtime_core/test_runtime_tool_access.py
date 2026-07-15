@@ -1359,6 +1359,36 @@ def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
     assert payload["exampleTasks"]
 
 
+def test_direct_subagent_missing_tasks_returns_to_same_agent_for_one_contract_repair():
+    state = {
+        "current_route_context": {
+            "delegationId": "subagent::parent-contract-repair",
+            "delegationDepth": 1,
+        }
+    }
+    with bind_runtime_context(
+        runtime_kind="subagent",
+        actor_role="direct_subagent",
+        agent_id="implementation-engineer",
+        delegation_id="subagent::parent-contract-repair",
+        delegation_depth=1,
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks={},
+            worker_briefs={},
+            state=state,
+            tool_call_id="call-direct-child-empty",
+        )
+
+    payload = _tool_message_payload(command)
+    assert command.goto == "implementation-engineer"
+    assert payload["error"] == "missing_tasks"
+    assert payload["recommendedNextAction"] == "retry_dispatch_with_complete_flat_task"
+    assert payload["exampleTasks"][0]["taskBriefId"] == "child-check-1"
+    assert payload["exampleTasks"][0]["expectedOutputs"]
+
+
 def test_delegation_broker_null_task_is_structured_and_diagnostic_only():
     command = delegation_broker.func(
         mode="dispatch",
@@ -1429,6 +1459,50 @@ def test_supervisor_delegation_starts_new_top_level_tree_and_routes_risk_review(
     assert episode["parentEpisodeId"] == ""
 
 
+def test_supervisor_dispatch_persists_recursive_policy_on_durable_task_brief(monkeypatch):
+    monkeypatch.setattr(native_delegation, "persist_runtime_episode", lambda episode, **_kwargs: dict(episode))
+    monkeypatch.setattr(native_delegation, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    state = {
+        "session_id": "session-supervisor-recursive-policy",
+        "run_id": "run-supervisor-recursive-policy",
+        "current_route_context": {},
+    }
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        actor_role="supervisor",
+        agent_id="supervisor",
+        session_id=state["session_id"],
+        run_id=state["run_id"],
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "recursive-read",
+                    "goal": "Read README.md and delegate one independent read-only verification.",
+                    "expectedOutputs": ["direct result", "child result"],
+                    "acceptanceContract": "Both read-only results agree.",
+                    "preferredAgentId": "implementation-engineer",
+                    "toolPolicy": {
+                        "mode": "allowlist",
+                        "allowedTools": ["read_native_file", "delegation_broker"],
+                    },
+                }
+            ],
+            allow_child_delegation=True,
+            child_delegation_budget={"maxChildren": 1, "maxDepth": 2},
+            state=state,
+            tool_call_id="call-supervisor-recursive-policy",
+        )
+
+    task_brief = list(command.goto)[0].arg["parallel_branch"]["taskBrief"]
+    assert task_brief["allowChildDelegation"] is True
+    assert task_brief["childDelegationBudget"] == {"maxChildren": 1, "maxDepth": 2}
+    assert task_brief["delegationPolicy"]["allowChildDelegation"] is True
+    assert task_brief["delegationPolicy"]["childDelegationBudget"] == {"maxChildren": 1, "maxDepth": 2}
+
+
 def test_delegation_maps_verifier_worker_type_to_verification_agent():
     tasks = native_delegation._apply_delegation_target_defaults(
         [
@@ -1457,6 +1531,39 @@ def test_delegation_retires_project_planner_target_and_routes_verification_work(
 
     assert tasks[0]["preferredAgentId"] == "verification-engineer"
     assert tasks[0]["targetDefaultReason"] == "verification_task_signal"
+
+
+def test_delegation_routes_structured_workspace_task_to_engineering_family():
+    tasks = native_delegation._apply_delegation_target_defaults(
+        [
+            {
+                "taskBriefId": "read-workspace-file",
+                "goal": "Read README.md and return its first heading.",
+                "readSet": ["README.md"],
+                "toolPolicy": {"mode": "allowlist", "allowedTools": ["read_native_file"]},
+            }
+        ]
+    )
+
+    assert tasks[0]["familyHint"] == "engineering"
+    assert tasks[0]["targetDefaultReason"] == "structured_workspace_task"
+
+
+def test_delegation_keeps_explicit_specialist_family_for_structured_task():
+    tasks = native_delegation._apply_delegation_target_defaults(
+        [
+            {
+                "taskBriefId": "creative-source-review",
+                "goal": "Inspect the supplied visual source before rendering.",
+                "familyHint": "creative_media",
+                "readSet": ["assets/reference.png"],
+                "runtimeAccess": ["creative_media.jobs"],
+            }
+        ]
+    )
+
+    assert tasks[0]["familyHint"] == "creative_media"
+    assert tasks[0].get("targetDefaultReason") != "structured_workspace_task"
 
 
 def test_handoff_only_readonly_delegation_receives_no_workspace_tools():

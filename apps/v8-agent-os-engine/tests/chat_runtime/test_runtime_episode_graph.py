@@ -495,13 +495,125 @@ def test_parallel_join_routes_pending_child_delegations_from_top_level() -> None
         }
     )
 
-    assert command.goto == "supervisor"
+    assert command.goto == "runtime_episode"
     assert "child_req" in command.update["routed_child_delegation_request_ids"]
     route_context = command.update["current_route_context"]
     child_episode = route_context["capabilityEpisodes"][-1]
     assert child_episode["kind"] == "delegation"
     assert child_episode["state"] == "queued"
     assert child_episode["parentEpisodeId"] == "subagent::parent"
+    pending_message = command.update["messages"][0]
+    assert pending_message.additional_kwargs["v8_governance_type"] == "delegation_child_pending"
+    assert "不是可验收结果" in pending_message.content
+    assert "不得根据任务说明猜测" in pending_message.content
+
+
+def test_parallel_join_reuses_broker_persisted_child_episode() -> None:
+    join_node = build_parallel_delegate_join_node()
+    suffix = uuid4().hex[:10]
+    parent_id = f"subagent::parent::{suffix}"
+    child_id = f"subagent::child::{suffix}"
+    parent = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent"},
+        kind="delegation",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+        extra={"episodeId": parent_id, "needId": parent_id},
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    existing = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "Read README.md independently.",
+            "parentEpisodeId": parent_id,
+            "inputs": {"workerBriefs": [{"taskBriefId": "task-child", "goal": "Read README.md."}]},
+        },
+        kind="delegation",
+        state="waiting",
+        parent_episode_id=parent_id,
+        continuation_target="parallel_delegate_join",
+        extra={"episodeId": child_id, "needId": child_id},
+    )
+    db.upsert_runtime_episode_record(existing, enqueue=False)
+    child_state = {
+        "messages": [],
+        "parallel_branch": {
+            "invocationId": f"delegation_child_{suffix}",
+            "branchIndex": 0,
+            "agentId": "child-agent",
+            "agentName": "Child Agent",
+            "reason": "Read README.md independently.",
+            "taskBriefId": "task-child",
+            "delegationId": child_id,
+            "parentDelegationId": parent_id,
+            "delegationDepth": 2,
+            "lane": "subagent",
+        },
+    }
+
+    command = join_node(
+        {
+            "parallel_invocations": [{"invocationId": f"delegation_parent_{suffix}", "expected": 1}],
+            "parallel_results": [
+                {
+                    "invocationId": f"delegation_parent_{suffix}",
+                    "status": "waiting_child_delegation",
+                    "childDelegationRequestIds": [f"child_req_{suffix}"],
+                }
+            ],
+            "pending_child_delegations": [
+                {
+                    "requestId": f"child_req_{suffix}",
+                    "sourceInvocationId": f"delegation_parent_{suffix}",
+                    "sourceDelegationId": parent_id,
+                    "childDelegationId": child_id,
+                    "send": {"node": "parallel_delegate_task", "arg": child_state},
+                }
+            ],
+        }
+    )
+
+    assert command.goto == "runtime_episode"
+    child_episode_ids = command.update["current_route_context"]["lastChildDelegationRouted"]["childEpisodeIds"]
+    assert child_episode_ids == [child_id]
+    children = db.list_runtime_episodes(parent_episode_id=parent_id, limit=20)
+    assert [item["episodeId"] for item in children if item["episodeId"] == child_id] == [child_id]
+    assert not any(item["source"] == "subagent" and item["episodeId"] != child_id for item in children)
+    stored_parent = db.get_runtime_episode(parent_id)
+    assert stored_parent is not None
+    assert stored_parent["state"] == "waiting_child"
+    parent_handoffs = db.list_runtime_episode_handoffs(parent_id)
+    assert parent_handoffs[-1]["payload"]["status"] == "waiting"
+
+    second_command = join_node(
+        {
+            "parallel_invocations": [{"invocationId": f"delegation_parent_{suffix}", "expected": 1}],
+            "parallel_results": [
+                {
+                    "invocationId": f"delegation_parent_{suffix}",
+                    "delegationId": parent_id,
+                    "status": "waiting_child_delegation",
+                    "childDelegationRequestIds": [f"child_req_{suffix}"],
+                }
+            ],
+            "pending_child_delegations": [
+                {
+                    "requestId": f"child_req_{suffix}",
+                    "sourceInvocationId": f"delegation_parent_{suffix}",
+                    "sourceDelegationId": parent_id,
+                    "childDelegationId": child_id,
+                    "send": {"node": "parallel_delegate_task", "arg": child_state},
+                }
+            ],
+            "routed_child_delegation_request_ids": [f"child_req_{suffix}"],
+            "current_route_context": command.update["current_route_context"],
+        }
+    )
+
+    assert second_command.goto == "supervisor"
+    assert second_command.update["current_route_context"]["lastDelegationHandoff"]["state"] == "waiting_child"
+    assert all(row["payload"]["status"] != "failed" for row in db.list_runtime_episode_handoffs(parent_id))
 
 
 def test_parallel_join_creates_and_persists_handoff_for_completed_subagent(monkeypatch) -> None:

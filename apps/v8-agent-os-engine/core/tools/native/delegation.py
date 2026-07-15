@@ -124,7 +124,7 @@ def _delegation_parent_episode_id(
 
 
 def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Route explicit verification-shaped work without overriding model choices."""
+    """Apply structured routing hints without overriding explicit model choices."""
 
     normalized: list[dict[str, Any]] = []
     for task in tasks:
@@ -141,6 +141,41 @@ def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[
             item["targetDefaultReason"] = "preferred_worker_type_alias"
             preferred_agent_id = aliased_agent_id
         family_hint = str(item.get("familyHint") or "").strip().lower()
+        runtime_access = {
+            str(value or "").strip().lower()
+            for value in list(item.get("runtimeAccess") or item.get("runtime_access") or [])
+            if str(value or "").strip()
+        }
+        specialist_runtime_requested = any(
+            value.startswith(("creative_media", "computer_use", "rpa", "research"))
+            for value in runtime_access
+        )
+        tool_policy = item.get("toolPolicy") if isinstance(item.get("toolPolicy"), dict) else {}
+        allowed_tools = {
+            str(value or "").strip()
+            for value in list(tool_policy.get("allowedTools") or item.get("allowedTools") or [])
+            if str(value or "").strip()
+        }
+        structured_workspace_task = bool(
+            item.get("engineeringTaskCapsule")
+            or item.get("engineering_task_capsule")
+            or item.get("readSet")
+            or item.get("read_set")
+            or item.get("writeSet")
+            or item.get("write_set")
+            or item.get("criticalFiles")
+            or item.get("critical_files")
+            or allowed_tools.intersection({"read_native_file", "write_native_file", "grep_search"})
+        )
+        if (
+            not preferred_agent_id
+            and not family_hint
+            and structured_workspace_task
+            and not specialist_runtime_requested
+        ):
+            item["familyHint"] = "engineering"
+            item["targetDefaultReason"] = "structured_workspace_task"
+            family_hint = "engineering"
         write_execution = bool(
             engineering_capsule_mode(item) == "write"
             or item.get("writeRequired")
@@ -988,12 +1023,12 @@ def delegation_broker(
     mode: str = "observe",
     family: str = "",
     tasks: Annotated[
-        list[DelegationTaskInput] | DelegationTaskInput | str | None,
-        "Flat task briefs. Use tasks=[{taskBriefId, goal, context, expectedOutput, acceptanceContract, constraints, toolPolicy}]. Never wrap an item inside taskBrief.",
+        list[dict[str, Any]] | dict[str, Any] | str | None,
+        "Flat task briefs. Minimal dispatch form: tasks=[{taskBriefId, goal, expectedOutputs, acceptanceContract, toolPolicy}]. Never pass tasks={} and never wrap an item inside taskBrief.",
     ] = None,
     target_count: int | None = None,
     worker_briefs: Annotated[
-        list[DelegationTaskInput] | DelegationTaskInput | str | None,
+        list[dict[str, Any]] | dict[str, Any] | str | None,
         "Alias for a flat task-brief list; each item uses the same fields as tasks.",
     ] = None,
     allow_child_delegation: bool = False,
@@ -1150,6 +1185,11 @@ def delegation_broker(
         normalized_tasks = _apply_delegation_tool_defaults(normalized_tasks)
         if allow_child_delegation or child_delegation_budget or write_set_partitions_list:
             for task in normalized_tasks:
+                task["allowChildDelegation"] = bool(allow_child_delegation)
+                if child_delegation_budget:
+                    task["childDelegationBudget"] = dict(child_delegation_budget)
+                if write_set_partitions_list:
+                    task["writeSetPartitions"] = list(write_set_partitions_list)
                 task.setdefault("delegationPolicy", {})
                 task["delegationPolicy"].update(
                     {
@@ -1166,16 +1206,24 @@ def delegation_broker(
                 )
             runtime_context = get_runtime_context()
             run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "unknown").strip() or "unknown"
+            retry_node = caller.agent_id if caller.is_direct_subagent and caller.agent_id else "supervisor"
             return Command(
-                goto="supervisor",
+                goto=retry_node,
                 update={
                     "messages": [
                         ToolMessage(
                             content=_delegation_broker_payload(
                                 mode=normalized_mode,
                                 ok=False,
-                                summary="delegation_broker(mode=dispatch) 需要提供 tasks。",
-                                recommended_next_action="none",
+                                summary=(
+                                    "delegation_broker(mode=dispatch) 需要至少一个完整的扁平 tasks 项。"
+                                    "请按 exampleTasks 修正后重试一次。"
+                                ),
+                                recommended_next_action=(
+                                    "retry_dispatch_with_complete_flat_task"
+                                    if caller.is_direct_subagent
+                                    else "repair_task_contract"
+                                ),
                                 error="missing_tasks",
                                 dispatchStatus="missing_tasks",
                                 missingTasks=True,
@@ -1184,10 +1232,14 @@ def delegation_broker(
                                 dispatchGroup=f"delegation_missing_tasks:{run_id}",
                                 exampleTasks=[
                                     {
-                                        "title": "Implement one isolated work package",
-                                        "goal": "Describe the exact subtask and expected artifact.",
-                                        "runtimeAccess": ["memory.read"],
-                                        "acceptanceContract": "Return result summary, touched files, proof, and risks.",
+                                        "taskBriefId": "child-check-1",
+                                        "goal": "Independently inspect the assigned evidence and return the requested fact.",
+                                        "expectedOutputs": ["result", "evidence", "limitations"],
+                                        "acceptanceContract": "Return a compact result with evidence and limitations.",
+                                        "toolPolicy": {
+                                            "mode": "allowlist",
+                                            "allowedTools": ["read_native_file"],
+                                        },
                                     }
                                 ],
                             ),
@@ -1658,7 +1710,17 @@ def delegation_broker(
                         requestedTaskCount=requested_count,
                         registryVersion=registry_version,
                         registryHash=registry_hash,
-                        recommended_next_action="observe" if any(item.get("lane") == "external_worker" for item in items) else "review",
+                        recommended_next_action=(
+                            "observe"
+                            if any(item.get("lane") == "external_worker" for item in items)
+                            else "yield_for_graph_handoff"
+                        ),
+                        localHandoffPending=bool(sends),
+                        localHandoffInstruction=(
+                            "本地子 Agent 结果会由执行图自动回流。不要调用 wait 或 observe 轮询；结束当前执行片段并等待结构化回流。"
+                            if sends
+                            else None
+                        ),
                     ),
                     tool_call_id=tool_call_id,
                 )

@@ -19,6 +19,7 @@ from graph.supervisor_turn import (
     _runtime_handoff_final_response,
     _runtime_handoff_final_text,
     _runtime_handoff_final_message,
+    _retry_delegation_acceptance_once,
     _runtime_recoverable_failure_final_response,
     _runtime_recoverable_failure_final_text,
     _runtime_recoverable_failure_message,
@@ -37,7 +38,200 @@ from graph.supervisor_turn import (
     execute_supervisor_turn,
 )
 from runtimes.chat.supervisor_completion_gate import ACTIVE_EPISODE_STATES, evaluate_supervisor_completion
-from runtimes.chat.runtime import ChatRuntime
+from runtimes.chat.runtime import ChatRuntime, _delegation_acceptance_from_final_text
+
+
+def test_subagent_waiting_child_projection_is_progress_not_failure():
+    emitted = []
+    chat_run = SimpleNamespace(
+        active_run_id="run-waiting-child",
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    execution_bundle = SimpleNamespace(runner_bundle=SimpleNamespace())
+    state = {
+        "parallel_results": [
+            {
+                "invocationId": "delegation-parent",
+                "delegationId": "subagent::parent",
+                "agentId": "implementation-engineer",
+                "taskBriefId": "TASK-PARENT",
+                "status": "waiting_child_delegation",
+                "childDelegationCount": 1,
+            }
+        ]
+    }
+
+    async def _snapshot(_bundle):
+        return state
+
+    with (
+        patch("runtimes.chat.runtime.supervisor_runner.get_state_snapshot", side_effect=_snapshot),
+        patch("runtimes.chat.runtime.storage.get_agent", return_value={}),
+    ):
+        asyncio.run(ChatRuntime().emit_subagent_swarm_projection(chat_run, execution_bundle))
+
+    assert emitted[0][0] == "subagent.task.updated"
+    assert emitted[0][1]["status"] == "waiting_child_delegation"
+
+
+def test_subagent_terminal_projection_records_supervisor_acceptance_and_nested_return():
+    emitted = []
+    chat_run = SimpleNamespace(
+        active_run_id="run-accepted-child",
+        session_id="session-accepted-child",
+        emit_runtime_event=lambda topic, payload, **kwargs: emitted.append((topic, payload, kwargs)),
+    )
+    execution_bundle = SimpleNamespace(runner_bundle=SimpleNamespace())
+    parent_delegation_id = "subagent::parent"
+    child_delegation_id = "subagent::child"
+    state = {
+        "parallel_results": [
+            {
+                "invocationId": "delegation-parent",
+                "delegationId": parent_delegation_id,
+                "agentId": "implementation-engineer",
+                "taskBriefId": "TASK-PARENT",
+                "status": "waiting_child_delegation",
+                "delegationDepth": 1,
+            }
+        ]
+    }
+    child_result = {
+        "invocationId": "delegation-child",
+        "delegationId": child_delegation_id,
+        "parentDelegationId": parent_delegation_id,
+        "agentId": "verification-engineer",
+        "taskBriefId": "TASK-CHILD",
+        "status": "ok",
+        "delegationDepth": 2,
+        "supervisorAcceptance": {"status": "pending"},
+    }
+
+    async def _snapshot(_bundle):
+        return state
+
+    with (
+        patch("runtimes.chat.runtime.supervisor_runner.get_state_snapshot", side_effect=_snapshot),
+        patch("runtimes.chat.runtime.storage.get_agent", return_value={}),
+        patch(
+            "runtimes.chat.runtime.db.get_runtime_episode",
+            return_value={"episodeId": parent_delegation_id, "state": "completed", "metadata": {}},
+        ),
+        patch(
+            "runtimes.chat.runtime.db.list_runtime_episode_handoffs",
+            return_value=[{"payload": {"childHandoffs": [{"results": [child_result]}]}}],
+        ),
+        patch("runtimes.chat.runtime.db.add_runtime_episode_handoff") as add_handoff,
+        patch("runtimes.chat.runtime.db.complete_runtime_episode") as complete_episode,
+    ):
+        asyncio.run(
+            ChatRuntime().emit_subagent_swarm_projection(
+                chat_run,
+                execution_bundle,
+                final_text="验收决定：ACCEPT\n理由：父子结果一致。",
+            )
+        )
+
+    parent_event = next(payload for topic, payload, _ in emitted if payload.get("delegationId") == parent_delegation_id)
+    child_event = next(payload for topic, payload, _ in emitted if payload.get("delegationId") == child_delegation_id)
+    assert parent_event["status"] == "completed"
+    assert parent_event["supervisorAcceptance"]["status"] == "accepted"
+    assert child_event["status"] == "ok"
+    assert child_event["parentDelegationId"] == parent_delegation_id
+    acceptance_handoff = add_handoff.call_args.kwargs["handoff"]
+    assert acceptance_handoff["kind"] == "subagent_acceptance"
+    assert acceptance_handoff["status"] == "accepted"
+    complete_episode.assert_called_once()
+
+
+def test_delegation_acceptance_parser_requires_one_explicit_decision():
+    accepted = _delegation_acceptance_from_final_text("验收决定：ACCEPT\n理由：证据完整。")
+    assert accepted == {
+        "status": "accepted",
+        "decision": "ACCEPT",
+        "summary": "理由：证据完整。",
+    }
+    markdown_accepted = _delegation_acceptance_from_final_text("> 验收决定：**ACCEPT**\n> 依据：证据完整。")
+    assert markdown_accepted == {
+        "status": "accepted",
+        "decision": "ACCEPT",
+        "summary": "依据：证据完整。",
+    }
+    assert _delegation_acceptance_from_final_text("结果已完成。") is None
+    assert _delegation_acceptance_from_final_text("验收决定：ACCEPT\n验收决定：RETRY") is None
+
+
+def test_runtime_handoff_retries_missing_delegation_acceptance_once():
+    calls = []
+    state = {
+        "runtime_dispatch_status": {
+            "mode": "runtime_episode",
+            "nextAction": "resume_supervisor",
+            "state": "handoff_ready",
+            "handoffCount": 1,
+        },
+        "current_route_context": {
+            "handoffRefs": [
+                {
+                    "kind": "delegation",
+                    "status": "ready",
+                    "results": [{"supervisorAcceptance": {"status": "pending"}}],
+                }
+            ]
+        },
+    }
+
+    def _robust_invoke(_llm, messages, tools, **_kwargs):
+        calls.append({"messages": messages, "tools": tools})
+        return AIMessage(content="验收决定：ACCEPT\n依据：父子标题结果一致。")
+
+    result = _retry_delegation_acceptance_once(
+        AIMessage(content=""),
+        state=state,
+        prepared_messages=[HumanMessage(content="original")],
+        invoke_llm=object(),
+        robust_invoke=_robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert result.content.startswith("验收决定：ACCEPT")
+    assert len(calls) == 1
+    assert calls[0]["tools"] == []
+    assert "Delegation Acceptance Discipline Correction" in calls[0]["messages"][-1].content
+
+
+def test_completion_gate_blocks_terminal_delegation_without_parent_acceptance():
+    episode = {
+        "episodeId": "subagent::parent",
+        "kind": "delegation",
+        "state": "completed",
+        "metadata": {},
+    }
+    handoffs = {
+        "subagent::parent": [
+            {
+                "status": "ready",
+                "payload": {"results": [{"supervisorAcceptance": {"status": "pending"}}]},
+            }
+        ]
+    }
+
+    missing = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode=handoffs,
+        final_text="子 Agent 已完成。",
+    )
+    accepted = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode=handoffs,
+        final_text="> 验收决定：**ACCEPT**\n> 依据：证据完整。",
+    )
+
+    assert missing.action == "fail"
+    assert missing.reason == "delegation_supervisor_acceptance_missing"
+    assert accepted.action == "complete"
 
 
 def test_runtime_episode_handoff_ready_requires_resume_terminal_state():
@@ -329,6 +523,9 @@ def test_runtime_handoff_final_message_leaves_delivery_decision_to_supervisor():
     assert "detail, verification, repair, or runtime tools" in content
     assert "do not re-read the same artifact" in content
     assert "evidence=complete" in content
+    assert "验收决定：ACCEPT" in content
+    assert "验收决定：RETRY" in content
+    assert "验收决定：IGNORE" in content
     assert "Do not call tools" not in content
 
 
@@ -1452,3 +1649,36 @@ def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch, t
     assert episodes and episodes[-1]["episodeId"] == "episode_runtime"
     assert episodes[-1]["state"] == terminal_state
     assert "planner_plan" not in captured
+
+
+def test_runtime_episode_handoff_resume_restarts_wait_graph_instead_of_resuming_completed_checkpoint(monkeypatch):
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(
+        is_resume_request=True,
+        request=SimpleNamespace(
+            resume_value={
+                "runtimeEpisodeHandoff": {
+                    "episodeId": "episode-runtime-ready",
+                    "episodeKind": "delegation",
+                    "episodeState": "completed",
+                }
+            }
+        ),
+    )
+    calls = []
+
+    async def _create_execution_bundle(*, chat_run):
+        calls.append("start")
+        return "fresh-runtime-handoff-graph"
+
+    async def _create_resume_bundle(*, chat_run):
+        calls.append("resume")
+        return "completed-checkpoint-resume"
+
+    monkeypatch.setattr(runtime, "create_execution_bundle", _create_execution_bundle)
+    monkeypatch.setattr(runtime, "create_resume_bundle", _create_resume_bundle)
+
+    result = asyncio.run(runtime.resolve_execution_bundle(chat_run=chat_run))
+
+    assert result == "fresh-runtime-handoff-graph"
+    assert calls == ["start"]

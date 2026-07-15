@@ -462,6 +462,41 @@ def test_non_spec_required_write_without_file_cannot_complete(tmp_path) -> None:
     assert decision.reason == "required_write_files_missing"
 
 
+def test_non_spec_readonly_engineering_family_delegation_does_not_require_written_file(tmp_path) -> None:
+    episode = {
+        "episodeId": "episode-readonly-delegation",
+        "kind": "delegation",
+        "state": "completed",
+        "inputs": {
+            "workspacePath": str(tmp_path),
+            "workerBriefs": [
+                {
+                    "taskBriefId": "TASK-READ",
+                    "goal": "Read README.md and return its first heading.",
+                    "familyHint": "engineering",
+                    "readSet": ["README.md"],
+                    "toolPolicy": {"mode": "allowlist", "allowedTools": ["read_native_file"]},
+                }
+            ],
+        },
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={
+            "episode-readonly-delegation": [
+                {
+                    "status": "ready",
+                    "compactSummary": "README.md first heading verified.",
+                }
+            ]
+        },
+        final_text="验收决定：ACCEPT\n依据：README.md 首个标题已经由只读 worker 验证。",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
 def test_non_spec_required_write_rejects_unresolved_workspace_artifact_ref(tmp_path) -> None:
     decision = evaluate_supervisor_completion(
         episodes=[_required_write_episode(str(tmp_path))],

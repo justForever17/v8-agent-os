@@ -2171,6 +2171,258 @@ def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkey
     assert payload["childEpisodeIds"] == [child_episodes[0]["episodeId"]]
 
 
+def test_durable_child_delegation_dispatch_preserves_parent_actor_and_selected_target(monkeypatch):
+    from core.native_tools import delegation_broker
+    from erc.runtime_context import get_runtime_context
+    from langgraph.types import Command
+
+    parent = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "parent direct subagent",
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "parent-brief",
+                        "goal": "Inspect the workspace and delegate one independent check.",
+                    }
+                ]
+            },
+        },
+        kind="delegation",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+        extra={"targetId": "implementation-engineer"},
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "subagent",
+            "reason": "grandchild workspace verification",
+            "parentEpisodeId": parent["episodeId"],
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "child-brief",
+                        "goal": "Read README.md and return the first heading.",
+                        "agentId": "verification-engineer",
+                        "readSet": ["README.md"],
+                        "toolPolicy": {"mode": "allowlist", "allowedTools": ["read_native_file"]},
+                    }
+                ]
+            },
+        },
+        kind="delegation",
+        state="queued",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    captured: dict = {}
+
+    def _fake_dispatch(**kwargs):
+        captured["context"] = get_runtime_context()
+        captured["tasks"] = kwargs["tasks"]
+        captured["route"] = kwargs["state"]["current_route_context"]
+        return Command(
+            update={
+                "parallel_results": [
+                    {
+                        "status": "ready",
+                        "delegationId": "delegation-grandchild-ready",
+                        "targetLabel": "Verification Engineer",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(delegation_broker, "func", _fake_dispatch)
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(child))
+
+    assert handoff["status"] == "ready"
+    assert captured["context"]["actor_role"] == "direct_subagent"
+    assert captured["context"]["agent_id"] == "implementation-engineer"
+    assert captured["context"]["delegation_id"] == parent["episodeId"]
+    assert captured["context"]["delegation_depth"] == 1
+    assert captured["tasks"][0]["preferredAgentId"] == "verification-engineer"
+    assert captured["tasks"][0]["targetDefaultReason"] == "durable_child_target"
+    assert captured["route"]["taskBrief"]["taskBriefId"] == "parent-brief"
+
+
+def test_runtime_runner_reuses_broker_persisted_child_episode():
+    suffix = __import__("uuid").uuid4().hex[:10]
+    parent_id = f"subagent::runner-parent::{suffix}"
+    child_id = f"subagent::runner-child::{suffix}"
+    parent = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent"},
+        kind="delegation",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+        extra={"episodeId": parent_id, "needId": parent_id},
+    )
+    child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "child",
+            "parentEpisodeId": parent_id,
+            "inputs": {"workerBriefs": [{"taskBriefId": "child", "goal": "Read README.md."}]},
+        },
+        kind="delegation",
+        state="waiting",
+        parent_episode_id=parent_id,
+        continuation_target="parallel_delegate_join",
+        extra={"episodeId": child_id, "needId": child_id},
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    db.upsert_runtime_episode_record(child, enqueue=False)
+
+    child_ids = RuntimeEpisodeRunner()._enqueue_child_delegation_requests(
+        [
+            {
+                "requestId": f"request-{suffix}",
+                "sourceDelegationId": parent_id,
+                "sourceInvocationId": f"invoke-{suffix}",
+                "sourceAgentId": "implementation-engineer",
+                "childInvocationId": f"child-invoke-{suffix}",
+                "childDelegationId": child_id,
+                "childTaskBriefId": "child",
+                "childTaskGoal": "Read README.md.",
+                "childAgentId": "verification-engineer",
+                "childDepth": 2,
+                "send": {
+                    "node": "parallel_delegate_task",
+                    "arg": {
+                        "parallel_branch": {
+                            "agentId": "verification-engineer",
+                            "delegationId": child_id,
+                            "delegationDepth": 2,
+                        }
+                    },
+                },
+            }
+        ],
+        episode=parent,
+    )
+
+    assert child_ids == [child_id]
+    children = db.list_runtime_episodes(parent_episode_id=parent_id, limit=20)
+    assert [item["episodeId"] for item in children if item["episodeId"] == child_id] == [child_id]
+    assert not any(item["source"] == "subagent" and item["episodeId"] != child_id for item in children)
+
+
+def test_broker_selected_local_episode_executes_without_redispatch(monkeypatch):
+    from core.native_tools import delegation_broker
+    import graph.parallel_support as parallel_support
+
+    parent_id = "subagent::delegation_parent_direct::0::parent::implementation-engineer"
+    episode = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "Read README.md and return its first heading.",
+            "parentEpisodeId": parent_id,
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "child-read",
+                        "goal": "Read README.md and return its first heading.",
+                        "toolPolicy": {"mode": "allowlist", "allowedTools": ["read_native_file"]},
+                        "allowChildDelegation": False,
+                        "acceptanceContract": "Return the first Markdown H1.",
+                    }
+                ],
+                "workspacePath": r"E:\Projects\test3",
+            },
+        },
+        kind="delegation",
+        state="queued",
+        parent_episode_id=parent_id,
+        continuation_target="parallel_delegate_join",
+        extra={
+            "episodeId": "subagent::delegation_child_direct::0::child-read::verification-engineer",
+            "needId": "subagent::delegation_child_direct::0::child-read::verification-engineer",
+            "targetId": "verification-engineer",
+        },
+    )
+    calls: list[dict] = []
+
+    def _must_not_redispatch(**_kwargs):
+        raise AssertionError("a broker-selected local episode must not call delegation_broker again")
+
+    async def _fake_run_parallel_agent_branch(state, agent_data, progress_callback=None):
+        calls.append(dict(state.get("parallel_branch") or {}))
+        return [], [], {
+            "taskBriefId": "child-read",
+            "delegationId": episode["episodeId"],
+            "agentId": "verification-engineer",
+            "agentName": "Verification Engineer",
+            "status": "ok",
+            "summary": "# Spec Mode Live Counter",
+            "toolsUsed": ["read_native_file"],
+        }, []
+
+    monkeypatch.setattr(delegation_broker, "func", _must_not_redispatch)
+    monkeypatch.setattr(
+        RuntimeEpisodeRunner,
+        "_build_agent_nodes_map",
+        lambda self: {"verification-engineer": {"node_func": object()}},
+    )
+    monkeypatch.setattr(parallel_support, "_run_parallel_agent_branch", _fake_run_parallel_agent_branch)
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(episode))
+
+    assert handoff["status"] == "ready"
+    assert len(calls) == 1
+    assert calls[0]["delegationId"] == episode["episodeId"]
+    assert calls[0]["parentDelegationId"] == parent_id
+    assert calls[0]["delegationDepth"] == 2
+    assert calls[0]["allowChildDelegation"] is False
+
+
+def test_broker_selected_direct_child_rehydrates_recursive_policy_from_durable_brief():
+    episode = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "Read README.md and delegate one independent verification.",
+        },
+        kind="delegation",
+        state="queued",
+        continuation_target="parallel_delegate_join",
+        extra={
+            "episodeId": "subagent::delegation_parent_policy::0::parent::implementation-engineer",
+            "needId": "subagent::delegation_parent_policy::0::parent::implementation-engineer",
+            "targetId": "implementation-engineer",
+        },
+    )
+    command = RuntimeEpisodeRunner._broker_selected_local_episode_command(
+        episode,
+        worker_briefs=[
+            {
+                "taskBriefId": "parent-policy",
+                "goal": "Read README.md and delegate one independent verification.",
+                "delegationPolicy": {
+                    "allowChildDelegation": True,
+                    "childDelegationBudget": {"maxChildren": 1, "maxDepth": 2},
+                },
+            }
+        ],
+        session_id="session-parent-policy",
+        run_id="run-parent-policy",
+        workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+    )
+
+    assert command is not None
+    send = list(command.goto)[0]
+    branch = send.arg["parallel_branch"]
+    assert branch["delegationDepth"] == 1
+    assert branch["allowChildDelegation"] is True
+    assert branch["childDelegationBudget"] == {"maxChildren": 1, "maxDepth": 2}
+
+
 def test_failed_grandchild_delegation_unblocks_parent_episode_chain():
     parent = build_runtime_episode(
         need={"kind": "engineering", "source": "test", "reason": "parent waiting for delegation"},
@@ -2674,6 +2926,54 @@ def test_parallel_branch_extracts_child_delegation_from_command_update_list():
     assert child_requests[0]["requestId"] == "child-request-from-update"
     assert child_requests[0]["childAgentId"] == "verification_worker"
     assert child_requests[0]["send"]["arg"]["parallel_branch"]["invocationId"] == "invoke-child-1"
+
+
+def test_parallel_branch_extracts_child_delegation_from_single_command_goto_send():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langgraph.types import Command, Send
+
+    parent_state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "review_worker",
+            "agentName": "Review Worker",
+            "delegationId": "delegation-parent-command",
+            "invocationId": "invoke-parent-command",
+            "taskBriefId": "brief-parent-command",
+            "reason": "Read the file, then delegate an independent verification.",
+            "allowChildDelegation": True,
+            "childDelegationBudget": {"maxChildren": 1, "maxDepth": 2},
+        },
+    }
+    child_arg = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "verification_worker",
+            "agentName": "Verification Worker",
+            "delegationId": "delegation-child-command",
+            "invocationId": "invoke-child-command",
+            "taskBriefId": "brief-child-command",
+            "reason": "Read README.md independently.",
+            "delegationDepth": 2,
+        },
+    }
+
+    def _node_func(_state):
+        return Command(
+            goto=[Send("parallel_delegate_task", child_arg)],
+            update={},
+        )
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(parent_state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert summary["status"] == "waiting_child_delegation"
+    assert summary["childDelegationCount"] == 1
+    assert child_requests[0]["childAgentId"] == "verification_worker"
+    assert child_requests[0]["childDelegationId"] == "delegation-child-command"
 
 
 def test_parallel_branch_blocks_child_delegation_without_explicit_budget():

@@ -322,14 +322,16 @@ class ProjectRegistryService:
             workspace_path=workspace_path,
         )
         if binding:
-            return self.get_project(binding.project_id)
+            bound_project = self.get_project(binding.project_id)
+            if bound_project is not None:
+                return bound_project
 
-        normalized_path = (workspace_path or "").replace("\\", "/").rstrip("/")
+        normalized_path = self._normalize_path_key(workspace_path or "")
         for project in self.list_projects():
             if workspace_id and project.workspace_id == workspace_id:
                 return project
             if normalized_path and project.workspace_path:
-                project_path = project.workspace_path.replace("\\", "/").rstrip("/")
+                project_path = self._normalize_path_key(project.workspace_path)
                 if project_path == normalized_path:
                     return project
         return None

@@ -46,7 +46,7 @@ from core.storage import storage  # noqa: E402
 from core.system_tools.native import NATIVE_TOOLS  # noqa: E402
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot  # noqa: E402
 from erc.capability_registry import capability_registry  # noqa: E402
-from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context, _select_contextual_subagent_native_tools  # noqa: E402
+from graph.agent_factories import _build_agent_system_content, _format_delegated_task_contract, _select_contextual_subagent_native_tools  # noqa: E402
 from graph.supervisor_context import build_supervisor_system_content, workspace_resolution_service  # noqa: E402
 from graph.supervisor_routing import build_supervisor_toolset  # noqa: E402
 from runtimes.engineering import engineering_lane_service  # noqa: E402
@@ -392,7 +392,6 @@ def _module_stats(bundle: dict[str, Any], extension_prompt: str) -> list[dict[st
         ("available_tools_context", bundle.get("available_tools_context")),
         ("network_supervisor_context", bundle.get("network_supervisor_context")),
         ("engineering_context", bundle.get("engineering_context")),
-        ("planner_context", bundle.get("planner_context")),
         ("artifact_awareness_context", bundle.get("artifact_awareness_context")),
         ("todos_context", bundle.get("todos_context")),
         ("memory_context", bundle.get("memory_context")),
@@ -728,13 +727,7 @@ def _build_scene(
         "project_id": scene.get("projectId") or "",
         "current_route_context": route_context,
         "engineering_context": engineering_result,
-        "planner_plan": {
-            "planId": f"runtime-observation-plan-{scene['id']}",
-            "executionStrategy": "mixed" if scene.get("engineeringMode") != "off" else "direct",
-            "planSummary": "Observation-only synthetic plan used to export current prompt structure.",
-            "taskBriefs": [task_brief],
-            "globalAcceptanceContract": "No model calls, no tool execution, no durable memory writes.",
-        },
+        "runtime_task_contracts": [task_brief],
     }
     token = extensions_runtime_service.bind_execution_context(
         session_id=state["session_id"],
@@ -820,7 +813,7 @@ def _build_scene(
             f"Local Workspace Absolute Path: {scene.get('workspacePath') or _main_workspace()}\n"
             "</environment>\n"
         )
-        delegated_context = _format_delegated_plan_context(task_brief, {"source": "runtime_deep_observation_matrix"})
+        delegated_context = _format_delegated_task_contract(task_brief)
         sub_content = _build_agent_system_content(
             agent_name=str(selected_agent.get("name") or selected_agent.get("id") or "subagent"),
             agent_system_prompt=str(selected_agent.get("system_prompt") or ""),

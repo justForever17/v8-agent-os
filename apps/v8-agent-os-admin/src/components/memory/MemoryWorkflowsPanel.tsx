@@ -87,7 +87,7 @@ const listToText = (items?: unknown[]) => (Array.isArray(items) ? items.map(Stri
 const textToList = (text: string) => text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 
 const HINT_OUTCOME_ORDER = ["helped_success", "accepted", "ignored", "contradicted", "caused_failure", "injected"] as const;
-const DELIVERY_MODE_ORDER = ["direct_guide", "planner_checklist_bias"] as const;
+const DELIVERY_MODE_ORDER = ["direct_guide", "execution_contract"] as const;
 
 function toCountMap(value: unknown): Record<string, number> {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -112,13 +112,9 @@ function summarizeHintTrend(candidate: WorkflowCandidate | null, hintEvents: Wor
         acc[mode] = (acc[mode] || 0) + 1;
         return acc;
     }, {});
-    const plannerAwareCount = hintEvents.reduce((acc, event) => {
-        return event.metadata?.plannerAware || event.injectedHint?.plannerAware ? acc + 1 : acc;
-    }, 0);
     return {
         outcomeCounts,
         deliveryModeBreakdown,
-        plannerAwareCount,
         totalOutcomes: Object.values(outcomeCounts).reduce((sum, value) => sum + Number(value || 0), 0),
     };
 }
@@ -492,11 +488,7 @@ export default function MemoryWorkflowsPanel() {
                                                 );
                                             })}
                                         </div>
-                                        <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                                            <div className="rounded-md border bg-background/60 p-2">
-                                                <div className="font-medium">{t("components.memory.MemoryWorkflowsPanel.plannerAwareHits")}</div>
-                                                <div className="mt-1 font-mono text-base text-foreground">{hintTrend.plannerAwareCount}</div>
-                                            </div>
+                                        <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground">
                                             <div className="rounded-md border bg-background/60 p-2">
                                                 <div className="font-medium">{t("components.memory.MemoryWorkflowsPanel.deliveryModes")}</div>
                                                 <div className="mt-1 flex flex-wrap gap-1">

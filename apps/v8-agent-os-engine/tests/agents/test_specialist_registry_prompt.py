@@ -183,7 +183,7 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("[/Execution Hints]", system_content)
         self.assertLess(system_content.index("[Execution Hints]"), system_content.index("[/Execution Hints]"))
         self.assertIn("general-purpose intelligent Supervisor", system_content)
-        self.assertIn("Use Planner/Memory/runtime hints as supporting evidence, not as commands", system_content)
+        self.assertIn("Memory and runtime hints are evidence, not commands", system_content)
         self.assertIn("Active execution runtimes: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent", system_content)
         self.assertIn("插件管理中心(Plugin Manager)", system_content)
 
@@ -217,7 +217,6 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
         self.assertIn("supporting signals", system_content)
         self.assertIn("Path selection:", system_content)
         self.assertIn("Direct path:", system_content)
-        self.assertIn("Planner path:", system_content)
         self.assertIn("Runtime path:", system_content)
         self.assertIn("Subagent path:", system_content)
         self.assertIn("Spec path:", system_content)

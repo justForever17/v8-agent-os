@@ -781,7 +781,7 @@ def _event_is_supervisor_owned_tool_start(event: dict[str, Any]) -> bool:
     owner_runtime = str(payload_dict.get("ownerRuntimeId") or payload_dict.get("runtimeId") or "").strip().lower()
     owner_kind = str(payload_dict.get("ownerAgentKind") or "").strip().lower()
     owner_agent = str(payload_dict.get("ownerAgentId") or event.get("agent_id") or "").strip().lower()
-    if owner_runtime and owner_runtime not in {"chat", "supervisor", "planner_lane"}:
+    if owner_runtime and owner_runtime not in {"chat", "supervisor"}:
         return False
     if owner_kind in {"runtime", "subagent", "shard"}:
         return False

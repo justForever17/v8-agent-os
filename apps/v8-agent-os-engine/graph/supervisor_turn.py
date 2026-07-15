@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 import time
@@ -276,28 +277,6 @@ def _memory_broker_first_guidance(user_query: str) -> SystemMessage:
     )
 
 
-def _fast_first_turn_guidance() -> SystemMessage:
-    return SystemMessage(
-        content=(
-            "[Fast First Supervisor Turn]\n"
-            "Planner is deferred for this first visible turn. Start real work quickly: either make one concise tool call "
-            "(for example write_todos/runtime_broker/memory_broker when appropriate) or reply in 1-2 short sentences. "
-            "Do not write a long planning narrative in this first turn; continue detailed orchestration in later turns."
-        )
-    )
-
-
-def _fast_first_turn_caller_kwargs(caller_kwargs: dict) -> dict:
-    fast_kwargs = dict(caller_kwargs or {})
-    try:
-        configured_max_tokens = int(fast_kwargs.get("max_tokens") or 0)
-    except Exception:
-        configured_max_tokens = 0
-    if not configured_max_tokens or configured_max_tokens > _FAST_FIRST_TURN_MAX_TOKENS:
-        fast_kwargs["max_tokens"] = _FAST_FIRST_TURN_MAX_TOKENS
-    return fast_kwargs
-
-
 def _is_network_supervisor_compat_transport(state) -> bool:
     route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
     transport = str(
@@ -359,7 +338,6 @@ _COMPAT_ALLOWED_INTERNAL_TOOL_NAMES = {
 
 _SUPERVISOR_TODO_TOOL_NAMES = {"write_todos", "update_todo"}
 _SPEC_BROKER_TOOL_NAMES = {"spec_broker"}
-_FAST_FIRST_TURN_MAX_TOKENS = 900
 _SPEC_MODE_INITIAL_ALLOWED_TOOL_NAMES = {
     "ask_user",
     "fetch_skill_instructions",
@@ -401,6 +379,18 @@ _SESSION_COORDINATION_REQUEST_DENY_RE = re.compile(
     r"(?:不要|不准|禁止|别|取消|do\s+not|don't|must\s+not|never)"
     r".{0,24}(?:发送|发给|通知|告诉|转告|同步|询问|纠偏|修正|协调|send|tell|notify|message|sync|ask|correct|coordinate)",
     re.IGNORECASE,
+)
+
+_RUNTIME_ORCHESTRATION_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("research", ("深度调研", "多源调研", "research")),
+    (
+        "engineering",
+        ("编程模式", "工程方案", "工程执行方案", "工程执行", "工程计划", "engineering"),
+    ),
+    ("creative_media", ("多媒体创作", "creative media", "creative_media")),
+    ("computer_use", ("桌面操作", "computer use", "computer_use")),
+    ("rpa", ("自动流程", "rpa")),
+    ("delegation", ("子代理", "协作 worker", "delegation", "subagent")),
 )
 
 
@@ -590,6 +580,228 @@ def _ensure_named_tools(selected_tools, available_tools, required_names: set[str
             result.append(tool_ref)
             present.add(name)
     return result
+
+
+def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
+    if not isinstance(state, dict):
+        return []
+    hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
+    boundary = hint.get("boundaryDecision") if isinstance(hint.get("boundaryDecision"), dict) else {}
+    if bool(boundary.get("askUserNeeded")):
+        return []
+    allowed = {
+        str(boundary.get("primaryRuntime") or "").strip(),
+        *[str(item or "").strip() for item in list(boundary.get("supportingRuntimes") or [])],
+    }
+    allowed.discard("")
+    query = str(user_query or "").lower()
+    positions: list[tuple[int, str]] = []
+    for kind, markers in _RUNTIME_ORCHESTRATION_MARKERS:
+        if kind not in allowed:
+            continue
+        marker_positions = [query.find(marker.lower()) for marker in markers if query.find(marker.lower()) >= 0]
+        if marker_positions:
+            positions.append((min(marker_positions), kind))
+    ordered = [kind for _, kind in sorted(positions)]
+    return list(dict.fromkeys(ordered)) if len(set(ordered)) >= 2 else []
+
+
+def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bool = False) -> SystemMessage:
+    prefix = "[Explicit Runtime Orchestration Correction]" if correction else "[Explicit Runtime Orchestration]"
+    correction_line = (
+        "Your previous response replaced execution with planning or clarification. This is the single correction attempt. "
+        if correction
+        else ""
+    )
+    return SystemMessage(
+        content=(
+            f"{prefix}\n"
+            f"The user already supplied a sufficient ordered execution chain: {' -> '.join(kinds)}. "
+            "The task boundary says askUserNeeded=false. "
+            f"{correction_line}Do not invent clarification questions, emit a prose-only plan, print pseudo tool calls, or stop at Todo scaffolding. "
+            "Use the user's explicit read-only/no-side-effect boundary as the contract. Your first durable action MUST call "
+            "runtime_broker(mode='route', need=<typed contract>) for the first runtime in the chain. "
+            "For a read-only task brief, use readOnly=true, writeRequired=false, writeSet=[], "
+            "expectedOutputs=[\"<human-readable output>\"], and a non-empty acceptance or acceptanceContract. "
+            "After each graph-injected handoff, route the next unfinished runtime; dispatch the requested subagent through the governed delegation path."
+        )
+    )
+
+
+def _response_runtime_route_kinds(response) -> list[str]:
+    calls = list(getattr(response, "tool_calls", None) or [])
+    if not calls:
+        calls = list(dict(getattr(response, "additional_kwargs", None) or {}).get("tool_calls") or [])
+    routed: list[str] = []
+    for call in calls:
+        payload = dict(call or {}) if isinstance(call, dict) else {}
+        name = str(payload.get("name") or payload.get("toolName") or ((payload.get("function") or {}).get("name") if isinstance(payload.get("function"), dict) else "") or "").strip()
+        args = _coerce_json_mapping(
+            payload.get("args")
+            or payload.get("arguments")
+            or ((payload.get("function") or {}).get("arguments") if isinstance(payload.get("function"), dict) else {})
+        )
+        if name == "delegation_broker":
+            routed.append("delegation")
+            continue
+        if name != "runtime_broker" or not isinstance(args, dict):
+            continue
+        need = _coerce_json_mapping(args.get("need"))
+        kind = str(need.get("kind") or args.get("runtime_kind") or args.get("runtimeKind") or "").strip().lower()
+        if kind:
+            routed.append(kind)
+    return routed
+
+
+def _coerce_json_mapping(value) -> dict:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], dict):
+        return dict(value[0])
+    if hasattr(value, "model_dump"):
+        try:
+            payload = value.model_dump(exclude_none=True)
+            return dict(payload) if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+    if isinstance(value, str):
+        try:
+            payload = json.loads(value)
+            return dict(payload) if isinstance(payload, dict) else {}
+        except Exception:
+            try:
+                payload = ast.literal_eval(value)
+                return dict(payload) if isinstance(payload, dict) else {}
+            except Exception:
+                return {}
+    return {}
+
+
+def _coerce_json_sequence(value, *, nested_keys: tuple[str, ...] = ()) -> list:
+    parsed = value
+    if hasattr(parsed, "model_dump"):
+        try:
+            parsed = parsed.model_dump(exclude_none=True)
+        except Exception:
+            return []
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(parsed)
+            except Exception:
+                return []
+    if isinstance(parsed, list):
+        return list(parsed)
+    if isinstance(parsed, dict):
+        for key in nested_keys:
+            if key in parsed:
+                nested = _coerce_json_sequence(parsed.get(key), nested_keys=nested_keys)
+                if nested:
+                    return nested
+        return [dict(parsed)]
+    return []
+
+
+def _normalize_delegation_task_arguments(value) -> list[dict]:
+    normalized: list[dict] = []
+    for raw_task in _coerce_json_sequence(
+        value,
+        nested_keys=("tasks", "workerBriefs", "worker_briefs"),
+    ):
+        task = _coerce_json_mapping(raw_task)
+        if not task:
+            continue
+        task = {key: item for key, item in task.items() if item is not None}
+        if "expectedOutputs" not in task:
+            expected_output = task.get("expectedOutput") or task.get("expected_output")
+            if expected_output not in (None, ""):
+                task["expectedOutputs"] = (
+                    list(expected_output)
+                    if isinstance(expected_output, (list, tuple, set))
+                    else [str(expected_output)]
+                )
+        if "acceptanceContract" not in task:
+            acceptance = task.get("acceptance") or task.get("acceptance_contract")
+            if acceptance not in (None, "", [], {}):
+                task["acceptanceContract"] = acceptance
+        normalized.append(task)
+    return normalized
+
+
+def _normalize_runtime_broker_response_arguments(response):
+    for call in list(getattr(response, "tool_calls", None) or []):
+        if not isinstance(call, dict):
+            continue
+        tool_name = str(call.get("name") or "").strip()
+        args = _coerce_json_mapping(call.get("args"))
+        if not args:
+            continue
+        if tool_name == "runtime_broker":
+            normalized_need = _coerce_json_mapping(args.get("need"))
+            if normalized_need:
+                args["need"] = normalized_need
+        elif tool_name == "delegation_broker":
+            if "tasks" in args:
+                args["tasks"] = _normalize_delegation_task_arguments(args.get("tasks"))
+            if "worker_briefs" in args:
+                args["worker_briefs"] = _normalize_delegation_task_arguments(args.get("worker_briefs"))
+            if "workerBriefs" in args:
+                args["workerBriefs"] = _normalize_delegation_task_arguments(args.get("workerBriefs"))
+            args = {key: value for key, value in args.items() if value is not None}
+        call["args"] = args
+    return response
+
+
+def _required_orchestration_tool_name(runtime_kind: str) -> str:
+    return "delegation_broker" if str(runtime_kind or "").strip().lower() == "delegation" else "runtime_broker"
+
+
+def _response_has_required_broker_attempt(response, tool_name: str) -> bool:
+    expected_tool = str(tool_name or "").strip()
+    expected_mode = "dispatch" if expected_tool == "delegation_broker" else "route"
+    for call in list(getattr(response, "tool_calls", None) or []):
+        if not isinstance(call, dict) or str(call.get("name") or "").strip() != expected_tool:
+            continue
+        args = _coerce_json_mapping(call.get("args"))
+        if str(args.get("mode") or "").strip().lower() == expected_mode:
+            return True
+    return False
+
+
+def _delegation_dispatch_contract_error(response) -> str | None:
+    """Reject missing delegation contract fields before ToolNode execution.
+
+    Present-but-malformed values remain the typed tool boundary's responsibility;
+    this validator only gives model failover a chance to repair omissions.
+    """
+
+    for call in list(getattr(response, "tool_calls", None) or []):
+        if not isinstance(call, dict) or str(call.get("name") or "").strip() != "delegation_broker":
+            continue
+        args = _coerce_json_mapping(call.get("args"))
+        if str(args.get("mode") or "").strip().lower() != "dispatch":
+            continue
+        tasks = _coerce_json_sequence(
+            args.get("tasks") if "tasks" in args else args.get("worker_briefs") or args.get("workerBriefs"),
+            nested_keys=("tasks", "workerBriefs", "worker_briefs"),
+        )
+        if not tasks:
+            return "delegation_dispatch_contract_missing:tasks"
+        for index, raw_task in enumerate(tasks, start=1):
+            task = _coerce_json_mapping(raw_task)
+            if not task:
+                return f"delegation_dispatch_contract_missing:task[{index}]"
+            missing = [
+                key
+                for key in ("taskBriefId", "goal", "expectedOutputs", "acceptanceContract")
+                if key not in task or task.get(key) in (None, "", [], {})
+            ]
+            if missing:
+                return f"delegation_dispatch_contract_missing:task[{index}].{','.join(missing)}"
+        return None
+    return None
 
 
 def _session_coordination_guidance(coordination: dict, *, correction: bool = False) -> SystemMessage:
@@ -981,46 +1193,6 @@ def _build_neutral_extensions_route(visible_supervisor_tools):
     )
 
 
-def _explicit_extension_request_in_query(user_query: str) -> bool:
-    query = str(user_query or "").strip().lower()
-    if not query:
-        return False
-    markers = (
-        "@",
-        "skill",
-        "skills",
-        "mcp",
-        "context7",
-        "fetch_skill",
-        "fetch skill",
-        "技能",
-        "调用技能",
-        "使用技能",
-        "预筛",
-        "女娲",
-        "huashu",
-        "nuwa",
-    )
-    return any(marker in query for marker in markers)
-
-
-def _should_use_fast_first_turn_route(state, user_query: str) -> bool:
-    if not isinstance(state, dict):
-        return False
-    route_context = dict(state.get("current_route_context") or {})
-    planner_deferred = bool(
-        state.get("plannerDeferredFirstTurn")
-        or state.get("planner_deferred_first_turn")
-        or route_context.get("plannerDeferredFirstTurn")
-        or route_context.get("planner_deferred_first_turn")
-    )
-    if not planner_deferred:
-        return False
-    if _spec_mode_active(state):
-        return False
-    return not _explicit_extension_request_in_query(user_query)
-
-
 def _should_use_spec_narrow_route(state) -> bool:
     return _spec_mode_active(state) and not _spec_runtime_execution_allowed(state)
 
@@ -1117,7 +1289,7 @@ def _suppress_extensions_prefilter_prompt(route_bundle, *, reason: str = "prefil
 def _runtime_episode_handoff_ready(state) -> bool:
     if not isinstance(state, dict):
         return False
-    dispatch_status = state.get("planner_dispatch_status")
+    dispatch_status = state.get("runtime_dispatch_status")
     if not isinstance(dispatch_status, dict):
         return False
     mode = str(dispatch_status.get("mode") or "").strip()
@@ -1138,13 +1310,67 @@ def _runtime_episode_handoff_ready(state) -> bool:
 def _runtime_episode_recoverable_failure(state) -> bool:
     if not isinstance(state, dict):
         return False
-    dispatch_status = state.get("planner_dispatch_status")
+    dispatch_status = state.get("runtime_dispatch_status")
     if not isinstance(dispatch_status, dict):
         return False
     mode = str(dispatch_status.get("mode") or "").strip()
     next_action = str(dispatch_status.get("nextAction") or "").strip()
     dispatch_state = str(dispatch_status.get("state") or "").strip()
     return mode == "runtime_episode" and next_action == "recoverable_failure" and bool(dispatch_state)
+
+
+def _runtime_kind_from_milestone_text(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if any(marker in text for marker in ("子代理", "subagent", "delegation", "agent swarm")):
+        return "delegation"
+    if any(marker in text for marker in ("深度调研", "research runtime", "research episode")):
+        return "research"
+    if any(marker in text for marker in ("编程模式", "engineering runtime", "engineering episode")):
+        return "engineering"
+    if any(marker in text for marker in ("多媒体创作", "creative media", "creative_media")):
+        return "creative_media"
+    if any(marker in text for marker in ("桌面操作", "computer use", "computer_use")):
+        return "computer_use"
+    if any(marker in text for marker in ("自动流程", "rpa runtime", "rpa episode")):
+        return "rpa"
+    return ""
+
+
+def _pending_runtime_milestone_kinds(state) -> list[str]:
+    if not isinstance(state, dict):
+        return []
+    kinds: list[str] = []
+    for item in list(state.get("todos") or []):
+        if not isinstance(item, dict) or bool(item.get("_task_init")):
+            continue
+        status = str(item.get("status") or "pending").strip().lower()
+        if status in {"done", "completed", "cancelled", "canceled", "skipped"}:
+            continue
+        kind = _runtime_kind_from_milestone_text(
+            str(item.get("text") or item.get("goal") or item.get("name") or "")
+        )
+        if kind and kind not in kinds:
+            kinds.append(kind)
+    return kinds
+
+
+def _observed_runtime_episode_kinds(state) -> set[str]:
+    route_context = dict((state or {}).get("current_route_context") or {}) if isinstance(state, dict) else {}
+    observed: set[str] = set()
+    for episode in list(route_context.get("capabilityEpisodes") or []):
+        if not isinstance(episode, dict):
+            continue
+        kind = str(episode.get("kind") or episode.get("runtimeKind") or "").strip().lower()
+        if kind:
+            observed.add(kind)
+    return observed
+
+
+def _pending_runtime_continuation_kinds(state) -> list[str]:
+    observed = _observed_runtime_episode_kinds(state)
+    return [kind for kind in _pending_runtime_milestone_kinds(state) if kind not in observed]
 
 
 def _runtime_handoff_requires_continuation(state) -> bool:
@@ -1162,7 +1388,7 @@ def _runtime_handoff_requires_continuation(state) -> bool:
         artifact_refs = handoff.get("artifactRefs") if isinstance(handoff.get("artifactRefs"), list) else []
         if stage in {"planned", "compiled"} and not artifact_refs:
             return True
-    return False
+    return bool(_pending_runtime_continuation_kinds(state))
 
 
 def _runtime_handoff_continuation_message(state) -> HumanMessage:
@@ -1173,17 +1399,29 @@ def _runtime_handoff_continuation_message(state) -> HumanMessage:
         for item in handoffs
         if str(item.get("recommendedNextAction") or "").strip()
     ]
-    next_action = next_actions[0] if next_actions else (
-        "Use the granted runtime tools to produce the requested artifacts, then verify and deliver their refs."
-    )
+    pending_kinds = _pending_runtime_continuation_kinds(state)
+    next_action = next_actions[0] if next_actions else "Route the next unfinished Supervisor milestone."
+    if not pending_kinds:
+        return HumanMessage(
+            content=(
+                "[Runtime Intermediate Handoff]\n"
+                "The runtime returned an intermediate recipe/work order, not the user's final deliverable. "
+                "Do not stop or claim completion yet. Continue with the currently granted runtime tools.\n"
+                f"Next action: {next_action}\n"
+                "Do not manually poll the runtime episode itself. For provider jobs explicitly created by the handoff, "
+                "use their governed job-status tools and return real artifact/proof refs; a provider task ID alone is not delivery evidence."
+            )
+        )
     return HumanMessage(
         content=(
             "[Runtime Intermediate Handoff]\n"
-            "The runtime returned a compiled recipe/work order, not the user's final deliverable. "
-            "Do not stop or claim completion yet. Continue the same user task with the currently granted runtime tools.\n"
+            "A typed handoff returned, but the original user task still has unfinished runtime milestones. "
+            "Keep the original user request as the governing instruction. Consume the compact handoff directly; "
+            "do not inspect the successful route's raw observation, call wait/observe/status, or manually poll.\n"
+            f"Pending runtime kinds: {', '.join(pending_kinds) if pending_kinds else 'current runtime continuation'}\n"
             f"Next action: {next_action}\n"
-            "For Creative Media, create each required image/video/voice job, poll queued jobs, and pass real artifact refs "
-            "to Engineering for integration. Provider task IDs or recipe IDs alone are not delivery evidence."
+            "Update the completed high-level milestone, then call runtime_broker(mode='route', need=<typed contract>) "
+            "for the next required runtime. Do not replace execution with Todo updates or a prose-only plan."
         )
     )
 
@@ -1204,7 +1442,7 @@ def _runtime_handoff_final_message() -> HumanMessage:
 
 def _runtime_handoff_final_text(state) -> str:
     route_context = dict((state or {}).get("current_route_context") or {})
-    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
     handoffs = [
         dict(item)
         for item in list(route_context.get("handoffRefs") or [])
@@ -1240,7 +1478,7 @@ def _runtime_handoff_final_response(state) -> AIMessage:
 
 
 def _runtime_recoverable_failure_final_text(state) -> str:
-    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
     reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
     failed_episode_count = int(dispatch_status.get("failedEpisodeCount") or dispatch_status.get("episodeCount") or 0)
     failed_handoff_count = int(dispatch_status.get("failedHandoffCount") or 0)
@@ -1261,7 +1499,7 @@ def _runtime_recoverable_failure_final_response(state) -> AIMessage:
 
 
 def _runtime_recoverable_failure_message(state) -> HumanMessage:
-    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
     reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
     return HumanMessage(
         content=(
@@ -1302,7 +1540,7 @@ def _coerce_recoverable_failure_response(response, state):
     content = str(getattr(response, "content", "") or "")
     if any(marker in content for marker in ("未完成", "失败", "阻塞", "需要修复", "recoverable", "failed", "blocked")):
         return response
-    dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+    dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
     reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
     response.content = (
         "这次任务还没有真正完成：必需的 runtime episode 已失败，"
@@ -1378,6 +1616,19 @@ def execute_supervisor_turn(
     current_scope = context_info["current_scope"]
     scope_chain = context_info["scope_chain"]
     session_id = context_info["session_id"]
+    explicit_runtime_kinds = _explicit_runtime_orchestration_kinds(state, user_query)
+    observed_runtime_kinds = _observed_runtime_episode_kinds(state)
+    pending_explicit_runtime_kinds = [
+        kind for kind in explicit_runtime_kinds if kind not in observed_runtime_kinds
+    ]
+    required_orchestration_kind = (
+        pending_explicit_runtime_kinds[0] if pending_explicit_runtime_kinds else ""
+    )
+    required_orchestration_tool = (
+        _required_orchestration_tool_name(required_orchestration_kind)
+        if required_orchestration_kind
+        else ""
+    )
     explicit_coordination_send = _looks_like_session_coordination_request(user_query, session_id)
     route_context_token = extensions_runtime_service.bind_execution_context(
         session_id=session_id,
@@ -1405,15 +1656,14 @@ def execute_supervisor_turn(
         if _is_network_supervisor_compat_transport(state) and not _compat_v8_main_chain_mode(state):
             visible_supervisor_tools = _filter_network_supervisor_compat_tools(visible_supervisor_tools)
         route_started_at = time.perf_counter()
-        fast_first_turn_route = bool(
-            not session_coordination
-            and not explicit_coordination_send
-            and _should_use_fast_first_turn_route(state, user_query)
-        )
         spec_narrow_route = _should_use_spec_narrow_route(state)
         if spec_narrow_route:
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
             route_bundle.candidate_summary["reason"] = "spec_mode_stage_uses_narrow_tool_surface"
+            route_duration_ms = 0.0
+        elif pending_explicit_runtime_kinds:
+            route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
+            route_bundle.candidate_summary["reason"] = "explicit_runtime_orchestration_uses_narrow_tool_surface"
             route_duration_ms = 0.0
         elif _is_network_supervisor_compat_transport(state) and _compat_suppress_extensions_prefilter(state):
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
@@ -1425,7 +1675,7 @@ def execute_supervisor_turn(
                 loaded_agents=loaded_agents,
             )
             route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
-        include_extensions_prefilter_prompt = _should_include_extensions_prefilter_prompt(
+        include_extensions_prefilter_prompt = False if pending_explicit_runtime_kinds else _should_include_extensions_prefilter_prompt(
             state=state,
             messages=messages,
             user_query=user_query,
@@ -1449,12 +1699,30 @@ def execute_supervisor_turn(
             )
         if _memory_no_match_since_latest_human(state):
             filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, {"memory_broker"})
+        if pending_explicit_runtime_kinds:
+            filtered_supervisor_tools = [
+                tool_ref
+                for tool_ref in list(filtered_supervisor_tools or [])
+                if _tool_ref_name(tool_ref) == required_orchestration_tool
+            ]
+            filtered_supervisor_tools = _ensure_named_tools(
+                filtered_supervisor_tools,
+                visible_supervisor_tools,
+                {required_orchestration_tool},
+            )
         try:
             route_bundle.filtered_tools = list(filtered_supervisor_tools)
         except Exception:
             pass
         if _should_hide_todo_tools_for_direct_writing(state, user_query):
             filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, _SUPERVISOR_TODO_TOOL_NAMES)
+        if runtime_handoff_needs_continuation and _pending_runtime_continuation_kinds(state):
+            filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, {"tool_observation_detail"})
+            filtered_supervisor_tools = _ensure_named_tools(
+                filtered_supervisor_tools,
+                visible_supervisor_tools,
+                {"runtime_broker", "update_todo"},
+            )
         if not _is_network_supervisor_compat_transport(state) and include_extensions_prefilter_prompt:
             extensions_runtime_service.emit_route_selected(user_query=user_query, route_bundle=route_bundle)
 
@@ -1597,14 +1865,12 @@ def execute_supervisor_turn(
         )
         if spec_guidance is not None:
             prepared_messages.append(spec_guidance)
-        if fast_first_turn_route:
-            prepared_messages.append(_fast_first_turn_guidance())
         if runtime_handoff_ready and runtime_handoff_needs_continuation:
             prepared_messages.append(_runtime_handoff_continuation_message(state))
         elif runtime_handoff_ready:
             prepared_messages.append(_runtime_handoff_final_message())
         elif _runtime_episode_recoverable_failure(state):
-            dispatch_status = dict((state or {}).get("planner_dispatch_status") or {})
+            dispatch_status = dict((state or {}).get("runtime_dispatch_status") or {})
             failure_reason = str(dispatch_status.get("reason") or dispatch_status.get("state") or "runtime_episode_failed").strip()
             if not _has_runtime_recoverable_failure_message(prepared_messages, failure_reason):
                 prepared_messages.append(_runtime_recoverable_failure_message(state))
@@ -1615,6 +1881,8 @@ def execute_supervisor_turn(
         spec_revision_contract = _latest_spec_revision_contract(prepared_messages)
         if spec_revision_contract:
             prepared_messages.append(_spec_revision_discipline_message(spec_revision_contract))
+        if pending_explicit_runtime_kinds:
+            prepared_messages.append(_explicit_runtime_orchestration_guidance(pending_explicit_runtime_kinds))
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],
@@ -1624,7 +1892,6 @@ def execute_supervisor_turn(
                 "selectedSkillCount": len(route_bundle.selected_skill_names or []),
                 "selectedMcpToolCount": len(route_bundle.exposed_mcp_tool_names or []),
                 "extensionsPrefilterPromptIncluded": include_extensions_prefilter_prompt,
-                "fastFirstTurnRoute": fast_first_turn_route,
                 "routeReason": route_bundle.candidate_summary.get("reason"),
                 "scope": current_scope,
                 "sessionId": session_id,
@@ -1639,20 +1906,43 @@ def execute_supervisor_turn(
         invoke_caller_kwargs = caller_kwargs
         if supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
             invoke_caller_kwargs = {**invoke_caller_kwargs, "_reasoning_effort": supervisor_reasoning_effort}
-        if fast_first_turn_route:
-            invoke_caller_kwargs = _fast_first_turn_caller_kwargs(caller_kwargs)
-            if supervisor_reasoning_effort and supervisor_reasoning_effort != "auto":
-                invoke_caller_kwargs = {**invoke_caller_kwargs, "_reasoning_effort": supervisor_reasoning_effort}
-            try:
-                invoke_llm = llm_factory.create_chat_model(
-                    sup_model_name,
-                    streaming=False,
-                    _role="supervisor",
-                    **invoke_caller_kwargs,
+
+        def _required_route_result_validator(candidate_response) -> str | None:
+            if not required_orchestration_kind:
+                return None
+            sanitized_response = _normalize_runtime_broker_response_arguments(
+                sanitize_response_tool_calls(candidate_response)
+            )
+            routed_kinds = _response_runtime_route_kinds(sanitized_response)
+            required_attempt = _response_has_required_broker_attempt(
+                sanitized_response,
+                required_orchestration_tool,
+            )
+            if required_orchestration_tool == "delegation_broker" and required_attempt:
+                contract_error = _delegation_dispatch_contract_error(sanitized_response)
+                if contract_error:
+                    return contract_error
+                return None
+            if required_orchestration_kind in routed_kinds or required_attempt:
+                return None
+            observed_call_summaries = [
+                (
+                    f"{str((call or {}).get('name') or (call or {}).get('toolName') or '').strip()}"
+                    f"(args={','.join(sorted(_coerce_json_mapping((call or {}).get('args')).keys())) or 'none'},"
+                    f"needType={type(_coerce_json_mapping((call or {}).get('args')).get('need')).__name__},"
+                    f"need={','.join(sorted(_coerce_json_mapping(_coerce_json_mapping((call or {}).get('args')).get('need')).keys())) or 'none'})"
                 )
-            except Exception:
-                invoke_llm = supervisor_base_llm
-                invoke_caller_kwargs = caller_kwargs
+                for call in list(getattr(sanitized_response, "tool_calls", None) or [])
+                if isinstance(call, dict)
+            ]
+            return (
+                "Supervisor response did not produce the required "
+                f"{required_orchestration_tool} route for runtime "
+                f"{required_orchestration_kind}; observed tools="
+                f"{','.join(item for item in observed_call_summaries if item) or 'none'}; "
+                f"observed runtime kinds={','.join(routed_kinds) or 'none'}."
+            )
+
         response = robust_invoke(
             invoke_llm,
             prepared_messages,
@@ -1665,8 +1955,16 @@ def execute_supervisor_turn(
                 _role="supervisor",
                 **invoke_caller_kwargs,
             ),
+            tool_choice=required_orchestration_tool or None,
+            result_validator=(
+                _required_route_result_validator
+                if required_orchestration_kind
+                else None
+            ),
         )
-        response = sanitize_response_tool_calls(response)
+        response = _normalize_runtime_broker_response_arguments(
+            sanitize_response_tool_calls(response)
+        )
         response = _retry_spec_revision_once(
             response,
             contract=spec_revision_contract,
@@ -1683,6 +1981,51 @@ def execute_supervisor_turn(
             ),
             sanitize_response_tool_calls=sanitize_response_tool_calls,
         )
+        if pending_explicit_runtime_kinds:
+            required_kind = required_orchestration_kind
+            if (
+                required_kind not in _response_runtime_route_kinds(response)
+                and not _response_has_required_broker_attempt(
+                    response,
+                    required_orchestration_tool,
+                )
+            ):
+                correction_messages = [
+                    *prepared_messages,
+                    response,
+                    _explicit_runtime_orchestration_guidance(
+                        pending_explicit_runtime_kinds,
+                        correction=True,
+                    ),
+                ]
+                response = robust_invoke(
+                    invoke_llm,
+                    correction_messages,
+                    filtered_supervisor_tools,
+                    role="supervisor",
+                    preferred_model_id=sup_model_name,
+                    build_model=lambda candidate_model_id: llm_factory.create_chat_model(
+                        candidate_model_id,
+                        streaming=False,
+                        _role="supervisor",
+                        **invoke_caller_kwargs,
+                    ),
+                    tool_choice=required_orchestration_tool,
+                    result_validator=_required_route_result_validator,
+                )
+                response = _normalize_runtime_broker_response_arguments(
+                    sanitize_response_tool_calls(response)
+                )
+                if (
+                    required_kind not in _response_runtime_route_kinds(response)
+                    and not _response_has_required_broker_attempt(
+                        response,
+                        required_orchestration_tool,
+                    )
+                ):
+                    raise RuntimeError(
+                        f"required_runtime_route_missing_after_correction:{required_kind}"
+                    )
         if (
             coordination_requires_reply
             and not coordination_reply_already_called
@@ -1707,7 +2050,9 @@ def execute_supervisor_turn(
                     **invoke_caller_kwargs,
                 ),
             )
-            response = sanitize_response_tool_calls(response)
+            response = _normalize_runtime_broker_response_arguments(
+                sanitize_response_tool_calls(response)
+            )
             if (
                 not _message_session_coordination_reply(response, coordination_message_id)
                 and not _response_has_tool_calls(response)

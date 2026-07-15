@@ -420,6 +420,10 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Spec Ref Usage", "specRefUsage", 900),
     ("Expected Output", "expectedOutput", 800),
     ("Expected Outputs", "expectedOutputs", 900),
+    ("Task Context", "notes", 1800),
+    ("Upstream Handoffs", "upstreamHandoffs", 7200),
+    ("Handoff Usage", "handoffUsage", 900),
+    ("Shell Dialect", "shellDialect", 120),
     ("Workspace Path", "workspacePath", 260),
     ("Artifact Write Discipline", "artifactWriteDiscipline", 800),
     ("Artifact Acceptance Guard", "artifactAcceptanceGuard", 800),
@@ -518,8 +522,8 @@ def _artifact_write_discipline_lines(task_brief: dict | None) -> list[str]:
     return lines
 
 
-def _format_delegated_plan_context(task_brief: dict | None, planner_context: dict | None) -> str:
-    if not isinstance(task_brief, dict) and not isinstance(planner_context, dict):
+def _format_delegated_task_contract(task_brief: dict | None) -> str:
+    if not isinstance(task_brief, dict):
         return ""
     lines: list[str] = [
         "",
@@ -530,24 +534,6 @@ def _format_delegated_plan_context(task_brief: dict | None, planner_context: dic
         "If both built-in runtime capability and installed Skill/MCP tools appear relevant, obey the supervisor/user route first; when no route is specified and a selected installed Skill/MCP explicitly advertises 免费/free use, prefer that selected channel within your granted tools.",
         "If the task is to configure MCP servers, use the supervisor-provided MCP config route/tool; do not call Admin login-only APIs or edit V8OS config files directly.",
     ]
-    if isinstance(planner_context, dict) and planner_context:
-        if planner_context.get("planId"):
-            lines.append(f"Plan ID: {planner_context.get('planId')}")
-        if planner_context.get("executionStrategy"):
-            lines.append(f"Execution Strategy: {planner_context.get('executionStrategy')}")
-        if planner_context.get("planSummary"):
-            lines.append(f"Plan Summary: {planner_context.get('planSummary')}")
-        if planner_context.get("taskCount"):
-            lines.append(f"Task Count: {planner_context.get('taskCount')}")
-        risk_flags = _compact_prompt_value(planner_context.get("riskFlags"))
-        if risk_flags:
-            lines.append(f"Risk Flags: {risk_flags}")
-        dependencies = _compact_prompt_value(planner_context.get("dependencies"))
-        if dependencies:
-            lines.append(f"Dependencies: {dependencies}")
-        global_acceptance = _compact_prompt_value(planner_context.get("globalAcceptanceContract"))
-        if global_acceptance:
-            lines.append(f"Global Acceptance Contract: {global_acceptance}")
     if isinstance(task_brief, dict) and task_brief:
         lines.append("")
         lines.append("Assigned Task Brief:")
@@ -812,7 +798,7 @@ def _build_agent_system_bundle(
             scope="delegation_charter",
         ),
         *_split_agent_env_context_parts(env_context),
-        _agent_prompt_part("subagent.active_plan", "dynamic", active_plan_context, scope="planner"),
+        _agent_prompt_part("subagent.active_todos", "dynamic", active_plan_context, scope="todos"),
         _agent_prompt_part("subagent.delegated_task_brief", "dynamic", delegated_plan_context, scope="task_brief"),
         _agent_prompt_part("subagent.route_additions", "dynamic", route_prompt_addition, scope="extensions"),
         _agent_prompt_part("subagent.separator", "dynamic", "\n\n", scope="separator"),
@@ -1003,8 +989,7 @@ def build_agent_node(
                     **dict(delegated_task_brief or {}),
                     "runtimeAccess": delegated_runtime_access,
                 }
-            delegated_planner_context = inherited_route_context.get("plannerContext") if isinstance(inherited_route_context.get("plannerContext"), dict) else None
-            delegated_plan_context = _format_delegated_plan_context(delegated_task_brief, delegated_planner_context)
+            delegated_plan_context = _format_delegated_task_contract(delegated_task_brief)
             inherited_query = str(inherited_route_context.get("query") or delegated_query).strip() or delegated_query
             full_task_brief_query = task_brief_query_text(delegated_task_brief)
             extensions_route_query = task_brief_route_query_text(delegated_task_brief)
@@ -1119,7 +1104,6 @@ def build_agent_node(
                     prompt_addition=route_bundle.prompt_addition,
                     invocation_id=inherited_route_context.get("invocationId"),
                     task_brief=delegated_task_brief,
-                    planner_context=delegated_planner_context,
                 ),
                 "toolMode": agent_tool_mode,
                 "runtimeAccess": delegated_runtime_access,

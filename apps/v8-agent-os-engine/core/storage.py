@@ -269,13 +269,13 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "## Delegation Discipline\n"
         "- If a task is small and local, solve it directly.\n"
         "- If a task needs a distinct role, independent context, or parallel execution, use `delegation_broker`.\n"
-        "- Treat planner task briefs as the canonical delegation contract.\n"
+        "- Treat Supervisor-authored task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
         "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n\n",
         "## Delegation Discipline\n"
         "- If a task is small, local, and realistically finishes within 1-10 tool steps, solve it directly.\n"
         "- If a task needs a distinct role, independent context, parallel execution, broad multi-file implementation, or source-backed research plus coding, use `delegation_broker` / Engineering discipline first.\n"
-        "- Treat planner task briefs as the canonical delegation contract.\n"
+        "- Treat Supervisor-authored task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
         "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
         "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n",
@@ -293,7 +293,7 @@ _STOCK_SUPERVISOR_PROMPT_REPLACEMENTS: tuple[tuple[str, str], ...] = (
         "## Delegation Discipline\n"
         "- If a task is small, local, and realistically finishes within 1-10 tool steps, solve it directly.\n"
         "- If a task needs a distinct role, independent context, parallel execution, broad multi-file implementation, or source-backed research plus coding, use `delegation_broker` / Engineering discipline first.\n"
-        "- Treat planner task briefs as the canonical delegation contract.\n"
+        "- Treat Supervisor-authored task briefs as the canonical delegation contract.\n"
         "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
         "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
         "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n",
@@ -393,7 +393,6 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "roles": {
             "default": "",
             "supervisor": "",
-            "planner": "",
             "subagent": "",
             "summary": "",
             "extraction": "",
@@ -421,7 +420,6 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         },
         "routingPolicies": {
             "chat": "supervisor",
-            "planner": "planner",
             "subagent": "subagent",
             "channel": "channel",
             "automation": "automation",
@@ -508,7 +506,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "contextPackBudget": 48000,
         "evidenceGraphEnabled": True,
         "evidenceGraphBudget": 16000,
-        "codingPlannerContractEnabled": True,
+        "codingExecutionContractEnabled": True,
         "worksetGovernanceMode": "observe_auto_block",
         "worksetObservationEnabled": True,
         "workbenchDryRunMatrixEnabled": True,
@@ -1023,7 +1021,7 @@ class StorageManager:
                 "- If a task is small and local, solve it directly.\n"
                 "- If a task needs a distinct role, independent context, or parallel execution, delegate.\n"
                 "- Use `delegation_broker` as the internal canonical delegation entrypoint, but say 子代理 / 协作 worker to users.\n"
-                "- Treat planner task briefs as the canonical delegation contract.\n"
+                "- Treat Supervisor-authored task briefs as the canonical delegation contract.\n"
                 "- Keep local subagents and external workers on the same brokered path instead of mixing old delegation tools.\n"
                 "- Subagents should inherit relevant skills, MCP, explicit plugin grants, and baseline tool context instead of starting blind.\n"
                 "- Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those managed runtime actions, route gates, and final verification in the supervisor unless a brokered task explicitly grants a narrow surface.\n\n"
@@ -1062,6 +1060,7 @@ class StorageManager:
         self._sanitize_stock_supervisor_prompt_file()
         self._ensure_default_subagents()
         self._ensure_config_json_exists()
+        self._remove_deprecated_subagent_model_bindings()
         self._migrate_computer_use_storage()
         self._migrate_legacy_structured_files()
 
@@ -1151,6 +1150,37 @@ class StorageManager:
                 handle.write(sanitized)
         except (OSError, PermissionError):
             return
+
+    def _remove_deprecated_subagent_model_bindings(self) -> None:
+        """Remove bindings for retired managed defaults after their files are gone.
+
+        A user-authored agent file with the same id remains authoritative and keeps
+        its binding. This cleanup only closes the residue left by a managed default
+        that `_ensure_default_subagents` already removed.
+        """
+
+        try:
+            from core.agents import DEPRECATED_DEFAULT_SUBAGENT_IDS
+
+            payload = self._read_raw_config_payload()
+            models = dict(payload.get("models") or {})
+            bindings = dict(models.get("bindings") or {})
+            agent_bindings = dict(bindings.get("agents") or {})
+            changed = False
+            for deprecated_id in sorted(DEPRECATED_DEFAULT_SUBAGENT_IDS):
+                if (self.base_dir / "agents" / f"{deprecated_id}.md").exists():
+                    continue
+                if deprecated_id in agent_bindings:
+                    agent_bindings.pop(deprecated_id, None)
+                    changed = True
+            if not changed:
+                return
+            bindings["agents"] = agent_bindings
+            models["bindings"] = bindings
+            payload["models"] = models
+            self._write_config_payload(payload)
+        except (OSError, PermissionError, TypeError, ValueError) as exc:
+            print(f"[Storage] Deprecated subagent binding cleanup skipped: {exc}")
 
     def _default_system_base_config(self) -> dict[str, Any]:
         engine_base_url = _normalize_http_base_url(
@@ -2332,7 +2362,7 @@ class StorageManager:
                 merged[key] = max(minimum, min(int(merged.get(key) or default), maximum))
             except (TypeError, ValueError):
                 merged[key] = default
-        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
+        for key in ("enabled", "evidenceGraphEnabled", "codingExecutionContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
             merged[key] = bool(merged.get(key))
         return merged
 
@@ -2370,7 +2400,7 @@ class StorageManager:
                 next_data[key] = max(minimum, min(int(next_data.get(key) or default), maximum))
             except (TypeError, ValueError):
                 next_data[key] = default
-        for key in ("enabled", "evidenceGraphEnabled", "codingPlannerContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
+        for key in ("enabled", "evidenceGraphEnabled", "codingExecutionContractEnabled", "proofLedgerEnabled", "autoProofCollectionEnabled", "suppressDailyMemory", "suppressMemoryMap", "worksetObservationEnabled", "workbenchDryRunMatrixEnabled"):
             next_data[key] = bool(next_data.get(key))
         payload["engineeringLane"] = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["engineeringLane"], next_data)
         self._write_config_payload(payload)

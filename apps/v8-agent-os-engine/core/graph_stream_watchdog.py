@@ -12,7 +12,6 @@ ACTIVE_TOOL_STREAM_IDLE_TIMEOUT_SECONDS = float(os.getenv("V8_GRAPH_STREAM_TOOL_
 ACTIVE_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS = float(os.getenv("V8_GRAPH_STREAM_RUNTIME_EPISODE_IDLE_TIMEOUT_SECONDS", "900"))
 _IGNORED_CHAIN_START_NAMES = {"LangGraph", "__start__", "supervisor_tools"}
 _LONG_RUNNING_CHAIN_NAMES = {
-    "planner_auto_dispatch",
     "parallel_delegate_task",
     "parallel_delegate_join",
     "capability_router",

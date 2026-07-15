@@ -86,7 +86,7 @@ def main() -> int:
             [
                 "Supervisor First, Runtime Grounded",
                 "supporting signals",
-                "Planner output as a proposed episode plan/runtime-needs map",
+                "You own routing and task decomposition",
                 "Memory is evidence",
                 "Product language:",
                 "Use product words with users",
@@ -94,7 +94,7 @@ def main() -> int:
                 "深度调研",
                 "多媒体创作",
                 "canonical ids",
-                "Specialist mode path",
+                "Subagent path:",
                 "Passive/support systems",
                 "`wait` is only for a short local stabilization pause",
                 "`manage_cron` creates or changes scheduled tasks only when the user explicitly asks",

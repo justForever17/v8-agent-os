@@ -7,7 +7,6 @@ from core.storage import storage
 
 
 MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262_144
-MIN_PLANNER_CONTEXT_WINDOW_TOKENS = 32_768
 DEFAULT_UNKNOWN_CONTEXT_WINDOW_TOKENS = 32_000
 
 _NON_TEXT_MODEL_TYPES = {
@@ -205,7 +204,7 @@ context_window_guard = ContextWindowGuard()
 def validate_text_role_model_window(role: str, model_ref: str) -> Dict[str, Any]:
     model_ref = str(model_ref or "").strip()
     role_key = str(role or "").strip() or "default"
-    minimum_required = MIN_PLANNER_CONTEXT_WINDOW_TOKENS if role_key == "planner" else MIN_TEXT_CONTEXT_WINDOW_TOKENS
+    minimum_required = MIN_TEXT_CONTEXT_WINDOW_TOKENS
     if not model_ref or not is_text_generation_model_ref(model_ref, role=role_key):
         return {"ok": True, "reason": "not_text_generation"}
     participant = _participant(

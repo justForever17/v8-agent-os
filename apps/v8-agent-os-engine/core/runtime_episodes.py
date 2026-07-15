@@ -16,6 +16,7 @@ ACTIVE_EPISODE_STATES = {
     "leased",
     "active",
     "waiting",
+    "waiting_dependency",
     "waiting_child",
     "waiting_external",
     "waiting_approval",
@@ -231,6 +232,19 @@ def persist_runtime_episode(
         return dict(episode)
 
 
+def heartbeat_runtime_episode(episode_id: str, *, progress: str = "") -> None:
+    normalized_id = str(episode_id or "").strip()
+    if not normalized_id:
+        return
+    try:
+        db.heartbeat_runtime_episode(
+            normalized_id,
+            progress=str(progress or "").strip() or None,
+        )
+    except Exception:
+        return
+
+
 def enqueue_runtime_episode(
     episode: dict[str, Any],
     *,
@@ -379,9 +393,25 @@ def persist_handoff_ref(
 def emit_runtime_episode_event(topic: str, payload: dict[str, Any], *, source: dict[str, Any] | None = None) -> None:
     try:
         runtime_context = get_runtime_context()
-        session_id = str(runtime_context.get("session_id") or runtime_context.get("sessionId") or "").strip()
-        run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip()
         episode_payload = payload.get("episode") if isinstance(payload.get("episode"), dict) else payload
+        session_id = str(
+            runtime_context.get("session_id")
+            or runtime_context.get("sessionId")
+            or (episode_payload or {}).get("session_id")
+            or (episode_payload or {}).get("sessionId")
+            or payload.get("session_id")
+            or payload.get("sessionId")
+            or ""
+        ).strip()
+        run_id = str(
+            runtime_context.get("run_id")
+            or runtime_context.get("runId")
+            or (episode_payload or {}).get("run_id")
+            or (episode_payload or {}).get("runId")
+            or payload.get("run_id")
+            or payload.get("runId")
+            or ""
+        ).strip()
         episode_id = str(
             (episode_payload or {}).get("episodeId")
             or (episode_payload or {}).get("needId")
@@ -417,7 +447,7 @@ def emit_runtime_episode_event(topic: str, payload: dict[str, Any], *, source: d
                     "kind": "runtime_event",
                     "topic": topic,
                     "ts": utc_now_iso(),
-                    "source": source or {"runtime": "planner_lane", "component": "runtime_episode_runner"},
+                    "source": source or {"runtime": "runtime_episode", "component": "runtime_episode_runner"},
                     "payload": payload,
                 }
             )

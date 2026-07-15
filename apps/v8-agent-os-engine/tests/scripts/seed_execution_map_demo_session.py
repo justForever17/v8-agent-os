@@ -259,12 +259,12 @@ def main() -> None:
     events = [
         (
             "capability.need.detected",
-            "planner_lane",
+            "chat",
             {
                 "need": {
                     "needId": "need_research_demo",
                     "kind": "research",
-                    "source": "planner",
+                    "source": "supervisor",
                     "reason": "需要先核对 API 与 UI 方案事实",
                     "requiredRuntimeAccess": ["memory.read", "web.read"],
                 }

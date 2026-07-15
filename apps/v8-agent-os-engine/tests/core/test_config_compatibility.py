@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from core import storage as storage_module
+from core.agents import DEPRECATED_DEFAULT_SUBAGENT_IDS
 
 
 def _storage_for_tmp(tmp_path: Path, monkeypatch) -> storage_module.StorageManager:
@@ -72,3 +73,50 @@ def test_stock_prompt_sanitizer_removes_retired_plugin_host_wording() -> None:
     assert legacy_runtime_id not in sanitized
     assert "插件管理中心" in sanitized
     assert "explicit plugin grants" in sanitized
+
+
+def test_retired_project_planner_binding_is_removed_after_managed_file_disappears(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "bindings": {
+                        "agents": {
+                            "project-planner": "model-planner",
+                            "verification-engineer": "model-verifier",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager._remove_deprecated_subagent_model_bindings()
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "project-planner" in DEPRECATED_DEFAULT_SUBAGENT_IDS
+    assert "project-planner" not in persisted["models"]["bindings"]["agents"]
+    assert persisted["models"]["bindings"]["agents"]["verification-engineer"] == "model-verifier"
+
+
+def test_custom_agent_file_preserves_same_id_model_binding(tmp_path: Path, monkeypatch) -> None:
+    manager = _storage_for_tmp(tmp_path, monkeypatch)
+    config_path = tmp_path / "config.json"
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "project-planner.md").write_text("# User-authored agent\n", encoding="utf-8")
+    config_path.write_text(
+        json.dumps({"models": {"bindings": {"agents": {"project-planner": "custom-model"}}}}),
+        encoding="utf-8",
+    )
+
+    manager._remove_deprecated_subagent_model_bindings()
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["models"]["bindings"]["agents"]["project-planner"] == "custom-model"

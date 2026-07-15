@@ -15,8 +15,10 @@ class FakeLLM:
         self.outcomes = list(outcomes)
         self.calls = 0
         self.invocation_configs: list[dict[str, Any] | None] = []
+        self.tool_bindings: list[dict[str, Any]] = []
 
-    def bind_tools(self, _tools):
+    def bind_tools(self, _tools, **kwargs):
+        self.tool_bindings.append(dict(kwargs))
         return self
 
     def effective_capability_matrix(self):
@@ -183,6 +185,73 @@ def test_invocation_config_is_forwarded_to_callback_events(monkeypatch: pytest.M
 
     assert result == "ok"
     assert primary.invocation_configs == [invocation_config]
+
+
+def test_required_tool_choice_is_forwarded_to_every_failover_candidate(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = FakeLLM(Exception("request timeout"), Exception("request timeout"))
+    backup = FakeLLM("ok")
+
+    result = service.invoke_with_failover(
+        config=_config(maxTotalAttempts=3, maxFailoverSeconds=30),
+        base_llm_instance=primary,
+        messages=[],
+        tools=[object()],
+        role="supervisor",
+        preferred_model_id=make_model_ref("p-openai-a", "primary"),
+        build_model=lambda _model_id: backup,
+        tool_choice="required",
+    )
+
+    assert result == "ok"
+    assert primary.tool_bindings == [{"tool_choice": "required"}]
+    assert backup.tool_bindings == [{"tool_choice": "required"}]
+
+
+def test_response_contract_violation_retries_with_next_candidate(monkeypatch: pytest.MonkeyPatch):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = FakeLLM({"tool_calls": []})
+    backup = FakeLLM(
+        {
+            "tool_calls": [
+                {
+                    "name": "runtime_broker",
+                    "args": {"mode": "route", "need": {"kind": "engineering"}},
+                }
+            ]
+        }
+    )
+
+    result = service.invoke_with_failover(
+        config=_config(maxLocalRetries=0, maxTotalAttempts=2, maxFailoverSeconds=30),
+        base_llm_instance=primary,
+        messages=[],
+        tools=[object()],
+        role="supervisor",
+        preferred_model_id=make_model_ref("p-openai-a", "primary"),
+        build_model=lambda _model_id: backup,
+        tool_choice="runtime_broker",
+        result_validator=lambda response: (
+            None
+            if list(response.get("tool_calls") or [])
+            else "missing required runtime_broker call"
+        ),
+    )
+
+    assert result == {
+        "tool_calls": [
+            {
+                "name": "runtime_broker",
+                "args": {"mode": "route", "need": {"kind": "engineering"}},
+            }
+        ]
+    }
+    assert primary.calls == 1
+    assert backup.calls == 1
+    assert primary.tool_bindings == [{"tool_choice": "runtime_broker"}]
+    assert backup.tool_bindings == [{"tool_choice": "runtime_broker"}]
 
 
 def test_non_transient_model_error_does_not_hidden_failover(monkeypatch: pytest.MonkeyPatch):

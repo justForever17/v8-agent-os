@@ -428,7 +428,7 @@ def _default_workflow_candidate_definitions() -> List[Dict[str, Any]]:
                 "roadmap",
                 "task mode",
                 "todos",
-                "planner",
+                "task brief",
             ],
             "firstActionTriggers": [
                 "ask_user",
@@ -455,7 +455,7 @@ def _default_workflow_candidate_definitions() -> List[Dict[str, Any]]:
             "maturityScore": 0.82,
             "successCount": 2,
             "metadata": {
-                "canonicalAnchors": ["任务模式", "拆解", "分工", "planner", "todos", "ask_user"],
+                "canonicalAnchors": ["任务模式", "拆解", "分工", "task brief", "todos", "ask_user"],
                 "actionVariantsByStep": {
                     "0": ["用 ask_user 问清验收标准和范围。", "若用户已给足上下文，直接列出假设并进入 task brief。", "只问会改变执行路线的问题。"],
                     "1": ["把回答转为 broker-ready task brief。", "列出不做什么和需要保留的用户约束。"],
@@ -1150,7 +1150,7 @@ class WorkflowMemoryService:
         if verification_status != "verified":
             return []
         steps = [
-            "先读取 Engineering ContextPack / planner contract，确认 read-set、write-set 和任务边界。",
+            "先读取 Engineering ContextPack / Supervisor task contract，确认 read-set、write-set 和任务边界。",
             "只在授权 writeSet 内做最小必要修改；如果需要越界，先让 supervisor 重新确认或记录 override。",
             f"完成改动后运行与任务匹配的验证链：{verification_family or 'targeted validation'}。",
             "把 changed files、验证命令、diagnostics、residual risks 写入 Proof Ledger；没有验证证据不得标记 verified。",
@@ -1970,54 +1970,6 @@ class WorkflowMemoryService:
             return []
         return []
 
-    def _planner_context_from_runtime_events(
-        self,
-        *,
-        session_id: Optional[str],
-        run_id: Optional[str],
-        events: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        recent_events = list(events or self._recent_runtime_events(session_id=session_id, run_id=run_id))
-        if not recent_events:
-            return {
-                "plannerAware": False,
-                "deliveryMode": "direct_guide",
-                "plannerPlanId": None,
-                "plannerTaskRef": None,
-            }
-
-        planner_plan_id: Optional[str] = None
-        planner_task_ref: Optional[str] = None
-        for event in reversed(recent_events):
-            topic = str(event.get("topic") or "").strip().lower()
-            source = event.get("source") if isinstance(event.get("source"), dict) else {}
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-            runtime_id = str(event.get("runtime_id") or source.get("runtimeId") or payload.get("runtimeId") or "").strip().lower()
-            if runtime_id == "planner_lane" or topic.startswith("planner.") or topic.startswith("chat.planner_"):
-                planner_plan_id = (
-                    str(payload.get("planId") or payload.get("plannerPlanId") or "").strip()
-                    or str((payload.get("traceRef") or {}).get("planId") or "").strip()
-                    or planner_plan_id
-                )
-                task_briefs = list(payload.get("taskBriefs") or [])
-                if task_briefs:
-                    first_brief = task_briefs[0] if isinstance(task_briefs[0], dict) else {}
-                    planner_task_ref = str(first_brief.get("taskBriefId") or "").strip() or planner_task_ref
-                dependencies = list(payload.get("dependencies") or [])
-                if not planner_task_ref and dependencies:
-                    first_dep = dependencies[0] if isinstance(dependencies[0], dict) else {}
-                    planner_task_ref = str(first_dep.get("taskBriefId") or "").strip() or planner_task_ref
-                if topic == "planner.plan.projected":
-                    break
-
-        planner_aware = bool(planner_plan_id or planner_task_ref)
-        return {
-            "plannerAware": planner_aware,
-            "deliveryMode": "planner_checklist_bias" if planner_aware else "direct_guide",
-            "plannerPlanId": planner_plan_id or None,
-            "plannerTaskRef": planner_task_ref or None,
-        }
-
     def _engineering_active_from_runtime_events(self, events: Optional[List[Dict[str, Any]]] = None) -> bool:
         for event in reversed(list(events or [])):
             topic = str(event.get("topic") or "").strip().lower()
@@ -2671,11 +2623,6 @@ class WorkflowMemoryService:
             anti = item.get("antiPatterns") or []
             verify = item.get("verificationSteps") or []
             recent_events = recent_events_for_context
-            planner_context = self._planner_context_from_runtime_events(
-                session_id=session_id,
-                run_id=run_id,
-                events=recent_events,
-            )
             guide_state = self._latest_guide_state(
                 candidate_id=str(item.get("id") or ""),
                 session_id=session_id,
@@ -2714,34 +2661,15 @@ class WorkflowMemoryService:
                 "currentStepIndex": step_index,
                 "matchedReason": diagnostics.get("matchedReasons") or [],
                 "score": diagnostics.get("score"),
-                "adaptation": (
-                    "Planner exists for this run; use the workflow as a checklist / route bias only."
-                    if planner_context.get("plannerAware")
-                    else "Keep the goal and verification intent, but adjust concrete actions if this task differs from the learned workflow."
-                ),
-                "deliveryMode": planner_context.get("deliveryMode"),
-                "plannerAware": bool(planner_context.get("plannerAware")),
-                "plannerPlanId": planner_context.get("plannerPlanId"),
-                "plannerTaskRef": planner_context.get("plannerTaskRef"),
+                "adaptation": "Keep the goal and verification intent, but adjust concrete actions if this task differs from the learned workflow.",
+                "deliveryMode": "direct_guide",
             }
             lines.append(f"- Workflow: {item.get('task_family') or item.get('id')} (confidence {float(item.get('confidence') or 0):.2f})")
             if diagnostics.get("matchedReasons"):
                 lines.append(f"  Applies because: {'; '.join(str(reason)[:80] for reason in diagnostics.get('matchedReasons')[:3])}")
-            if planner_context.get("plannerAware"):
-                planner_bits = []
-                if planner_context.get("plannerPlanId"):
-                    planner_bits.append(f"plan={planner_context.get('plannerPlanId')}")
-                if planner_context.get("plannerTaskRef"):
-                    planner_bits.append(f"task={planner_context.get('plannerTaskRef')}")
-                planner_suffix = f" ({', '.join(planner_bits)})" if planner_bits else ""
-                lines.append(f"  Delivery mode: checklist / bias{planner_suffix}")
             if golden:
-                if planner_context.get("plannerAware"):
-                    lines.append(f"  Checklist focus (Step {step_index + 1}/{len(golden)}): {next_step}")
-                    lines.append("  Adaptation: Respect the current planner/task brief; use this only to bias route choice and verification.")
-                else:
-                    lines.append(f"  Suggested next move (Step {step_index + 1}/{len(golden)}): {next_step}")
-                    lines.append("  Adaptation: Keep the goal and verification intent; change concrete actions when the current task differs.")
+                lines.append(f"  Suggested next move (Step {step_index + 1}/{len(golden)}): {next_step}")
+                lines.append("  Adaptation: Keep the goal and verification intent; change concrete actions when the current task differs.")
                 if ranked_next_actions:
                     lines.append("  Ranked next action paths:")
                     for action in ranked_next_actions[:ranked_path_count]:
@@ -2769,9 +2697,6 @@ class WorkflowMemoryService:
                         "matchedReasons": diagnostics.get("matchedReasons") or [],
                         "score": diagnostics.get("score"),
                         "deliveryMode": hint_payload["deliveryMode"],
-                        "plannerAware": hint_payload["plannerAware"],
-                        "plannerPlanId": hint_payload["plannerPlanId"],
-                        "plannerTaskRef": hint_payload["plannerTaskRef"],
                     },
                 )
                 self.record_hint_event(
@@ -2785,9 +2710,6 @@ class WorkflowMemoryService:
                         "scopeChain": scope_chain or [],
                         "guideStateId": new_guide_state.get("id"),
                         "deliveryMode": hint_payload["deliveryMode"],
-                        "plannerAware": hint_payload["plannerAware"],
-                        "plannerPlanId": hint_payload["plannerPlanId"],
-                        "plannerTaskRef": hint_payload["plannerTaskRef"],
                     },
                 )
             except Exception:

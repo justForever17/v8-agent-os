@@ -191,65 +191,6 @@ class MemoryWorkflowRuntimeV2Tests(unittest.TestCase):
         self.assertEqual(updated.get("lastHintOutcome"), "injected")
         self.assertEqual((updated.get("guideState") or {}).get("state"), "step_0_pending")
 
-    def test_planner_context_downgrades_hint_to_checklist_bias(self) -> None:
-        payload = {
-            "id": f"mw_ep_planner_{self.suffix}",
-            "taskFamily": f"Planner-aware docs workflow {self.suffix}",
-            "taskFamilySignature": f"wf:test_planner_aware:{self.suffix}",
-            "canonicalTriggerPatterns": ["planner docs workflow", "governance doc"],
-            "firstActionTriggers": ["read_native_file"],
-            "runtimeEvidence": [{"topic": "tool.finished", "tool": "read_native_file", "status": "success"}],
-            "evidenceSource": "runtime_events",
-            "sideEffectScope": "read_only",
-            "goldenPathSteps": [
-                "Read the governance document first.",
-                "Convert the findings into a task brief.",
-            ],
-            "verificationSteps": ["Confirm the task brief matches the planner acceptance contract."],
-            "finalSuccessEvidence": "planner consumed the checklist",
-            "confidence": 0.88,
-        }
-        session_id = f"session_planner_{self.suffix}"
-        run_id = f"run_planner_{self.suffix}"
-        db.create_or_update_session(session_id, title="workflow planner aware test")
-        db.create_run_record(run_id=run_id, session_id=session_id, run_type="test", status="running")
-        self.session_ids.append(session_id)
-        self.run_ids.append(run_id)
-        db.add_runtime_event(
-            {
-                "event_id": f"evt_planner_{self.suffix}",
-                "session_id": session_id,
-                "run_id": run_id,
-                "seq": db.get_latest_runtime_seq(session_id) + 1,
-                "kind": "projection",
-                "topic": "planner.plan.projected",
-                "ts": utc_now_iso(),
-                "source": {"runtimeId": "planner_lane"},
-                "payload": {
-                    "planId": "plan_test",
-                    "taskBriefs": [{"taskBriefId": "tb_1", "goal": "Review the governance doc"}],
-                },
-            }
-        )
-
-        with patch("runtimes.memory.workflow_service.workflow_memory_config", side_effect=_workflow_test_config):
-            record = self._add_episode(payload, extraction_source="runtime_evidence")
-            block = workflow_memory_service.build_hints_block(
-                query=f"Please use the planner docs workflow {self.suffix}",
-                scope_chain=["global"],
-                session_id=session_id,
-                run_id=run_id,
-            )
-            hint_events = workflow_memory_service.list_hint_events(candidate_id=record["candidate"]["id"], limit=5)
-
-        self.assertIn("Delivery mode: checklist / bias", block)
-        self.assertIn("Checklist focus", block)
-        self.assertIn("plan=plan_test", block)
-        self.assertIn("task=tb_1", block)
-        self.assertTrue(hint_events)
-        self.assertTrue(hint_events[0].get("metadata", {}).get("plannerAware"))
-        self.assertEqual(hint_events[0].get("metadata", {}).get("deliveryMode"), "planner_checklist_bias")
-
     def test_intent_gate_rejects_generic_generation_query(self) -> None:
         payload = {
             "id": f"mw_ep_nuwa_gate_{self.suffix}",

@@ -108,3 +108,70 @@ def test_runtime_episode_resume_schedule_claim_rejects_active_top_level(tmp_path
     assert result["claimed"] is False
     assert result["reason"] == "top_level_runtime_episode_still_active"
     assert manager.get_run_record("run_runtime")["metadata"]["runtimeEpisodeResume"]["state"] == "waiting"
+
+
+def test_terminal_run_cancels_only_active_runtime_episodes(monkeypatch, tmp_path):
+    manager = DatabaseManager(tmp_path / "state.db")
+    manager.create_or_update_session("session_runtime", "Runtime Cleanup")
+    manager.create_run_record(
+        run_id="run_runtime",
+        session_id="session_runtime",
+        run_type="chat",
+        status="running",
+    )
+    manager.upsert_runtime_episode_record(
+        {"episodeId": "episode_waiting", "kind": "delegation", "state": "waiting_child"},
+        session_id="session_runtime",
+        run_id="run_runtime",
+        enqueue=True,
+    )
+    manager.upsert_runtime_episode_record(
+        {"episodeId": "episode_complete", "kind": "research", "state": "completed"},
+        session_id="session_runtime",
+        run_id="run_runtime",
+    )
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr("erc.run_service.db", manager)
+    monkeypatch.setattr("erc.run_service.run_ledger_service.record_event", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "erc.run_service.emit_runtime_episode_event",
+        lambda topic, payload, source=None: emitted.append((topic, payload)),
+    )
+
+    RunService().transition_run("run_runtime", status="cancelled", error_message="live harness timeout")
+
+    waiting = manager.get_runtime_episode("episode_waiting")
+    completed = manager.get_runtime_episode("episode_complete")
+    assert waiting["state"] == "cancelled"
+    assert waiting["errorCode"] == "parent_run_terminal"
+    assert completed["state"] == "completed"
+    assert emitted[0][0] == "runtime.episode.cancelled"
+    assert emitted[0][1]["episode"]["episodeId"] == "episode_waiting"
+
+
+def test_nonterminal_run_does_not_cancel_runtime_episode(monkeypatch, tmp_path):
+    manager = DatabaseManager(tmp_path / "state.db")
+    manager.create_or_update_session("session_runtime", "Runtime Cleanup")
+    manager.create_run_record(
+        run_id="run_runtime",
+        session_id="session_runtime",
+        run_type="chat",
+        status="queued",
+    )
+    manager.upsert_runtime_episode_record(
+        {"episodeId": "episode_waiting", "kind": "delegation", "state": "waiting_dependency"},
+        session_id="session_runtime",
+        run_id="run_runtime",
+        enqueue=True,
+    )
+    monkeypatch.setattr("erc.run_service.db", manager)
+    monkeypatch.setattr("erc.run_service.run_ledger_service.record_event", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "erc.run_service.emit_runtime_episode_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not emit cancellation")),
+    )
+
+    RunService().transition_run("run_runtime", status="running")
+
+    assert manager.get_runtime_episode("episode_waiting")["state"] == "waiting_dependency"
+    assert manager.list_runtime_episodes(run_id="run_runtime", active_only=True)[0]["episodeId"] == "episode_waiting"

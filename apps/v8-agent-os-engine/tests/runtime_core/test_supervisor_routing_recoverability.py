@@ -1,43 +1,8 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
-
 from core.native_tools import _detect_session_preferred_command, run_system_command
 from core.storage import _sanitize_stock_supervisor_prompt_text
-from runtimes.chat.runtime import ChatRuntime
-
-
-WEREWOLF_APP_REQUEST = (
-    "调研狼人杀的玩法，以及配套狼人杀风格的前端界面以及图标，做一个AI狼人杀web应用，"
-    "可以接入6个不同供应商的LLM也可指定某个LLM扮演多个角色"
-)
-
-
-def test_planner_fallback_splits_research_and_engineering_for_app_build() -> None:
-    runtime = ChatRuntime()
-    chat_run = SimpleNamespace(
-        prepared=SimpleNamespace(
-            latest_user_content=WEREWOLF_APP_REQUEST,
-            planner_intent_diagnostics={"signals": []},
-            planner_mode="suggest",
-            task_shape_hint={
-                "primaryTaskShape": "project_coding",
-                "secondaryTaskShapes": ["research"],
-                "suggestedFamilies": ["engineering", "research"],
-                "optionalRuntimeGrants": ["research.core"],
-            },
-        )
-    )
-
-    plan = runtime._fallback_planner_plan(chat_run=chat_run, reason="empty_structured_output")
-
-    assert plan["executionStrategy"] == "mixed"
-    assert [brief["familyHint"] for brief in plan["taskBriefs"]] == ["research", "engineering"]
-    assert plan["taskBriefs"][0]["runtimeAccess"] == ["research.core"]
-    assert "<project-workspace>/" in plan["taskBriefs"][1]["writeSet"]
-    assert "engineeringTaskCapsule" in plan["taskBriefs"][1]
-    assert "mixed_research_engineering_fallback" in plan["riskFlags"]
 
 
 def test_scaffold_command_is_not_allowed_in_sync_mode() -> None:

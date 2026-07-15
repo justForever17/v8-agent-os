@@ -218,7 +218,7 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         target_count = max(target_count, len(worker_briefs))
     child_delegation_budget = _first_present(payload, ("childDelegationBudget", "child_delegation_budget", "childBudget", "child_budget"))
     write_set_partitions = _first_present(payload, ("writeSetPartitions", "write_set_partitions", "writePartitions", "write_partitions"))
-    acceptance_contract = _first_present(payload, ("acceptanceContract", "acceptance_contract"))
+    acceptance_contract = _first_present(payload, ("acceptanceContract", "acceptance_contract", "acceptance"))
     acceptance_tiers = _first_present(payload, ("acceptanceTiers", "acceptance_tiers", "tieredAcceptance", "tiered_acceptance"))
     normalized_acceptance_tiers = _normalize_acceptance_tiers(acceptance_tiers if acceptance_tiers is not None else acceptance_contract)
     raw_tool_policy = _first_present(payload, ("toolPolicy", "tool_policy"))
@@ -252,7 +252,17 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         if boundary not in behavior_scope:
             behavior_scope.append(boundary)
     expected_outputs = _normalize_scope_values(
-        _first_present(payload, ("expectedOutputs", "expected_outputs", "expectedOutput", "expected_output"))
+        _first_present(
+            payload,
+            (
+                "expectedOutputs",
+                "expected_outputs",
+                "expectedOutput",
+                "expected_output",
+                "expectedArtifacts",
+                "expected_artifacts",
+            ),
+        )
     )
     normalized = {
         "taskBriefId": str(payload.get("taskBriefId") or payload.get("task_brief_id") or defaults["taskBriefId"]).strip(),
@@ -317,6 +327,10 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         normalized["writeRequired"] = _safe_bool(
             _first_present(payload, ("writeRequired", "write_required"))
         )
+    if "readOnly" in payload or "read_only" in payload:
+        normalized["readOnly"] = _safe_bool(
+            _first_present(payload, ("readOnly", "read_only"))
+        )
     if "validateSkillArtifact" in payload or "validate_skill_artifact" in payload:
         normalized["validateSkillArtifact"] = _safe_bool(
             _first_present(payload, ("validateSkillArtifact", "validate_skill_artifact"))
@@ -361,7 +375,7 @@ def _merge_worker_context(parent_context: Any, worker_context: Any, *, parent_go
 def expand_delegation_task_briefs(values: Iterable[Any] | None) -> list[dict[str, Any]]:
     """Expand macro task briefs that explicitly request multiple parallel workers.
 
-    The planner/supervisor owns the requested fanout. A single macro task may
+    The supervisor owns the requested fanout. A single macro task may
     request targetCount=3 or provide three workerBriefs; budget enforcement still
     happens later on the expanded branch count.
     """
@@ -891,8 +905,8 @@ def build_workset_dispatch_decisions(
     normalized_tasks = [normalize_task_brief(item, index=index) for index, item in enumerate(list(task_briefs or []))]
     decisions: list[dict[str, Any]] = []
     write_owners: list[tuple[int, str, str]] = []
-    source = str(decision_source or ("planner_auto" if auto_dispatch else "supervisor_manual")).strip() or (
-        "planner_auto" if auto_dispatch else "supervisor_manual"
+    source = str(decision_source or ("supervisor_auto" if auto_dispatch else "supervisor_manual")).strip() or (
+        "supervisor_auto" if auto_dispatch else "supervisor_manual"
     )
 
     for index, task in enumerate(normalized_tasks):
@@ -917,7 +931,7 @@ def build_workset_dispatch_decisions(
             else:
                 risk = "missing_write_set"
                 reason = "engineering_task_missing_write_set"
-                repair = "Repair planner output with a concrete writeSet, or mark the task read-only/review-only before auto-dispatch."
+                repair = "Repair the Supervisor task brief with a concrete writeSet, or mark the task read-only/review-only before auto-dispatch."
                 blocked = bool(auto_dispatch)
                 warning = True
 
@@ -978,7 +992,7 @@ def _flatten_snapshot_values(snapshot: dict[str, Any] | None) -> list[str]:
         "operationCapabilities",
         "runtimeAffinities",
         "toolExposurePolicy",
-        "plannerSuitability",
+        "executionSuitability",
         "externalWorkerSuitability",
     ):
         value = snapshot.get(key)
@@ -1105,7 +1119,7 @@ def score_capability_candidate(
             score += 2
             signals.append(f"agentClass:{agent_class}")
 
-    suitability_key = "externalWorkerSuitability" if candidate_kind == "external_worker" else "plannerSuitability"
+    suitability_key = "externalWorkerSuitability" if candidate_kind == "external_worker" else "executionSuitability"
     suitability = str(snapshot.get(suitability_key) or "").strip().lower()
     if suitability in {"high", "preferred", "strong"}:
         score += 4
@@ -1230,7 +1244,7 @@ def reveal_subagent_family(family: str, agents: Iterable[dict[str, Any]], *, lim
                     "operationCapabilities": _normalize_scope_values(snapshot.get("operationCapabilities"))[:8],
                     "runtimeAffinities": _normalize_scope_values(snapshot.get("runtimeAffinities"))[:8],
                     "runtimeBindings": normalize_subagent_runtime_bindings(snapshot.get("runtimeBindings"))[:4],
-                    "plannerSuitability": snapshot.get("plannerSuitability"),
+                    "executionSuitability": snapshot.get("executionSuitability"),
                 },
                 "capabilitySummary": summarize_capability_snapshot(snapshot),
             }

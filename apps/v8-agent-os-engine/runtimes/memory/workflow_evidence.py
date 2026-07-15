@@ -56,7 +56,6 @@ def _event_is_workflow_relevant(topic: str, payload: Dict[str, Any]) -> bool:
         return False
     prefixes = (
         "tool.",
-        "planner.",
         "delegation.",
         "subagent.",
         "extension.",

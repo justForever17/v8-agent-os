@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import threading
@@ -16,10 +17,88 @@ from core.delegation_broker import normalize_task_briefs
 from core.delegation_result_contract import build_delegation_result_contract
 from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
-from core.runtime_episodes import build_handoff_ref, build_runtime_episode
+from core.runtime_episodes import ACTIVE_EPISODE_STATES, build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
 from core.workspace_state_digest import build_workspace_state_digest_context
 from erc.runtime_context import bind_runtime_context
+
+
+logger = logging.getLogger(__name__)
+
+_EPISODE_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:episode_[A-Za-z0-9]+|subagent::[A-Za-z0-9:_-]+)(?![A-Za-z0-9_])"
+)
+_WORKSPACE_READ_FILE_EXTENSIONS = frozenset(
+    {
+        ".bat",
+        ".c",
+        ".cc",
+        ".cjs",
+        ".cmd",
+        ".cpp",
+        ".cs",
+        ".css",
+        ".go",
+        ".h",
+        ".hpp",
+        ".htm",
+        ".html",
+        ".java",
+        ".js",
+        ".json",
+        ".jsonc",
+        ".jsx",
+        ".kt",
+        ".kts",
+        ".less",
+        ".md",
+        ".mjs",
+        ".ps1",
+        ".py",
+        ".rs",
+        ".scss",
+        ".sh",
+        ".sql",
+        ".svelte",
+        ".swift",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".vue",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
+_WORKSPACE_READ_FILENAMES = frozenset(
+    {
+        "dockerfile",
+        "gemfile",
+        "license",
+        "makefile",
+        "procfile",
+        "readme",
+    }
+)
+
+
+def _is_declared_workspace_read_target(value: Any) -> bool:
+    """Return true only for a file-shaped workspace target, never evidence prose."""
+
+    text = str(value or "").strip()
+    if not text or "://" in text or _EPISODE_REF_RE.search(text):
+        return False
+    normalized = text.replace("\\", "/")
+    basename = normalized.rstrip("/").rsplit("/", 1)[-1].strip().lower()
+    if not basename or normalized.endswith("/"):
+        return False
+    suffix = Path(basename).suffix.lower()
+    if suffix in _WORKSPACE_READ_FILE_EXTENSIONS or basename in _WORKSPACE_READ_FILENAMES:
+        return True
+    return bool(re.match(r"(?i)(?:^[a-z]:/|^\.{1,2}/|^/)", normalized)) and not any(
+        token in basename for token in ("(", ")", " evidence ", " bundle ")
+    )
 
 
 def _preview(value: Any, *, limit: int = 900) -> str:
@@ -30,12 +109,29 @@ def _preview(value: Any, *, limit: int = 900) -> str:
 
 
 def _first_tool_message_content(command: Any) -> str:
+    if isinstance(command, str):
+        return command
+    if isinstance(command, dict):
+        return json.dumps(command, ensure_ascii=False, default=str)
     update = dict(getattr(command, "update", None) or {})
     for message in list(update.get("messages") or []):
         content = getattr(message, "content", None)
         if content:
             return str(content)
     return ""
+
+
+def _tool_result_payload(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        return dict(result)
+    text = _first_tool_message_content(result).strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
 
 
 def _schedule_runtime_episode_handoff_resume(episode: dict[str, Any]) -> dict[str, Any]:
@@ -49,6 +145,26 @@ def _schedule_runtime_episode_handoff_resume(episode: dict[str, Any]) -> dict[st
             "resume_scheduled": False,
             "resume_error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def _runtime_surface_id_for_episode(episode: dict[str, Any]) -> str:
+    kind = str(episode.get("kind") or episode.get("runtimeKind") or "").strip().lower()
+    if "delegation" in kind or "subagent" in kind:
+        return "subagent_swarm"
+    for runtime_id in (
+        "engineering",
+        "research",
+        "creative_media",
+        "computer_use",
+        "rpa",
+        "memory",
+        "automation",
+        "extensions",
+        "network_supervisor",
+    ):
+        if kind == runtime_id or kind.startswith(f"{runtime_id}_"):
+            return runtime_id
+    return "chat"
 
 
 class RuntimeEpisodeRunner:
@@ -169,11 +285,42 @@ class RuntimeEpisodeRunner:
         self._emit("runtime.episode.started", episode=episode, session_id=session_id, run_id=run_id)
         try:
             self._heartbeat(episode_id, "executor starting")
-            if self._should_dispatch_child_needs(episode):
+            episode, dependency_gate = self._prepare_cross_episode_dependencies(episode)
+            if dependency_gate and dependency_gate.get("state") == "waiting_dependency":
+                waiting = db.complete_runtime_episode(
+                    episode_id,
+                    state="waiting_dependency",
+                    error_code="cross_episode_dependency_active",
+                    error_message=str(dependency_gate.get("summary") or "Waiting for upstream runtime episode."),
+                    metadata={"dependencyGate": dependency_gate},
+                ) or {**episode, "state": "waiting_dependency"}
+                self._emit(
+                    "runtime.episode.waiting",
+                    episode=waiting,
+                    session_id=session_id,
+                    run_id=run_id,
+                    dependency=dependency_gate,
+                )
+                return
+            if dependency_gate and dependency_gate.get("state") == "failed":
+                handoff = build_handoff_ref(
+                    producer_episode_id=episode_id,
+                    kind=f"{kind}_handoff",
+                    compact_summary=str(dependency_gate.get("summary") or "A required cross-episode dependency failed."),
+                    status="failed",
+                    confidence="high",
+                    consumer_hint="Repair or rerun the failed upstream episode before retrying this dependent episode.",
+                    extra={
+                        "errorCode": str(dependency_gate.get("errorCode") or "cross_episode_dependency_failed"),
+                        "dependencyGate": dependency_gate,
+                        "recoverable": True,
+                    },
+                )
+            elif self._should_dispatch_child_needs(episode):
                 waiting = self._dispatch_child_needs(episode, session_id=session_id, run_id=run_id)
                 self._emit("runtime.episode.waiting", episode=waiting, session_id=session_id, run_id=run_id)
                 return
-            if target_kind == "network_peer":
+            elif target_kind == "network_peer":
                 handoff = await self._execute_network_peer_target(episode)
             elif target_kind == "external_worker":
                 handoff = await self._execute_external_worker_target(episode)
@@ -261,6 +408,7 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            self._resume_cross_episode_dependents(completed or {**episode, "state": final_state})
             self._maybe_schedule_chat_handoff_resume(completed or {**episode, "state": final_state})
             self._maybe_resume_parent_episode(completed or episode, session_id=session_id, run_id=run_id)
         except Exception as exc:
@@ -293,6 +441,7 @@ class RuntimeEpisodeRunner:
                 session_id=session_id,
                 run_id=run_id,
             )
+            self._resume_cross_episode_dependents(failed or {**episode, "state": "failed"})
             self._maybe_schedule_chat_handoff_resume(failed or {**episode, "state": "failed"})
             self._maybe_resume_parent_episode(failed or {**episode, "state": "failed"}, session_id=session_id, run_id=run_id)
 
@@ -324,30 +473,86 @@ class RuntimeEpisodeRunner:
         **payload: Any,
     ) -> None:
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
-        event_payload = {"episode": to_jsonable(episode), **to_jsonable(payload)}
+        event_episode = episode
+        if topic == "runtime.episode.progress":
+            event_episode = {
+                "episodeId": episode_id,
+                "kind": episode.get("kind"),
+                "state": episode.get("state"),
+                "parentEpisodeId": episode.get("parentEpisodeId") or episode.get("parent_episode_id"),
+            }
+        event_payload = {
+            "runtimeId": _runtime_surface_id_for_episode(episode),
+            "episode": to_jsonable(event_episode),
+        }
+        if topic == "runtime.episode.progress":
+            raw_progress = dict(payload.get("progress") or {}) if isinstance(payload.get("progress"), dict) else {}
+            allowed_progress_keys = {
+                "stage",
+                "status",
+                "summary",
+                "toolName",
+                "taskBriefId",
+                "agentId",
+                "agentName",
+                "delegationId",
+                "parentDelegationId",
+                "delegationDepth",
+                "parentEpisodeId",
+                "rootEpisodeId",
+            }
+            compact_progress = {
+                key: value
+                for key, value in raw_progress.items()
+                if key in allowed_progress_keys and value not in (None, "", [], {})
+            }
+            event_payload["progress"] = to_jsonable(compact_progress)
+            for key in (
+                "stage",
+                "status",
+                "summary",
+                "toolName",
+                "agentName",
+                "delegationDepth",
+                "taskBriefId",
+                "delegationId",
+                "parentDelegationId",
+            ):
+                value = compact_progress.get(key)
+                if value not in (None, ""):
+                    event_payload[key] = to_jsonable(value)
+        else:
+            event_payload.update(to_jsonable(payload))
         if episode_id:
-            db.add_runtime_episode_event_record(
-                episode_id=episode_id,
-                topic=topic,
-                payload=event_payload,
-                session_id=session_id,
-                run_id=run_id,
-                state=str(episode.get("state") or ""),
-            )
+            try:
+                db.add_runtime_episode_event_record(
+                    episode_id=episode_id,
+                    topic=topic,
+                    payload=event_payload,
+                    session_id=session_id,
+                    run_id=run_id,
+                    state=str(episode.get("state") or ""),
+                )
+            except Exception as exc:
+                # Progress/audit observability must never break the episode it observes.
+                logger.debug("Failed to persist runtime episode event %s for %s: %s", topic, episode_id, exc)
         if session_id:
-            db.add_runtime_event(
-                {
-                    "event_id": f"evt_{topic.replace('.', '_')}_{uuid.uuid4().hex[:12]}",
-                    "session_id": session_id,
-                    "run_id": run_id,
-                    "seq": db.get_next_runtime_seq(session_id),
-                    "kind": "runtime_event",
-                    "topic": topic,
-                    "ts": utc_now_iso(),
-                    "source": {"runtime": "episode_runner", "workerId": self.worker_id},
-                    "payload": event_payload,
-                }
-            )
+            try:
+                db.add_runtime_event(
+                    {
+                        "event_id": f"evt_{topic.replace('.', '_')}_{uuid.uuid4().hex[:12]}",
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "seq": db.get_next_runtime_seq(session_id),
+                        "kind": "runtime_event",
+                        "topic": topic,
+                        "ts": utc_now_iso(),
+                        "source": {"runtime": "episode_runner", "workerId": self.worker_id},
+                        "payload": event_payload,
+                    }
+                )
+            except Exception as exc:
+                logger.debug("Failed to publish runtime event %s for %s: %s", topic, episode_id, exc)
 
     def _generic_handoff(self, episode: dict[str, Any], *, status: str, summary: str) -> dict[str, Any]:
         return build_handoff_ref(
@@ -711,6 +916,7 @@ class RuntimeEpisodeRunner:
                 state=state,
                 tool_call_id=f"episode:{episode.get('episodeId')}:research_run",
             )
+            run_payload = _tool_result_payload(run_result)
             visible = _first_tool_message_content(run_result) or search_visible
         else:
             self._heartbeat(str(episode.get("episodeId")), "research: plan")
@@ -738,14 +944,70 @@ class RuntimeEpisodeRunner:
                     "recommendedNextAction": "route_research_run",
                 },
             )
+        evidence_id = str(run_payload.get("evidenceBundleId") or "").strip()
+        answer_pack = dict(run_payload.get("researchAnswerPack") or {}) if isinstance(run_payload.get("researchAnswerPack"), dict) else {}
+        source_items = [
+            dict(item)
+            for item in list(answer_pack.get("sources") or run_payload.get("sourceMatrix") or [])
+            if isinstance(item, dict)
+        ]
+        claim_items = [
+            dict(item)
+            for item in list(answer_pack.get("claimTable") or run_payload.get("claimTable") or [])
+            if isinstance(item, dict)
+        ]
+        answer = str(answer_pack.get("answer") or run_payload.get("summary") or "").strip()
+        research_ready = bool(run_payload.get("ok") and evidence_id and source_items and answer)
+        if not research_ready:
+            return build_handoff_ref(
+                producer_episode_id=str(episode.get("episodeId") or ""),
+                kind="research",
+                compact_summary=_preview(
+                    answer
+                    or str(run_payload.get("summary") or "")
+                    or visible
+                    or "Research run ended without a source-backed evidence bundle."
+                ),
+                status="degraded",
+                confidence="low",
+                consumer_hint="Retry Research Runtime with a narrower question or repair the research provider before downstream use.",
+                extra={
+                    "query": query,
+                    "researchRefs": [],
+                    "runMode": "run",
+                    "researchState": "evidence_missing",
+                    "degradedReason": "research_run_missing_evidence",
+                    "sourceCount": len(source_items),
+                    "claimCount": len(claim_items),
+                    "recommendedNextAction": "retry_research_run",
+                },
+            )
+        research_ref = f"research://bundle/{evidence_id}"
+        source_urls = [
+            str(item.get("url") or item.get("sourceUrl") or "").strip()
+            for item in source_items
+            if str(item.get("url") or item.get("sourceUrl") or "").strip()
+        ]
         return build_handoff_ref(
             producer_episode_id=str(episode.get("episodeId") or ""),
             kind="research",
-            compact_summary=_preview(visible or f"Research routed for: {query}"),
+            compact_summary=_preview(answer),
             status="ready",
             confidence="medium",
             consumer_hint="Use this research handoff as evidence refs input for Engineering/Creative episodes.",
-            extra={"query": query, "researchRefs": [f"episode:{episode.get('episodeId')}"], "runMode": run_mode or "plan"},
+            extra={
+                "query": query,
+                "researchRefs": [research_ref],
+                "refs": [research_ref, *source_urls[:6]],
+                "proofRefs": [research_ref],
+                "evidenceBundleId": evidence_id,
+                "runMode": "run",
+                "researchState": "evidence_ready",
+                "sourceCount": len(source_items),
+                "claimCount": len(claim_items),
+                "limitations": list(answer_pack.get("limitations") or run_payload.get("limitations") or [])[:6],
+                "detailRef": research_ref,
+            },
         )
 
     async def _execute_engineering(self, episode: dict[str, Any]) -> dict[str, Any]:
@@ -773,6 +1035,21 @@ class RuntimeEpisodeRunner:
             )
         if child_handoffs:
             ready_count = len(child_handoffs)
+            resumed_worker_briefs = normalize_task_briefs(
+                inputs.get("workerBriefs")
+                or inputs.get("worker_briefs")
+                or inputs.get("taskBriefs")
+                or inputs.get("task_briefs")
+                or inputs.get("tasks")
+                or need.get("workerBriefs")
+                or need.get("taskBriefs")
+                or need.get("tasks")
+            )
+            resumed_plan_only = self._is_engineering_plan_only_request(
+                need=need,
+                inputs=inputs,
+                worker_briefs=resumed_worker_briefs,
+            )
             skill_validation = self._validate_skill_artifact_if_requested(episode, need=need, inputs=inputs)
             if skill_validation and not skill_validation.get("ok"):
                 return build_handoff_ref(
@@ -794,14 +1071,27 @@ class RuntimeEpisodeRunner:
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="engineering",
                 compact_summary=(
-                    f"Engineering handoff_ready after {ready_count} child delegation handoff(s).\n"
+                    (
+                        f"Engineering work_plan_ready after {ready_count} child delegation handoff(s).\n"
+                        if resumed_plan_only
+                        else f"Engineering handoff_ready after {ready_count} child delegation handoff(s).\n"
+                    )
+                    +
                     f"{visible_evidence_summary or _preview('; '.join(str(item.get('compactSummary') or item.get('summary') or item.get('kind') or '') for item in child_handoffs), limit=900)}"
                 ),
                 status="ready",
                 confidence="medium",
                 consumer_hint="Merge child delegation handoffs into Supervisor route context and continue orchestration.",
                 extra={
-                    "engineeringState": "skill_artifact_ready" if skill_validation and skill_validation.get("ok") else "handoff_ready",
+                    "engineeringState": (
+                        "skill_artifact_ready"
+                        if skill_validation and skill_validation.get("ok")
+                        else "work_plan_ready"
+                        if resumed_plan_only
+                        else "handoff_ready"
+                    ),
+                    "deliverableKind": "plan_only" if resumed_plan_only else inputs.get("deliverableKind") or need.get("deliverableKind"),
+                    "writeRequired": False if resumed_plan_only else inputs.get("writeRequired") if "writeRequired" in inputs else need.get("writeRequired"),
                     "childHandoffs": child_handoffs,
                     "handoffRefs": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs if isinstance(item, dict)],
                     "visibleEvidenceSummary": visible_evidence_summary,
@@ -870,7 +1160,7 @@ class RuntimeEpisodeRunner:
                     }
                 ]
             )
-        if worker_briefs and not plan_only:
+        if worker_briefs:
             worker_briefs = self._prepare_engineering_worker_briefs_for_delegation(
                 worker_briefs,
                 need=need,
@@ -979,14 +1269,27 @@ class RuntimeEpisodeRunner:
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="engineering",
                 compact_summary=(
-                    f"Engineering execution_started through {len(worker_briefs)} delegated worker(s).\n"
+                    (
+                        f"Engineering work_plan_started through {len(worker_briefs)} delegated worker(s).\n"
+                        if plan_only
+                        else f"Engineering execution_started through {len(worker_briefs)} delegated worker(s).\n"
+                    )
+                    +
                     f"{visible_evidence_summary or _preview(delegation_handoff.get('compactSummary') or delegation_handoff.get('summary') or context_summary, limit=700)}"
                 ),
                 status=status,
                 confidence=str(delegation_handoff.get("confidence") or "medium"),
                 consumer_hint="Merge this engineering handoff into Supervisor route context before continuing.",
                 extra={
-                    "engineeringState": "skill_artifact_ready" if skill_validation and skill_validation.get("ok") else "execution_started",
+                    "engineeringState": (
+                        "skill_artifact_ready"
+                        if skill_validation and skill_validation.get("ok")
+                        else "work_plan_started"
+                        if plan_only
+                        else "execution_started"
+                    ),
+                    "deliverableKind": "plan_only" if plan_only else inputs.get("deliverableKind") or need.get("deliverableKind"),
+                    "writeRequired": False if plan_only else inputs.get("writeRequired") if "writeRequired" in inputs else need.get("writeRequired"),
                     "delegationHandoff": delegation_handoff,
                     "workspaceDigestRef": f"workspace_digest:{episode.get('episodeId')}",
                     "proofExpectations": inputs.get("proofExpectations") or need.get("proofExpectations") or [],
@@ -1660,6 +1963,11 @@ class RuntimeEpisodeRunner:
                 ".agents/skills",
             )
         )
+        plan_only = self._is_engineering_plan_only_request(
+            need=need,
+            inputs=inputs,
+            worker_briefs=worker_briefs,
+        )
         normalized: list[dict[str, Any]] = []
         for brief in worker_briefs:
             item = dict(brief)
@@ -1698,11 +2006,70 @@ class RuntimeEpisodeRunner:
                     and any(marker in task_text for marker in ("构建", "组装", "写入", "质量验证", "build", "assemble", "validate"))
                 )
                 artifact_write_required = artifact_write_required or validate_skill_artifact
+            else:
+                if not str(item.get("familyHint") or "").strip():
+                    item["familyHint"] = "engineering"
+                required_capabilities = [
+                    str(value).strip()
+                    for value in list(item.get("requiredCapabilities") or [])
+                    if str(value).strip()
+                ]
+                plan_capabilities = ["software_engineering"]
+                if plan_only:
+                    plan_capabilities.extend(["architecture", "review"])
+                for capability in plan_capabilities:
+                    if capability not in required_capabilities:
+                        required_capabilities.append(capability)
+                item["requiredCapabilities"] = required_capabilities
+                if not item.get("readSet"):
+                    detail_refs = [
+                        str(value).strip()
+                        for value in list(item.get("detailRefs") or [])
+                        if str(value).strip()
+                        and "://" not in str(value)
+                    ]
+                    if detail_refs:
+                        item["readSet"] = detail_refs
             if expected_outputs:
                 context.setdefault("expectedOutputs", expected_outputs)
                 expected_text = json.dumps(expected_outputs, ensure_ascii=False, default=str).lower()
                 artifact_write_required = artifact_write_required or bool(
                     re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", expected_text)
+                )
+            read_targets = [
+                str(value or "").strip()
+                for value in list(item.get("readSet") or [])
+                if str(value or "").strip()
+            ]
+            filesystem_read_targets: list[str] = []
+            injected_evidence_refs: list[str] = []
+            for value in read_targets:
+                target = filesystem_read_targets if _is_declared_workspace_read_target(value) else injected_evidence_refs
+                if value not in target:
+                    target.append(value)
+            item["readSet"] = filesystem_read_targets
+            if injected_evidence_refs:
+                context["injectedEvidenceRefs"] = injected_evidence_refs
+                context.setdefault(
+                    "handoffConsumptionDiscipline",
+                    "Use dependencyResults and injected handoff summaries directly. injectedEvidenceRefs are evidence labels, not filesystem paths; never pass episode IDs, handoff IDs, research:// refs, bundle labels, or capability labels to file tools.",
+                )
+            has_workspace_read_target = bool(filesystem_read_targets)
+            tool_policy = dict(item.get("toolPolicy") or {}) if isinstance(item.get("toolPolicy"), dict) else {}
+            tool_mode = str(tool_policy.get("mode") or "default").strip().lower()
+            explicit_allowed_tools = list(tool_policy.get("allowedTools") or item.get("allowedTools") or [])
+            if (
+                plan_only
+                and not artifact_write_required
+                and not has_workspace_read_target
+                and not explicit_allowed_tools
+                and tool_mode in {"", "default", "none"}
+            ):
+                item["toolPolicy"] = {"mode": "none", "allowedTools": [], "forbiddenTools": []}
+                item["allowedTools"] = []
+                context.setdefault(
+                    "handoffConsumptionDiscipline",
+                    "Use dependencyResults and injected handoff summaries directly. They are evidence, not filesystem paths; do not look up episode IDs, handoff IDs, research:// refs, or invented bundle filenames.",
                 )
             if artifact_write_required:
                 item["writeRequired"] = True
@@ -1716,6 +2083,7 @@ class RuntimeEpisodeRunner:
                     "artifactAcceptanceGuard",
                     "Expected output files must contain complete, source-backed content. Empty placeholders or one-line stubs are invalid; return a blocker/degraded result if evidence is missing.",
                 )
+            if context:
                 item["context"] = context
             normalized.append(item)
         return normalized
@@ -1767,11 +2135,295 @@ class RuntimeEpisodeRunner:
         return deps
 
     @staticmethod
+    def _episode_task_briefs(episode: dict[str, Any]) -> list[dict[str, Any]]:
+        inputs = dict(episode.get("inputs") or {}) if isinstance(episode.get("inputs"), dict) else {}
+        return normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
+
+    @classmethod
+    def _episode_task_ids(cls, episode: dict[str, Any]) -> list[str]:
+        task_ids: list[str] = []
+        for brief in cls._episode_task_briefs(episode):
+            task_id = str(brief.get("taskBriefId") or brief.get("taskId") or brief.get("id") or "").strip()
+            if task_id and task_id not in task_ids:
+                task_ids.append(task_id)
+        return task_ids
+
+    @staticmethod
+    def _compact_cross_episode_result(
+        *,
+        task_id: str,
+        episode: dict[str, Any],
+        handoff: dict[str, Any] | None,
+        forced_status: str = "",
+    ) -> dict[str, Any]:
+        handoff = dict(handoff or {})
+        payload = handoff.get("payload") if isinstance(handoff.get("payload"), dict) else handoff
+        result_items = [item for item in list(payload.get("results") or []) if isinstance(item, dict)]
+        matching = next(
+            (
+                dict(item)
+                for item in result_items
+                if str(item.get("taskBriefId") or item.get("taskId") or "").strip() == task_id
+            ),
+            {},
+        )
+        source = matching or payload
+        metadata = episode.get("metadata") if isinstance(episode.get("metadata"), dict) else {}
+        recovery = metadata.get("recovery") if isinstance(metadata.get("recovery"), dict) else {}
+        can_continue_parent = bool(recovery.get("canContinueParent"))
+        status = str(forced_status or source.get("status") or payload.get("status") or episode.get("state") or "").strip().lower()
+        if status in {"completed", "merged"}:
+            status = "ok"
+        elif status == "degraded":
+            status = "degraded"
+        elif status in {"failed", "blocked", "cancelled", "canceled"}:
+            status = "failed"
+        summary = _preview(
+            source.get("resultText")
+            or source.get("summary")
+            or source.get("compactSummary")
+            or payload.get("compactSummary")
+            or payload.get("summary")
+            or f"Dependency task {task_id} finished in episode {episode.get('episodeId') or episode.get('id')}",
+            limit=1200,
+        )
+
+        def _values(*keys: str, limit: int = 8) -> list[Any]:
+            values: list[Any] = []
+            for container in (source, payload):
+                for key in keys:
+                    raw = container.get(key)
+                    items = raw if isinstance(raw, list) else [raw] if raw not in (None, "") else []
+                    for item in items:
+                        if item not in values:
+                            values.append(item)
+                        if len(values) >= limit:
+                            return values
+            return values
+
+        return {
+            "taskBriefId": task_id,
+            "status": status or "failed",
+            "summary": summary,
+            "agentId": source.get("agentId"),
+            "agentName": source.get("agentName") or source.get("targetLabel"),
+            "artifacts": _values("artifactRefs", "artifacts", "changedFiles", "touchedFiles", "refs"),
+            "proofRefs": _values("proofRefs", "verificationRefs", "evidenceRefs"),
+            "blockers": _values("blockers", "residualRisks", limit=6),
+            "error": source.get("error") or payload.get("errorCode") or ("dependency_episode_failed" if status == "failed" else None),
+            "canContinueParent": can_continue_parent,
+            "degradedReason": payload.get("degradedReason") if status == "degraded" else None,
+            "producerEpisodeId": episode.get("episodeId") or episode.get("id"),
+            "handoffRefId": handoff.get("handoffId") or handoff.get("handoffRefId") or payload.get("handoffRefId"),
+        }
+
+    @classmethod
+    def _cross_episode_dependency_context(
+        cls,
+        episode: dict[str, Any],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if not run_id:
+            return {}, {}
+        completed: dict[str, dict[str, Any]] = {}
+        active_task_to_episode: dict[str, str] = {}
+        for sibling in db.list_runtime_episodes(run_id=run_id, limit=200):
+            sibling_id = str(sibling.get("episodeId") or sibling.get("id") or "").strip()
+            if not sibling_id or sibling_id == episode_id:
+                continue
+            task_ids = cls._episode_task_ids(sibling)
+            if not task_ids:
+                continue
+            state = str(sibling.get("state") or "").strip().lower()
+            if state in ACTIVE_EPISODE_STATES:
+                for task_id in task_ids:
+                    active_task_to_episode[task_id] = sibling_id
+                continue
+            handoffs = db.list_runtime_episode_handoffs(sibling_id)
+            latest_handoff = dict(handoffs[-1]) if handoffs else {}
+            metadata = sibling.get("metadata") if isinstance(sibling.get("metadata"), dict) else {}
+            recovery = metadata.get("recovery") if isinstance(metadata.get("recovery"), dict) else {}
+            degraded_continuable = state == "degraded" and bool(recovery.get("canContinueParent")) and bool(latest_handoff)
+            if degraded_continuable:
+                forced_status = "degraded"
+            else:
+                forced_status = "failed" if state in {"degraded", "failed", "cancelled", "canceled"} else ""
+            for task_id in task_ids:
+                completed[task_id] = cls._compact_cross_episode_result(
+                    task_id=task_id,
+                    episode=sibling,
+                    handoff=latest_handoff,
+                    forced_status=forced_status,
+                )
+        return completed, active_task_to_episode
+
+    @classmethod
+    def _episode_dependency_ids(cls, episode: dict[str, Any]) -> list[str]:
+        dependencies: list[str] = []
+        for brief in cls._episode_task_briefs(episode):
+            context = brief.get("context") if isinstance(brief.get("context"), dict) else {}
+            for source in (
+                brief.get("dependency"),
+                brief.get("dependencies"),
+                brief.get("dependsOn"),
+                context.get("dependency"),
+                context.get("dependencies"),
+                context.get("dependsOn"),
+            ):
+                values = source if isinstance(source, list) else [source]
+                for value in values:
+                    dependency = str(value or "").strip()
+                    if dependency and dependency not in dependencies:
+                        dependencies.append(dependency)
+        return dependencies
+
+    @classmethod
+    def _inject_cross_episode_dependency_results(
+        cls,
+        episode: dict[str, Any],
+        results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Attach compact upstream truth to every executor-facing task brief.
+
+        The injection is deliberately bounded and contains only the accepted
+        handoff summary, artifact/proof references, blockers and lineage.  Raw
+        tool output, reasoning and runtime queue metadata never cross the
+        episode boundary.
+        """
+        if not results:
+            return dict(episode)
+        compact_results = [dict(item) for item in results[:24] if isinstance(item, dict)]
+        updated = dict(episode)
+        inputs = dict(updated.get("inputs") or {}) if isinstance(updated.get("inputs"), dict) else {}
+        existing = [dict(item) for item in list(inputs.get("dependencyResults") or []) if isinstance(item, dict)]
+        by_task_id = {
+            str(item.get("taskBriefId") or "").strip(): item
+            for item in [*existing, *compact_results]
+            if str(item.get("taskBriefId") or "").strip()
+        }
+        merged_results = list(by_task_id.values())[:24]
+        inputs["dependencyResults"] = merged_results
+        for key in ("workerBriefs", "taskBriefs", "tasks"):
+            raw_briefs = inputs.get(key)
+            if not isinstance(raw_briefs, list):
+                continue
+            injected_briefs: list[Any] = []
+            for raw_brief in raw_briefs:
+                if not isinstance(raw_brief, dict):
+                    injected_briefs.append(raw_brief)
+                    continue
+                brief = dict(raw_brief)
+                context = dict(brief.get("context") or {}) if isinstance(brief.get("context"), dict) else {}
+                dependency_ids: list[str] = []
+                for source in (
+                    brief.get("dependency"),
+                    brief.get("dependencies"),
+                    brief.get("dependsOn"),
+                    context.get("dependency"),
+                    context.get("dependencies"),
+                    context.get("dependsOn"),
+                ):
+                    values = source if isinstance(source, list) else [source]
+                    for value in values:
+                        dependency_id = str(value or "").strip()
+                        if dependency_id and dependency_id not in dependency_ids:
+                            dependency_ids.append(dependency_id)
+                matched = [item for item in merged_results if str(item.get("taskBriefId") or "") in dependency_ids]
+                if matched:
+                    context["dependencyResults"] = matched
+                    brief["context"] = context
+                injected_briefs.append(brief)
+            inputs[key] = injected_briefs
+        updated["inputs"] = inputs
+        need = dict(updated.get("need") or {}) if isinstance(updated.get("need"), dict) else {}
+        if need:
+            need_inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
+            need_inputs.update(inputs)
+            need["inputs"] = need_inputs
+            updated["need"] = need
+        return updated
+
+    @classmethod
+    def _prepare_cross_episode_dependencies(
+        cls,
+        episode: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        dependencies = cls._episode_dependency_ids(episode)
+        if not dependencies:
+            return dict(episode), None
+        local_task_ids = set(cls._episode_task_ids(episode))
+        external_dependencies = [item for item in dependencies if item not in local_task_ids]
+        if not external_dependencies:
+            return dict(episode), None
+        completed, active = cls._cross_episode_dependency_context(episode)
+        waiting = [item for item in external_dependencies if item in active]
+        if waiting:
+            return dict(episode), {
+                "state": "waiting_dependency",
+                "taskBriefIds": waiting,
+                "producerEpisodeIds": sorted({active[item] for item in waiting}),
+                "summary": "Waiting for required upstream runtime episode handoff before execution.",
+            }
+        missing = [item for item in external_dependencies if item not in completed]
+        if missing:
+            return dict(episode), {
+                "state": "failed",
+                "errorCode": "cross_episode_dependency_missing",
+                "taskBriefIds": missing,
+                "summary": "Required cross-episode dependency was not found in the current run.",
+            }
+        failed = [item for item in external_dependencies if not cls._delegation_summary_succeeded(completed[item])]
+        if failed:
+            return dict(episode), {
+                "state": "failed",
+                "errorCode": "cross_episode_dependency_failed",
+                "taskBriefIds": failed,
+                "dependencyResults": [completed[item] for item in failed],
+                "summary": "Required upstream runtime episode failed acceptance; dependent execution was blocked.",
+            }
+        dependency_results = [completed[item] for item in external_dependencies]
+        return cls._inject_cross_episode_dependency_results(episode, dependency_results), None
+
+    def _resume_cross_episode_dependents(self, completed_episode: dict[str, Any]) -> None:
+        run_id = str(completed_episode.get("run_id") or completed_episode.get("runId") or "").strip()
+        completed_episode_id = str(completed_episode.get("episodeId") or completed_episode.get("id") or "").strip()
+        completed_task_ids = set(self._episode_task_ids(completed_episode))
+        if not run_id or not completed_task_ids:
+            return
+        for sibling in db.list_runtime_episodes(run_id=run_id, limit=200):
+            sibling_id = str(sibling.get("episodeId") or sibling.get("id") or "").strip()
+            if not sibling_id or sibling_id == completed_episode_id:
+                continue
+            if str(sibling.get("state") or "").strip().lower() not in {"waiting", "waiting_dependency"}:
+                continue
+            if not completed_task_ids.intersection(self._episode_dependency_ids(sibling)):
+                continue
+            resumed = db.retry_runtime_episode(
+                sibling_id,
+                error_message="cross_episode_dependency_resolved",
+                delay_seconds=0,
+            )
+            if resumed:
+                self._emit(
+                    "runtime.episode.resumed",
+                    episode=resumed,
+                    session_id=str(resumed.get("session_id") or resumed.get("sessionId") or "").strip() or None,
+                    run_id=run_id,
+                    dependency={
+                        "producerEpisodeId": completed_episode_id,
+                        "taskBriefIds": sorted(completed_task_ids),
+                    },
+                )
+
+    @staticmethod
     def _delegation_summary_succeeded(summary: dict[str, Any]) -> bool:
         status = str(summary.get("status") or "").strip().lower()
         if status in {"ok", "ready", "success", "completed", "done"}:
             return True
-        if status in {"degraded", "blocked", "error", "failed", "cancelled"}:
+        if status == "degraded":
+            return bool(summary.get("canContinueParent"))
+        if status in {"blocked", "error", "failed", "cancelled"}:
             return False
         return bool(summary.get("artifacts") or summary.get("proofRefs") or summary.get("changedFiles"))
 
@@ -2435,7 +3087,7 @@ class RuntimeEpisodeRunner:
                     compact_summary="Delegation episode cannot dispatch because it has no worker brief/task.",
                     status="degraded",
                     confidence="high",
-                    consumer_hint="Use this degraded handoff as a single missing-tasks diagnostic; repair the planner taskBriefs or ask for a narrower contract before retrying.",
+                    consumer_hint="Use this degraded handoff as a single missing-tasks diagnostic; repair the Supervisor taskBriefs or ask for a narrower contract before retrying.",
                     extra={
                         "delegationState": "delegation_degraded",
                         "degraded": True,
@@ -2511,7 +3163,12 @@ class RuntimeEpisodeRunner:
             waiting_child = [
                 item
                 for item in results
-                if str(item.get("status") or "").lower() in {"waiting_child_delegation", "waiting_child", "waiting"}
+                if str(item.get("status") or "").lower() in {
+                    "waiting_child_delegation",
+                    "waiting_child",
+                    "waiting_dependency",
+                    "waiting",
+                }
             ]
             ready_results = [
                 item
@@ -2606,6 +3263,14 @@ class RuntimeEpisodeRunner:
                     ),
                     "delegationRefs": [item.get("delegationId") or item.get("id") for item in results if isinstance(item, dict)],
                     "childEpisodeIds": child_episode_ids,
+                    "waitingDependencyEpisodeIds": list(
+                        dict.fromkeys(
+                            episode_id
+                            for item in waiting_child
+                            for episode_id in list(item.get("waitingDependencyEpisodeIds") or [])
+                            if str(episode_id or "").strip()
+                        )
+                    ),
                     "failedDelegationCount": len(hard_failed),
                     "totalFailedDelegationCount": len(failed),
                     "attemptedWorkers": [
@@ -2716,8 +3381,128 @@ class RuntimeEpisodeRunner:
             or ""
         ).strip() or None
 
+        def _direct_delegation_episode(branch: dict[str, Any]) -> dict[str, Any] | None:
+            delegation_id = str(branch.get("delegationId") or "").strip()
+            if not delegation_id:
+                return None
+            stored = db.get_runtime_episode(delegation_id)
+            if stored:
+                return stored
+            return None
+
+        def _start_direct_delegation_episode(branch: dict[str, Any]) -> dict[str, Any] | None:
+            direct_episode = _direct_delegation_episode(branch)
+            if not direct_episode:
+                return None
+            started = db.complete_runtime_episode(
+                str(direct_episode.get("episodeId") or direct_episode.get("id") or ""),
+                state="active",
+            ) or {**direct_episode, "state": "active"}
+            self._emit(
+                "runtime.episode.started",
+                episode=started,
+                session_id=session_id,
+                run_id=run_id,
+            )
+            return started
+
+        def _finalize_direct_delegation_episode(
+            branch: dict[str, Any],
+            summary: dict[str, Any],
+            *,
+            child_ids: list[str] | None = None,
+        ) -> None:
+            direct_episode = _direct_delegation_episode(branch)
+            if not direct_episode:
+                return
+            delegation_id = str(direct_episode.get("episodeId") or direct_episode.get("id") or "").strip()
+            if not delegation_id:
+                return
+            children = [str(value).strip() for value in list(child_ids or []) if str(value).strip()]
+            raw_status = str(summary.get("status") or "").strip().lower()
+            if children or raw_status in {"waiting", "waiting_child", "waiting_child_delegation", "waiting_dependency"}:
+                handoff_status = "waiting"
+                final_state = "waiting_child" if children or "child" in raw_status else "waiting"
+                event_topic = "runtime.episode.waiting"
+            elif self._delegation_summary_succeeded(summary):
+                handoff_status = "ready"
+                final_state = "completed"
+                event_topic = "runtime.episode.completed"
+            elif raw_status == "degraded":
+                handoff_status = "degraded"
+                final_state = "degraded"
+                event_topic = "runtime.episode.degraded"
+            else:
+                handoff_status = "failed"
+                final_state = "failed"
+                event_topic = "runtime.episode.failed"
+            compact_summary = self._delegation_handoff_visible_evidence_summary(summary) or _preview(
+                summary.get("summary") or summary.get("error") or "Delegated worker returned no usable summary.",
+                limit=700,
+            )
+            handoff = build_handoff_ref(
+                producer_episode_id=delegation_id,
+                kind="delegation",
+                compact_summary=compact_summary,
+                status=handoff_status,
+                confidence="medium" if handoff_status in {"ready", "waiting"} else "low",
+                consumer_hint="Parent runtime must merge this delegated result before continuing.",
+                extra={
+                    "delegationState": "waiting_child" if final_state == "waiting_child" else "handoff_ready" if final_state == "completed" else final_state,
+                    "results": [build_delegation_result_contract(summary)],
+                    "childEpisodeIds": children,
+                    "parentEpisodeId": direct_episode.get("parentEpisodeId") or direct_episode.get("parent_episode_id"),
+                },
+            )
+            persisted_handoff = db.add_runtime_episode_handoff(
+                episode_id=delegation_id,
+                handoff=handoff,
+                session_id=session_id,
+                run_id=run_id,
+            )
+            updated = db.complete_runtime_episode(
+                delegation_id,
+                state=final_state,
+                result_ref=str(persisted_handoff.get("handoffId") or persisted_handoff.get("handoffRefId") or ""),
+                error_code=("delegation_worker_failed" if final_state == "failed" else None),
+                error_message=(str(summary.get("error") or compact_summary) if final_state == "failed" else None),
+                metadata={
+                    "handoff": persisted_handoff,
+                    "childEpisodeIds": children,
+                    "executionSource": "runtime_episode_runner.local_delegation",
+                },
+            ) or {**direct_episode, "state": final_state}
+            self._emit(
+                event_topic,
+                episode=updated,
+                handoff=persisted_handoff,
+                session_id=session_id,
+                run_id=run_id,
+            )
+
         pending = list(sends)
-        completed_by_task_id: dict[str, dict[str, Any]] = {}
+        completed_by_task_id, active_dependency_episodes = self._cross_episode_dependency_context(episode)
+        local_task_ids = {self._delegation_send_task_id(item) for item in pending if self._delegation_send_task_id(item)}
+        waiting_dependencies = sorted(
+            {
+                dependency
+                for item in pending
+                for dependency in self._delegation_send_dependencies(item)
+                if dependency not in local_task_ids and dependency in active_dependency_episodes
+            }
+        )
+        if waiting_dependencies:
+            waiting_episode_ids = sorted({active_dependency_episodes[item] for item in waiting_dependencies})
+            return [
+                {
+                    "status": "waiting_dependency",
+                    "error": "cross_episode_dependency_active",
+                    "summary": "Waiting for required upstream runtime episode handoff before dispatching dependent subagents.",
+                    "dependency": waiting_dependencies,
+                    "waitingDependencyEpisodeIds": waiting_episode_ids,
+                    "completedAt": None,
+                }
+            ], []
 
         async def _run_ready_send(item: Send) -> None:
             nonlocal agent_nodes_map
@@ -2754,6 +3539,48 @@ class RuntimeEpisodeRunner:
             arg["current_route_context"] = route_context
             branch = dict(arg.get("parallel_branch") or {})
             agent_id = str(branch.get("agentId") or "").strip()
+            direct_episode = _start_direct_delegation_episode(branch)
+            progress_fingerprints: set[str] = set()
+
+            def _progress(progress_payload: dict[str, Any]) -> None:
+                compact = {
+                    "stage": str(progress_payload.get("stage") or "working").strip(),
+                    "status": str(progress_payload.get("status") or "running").strip(),
+                    "summary": _preview(progress_payload.get("summary"), limit=240),
+                    "toolName": str(progress_payload.get("toolName") or "").strip() or None,
+                    "taskBriefId": task_id or branch.get("taskBriefId"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                    "delegationId": branch.get("delegationId"),
+                    "parentDelegationId": branch.get("parentDelegationId"),
+                    "delegationDepth": int(branch.get("delegationDepth") or 1),
+                    "parentEpisodeId": episode.get("episodeId") or episode.get("id"),
+                    "rootEpisodeId": episode.get("rootEpisodeId") or episode.get("root_episode_id") or episode.get("episodeId"),
+                }
+                fingerprint = json.dumps(compact, ensure_ascii=False, sort_keys=True, default=str)
+                if fingerprint in progress_fingerprints:
+                    return
+                progress_fingerprints.add(fingerprint)
+                progress_episode = direct_episode or {
+                    "episodeId": branch.get("delegationId") or episode.get("episodeId"),
+                    "kind": "delegation",
+                    "state": "active",
+                    "parentEpisodeId": episode.get("episodeId"),
+                }
+                direct_episode_id = str(progress_episode.get("episodeId") or "").strip()
+                if direct_episode_id and direct_episode is not None:
+                    try:
+                        db.heartbeat_runtime_episode(direct_episode_id, progress=str(compact.get("summary") or ""))
+                    except Exception:
+                        pass
+                self._emit(
+                    "runtime.episode.progress",
+                    episode=progress_episode,
+                    session_id=session_id,
+                    run_id=run_id,
+                    progress=compact,
+                )
+
             agent_data = agent_nodes_map.get(agent_id)
             refresh_attempted = False
             previous_registry_hash = self._agent_nodes_map_snapshot_hash
@@ -2788,6 +3615,8 @@ class RuntimeEpisodeRunner:
                     "completedAt": utc_now_iso(),
                 }
                 results.append(summary)
+                _progress({"stage": "failed", "status": "failed", "summary": summary["summary"]})
+                _finalize_direct_delegation_episode(branch, summary)
                 if task_id:
                     completed_by_task_id[task_id] = summary
                 return
@@ -2795,7 +3624,7 @@ class RuntimeEpisodeRunner:
                 try:
                     _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
                         str(episode.get("episodeId") or ""),
-                        _run_parallel_agent_branch(arg, agent_data),
+                        _run_parallel_agent_branch(arg, agent_data, progress_callback=_progress),
                         progress=f"delegation: running subagent {agent_id or 'worker'}",
                         interval_seconds=8.0,
                     )
@@ -2809,7 +3638,7 @@ class RuntimeEpisodeRunner:
                         raise
                     _delta_messages, _delta_todos, summary, child_requests = await self._await_with_heartbeat(
                         str(episode.get("episodeId") or ""),
-                        _run_parallel_agent_branch(retry_arg, agent_data),
+                        _run_parallel_agent_branch(retry_arg, agent_data, progress_callback=_progress),
                         progress=f"delegation: retry safe verification for {agent_id or 'worker'}",
                         interval_seconds=8.0,
                     )
@@ -2853,10 +3682,22 @@ class RuntimeEpisodeRunner:
                     workspace_path=workspace_path,
                 )
                 summary.setdefault("taskBriefId", task_id or branch.get("taskBriefId"))
+                direct_parent = direct_episode or episode
+                branch_child_ids = self._enqueue_child_delegation_requests(child_requests, episode=direct_parent)
+                if branch_child_ids:
+                    summary["childEpisodeIds"] = branch_child_ids
                 results.append(summary)
+                _progress(
+                    {
+                        "stage": "handoff_ready" if self._delegation_summary_succeeded(summary) else "blocked",
+                        "status": "completed" if self._delegation_summary_succeeded(summary) else str(summary.get("status") or "blocked"),
+                        "summary": self._delegation_handoff_visible_evidence_summary(summary),
+                    }
+                )
+                _finalize_direct_delegation_episode(branch, summary, child_ids=branch_child_ids)
                 if task_id:
                     completed_by_task_id[task_id] = summary
-                child_episode_ids.extend(self._enqueue_child_delegation_requests(child_requests, episode=episode))
+                child_episode_ids.extend(branch_child_ids)
             except Exception as exc:
                 summary = {
                     "invocationId": branch.get("invocationId"),
@@ -2872,9 +3713,19 @@ class RuntimeEpisodeRunner:
                     "branchIndex": branch.get("branchIndex"),
                     "status": "error",
                     "error": str(exc).strip() or exc.__class__.__name__,
+                    "compactExecutionTrace": str(getattr(exc, "compact_trace", "") or "")[:2400],
+                    "toolsUsed": list(getattr(exc, "tools_used", []) or [])[:12],
                     "completedAt": utc_now_iso(),
                 }
                 results.append(summary)
+                _progress(
+                    {
+                        "stage": "failed",
+                        "status": "failed",
+                        "summary": _preview(summary.get("error"), limit=240),
+                    }
+                )
+                _finalize_direct_delegation_episode(branch, summary)
                 if task_id:
                     completed_by_task_id[task_id] = summary
 
@@ -2898,6 +3749,7 @@ class RuntimeEpisodeRunner:
                         failed=failed_deps,
                     )
                     results.append(summary)
+                    _finalize_direct_delegation_episode(branch, summary)
                     if task_id:
                         completed_by_task_id[task_id] = summary
                     pending.remove(item)
@@ -2924,6 +3776,7 @@ class RuntimeEpisodeRunner:
                     failed=missing_deps,
                 )
                 results.append(summary)
+                _finalize_direct_delegation_episode(branch, summary)
                 if task_id:
                     completed_by_task_id[task_id] = summary
                 pending.remove(item)
@@ -3053,10 +3906,10 @@ class RuntimeEpisodeRunner:
             "编排",
             "主链",
         )
-        if any(token in normalized for token in research_tokens):
-            return ("web-research-architect", "Web Research Architect", "research_goal")
         if any(token in normalized for token in verification_tokens):
             return ("verification-engineer", "Verification Engineer", "verification_goal")
+        if any(token in normalized for token in research_tokens):
+            return ("web-research-architect", "Web Research Architect", "research_goal")
         if any(token in normalized for token in engineering_tokens):
             return ("implementation-engineer", "Implementation Engineer", "engineering_goal")
         return None

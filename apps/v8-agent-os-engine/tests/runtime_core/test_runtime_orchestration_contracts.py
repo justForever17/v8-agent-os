@@ -1,0 +1,545 @@
+from __future__ import annotations
+
+import json
+import asyncio
+from types import SimpleNamespace
+
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.types import Command
+
+import core.runtime_episode_runner as runner_module
+import core.tools.native.command as command_module
+from core.runtime_episode_runner import RuntimeEpisodeRunner
+from core.runtime_episodes import ACTIVE_EPISODE_STATES
+from core.tools.native.delegation import _inject_inherited_handoffs_into_tasks
+from core.tools.native.command_governance import _windows_shell_syntax_violation_payload
+from core.tools.native.runtime import RuntimeRouteTaskBrief
+from graph.parallel_support import (
+    _repeat_sensitive_tool_call_signature,
+    build_parallel_delegate_task_node,
+)
+from graph.workflow_assembly import _route_runtime_tool_commands, _workflow_entry_command
+from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
+
+
+def _dependent_episode() -> dict:
+    return {
+        "episodeId": "episode-dependent",
+        "runId": "run-shared",
+        "kind": "engineering",
+        "state": "active",
+        "inputs": {
+            "workerBriefs": [
+                {
+                    "taskBriefId": "TASK-B",
+                    "goal": "Use the upstream evidence and write result.md.",
+                    "dependency": ["TASK-A"],
+                    "context": {},
+                }
+            ]
+        },
+    }
+
+
+def _upstream_episode(state: str) -> dict:
+    return {
+        "episodeId": "episode-upstream",
+        "runId": "run-shared",
+        "kind": "research",
+        "state": state,
+        "inputs": {
+            "workerBriefs": [
+                {
+                    "taskBriefId": "TASK-A",
+                    "goal": "Collect evidence.",
+                    "readOnly": True,
+                    "context": {},
+                }
+            ]
+        },
+    }
+
+
+def test_runtime_route_task_brief_normalizes_explicit_expected_output_map() -> None:
+    brief = RuntimeRouteTaskBrief.model_validate(
+        {
+            "taskBriefId": "research-1",
+            "goal": "Collect evidence.",
+            "readOnly": True,
+            "writeRequired": False,
+            "writeSet": "",
+            "expectedOutputs": {
+                "item": "limitations",
+                "reuseDecision": "",
+                "detailRef": "",
+            },
+            "acceptanceContract": {"mustCiteSources": True},
+        }
+    )
+
+    assert brief.writeSet == []
+    assert brief.expectedOutputs == ["item: limitations", "reuseDecision", "detailRef"]
+
+
+def test_command_list_runtime_route_enters_runtime_episode() -> None:
+    commands = [
+        Command(
+            goto="supervisor",
+            update={
+                "messages": [ToolMessage(content="queued", tool_call_id="runtime-route")],
+                "current_route_context": {"capabilityEpisodes": [{"episodeId": "episode-1"}]},
+            },
+        ),
+        Command(
+            goto="supervisor",
+            update={
+                "runtime_dispatch_status": {
+                    "mode": "runtime_broker_route",
+                    "nextAction": "wait_episode",
+                    "episodeId": "episode-1",
+                }
+            },
+        ),
+    ]
+
+    routed = _route_runtime_tool_commands(commands)
+
+    assert isinstance(routed, Command)
+    assert routed.goto == "runtime_episode"
+    assert routed.update["runtime_dispatch_status"]["episodeId"] == "episode-1"
+    assert routed.update["current_route_context"]["capabilityEpisodes"][0]["episodeId"] == "episode-1"
+    assert len(routed.update["messages"]) == 1
+
+
+def test_non_runtime_command_list_remains_unmodified() -> None:
+    commands = [Command(goto="supervisor", update={"messages": []})]
+    assert _route_runtime_tool_commands(commands) is commands
+
+
+def test_workflow_entry_routes_pending_runtime_handoff_to_episode_node() -> None:
+    command = _workflow_entry_command(
+        {
+            "runtime_dispatch_status": {
+                "mode": "runtime_episode",
+                "nextAction": "wait_episode",
+                "state": "handoff_resume_requested",
+            }
+        }
+    )
+    assert command.goto == "runtime_episode"
+    assert _workflow_entry_command({}).goto == "supervisor"
+
+
+def test_waiting_dependency_is_an_active_episode_state() -> None:
+    assert "waiting_dependency" in ACTIVE_EPISODE_STATES
+
+
+def test_cross_episode_active_dependency_blocks_before_executor(monkeypatch) -> None:
+    fake_db = SimpleNamespace(
+        list_runtime_episodes=lambda **_kwargs: [_upstream_episode("active")],
+        list_runtime_episode_handoffs=lambda _episode_id: [],
+    )
+    monkeypatch.setattr(runner_module, "db", fake_db)
+
+    updated, gate = RuntimeEpisodeRunner._prepare_cross_episode_dependencies(_dependent_episode())
+
+    assert updated["episodeId"] == "episode-dependent"
+    assert gate == {
+        "state": "waiting_dependency",
+        "taskBriefIds": ["TASK-A"],
+        "producerEpisodeIds": ["episode-upstream"],
+        "summary": "Waiting for required upstream runtime episode handoff before execution.",
+    }
+
+
+def test_cross_episode_handoff_is_injected_without_runtime_noise(monkeypatch) -> None:
+    handoff = {
+        "handoffId": "handoff-upstream",
+        "payload": {
+            "status": "ready",
+            "compactSummary": "Evidence collected.",
+            "results": [
+                {
+                    "taskBriefId": "TASK-A",
+                    "status": "completed",
+                    "resultText": "Three primary sources agree.",
+                    "artifactRefs": ["workspace://evidence.md"],
+                    "proofRefs": ["proof://source-check"],
+                    "rawToolPayload": {"secret": "must-not-cross"},
+                }
+            ],
+            "rawReasoning": "must-not-cross",
+        },
+    }
+    fake_db = SimpleNamespace(
+        list_runtime_episodes=lambda **_kwargs: [_upstream_episode("completed")],
+        list_runtime_episode_handoffs=lambda _episode_id: [handoff],
+    )
+    monkeypatch.setattr(runner_module, "db", fake_db)
+
+    updated, gate = RuntimeEpisodeRunner._prepare_cross_episode_dependencies(_dependent_episode())
+
+    assert gate is None
+    injected = updated["inputs"]["workerBriefs"][0]["context"]["dependencyResults"][0]
+    assert injected["taskBriefId"] == "TASK-A"
+    assert injected["status"] == "ok"
+    assert injected["summary"] == "Three primary sources agree."
+    assert injected["artifacts"] == ["workspace://evidence.md"]
+    assert injected["proofRefs"] == ["proof://source-check"]
+    serialized = json.dumps(injected, ensure_ascii=False)
+    assert "rawToolPayload" not in serialized
+    assert "rawReasoning" not in serialized
+    assert "must-not-cross" not in serialized
+
+
+def test_cross_episode_failed_dependency_blocks_dependent(monkeypatch) -> None:
+    fake_db = SimpleNamespace(
+        list_runtime_episodes=lambda **_kwargs: [_upstream_episode("failed")],
+        list_runtime_episode_handoffs=lambda _episode_id: [
+            {
+                "handoffId": "handoff-failed",
+                "payload": {"status": "failed", "compactSummary": "Source validation failed."},
+            }
+        ],
+    )
+    monkeypatch.setattr(runner_module, "db", fake_db)
+
+    _updated, gate = RuntimeEpisodeRunner._prepare_cross_episode_dependencies(_dependent_episode())
+
+    assert gate["state"] == "failed"
+    assert gate["errorCode"] == "cross_episode_dependency_failed"
+    assert gate["taskBriefIds"] == ["TASK-A"]
+
+
+def test_direct_delegation_injects_upstream_handoff_content_instead_of_fake_file_paths(monkeypatch) -> None:
+    monkeypatch.setattr("core.tools.native.delegation.sys.platform", "win32")
+    tasks = [
+        {
+            "taskBriefId": "risk-review",
+            "goal": "Review research://episode_research/evidence and engineering://episode_engineering/plan.",
+            "context": "Read-only review.",
+            "evidenceRefs": [
+                "research://episode_research/evidence",
+                "engineering://episode_engineering/plan",
+            ],
+        }
+    ]
+    inherited = {
+        "handoffRefs": [
+            {
+                "handoffRefId": "handoff-research",
+                "producerEpisodeId": "episode_research",
+                "kind": "research_evidence_bundle",
+                "status": "ready",
+                "compactSummary": "Three sources agree on the bottleneck.",
+                "rawReasoning": "must-not-cross",
+            },
+            {
+                "handoffRefId": "handoff-engineering",
+                "producerEpisodeId": "episode_engineering",
+                "kind": "engineering_patch_bundle",
+                "status": "ready",
+                "compactSummary": "The execution plan has three bounded phases.",
+                "childHandoffs": [
+                    {
+                        "producerEpisodeId": "subagent::plan",
+                        "kind": "subagent_result",
+                        "status": "ready",
+                        "compactSummary": "Phase 1 narrows routing; phase 2 verifies handoffs.",
+                        "rawToolPayload": {"secret": "must-not-cross"},
+                    }
+                ],
+            },
+        ]
+    }
+
+    injected = _inject_inherited_handoffs_into_tasks(tasks, inherited)[0]
+    context = injected["context"]
+
+    assert context["notes"] == "Read-only review."
+    assert context["shellDialect"] == "powershell"
+    assert [item["producerEpisodeId"] for item in context["upstreamHandoffs"]] == [
+        "episode_research",
+        "episode_engineering",
+    ]
+    assert context["upstreamHandoffs"][1]["childResults"][0]["summary"].startswith("Phase 1")
+    assert "not filesystem paths" in context["handoffUsage"]
+    serialized = json.dumps(injected, ensure_ascii=False)
+    assert "rawReasoning" not in serialized
+    assert "rawToolPayload" not in serialized
+    assert "must-not-cross" not in serialized
+
+
+def test_runtime_handoff_file_hunting_uses_one_semantic_repeat_signature() -> None:
+    read_signature = _repeat_sensitive_tool_call_signature(
+        {"name": "read_native_file", "args": {"path": "E:/repo/research_evidence_bundle_episode_a.md"}}
+    )
+    command_signature = _repeat_sensitive_tool_call_signature(
+        {"name": "run_system_command", "args": {"command": "dir /s /b E:\\repo\\episode_b 2>nul"}}
+    )
+
+    assert read_signature == command_signature == (
+        "runtime_handoff_lookup",
+        "runtime_handoff_identifier_is_not_a_file",
+    )
+
+
+def test_parallel_delegation_publishes_denoised_progress_and_terminal_handoff(monkeypatch) -> None:
+    events: list[dict] = []
+    heartbeats: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        "graph.parallel_support.emit_runtime_episode_event",
+        lambda topic, payload, source=None: events.append({"topic": topic, "payload": payload, "source": source}),
+    )
+    monkeypatch.setattr(
+        "graph.parallel_support.heartbeat_runtime_episode",
+        lambda episode_id, progress="": heartbeats.append((episode_id, progress)),
+    )
+
+    def worker_node(_state):
+        return Command(goto="supervisor", update={"messages": [AIMessage(content="Risk review complete.")]})
+
+    node = build_parallel_delegate_task_node(
+        {
+            "worker": {
+                "node_func": worker_node,
+                "tool_mode": "none",
+            }
+        }
+    )
+    result = asyncio.run(
+        node(
+            {
+                "session_id": "session-progress",
+                "run_id": "run-progress",
+                "messages": [],
+                "todos": [],
+                "parallel_branch": {
+                    "invocationId": "delegation-progress",
+                    "delegationId": "subagent::delegation-progress::worker",
+                    "taskBriefId": "TASK-PROGRESS",
+                    "taskBrief": {"taskBriefId": "TASK-PROGRESS", "goal": "Review risk."},
+                    "agentId": "worker",
+                    "agentName": "Risk Reviewer",
+                    "reason": "Review risk.",
+                    "initialMessageCount": 0,
+                    "initialTodoCount": 0,
+                },
+            }
+        )
+    )
+
+    assert result.goto == "parallel_delegate_join"
+    stages = [item["payload"]["progress"]["stage"] for item in events]
+    assert stages == ["started", "working", "handoff_ready"]
+    assert all(item["topic"] == "runtime.episode.progress" for item in events)
+    assert heartbeats[-1][0] == "subagent::delegation-progress::worker"
+
+
+def test_progress_event_drops_raw_payload_and_reasoning(monkeypatch) -> None:
+    recorded: list[dict] = []
+
+    class FakeDb:
+        def add_runtime_episode_event_record(self, **kwargs):
+            recorded.append(dict(kwargs))
+
+        def add_runtime_event(self, payload):
+            recorded.append(dict(payload))
+
+        def get_next_runtime_seq(self, _session_id):
+            return 1
+
+    monkeypatch.setattr(runner_module, "db", FakeDb())
+    runner = RuntimeEpisodeRunner()
+    runner._emit(
+        "runtime.episode.progress",
+        episode={"episodeId": "episode-progress", "kind": "delegation", "state": "active"},
+        session_id="session-progress",
+        run_id="run-progress",
+        progress={
+            "stage": "tool_execution",
+            "status": "running",
+            "summary": "正在验证产物。",
+            "toolName": "run_system_command",
+            "rawOutput": "SECRET_OUTPUT",
+            "reasoning": "SECRET_REASONING",
+        },
+        rawToolPayload={"secret": "SECRET_PAYLOAD"},
+    )
+
+    serialized = json.dumps(recorded, ensure_ascii=False)
+    assert "tool_execution" in serialized
+    assert "run_system_command" in serialized
+    assert "SECRET_OUTPUT" not in serialized
+    assert "SECRET_REASONING" not in serialized
+    assert "SECRET_PAYLOAD" not in serialized
+
+
+def test_windows_shell_dialect_is_deterministic(monkeypatch) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+
+    assert command_module._resolve_shell_dialect("$env:MODE='test'; Get-ChildItem -Force") == "powershell"
+    assert command_module._resolve_shell_dialect("set MODE=test && dir /b") == "cmd"
+    assert command_module._resolve_shell_dialect("Get-ChildItem", "pwsh") == "pwsh"
+
+    violation = _windows_shell_syntax_violation_payload(
+        "set MODE=test && dir /b",
+        shell_dialect="powershell",
+    )
+    assert violation is not None
+    assert "cmd_syntax_in_powershell" in violation["violations"]
+
+
+def test_windows_shell_argv_uses_one_explicit_shell(monkeypatch) -> None:
+    monkeypatch.setattr(command_module.sys, "platform", "win32")
+    monkeypatch.setattr(command_module.shutil, "which", lambda name: f"C:/shells/{name}")
+
+    argv = command_module._shell_command_argv("Write-Output 'ok'", "powershell")
+
+    assert argv[0] == "C:/shells/powershell.exe"
+    assert argv[-2:] == ["-Command", "Write-Output 'ok'"]
+    assert argv.count("powershell.exe") == 0
+
+
+def _required_write_episode(workspace: str, *, state: str = "completed") -> dict:
+    return {
+        "episodeId": "episode-write",
+        "kind": "engineering",
+        "state": state,
+        "inputs": {
+            "workspacePath": workspace,
+            "taskBriefs": [
+                {
+                    "taskBriefId": "TASK-WRITE",
+                    "goal": "Write result.md.",
+                    "writeRequired": True,
+                    "writeSet": ["result.md"],
+                    "expectedOutputs": ["result.md"],
+                    "acceptanceContract": {"must": ["result.md exists"]},
+                }
+            ],
+        },
+    }
+
+
+def test_non_spec_required_write_degraded_cannot_complete(tmp_path) -> None:
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path), state="degraded")],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "degraded",
+                    "compactSummary": "Worker returned without a file.",
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_runtime_degraded"
+    assert decision.details["nextAction"] == "repair_or_retry_required_write_episode"
+
+
+def test_non_spec_required_write_without_file_cannot_complete(tmp_path) -> None:
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "proofRefs": ["proof://verification"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_files_missing"
+
+
+def test_non_spec_required_write_rejects_unresolved_workspace_artifact_ref(tmp_path) -> None:
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "artifactRefs": ["workspace://result.md"],
+                    "proofRefs": ["proof://verification"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_files_missing"
+
+
+def test_non_spec_required_write_without_proof_cannot_complete(tmp_path) -> None:
+    artifact = tmp_path / "result.md"
+    artifact.write_text("done", encoding="utf-8")
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "changedFiles": ["result.md"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_proof_missing"
+
+
+def test_non_spec_required_write_with_file_and_proof_can_complete(tmp_path) -> None:
+    artifact = tmp_path / "result.md"
+    artifact.write_text("done", encoding="utf-8")
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "changedFiles": ["result.md"],
+                    "proofRefs": ["proof://verification"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
+def test_non_spec_required_write_resolves_workspace_artifact_ref_to_real_file(tmp_path) -> None:
+    artifact = tmp_path / "result.md"
+    artifact.write_text("done", encoding="utf-8")
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "artifactRefs": ["workspace://result.md"],
+                    "proofRefs": ["proof://verification"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"

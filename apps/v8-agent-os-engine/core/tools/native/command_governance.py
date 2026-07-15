@@ -152,33 +152,63 @@ def _detect_session_preferred_command(command: str) -> str | None:
     return None
 
 
-def _windows_shell_syntax_violation_payload(command: str) -> dict[str, Any] | None:
+def _windows_shell_syntax_violation_payload(
+    command: str,
+    *,
+    shell_dialect: str = "auto",
+) -> dict[str, Any] | None:
     if sys.platform != "win32":
         return None
     stripped = _strip_leading_shell_cwd(command)
     if not stripped:
         return None
     lowered = stripped.lower()
+    dialect = str(shell_dialect or "auto").strip().lower()
     violations: list[str] = []
     suggestions: list[str] = []
-    if re.search(r"(^|[;&|]\s*)mkdir\s+-p(?:\s|$)", lowered):
+    if dialect != "bash" and re.search(r"(^|[;&|]\s*)mkdir\s+-p(?:\s|$)", lowered):
         violations.append("mkdir_-p")
         suggestions.append("PowerShell: New-Item -ItemType Directory -Force <path>")
         suggestions.append("Prefer write_native_file for project files; it creates parent directories safely.")
-    if re.search(r"\{[^{}\r\n,]+,[^{}\r\n]+\}", stripped):
+    if dialect != "bash" and re.search(r"\{[^{}\r\n,]+,[^{}\r\n]+\}", stripped):
         violations.append("brace_expansion")
         suggestions.append("PowerShell: create each directory explicitly or use an array piped to New-Item.")
-    if re.search(r"(^|[;&|]\s*)ls\s+-[A-Za-z]*[la][A-Za-z]*(?:\s|$)", stripped):
+    if dialect != "bash" and re.search(r"(^|[;&|]\s*)ls\s+-[A-Za-z]*[la][A-Za-z]*(?:\s|$)", stripped):
         violations.append("ls_dash_la")
         suggestions.append("PowerShell: Get-ChildItem -Force <path>")
     if not violations:
+        if dialect in {"powershell", "pwsh"} and (
+            re.search(r"(^|[;&|]\s*)set\s+[A-Za-z_][A-Za-z0-9_]*=", stripped, re.IGNORECASE)
+            or re.search(r"%[A-Za-z_][A-Za-z0-9_]*%", stripped)
+            or re.search(r"(^|[;&|]\s*)dir\s+/[A-Za-z]", stripped, re.IGNORECASE)
+        ):
+            violations.append("cmd_syntax_in_powershell")
+            suggestions.append("Use $env:NAME for environment variables and Get-ChildItem for directory listing.")
+        elif dialect == "powershell" and ("&&" in stripped or "||" in stripped):
+            violations.append("powershell_5_chain_operator")
+            suggestions.append("Use '; if ($?) { ... }' in Windows PowerShell, or choose shell_dialect='pwsh'/'cmd' explicitly.")
+        elif dialect == "cmd" and (
+            re.search(r"\$env:[A-Za-z_]", stripped, re.IGNORECASE)
+            or re.search(r"\$\([^\r\n]+\)", stripped)
+            or re.search(r"(^|[;&|]\s*)(?:Get|Set|New|Remove|Copy|Move)-[A-Za-z]+", stripped, re.IGNORECASE)
+            or re.search(r"\|\s*(?:Where|ForEach|Select)-Object\b", stripped, re.IGNORECASE)
+        ):
+            violations.append("powershell_syntax_in_cmd")
+            suggestions.append("Choose shell_dialect='powershell' or rewrite the command with cmd.exe syntax.")
+    if not violations:
         return None
+    summary = (
+        "检测到所选 shell dialect 与命令语法不一致，已阻断以避免执行偏差。"
+        if any(item in {"cmd_syntax_in_powershell", "powershell_5_chain_operator", "powershell_syntax_in_cmd"} for item in violations)
+        else "检测到 POSIX shell 写法，但当前命令会在 Windows shell 中执行，已阻断以避免污染工作区。"
+    )
     return {
         "ok": False,
         "kind": "cross_shell_syntax_violation",
-        "summary": "检测到 POSIX shell 写法，但当前命令会在 Windows shell 中执行，已阻断以避免污染工作区。",
+        "summary": summary,
         "command": command,
         "platform": "windows",
+        "shellDialect": dialect,
         "violations": violations,
         "suggestedAlternatives": list(dict.fromkeys(suggestions)),
         "recommendedNextAction": "改用 PowerShell/Windows 等价命令，或使用 V8 文件工具在 Active Workspace Root 内创建文件。",

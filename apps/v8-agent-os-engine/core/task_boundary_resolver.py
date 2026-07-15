@@ -67,7 +67,7 @@ def _explicitly_excludes_runtime(text: str, runtime_terms: tuple[str, ...]) -> b
 
     This is intentionally stricter than generic negation: route choices are
     safety/ownership decisions, so "不含 Computer Use/RPA" must override
-    broader workflow/planner signals in the same request.
+    broader workflow-routing signals in the same request.
     """
 
     for term in runtime_terms:
@@ -247,7 +247,6 @@ def resolve_task_boundary(
     user_query: str,
     *,
     task_shape_hint: dict[str, Any] | None = None,
-    planner_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve ambiguous execution ownership into a compact, auditable hint.
 
@@ -256,7 +255,7 @@ def resolve_task_boundary(
     """
 
     hint = dict(task_shape_hint or {})
-    text = "\n".join(part for part in (_lower(user_query), _lower(planner_plan)) if part)
+    text = _lower(user_query)
     primary_shape = _text(hint.get("primaryTaskShape")) or "general_chat"
     secondary_shapes = [_text(item) for item in _as_list(hint.get("secondaryTaskShapes")) if _text(item)]
     writing_route = hint.get("writingRoute") if isinstance(hint.get("writingRoute"), dict) else {}
@@ -413,13 +412,11 @@ def attach_task_boundary_decision(
     task_shape_hint: dict[str, Any] | None,
     *,
     user_query: str,
-    planner_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     hint = dict(task_shape_hint or {})
     hint["boundaryDecision"] = resolve_task_boundary(
         user_query,
         task_shape_hint=hint,
-        planner_plan=planner_plan,
     )
     return hint
 
@@ -435,7 +432,7 @@ def render_task_boundary_hint(boundary: dict[str, Any] | None) -> str:
         f"primaryRuntime={boundary.get('primaryRuntime') or 'unknown'}; supportingRuntimes={support}; executionMode={boundary.get('executionMode') or 'unknown'}",
         f"askUserNeeded={bool(boundary.get('askUserNeeded'))}; reason={boundary.get('reason') or 'unspecified'}",
         f"forbiddenRoutes={forbidden}; signals={signals}; source=task_boundary_resolver",
-        "policy=code decision hint; Planner and tool gates must respect route corrections, but this does not grant runtime tools.",
+        "policy=code decision hint; Supervisor and tool gates must respect route corrections, but this does not grant runtime tools.",
         "</task_boundary>",
     ]
     return "\n".join(lines) + "\n"

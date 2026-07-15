@@ -74,6 +74,41 @@ class FakeChatRun:
 
 
 class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
+    async def test_engineering_projection_uses_execution_contract_without_global_plan(self):
+        runtime = ChatRuntime()
+        chat_run = FakeChatRun()
+        chat_run.prepared = SimpleNamespace(
+            engineering_trigger_decision={"active": True},
+            engineering_context_pack={
+                "contextPack": {
+                    "codingExecutionContractPreview": {
+                        "enabled": True,
+                        "writeSet": [],
+                        "riskFlags": ["write_set_missing"],
+                        "proofExpectations": ["Return verification evidence."],
+                    }
+                }
+            },
+            engineering_mode="force",
+        )
+        bundle = ChatExecutionBundle(
+            run_handle=object(),
+            runner_bundle=SupervisorExecutionBundle(graph=None, payload=None, graph_config={}, diagnostics={}),
+        )
+
+        with mock.patch.object(
+            chat_runtime_module.supervisor_runner,
+            "get_state_snapshot",
+            new=mock.AsyncMock(return_value={"parallel_results": [], "current_route_context": {}}),
+        ):
+            await runtime.emit_engineering_lane_projection(chat_run, bundle)
+
+        event = chat_run.events[-1]
+        self.assertEqual(event["topic"], "engineering.plan.projected")
+        self.assertEqual(event["payload"]["summary"], "工程执行合同已投影 · 0 个工程任务")
+        self.assertEqual(event["payload"]["riskFlags"], ["write_set_missing"])
+        self.assertEqual(event["payload"]["traceRef"], {"runId": "run_test"})
+
     def test_runtime_episode_chain_uses_long_timeout_window(self):
         state = GraphStreamWatchdogState()
 
@@ -278,7 +313,6 @@ class ChatStreamWatchdogTests(unittest.IsolatedAsyncioTestCase):
             run_handle=object(),
             scope_result=SimpleNamespace(binding=binding),
             prepared=SimpleNamespace(
-                planner_plan={},
                 engineering_context_pack={},
                 task_shape_hint={},
                 explicit_subagent_families=[],

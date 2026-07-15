@@ -75,7 +75,6 @@ export function buildChatSubmitPayload({
       projectId: projectId || undefined,
       specMode,
       safetyApprovalMode: normalizedSafetyApprovalMode,
-      taskPlanningMode: false,
     },
   };
 }

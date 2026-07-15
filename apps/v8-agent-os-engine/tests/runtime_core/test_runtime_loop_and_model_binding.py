@@ -21,6 +21,29 @@ class _NativeModel:
         return AIMessage(content="ok")
 
 
+class _PromptFallbackNativeModel:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.messages = []
+        self.bind_kwargs = []
+
+    def bind_tools(self, _tools, **kwargs):
+        self.bind_kwargs.append(dict(kwargs))
+        return self
+
+    def invoke(self, messages, *, config=None, **_kwargs):
+        self.calls += 1
+        self.messages.append(list(messages))
+        if self.calls == 1:
+            return AIMessage(content="我会先调用 runtime_broker。")
+        return AIMessage(
+            content=(
+                '{"tool_name":"runtime_broker","arguments":'
+                '{"mode":"route","need":{"kind":"engineering"}}}'
+            )
+        )
+
+
 class _FlakySaver:
     def __init__(self) -> None:
         self.aput_calls = 0
@@ -82,6 +105,52 @@ def test_adapter_marks_nested_provider_events_runtime_internal():
         "metadata": {"v8_model_scope": "runtime_internal"},
         "tags": ["v8:provider-internal"],
     }
+
+
+def test_required_native_tool_call_falls_back_to_strict_prompt_emulation():
+    native = _PromptFallbackNativeModel()
+    adapter = V8ChatModelAdapter(
+        model_id="test-model",
+        provider_standard="openai",
+        role="supervisor",
+        meta={
+            "api_standard": "openai",
+            "capabilityClass": "chat_tool_calling",
+            "capabilities": {"supportsTools": True},
+        },
+        model_kwargs={},
+        builder=lambda: native,
+    )
+    runtime_broker_schema = {
+        "type": "function",
+        "function": {
+            "name": "runtime_broker",
+            "description": "Route a typed runtime episode.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string"},
+                    "need": {"type": "object"},
+                },
+                "required": ["mode", "need"],
+            },
+        },
+    }
+
+    response = adapter.bind_tools(
+        [runtime_broker_schema],
+        tool_choice="runtime_broker",
+    ).invoke([HumanMessage(content="route engineering")])
+
+    assert native.calls == 2
+    assert native.bind_kwargs == [{"tool_choice": "runtime_broker"}]
+    assert response.content == ""
+    assert response.tool_calls[0]["name"] == "runtime_broker"
+    assert response.tool_calls[0]["args"] == {
+        "mode": "route",
+        "need": {"kind": "engineering"},
+    }
+    assert "本次必须调用工具 runtime_broker" in native.messages[1][0].content
 
 
 def test_checkpoint_store_isolates_savers_by_event_loop(tmp_path):

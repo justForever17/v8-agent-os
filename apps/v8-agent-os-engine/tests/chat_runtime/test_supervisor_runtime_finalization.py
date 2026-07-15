@@ -42,7 +42,7 @@ from runtimes.chat.runtime import ChatRuntime
 def test_runtime_episode_handoff_ready_requires_resume_terminal_state():
     assert _runtime_episode_handoff_ready(
         {
-            "planner_dispatch_status": {
+            "runtime_dispatch_status": {
                 "mode": "runtime_episode",
                 "nextAction": "resume_supervisor",
                 "state": "handoff_ready",
@@ -53,7 +53,7 @@ def test_runtime_episode_handoff_ready_requires_resume_terminal_state():
 
     assert not _runtime_episode_handoff_ready(
         {
-            "planner_dispatch_status": {
+            "runtime_dispatch_status": {
                 "mode": "runtime_episode",
                 "nextAction": "wait_episode",
                 "state": "handoff_ready",
@@ -64,7 +64,7 @@ def test_runtime_episode_handoff_ready_requires_resume_terminal_state():
 
     assert not _runtime_episode_handoff_ready(
         {
-            "planner_dispatch_status": {
+            "runtime_dispatch_status": {
                 "mode": "runtime_episode",
                 "nextAction": "resume_supervisor",
                 "state": "episode_terminal",
@@ -311,7 +311,7 @@ def test_natural_language_session_coordination_request_keeps_brokers_visible():
 def test_runtime_episode_degraded_handoff_ready_is_terminal():
     assert _runtime_episode_handoff_ready(
         {
-            "planner_dispatch_status": {
+            "runtime_dispatch_status": {
                 "mode": "runtime_episode",
                 "nextAction": "resume_supervisor",
                 "state": "degraded_handoff_ready",
@@ -331,7 +331,7 @@ def test_runtime_handoff_final_message_leaves_delivery_decision_to_supervisor():
 
 def test_runtime_handoff_compat_response_is_review_summary_from_handoff_refs():
     state = {
-        "planner_dispatch_status": {
+        "runtime_dispatch_status": {
             "mode": "runtime_episode",
             "nextAction": "resume_supervisor",
             "state": "handoff_ready",
@@ -356,7 +356,7 @@ def test_runtime_handoff_compat_response_is_review_summary_from_handoff_refs():
 
 def test_compiled_creative_media_handoff_requires_continuation():
     state = {
-        "planner_dispatch_status": {
+        "runtime_dispatch_status": {
             "mode": "runtime_episode",
             "nextAction": "resume_supervisor",
             "state": "handoff_ready",
@@ -416,7 +416,7 @@ def test_completion_gate_reports_forward_only_text_as_advisory():
 
 def test_runtime_recoverable_failure_message_blocks_false_completion():
     state = {
-        "planner_dispatch_status": {
+        "runtime_dispatch_status": {
             "mode": "runtime_episode",
             "nextAction": "recoverable_failure",
             "state": "episode_failed",
@@ -432,7 +432,7 @@ def test_runtime_recoverable_failure_message_blocks_false_completion():
 
 def test_runtime_recoverable_failure_final_response_is_deterministic():
     state = {
-        "planner_dispatch_status": {
+        "runtime_dispatch_status": {
             "mode": "runtime_episode",
             "nextAction": "recoverable_failure",
             "state": "episode_failed",
@@ -450,7 +450,7 @@ def test_runtime_recoverable_failure_final_response_is_deterministic():
 
 def test_runtime_recoverable_failure_response_is_coerced_when_model_claims_success():
     state = {
-        "planner_dispatch_status": {
+        "runtime_dispatch_status": {
             "mode": "runtime_episode",
             "nextAction": "recoverable_failure",
             "state": "episode_failed",
@@ -495,7 +495,6 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
     monkeypatch.setattr(supervisor_turn_module, "filter_visible_tools_for_actor", lambda tools, **_kwargs: tools)
     monkeypatch.setattr(supervisor_turn_module, "_filter_spec_tools_for_mode", lambda tools, _state: tools)
     monkeypatch.setattr(supervisor_turn_module, "_is_network_supervisor_compat_transport", lambda _state: False)
-    monkeypatch.setattr(supervisor_turn_module, "_should_use_fast_first_turn_route", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(supervisor_turn_module, "_should_use_spec_narrow_route", lambda _state: True)
     monkeypatch.setattr(supervisor_turn_module, "_build_neutral_extensions_route", lambda _tools: route_bundle)
     monkeypatch.setattr(supervisor_turn_module, "_should_include_extensions_prefilter_prompt", lambda **_kwargs: False)
@@ -541,7 +540,7 @@ def test_runtime_recoverable_failure_reenters_real_supervisor_invocation(monkeyp
 
     state = {
         "run_id": "run-repair",
-        "planner_dispatch_status": {
+        "runtime_dispatch_status": {
             "mode": "runtime_episode",
             "nextAction": "recoverable_failure",
             "state": "episode_failed",
@@ -644,7 +643,7 @@ def test_completion_gate_blocks_research_plan_claimed_as_ready_evidence():
     assert decision.reason == "research_plan_only_claimed_evidence_ready"
 
 
-def test_completion_gate_accepts_failed_episode_with_degraded_handoff():
+def test_completion_gate_blocks_failed_required_write_episode_with_degraded_handoff():
     decision = evaluate_supervisor_completion(
         episodes=[{"episodeId": "episode_engineering", "state": "failed", "kind": "engineering"}],
         handoffs_by_episode={
@@ -661,8 +660,9 @@ def test_completion_gate_accepts_failed_episode_with_degraded_handoff():
         final_text="技能产物没有通过验证，需要继续修复。",
     )
 
-    assert decision.action == "complete"
-    assert decision.reason == "eligible"
+    assert decision.action == "fail"
+    assert decision.reason == "required_write_runtime_degraded"
+    assert decision.details["nextAction"] == "repair_or_retry_required_write_episode"
 
 
 def test_completion_gate_blocks_spec_runtime_degraded_handoff_as_delivery():
@@ -1361,14 +1361,11 @@ def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch, t
 
     asyncio.run(runtime.create_execution_bundle(chat_run=chat_run))
 
-    assert captured["planner_dispatch_status"]["nextAction"] == "wait_episode"
-    assert captured["planner_dispatch_status"]["state"] == "handoff_resume_requested"
+    assert captured["runtime_dispatch_status"]["nextAction"] == "wait_episode"
+    assert captured["runtime_dispatch_status"]["state"] == "handoff_resume_requested"
     route_context = captured["current_route_context"]
     assert route_context["runtimeEpisodeHandoffResume"]["episodeId"] == "episode_runtime"
     episodes = route_context["capabilityEpisodes"]
     assert episodes and episodes[-1]["episodeId"] == "episode_runtime"
     assert episodes[-1]["state"] == terminal_state
-    planner_plan = captured["planner_plan"]
-    assert planner_plan["autoDispatchDecision"]["willDispatch"] is True
-    assert planner_plan["capabilityPlan"][0]["episodeId"] == "episode_runtime"
-    assert planner_plan["capabilityPlan"][0]["state"] == terminal_state
+    assert "planner_plan" not in captured

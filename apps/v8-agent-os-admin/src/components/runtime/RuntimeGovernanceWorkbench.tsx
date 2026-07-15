@@ -243,43 +243,6 @@ function compactNumber(value: unknown) {
   if (!Number.isFinite(num)) return 0;
   return num;
 }
-function extractPlannerInspector(detail: SessionDetail | null) {
-  if (!detail) return null;
-  const workflowProjection = asRecord(detail.workflowProjection);
-  const steps = asRecordArray(workflowProjection.steps);
-  const plannerSteps = steps.filter(step => asString(step.ownerRuntime) === "planner_lane");
-  const latestPlannerStep = plannerSteps[plannerSteps.length - 1] || null;
-  const plannerInput = asRecord(latestPlannerStep?.input);
-  const plannerPlan = asRecord(plannerInput.plannerPlan);
-  const runtimeTimeline = asRecordArray(detail.runtimeTimeline);
-  const plannerEntries = runtimeTimeline.filter(entry => asString(entry.runtimeId) === "planner_lane");
-  const latestPlannerEntry = plannerEntries[plannerEntries.length - 1] || null;
-  const latestPlannerMetadata = asRecord(latestPlannerEntry?.metadata);
-  const selectedDelegations = asRecordArray(latestPlannerMetadata.selectedDelegations);
-  const taskBriefs = asRecordArray(latestPlannerMetadata.taskBriefs).length > 0 ? asRecordArray(latestPlannerMetadata.taskBriefs) : asRecordArray(plannerPlan.taskBriefs);
-  const dependencies = asRecordArray(latestPlannerMetadata.dependencies);
-  const riskFlags = asStringArray(latestPlannerMetadata.riskFlags).length > 0 ? asStringArray(latestPlannerMetadata.riskFlags) : asStringArray(plannerPlan.riskFlags);
-  const executionStrategy = asString(latestPlannerMetadata.executionStrategy) || asString(plannerPlan.executionStrategy);
-  const planSummary = asString(latestPlannerMetadata.planSummary) || asString(plannerPlan.planSummary);
-  const planId = asString(latestPlannerMetadata.planId) || asString(plannerPlan.planId);
-  const globalAcceptanceContract = asString(latestPlannerMetadata.globalAcceptanceContract) || asString(plannerPlan.globalAcceptanceContract);
-  const traceRef = asRecord(latestPlannerMetadata.traceRef);
-  if (!planId && !planSummary && taskBriefs.length === 0 && selectedDelegations.length === 0) {
-    return null;
-  }
-  return {
-    planId,
-    planSummary,
-    executionStrategy,
-    globalAcceptanceContract,
-    taskBriefs,
-    selectedDelegations,
-    riskFlags,
-    dependencies,
-    traceRef,
-    stepTitle: asString(latestPlannerStep?.title)
-  };
-}
 function isRecoverableSession(session: SessionSummary) {
   return Boolean(session.workflow?.recoverable || session.recoverableView?.recoverable);
 }
@@ -432,7 +395,6 @@ export function RuntimeGovernanceWorkbench({
     });
   }, [activeRuntimeKind, approvals, runMap, sessionMap]);
   const filteredRecoverableSessions = useMemo(() => activeRuntimeKind ? recoverableSessions.filter(session => (session.workflow?.ownerRuntime || "chat") === activeRuntimeKind) : recoverableSessions, [activeRuntimeKind, recoverableSessions]);
-  const plannerInspector = useMemo(() => extractPlannerInspector(selectedSessionDetail), [selectedSessionDetail]);
   const memoryExtractionSummary = memoryDashboard?.extractions?.summary || {};
   const memoryMaintenanceSummary = memoryDashboard?.maintenance?.summary || {};
   const loadSnapshot = useCallback(async (nextQuery?: string) => {
@@ -955,77 +917,6 @@ export function RuntimeGovernanceWorkbench({
                                       { label: t("components.common.sessionReference"), value: selectedSessionId },
                                       { label: t("components.common.sourceReference"), value: selectedSessionDetail.source },
                                     ]} />
-                                    {plannerInspector ? <div className="rounded-xl border border-border/50 p-4">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <div className="text-sm font-medium">Planner Inspector</div>
-                                                {plannerInspector.executionStrategy ? <Badge variant="secondary">{plannerInspector.executionStrategy}</Badge> : null}
-                                                {plannerInspector.planId ? <Badge variant="outline">{plannerInspector.planId}</Badge> : null}
-                                            </div>
-                                            <div className="mt-2 text-xs text-muted-foreground">{plannerInspector.stepTitle || t("components.common.planningStage")}</div>
-                                            <TechnicalReferenceDetails className="mt-3" items={[
-                                              { label: t("components.common.runReference"), value: String(plannerInspector.traceRef.runId || "") },
-                                              { label: t("components.common.traceReference"), value: String(plannerInspector.traceRef.planId || "") },
-                                            ]} />
-                                            <div className="mt-4 grid gap-3 md:grid-cols-4">
-                                                <div className="rounded-lg border border-border/50 p-3">
-                                                    <div className="text-xs text-muted-foreground">plan summary</div>
-                                                    <div className="mt-2 text-sm font-medium">{plannerInspector.planSummary || "n/a"}</div>
-                                                </div>
-                                                <div className="rounded-lg border border-border/50 p-3">
-                                                    <div className="text-xs text-muted-foreground">task briefs</div>
-                                                    <div className="mt-2 text-sm font-medium">{plannerInspector.taskBriefs.length}</div>
-                                                </div>
-                                                <div className="rounded-lg border border-border/50 p-3">
-                                                    <div className="text-xs text-muted-foreground">selected delegations</div>
-                                                    <div className="mt-2 text-sm font-medium">{plannerInspector.selectedDelegations.length}</div>
-                                                </div>
-                                                <div className="rounded-lg border border-border/50 p-3">
-                                                    <div className="text-xs text-muted-foreground">risk flags</div>
-                                                    <div className="mt-2 text-sm font-medium">{plannerInspector.riskFlags.length || 0}</div>
-                                                </div>
-                                            </div>
-                                            <div className="mt-4 grid gap-4 xl:grid-cols-[0.58fr_0.42fr]">
-                                                <div className="rounded-lg border border-border/50 p-3">
-                                                    <div className="text-sm font-medium">Broker-ready task briefs</div>
-                                                    <div className="mt-3 space-y-3">
-                                                        {plannerInspector.taskBriefs.length > 0 ? plannerInspector.taskBriefs.map((taskBrief, index) => <div key={asString(taskBrief.taskBriefId) || `task-brief:${index}`} className="rounded-lg bg-muted/40 p-3">
-                                                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                                                                    <span>{asString(taskBrief.taskBriefId) || `task-${index + 1}`}</span>
-                                                                    {asString(taskBrief.executionLaneHint) ? <Badge variant="outline">{asString(taskBrief.executionLaneHint)}</Badge> : null}
-                                                                    {asString(taskBrief.parallelGroup) ? <Badge variant="secondary">{asString(taskBrief.parallelGroup)}</Badge> : null}
-                                                                </div>
-                                                                <div className="mt-2 text-sm font-medium">{asString(taskBrief.goal) || "n/a"}</div>
-                                                                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                                                                    <div>writeSet：{asStringArray(taskBrief.writeSet).join(" / ") || "n/a"}</div>
-                                                                    <div>behaviorScope：{asStringArray(taskBrief.behaviorScope).join(" / ") || "n/a"}</div>
-                                                                    <div>requiredCapabilities：{asStringArray(taskBrief.requiredCapabilities).join(" / ") || "n/a"}</div>
-                                                                    <div>acceptance：{asString(taskBrief.acceptanceContract) || "n/a"}</div>
-                                                                </div>
-                                                            </div>) : <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{tg(t, "b0094e1b")}</div>}
-                                                    </div>
-                                                </div>
-                                                <div className="space-y-4">
-                                                    <div className="rounded-lg border border-border/50 p-3">
-                                                        <div className="text-sm font-medium">Selected delegations</div>
-                                                        <div className="mt-3 space-y-2">
-                                                            {plannerInspector.selectedDelegations.length > 0 ? plannerInspector.selectedDelegations.map((item, index) => <div key={asString(item.delegationId) || `delegation:${index}`} className="rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
-                                                                    <div className="font-medium text-foreground">{asString(item.targetLabel) || asString(item.targetId) || "delegation target"}</div>
-                                                                    <div className="mt-1">lane：{asString(item.lane) || "n/a"} · status：{asString(item.status) || "n/a"}</div>
-                                                                    <div className="mt-1">taskBriefId：{asString(item.taskBriefId) || "n/a"}</div>
-                                                                </div>) : <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">{tg(t, "7968d4a5")}</div>}
-                                                        </div>
-                                                    </div>
-                                                    <div className="rounded-lg border border-border/50 p-3">
-                                                        <div className="text-sm font-medium">Acceptance & risks</div>
-                                                        <div className="mt-3 space-y-2 text-xs text-muted-foreground">
-                                                            <div>globalAcceptance：{plannerInspector.globalAcceptanceContract || "n/a"}</div>
-                                                            <div>riskFlags：{plannerInspector.riskFlags.join(" / ") || "n/a"}</div>
-                                                            <div>dependencies：{plannerInspector.dependencies.length > 0 ? plannerInspector.dependencies.length : "0"}</div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div> : null}
                                     <div className="grid gap-4 xl:grid-cols-[0.42fr_0.58fr]">
                                         <div className="rounded-xl border border-border/50 p-4">
                                             <div className="text-sm font-medium">{tg(t, "4bafdc6d")}</div>

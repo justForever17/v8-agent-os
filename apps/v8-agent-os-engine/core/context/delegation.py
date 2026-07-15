@@ -80,32 +80,6 @@ def _normalize_root_descriptors(values: Iterable[Any] | None) -> list[dict[str, 
     return descriptors
 
 
-def _normalize_planner_context(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    normalized = {
-        "planId": str(value.get("planId") or "").strip(),
-        "executionStrategy": str(value.get("executionStrategy") or "").strip(),
-        "planSummary": str(value.get("planSummary") or "").strip(),
-        "globalAcceptanceContract": value.get("globalAcceptanceContract")
-        if isinstance(value.get("globalAcceptanceContract"), dict)
-        else str(value.get("globalAcceptanceContract") or "").strip(),
-        "riskFlags": _unique_str_list(value.get("riskFlags")),
-        "dependencies": [
-            dict(item)
-            for item in list(value.get("dependencies") or [])
-            if isinstance(item, dict)
-        ],
-        "taskCount": int(value.get("taskCount") or 0) if str(value.get("taskCount") or "").isdigit() else 0,
-    }
-    if not any(
-        normalized.get(key)
-        for key in ("planId", "executionStrategy", "planSummary", "globalAcceptanceContract", "riskFlags", "dependencies")
-    ):
-        return None
-    return normalized
-
-
 def build_delegation_context(
     *,
     agent_id: str | None = None,
@@ -122,7 +96,6 @@ def build_delegation_context(
     prompt_addition: str | None = None,
     invocation_id: str | None = None,
     task_brief: dict[str, Any] | None = None,
-    planner_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "agentId": str(agent_id or "").strip() or None,
@@ -138,7 +111,6 @@ def build_delegation_context(
         "selectedBaselineTools": _unique_str_list(selected_baseline_tools),
         "promptAddition": str(prompt_addition or "").strip(),
         "taskBrief": normalize_task_brief(task_brief) if isinstance(task_brief, dict) else None,
-        "plannerContext": _normalize_planner_context(planner_context),
     }
     if invocation_id:
         payload["invocationId"] = str(invocation_id).strip()
@@ -171,7 +143,6 @@ def latest_delegation_context(
             prompt_addition=item.get("promptAddition"),
             invocation_id=item.get("invocationId"),
             task_brief=item.get("taskBrief"),
-            planner_context=item.get("plannerContext"),
         )
         latest_any = normalized
         if target_agent_id and normalized.get("agentId") == target_agent_id:

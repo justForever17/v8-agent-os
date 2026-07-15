@@ -31,7 +31,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | `tests/agent_quality/` | mock / fixture matrix | 主链 Agent 质量门禁 | 工具调用正确性、上下文记忆、幻觉抑制、Prompt 注入、多智能体协作。 |
 | `tests/agents/` | unit / fixture | Subagent registry | specialist registry、能力快照、专家族 prompt。 |
 | `tests/artifacts/` | unit | Artifact surface | artifact 展示和策略边界。 |
-| `tests/chat_runtime/` | unit / integration | ChatRuntime / Supervisor | canonical transcript、queue/guidance、planner mode、runtime finalization、message delete、realtime lane。 |
+| `tests/chat_runtime/` | unit / integration | ChatRuntime / Supervisor | canonical transcript、queue/guidance、Spec mode、runtime episode finalization、message delete、realtime lane。 |
 | `tests/contracts/` | contract | Shared realtime projection | session realtime projection matrix。 |
 | `tests/core/` | unit / integration | Core services | research broker、tool registry、tool surface、workspace digest、provider catalog。 |
 | `tests/creative_media/` | unit / integration | Creative Media Runtime | work order、provider plan、artifact/job/recipe contract。 |

@@ -7,6 +7,9 @@ import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+import core.tools.native.delegation as native_delegation
 from core.delegation_broker import normalize_task_brief
 from core.native_tools import (
     _decode_completed_process_bytes,
@@ -31,7 +34,7 @@ from core.runtime_tool_access import (
 from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
 from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capability_registry
-from graph.agent_factories import _format_delegated_plan_context, _select_contextual_subagent_native_tools
+from graph.agent_factories import _format_delegated_task_contract, _select_contextual_subagent_native_tools
 
 
 def _set_pack_runtime_installed(monkeypatch, installed: bool) -> None:
@@ -195,7 +198,7 @@ def test_feature_pack_gated_runtime_groups_hide_when_not_installed(monkeypatch):
     assert route_payload["ok"] is False
     assert route_payload["error"] == "runtime_feature_pack_required"
     assert route_payload["detailRef"] == "runtimeRegistry.featurePacks.computer_use_desktop"
-    assert route.update["planner_dispatch_status"]["blocked"] is True
+    assert route.update["runtime_dispatch_status"]["blocked"] is True
 
     summary = capability_registry.build_supervisor_summary(user_query="操作真实桌面窗口")
     assert "kind=computer_use" not in summary
@@ -268,14 +271,14 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert payload["episode"]["continuationTarget"] == "runtime_episode_runner"
     assert payload["queuedEpisodeId"] == payload["episode"]["episodeId"]
     assert payload["episodeKind"] == "research"
-    assert payload["nextAction"] == "wait_episode"
+    assert payload["nextAction"] == "runtime_episode"
     assert runtime_access_from_route_context(updated_context) == ["research.core"]
     assert updated_context["capabilityEpisodes"][-1]["kind"] == "research"
     assert updated_context["capabilityEpisodes"][-1]["state"] == "queued"
-    assert command.update["planner_dispatch_status"]["nextAction"] == "wait_episode"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
 
 
-def test_runtime_broker_wait_episode_is_supported_for_queued_episode():
+def test_runtime_broker_rejects_manual_wait_episode_polling():
     command = runtime_broker.func(
         mode="wait_episode",
         state={
@@ -295,15 +298,127 @@ def test_runtime_broker_wait_episode_is_supported_for_queued_episode():
     payload = _tool_message_payload(command)
 
     assert payload["mode"] == "wait_episode"
+    assert payload["ok"] is False
+    assert payload["error"] == "manual_runtime_polling_forbidden"
+    assert "graph" in payload["summary"].lower()
+
+
+def test_runtime_broker_accepts_explicit_empty_string_write_set_for_read_only_episode():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "source": "supervisor",
+            "reason": "produce a read-only engineering plan",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "plan-only",
+                        "goal": "Return a reviewed engineering plan without writing files.",
+                        "readOnly": True,
+                        "writeRequired": False,
+                        "writeSet": "",
+                        "expectedOutputs": ["engineering plan handoff"],
+                        "acceptance": {"must": ["No workspace files are written."]},
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-read-only-empty-write-set",
+    )
+    payload = _tool_message_payload(command)
+
     assert payload["ok"] is True
-    assert payload["episode"]["episodeId"] == "episode-waitable"
-    assert payload["nextAction"] == "wait_episode"
-    assert "unsupported" not in payload["summary"].lower()
-    assert command.update["planner_dispatch_status"]["nextAction"] == "wait_episode"
-    assert command.update["planner_dispatch_status"]["episodeId"] == "episode-waitable"
+    assert payload["episodeKind"] == "engineering"
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert episode["inputs"]["taskBriefs"][0]["writeSet"] == []
 
 
-def test_runtime_broker_route_fills_delegation_tasks_from_planner_plan():
+def test_runtime_broker_rejects_nonempty_string_write_set_as_invalid_typed_need():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "source": "supervisor",
+            "reason": "invalid write set shape",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "invalid-write-set",
+                        "goal": "Write one file.",
+                        "writeRequired": True,
+                        "writeSet": "result.md",
+                        "expectedOutputs": ["result.md"],
+                        "acceptance": {"must": ["result.md exists"]},
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-invalid-write-set",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "typed_need_invalid"
+    assert payload["routeBriefQuality"]["validationErrors"][0]["field"].endswith("writeSet")
+
+
+def test_delegation_broker_rejects_manual_local_observation_polling():
+    command = delegation_broker.func(
+        mode="observe",
+        delegation_id="delegation_local_task",
+        state={"current_route_context": {}},
+        tool_call_id="call-delegation-observe-local",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "manual_local_delegation_polling_forbidden"
+    assert payload["recommendedNextAction"] == "wait_for_graph_handoff"
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "expected_missing"),
+    [
+        ("writeSet", "writeSet"),
+        ("expectedOutputs", "expectedOutputs"),
+        ("acceptanceContract", "acceptance"),
+    ],
+)
+def test_runtime_broker_blocks_incomplete_engineering_write_contract(missing_key, expected_missing):
+    task = {
+        "taskBriefId": "write-task",
+        "goal": "Write result.md and verify it.",
+        "context": {"source": "supervisor_current_turn"},
+        "writeRequired": True,
+        "writeSet": ["result.md"],
+        "expectedOutputs": ["result.md"],
+        "acceptanceContract": {"must": ["result.md exists and matches the request."]},
+    }
+    task.pop(missing_key)
+
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "reason": "write_contract_test",
+            "inputs": {"taskBriefs": [task]},
+        },
+        state={"current_route_context": {}},
+        tool_call_id=f"call-runtime-missing-{missing_key}",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "write_task_contract_incomplete"
+    failures = payload["routeBriefQuality"]["tasks"]
+    assert failures[0]["taskBriefId"] == "write-task"
+    assert expected_missing in failures[0]["missingFields"]
+
+
+def test_runtime_broker_route_does_not_inherit_legacy_planner_tasks():
     command = runtime_broker.func(
         mode="route",
         need={"kind": "delegation", "source": "supervisor", "reason": "parallel implementation"},
@@ -322,15 +437,13 @@ def test_runtime_broker_route_fills_delegation_tasks_from_planner_plan():
         tool_call_id="call-runtime-route",
     )
     payload = _tool_message_payload(command)
-    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
 
-    assert payload["episodeKind"] == "delegation"
-    assert payload["nextAction"] == "wait_episode"
-    assert episode["inputs"]["tasks"][0]["goal"] == "Build the visible application shell."
-    assert episode["inputs"]["workerBriefs"][0]["goal"] == "Build the visible application shell."
+    assert payload["ok"] is False
+    assert payload["error"] == "task_brief_required"
+    assert command.update["current_route_context"] == {}
 
 
-def test_runtime_broker_route_prefers_explicit_supervisor_briefs_over_planner_plan():
+def test_runtime_broker_route_uses_only_explicit_supervisor_briefs():
     command = runtime_broker.func(
         mode="route",
         need={
@@ -351,19 +464,8 @@ def test_runtime_broker_route_prefers_explicit_supervisor_briefs_over_planner_pl
                 ]
             },
         },
-        state={
-            "current_route_context": {},
-            "planner_plan": {
-                "taskBriefs": [
-                    {
-                        "taskBriefId": "planner-stale-task",
-                        "title": "Stale planner task",
-                        "goal": "Do something from an older route hint.",
-                    }
-                ]
-            },
-        },
-        tool_call_id="call-runtime-explicit-over-planner",
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-explicit-supervisor",
     )
     episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
 
@@ -380,7 +482,7 @@ def test_delegation_broker_description_requires_complete_explicit_task_briefs():
     assert "Do not dispatch vague ID-only tasks" in description
 
 
-def test_runtime_broker_route_accepts_json_need_string_and_infers_engineering():
+def test_runtime_broker_route_rejects_untyped_json_need_string():
     command = runtime_broker.func(
         mode="route",
         need=json.dumps(
@@ -396,11 +498,40 @@ def test_runtime_broker_route_accepts_json_need_string_and_infers_engineering():
     payload = _tool_message_payload(command)
 
     assert payload["ok"] is False
-    assert payload["error"] == "task_brief_required"
-    assert payload["routeBriefQuality"]["reason"] == "minimal_brief_only"
-    assert payload["recommendedNextAction"].startswith("Call runtime_broker(mode='route') again")
+    assert payload["error"] == "typed_need_required"
+
+
+@pytest.mark.parametrize(
+    "need, expected_field",
+    [
+        ({"kind": "engineering"}, "reason"),
+        ({"kind": "unknown", "reason": "route work"}, "kind"),
+        (
+            {
+                "kind": "engineering",
+                "reason": "route work",
+                "inputs": {"taskBriefs": [{"goal": "Write result.md"}]},
+            },
+            "inputs.taskBriefs.0.taskBriefId",
+        ),
+    ],
+)
+def test_runtime_broker_route_rejects_invalid_typed_need_contract(need, expected_field):
+    command = runtime_broker.func(
+        mode="route",
+        need=need,
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-route-invalid-typed-need",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is False
+    assert payload["error"] == "typed_need_invalid"
+    fields = [item["field"] for item in payload["routeBriefQuality"]["validationErrors"]]
+    assert expected_field in fields
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "repair_task_contract"
     assert command.update["current_route_context"] == {}
-    assert command.update["planner_dispatch_status"]["nextAction"] == "provide_task_brief"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "repair_task_contract"
 
 
 def test_runtime_broker_route_requires_task_brief_before_enqueue_for_engineering():
@@ -421,8 +552,8 @@ def test_runtime_broker_route_requires_task_brief_before_enqueue_for_engineering
     assert payload["ok"] is False
     assert payload["error"] == "task_brief_required"
     assert "goal" in payload["routeBriefQuality"]["requiredFields"]
-    assert "detailRefs" in payload["routeBriefQuality"]["requiredFields"]
-    assert command.update["planner_dispatch_status"]["blocked"] is True
+    assert "context" in payload["routeBriefQuality"]["requiredFields"]
+    assert command.update["runtime_dispatch_status"]["blocked"] is True
 
 
 def test_runtime_broker_route_binds_session_run_root_and_workspace_with_explicit_brief():
@@ -444,7 +575,9 @@ def test_runtime_broker_route_binds_session_run_root_and_workspace_with_explicit
                             "taskBriefId": "explicit-engineering-task",
                             "goal": "Patch the requested file after reading it.",
                             "context": {"workspacePath": r"E:\Projects\test7"},
-                            "expectedOutput": "Patch plus proof.",
+                            "writeRequired": True,
+                            "writeSet": ["src/feature.ts"],
+                            "expectedOutputs": ["src/feature.ts"],
                             "acceptance": "Tests pass or blockers are reported.",
                             "detailRefs": ["conversation://current-turn"],
                         }
@@ -983,7 +1116,7 @@ def test_runtime_broker_preserves_spec_research_fanout_without_route_compression
                 "- **执行层级**: Research Runtime / Web Research Architect\n"
                 "- **依赖**: TASK-001 完成\n"
                 "- **需求引用**: REQ-001, DES-001\n"
-                f"- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\references\\research\\0{index - 1}-part.md`\n"
+                f"- **输出文件**: `.agents/skills/ling-perspective/references/research/0{index - 1}-part.md`\n"
                 "- **验收标准**: 文件存在且满足质量要求\n"
             )
             for index in range(2, 8)
@@ -1001,29 +1134,29 @@ def test_runtime_broker_preserves_spec_research_fanout_without_route_compression
             "- **执行层级**: Supervisor 直接执行\n"
             "- **任务描述**: 创建完整的自包含目录结构\n"
             "- **需求引用**: REQ-001, DES-001\n"
-            "- **预期输出**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\scripts\\`\n\n"
+            "- **预期输出**: `.agents/skills/ling-perspective/scripts/`\n\n"
             f"{research_tasks}\n\n"
             "#### TASK-009: 思维框架提炼\n"
             "- **ID**: TASK-009\n"
             "- **执行层级**: Engineering Runtime / 综合 Agent\n"
             "- **需求引用**: REQ-001, DES-001\n"
-            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\references\\framework.md`\n\n"
+            "- **输出文件**: `.agents/skills/ling-perspective/references/framework.md`\n\n"
             "#### TASK-010: SKILL.md 构建\n"
             "- **ID**: TASK-010\n"
             "- **执行层级**: Engineering Runtime / 构建 Agent\n"
             "- **需求引用**: REQ-001, DES-001\n"
-            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\SKILL.md`\n\n"
+            "- **输出文件**: `.agents/skills/ling-perspective/SKILL.md`\n\n"
             "#### TASK-011: 三项测试验证\n"
             "- **ID**: TASK-011\n"
             "- **执行层级**: Engineering Runtime / 验证 Agent\n"
             "- **需求引用**: REQ-001, DES-001\n"
-            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\verification-report.md`\n\n"
+            "- **输出文件**: `.agents/skills/ling-perspective/verification-report.md`\n\n"
             "#### TASK-012: 生成最终交付文档\n"
             "- **ID**: TASK-012\n"
             "- **执行层级**: Supervisor 执行\n"
             "- **任务描述**: 生成最终交付文档\n"
             "- **需求引用**: REQ-001, DES-001\n"
-            "- **输出文件**: `E:\\Projects\\test2\\.agents\\skills\\ling-perspective\\delivery-summary.md`\n"
+            "- **输出文件**: `.agents/skills/ling-perspective/delivery-summary.md`\n"
         ),
     )
     spec_service.approve_stage(workspace_path=str(workspace), spec_id=spec_id, stage="tasks")
@@ -1109,11 +1242,9 @@ def test_runtime_broker_list_with_episode_intent_requires_brief_but_catalog_stay
 
     assert payload["mode"] == "route"
     assert payload["ok"] is False
-    assert payload["error"] == "task_brief_required"
-    assert payload["routeBriefQuality"]["reason"] == "minimal_brief_only"
-    assert "workerBriefs/taskBriefs/tasks" in payload["recommendedNextAction"]
+    assert payload["error"] == "typed_need_required"
     assert command.update["current_route_context"] == {}
-    assert command.update["planner_dispatch_status"]["nextAction"] == "provide_task_brief"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "repair_task_contract"
 
 
 def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
@@ -1147,6 +1278,150 @@ def test_delegation_broker_null_task_is_structured_and_diagnostic_only():
     assert payload["missingTasks"] is True
     assert payload["diagnosticKey"] == "delegation_missing_tasks"
     assert "parallel_invocations" not in command.update
+
+
+def test_supervisor_delegation_starts_new_top_level_tree_and_routes_risk_review(monkeypatch):
+    monkeypatch.setattr(native_delegation, "persist_runtime_episode", lambda episode, **_kwargs: dict(episode))
+    monkeypatch.setattr(native_delegation, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    stale_episode_id = "episode_engineering_terminal"
+    state = {
+        "session_id": "session-supervisor-risk-review",
+        "run_id": "run-supervisor-risk-review",
+        "current_route_context": {
+            "activeCapabilityEpisodeId": stale_episode_id,
+            "delegationId": "subagent::stale-parent",
+            "delegationDepth": 3,
+            "delegationNodeCount": 7,
+            "capabilityEpisodes": [
+                {
+                    "episodeId": stale_episode_id,
+                    "kind": "engineering",
+                    "state": "degraded",
+                }
+            ],
+        },
+    }
+
+    with bind_runtime_context(
+        runtime_kind="chat",
+        agent_id="supervisor",
+        session_id=state["session_id"],
+        run_id=state["run_id"],
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "risk-review",
+                    "goal": "Perform a final risk review of the research and engineering handoffs without writing files.",
+                    "expectedOutput": "A concise verification report with blocking risks and evidence refs.",
+                    "acceptanceContract": "Verify the result against both upstream handoffs and report pass or fail.",
+                    "toolPolicy": {"mode": "none"},
+                }
+            ],
+            state=state,
+            tool_call_id="call-supervisor-risk-review",
+        )
+
+    send = list(command.goto)[0]
+    branch = send.arg["parallel_branch"]
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert branch["agentId"] == "verification-engineer"
+    assert branch["parentDelegationId"] is None
+    assert branch["delegationDepth"] == 1
+    assert branch["taskBrief"]["targetDefaultReason"] == "verification_task_signal"
+    assert episode["parentEpisodeId"] == ""
+
+
+def test_delegation_maps_verifier_worker_type_to_verification_agent():
+    tasks = native_delegation._apply_delegation_target_defaults(
+        [
+            {
+                "goal": "Review the supplied evidence and return a risk register.",
+                "familyHint": "engineering",
+                "preferredWorkerType": "verifier",
+            }
+        ]
+    )
+
+    assert tasks[0]["preferredAgentId"] == "verification-engineer"
+    assert tasks[0]["targetDefaultReason"] == "preferred_worker_type_alias"
+
+
+def test_delegation_retires_project_planner_target_and_routes_verification_work():
+    tasks = native_delegation._apply_delegation_target_defaults(
+        [
+            {
+                "goal": "Perform a final risk review and verify both upstream handoffs.",
+                "familyHint": "engineering",
+                "preferredAgentId": "project-planner",
+            }
+        ]
+    )
+
+    assert tasks[0]["preferredAgentId"] == "verification-engineer"
+    assert tasks[0]["targetDefaultReason"] == "verification_task_signal"
+
+
+def test_handoff_only_readonly_delegation_receives_no_workspace_tools():
+    tasks = native_delegation._apply_delegation_tool_defaults(
+        [
+            {
+                "taskBriefId": "handoff-review",
+                "goal": "Review the injected upstream handoffs.",
+                "context": {
+                    "readOnly": True,
+                    "upstreamHandoffs": [{"status": "ready", "summary": "Evidence is injected."}],
+                },
+                "readSet": [],
+                "writeSet": [],
+                "toolPolicy": {"mode": "default"},
+            }
+        ]
+    )
+
+    assert tasks[0]["toolPolicy"] == {"mode": "none", "allowedTools": [], "forbiddenTools": []}
+    assert tasks[0]["allowedTools"] == []
+    assert "no readSet" in tasks[0]["context"]["handoffConsumptionDiscipline"]
+
+
+def test_handoff_review_with_explicit_read_set_keeps_declared_tool_policy():
+    tasks = native_delegation._apply_delegation_tool_defaults(
+        [
+            {
+                "taskBriefId": "handoff-and-file-review",
+                "goal": "Review injected evidence and one source file.",
+                "context": {
+                    "readOnly": True,
+                    "upstreamHandoffs": [{"status": "ready", "summary": "Evidence is injected."}],
+                },
+                "readSet": ["src/runtime.ts"],
+                "writeSet": [],
+                "toolPolicy": {"mode": "default"},
+            }
+        ]
+    )
+
+    assert tasks[0]["toolPolicy"]["mode"] == "default"
+
+
+def test_subagent_recursive_delegation_keeps_explicit_parent():
+    parent = native_delegation._delegation_parent_episode_id(
+        {
+            "delegationId": "subagent::active-parent",
+            "activeCapabilityEpisodeId": "subagent::active-parent",
+            "capabilityEpisodes": [
+                {
+                    "episodeId": "subagent::active-parent",
+                    "kind": "delegation",
+                    "state": "active",
+                }
+            ],
+        },
+        {"runtime_kind": "subagent", "subagent_id": "code-review-architect"},
+    )
+
+    assert parent == "subagent::active-parent"
 
 
 def test_windows_shell_syntax_violation_blocks_posix_mkdir(monkeypatch):
@@ -1318,17 +1593,15 @@ def test_local_subagent_dispatch_only_adds_recursive_grant_when_child_delegation
 
 
 def test_subagent_prompt_explains_bounded_delegation_authority_without_false_missing_tool_failure():
-    blocked = _format_delegated_plan_context(
+    blocked = _format_delegated_task_contract(
         {"taskBriefId": "task-1", "goal": "Review one file"},
-        None,
     )
-    allowed = _format_delegated_plan_context(
+    allowed = _format_delegated_task_contract(
         {
             "taskBriefId": "task-2",
             "goal": "Coordinate a bounded review",
             "delegationPolicy": {"allowChildDelegation": True},
         },
-        None,
     )
 
     assert "absence of `delegation_broker` and `request_peer_help` is intentional" in blocked

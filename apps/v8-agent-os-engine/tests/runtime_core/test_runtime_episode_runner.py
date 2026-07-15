@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,8 @@ from langgraph.types import Send
 
 from erc.runtime_context import bind_runtime_context
 from core.database import DatabaseManager, db
+from core.agents import default_subagent_configs
+from core.delegation_broker import choose_best_local_agent_with_diagnostics
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import core.runtime_episode_runner as runtime_episode_runner_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
@@ -33,6 +36,14 @@ def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: s
             }
         },
     )
+
+
+def test_child_target_inference_prioritizes_verification_over_research_evidence_terms():
+    target = RuntimeEpisodeRunner._infer_child_delegation_target(
+        "Verify the research evidence bundle and perform a final risk review before completion."
+    )
+
+    assert target == ("verification-engineer", "Verification Engineer", "verification_goal")
 
 
 def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(tmp_path, monkeypatch):
@@ -133,6 +144,185 @@ def test_engineering_plan_only_without_workers_returns_ready_handoff():
     assert "errorCode" not in handoff
 
 
+def test_engineering_plan_only_with_worker_brief_generates_real_delegated_plan(monkeypatch):
+    runner = RuntimeEpisodeRunner()
+    captured: dict = {}
+
+    async def _fake_execute_delegation(delegation_episode):
+        captured.update(delegation_episode)
+        return {
+            "status": "ready",
+            "confidence": "medium",
+            "compactSummary": "Engineering planner returned a three-phase implementation plan.",
+            "childHandoffs": [
+                {
+                    "kind": "subagent_result",
+                    "status": "ready",
+                    "compactSummary": "Phase 1 routes; phase 2 validates; phase 3 rolls back safely.",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(runner, "_execute_delegation", _fake_execute_delegation)
+    monkeypatch.setattr(
+        runtime_episode_runner_module,
+        "build_workspace_state_digest_context",
+        lambda **_kwargs: ("workspace digest", []),
+    )
+    episode = build_runtime_episode(
+        need={
+            "kind": "engineering",
+            "reason": "Produce an execution plan without writing files.",
+            "inputs": {
+                "deliverableKind": "plan_only",
+                "writeRequired": False,
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "PLAN-001",
+                        "goal": "Produce a source-backed engineering execution plan.",
+                        "writeRequired": False,
+                        "writeSet": [],
+                        "expectedOutputs": ["phases", "verification matrix", "rollback plan"],
+                        "acceptanceContract": "Return an actionable plan with evidence refs.",
+                        "familyHint": "engineering",
+                    }
+                ],
+            },
+        },
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+
+    handoff = asyncio.run(runner._execute_engineering(episode))
+
+    assert captured["kind"] == "delegation"
+    assert captured["inputs"]["workerBriefs"][0]["taskBriefId"] == "PLAN-001"
+    assert handoff["status"] == "ready"
+    assert handoff["engineeringState"] == "work_plan_started"
+    assert handoff["deliverableKind"] == "plan_only"
+    assert handoff["writeRequired"] is False
+    assert "three-phase implementation plan" in handoff["compactSummary"]
+
+
+def test_engineering_plan_only_brief_stays_in_engineering_family() -> None:
+    runner = RuntimeEpisodeRunner()
+    briefs = runner._prepare_engineering_worker_briefs_for_delegation(
+        [
+            {
+                "taskBriefId": "PLAN-ARCH",
+                "goal": "Inspect the runtime orchestration code and return an architecture execution plan.",
+                "writeRequired": False,
+                "detailRefs": ["core/runtime_episode_runner.py", "graph/supervisor_turn.py"],
+            }
+        ],
+        need={"kind": "engineering", "reason": "plan only", "writeRequired": False},
+        inputs={"deliverableKind": "plan_only", "writeRequired": False},
+    )
+    brief = briefs[0]
+    agents = [agent.model_dump() for agent in default_subagent_configs()]
+    selected, diagnostics = choose_best_local_agent_with_diagnostics(brief, agents)
+
+    assert brief["familyHint"] == "engineering"
+    assert brief["readSet"] == ["core/runtime_episode_runner.py", "graph/supervisor_turn.py"]
+    assert {"software_engineering", "architecture", "review"}.issubset(set(brief["requiredCapabilities"]))
+    assert selected is not None
+    assert selected["capabilitySnapshot"]["specialistFamily"] == "engineering"
+    assert selected["id"] != "web-research-architect"
+    assert diagnostics["targetFamily"] == "engineering"
+
+
+def test_runtime_runner_finalizes_direct_delegation_episode(monkeypatch, tmp_path) -> None:
+    manager = DatabaseManager(tmp_path / "direct-delegation.db")
+    manager.create_or_update_session("session-direct", "Direct Delegation")
+    manager.create_run_record(
+        run_id="run-direct",
+        session_id="session-direct",
+        run_type="chat",
+        status="running",
+    )
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "reason": "plan only"},
+        kind="engineering",
+        state="active",
+        continuation_target="runtime_episode_runner",
+        extra={"sessionId": "session-direct", "runId": "run-direct", "inputs": {"workspacePath": str(tmp_path)}},
+    )
+    manager.upsert_runtime_episode_record(parent, session_id="session-direct", run_id="run-direct", enqueue=False)
+    delegation_id = "subagent::delegation_direct::0::PLAN-1::code-review-architect"
+    direct = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "needId": delegation_id,
+            "reason": "review plan",
+            "parentEpisodeId": parent["episodeId"],
+            "inputs": {"workerBriefs": [{"taskBriefId": "PLAN-1", "goal": "Review plan."}]},
+        },
+        kind="delegation",
+        state="waiting",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="parallel_delegate_join",
+        extra={"sessionId": "session-direct", "runId": "run-direct"},
+    )
+    manager.upsert_runtime_episode_record(direct, session_id="session-direct", run_id="run-direct", enqueue=False)
+    monkeypatch.setattr(runtime_episode_runner_module, "db", manager)
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"code-review-architect": {"id": "code-review-architect"}})
+
+    async def _fake_branch(_arg, _agent_data, progress_callback=None):
+        if progress_callback:
+            progress_callback({"stage": "working", "status": "running", "summary": "Reviewing orchestration."})
+        return [], [], {
+            "taskBriefId": "PLAN-1",
+            "delegationId": delegation_id,
+            "agentId": "code-review-architect",
+            "agentName": "Code Review Architect",
+            "status": "ok",
+            "summary": "Three bounded phases with verification and rollback were returned.",
+            "resultText": "Phase 1 inspect; phase 2 change; phase 3 verify and rollback.",
+        }, []
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+    from langgraph.types import Command, Send
+
+    command = Command(
+        goto=[
+            Send(
+                "parallel_delegate_task",
+                {
+                    "parallel_branch": {
+                        "agentId": "code-review-architect",
+                        "agentName": "Code Review Architect",
+                        "delegationId": delegation_id,
+                        "invocationId": "delegation_direct",
+                        "taskBriefId": "PLAN-1",
+                        "taskBrief": {"taskBriefId": "PLAN-1", "goal": "Review plan."},
+                        "reason": "Review plan.",
+                    },
+                    "messages": [],
+                    "todos": [],
+                },
+            )
+        ],
+        update={},
+    )
+
+    results, child_ids = asyncio.run(RuntimeEpisodeRunner()._execute_local_delegation_sends(command, parent))
+
+    stored = manager.get_runtime_episode(delegation_id)
+    handoffs = manager.list_runtime_episode_handoffs(delegation_id)
+    with manager.get_connection() as conn:
+        topics = [row["topic"] for row in conn.execute(
+            "SELECT topic FROM runtime_episode_events WHERE episode_id = ? ORDER BY created_at",
+            (delegation_id,),
+        ).fetchall()]
+    assert results[0]["status"] == "ok"
+    assert child_ids == []
+    assert stored["state"] == "completed"
+    assert handoffs[-1]["payload"]["status"] == "ready"
+    assert "runtime.episode.progress" in topics
+    assert topics[-1] == "runtime.episode.completed"
+
+
 def test_local_delegation_blocks_task_when_dependency_failed(monkeypatch):
     runner = RuntimeEpisodeRunner()
     executed: list[str] = []
@@ -144,7 +334,7 @@ def test_local_delegation_blocks_task_when_dependency_failed(monkeypatch):
 
     monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
 
-    async def _fake_branch(arg, _agent_data):
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
         task_id = arg["parallel_branch"]["taskBriefId"]
         executed.append(task_id)
         if task_id == "TASK-001":
@@ -178,7 +368,7 @@ def test_local_delegation_passes_dependency_results_to_dependent_task(monkeypatc
 
     monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
 
-    async def _fake_branch(arg, _agent_data):
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
         task_id = arg["parallel_branch"]["taskBriefId"]
         seen_args[task_id] = arg
         return [], [], {"taskBriefId": task_id, "status": "ok", "summary": f"{task_id} finished"}, []
@@ -199,6 +389,94 @@ def test_local_delegation_passes_dependency_results_to_dependent_task(monkeypatc
     assert "TASK-001 finished" in dependency_results[0]["summary"]
 
 
+def test_cross_episode_degraded_handoff_can_continue_when_recovery_allows(monkeypatch):
+    upstream = {
+        "episodeId": "episode_research_degraded",
+        "runId": "run-cross-episode",
+        "kind": "research",
+        "state": "degraded",
+        "inputs": {"taskBriefs": [{"taskBriefId": "RESEARCH-001", "goal": "Collect evidence."}]},
+        "metadata": {"recovery": {"canContinueParent": True}},
+    }
+    downstream = {
+        "episodeId": "episode_engineering_consumer",
+        "runId": "run-cross-episode",
+        "kind": "engineering",
+        "state": "queued",
+        "inputs": {
+            "taskBriefs": [
+                {
+                    "taskBriefId": "ENGINEERING-001",
+                    "goal": "Use the bounded degraded evidence.",
+                    "dependency": ["RESEARCH-001"],
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(runtime_episode_runner_module.db, "list_runtime_episodes", lambda **_kwargs: [upstream, downstream])
+    monkeypatch.setattr(
+        runtime_episode_runner_module.db,
+        "list_runtime_episode_handoffs",
+        lambda _episode_id: [
+            {
+                "handoffId": "handoff-research-degraded",
+                "payload": {
+                    "status": "degraded",
+                    "compactSummary": "Two sources are available; one requested source is missing.",
+                    "degradedReason": "research_run_missing_evidence",
+                },
+            }
+        ],
+    )
+
+    prepared, gate = RuntimeEpisodeRunner._prepare_cross_episode_dependencies(downstream)
+
+    assert gate is None
+    dependency = prepared["inputs"]["dependencyResults"][0]
+    assert dependency["status"] == "degraded"
+    assert dependency["canContinueParent"] is True
+    assert dependency["degradedReason"] == "research_run_missing_evidence"
+    assert prepared["inputs"]["taskBriefs"][0]["context"]["dependencyResults"] == [dependency]
+
+
+def test_cross_episode_degraded_handoff_blocks_when_recovery_disallows(monkeypatch):
+    upstream = {
+        "episodeId": "episode_research_blocked",
+        "runId": "run-cross-episode-blocked",
+        "kind": "research",
+        "state": "degraded",
+        "inputs": {"taskBriefs": [{"taskBriefId": "RESEARCH-002", "goal": "Collect evidence."}]},
+        "metadata": {"recovery": {"canContinueParent": False}},
+    }
+    downstream = {
+        "episodeId": "episode_engineering_blocked",
+        "runId": "run-cross-episode-blocked",
+        "kind": "engineering",
+        "state": "queued",
+        "inputs": {
+            "taskBriefs": [
+                {
+                    "taskBriefId": "ENGINEERING-002",
+                    "goal": "Must consume accepted evidence.",
+                    "dependency": ["RESEARCH-002"],
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(runtime_episode_runner_module.db, "list_runtime_episodes", lambda **_kwargs: [upstream, downstream])
+    monkeypatch.setattr(
+        runtime_episode_runner_module.db,
+        "list_runtime_episode_handoffs",
+        lambda _episode_id: [{"payload": {"status": "degraded", "compactSummary": "Unusable evidence."}}],
+    )
+
+    _prepared, gate = RuntimeEpisodeRunner._prepare_cross_episode_dependencies(downstream)
+
+    assert gate["state"] == "failed"
+    assert gate["errorCode"] == "cross_episode_dependency_failed"
+    assert gate["dependencyResults"][0]["status"] == "failed"
+
+
 def test_local_delegation_retries_unsafe_verification_once_after_artifact_exists(monkeypatch, tmp_path):
     runner = RuntimeEpisodeRunner()
     artifact = tmp_path / "index.html"
@@ -212,7 +490,7 @@ def test_local_delegation_retries_unsafe_verification_once_after_artifact_exists
 
     monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
 
-    async def _fake_branch(arg, _agent_data):
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
         calls.append(arg)
         task_id = arg["parallel_branch"]["taskBriefId"]
         if task_id == "TASK-001" and len(calls) == 1:
@@ -297,7 +575,7 @@ def test_local_delegation_refreshes_stale_node_map_before_missing(monkeypatch):
 
     monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
 
-    async def _fake_branch(arg, _agent_data):
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
         return [], [], {"taskBriefId": arg["parallel_branch"]["taskBriefId"], "status": "ok"}, []
 
     monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
@@ -336,7 +614,7 @@ def test_local_delegation_blocks_dependent_task_when_research_artifact_is_placeh
 
     monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
 
-    async def _fake_branch(arg, _agent_data):
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
         task_id = arg["parallel_branch"]["taskBriefId"]
         executed.append(task_id)
         return [], [], {"taskBriefId": task_id, "status": "ok", "summary": f"{task_id} returned"}, []
@@ -398,11 +676,24 @@ def test_local_delegation_blocks_dependent_task_when_research_artifact_is_placeh
     assert results[1]["blockedDependencies"] == ["TASK-001"]
 
 
-def test_engineering_plan_only_with_task_briefs_does_not_delegate(monkeypatch):
-    async def _fail_if_delegated(self, _episode):
-        raise AssertionError("plan_only engineering episodes must not delegate executable workers")
+def test_engineering_plan_only_with_task_briefs_delegates_a_plan_specialist(monkeypatch):
+    captured: dict = {}
 
-    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _fail_if_delegated)
+    async def _capture_delegation(self, delegation_episode):
+        captured.update(delegation_episode)
+        return {
+            "status": "ready",
+            "compactSummary": "A bounded engineering plan was produced.",
+            "childHandoffs": [
+                {
+                    "kind": "subagent_result",
+                    "status": "ready",
+                    "compactSummary": "Implement, verify, then roll back if verification fails.",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_execute_delegation", _capture_delegation)
     episode = build_runtime_episode(
         need={
             "kind": "engineering",
@@ -431,8 +722,10 @@ def test_engineering_plan_only_with_task_briefs_does_not_delegate(monkeypatch):
 
     handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(episode))
 
+    assert captured["kind"] == "delegation"
+    assert captured["inputs"]["workerBriefs"][0]["taskBriefId"] == "task-1"
     assert handoff["status"] == "ready"
-    assert handoff["engineeringState"] == "work_plan_ready"
+    assert handoff["engineeringState"] == "work_plan_started"
     assert handoff["deliverableKind"] == "plan_only"
     assert handoff["writeRequired"] is False
 
@@ -989,11 +1282,26 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
         from langchain_core.messages import ToolMessage
         from langgraph.types import Command
 
+        content = f"mode={kwargs.get('mode')} query={kwargs.get('query')}"
+        if kwargs.get("mode") == "run":
+            content = json.dumps(
+                {
+                    "ok": True,
+                    "evidenceBundleId": "research_march7",
+                    "researchAnswerPack": {
+                        "answer": "官方资料与多源证据已汇总。",
+                        "sources": [{"title": "Official", "url": "https://example.com/official"}],
+                        "claimTable": [{"claim": "supported", "confidence": "high"}],
+                        "limitations": [],
+                    },
+                },
+                ensure_ascii=False,
+            )
         return Command(
             update={
                 "messages": [
                     ToolMessage(
-                        content=f"mode={kwargs.get('mode')} query={kwargs.get('query')}",
+                        content=content,
                         tool_call_id=str(kwargs.get("tool_call_id") or "test"),
                     )
                 ]
@@ -1031,6 +1339,43 @@ def test_research_episode_uses_task_route_query_and_runs_full_evidence(monkeypat
     assert calls[0]["query"] != "skill_driven_writing_requires_source_evidence"
     assert handoff["status"] == "ready"
     assert handoff["runMode"] == "run"
+    assert handoff["researchRefs"] == ["research://bundle/research_march7"]
+    assert handoff["sourceCount"] == 1
+
+
+def test_research_episode_run_without_evidence_bundle_is_degraded(monkeypatch):
+    def _fake_research_broker(**kwargs):
+        if kwargs.get("mode") == "run":
+            return json.dumps({"ok": True, "summary": "Research started but returned no sources."})
+        return json.dumps({"ok": True, "items": []})
+
+    import core.native_tools as native_tools
+
+    monkeypatch.setattr(native_tools, "research_broker", SimpleNamespace(func=_fake_research_broker))
+    episode = build_runtime_episode(
+        need={"kind": "research", "source": "test", "reason": "collect source-backed evidence"},
+        kind="research",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "inputs": {
+                "mode": "run",
+                "query": "Collect authoritative evidence.",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "research-missing-evidence",
+                        "goal": "Collect authoritative evidence.",
+                    }
+                ],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_research(episode))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["degradedReason"] == "research_run_missing_evidence"
+    assert handoff["researchRefs"] == []
 
 
 def test_research_episode_plan_only_is_degraded_not_evidence_ready(monkeypatch):
@@ -1419,7 +1764,7 @@ def test_delegation_episode_executes_local_parallel_delegate_send(monkeypatch):
             update={},
         )
 
-    async def _fake_run_parallel_agent_branch(state, agent_data):
+    async def _fake_run_parallel_agent_branch(state, agent_data, progress_callback=None):
         branch = state["parallel_branch"]
         return [], [], {
             "invocationId": branch["invocationId"],
@@ -1501,7 +1846,7 @@ def test_delegation_episode_degrades_when_local_worker_fails(monkeypatch):
             update={},
         )
 
-    async def _fake_run_parallel_agent_branch(state, agent_data):
+    async def _fake_run_parallel_agent_branch(state, agent_data, progress_callback=None):
         branch = state["parallel_branch"]
         return [], [], {
             "invocationId": branch["invocationId"],
@@ -1700,7 +2045,7 @@ def test_delegation_episode_promotes_child_delegate_send_to_child_episode(monkey
             update={},
         )
 
-    async def _fake_run_parallel_agent_branch(state, agent_data):
+    async def _fake_run_parallel_agent_branch(state, agent_data, progress_callback=None):
         branch = state["parallel_branch"]
         child_request = {
             "requestId": "child-request-1",
@@ -2161,7 +2506,7 @@ def test_delegation_episode_promotes_malformed_child_delegate_signal(monkeypatch
             update={},
         )
 
-    async def _fake_run_parallel_agent_branch(state, agent_data):
+    async def _fake_run_parallel_agent_branch(state, agent_data, progress_callback=None):
         branch = state["parallel_branch"]
         return [], [], {
             "invocationId": branch["invocationId"],
@@ -2698,6 +3043,86 @@ def test_engineering_worker_briefs_for_artifact_include_write_discipline(tmp_pat
     assert normalized[0]["context"]["expectedOutputs"] == ["docs/delivery-summary.md"]
     assert "write_native_file" in normalized[0]["context"]["artifactWriteDiscipline"]
     assert "shell commands are only for directories" in normalized[0]["context"]["artifactWriteDiscipline"]
+
+
+def test_engineering_plan_only_handoff_synthesis_receives_no_lookup_tools(tmp_path):
+    worker_briefs = [
+        {
+            "taskBriefId": "eng-plan-only",
+            "goal": "Consume the injected research handoff and produce an engineering work plan without writing files.",
+            "familyHint": "engineering",
+            "readSet": ["research-mainchain-opt-001 evidence bundle (episode_abc123)"],
+            "writeSet": [],
+            "expectedOutputs": ["Human-readable engineering work plan"],
+            "toolPolicy": {"mode": "default"},
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"writeRequired": False, "deliverableKind": "plan_only"},
+        inputs={"workspacePath": str(tmp_path), "writeRequired": False, "deliverableKind": "plan_only"},
+    )
+
+    assert normalized[0]["toolPolicy"]["mode"] == "none"
+    assert normalized[0]["allowedTools"] == []
+    assert normalized[0]["readSet"] == []
+    assert normalized[0]["context"]["injectedEvidenceRefs"] == [
+        "research-mainchain-opt-001 evidence bundle (episode_abc123)"
+    ]
+    assert "not filesystem paths" in normalized[0]["context"]["handoffConsumptionDiscipline"]
+
+
+def test_engineering_plan_only_with_declared_source_file_keeps_read_tools(tmp_path):
+    worker_briefs = [
+        {
+            "taskBriefId": "eng-plan-source-read",
+            "goal": "Inspect the declared source file and produce a read-only work plan.",
+            "familyHint": "engineering",
+            "readSet": ["src/app.ts"],
+            "writeSet": [],
+            "toolPolicy": {"mode": "default"},
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"writeRequired": False, "deliverableKind": "plan_only"},
+        inputs={"workspacePath": str(tmp_path), "writeRequired": False, "deliverableKind": "plan_only"},
+    )
+
+    assert normalized[0]["toolPolicy"]["mode"] == "default"
+
+
+def test_engineering_mixed_read_set_keeps_files_and_moves_symbolic_refs_to_context(tmp_path):
+    worker_briefs = [
+        {
+            "taskBriefId": "eng-plan-mixed-readset",
+            "goal": "Use the injected evidence and inspect the one declared source document.",
+            "familyHint": "engineering",
+            "readSet": [
+                "research_evidence_bundle.summary",
+                "capability_registry (engineering/research)",
+                "docs/architecture.md",
+            ],
+            "writeSet": [],
+            "toolPolicy": {"mode": "default"},
+        }
+    ]
+
+    normalized = RuntimeEpisodeRunner()._prepare_engineering_worker_briefs_for_delegation(
+        worker_briefs,
+        need={"writeRequired": False, "deliverableKind": "plan_only"},
+        inputs={"workspacePath": str(tmp_path), "writeRequired": False, "deliverableKind": "plan_only"},
+    )
+
+    assert normalized[0]["readSet"] == ["docs/architecture.md"]
+    assert normalized[0]["context"]["injectedEvidenceRefs"] == [
+        "research_evidence_bundle.summary",
+        "capability_registry (engineering/research)",
+    ]
+    assert normalized[0]["toolPolicy"]["mode"] == "default"
+    assert "never pass" in normalized[0]["context"]["handoffConsumptionDiscipline"]
 
 
 def test_engineering_worker_briefs_do_not_treat_directory_setup_as_full_skill_artifact(tmp_path):

@@ -28,6 +28,8 @@ def create_robust_invoke(
         preferred_model_id="",
         build_model=None,
         invocation_config=None,
+        tool_choice=None,
+        result_validator=None,
     ):
         import logging
 
@@ -57,6 +59,8 @@ def create_robust_invoke(
             preferred_model_id=target_model_id,
             build_model=model_builder,
             invocation_config=invocation_config,
+            tool_choice=tool_choice,
+            result_validator=result_validator,
         )
 
     return _robust_invoke

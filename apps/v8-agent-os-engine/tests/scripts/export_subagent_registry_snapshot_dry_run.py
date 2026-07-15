@@ -25,7 +25,6 @@ def _agent(agent_id: str, family: str | None, *, ops: list[str], description: st
         "agentClass": "executor",
         "domainTags": [family or "general"],
         "operationCapabilities": ops,
-        "plannerSuitability": "high",
     }
     if family is not None:
         snapshot["specialistFamily"] = family

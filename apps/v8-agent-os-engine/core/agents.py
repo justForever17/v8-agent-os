@@ -7,10 +7,9 @@ from pydantic import BaseModel, Field
 
 from core.time_truth import utc_now_iso
 
-DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-06-30-runtime-bindings"
+DEFAULT_SUBAGENT_TEMPLATE_VERSION = "v8-default-subagents-2026-07-14-supervisor-owned-contracts"
 FREELANCERS_SPECIALIST_FAMILY_ID = "freelancers"
 DEFAULT_SUBAGENT_IDS = {
-    "project-planner",
     "implementation-engineer",
     "frontend-product-engineer",
     "verification-engineer",
@@ -27,6 +26,7 @@ DEFAULT_SUBAGENT_IDS = {
     "audio-post-producer",
 }
 DEPRECATED_DEFAULT_SUBAGENT_IDS = {
+    "project-planner",
     "research-scout",
     "creative-editor",
     "life-ops-coach",
@@ -221,7 +221,7 @@ def _compact_registry_member(agent: Dict[str, Any]) -> Dict[str, Any] | None:
             "operationCapabilities": _snapshot_list(snapshot.get("operationCapabilities")),
             "runtimeAffinities": _snapshot_list(snapshot.get("runtimeAffinities")),
             "runtimeBindings": list(snapshot.get("runtimeBindings") or [])[:8] if isinstance(snapshot.get("runtimeBindings"), list) else [],
-            "plannerSuitability": snapshot.get("plannerSuitability"),
+            "executionSuitability": snapshot.get("executionSuitability"),
         },
     }
     tools = _snapshot_list(agent.get("tools"), limit=24)
@@ -542,34 +542,8 @@ Do not pretend to be the supervisor, do not make final user-facing acceptance de
 
 
 def default_subagent_configs() -> List[AgentConfig]:
-    """Default local subagents seeded into a fresh V8 home for planner/swarm execution."""
+    """Default local execution specialists seeded into a fresh V8 home."""
     return [
-        _default_agent(
-            agent_id="project-planner",
-            name="Project Planner",
-            description="Breaks complex engineering work into isolated, verifiable task briefs.",
-            role_label="Planner",
-            icon="diagram-project",
-            capability_snapshot={
-                "agentClass": "planner",
-                "specialistFamily": "engineering",
-                "domainTags": ["software_engineering", "runtime_governance", "project_execution"],
-                "artifactCapabilities": ["task_brief", "implementation_plan", "acceptance_contract"],
-                "operationCapabilities": ["decompose", "sequence", "risk_assess", "scope_isolate"],
-                "runtimeAffinities": ["chat", "extensions"],
-                "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "high",
-                "externalWorkerSuitability": "low",
-                "confidence": 0.9,
-                "source": "system_default",
-            },
-            mission="- Convert broad work into executable task briefs with clear ownership, dependencies, write sets, behavior scopes, and acceptance contracts.\n- Protect parallel work from file conflicts, runtime side-effect collisions, and vague success criteria.",
-            input_contract="- A user goal, supervisor plan, partial task graph, or ambiguous implementation request.\n- Available capability snapshots and any fixed constraints from the supervisor.",
-            operating_protocol="- First classify whether the work should be direct, delegated, or mixed.\n- Slice by ownership boundary before slicing by convenience.\n- Prefer small parallel waves only when writeSet and behaviorScope are isolated.\n- Surface risks before assigning work, especially destructive migrations, external side effects, and unclear acceptance.",
-            output_contract="- A compact task graph or ordered plan.\n- Each task includes goal, context, writeSet, behaviorScope, requiredCapabilities, dependency, parallelGroup, and acceptanceContract.\n- Include planner risks and the reason any task should remain with the supervisor.",
-            verification="- Check that every task has an owner-compatible capability, no hidden shared writeSet, legal dependency order, and a testable acceptance contract.",
-            boundaries="- Do not execute code changes or run side-effectful commands.\n- Do not assign ComputerUse, RPA, or Memory actions to subagents unless the supervisor explicitly brokered a narrow surface.\n- Do not inflate one-person work into a swarm.",
-        ),
         _default_agent(
             agent_id="implementation-engineer",
             name="Implementation Engineer",
@@ -584,7 +558,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["implement", "refactor", "debug"],
                 "runtimeAffinities": ["chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.88,
                 "source": "system_default",
@@ -610,7 +584,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["implement", "debug_ui", "refine_interaction", "verify_surface"],
                 "runtimeAffinities": ["chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.87,
                 "source": "system_default",
@@ -620,7 +594,7 @@ def default_subagent_configs() -> List[AgentConfig]:
             operating_protocol="- Identify the state source before changing presentation.\n- Preserve shared contract semantics when touching session-realtime, runtime cards, HUDs, or artifact/process refs.\n- Keep i18n complete for admin/phone surfaces.\n- Prefer clear empty/error/loading states over hidden failures.",
             output_contract="- UI behavior summary, component/files touched, state-contract impact, i18n keys touched, and verification evidence.",
             verification="- Run type/build checks when possible; otherwise provide exact manual surface checks and expected visible states.",
-            boundaries="- Do not invent runtime data in the UI layer.\n- Do not move execution semantics into page state.\n- Do not collapse planner/subagent/process/governance surfaces into one card without explicit instruction.",
+            boundaries="- Do not invent runtime data in the UI layer.\n- Do not move execution semantics into page state.\n- Do not collapse subagent/process/governance surfaces into one card without explicit instruction.",
         ),
         _default_agent(
             agent_id="verification-engineer",
@@ -636,7 +610,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["test", "verify", "reproduce", "triage"],
                 "runtimeAffinities": ["chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.9,
                 "source": "system_default",
@@ -662,7 +636,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["review", "audit", "compare", "validate_contract"],
                 "runtimeAffinities": ["chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "low",
                 "confidence": 0.88,
                 "source": "system_default",
@@ -688,7 +662,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["plan_search", "decompose_queries", "rank_sources", "orchestrate_shards", "synthesize_evidence"],
                 "runtimeAffinities": ["research", "chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "high",
+                "executionSuitability": "high",
                 "externalWorkerSuitability": "low",
                 "confidence": 0.9,
                 "source": "system_default",
@@ -715,7 +689,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["research", "compare", "summarize", "triangulate"],
                 "runtimeAffinities": ["chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "low",
+                "executionSuitability": "low",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.82,
                 "source": "system_default",
@@ -741,7 +715,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["summarize", "document", "explain"],
                 "runtimeAffinities": ["chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "low",
+                "executionSuitability": "low",
                 "externalWorkerSuitability": "low",
                 "confidence": 0.84,
                 "source": "system_default",
@@ -767,7 +741,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["audit", "distill", "improve", "validate"],
                 "runtimeAffinities": ["chat", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "low",
                 "confidence": 0.86,
                 "source": "system_default",
@@ -793,7 +767,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["brief", "decompose", "preserve_constraints", "sequence", "scope_media_run"],
                 "runtimeAffinities": ["chat", "artifact", "extensions", "audio"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "high",
+                "executionSuitability": "high",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.86,
                 "source": "system_default",
@@ -821,7 +795,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["compile_prompt", "polish", "structure", "adapt_provider", "quality_gate"],
                 "runtimeAffinities": ["chat", "artifact", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.84,
                 "source": "system_default",
@@ -857,7 +831,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["plan_layers", "inspect_alpha", "request_chroma_key_assets", "compose_psd", "export_preview", "handoff_artifact"],
                 "runtimeAffinities": ["chat", "artifact", "extensions", "creative_media"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.84,
                 "source": "system_default",
@@ -885,7 +859,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["define_character", "anchor_references", "compare", "repair_plan"],
                 "runtimeAffinities": ["chat", "artifact", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.83,
                 "source": "system_default",
@@ -913,7 +887,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["timebox", "direct_camera", "sequence_clips", "plan_transition", "evaluate_motion"],
                 "runtimeAffinities": ["chat", "artifact", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.84,
                 "source": "system_default",
@@ -941,7 +915,7 @@ def default_subagent_configs() -> List[AgentConfig]:
                 "operationCapabilities": ["plan_voiceover", "sync_audio", "write_subtitles", "assemble", "deliver_artifact"],
                 "runtimeAffinities": ["chat", "audio", "artifact", "extensions"],
                 "toolExposurePolicy": "contextual_auto",
-                "plannerSuitability": "medium",
+                "executionSuitability": "medium",
                 "externalWorkerSuitability": "medium",
                 "confidence": 0.82,
                 "source": "system_default",

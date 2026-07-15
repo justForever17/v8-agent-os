@@ -10,7 +10,7 @@ from tests.scripts.run_agent_quality_live_audit import LiveCaseResult, _route_ev
 
 def test_research_to_engineering_to_delegation_handoff_chain(monkeypatch) -> None:
     research = build_runtime_episode(
-        need={"kind": "research", "source": "planner", "reason": "collect source-backed facts"},
+        need={"kind": "research", "source": "supervisor", "reason": "collect source-backed facts"},
         kind="research",
         state="queued",
         continuation_target="runtime_episode_runner",
@@ -18,7 +18,7 @@ def test_research_to_engineering_to_delegation_handoff_chain(monkeypatch) -> Non
     engineering = build_runtime_episode(
         need={
             "kind": "engineering",
-            "source": "planner",
+            "source": "supervisor",
             "reason": "consume research and implement",
             "inputs": {
                 "handoffRefs": [research["episodeId"]],
@@ -90,7 +90,7 @@ def test_child_capability_need_promotes_and_parent_resumes(monkeypatch) -> None:
     parent = build_runtime_episode(
         need={
             "kind": "engineering",
-            "source": "planner",
+            "source": "supervisor",
             "reason": "needs child creative episode",
             "inputs": {
                 "capabilityNeeds": [

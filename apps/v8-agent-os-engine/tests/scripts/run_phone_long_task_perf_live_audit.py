@@ -390,8 +390,6 @@ def submit_long_task(admin_url: str, token: str, session_id: str, prompt: str) -
             "data": {
                 "conversationId": session_id,
                 "clientMessageId": client_message_id,
-                "taskPlanningMode": True,
-                "taskPlanningSource": "phone_long_task_perf_audit",
             },
         },
         timeout=45,

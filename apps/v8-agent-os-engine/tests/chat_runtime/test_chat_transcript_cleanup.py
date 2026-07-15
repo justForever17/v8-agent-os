@@ -473,7 +473,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         final_state = {
-            "planner_dispatch_status": {
+            "runtime_dispatch_status": {
                 "mode": "runtime_episode",
                 "nextAction": "resume_supervisor",
                 "state": "handoff_ready",
@@ -532,7 +532,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         final_state = {
-            "planner_dispatch_status": {
+            "runtime_dispatch_status": {
                 "mode": "runtime_episode",
                 "nextAction": "resume_supervisor",
                 "state": "degraded_handoff_ready",
@@ -919,7 +919,7 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
             {
                 "goto": "resume_supervisor",
                 "update": {
-                    "planner_dispatch_status": {"state": "degraded_handoff_ready"},
+                    "runtime_dispatch_status": {"state": "degraded_handoff_ready"},
                     "messages": [{"content": "Engineering Runtime 已返回降级证据。"}],
                     "current_route_context": {
                         "runtimeId": "engineering",

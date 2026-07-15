@@ -75,7 +75,6 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const modelName = data.model;
     const agentId = root.agentId;
     const specMode = data.specMode === true;
-    const taskPlanningMode = !specMode && data.taskPlanningMode === true;
     const supervisorReasoningEffort = typeof data.supervisorReasoningEffort === "string"
         ? data.supervisorReasoningEffort
         : undefined;
@@ -123,17 +122,7 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
                 commandPreset: data.commandPreset,
                 fileUrls,
                 attachments: dedupedAttachments,
-                plannerMode: specMode
-                    ? "off"
-                    : typeof data.plannerMode === "string"
-                    ? data.plannerMode
-                    : taskPlanningMode
-                        ? "force"
-                        : undefined,
                 specMode,
-                taskPlanningMode,
-                taskPlanningSource: typeof data.taskPlanningSource === "string" ? data.taskPlanningSource : undefined,
-                taskPlanningRequestedByComposer: data.taskPlanningRequestedByComposer === true,
                 supervisorReasoningEffort,
                 safetyApprovalMode,
                 skillReferences: Array.isArray(data.skillReferences) ? data.skillReferences : undefined,

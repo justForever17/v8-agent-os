@@ -161,9 +161,6 @@ def _submit_message(
         "data": {
             "conversationId": session_id,
             "modelProfile": model_profile,
-            "taskPlanningMode": True,
-            "plannerMode": "force",
-            "plannerDispatchMode": "auto",
         },
     }
     response = _json_request(f"{_engine_api_base(engine_url)}/chat/submit", method="POST", payload=payload, timeout=30)

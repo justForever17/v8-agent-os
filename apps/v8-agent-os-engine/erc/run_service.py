@@ -4,11 +4,28 @@ from typing import Any, Dict, Optional
 
 from core.database import db
 from core.run_ledger import run_ledger_service
+from core.runtime_episodes import emit_runtime_episode_event
 
-from erc.models import RunDescriptor
+from erc.models import RunDescriptor, TERMINAL_RUN_STATUSES
 
 
 class RunService:
+    @staticmethod
+    def _cancel_orphaned_runtime_episodes(run_id: str, *, run_status: str, reason: Optional[str]) -> None:
+        if str(run_status or "").strip() not in TERMINAL_RUN_STATUSES:
+            return
+        cancel_reason = reason or f"Parent run reached terminal status: {run_status}."
+        for episode in db.cancel_active_runtime_episodes_for_run(run_id, reason=cancel_reason):
+            emit_runtime_episode_event(
+                "runtime.episode.cancelled",
+                {
+                    "episode": episode,
+                    "summary": "The parent run ended before this runtime episode completed.",
+                    "reason": cancel_reason,
+                },
+                source={"runtime": "erc", "component": "run_service"},
+            )
+
     def create_run(self, descriptor: RunDescriptor) -> RunDescriptor:
         db.create_run_record(
             run_id=descriptor.run_id,
@@ -60,6 +77,11 @@ class RunService:
             error_message=error_message,
             metadata=persisted_metadata,
         )
+        self._cancel_orphaned_runtime_episodes(
+            run_id,
+            run_status=status,
+            reason=error_message,
+        )
         run_record = db.get_run_record(run_id) or {}
         run_ledger_service.record_event(
             event_type=f"run.status.{status}",
@@ -95,6 +117,11 @@ class RunService:
         )
         if not result.get("updated"):
             return result
+        self._cancel_orphaned_runtime_episodes(
+            run_id,
+            run_status=status,
+            reason=error_message,
+        )
         run_record = result.get("run_record") or db.get_run_record(run_id) or {}
         run_ledger_service.record_event(
             event_type=f"run.status.{status}",

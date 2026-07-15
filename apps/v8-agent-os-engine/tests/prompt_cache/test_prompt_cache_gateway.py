@@ -179,29 +179,6 @@ def test_dynamic_user_time_and_memory_do_not_change_static_prefix_key():
     assert first_memory["cacheDiagnostics"]["dynamicRequestHash"] != second_memory["cacheDiagnostics"]["dynamicRequestHash"]
 
 
-def test_deepseek_planner_observe_only_keeps_static_prefix_stable():
-    gateway = PromptCacheGateway()
-    first = gateway.dry_run(
-        messages=_messages("把这个模糊需求整理成 runtime needs。"),
-        provider_id="deepseek",
-        model_id="deepseek-v4-flash",
-        role="planner",
-        kwargs={"temperature": 0},
-    )
-    second = gateway.dry_run(
-        messages=_messages("把另一个工程续接需求整理成 runtime needs。"),
-        provider_id="deepseek",
-        model_id="deepseek-v4-flash",
-        role="planner",
-        kwargs={"temperature": 0},
-    )
-
-    assert first["cacheDiagnostics"]["staticPrefixKey"] == second["cacheDiagnostics"]["staticPrefixKey"]
-    assert first["cacheDiagnostics"]["dynamicRequestHash"] != second["cacheDiagnostics"]["dynamicRequestHash"]
-    assert first["cacheDiagnostics"]["providerRequestPatch"]["observeOnly"] is True
-    assert first["cacheDiagnostics"]["usageFields"] == ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"]
-
-
 def test_deepseek_usage_fields_are_parsed_as_cached_tokens():
     usage = {"usage": {"prompt_cache_hit_tokens": 900, "prompt_cache_miss_tokens": 124}}
     assert _find_cached_input_tokens(usage) == 900

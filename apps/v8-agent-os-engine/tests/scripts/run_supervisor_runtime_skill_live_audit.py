@@ -490,7 +490,6 @@ def _poll_case(engine_url: str, result: LiveCaseResult, *, max_wait: float) -> L
                 "runtime.episode.completed",
                 "runtime.episode.failed",
                 "handoff.ref.created",
-                "planner.fallback.used",
                 "human_guidance.injected",
                 "run.resume.scheduling",
                 "run.resume.scheduled",
@@ -801,7 +800,7 @@ def _case_findings(result: LiveCaseResult) -> list[AuditFinding]:
                     }
                 ),
                 modules=["runtimes/chat/runtime.py", "runtimes/research", "tests/scripts/run_supervisor_runtime_skill_live_audit.py"],
-                recommended_fix="写作分流为 research_then_write 且 primaryTaskShape=writing 时强制进入 Planner/Research evidence 链路，再由 Supervisor 或 writing subagent 成稿。",
+                recommended_fix="写作分流为 research_then_write 且 primaryTaskShape=writing 时由 Supervisor 强制进入 Research evidence 链路，再由 Supervisor 或 writing subagent 成稿。",
                 regression_test="tests/agent_quality/test_skill_writing_routing.py",
             )
         )

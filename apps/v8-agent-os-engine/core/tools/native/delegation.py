@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Required, TypedDict
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -13,7 +14,6 @@ from langgraph.types import Command, Send
 
 from core.agents import agents_from_subagent_registry_snapshot, build_subagent_registry_snapshot
 from core.context.delegation import build_delegation_context, latest_delegation_context
-from core.delegation_result_contract import build_delegation_result_contract
 from core.delegation_broker import (
     build_workset_dispatch_decisions,
     choose_best_external_worker_with_diagnostics,
@@ -34,12 +34,268 @@ from core.delegation_broker import (
     task_brief_summary,
 )
 from core.tools.native.command import command_session_broker
-from core.runtime_episodes import build_runtime_episode, emit_runtime_episode_event, upsert_runtime_episode
+from core.runtime_episodes import (
+    TERMINAL_EPISODE_STATES,
+    build_runtime_episode,
+    emit_runtime_episode_event,
+    persist_runtime_episode,
+    upsert_runtime_episode,
+)
 from core.storage import StorageManager
 from core.time_truth import utc_now_iso
 from erc.runtime_context import get_runtime_context
 
 storage = StorageManager()
+
+_EPISODE_REF_RE = re.compile(r"(?:episode_[A-Za-z0-9]+|subagent::[A-Za-z0-9:_-]+)")
+
+_VERIFICATION_TASK_SIGNALS = (
+    "risk review",
+    "final review",
+    "verification",
+    "verify the result",
+    "validation review",
+    "acceptance review",
+    "regression review",
+    "audit the result",
+    "风险复核",
+    "最终复核",
+    "验收复核",
+    "回归复核",
+    "验证结果",
+    "校验结果",
+    "审计结果",
+)
+
+_PREFERRED_WORKER_AGENT_ALIASES = {
+    "verifier": "verification-engineer",
+    "verification": "verification-engineer",
+    "verification_engineer": "verification-engineer",
+    "verification-engineer": "verification-engineer",
+}
+
+_DEPRECATED_DELEGATION_TARGET_IDS = {"project-planner"}
+
+
+def _is_supervisor_delegation_caller(runtime_context: dict[str, Any]) -> bool:
+    runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "").strip().lower()
+    agent_id = str(
+        runtime_context.get("agent_id")
+        or runtime_context.get("agentId")
+        or runtime_context.get("subagent_id")
+        or runtime_context.get("subagentId")
+        or ""
+    ).strip().lower()
+    return runtime_kind == "chat" or agent_id == "supervisor"
+
+
+def _delegation_parent_episode_id(
+    inherited_context: dict[str, Any],
+    runtime_context: dict[str, Any],
+) -> str:
+    """Resolve a real recursive parent without inheriting stale Supervisor state."""
+
+    if _is_supervisor_delegation_caller(runtime_context):
+        return ""
+
+    explicit_parent = str(
+        inherited_context.get("parentDelegationId")
+        or inherited_context.get("delegationId")
+        or ""
+    ).strip()
+    if explicit_parent:
+        return explicit_parent
+
+    active_episode_id = str(inherited_context.get("activeCapabilityEpisodeId") or "").strip()
+    if not active_episode_id:
+        return ""
+    for episode in list(inherited_context.get("capabilityEpisodes") or []):
+        if not isinstance(episode, dict):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if episode_id != active_episode_id:
+            continue
+        state = str(episode.get("state") or episode.get("status") or "").strip().lower()
+        return "" if state in TERMINAL_EPISODE_STATES else active_episode_id
+    return active_episode_id
+
+
+def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Route explicit verification-shaped work without overriding model choices."""
+
+    normalized: list[dict[str, Any]] = []
+    for task in tasks:
+        item = dict(task)
+        preferred_agent_id = str(item.get("preferredAgentId") or "").strip()
+        if preferred_agent_id.lower() in _DEPRECATED_DELEGATION_TARGET_IDS:
+            item.pop("preferredAgentId", None)
+            item["targetDefaultReason"] = "deprecated_target_removed"
+            preferred_agent_id = ""
+        preferred_worker_type = str(item.get("preferredWorkerType") or "").strip().lower().replace(" ", "_")
+        aliased_agent_id = _PREFERRED_WORKER_AGENT_ALIASES.get(preferred_worker_type, "")
+        if not preferred_agent_id and aliased_agent_id:
+            item["preferredAgentId"] = aliased_agent_id
+            item["targetDefaultReason"] = "preferred_worker_type_alias"
+            preferred_agent_id = aliased_agent_id
+        family_hint = str(item.get("familyHint") or "").strip().lower()
+        if not preferred_agent_id and family_hint in {"", "engineering"}:
+            signal = " ".join(
+                str(value or "")
+                for value in (
+                    item.get("title"),
+                    item.get("goal"),
+                    item.get("expectedOutput"),
+                    item.get("expectedOutputs"),
+                    item.get("acceptanceContract"),
+                    item.get("proofExpectations"),
+                )
+            ).lower()
+            if any(token in signal for token in _VERIFICATION_TASK_SIGNALS):
+                item.setdefault("familyHint", "engineering")
+                item["preferredAgentId"] = "verification-engineer"
+                item["targetDefaultReason"] = "verification_task_signal"
+        normalized.append(item)
+    return normalized
+
+
+def _apply_delegation_tool_defaults(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep injected-handoff review work out of unrelated workspace tools."""
+
+    normalized: list[dict[str, Any]] = []
+    for task in tasks:
+        item = dict(task)
+        context = dict(item.get("context") or {}) if isinstance(item.get("context"), dict) else {}
+        tool_policy = dict(item.get("toolPolicy") or {}) if isinstance(item.get("toolPolicy"), dict) else {}
+        tool_mode = str(tool_policy.get("mode") or "default").strip().lower()
+        allowed_tools = list(tool_policy.get("allowedTools") or item.get("allowedTools") or [])
+        read_set = [str(value or "").strip() for value in list(item.get("readSet") or []) if str(value or "").strip()]
+        write_set = [str(value or "").strip() for value in list(item.get("writeSet") or []) if str(value or "").strip()]
+        handoff_evidence = bool(
+            context.get("upstreamHandoffs")
+            or context.get("dependencyResults")
+            or context.get("injectedEvidenceRefs")
+            or context.get("handoffUsage")
+        )
+        read_only = bool(context.get("readOnly") or context.get("noSideEffect") or item.get("readOnly"))
+        if (
+            handoff_evidence
+            and read_only
+            and not read_set
+            and not write_set
+            and not allowed_tools
+            and tool_mode in {"", "default", "none"}
+        ):
+            item["toolPolicy"] = {"mode": "none", "allowedTools": [], "forbiddenTools": []}
+            item["allowedTools"] = []
+            context.setdefault(
+                "handoffConsumptionDiscipline",
+                "Review the injected upstreamHandoffs/dependencyResults directly. No filesystem lookup is authorized because this task declares no readSet.",
+            )
+            item["context"] = context
+        normalized.append(item)
+    return normalized
+
+
+def _compact_handoff_values(value: Any, *, limit: int = 8) -> list[Any]:
+    values = value if isinstance(value, list) else [value] if value not in (None, "") else []
+    result: list[Any] = []
+    for item in values:
+        if item in result:
+            continue
+        result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _compact_upstream_handoff_for_agent(handoff: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(handoff or {})
+    compact: dict[str, Any] = {
+        "producerEpisodeId": str(payload.get("producerEpisodeId") or payload.get("episodeId") or "").strip(),
+        "handoffRefId": str(payload.get("handoffRefId") or payload.get("handoffId") or "").strip(),
+        "kind": str(payload.get("kind") or "runtime_handoff").strip(),
+        "status": str(payload.get("status") or "unknown").strip(),
+        "summary": str(payload.get("compactSummary") or payload.get("summary") or "").strip()[:6000],
+        "confidence": str(payload.get("confidence") or "").strip(),
+        "refs": _compact_handoff_values(payload.get("refs") or payload.get("researchRefs")),
+        "proofRefs": _compact_handoff_values(payload.get("proofRefs") or payload.get("verificationRefs")),
+        "artifactRefs": _compact_handoff_values(payload.get("artifactRefs") or payload.get("changedFiles")),
+        "limitations": _compact_handoff_values(payload.get("limitations"), limit=6),
+        "consumerHint": str(payload.get("consumerHint") or "").strip()[:800],
+        "detailRef": str(payload.get("detailRef") or "").strip(),
+    }
+    child_handoffs = [
+        _compact_upstream_handoff_for_agent(dict(item))
+        for item in list(payload.get("childHandoffs") or [])
+        if isinstance(item, dict)
+    ][:6]
+    delegation_handoff = payload.get("delegationHandoff")
+    if isinstance(delegation_handoff, dict):
+        nested_children = [
+            _compact_upstream_handoff_for_agent(dict(item))
+            for item in list(delegation_handoff.get("childHandoffs") or [])
+            if isinstance(item, dict)
+        ][:6]
+        child_handoffs.extend(item for item in nested_children if item not in child_handoffs)
+    if child_handoffs:
+        compact["childResults"] = child_handoffs[:6]
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
+
+
+def _episode_ids_from_task_brief(task_brief: dict[str, Any]) -> set[str]:
+    candidates = [
+        task_brief.get("evidenceRefs"),
+        task_brief.get("detailRefs"),
+        task_brief.get("researchRefs"),
+        task_brief.get("dependency"),
+        task_brief.get("goal"),
+        task_brief.get("context"),
+    ]
+    serialized = json.dumps(candidates, ensure_ascii=False, default=str)
+    return set(_EPISODE_REF_RE.findall(serialized))
+
+
+def _inject_inherited_handoffs_into_tasks(
+    tasks: list[dict[str, Any]],
+    inherited_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    handoffs = [
+        dict(item)
+        for item in list((inherited_context or {}).get("handoffRefs") or [])
+        if isinstance(item, dict)
+    ]
+    compact_handoffs = [_compact_upstream_handoff_for_agent(item) for item in handoffs]
+    result: list[dict[str, Any]] = []
+    for task in tasks:
+        item = dict(task)
+        context_value = item.get("context")
+        context = dict(context_value) if isinstance(context_value, dict) else {}
+        if isinstance(context_value, str) and context_value.strip():
+            context.setdefault("notes", context_value.strip())
+        requested_episode_ids = _episode_ids_from_task_brief(item)
+        matched = [
+            handoff
+            for handoff in compact_handoffs
+            if not requested_episode_ids
+            or str(handoff.get("producerEpisodeId") or "") in requested_episode_ids
+        ]
+        if requested_episode_ids and not matched:
+            matched = compact_handoffs[-4:]
+        if matched:
+            context["upstreamHandoffs"] = matched[-6:]
+            context["handoffUsage"] = (
+                "These handoffs are injected evidence, not filesystem paths. Read their summary/childResults directly; "
+                "do not search the workspace for research://, engineering://, episode IDs, or invented bundle filenames."
+            )
+            item["upstreamHandoffRefs"] = [
+                str(handoff.get("handoffRefId") or "")
+                for handoff in matched
+                if str(handoff.get("handoffRefId") or "").strip()
+            ]
+        context.setdefault("shellDialect", "powershell" if sys.platform.startswith("win") else "bash")
+        item["context"] = context
+        result.append(item)
+    return result
 
 
 class DelegationToolPolicyInput(TypedDict, total=False):
@@ -50,13 +306,13 @@ class DelegationToolPolicyInput(TypedDict, total=False):
 
 
 class DelegationTaskInput(TypedDict, total=False):
-    taskBriefId: str
+    taskBriefId: Required[str]
     title: str
-    goal: str
+    goal: Required[str]
     context: Any
     expectedOutput: str
-    expectedOutputs: list[str]
-    acceptanceContract: str
+    expectedOutputs: Required[list[str]]
+    acceptanceContract: Required[str | dict[str, Any] | list[Any]]
     acceptanceTiers: Any
     constraints: list[str]
     behaviorScope: list[str]
@@ -145,80 +401,6 @@ def _delegation_broker_payload(
     )
 
 
-def _local_delegation_observation_items(
-    base_state: dict[str, Any],
-    route_context: dict[str, Any],
-    delegation_id: str,
-) -> list[dict[str, Any]]:
-    selector = str(delegation_id or "").strip()
-    latest = route_context.get("lastDelegationHandoff") if isinstance(route_context.get("lastDelegationHandoff"), dict) else {}
-    if not selector:
-        selector = str(latest.get("invocationId") or "").strip()
-
-    results: list[dict[str, Any]] = []
-    for item in list(latest.get("results") or []):
-        if isinstance(item, dict):
-            results.append(dict(item))
-    for handoff in list(route_context.get("handoffRefs") or []):
-        if not isinstance(handoff, dict):
-            continue
-        results.append(
-            {
-                "contractVersion": handoff.get("contractVersion") or "delegation-result/v1",
-                "taskBriefId": handoff.get("taskBriefId"),
-                "delegationId": handoff.get("delegationId") or handoff.get("producerEpisodeId"),
-                "parentDelegationId": handoff.get("parentDelegationId"),
-                "parentInvocationId": handoff.get("parentInvocationId"),
-                "delegationDepth": handoff.get("delegationDepth"),
-                "invocationId": handoff.get("invocationId"),
-                "targetId": handoff.get("targetId") or handoff.get("agentId"),
-                "targetLabel": handoff.get("targetLabel") or handoff.get("agentName"),
-                "lane": handoff.get("lane") or "subagent",
-                "status": handoff.get("workerStatus") or ("ok" if handoff.get("status") == "ready" else handoff.get("status")),
-                "error": handoff.get("error"),
-                "artifactRefs": handoff.get("artifactRefs"),
-                "missingArtifactEvidence": handoff.get("missingArtifactEvidence"),
-                "localSelfCheck": handoff.get("localSelfCheck"),
-                "acceptanceHint": handoff.get("acceptanceHint") or handoff.get("consumerHint"),
-                "supervisorAcceptance": handoff.get("supervisorAcceptance"),
-                "resultSchemaMatched": handoff.get("resultSchemaMatched"),
-                "toolsUsed": handoff.get("toolsUsed"),
-                "resultText": handoff.get("resultText"),
-                "toolPolicy": handoff.get("toolPolicy"),
-                "expectedOutputs": handoff.get("expectedOutputs"),
-                "behaviorScope": handoff.get("behaviorScope"),
-                "acceptanceContract": handoff.get("acceptanceContract"),
-                "summary": handoff.get("summary") or handoff.get("compactSummary"),
-                "compactTranscript": handoff.get("compactTranscript"),
-                "handoffRefId": handoff.get("handoffRefId"),
-            }
-        )
-    for item in list(base_state.get("parallel_results") or []):
-        if isinstance(item, dict):
-            results.append(build_delegation_result_contract(item))
-
-    matched: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
-    for item in results:
-        identities = {
-            str(item.get("delegationId") or "").strip(),
-            str(item.get("invocationId") or "").strip(),
-            str(item.get("handoffRefId") or "").strip(),
-        }
-        if selector and selector not in identities:
-            continue
-        key = (
-            str(item.get("delegationId") or "").strip(),
-            str(item.get("taskBriefId") or "").strip(),
-            str(item.get("targetId") or "").strip(),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        matched.append({key: value for key, value in item.items() if value not in (None, "", [], {})})
-    return matched[-20:]
-
-
 def _delegation_external_worker_descriptors() -> list[dict[str, Any]]:
     supervisor_config = _delegation_storage().get_supervisor_config() or {}
     delegation = dict(supervisor_config.get("delegation") or {})
@@ -232,66 +414,6 @@ def _safe_int_range(value: Any, default: int, minimum: int, maximum: int) -> int
     except Exception:
         parsed = default
     return max(minimum, min(maximum, parsed))
-
-
-def _planner_task_briefs_from_state(state: dict[str, Any] | None) -> list[dict[str, Any]]:
-    state = dict(state or {})
-    planner_plan = state.get("planner_plan")
-    briefs: list[Any] = []
-    if isinstance(planner_plan, dict):
-        for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
-            value = planner_plan.get(key)
-            if isinstance(value, list) and value:
-                briefs = value
-                break
-    if not briefs:
-        route_context = dict(state.get("current_route_context") or {})
-        for episode in list(route_context.get("capabilityEpisodes") or []):
-            if not isinstance(episode, dict):
-                continue
-            inputs = episode.get("inputs")
-            if not isinstance(inputs, dict):
-                continue
-            for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
-                value = inputs.get(key)
-                if isinstance(value, list) and value:
-                    briefs = value
-                    break
-            if briefs:
-                break
-    return normalize_task_briefs(briefs)
-
-
-def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, Any]:
-    inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
-    blocked_tool = str(need.get("tool") or inputs.get("blockedTool") or "").strip()
-    args = dict(inputs.get("blockedToolArgs") or {}) if isinstance(inputs.get("blockedToolArgs"), dict) else {}
-    command = str(args.get("command") or args.get("_raw") or "").strip()
-    target_path = str(args.get("path") or args.get("filePath") or args.get("file_path") or "").strip()
-    reason = str(need.get("reason") or inputs.get("brief") or inputs.get("query") or "").strip()
-    goal = (
-        command
-        or target_path
-        or reason
-        or (f"Handle blocked Supervisor tool {blocked_tool} through {kind} runtime." if blocked_tool else f"Run {kind} runtime episode.")
-    )
-    brief = {
-        "taskBriefId": f"route-{kind}-minimal",
-        "title": goal[:96],
-        "goal": goal,
-        "brief": goal,
-        "familyHint": "engineering" if kind == "engineering" else ("research" if kind == "research" else "generalist"),
-        "executionLaneHint": "auto",
-        "requiredCapabilities": ["workspace_mutation", "verification"] if kind == "engineering" else [],
-        "acceptanceContract": "Return a compact handoff with outcome, evidence, and next steps.",
-    }
-    workspace = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip()
-    if workspace:
-        brief["workspacePath"] = workspace
-        brief["writeSet"] = [target_path or workspace]
-    if blocked_tool:
-        brief["context"] = {"blockedTool": blocked_tool, **({"workspacePath": workspace} if workspace else {})}
-    return brief
 
 
 def _delegation_recursive_policy() -> dict[str, Any]:
@@ -418,43 +540,6 @@ def _delegation_trace_ref(*, run_id: str | None, invocation_id: str | None, bran
     if str(command_id or "").strip():
         trace["commandId"] = str(command_id).strip()
     return trace
-
-
-def _delegation_planner_context(plan: Any, task_brief: dict[str, Any]) -> dict[str, Any] | None:
-    if not isinstance(plan, dict) or not plan:
-        return None
-    task_id = str(task_brief.get("taskBriefId") or "").strip()
-    dependency_rows: list[dict[str, Any]] = []
-    for row in list(plan.get("dependencies") or []):
-        if not isinstance(row, dict):
-            continue
-        if task_id and str(row.get("taskBriefId") or "").strip() not in {"", task_id}:
-            continue
-        dependency_rows.append(
-            {
-                "taskBriefId": str(row.get("taskBriefId") or "").strip(),
-                "dependsOn": [
-                    str(item).strip()
-                    for item in list(row.get("dependsOn") or row.get("dependency") or [])
-                    if str(item).strip()
-                ],
-            }
-        )
-    return {
-        "planId": str(plan.get("planId") or "").strip(),
-        "executionStrategy": str(plan.get("executionStrategy") or "").strip(),
-        "planSummary": str(plan.get("planSummary") or "").strip(),
-        "globalAcceptanceContract": plan.get("globalAcceptanceContract")
-        if isinstance(plan.get("globalAcceptanceContract"), dict)
-        else str(plan.get("globalAcceptanceContract") or "").strip(),
-        "riskFlags": [
-            str(item).strip()
-            for item in list(plan.get("riskFlags") or [])
-            if str(item).strip()
-        ],
-        "dependencies": dependency_rows,
-        "taskCount": len(list(plan.get("taskBriefs") or [])),
-    }
 
 
 def _delegation_compact_item(
@@ -909,7 +994,7 @@ def delegation_broker(
     Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit flat tasks/worker_briefs. Example: `tasks=[{"taskBriefId":"task-1","goal":"...","expectedOutput":"...","acceptanceContract":"...","constraints":["..."],"toolPolicy":{"mode":"none"}}]`. Never wrap a task inside `{taskBrief:{...}}`. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     Subagents may request child work only through their brokered path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
-    Use `mode='observe'` or `mode='resume'` to collect results, degraded handoffs, or recovery hints before you synthesize a final answer. Supervisor still verifies and merges the result.
+    Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
     """
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt"}:
@@ -935,7 +1020,6 @@ def delegation_broker(
     base_messages = list(base_state.get("messages") or [])
     base_todos = list(base_state.get("todos") or [])
     base_contexts = list(base_state.get("delegation_contexts") or [])
-    planner_plan = dict(base_state.get("planner_plan") or {}) if isinstance(base_state.get("planner_plan"), dict) else {}
     inherited_context = dict(base_state.get("current_route_context") or {})
     if not inherited_context:
         inherited_context = latest_delegation_context(base_contexts, agent_id=None)
@@ -978,42 +1062,18 @@ def delegation_broker(
     if normalized_mode == "dispatch":
         requested_tasks = _filter_meaningful_delegation_tasks(list(tasks_list or worker_briefs_list or []))
         dispatch_task_source = "explicit"
-        if not requested_tasks:
-            requested_tasks = _filter_meaningful_delegation_tasks(_planner_task_briefs_from_state(
-                {
-                    **base_state,
-                    "current_route_context": inherited_context,
-                }
-            ))
-            if requested_tasks:
-                dispatch_task_source = "planner_or_episode_fallback"
-        if not requested_tasks:
-            need_reason = str(inherited_context.get("reason") or inherited_context.get("lastNeedReason") or followup or "").strip()
-            active_episodes = [
-                item for item in list(inherited_context.get("capabilityEpisodes") or [])
-                if isinstance(item, dict) and str(item.get("kind") or "").strip() in {"delegation", "engineering"}
-            ]
-            if active_episodes:
-                latest_episode = active_episodes[-1]
-                inputs = latest_episode.get("inputs") if isinstance(latest_episode.get("inputs"), dict) else {}
-                need_reason = need_reason or str(latest_episode.get("reason") or inputs.get("brief") or "").strip()
-                requested_tasks = [normalize_task_brief(_minimal_route_task_from_need(latest_episode, str(latest_episode.get("kind") or "delegation")))]
-                dispatch_task_source = "active_episode_minimal"
-            elif need_reason:
-                requested_tasks = [normalize_task_brief({"title": need_reason[:96], "goal": need_reason, "brief": need_reason, "executionLaneHint": "auto"})]
-                dispatch_task_source = "followup_minimal"
-        if (
-            dispatch_task_source != "explicit"
-            and _delegation_has_ready_spec_execution_context(inherited_context)
-            and (not requested_tasks or _delegation_tasks_are_generic_spec_routes(requested_tasks))
-        ):
-            return _delegation_missing_spec_tasks_command(tool_call_id=tool_call_id, source=dispatch_task_source)
         if target_count and target_count > len(requested_tasks) and requested_tasks:
             seed = dict(requested_tasks[-1])
             for index in range(len(requested_tasks), int(target_count)):
                 requested_tasks.append({**seed, "title": f"{seed.get('title') or 'Delegated task'} #{index + 1}"})
         macro_tasks = normalize_task_briefs(requested_tasks)
         normalized_tasks = expand_delegation_task_briefs(requested_tasks)
+        normalized_tasks = _apply_delegation_target_defaults(normalized_tasks)
+        normalized_tasks = _inject_inherited_handoffs_into_tasks(
+            normalized_tasks,
+            inherited_context,
+        )
+        normalized_tasks = _apply_delegation_tool_defaults(normalized_tasks)
         if allow_child_delegation or child_delegation_budget or write_set_partitions_list:
             for task in normalized_tasks:
                 task.setdefault("delegationPolicy", {})
@@ -1025,6 +1085,11 @@ def delegation_broker(
                     }
                 )
         if not normalized_tasks:
+            if _delegation_has_ready_spec_execution_context(inherited_context):
+                return _delegation_missing_spec_tasks_command(
+                    tool_call_id=tool_call_id,
+                    source=dispatch_task_source,
+                )
             runtime_context = get_runtime_context()
             run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "unknown").strip() or "unknown"
             return Command(
@@ -1059,9 +1124,11 @@ def delegation_broker(
             )
 
         recursive_policy = _delegation_recursive_policy()
-        parent_delegation_id = str(inherited_context.get("delegationId") or inherited_context.get("parentDelegationId") or "").strip()
-        current_depth = _safe_int_range(inherited_context.get("delegationDepth"), 0, 0, 100)
-        used_node_count = _safe_int_range(inherited_context.get("delegationNodeCount"), 0, 0, 1000)
+        runtime_context = get_runtime_context()
+        supervisor_dispatch = _is_supervisor_delegation_caller(runtime_context)
+        parent_delegation_id = _delegation_parent_episode_id(inherited_context, runtime_context)
+        current_depth = 0 if supervisor_dispatch else _safe_int_range(inherited_context.get("delegationDepth"), 0, 0, 100)
+        used_node_count = 0 if supervisor_dispatch else _safe_int_range(inherited_context.get("delegationNodeCount"), 0, 0, 1000)
         is_recursive_dispatch = bool(parent_delegation_id or current_depth > 0)
         macro_task_count = len(macro_tasks)
         requested_count = len(normalized_tasks)
@@ -1119,13 +1186,13 @@ def delegation_broker(
         external_descriptors = _delegation_external_worker_descriptors()
         dispatch_source = str(base_state.get("delegationDispatchSource") or inherited_context.get("delegationDispatchSource") or "").strip()
         compat_source = str(base_state.get("delegationCompatSource") or inherited_context.get("delegationCompatSource") or "").strip()
-        auto_dispatch_source = dispatch_source if dispatch_source.startswith("planner_auto") else ""
+        auto_dispatch_source = dispatch_source if dispatch_source.startswith("runtime_auto") else ""
         if dispatch_task_source != "explicit" and not dispatch_source:
             dispatch_source = dispatch_task_source
         workset_decisions = build_workset_dispatch_decisions(
             normalized_tasks,
             auto_dispatch=bool(auto_dispatch_source),
-            decision_source="planner_auto" if auto_dispatch_source else "supervisor_manual",
+            decision_source="runtime_auto" if auto_dispatch_source else "supervisor_manual",
         )
         blocked_decisions = [item for item in workset_decisions if bool(item.get("blocked"))]
         if blocked_decisions:
@@ -1150,7 +1217,7 @@ def delegation_broker(
                         workset_conflict_group=list(decision.get("worksetConflictGroup") or []),
                         engineering_capsule_attached=bool(decision.get("engineeringCapsuleAttached")),
                         dispatch_blocked_reason=str(decision.get("reason") or "workset_dispatch_blocked").strip(),
-                        repair_suggestion=str(decision.get("repairSuggestion") or "Repair planner writeSet before automatic dispatch.").strip(),
+                        repair_suggestion=str(decision.get("repairSuggestion") or "Repair the Supervisor writeSet before dispatch.").strip(),
                         registry_version=registry_version,
                         registry_hash=registry_hash,
                         error="workset_dispatch_blocked",
@@ -1165,7 +1232,7 @@ def delegation_broker(
                                 mode=normalized_mode,
                                 ok=False,
                                 summary=(
-                                    "delegation_broker blocked planner auto-dispatch because Engineering Runtime "
+                                    "delegation_broker blocked dispatch because Engineering Runtime "
                                     "work-set governance found missing or conflicting write sets."
                                 ),
                                 items=blocked_items,
@@ -1241,7 +1308,6 @@ def delegation_broker(
                     prompt_addition=inherited_context.get("promptAddition"),
                     invocation_id=invocation_id,
                     task_brief=branch_task_brief,
-                    planner_context=_delegation_planner_context(planner_plan, branch_task_brief),
                 )
                 branch_context.update(
                     {
@@ -1483,6 +1549,34 @@ def delegation_broker(
             ],
         }
         dispatch_route_context = dict(inherited_context or {})
+        session_id = str(
+            base_state.get("session_id")
+            or base_state.get("sessionId")
+            or runtime_context.get("session_id")
+            or runtime_context.get("sessionId")
+            or ""
+        ).strip() or None
+        run_id = str(
+            base_state.get("run_id")
+            or base_state.get("runId")
+            or runtime_context.get("run_id")
+            or runtime_context.get("runId")
+            or ""
+        ).strip() or None
+        workspace_path = str(
+            base_state.get("workspace_path")
+            or base_state.get("workspacePath")
+            or inherited_context.get("workspace_path")
+            or inherited_context.get("workspacePath")
+            or runtime_context.get("workspace_path")
+            or runtime_context.get("workspacePath")
+            or ""
+        ).strip()
+        task_briefs_by_id = {
+            str(task.get("taskBriefId") or "").strip(): dict(task)
+            for task in normalized_tasks
+            if isinstance(task, dict) and str(task.get("taskBriefId") or "").strip()
+        }
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -1491,19 +1585,30 @@ def delegation_broker(
                 continue
             status = str(item.get("status") or "").strip().lower()
             episode_state = "failed" if status in {"error", "blocked", "failed"} else "waiting"
-            task_brief_value = item.get("taskBrief") if isinstance(item.get("taskBrief"), dict) else {}
+            task_brief_value = task_briefs_by_id.get(str(item.get("taskBriefId") or "").strip(), {})
+            upstream_handoff_refs = [
+                str(ref or "").strip()
+                for ref in list(task_brief_value.get("upstreamHandoffRefs") or [])
+                if str(ref or "").strip()
+            ]
             episode = build_runtime_episode(
                 need={
                     "kind": "delegation",
                     "needId": delegation_id_value,
                     "source": "delegation_broker",
                     "reason": str(item.get("taskGoal") or item.get("targetLabel") or "delegated task"),
-                    "parentEpisodeId": parent_delegation_id or inherited_context.get("activeCapabilityEpisodeId") or "",
+                    "parentEpisodeId": parent_delegation_id,
+                    "inputs": {
+                        "targetCount": 1,
+                        "workerBriefs": [task_brief_value],
+                        **({"workspacePath": workspace_path} if workspace_path else {}),
+                    },
+                    "handoffRefs": upstream_handoff_refs,
                 },
                 kind="delegation",
                 state=episode_state,
                 required_runtime_access=list(task_brief_value.get("runtimeAccess") or []),
-                parent_episode_id=parent_delegation_id or inherited_context.get("activeCapabilityEpisodeId") or "",
+                parent_episode_id=parent_delegation_id,
                 continuation_target="parallel_delegate_join" if item.get("lane") == "subagent" else "delegation_broker.observe",
                 extra={
                     "invocationId": invocation_id,
@@ -1517,7 +1622,14 @@ def delegation_broker(
                     "error": item.get("error"),
                 },
             )
-            dispatch_route_context = upsert_runtime_episode(dispatch_route_context, episode)
+            persisted_episode = persist_runtime_episode(
+                episode,
+                session_id=session_id,
+                run_id=run_id,
+                priority=40,
+                enqueue=False,
+            )
+            dispatch_route_context = upsert_runtime_episode(dispatch_route_context, persisted_episode)
             emit_runtime_episode_event("capability.need.detected", {"episode": episode})
             emit_runtime_episode_event(
                 "runtime.episode.failed" if episode_state == "failed" else "runtime.episode.waiting",
@@ -1538,28 +1650,6 @@ def delegation_broker(
             update["parallel_results"] = parallel_results
         return Command(goto=sends if sends else "supervisor", update=update)
 
-    if normalized_mode == "observe":
-        local_items = _local_delegation_observation_items(base_state, inherited_context, delegation_id)
-        if local_items:
-            completed = sum(1 for item in local_items if str(item.get("status") or "").lower() == "ok")
-            failed = sum(1 for item in local_items if str(item.get("status") or "").lower() in {"error", "failed", "blocked"})
-            return Command(
-                goto="supervisor",
-                update={
-                    "messages": [
-                        ToolMessage(
-                            content=_delegation_broker_payload(
-                                mode=normalized_mode,
-                                summary=f"Collected {len(local_items)} local subagent result(s): {completed} completed, {failed} failed.",
-                                items=local_items,
-                                recommended_next_action="accept_retry_or_ignore",
-                            ),
-                            tool_call_id=tool_call_id,
-                        )
-                    ]
-                },
-            )
-
     parsed = parse_delegation_id(delegation_id)
     if str(parsed.get("lane") or "").strip() != "external_worker":
         return Command(
@@ -1575,8 +1665,8 @@ def delegation_broker(
                                 if normalized_mode == "observe"
                                 else "当前 resume/interrupt 仅支持 external_worker delegationId。"
                             ),
-                            recommended_next_action="wait_or_retry" if normalized_mode == "observe" else "dispatch",
-                            error="local_result_not_ready" if normalized_mode == "observe" else "unsupported_lane",
+                            recommended_next_action="wait_for_graph_handoff" if normalized_mode == "observe" else "dispatch",
+                            error="manual_local_delegation_polling_forbidden" if normalized_mode == "observe" else "unsupported_lane",
                         ),
                         tool_call_id=tool_call_id,
                     )

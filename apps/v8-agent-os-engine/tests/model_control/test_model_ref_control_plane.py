@@ -27,15 +27,11 @@ def test_model_ref_roundtrip():
     assert parse_model_ref(ref) == ("codex-oauth", "gpt-5.5")
 
 
-def test_planner_role_is_first_class_but_unbound_by_default():
-    assert DEFAULT_ROLE_MAP["planner"] == ""
-    assert DEFAULT_ROUTING_POLICIES["planner"] == "planner"
-    assert ROLE_DEFINITIONS["planner"]["label"] == "Planner 模型"
-    assert "chat_tool_calling" in ROLE_DEFINITIONS["planner"]["capabilityClasses"]
-
-    module = next(item for item in MODULE_DEFINITIONS if item["key"] == "planner_lane")
-    assert module["roles"] == ["planner"]
-    assert module["pagePath"] == "/admin/engineering-lane"
+def test_global_planner_role_and_lane_are_removed():
+    assert "planner" not in DEFAULT_ROLE_MAP
+    assert "planner" not in DEFAULT_ROUTING_POLICIES
+    assert "planner" not in ROLE_DEFINITIONS
+    assert all(item["key"] != "planner_lane" for item in MODULE_DEFINITIONS)
 
 
 def test_duplicate_naked_model_id_is_ambiguous_but_model_ref_is_exact():

@@ -108,6 +108,9 @@ __all__ = [
     "_terminal_menu_suggested_keys",
     "_terminal_snapshot_looks_busy",
     "_windows_text_encoding_candidates",
+    "_normalize_shell_dialect",
+    "_resolve_shell_dialect",
+    "_shell_command_argv",
     "_decode_completed_process_bytes",
     "_normalize_status_timestamp",
     "_preview_terminal_frame",
@@ -137,6 +140,77 @@ __all__ = [
     "send_background_input",
     "terminate_background_command",
 ]
+
+
+_SHELL_DIALECTS = {"auto", "powershell", "pwsh", "cmd", "bash", "sh"}
+
+
+def _normalize_shell_dialect(value: str | None) -> str:
+    dialect = str(value or "auto").strip().lower().replace("powershell.exe", "powershell").replace("cmd.exe", "cmd")
+    if dialect not in _SHELL_DIALECTS:
+        raise ValueError("shell_dialect 必须是 auto、powershell、pwsh、cmd、bash 或 sh。")
+    return dialect
+
+
+def _resolve_shell_dialect(command: str, requested: str | None = "auto") -> str:
+    dialect = _normalize_shell_dialect(requested)
+    if sys.platform != "win32":
+        if dialect in {"auto", "bash"}:
+            return "bash" if shutil.which("bash") else "sh"
+        if dialect == "sh":
+            return "sh"
+        raise ValueError(f"当前平台不支持 Windows shell dialect: {dialect}")
+    if dialect != "auto":
+        return dialect
+
+    stripped = _strip_leading_shell_cwd(command)
+    lowered = str(stripped or "").strip().lower()
+    if re.match(r"^(?:cmd(?:\.exe)?\s+/[dqs]*c\b)", lowered):
+        return "cmd"
+    if re.match(r"^(?:pwsh(?:\.exe)?\b)", lowered):
+        return "pwsh"
+    if re.match(r"^(?:powershell(?:\.exe)?\b)", lowered):
+        return "powershell"
+    if re.match(r"^(?:bash(?:\.exe)?\b|sh\b)", lowered):
+        return "bash"
+    if (
+        re.search(r"\$env:[A-Za-z_]", stripped, re.IGNORECASE)
+        or re.search(r"(^|[;&|]\s*)(?:Get|Set|New|Remove|Copy|Move|Test)-[A-Za-z]+", stripped, re.IGNORECASE)
+        or re.search(r"\|\s*(?:Where|ForEach|Select)-Object\b", stripped, re.IGNORECASE)
+    ):
+        return "powershell"
+    if (
+        re.search(r"%[A-Za-z_][A-Za-z0-9_]*%", stripped)
+        or re.search(r"(^|[;&|]\s*)set\s+[A-Za-z_][A-Za-z0-9_]*=", stripped, re.IGNORECASE)
+        or re.search(r"(^|[;&|]\s*)dir\s+/[A-Za-z]", stripped, re.IGNORECASE)
+        or "&&" in stripped
+        or "||" in stripped
+    ):
+        return "cmd"
+    return "powershell"
+
+
+def _shell_command_argv(command: str, shell_dialect: str) -> list[str]:
+    dialect = _normalize_shell_dialect(shell_dialect)
+    if dialect == "auto":
+        dialect = _resolve_shell_dialect(command, dialect)
+    if dialect == "cmd":
+        if sys.platform != "win32":
+            raise ValueError("cmd dialect 仅支持 Windows。")
+        return [str(os.environ.get("COMSPEC") or "cmd.exe"), "/d", "/s", "/c", command]
+    if dialect in {"powershell", "pwsh"}:
+        executable = "pwsh" if dialect == "pwsh" else "powershell.exe"
+        resolved = shutil.which(executable)
+        if not resolved:
+            raise ValueError(f"未找到 {executable}，无法执行 {dialect} 命令。")
+        args = [resolved, "-NoLogo", "-NoProfile", "-NonInteractive"]
+        if dialect == "powershell":
+            args.extend(["-ExecutionPolicy", "Bypass"])
+        return [*args, "-Command", command]
+    executable = shutil.which("bash" if dialect == "bash" else "sh")
+    if not executable:
+        raise ValueError(f"未找到 {dialect} shell。")
+    return [executable, "-lc" if dialect == "bash" else "-c", command]
 
 
 def execute_governed_argv(
@@ -465,6 +539,7 @@ def _terminate_run_background_commands(run_id: str | None, *, interactive_only: 
 def execute_system_command(
     command: str,
     cwd: str = "",
+    shell_dialect: str = "auto",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Run one short, non-interactive shell command and return a bounded result.
@@ -474,12 +549,14 @@ def execute_system_command(
     2. This tool blocks execution. If the command asks for user input, it can hang and time out.
     3. For installers, scaffolding, dev servers, TUI menus, password prompts, or long-running/watch commands, use `run_system_command(mode="auto")` so V8OS can open an observable terminal session.
     4. Do not use shell writes as a shortcut for known source/text edits; read the file first and use file tools when possible.
+    5. On Windows set shell_dialect explicitly when syntax is shell-specific. Do not mix cmd (`%VAR%`, `dir /b`) and PowerShell (`$env:VAR`, `Get-ChildItem`) syntax in one command.
     
     Arguments:
         command (str): The command to execute natively.
     """
     try:
-        shell_violation = _windows_shell_syntax_violation_payload(command)
+        resolved_shell_dialect = _resolve_shell_dialect(command, shell_dialect)
+        shell_violation = _windows_shell_syntax_violation_payload(command, shell_dialect=resolved_shell_dialect)
         if shell_violation:
             return json.dumps(shell_violation, ensure_ascii=False, indent=2)
         interactive_reason = _detect_interactive_command(command)
@@ -525,10 +602,9 @@ def execute_system_command(
         sync_deadline_ms = 90_000
         with ToolExecutionEnvelope(tool_name="run_system_command", family="command", deadline_ms=sync_deadline_ms, retry_limit=1) as envelope:
             try:
-                # Use shell=True to allow complex commands (pipes, redirects) if needed.
                 result = subprocess.run(
-                    command,
-                    shell=True,
+                    _shell_command_argv(command, resolved_shell_dialect),
+                    shell=False,
                     capture_output=True,
                     cwd=resolved_cwd,
                     timeout=sync_deadline_ms / 1000,
@@ -562,6 +638,7 @@ def execute_system_command(
             details={
                 "command": command,
                 "cwd": resolved_cwd,
+                "shellDialect": resolved_shell_dialect,
                 "workspaceBinding": workspace_preflight.get("binding"),
                 "return_code": result.returncode,
                 "encodingDiagnostics": encoding_diagnostics,
@@ -586,6 +663,7 @@ def execute_system_command(
             "command": command,
             "summary": "命令执行成功。" if result.returncode == 0 else f"命令执行失败，退出码 {result.returncode}。",
             "cwd": resolved_cwd,
+            "shellDialect": resolved_shell_dialect,
             "returnCode": result.returncode,
             "keyOutput": stdout_preview,
             "keyErrors": stderr_preview,
@@ -619,8 +697,10 @@ def _launch_background_command(
     tool_call_id: str = "",
     profile: str = "auto",
     cwd: str = "",
+    shell_dialect: str = "auto",
 ) -> dict[str, Any]:
-    shell_violation = _windows_shell_syntax_violation_payload(command)
+    resolved_shell_dialect = _resolve_shell_dialect(command, shell_dialect)
+    shell_violation = _windows_shell_syntax_violation_payload(command, shell_dialect=resolved_shell_dialect)
     if shell_violation:
         raise RuntimeError(json.dumps(shell_violation, ensure_ascii=False))
     interactive_reason = _detect_interactive_command(command)
@@ -697,6 +777,7 @@ def _launch_background_command(
         profile=resolved_profile,
         profile_reason=profile_reason or interactive_reason or session_reason,
         cwd=resolved_cwd,
+        shell_dialect=resolved_shell_dialect,
     )
     bg_proc.command_id = cmd_id
     bg_proc.workspace_binding = workspace_preflight.get("binding")
@@ -732,6 +813,7 @@ def _launch_background_command(
             "workspaceBinding": workspace_preflight.get("binding"),
             "profile": resolved_profile,
             "profile_reason": profile_reason,
+            "shellDialect": resolved_shell_dialect,
             "chat_cli_variant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
         },
         runtime_context=runtime_context,
@@ -751,6 +833,7 @@ def _launch_background_command(
         "interactiveReason": interactive_reason,
         "profile": resolved_profile,
         "profileReason": profile_reason or interactive_reason or session_reason,
+        "shellDialect": resolved_shell_dialect,
         "chatCliVariant": bg_proc.chat_cli_variant if resolved_profile == "chat_cli" else "",
         "initialOutput": initial_out,
     }
@@ -1302,7 +1385,14 @@ def _build_terminal_env_overrides() -> dict[str, str]:
     return overrides
 
 
-def _build_winpty_bootstrap_commands(env_overrides: dict[str, str]) -> list[str]:
+def _build_winpty_bootstrap_commands(env_overrides: dict[str, str], *, shell_dialect: str = "cmd") -> list[str]:
+    dialect = _normalize_shell_dialect(shell_dialect)
+    if dialect in {"powershell", "pwsh"}:
+        commands = ["[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()"]
+        for key, value in env_overrides.items():
+            escaped = str(value).replace("'", "''")
+            commands.append(f"$env:{key} = '{escaped}'")
+        return commands
     commands = ["@echo off", "chcp 65001 >NUL"]
     for key, value in env_overrides.items():
         commands.append(f"set {key}={value}")
@@ -1314,31 +1404,45 @@ def _extend_command_diagnostics_for_terminal(
     *,
     env_overrides: dict[str, str],
     uses_winpty: bool,
+    shell_dialect: str = "cmd",
 ) -> dict[str, Any]:
     next_diagnostics = dict(diagnostics or {})
     next_diagnostics["targetTextEncoding"] = "utf-8"
     next_diagnostics["terminalEnvOverrides"] = dict(env_overrides)
+    next_diagnostics["shellDialect"] = shell_dialect
     if uses_winpty:
-        next_diagnostics["ptyShell"] = "cmd.exe /q /d"
+        next_diagnostics["ptyShell"] = shell_dialect
         next_diagnostics["winptyBootstrapCodePage"] = "65001"
-        next_diagnostics["winptyBootstrapCommands"] = _build_winpty_bootstrap_commands(env_overrides)
+        next_diagnostics["winptyBootstrapCommands"] = _build_winpty_bootstrap_commands(
+            env_overrides,
+            shell_dialect=shell_dialect,
+        )
     return next_diagnostics
 
 
-def _run_winpty_bootstrap(pty_win: Any, env_overrides: dict[str, str]) -> None:
-    for command in _build_winpty_bootstrap_commands(env_overrides):
+def _run_winpty_bootstrap(pty_win: Any, env_overrides: dict[str, str], *, shell_dialect: str = "cmd") -> None:
+    for command in _build_winpty_bootstrap_commands(env_overrides, shell_dialect=shell_dialect):
         _write_winpty_input(pty_win, f"{command}\n")
         time.sleep(0.05)
 
 
-def _strip_terminal_bootstrap_noise(text: str, env_overrides: dict[str, str] | None = None) -> str:
+def _strip_terminal_bootstrap_noise(
+    text: str,
+    env_overrides: dict[str, str] | None = None,
+    *,
+    shell_dialect: str = "auto",
+) -> str:
     normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     if not normalized:
         return ""
     normalized = _AGENT_ANSI_ESCAPE_PATTERN.sub("", normalized)
     removable_lines = {"@echo off", "chcp 65001 >nul"}
     for key, value in (env_overrides or {}).items():
+        powershell_value = str(value).replace("'", "''")
         removable_lines.add(f"set {key}={value}".lower())
+        removable_lines.add(f"export {key}={shlex.quote(str(value))}".lower())
+        removable_lines.add(f"$env:{key} = '{powershell_value}'".lower())
+    removable_lines.add("[console]::outputencoding = [system.text.utf8encoding]::new()")
     filtered_lines: list[str] = []
     for line in normalized.split("\n"):
         stripped = line.strip()
@@ -1349,11 +1453,15 @@ def _strip_terminal_bootstrap_noise(text: str, env_overrides: dict[str, str] | N
             continue
         if re.match(r"^[a-z]:\\.*>", stripped, flags=re.IGNORECASE):
             continue
+        if re.match(r"^ps\s+[a-z]:\\.*>", stripped, flags=re.IGNORECASE):
+            continue
         if lowered.startswith("microsoft windows [") or lowered.startswith("(c) microsoft corporation"):
             continue
         if "cmd.exe" in lowered and any(marker in lowered for marker in removable_lines):
             continue
         if lowered.startswith("cd /d "):
+            continue
+        if lowered.startswith("set-location -literalpath ") or lowered.startswith("cd "):
             continue
         if "__v8_command_exit_" in lowered:
             continue
@@ -2049,6 +2157,7 @@ class BackgroundProcess:
         profile: str = "shell",
         profile_reason: str = "",
         cwd: str | None = None,
+        shell_dialect: str = "auto",
     ):
         self.command = command
         self.cwd = str(cwd or os.getcwd())
@@ -2057,6 +2166,7 @@ class BackgroundProcess:
         self.interactive = interactive
         self.profile = profile if profile in {"shell", "chat_cli"} else "shell"
         self.profile_reason = str(profile_reason or "")
+        self.shell_dialect = _resolve_shell_dialect(command, shell_dialect)
         self.chat_cli_variant = _detect_chat_cli_variant(command) if self.profile == "chat_cli" else ""
         self.output_queue = queue.Queue()
         self.output_history = []
@@ -2106,19 +2216,46 @@ class BackgroundProcess:
             _build_command_diagnostics_snapshot(command, cwd=self.cwd),
             env_overrides=self.terminal_env_overrides,
             uses_winpty=bool(sys.platform == "win32" and HAS_WINPTY),
+            shell_dialect=self.shell_dialect,
         )
         
         if sys.platform == "win32" and HAS_WINPTY:
             self.pty_win = PTY(self.cols, self.rows)
             self.uses_tty = True
-            self.pty_win.spawn("cmd.exe /q /d")
+            if self.shell_dialect == "cmd":
+                shell_command = f'"{os.environ.get("COMSPEC") or "cmd.exe"}" /q /d'
+            elif self.shell_dialect == "pwsh":
+                shell_command = f'"{shutil.which("pwsh") or "pwsh"}" -NoLogo -NoProfile'
+            elif self.shell_dialect == "powershell":
+                shell_command = f'"{shutil.which("powershell.exe") or "powershell.exe"}" -NoLogo -NoProfile -ExecutionPolicy Bypass'
+            else:
+                shell_command = f'"{shutil.which("bash") or "bash"}" --noprofile --norc'
+            self.pty_win.spawn(shell_command)
             time.sleep(0.5)
-            _run_winpty_bootstrap(self.pty_win, self.terminal_env_overrides)
-            _write_winpty_input(self.pty_win, f'cd /d "{self.cwd}"\n')
+            _run_winpty_bootstrap(
+                self.pty_win,
+                self.terminal_env_overrides,
+                shell_dialect=self.shell_dialect,
+            )
+            if self.shell_dialect == "cmd":
+                cwd_command = f'cd /d "{self.cwd}"'
+            elif self.shell_dialect in {"powershell", "pwsh"}:
+                escaped_cwd = self.cwd.replace("'", "''")
+                cwd_command = f"Set-Location -LiteralPath '{escaped_cwd}'"
+            else:
+                posix_cwd = self.cwd.replace("\\", "/")
+                cwd_command = f"cd {shlex.quote(posix_cwd)}"
+            _write_winpty_input(self.pty_win, f"{cwd_command}\n")
             time.sleep(0.2)
             _write_winpty_input(self.pty_win, f"{command}\n")
             if self.exit_sentinel:
-                _write_winpty_input(self.pty_win, f"echo {self.exit_sentinel}:%ERRORLEVEL%\n")
+                if self.shell_dialect == "cmd":
+                    sentinel_command = f"echo {self.exit_sentinel}:%ERRORLEVEL%"
+                elif self.shell_dialect in {"powershell", "pwsh"}:
+                    sentinel_command = f'Write-Output "{self.exit_sentinel}:$LASTEXITCODE"'
+                else:
+                    sentinel_command = f'printf "{self.exit_sentinel}:%s\\n" "$?"'
+                _write_winpty_input(self.pty_win, f"{sentinel_command}\n")
         elif sys.platform != "win32":
             pid, self.fd = pty.fork()
             if pid == 0:
@@ -2134,7 +2271,7 @@ class BackgroundProcess:
             child_env = dict(os.environ)
             child_env.update(self.terminal_env_overrides)
             self.proc = subprocess.Popen(
-                command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                _shell_command_argv(command, self.shell_dialect), shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env, cwd=self.cwd
             )
 
@@ -2546,10 +2683,18 @@ class BackgroundProcess:
             if not self.screen_snapshot_cache:
                 self.screen_snapshot_cache = self._compute_screen_snapshot()
             return _strip_command_internal_markers(
-                _strip_terminal_bootstrap_noise(self.screen_snapshot_cache, self.terminal_env_overrides)
+                _strip_terminal_bootstrap_noise(
+                    self.screen_snapshot_cache,
+                    self.terminal_env_overrides,
+                    shell_dialect=self.shell_dialect,
+                )
             )
         return _strip_command_internal_markers(
-            _strip_terminal_bootstrap_noise(self._compute_screen_snapshot(), self.terminal_env_overrides)
+            _strip_terminal_bootstrap_noise(
+                self._compute_screen_snapshot(),
+                self.terminal_env_overrides,
+                shell_dialect=self.shell_dialect,
+            )
         )
 
     def _derive_observation_state(self) -> str:
@@ -2603,6 +2748,7 @@ class BackgroundProcess:
             "command_completed_by_sentinel": bool(self.command_completed_by_sentinel),
             "profile": self.profile,
             "profile_reason": self.profile_reason,
+            "shell_dialect": self.shell_dialect,
             "chat_cli_variant": self.chat_cli_variant if self.profile == "chat_cli" else None,
             "tty_mode": tty_mode,
             "screen_mode": "terminal_screen" if self.uses_tty else "append_only",
@@ -2746,6 +2892,7 @@ def start_background_command(
     command: str,
     profile: str = "auto",
     cwd: str = "",
+    shell_dialect: str = "auto",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Start a long-running or interactive system command in the background.
@@ -2766,7 +2913,13 @@ def start_background_command(
     """
     try:
         launch_background_command = _compat_native_attr("_launch_background_command", _launch_background_command)
-        launched = launch_background_command(command, tool_call_id=tool_call_id, profile=profile, cwd=cwd)
+        launched = launch_background_command(
+            command,
+            tool_call_id=tool_call_id,
+            profile=profile,
+            cwd=cwd,
+            shell_dialect=shell_dialect,
+        )
         if command_may_change_workspace(command):
             mark_workspace_state_stale(
                 get_runtime_context(),
@@ -2785,6 +2938,7 @@ def start_background_command(
             f"Mode: {launched['mode']}\n"
             f"Profile: {launched['profile']}\n"
             f"TTY: {launched['tty']}\n"
+            f"Shell dialect: {launched.get('shellDialect') or 'n/a'}\n"
             f"RunId: {launched['runId'] or 'n/a'}\n"
             f"Status: {json.dumps(launched['status'], ensure_ascii=False)}\n"
             f"Initial output:\n{initial_section}{guidance}"
@@ -2800,6 +2954,7 @@ def run_system_command(
     mode: str = "auto",
     profile: str = "auto",
     cwd: str = "",
+    shell_dialect: str = "auto",
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
     """Run shell work with V8OS choosing the safest command path.
@@ -2829,6 +2984,10 @@ def run_system_command(
     - auto: 自动识别 shell / chat_cli
     - chat_cli: 把 AI CLI 作为对话终端处理，只向 supervisor 暴露最新语义增量
     - shell: 普通终端模式
+
+    shell_dialect:
+    - Windows 推荐显式选择 powershell、pwsh 或 cmd；auto 仅用于兼容并会返回实际选择。
+    - 不要在同一命令中混用 cmd 与 PowerShell 语法。
     """
     normalized_mode = str(mode or "auto").strip().lower()
     if normalized_mode not in {"auto", "sync", "session"}:
@@ -2866,17 +3025,29 @@ def run_system_command(
                             "command": command,
                             "profile": normalized_profile,
                             "cwd": cwd,
+                            "shell_dialect": shell_dialect,
                         },
                     },
                 },
                 ensure_ascii=False,
             )
-        return execute_system_command.func(command=command, cwd=cwd, tool_call_id=tool_call_id)
+        return execute_system_command.func(
+            command=command,
+            cwd=cwd,
+            shell_dialect=shell_dialect,
+            tool_call_id=tool_call_id,
+        )
 
     if effective_mode == "session":
         try:
             launch_background_command = _compat_native_attr("_launch_background_command", _launch_background_command)
-            launched = launch_background_command(command, tool_call_id=tool_call_id, profile=normalized_profile, cwd=cwd)
+            launched = launch_background_command(
+                command,
+                tool_call_id=tool_call_id,
+                profile=normalized_profile,
+                cwd=cwd,
+                shell_dialect=shell_dialect,
+            )
             if command_may_change_workspace(command):
                 mark_workspace_state_stale(
                     get_runtime_context(),
@@ -2890,6 +3061,7 @@ def run_system_command(
                 "kind": "command_session",
                 "mode": "session",
                 "command": command,
+                "shellDialect": launched.get("shellDialect"),
                 "commandId": launched["commandId"],
                 "sessionId": launched["commandId"],
                 "interactive": bool(launched["interactive"]),
@@ -3161,6 +3333,7 @@ def command_session_broker(
     submit: bool = True,
     profile: str = "auto",
     cwd: str = "",
+    shell_dialect: str = "auto",
     debug: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> str:
@@ -3186,6 +3359,7 @@ def command_session_broker(
     - If awaitingInput=true, send follow-up text with mode=input; if hasMore=true, observe again after a short wait.
     - For TUI menus, prefer keys=["down","down","enter"]. Common shorthand like input_text="↓↓" maps to arrow keys and appends Enter by default.
     - Use debug=true only for raw terminal diagnostics such as screenPreview, rawFramePreview, render_stalled, or encodingState/mojibake.
+    - On Windows choose shell_dialect explicitly for shell-specific commands; never mix cmd and PowerShell syntax in one session.
     """
     normalized_mode = str(mode or "observe").strip().lower()
     if normalized_mode not in {"start", "observe", "input", "terminate"}:
@@ -3230,6 +3404,7 @@ def command_session_broker(
                 tool_call_id=tool_call_id,
                 profile=normalized_profile,
                 cwd=cwd,
+                shell_dialect=shell_dialect,
             )
             if command_may_change_workspace(normalized_command):
                 mark_workspace_state_stale(
@@ -3270,6 +3445,7 @@ def command_session_broker(
                 interactive=bool(launched.get("interactive")),
                 observableSession=bool(launched.get("observableSession")),
                 profile=launched.get("profile"),
+                shellDialect=launched.get("shellDialect"),
                 reason=launched.get("interactiveReason") or launched.get("sessionReason") or launched.get("profileReason") or launched.get("reason") or _detect_interactive_command(normalized_command) or _detect_session_preferred_command(normalized_command),
                 command=normalized_command,
                 cwd=launched.get("cwd"),

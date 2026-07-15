@@ -981,7 +981,7 @@ class DatabaseManager:
                     run_id TEXT,
                     task_brief_id TEXT,
                     delegation_id TEXT,
-                    decision_source TEXT DEFAULT 'planner_auto',
+                    decision_source TEXT DEFAULT 'supervisor_auto',
                     phase TEXT DEFAULT 'dispatch',
                     decision_json TEXT,
                     warning_or_block_reason TEXT,
@@ -3750,6 +3750,102 @@ class DatabaseManager:
             metadata={"recoverable": True, "cancelReason": reason or "manual"},
         )
 
+    def cancel_active_runtime_episodes_for_run(
+        self,
+        run_id: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return []
+        now_iso = utc_now_iso()
+        cancel_reason = str(reason or "Parent run reached a terminal state.").strip()
+        active_states = (
+            "detected",
+            "routed",
+            "queued",
+            "leased",
+            "active",
+            "waiting",
+            "waiting_dependency",
+            "waiting_child",
+            "waiting_external",
+            "waiting_approval",
+        )
+        placeholders = ", ".join("?" for _ in active_states)
+        cancelled_ids: list[str] = []
+
+        def _write():
+            with self.get_connection() as conn:
+                cancelled_ids.clear()
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    f"SELECT id FROM runtime_episodes WHERE run_id = ? AND state IN ({placeholders})",
+                    (normalized_run_id, *active_states),
+                ).fetchall()
+                cancelled_ids.extend(str(row["id"]) for row in rows)
+                if not cancelled_ids:
+                    return
+                id_placeholders = ", ".join("?" for _ in cancelled_ids)
+                metadata_json = json.dumps(
+                    to_jsonable(
+                        {
+                            "recoverable": True,
+                            "cancelReason": cancel_reason,
+                            "cancelSource": "parent_run_terminal",
+                        }
+                    ),
+                    ensure_ascii=False,
+                )
+                conn.execute(
+                    f'''
+                    UPDATE runtime_episodes
+                    SET state = 'cancelled',
+                        error_code = 'parent_run_terminal',
+                        error_message = ?,
+                        metadata_json = ?,
+                        completed_at = COALESCE(completed_at, ?),
+                        updated_at = ?
+                    WHERE id IN ({id_placeholders})
+                      AND state IN ({placeholders})
+                    ''',
+                    (
+                        cancel_reason,
+                        metadata_json,
+                        now_iso,
+                        now_iso,
+                        *cancelled_ids,
+                        *active_states,
+                    ),
+                )
+                conn.execute(
+                    f'''
+                    UPDATE runtime_episode_queue
+                    SET state = 'cancelled',
+                        last_error = ?,
+                        locked_by = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE episode_id IN ({id_placeholders})
+                    ''',
+                    (cancel_reason, now_iso, *cancelled_ids),
+                )
+                conn.execute(
+                    f'''
+                    UPDATE runtime_episode_leases
+                    SET state = 'cancelled',
+                        released_at = COALESCE(released_at, ?)
+                    WHERE episode_id IN ({id_placeholders})
+                      AND state = 'active'
+                    ''',
+                    (now_iso, *cancelled_ids),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+        return [item for episode_id in cancelled_ids if (item := self.get_runtime_episode(episode_id))]
+
     def resume_runtime_episode(
         self,
         episode_id: str,
@@ -4015,7 +4111,7 @@ class DatabaseManager:
             query += " AND parent_episode_id = ?"
             params.append(parent_episode_id)
         if active_only:
-            query += " AND state IN ('detected', 'routed', 'queued', 'leased', 'active', 'waiting', 'waiting_child', 'waiting_external', 'waiting_approval')"
+            query += " AND state IN ('detected', 'routed', 'queued', 'leased', 'active', 'waiting', 'waiting_dependency', 'waiting_child', 'waiting_external', 'waiting_approval')"
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(int(limit or 100))
         with self.get_connection() as conn:
@@ -6109,7 +6205,7 @@ class DatabaseManager:
                     entry.get("run_id") or entry.get("runId"),
                     entry.get("task_brief_id") or entry.get("taskBriefId"),
                     entry.get("delegation_id") or entry.get("delegationId"),
-                    str(entry.get("decision_source") or entry.get("decisionSource") or "planner_auto"),
+                    str(entry.get("decision_source") or entry.get("decisionSource") or "supervisor_auto"),
                     str(entry.get("phase") or "dispatch"),
                     _dump(entry.get("decision"), {}),
                     str(entry.get("warning_or_block_reason") or entry.get("warningOrBlockReason") or ""),
@@ -6176,7 +6272,7 @@ class DatabaseManager:
 
         data["taskBriefId"] = data.pop("task_brief_id", None)
         data["delegationId"] = data.pop("delegation_id", None)
-        data["decisionSource"] = data.pop("decision_source", "planner_auto")
+        data["decisionSource"] = data.pop("decision_source", "supervisor_auto")
         data["decision"] = _load("decision_json", {})
         data["warningOrBlockReason"] = data.pop("warning_or_block_reason", "")
         data["manualOverride"] = bool(data.pop("manual_override", 0))

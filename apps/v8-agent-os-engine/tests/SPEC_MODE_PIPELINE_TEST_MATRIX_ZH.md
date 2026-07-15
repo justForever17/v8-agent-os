@@ -7,7 +7,7 @@
 ## 核心约束
 
 - 多份 Spec 同时存在是正常状态。
-- 默认注入 Planner / Runtime / Subagent 的只能是当前 run 绑定的 active Spec。
+- 默认注入 Supervisor / Runtime / Subagent 的只能是当前 run 绑定的 active Spec。
 - 三段审批顺序固定：requirements 或 bugfix -> design -> tasks -> runtime execution。
 - `tasks` 审批前不得派发 runtime。
 - 交付完成后 Spec 标记为 `delivered`，退出默认 active 列表；显式 `specId` 仍可读取。
@@ -23,8 +23,8 @@
 | S5 | delivered Spec 不进入 active list，但显式读取仍可用 | `tests/core/test_spec_service.py` |
 | S6 | SpecBroker 默认解析最新 active Spec，不选 delivered 旧 Spec | `tests/runtime_core/test_spec_broker_tool.py` |
 | S7 | SpecBroker 写阶段会创建阻塞式 `spec_stage_approval` | `tests/runtime_core/test_spec_broker_tool.py` |
-| S8 | 未批准 Spec 阻止 Planner auto dispatch | `tests/chat_runtime/test_chat_planner_mode.py` |
-| S9 | Planner taskBrief 的旧 SpecBrief 会被当前 SpecBrief 覆盖 | `tests/chat_runtime/test_chat_planner_mode.py` |
+| S8 | 未批准 Spec 阻止 runtime dispatch | `tests/chat_runtime/test_supervisor_runtime_finalization.py` |
+| S9 | Runtime taskBrief 只能引用当前 run 绑定的 SpecBrief | `tests/runtime_core/test_runtime_tool_access.py` |
 | S10 | Completion gate 等待审批而不是误判完成 | `tests/chat_runtime/test_supervisor_runtime_finalization.py` |
 | S11 | 成功交付后标记 `spec.lifecycle.delivered` | `tests/chat_runtime/test_supervisor_runtime_finalization.py` |
 
@@ -42,7 +42,7 @@
 - `runId`
 - `specId`
 - 三段 approval 记录
-- Planner taskBrief 中的 `context.specBrief.specId`
+- Runtime taskBrief 中的 `context.specBrief.specId`
 - runtime episode ids
 - handoff/proof/artifact refs
 - delivered lifecycle

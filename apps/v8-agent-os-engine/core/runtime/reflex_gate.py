@@ -22,6 +22,12 @@ _CODE_INTENT_RE = re.compile(
 )
 _VOICE_INTENT_RE = re.compile(r"(语音|朗读|播报|tts|voice|speak|发语音)", re.IGNORECASE)
 _ROUTE_INTENT_RE = re.compile(r"(skill|工具|插件|mcp|公众号|微信|文档|视频|图片|财报|会议纪要|代码审查)", re.IGNORECASE)
+_READ_ONLY_EXECUTION_RE = re.compile(
+    r"(不要|不需要|禁止|无需|只读|仅规划|仅方案|不真实).{0,18}(写|改|落盘|修改|变更|文件)"
+    r"|(不写|不落盘|不修改|不改动).{0,18}(项目|源码|文件|workspace|repo)"
+    r"|without\s+(?:actually\s+)?(?:writing|modifying|changing)|read[- ]only",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -129,30 +135,19 @@ def _engineering_active(state: dict[str, Any], user_query: str) -> bool:
     return bool(_CODE_INTENT_RE.search(str(user_query or "")))
 
 
-def _planner_plan(state: dict[str, Any]) -> dict[str, Any]:
-    plan = state.get("planner_plan") if isinstance(state.get("planner_plan"), dict) else {}
-    return plan
-
-
-def _planner_task_briefs(state: dict[str, Any]) -> list[dict[str, Any]]:
-    plan = _planner_plan(state)
-    return [item for item in _safe_list(plan.get("taskBriefs")) if isinstance(item, dict)]
-
-
-def _looks_read_only_task(brief: dict[str, Any]) -> bool:
-    behavior = " ".join(str(item).lower() for item in _safe_list(brief.get("behaviorScope")))
-    goal = str(brief.get("goal") or brief.get("summary") or "").lower()
-    worker = str(brief.get("preferredWorkerType") or brief.get("role") or "").lower()
-    text = f"{behavior} {goal} {worker}"
-    return any(token in text for token in ("review", "verify", "verifier", "docs", "documentation", "只读", "审查", "验证", "文档"))
-
-
-def _brief_write_set(brief: dict[str, Any]) -> list[str]:
-    write_set = _safe_list(brief.get("writeSet"))
-    capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), dict) else {}
-    if not write_set:
-        write_set = _safe_list(capsule.get("writeSet"))
-    return [str(item).strip() for item in write_set if str(item).strip()]
+def _read_only_execution_intent(user_query: str, state: dict[str, Any]) -> bool:
+    query = str(user_query or "")
+    if _READ_ONLY_EXECUTION_RE.search(query):
+        return True
+    hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
+    writing_route = hint.get("writingRoute") if isinstance(hint.get("writingRoute"), dict) else {}
+    boundary = hint.get("boundaryDecision") if isinstance(hint.get("boundaryDecision"), dict) else {}
+    return bool(
+        writing_route.get("present")
+        and not writing_route.get("requiresArtifact")
+        and str(boundary.get("executionMode") or "").strip() in {"engineering_runtime", "research_runtime"}
+        and any(marker in query.lower() for marker in ("不写", "不真实写", "只读", "read-only", "read only"))
+    )
 
 
 def _scope_conflict_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -190,9 +185,13 @@ class RuntimeReflexService:
             patch_lines.append("语音/朗读输出走干净文本纪律：避免特殊符号、代码块和不可播报格式，必要时按当前语音标签规范包裹正文。")
 
         if _engineering_active(state, query):
-            matched.append("engineering_read_before_write")
             confidence = max(confidence, 0.68)
-            patch_lines.append("工程任务先读关键文件与既有诊断，再写；保持 readSet/writeSet 纪律，验证是否执行仍由 supervisor 决策。")
+            if _read_only_execution_intent(query, state):
+                matched.append("engineering_read_only_contract")
+                patch_lines.append("这是显式只读工程任务：保持 readSet 纪律，writeSet=[]，只产出 typed handoff，不要写入或修改工作区。")
+            else:
+                matched.append("engineering_read_before_write")
+                patch_lines.append("工程任务先读关键文件与既有诊断，再写；保持 readSet/writeSet 纪律，验证是否执行仍由 supervisor 决策。")
 
         selected_skills = _selected_skill_names(route_bundle)
         if 0 < len(selected_skills) <= 3:
@@ -205,7 +204,7 @@ class RuntimeReflexService:
         if workflow_hint:
             matched.append("verified_workflow_bias")
             confidence = max(confidence, 0.66)
-            patch_lines.append("行为链记忆已命中：只把它当低权重 checklist/bias，不替代 planner、证据读取或用户确认。")
+            patch_lines.append("行为链记忆已命中：只把它当低权重 checklist/bias，不替代 Supervisor 判断、证据读取或用户确认。")
             evidence_refs.append({"type": "workflow_hint", **workflow_hint})
 
         diagnostics = dict(memory_diagnostics or {})
@@ -302,6 +301,8 @@ class RuntimePreflightGate:
         }
         blocked = False
         clarify = False
+        read_only_execution = _read_only_execution_intent(user_query, state)
+        diagnostics["readOnlyExecutionIntent"] = read_only_execution
 
         if _truthy_nested(summary, "inventoryBarrierTimedOut"):
             reasons.append("inventory_barrier_timed_out")
@@ -330,31 +331,17 @@ class RuntimePreflightGate:
             diagnostics["scopeConflict"] = scope_conflict
             blocked = True
 
-        for brief in _planner_task_briefs(state):
-            if _looks_read_only_task(brief):
-                continue
-            if not _brief_write_set(brief):
-                reasons.append("planner_task_missing_write_set")
-                clarify = True
-                break
-
-        auto_dispatch = _find_nested_value(_planner_plan(state), "autoDispatchDecision") or _find_nested_value(_planner_plan(state), "dispatchDecision")
-        if isinstance(auto_dispatch, dict):
-            diagnostics["plannerDispatchDecision"] = auto_dispatch
-            raw_blocked = auto_dispatch.get("blocked") or auto_dispatch.get("dispatchBlocked") or auto_dispatch.get("willDispatch") is False
-            raw_reason = str(auto_dispatch.get("reason") or auto_dispatch.get("blockedReason") or "").strip()
-            if raw_blocked and any(token in raw_reason for token in ("write", "conflict", "write_set", "missing")):
-                reasons.append("planner_auto_dispatch_blocked")
-                blocked = True
-
         engineering = state.get("engineering_context") if isinstance(state.get("engineering_context"), dict) else {}
         engineering_risk = _find_nested_value(engineering, "worksetSoftGateDecision") or _find_nested_value(engineering, "worksetDispatchDecision")
         if isinstance(engineering_risk, dict):
             diagnostics["engineeringWorksetDecision"] = engineering_risk
             risk = str(engineering_risk.get("risk") or engineering_risk.get("status") or "").strip()
             if risk in {"outside_write_set", "missing_write_set", "unknown_write_set"} or engineering_risk.get("warning"):
-                reasons.append("engineering_workset_risk")
-                clarify = True
+                if read_only_execution:
+                    reasons.append("engineering_workset_risk_not_applicable_to_read_only")
+                else:
+                    reasons.append("engineering_workset_risk")
+                    clarify = True
 
         memory = dict(memory_diagnostics or {})
         if memory.get("consistencyNoteInjected") or memory.get("consistencyConflicts"):
@@ -371,7 +358,7 @@ class RuntimePreflightGate:
             status = "blocked"
             risk_level = "critical" if "session_scope_conflict" in unique_reasons else "high"
             action = "repair_or_restart_scope_before_side_effects"
-        elif clarify or any(reason in unique_reasons for reason in ("route_no_candidate_for_tool_like_query", "planner_task_missing_write_set")):
+        elif clarify or "route_no_candidate_for_tool_like_query" in unique_reasons:
             status = "clarify"
             risk_level = "medium"
             action = "ask_user_or_read_evidence_before_side_effects"

@@ -82,19 +82,13 @@ _SUPERVISOR_TOOL_STEP_EXEMPT_TOOLS = {
 }
 
 
-def _planning_fact_gathering_active(state_mapping: dict[str, Any]) -> bool:
+def _spec_fact_gathering_active(state_mapping: dict[str, Any]) -> bool:
     route_context = dict(state_mapping.get("current_route_context") or {})
-    planner_mode = str(state_mapping.get("planner_mode") or route_context.get("plannerMode") or "").strip().lower()
     return bool(
-        state_mapping.get("task_planning_mode")
-        or state_mapping.get("taskPlanningMode")
-        or state_mapping.get("specMode")
+        state_mapping.get("specMode")
         or state_mapping.get("spec_mode")
-        or route_context.get("taskPlanningMode")
-        or route_context.get("task_planning_mode")
         or route_context.get("specMode")
         or route_context.get("spec_mode")
-        or planner_mode in {"plan", "planner", "force", "auto"}
     )
 
 
@@ -235,7 +229,7 @@ def _planning_fact_gathering_allowed(
     tool_names: list[str],
     has_active_episode: bool,
 ) -> bool:
-    if has_active_episode or not _planning_fact_gathering_active(state_mapping):
+    if has_active_episode or not _spec_fact_gathering_active(state_mapping):
         return False
     if _spec_runtime_execution_allowed(state_mapping):
         return False
@@ -868,7 +862,7 @@ def _supervisor_direct_scope_hard_block_message(
     state_mapping = _state_mapping(getattr(request, "state", None))
     if _supervisor_direct_scope_tool_allowed_by_runtime_episode(tool_name, state_mapping):
         return None
-    planner_dispatch_status = dict(state_mapping.get("planner_dispatch_status") or {})
+    runtime_dispatch_status = dict(state_mapping.get("runtime_dispatch_status") or {})
     route_required = _supervisor_direct_scope_requires_engineering_route(state_mapping)
     tool_calls = _supervisor_direct_tool_calls(getattr(request, "state", None), tool_call)
     tool_names = [str(call.get("name") or "").strip() for call in tool_calls if str(call.get("name") or "").strip()]
@@ -943,8 +937,8 @@ def _supervisor_direct_scope_hard_block_message(
         )
 
     hard_reasons: list[str] = []
-    planning_fact_gathering_active = _planning_fact_gathering_active(state_mapping)
-    if planning_fact_gathering_active and not _spec_runtime_execution_allowed(state_mapping):
+    spec_fact_gathering_active = _spec_fact_gathering_active(state_mapping)
+    if spec_fact_gathering_active and not _spec_runtime_execution_allowed(state_mapping):
         if tool_name == "web_broker":
             hard_reasons.append("planning_fact_gathering_budget_exhausted")
         elif tool_name == "run_system_command":
@@ -968,16 +962,8 @@ def _supervisor_direct_scope_hard_block_message(
         hard_reasons.append("task_boundary_route_correction")
     if _spec_mode_active(state_mapping) and _spec_runtime_execution_allowed(state_mapping):
         hard_reasons.append("spec_runtime_execution_requires_runtime_episode")
-    planner_mode = str(
-        state_mapping.get("planner_mode")
-        or state_mapping.get("plannerMode")
-        or dict(state_mapping.get("current_route_context") or {}).get("plannerMode")
-        or ""
-    ).strip().lower()
-    if bool(planner_dispatch_status.get("blocked")) and (
-        _spec_mode_active(state_mapping) or planner_mode == "force"
-    ):
-        hard_reasons.append(str(planner_dispatch_status.get("blockedReason") or planner_dispatch_status.get("reason") or "planner_dispatch_blocked"))
+    if bool(runtime_dispatch_status.get("blocked")):
+        hard_reasons.append(str(runtime_dispatch_status.get("blockedReason") or runtime_dispatch_status.get("reason") or "runtime_dispatch_blocked"))
     limited_write_allowed = _supervisor_limited_write_native_file_allowed(
         tool_name,
         direct_pressure_count=direct_pressure_count,

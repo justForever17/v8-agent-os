@@ -34,7 +34,7 @@ if "chromadb" not in sys.modules:
 
 from core.runtime_episode_runner import RuntimeEpisodeRunner  # noqa: E402
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode  # noqa: E402
-from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context  # noqa: E402
+from graph.agent_factories import _build_agent_system_content, _format_delegated_task_contract  # noqa: E402
 from graph.parallel_support import _child_request_from_send_state  # noqa: E402
 
 
@@ -153,13 +153,7 @@ def build_matrix() -> dict[str, Any]:
             "workspacePath": "E:/Projects/test3",
         },
     )
-    planner_context = {
-        "planId": "plan-child-contract-dry-run",
-        "executionStrategy": "delegation_child_research",
-        "planSummary": "父 subagent 委派孙 agent 做资料核查，再回流证据给父 subagent 继续写 skill。",
-        "globalAcceptanceContract": "父子孙链路必须传递可读任务目标和可读 handoff，不允许只传 ID。",
-    }
-    grandchild_plan_context = _format_delegated_plan_context(worker_brief, planner_context)
+    grandchild_task_contract = _format_delegated_task_contract(worker_brief)
     grandchild_prompt = _build_agent_system_content(
         agent_name=str(worker_brief.get("agentName") or "Web Research Architect"),
         agent_system_prompt=(
@@ -173,7 +167,7 @@ def build_matrix() -> dict[str, Any]:
             "Main V8 Workspace Store: E:/Projects/test3\n"
             "</environment>\n"
         ),
-        delegated_plan_context=grandchild_plan_context,
+        delegated_plan_context=grandchild_task_contract,
     )
     child_handoff = build_handoff_ref(
         producer_episode_id=child_episode["episodeId"],
@@ -217,7 +211,7 @@ def build_matrix() -> dict[str, Any]:
         ),
         "grandchild_prompt_contains_executable_context": _contains_all(
             grandchild_prompt,
-            ["Assigned Task Brief", "绝区零角色“玲”", "Acceptance Contract", "Global Acceptance Contract"],
+            ["Assigned Task Brief", "绝区零角色“玲”", "Acceptance Contract", "Required Typed Handoff"],
         ),
         "grandchild_prompt_preserves_workspace_spec_task_and_evidence_refs": _contains_all(
             grandchild_prompt,

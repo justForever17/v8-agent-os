@@ -399,6 +399,41 @@ class V8ChatModelAdapter(BaseChatModel):
         )
         return self._decorate_message(ai_message, tool_mode="prompt_emulated")
 
+    def _required_bound_tool_name(self) -> str:
+        choice = self._bound_tool_kwargs.get("tool_choice")
+        if isinstance(choice, Mapping):
+            function = choice.get("function") if isinstance(choice.get("function"), Mapping) else {}
+            return str(choice.get("name") or function.get("name") or "").strip()
+        normalized = str(choice or "").strip()
+        if normalized.lower() in {"", "auto", "any", "required", "none", "true", "false"}:
+            return ""
+        return normalized
+
+    def _requires_bound_tool_call(self) -> bool:
+        if not self._bound_tools:
+            return False
+        choice = self._bound_tool_kwargs.get("tool_choice")
+        if choice is True:
+            return True
+        if isinstance(choice, Mapping):
+            choice_type = str(choice.get("type") or "").strip().lower()
+            return choice_type != "none"
+        return str(choice or "").strip().lower() not in {"", "auto", "none", "false"}
+
+    def _missing_required_tool_call(self, message: Any) -> bool:
+        if not self._requires_bound_tool_call():
+            return False
+        if list(getattr(message, "tool_calls", None) or []):
+            return False
+        additional_kwargs = dict(getattr(message, "additional_kwargs", None) or {})
+        return not list(additional_kwargs.get("tool_calls") or [])
+
+    def _can_prompt_retry_required_tool(self, message: Any) -> bool:
+        return bool(
+            self._missing_required_tool_call(message)
+            and self.effective_capability_matrix().get("supports_prompt_emulated_tools")
+        )
+
     def _coerce_ai_message(self, response: Any, *, force_prompt_emulated_tools: bool = False) -> AIMessage:
         if isinstance(response, AIMessage):
             return self._apply_prompt_emulated_tool_calls(
@@ -460,10 +495,20 @@ class V8ChatModelAdapter(BaseChatModel):
                 tool_specs.append(convert_to_openai_tool(tool))
             except Exception:
                 tool_specs.append({"name": getattr(tool, "name", "tool"), "description": str(tool)})
+        required_tool_name = self._required_bound_tool_name()
+        if self._requires_bound_tool_call():
+            required_instruction = (
+                f"本次必须调用工具 {required_tool_name}。"
+                if required_tool_name
+                else "本次必须调用一个可用工具。"
+            )
+            required_instruction += "不要回答任务正文，也不要用自然语言描述将要调用工具。"
+        else:
+            required_instruction = "如需调用工具，请使用下述格式。"
         instruction = (
             "你当前处于工具调用兼容模式。"
-            "如需调用工具，只能输出一个 JSON 对象，格式为 "
-            '{"tool_name":"<name>","arguments":{...}}，不要输出额外解释。'
+            f"{required_instruction}只能输出一个 JSON 对象，格式为 "
+            '{"tool_name":"<name>","arguments":{...}}，不要输出 Markdown 或额外解释。'
             f"\n可用工具：{json.dumps(tool_specs, ensure_ascii=False)}"
         )
         return [SystemMessage(content=instruction), *messages]
@@ -583,7 +628,27 @@ class V8ChatModelAdapter(BaseChatModel):
                 stop=stop,
                 **prepared.kwargs,
             )
-            return self._build_chat_result(self._finalize_prompt_cache_response(self._coerce_ai_message(response), prepared))
+            native_message = self._coerce_ai_message(response)
+            if self._can_prompt_retry_required_tool(native_message):
+                fallback_prepared = self._prepare_prompt_cache_request(
+                    self._tool_prompt_messages(normalized_messages),
+                    stop=stop,
+                    **kwargs,
+                )
+                fallback_response = self._get_base_model().invoke(
+                    fallback_prepared.messages,
+                    config=self._provider_internal_config(),
+                    stop=stop,
+                    **fallback_prepared.kwargs,
+                )
+                fallback_message = self._coerce_ai_message(
+                    fallback_response,
+                    force_prompt_emulated_tools=True,
+                )
+                return self._build_chat_result(
+                    self._finalize_prompt_cache_response(fallback_message, fallback_prepared)
+                )
+            return self._build_chat_result(self._finalize_prompt_cache_response(native_message, prepared))
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
@@ -623,7 +688,27 @@ class V8ChatModelAdapter(BaseChatModel):
                 stop=stop,
                 **prepared.kwargs,
             )
-            return self._build_chat_result(self._finalize_prompt_cache_response(self._coerce_ai_message(response), prepared))
+            native_message = self._coerce_ai_message(response)
+            if self._can_prompt_retry_required_tool(native_message):
+                fallback_prepared = self._prepare_prompt_cache_request(
+                    self._tool_prompt_messages(normalized_messages),
+                    stop=stop,
+                    **kwargs,
+                )
+                fallback_response = await self._get_base_model().ainvoke(
+                    fallback_prepared.messages,
+                    config=self._provider_internal_config(),
+                    stop=stop,
+                    **fallback_prepared.kwargs,
+                )
+                fallback_message = self._coerce_ai_message(
+                    fallback_response,
+                    force_prompt_emulated_tools=True,
+                )
+                return self._build_chat_result(
+                    self._finalize_prompt_cache_response(fallback_message, fallback_prepared)
+                )
+            return self._build_chat_result(self._finalize_prompt_cache_response(native_message, prepared))
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:

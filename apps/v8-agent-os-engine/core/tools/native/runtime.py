@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from core.delegation_broker import normalize_task_brief, normalize_task_briefs
 from core.runtime_episodes import (
@@ -29,6 +30,93 @@ from core.runtime_tool_access import (
 )
 from core.spec_service import spec_service
 from erc.runtime_context import get_runtime_context
+
+
+class RuntimeRouteTaskBrief(BaseModel):
+    """Supervisor-owned execution contract passed to a runtime episode."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    taskBriefId: str = Field(min_length=1)
+    goal: str = Field(min_length=1)
+    context: dict[str, Any] | str = Field(default_factory=dict)
+    writeRequired: bool = False
+    readOnly: bool = False
+    writeSet: list[str] = Field(default_factory=list)
+    expectedOutputs: list[str] = Field(default_factory=list)
+    acceptance: dict[str, Any] | list[Any] | str | None = None
+    acceptanceContract: dict[str, Any] | list[Any] | str | None = None
+    constraints: list[str] = Field(default_factory=list)
+    detailRefs: list[str] = Field(default_factory=list)
+    dependency: list[str] = Field(default_factory=list)
+
+    @field_validator("writeSet", mode="before")
+    @classmethod
+    def _normalize_explicit_empty_write_set(cls, value: Any) -> Any:
+        """Accept only the model's common explicit-empty spelling for read-only work.
+
+        Some providers serialize an intended ``[]`` as ``""``.  Treating that
+        as an empty set preserves the typed contract for read-only episodes while
+        still rejecting every non-empty string.  Write-capable tasks remain
+        blocked later because an empty write set never grants mutation authority.
+        """
+        if isinstance(value, str) and not value.strip():
+            return []
+        return value
+
+    @field_validator("expectedOutputs", mode="before")
+    @classmethod
+    def _normalize_explicit_expected_outputs(cls, value: Any) -> Any:
+        """Canonicalize explicit provider output maps into the typed list."""
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if not isinstance(value, dict):
+            return value
+        normalized: list[str] = []
+        for key, item in value.items():
+            label = str(key or "").strip()
+            if isinstance(item, list):
+                for nested in item:
+                    rendered = str(nested or "").strip()
+                    if rendered:
+                        normalized.append(f"{label}: {rendered}" if label else rendered)
+                continue
+            if isinstance(item, dict):
+                rendered = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            else:
+                rendered = str(item or "").strip()
+            if rendered:
+                normalized.append(f"{label}: {rendered}" if label else rendered)
+            elif label:
+                normalized.append(label)
+        return normalized
+
+
+class RuntimeRouteInputs(BaseModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    workspacePath: str | None = None
+    taskBriefs: list[RuntimeRouteTaskBrief] = Field(default_factory=list)
+    workerBriefs: list[RuntimeRouteTaskBrief] = Field(default_factory=list)
+    tasks: list[RuntimeRouteTaskBrief] = Field(default_factory=list)
+    proofExpectations: list[str] = Field(default_factory=list)
+
+
+class RuntimeRouteNeed(BaseModel):
+    """Strong route envelope visible in the Supervisor tool schema."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    kind: Literal["research", "engineering", "creative_media", "computer_use", "rpa", "delegation"]
+    source: str = "supervisor"
+    reason: str = Field(min_length=1)
+    inputs: RuntimeRouteInputs = Field(default_factory=RuntimeRouteInputs)
+
+
+def _model_payload(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(exclude_none=True)
+    return value
 
 
 def _runtime_broker_payload(
@@ -88,7 +176,7 @@ def _runtime_broker_payload(
         payload["queuedEpisodeId"] = episode_id
         payload["episodeKind"] = episode_kind
         payload["state"] = episode_state
-        payload["nextAction"] = "wait_episode"
+        payload["nextAction"] = "runtime_episode"
     if next_action:
         payload["recommendedNextAction"] = next_action
     if detail_ref:
@@ -143,34 +231,6 @@ def _capability_route_groups(
     return normalize_runtime_access(requested, runtime_kind=runtime_kind or kind)
 
 
-def _planner_task_briefs_from_state(state: dict[str, Any] | None) -> list[dict[str, Any]]:
-    state = dict(state or {})
-    planner_plan = state.get("planner_plan")
-    briefs: list[Any] = []
-    if isinstance(planner_plan, dict):
-        for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
-            value = planner_plan.get(key)
-            if isinstance(value, list) and value:
-                briefs = value
-                break
-    if not briefs:
-        route_context = dict(state.get("current_route_context") or {})
-        for episode in list(route_context.get("capabilityEpisodes") or []):
-            if not isinstance(episode, dict):
-                continue
-            inputs = episode.get("inputs")
-            if not isinstance(inputs, dict):
-                continue
-            for key in ("workerBriefs", "worker_briefs", "taskBriefs", "task_briefs", "tasks"):
-                value = inputs.get(key)
-                if isinstance(value, list) and value:
-                    briefs = value
-                    break
-            if briefs:
-                break
-    return normalize_task_briefs(briefs)
-
-
 def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, Any]:
     inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
     blocked_tool = str(need.get("tool") or inputs.get("blockedTool") or "").strip()
@@ -206,6 +266,90 @@ def _minimal_route_task_from_need(need: dict[str, Any], kind: str) -> dict[str, 
 def _explicit_task_briefs_from_inputs(inputs: dict[str, Any] | None) -> list[dict[str, Any]]:
     inputs = dict(inputs or {})
     return normalize_task_briefs(inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or [])
+
+
+def _route_brief_is_write_task(brief: dict[str, Any], *, kind: str) -> bool:
+    if bool(brief.get("readOnly") or brief.get("read_only")):
+        return False
+    if bool(brief.get("writeRequired") or brief.get("write_required")):
+        return True
+    if list(brief.get("writeSet") or brief.get("write_set") or []):
+        return True
+    if kind == "engineering":
+        return True
+    family = str(brief.get("familyHint") or brief.get("family_hint") or "").strip().lower()
+    capabilities = " ".join(str(item or "") for item in list(brief.get("requiredCapabilities") or [])).lower()
+    deliverable_kind = str(brief.get("deliverableKind") or brief.get("deliverable_kind") or "").strip().lower()
+    return bool(
+        family == "engineering"
+        or any(marker in capabilities for marker in ("workspace_mutation", "file_write", "implementation"))
+        or deliverable_kind in {"file", "files", "code", "project", "artifact"}
+    )
+
+
+def _route_task_contract_quality(tasks: list[dict[str, Any]], *, kind: str, workspace_path: str = "") -> dict[str, Any]:
+    if not tasks:
+        return {
+            "status": "blocked",
+            "reason": "task_brief_required",
+            "blocking": True,
+            "message": "runtime_broker(route) requires an explicit Supervisor-owned task contract.",
+            "requiredFields": ["taskBriefId", "goal", "context"],
+        }
+
+    failures: list[dict[str, Any]] = []
+    normalized_workspace = str(Path(workspace_path).resolve()).lower() if workspace_path else ""
+    for index, brief in enumerate(tasks):
+        task_id = str(brief.get("taskBriefId") or brief.get("id") or f"task-{index + 1}").strip()
+        missing: list[str] = []
+        if not str(brief.get("goal") or "").strip():
+            missing.append("goal")
+        if _route_brief_is_write_task(brief, kind=kind):
+            write_set = [str(item or "").strip() for item in list(brief.get("writeSet") or []) if str(item or "").strip()]
+            expected_outputs = [str(item or "").strip() for item in list(brief.get("expectedOutputs") or []) if str(item or "").strip()]
+            acceptance = brief.get("acceptanceContract") or brief.get("acceptance")
+            acceptance_tiers = brief.get("acceptanceTiers") if isinstance(brief.get("acceptanceTiers"), dict) else {}
+            has_acceptance = bool(
+                (isinstance(acceptance, dict) and acceptance)
+                or (isinstance(acceptance, list) and acceptance)
+                or str(acceptance or "").strip()
+                or any(list(acceptance_tiers.get(key) or []) for key in ("must", "should", "nice"))
+            )
+            if not write_set:
+                missing.append("writeSet")
+            elif normalized_workspace:
+                resolved_write_set = []
+                workspace_root = Path(workspace_path).resolve()
+                for item in write_set:
+                    try:
+                        candidate = Path(item)
+                        if not candidate.is_absolute():
+                            candidate = workspace_root / candidate
+                        resolved_write_set.append(str(candidate.resolve()).lower())
+                    except Exception:
+                        continue
+                if resolved_write_set and all(item == normalized_workspace for item in resolved_write_set):
+                    missing.append("writeSet(file_or_directory_below_workspace)")
+            if not expected_outputs:
+                missing.append("expectedOutputs")
+            if not has_acceptance:
+                missing.append("acceptance")
+        if missing:
+            failures.append({"taskBriefId": task_id, "missingFields": missing})
+
+    if failures:
+        return {
+            "status": "blocked",
+            "reason": "write_task_contract_incomplete",
+            "blocking": True,
+            "message": (
+                "Write-capable runtime tasks require an explicit writeSet, expectedOutputs, and acceptance contract. "
+                "The workspace root, prose hints, dependencies, and input files are not write grants."
+            ),
+            "tasks": failures,
+            "requiredFields": ["writeSet", "expectedOutputs", "acceptance"],
+        }
+    return {"status": "ready", "reason": "explicit_task_contract", "blocking": False}
 
 
 def _safe_compact_text(value: Any, *, limit: int = 6000) -> str:
@@ -782,6 +926,11 @@ def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
         and not _spec_task_has_explicit_output_path(expected_output)
     ):
         return False
+    # An explicit output directory is still a bounded write contract.  Do not
+    # downgrade directory creation to a read-only task merely because it has
+    # no file extension; the Spec author already supplied the exact target.
+    if _spec_task_expected_paths(expected_output):
+        return True
     # Verification/checkpoint/final-summary tasks may inspect artifacts or produce
     # user-visible summaries, but they should not be treated as content-writing
     # workers unless a concrete artifact path is present.
@@ -789,7 +938,7 @@ def _spec_task_writes_artifact(task: dict[str, Any], family: str) -> bool:
         return bool(re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", text))
     if re.search(r"(?i)(?:skill\.md|[\\/\w.-]+\.(?:md|txt|json|py|ts|tsx|js|jsx|html|css|yml|yaml))", text):
         return True
-    if any(marker in text for marker in ("目录初始化", "创建目录", "空目录", "最终交付摘要", "交付整理")):
+    if any(marker in text for marker in ("最终交付摘要", "交付整理")):
         return False
     return any(
         marker in text
@@ -1056,7 +1205,7 @@ def _preferred_agent_for_spec_task(
     ):
         return "implementation-engineer"
     if any(marker in text for marker in ("规划", "拆解", "方案", "plan", "decompose")):
-        return "project-planner"
+        return "implementation-engineer"
     return "implementation-engineer"
 
 
@@ -1404,6 +1553,7 @@ def _task_briefs_from_spec_bundle(bundle: dict[str, Any], kind: str) -> list[dic
                 "context": context,
                 "routeQuery": extensions_route_query,
                 "writeSet": allowed_write_set,
+                "expectedOutputs": allowed_write_set,
                 "behaviorScope": ["approved_spec_execution", "runtime_first", "verification"],
                 "requiredCapabilities": _spec_task_required_capabilities(family, writes_artifact=writes_artifact),
                 "acceptanceContract": {
@@ -1609,67 +1759,6 @@ def _infer_route_kind_from_payload(payload: dict[str, Any], *fallbacks: Any) -> 
     return _normalize_capability_kind(joined)
 
 
-def _coerce_route_need_payload(
-    need: Any,
-    *,
-    runtime_kind: Optional[str],
-    tool_group: Optional[str],
-    reason: Optional[str],
-    state: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if isinstance(need, dict):
-        payload = dict(need)
-    elif isinstance(need, str):
-        raw = need.strip()
-        payload = {}
-        if raw:
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    payload = dict(parsed)
-                elif isinstance(parsed, list):
-                    payload = {"taskBriefs": parsed, "reason": reason or "capability_route"}
-                else:
-                    payload = {"routeIntent": raw, "reason": reason or raw}
-            except Exception:
-                payload = {"routeIntent": raw, "reason": reason or raw}
-    elif need:
-        payload = {"reason": str(need)}
-    else:
-        payload = {}
-
-    route_kind = _infer_route_kind_from_payload(payload, runtime_kind, tool_group, reason)
-    if route_kind:
-        payload["kind"] = route_kind
-    if reason and not str(payload.get("reason") or "").strip():
-        payload["reason"] = str(reason).strip()
-
-    inputs = dict(payload.get("inputs") or {}) if isinstance(payload.get("inputs"), dict) else {}
-    for source_key, target_key in (
-        ("cwd", "workspacePath"),
-        ("workspace", "workspacePath"),
-        ("workspacePath", "workspacePath"),
-        ("workspace_path", "workspacePath"),
-        ("task", "task"),
-        ("query", "query"),
-        ("brief", "brief"),
-    ):
-        value = payload.get(source_key)
-        if value is not None and str(value).strip():
-            inputs.setdefault(target_key, value)
-
-    runtime_context = get_runtime_context()
-    state_dict = dict(state or {})
-    for source in (state_dict, dict(state_dict.get("current_route_context") or {}), runtime_context):
-        workspace = str(source.get("workspace_path") or source.get("workspacePath") or "").strip()
-        if workspace:
-            inputs.setdefault("workspacePath", workspace)
-            break
-    if inputs:
-        payload["inputs"] = inputs
-    return payload
-
-
 def _enrich_route_need_for_episode(
     need: dict[str, Any],
     *,
@@ -1681,7 +1770,6 @@ def _enrich_route_need_for_episode(
     enriched.setdefault("source", "supervisor")
     enriched.setdefault("reason", str(enriched.get("reason") or "capability_route").strip() or "capability_route")
     inputs = dict(enriched.get("inputs") or {}) if isinstance(enriched.get("inputs"), dict) else {}
-    planner_briefs = _planner_task_briefs_from_state(state)
     spec_bundle = _approved_spec_execution_bundle(enriched, inputs, state=state)
     requested_spec_task_refs = _requested_spec_task_refs(enriched, inputs)
     if spec_bundle:
@@ -1698,7 +1786,7 @@ def _enrich_route_need_for_episode(
 
     if kind in {"engineering", "delegation"}:
         explicit_route_tasks = _explicit_task_briefs_from_inputs(inputs)
-        route_tasks = explicit_route_tasks or planner_briefs
+        route_tasks = explicit_route_tasks
         task_filter_applied = False
         if (
             spec_bundle
@@ -1712,18 +1800,14 @@ def _enrich_route_need_for_episode(
             if selected_tasks:
                 route_tasks = selected_tasks
             else:
-                fallback = normalize_task_brief(_minimal_route_task_from_need(enriched, kind))
-                fallback["taskBriefId"] = requested_spec_task_refs[0]
-                fallback_context = dict(fallback.get("context") or {})
-                fallback_context.update(
-                    {
-                        "source": "requested_spec_task_ref",
-                        "requestedSpecTaskRefs": requested_spec_task_refs,
-                        "specTaskRefMissing": True,
-                    }
-                )
-                fallback["context"] = fallback_context
-                route_tasks = [fallback]
+                route_tasks = []
+                inputs["routeBriefQuality"] = {
+                    "status": "blocked",
+                    "reason": "requested_spec_task_not_found",
+                    "blocking": True,
+                    "message": "The requested Spec task reference is not present in the approved execution bundle.",
+                    "requestedTaskBriefIds": requested_spec_task_refs,
+                }
             inputs["selectedSpecTaskIds"] = matched_refs or requested_spec_task_refs
             inputs["specTaskFilter"] = {
                 "requested": requested_spec_task_refs,
@@ -1733,36 +1817,12 @@ def _enrich_route_need_for_episode(
             }
             inputs["targetCount"] = len(route_tasks)
             task_filter_applied = True
-        if not route_tasks:
-            route_tasks = [normalize_task_brief(_minimal_route_task_from_need(enriched, kind))]
-            inputs["routeBriefQuality"] = {
-                "status": "insufficient",
-                "reason": "minimal_brief_only",
-                "blocking": True,
-                "message": (
-                    "runtime_broker(route) only has a minimal inferred brief. "
-                    "Provide workerBriefs/taskBriefs/tasks with goal, context, expected output, acceptance criteria, constraints, and detailRefs."
-                ),
-                "requiredFields": ["goal", "context", "expectedOutput", "acceptance", "constraints", "detailRefs"],
-            }
-        if spec_bundle and str(spec_bundle.get("status") or "") == "ready":
-            missing_artifact_contracts = [
-                str(task.get("taskBriefId") or task.get("id") or "unknown")
-                for task in route_tasks
-                if bool(task.get("writeRequired")) and not list(task.get("writeSet") or [])
-            ]
-            if missing_artifact_contracts:
-                inputs["routeBriefQuality"] = {
-                    "status": "blocked",
-                    "reason": "spec_write_artifact_contract_missing",
-                    "blocking": True,
-                    "message": (
-                        "Approved Spec write tasks must declare explicit expectedArtifacts/output paths before dispatch. "
-                        "Acceptance text, forbidden scopes, dependencies, input files, and the workspace root are not write grants."
-                    ),
-                    "taskBriefIds": missing_artifact_contracts,
-                    "requiredFields": ["expectedArtifacts", "output"],
-                }
+        if not bool((inputs.get("routeBriefQuality") or {}).get("blocking")):
+            inputs["routeBriefQuality"] = _route_task_contract_quality(
+                route_tasks,
+                kind=kind,
+                workspace_path=_workspace_path_from_route(inputs, state),
+            )
         if task_filter_applied or not inputs.get("workerBriefs"):
             inputs["workerBriefs"] = route_tasks
         if task_filter_applied or not inputs.get("tasks"):
@@ -1779,7 +1839,7 @@ def _enrich_route_need_for_episode(
             )
     elif kind == "research":
         explicit_route_briefs = _explicit_task_briefs_from_inputs(inputs)
-        route_briefs = explicit_route_briefs or planner_briefs
+        route_briefs = explicit_route_briefs
         brief_query = ""
         for brief in route_briefs:
             if not isinstance(brief, dict):
@@ -1801,6 +1861,15 @@ def _enrich_route_need_for_episode(
         research_blob = json.dumps(inputs.get("taskBriefs") or [], ensure_ascii=False, default=str).lower()
         if any(marker in research_blob for marker in ("full_read", "multi_source", "evidence_bundle", "claim_table", "claimtable", "sourcematrix", "source_matrix", "citations")):
             inputs.setdefault("mode", "run")
+
+    if kind not in {"engineering", "delegation"}:
+        explicit_tasks = _explicit_task_briefs_from_inputs(inputs)
+        if explicit_tasks:
+            inputs["routeBriefQuality"] = _route_task_contract_quality(
+                explicit_tasks,
+                kind=kind,
+                workspace_path=_workspace_path_from_route(inputs, state),
+            )
 
     enriched["inputs"] = inputs
     return enriched
@@ -1963,7 +2032,7 @@ def runtime_broker(
     tool_groups: Optional[list[str]] = None,
     reason: Optional[str] = None,
     detail_level: str = "summary",
-    need: Any = None,
+    need: RuntimeRouteNeed | None = None,
     allow_direct_fallback: bool = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
@@ -1972,16 +2041,17 @@ def runtime_broker(
 
     Use `mode='route'` with `need={'kind':'research'|'engineering'|'creative_media'|'computer_use'|'rpa'|'delegation', ...}` when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration.
     Product words for user-facing replies: `research`=深度调研, `engineering`=编程模式, `creative_media`=多媒体创作, `computer_use`=桌面操作, `rpa`=自动流程, `delegation`=子代理协作. Do not tell ordinary users "runtime_broker"; that is only the internal tool name.
-    Fill `need` with the actual task, workspace/scope, expected output, acceptance/proof needs, and useful detailRefs. If you only have a vague route hint, ask or build a complete taskBrief first.
+    `need` is a typed Supervisor-owned contract. Every write-capable task must declare writeRequired, a bounded writeSet, expectedOutputs, and acceptance/acceptanceContract. Missing fields block dispatch; the workspace root and prose hints are never inferred as write grants.
     Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions、插件管理中心和 Network Supervisor 是 support/discovery surfaces。@插件是强提示；Supervisor 也可通过 `plugin_broker` 为当前 run 创建最小插件授权。
     Use `mode='list'` only as a compact route menu; capability details already live in `<capability_registry>`.
     Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for execution.
-    A route result queues an episode and returns a waitable typed handoff path; do not claim the specialist mode completed until the handoff/proof returns.
+    A route result queues an episode and the graph moves to the managed runtime wait automatically. Never poll with wait_episode or repeated observe/status calls; do not claim completion until the typed handoff/proof returns.
     """
     normalized_mode = str(mode or "list").strip().lower()
+    need_payload_for_intent = _model_payload(need)
     route_context = dict((state or {}).get("current_route_context") or {})
     if normalized_mode == "list" and _runtime_list_request_should_route(
-        need=need,
+        need=need_payload_for_intent,
         runtime_kind=runtime_kind,
         tool_group=tool_group,
         reason=reason,
@@ -2015,17 +2085,28 @@ def runtime_broker(
         )
 
     if normalized_mode == "wait_episode":
-        active_episode = next(
-            (
-                item
-                for item in list(route_context.get("capabilityEpisodes") or [])
-                if isinstance(item, dict)
-                and str(item.get("state") or "").strip().lower()
-                in {"queued", "active", "running", "leased"}
-            ),
-            None,
-        )
-        if not active_episode:
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="Manual runtime polling is forbidden; the graph owns episode waiting and handoff resumption.",
+                                error="manual_runtime_polling_forbidden",
+                                detail_level=detail_level,
+                                next_action="Do not call another wait/status tool. Continue only after the graph injects the typed handoff.",
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                },
+            )
+
+    if normalized_mode == "route":
+        if not isinstance(need_payload_for_intent, dict):
             return Command(
                 goto="supervisor",
                 update={
@@ -2034,58 +2115,76 @@ def runtime_broker(
                             content=_runtime_broker_payload(
                                 mode=normalized_mode,
                                 ok=False,
-                                summary="No queued or active runtime episode is available to wait for.",
-                                error="no_active_episode",
+                                summary="runtime_broker(mode=route) requires the typed need contract.",
+                                error="typed_need_required",
                                 detail_level=detail_level,
-                                next_action="Call runtime_broker(mode='route', need={...}) first, or continue after an existing handoff.",
+                                next_action=(
+                                    "Call route once with need={kind, reason, inputs}. Write-capable tasks must include "
+                                    "taskBriefId, goal, writeSet, expectedOutputs, and acceptance."
+                                ),
                             ),
                             tool_call_id=tool_call_id,
                         )
                     ],
                     "current_route_context": route_context,
+                    "runtime_dispatch_status": {
+                        "mode": "runtime_broker_route",
+                        "dispatched": False,
+                        "blocked": True,
+                        "reason": "typed_need_required",
+                        "episodeCount": 0,
+                        "nextAction": "repair_task_contract",
+                    },
                 },
             )
-        episode_id = str(active_episode.get("episodeId") or active_episode.get("needId") or "").strip()
-        episode_kind = str(active_episode.get("kind") or "").strip()
-        return Command(
-            goto="supervisor",
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=_runtime_broker_payload(
-                            mode=normalized_mode,
-                            ok=True,
-                            summary="Runtime episode wait requested; the graph will continue at runtime_episode_wait.",
-                            episode=active_episode,
-                            detail_level=detail_level,
-                            next_action="Runtime wait is a graph transition; do not keep calling runtime_broker(mode='wait_episode').",
-                        ),
-                        tool_call_id=tool_call_id,
-                    )
-                ],
-                "current_route_context": route_context,
-                "planner_dispatch_status": {
-                    "mode": "runtime_broker_wait_episode",
-                    "dispatched": True,
-                    "blocked": False,
-                    "reason": "runtime_episode_wait_requested",
-                    "episodeId": episode_id,
-                    "episodeKind": episode_kind,
-                    "episodeCount": 1,
-                    "nextAction": "wait_episode",
+        try:
+            typed_need = RuntimeRouteNeed.model_validate(need_payload_for_intent)
+        except ValidationError as exc:
+            validation_errors = [
+                {
+                    "field": ".".join(str(part) for part in error.get("loc") or []),
+                    "type": str(error.get("type") or "invalid"),
+                }
+                for error in exc.errors(include_url=False, include_context=False, include_input=False)[:8]
+            ]
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=False,
+                                summary="runtime_broker(mode=route) rejected an invalid typed need contract.",
+                                error="typed_need_invalid",
+                                detail_level=detail_level,
+                                next_action=(
+                                    "Repair need.kind, need.reason, and need.inputs.taskBriefs. "
+                                    "Do not pass JSON strings or infer a write contract from prose."
+                                ),
+                                route_brief_quality={
+                                    "status": "blocked",
+                                    "reason": "typed_need_invalid",
+                                    "blocking": True,
+                                    "validationErrors": validation_errors,
+                                },
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": route_context,
+                    "runtime_dispatch_status": {
+                        "mode": "runtime_broker_route",
+                        "dispatched": False,
+                        "blocked": True,
+                        "reason": "typed_need_invalid",
+                        "episodeCount": 0,
+                        "nextAction": "repair_task_contract",
+                    },
                 },
-            },
-        )
-
-    if normalized_mode == "route":
-        need_payload = _coerce_route_need_payload(
-            need,
-            runtime_kind=runtime_kind,
-            tool_group=tool_group,
-            reason=reason,
-            state=state,
-        )
-        route_kind = _normalize_capability_kind(need_payload.get("kind") or runtime_kind or tool_group)
+            )
+        need_payload = typed_need.model_dump(exclude_none=True)
+        route_kind = _normalize_capability_kind(need_payload.get("kind"))
         if not route_kind:
             return Command(
                 goto="supervisor",
@@ -2138,7 +2237,7 @@ def runtime_broker(
                         )
                     ],
                     "current_route_context": route_context,
-                    "planner_dispatch_status": {
+                    "runtime_dispatch_status": {
                         "mode": "runtime_broker_route",
                         "dispatched": False,
                         "blocked": True,
@@ -2153,10 +2252,9 @@ def runtime_broker(
         need_payload = _enrich_route_need_for_episode(need_payload, kind=route_kind, state=state)
         route_inputs = dict(need_payload.get("inputs") or {}) if isinstance(need_payload.get("inputs"), dict) else {}
         route_brief_quality = route_inputs.get("routeBriefQuality") if isinstance(route_inputs.get("routeBriefQuality"), dict) else {}
-        if route_kind in {"engineering", "delegation"} and bool(route_brief_quality.get("blocking")):
+        if bool(route_brief_quality.get("blocking")):
             blocking_reason = str(route_brief_quality.get("reason") or "task_brief_required").strip()
-            missing_spec_artifact_contract = blocking_reason == "spec_write_artifact_contract_missing"
-            public_error = blocking_reason if missing_spec_artifact_contract else "task_brief_required"
+            public_error = blocking_reason
             return Command(
                 goto="supervisor",
                 update={
@@ -2169,18 +2267,14 @@ def runtime_broker(
                                     str(route_brief_quality.get("message") or "").strip()
                                     or (
                                         f"{route_kind} runtime route needs a concrete task brief before it can queue an episode. "
-                                        "Planner hints may fill blanks, but cannot replace a Supervisor-written task."
+                                        "Only the current Supervisor may define that execution contract."
                                     )
                                 ),
                                 error=public_error,
                                 detail_level=detail_level,
                                 next_action=(
-                                    "Add explicit expectedArtifacts/output paths to the approved Spec task, then route it again."
-                                    if missing_spec_artifact_contract
-                                    else (
-                                        "Call runtime_broker(mode='route') again with need.inputs.workerBriefs/taskBriefs/tasks. "
-                                        "Each brief should include goal, context, expectedOutput, acceptance, constraints, and detailRefs."
-                                    )
+                                    "Repair need.inputs.taskBriefs and call route once. Write tasks require writeSet, "
+                                    "expectedOutputs, and acceptance; read-only tasks must explicitly set readOnly=true."
                                 ),
                                 route_brief_quality=route_brief_quality,
                             ),
@@ -2188,14 +2282,14 @@ def runtime_broker(
                         )
                     ],
                     "current_route_context": route_context,
-                    "planner_dispatch_status": {
+                    "runtime_dispatch_status": {
                         "mode": "runtime_broker_route",
                         "dispatched": False,
                         "blocked": True,
                         "reason": blocking_reason,
                         "episodeKind": route_kind,
                         "episodeCount": 0,
-                        "nextAction": "define_expected_artifacts" if missing_spec_artifact_contract else "provide_task_brief",
+                        "nextAction": "repair_task_contract",
                     },
                 },
             )
@@ -2248,13 +2342,13 @@ def runtime_broker(
                             detail_level=detail_level,
                             changed=grants,
                             episode=episode,
-                            next_action="Runtime episode queued; the graph will wait for the typed handoff automatically. Do not call runtime_broker(mode='wait_episode') unless a previous route result was not handed to the graph.",
+                            next_action="Runtime episode queued. The graph now owns waiting and will inject the typed handoff; do not poll.",
                         ),
                         tool_call_id=tool_call_id,
                     )
                 ],
                 "current_route_context": updated_context,
-                "planner_dispatch_status": {
+                "runtime_dispatch_status": {
                     "mode": "runtime_broker_route",
                     "dispatched": True,
                     "blocked": False,
@@ -2387,7 +2481,7 @@ def runtime_broker(
                         ok=False,
                         summary=f"Unsupported runtime_broker mode: {normalized_mode}",
                         error="unsupported_mode",
-                        next_action="Use one of: list, route, wait_episode, status, grant, revoke.",
+                        next_action="Use one of: list, route, status, grant, revoke. Episode waiting is graph-managed.",
                     ),
                     tool_call_id=tool_call_id,
                 )
@@ -2396,16 +2490,18 @@ def runtime_broker(
         },
     )
 __all__ = [
+    "RuntimeRouteInputs",
+    "RuntimeRouteNeed",
+    "RuntimeRouteTaskBrief",
     "runtime_broker",
     "_append_runtime_episode",
     "_capability_route_groups",
-    "_coerce_route_need_payload",
     "_emit_runtime_episode_event",
     "_enrich_route_need_for_episode",
     "_infer_route_kind_from_payload",
     "_minimal_route_task_from_need",
     "_normalize_capability_kind",
-    "_planner_task_briefs_from_state",
+    "_route_task_contract_quality",
     "_runtime_broker_payload",
     "_runtime_list_request_should_route",
 ]

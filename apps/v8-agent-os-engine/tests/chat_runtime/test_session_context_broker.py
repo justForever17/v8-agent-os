@@ -441,11 +441,8 @@ def test_context_session_refs_validate_dedupe_and_inject_broker_first_contract()
     runtime._inject_structured_request_context(
         messages,
         command_preset=None,
-        task_planning_mode=False,
         spec_mode=False,
         spec_command=None,
-        planner_mode="off",
-        planner_intent_diagnostics={},
         skill_references=[],
         context_mentions=[],
         context_session_refs=refs,

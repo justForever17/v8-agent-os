@@ -87,7 +87,7 @@ SCENARIOS: dict[str, dict[str, Any]] = {
     "project_coding": {
         "role": "supervisor",
         "messages": [
-            structured_system_message("\n<planner_state>{\"phase\":\"inspect\"}</planner_state>"),
+            structured_system_message("\n<runtime_state>{\"phase\":\"inspect\"}</runtime_state>"),
             HumanMessage(content="修复项目里的一个类型错误。"),
         ],
         "kwargs": {"temperature": 0},

@@ -7,7 +7,7 @@ from core.delegation_broker import (
 )
 from core.task_shape_classifier import classify_task_shape
 from api.models import ChatRequest
-from graph.agent_factories import _format_delegated_plan_context
+from graph.agent_factories import _format_delegated_task_contract
 from graph.parallel_support import _compact_transcript, _extract_tool_names
 from langchain_core.messages import AIMessage, ToolMessage
 from runtimes.chat.runtime import ChatRuntime
@@ -25,7 +25,6 @@ def _agent(agent_id: str, family: str, ops: list[str]) -> dict:
             "agentClass": "executor",
             "domainTags": [family],
             "operationCapabilities": ops,
-            "plannerSuitability": "high",
         },
     }
 
@@ -337,7 +336,7 @@ def test_preferred_skill_workflow_curator_wins_for_skill_review() -> None:
 
 
 def test_delegated_writing_brief_requires_fetch_skill_instructions() -> None:
-    prompt = _format_delegated_plan_context(
+    prompt = _format_delegated_task_contract(
         {
             "goal": "Write a proposal with a skill",
             "context": {
@@ -351,7 +350,6 @@ def test_delegated_writing_brief_requires_fetch_skill_instructions() -> None:
                 }
             },
         },
-        {"planId": "plan-test", "executionStrategy": "delegate"},
     )
 
     assert "Writing Execution Brief" in prompt

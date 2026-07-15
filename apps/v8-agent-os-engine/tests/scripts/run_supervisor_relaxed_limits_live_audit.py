@@ -115,8 +115,6 @@ def _submit(
             "conversationId": session_id,
             "clientMessageId": client_tag,
             "modelProfile": model_profile,
-            "taskPlanningMode": False,
-            "plannerMode": "suggest",
             "relaxedLimitsLiveAudit": True,
         },
     }

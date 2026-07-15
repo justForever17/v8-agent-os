@@ -735,9 +735,6 @@ def _submit(
         "clientMessageId": client_tag,
         "specMode": True,
         "safetyApprovalMode": safety_approval_mode,
-        "taskPlanningMode": False,
-        "plannerMode": "off",
-        "plannerDispatchMode": "suggest",
     }
     if _uses_model_override(model_profile):
         data["modelProfile"] = _normalized_model_profile(model_profile)

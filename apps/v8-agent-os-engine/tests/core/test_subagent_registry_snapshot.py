@@ -138,6 +138,54 @@ def test_next_run_snapshot_can_dispatch_new_agent(monkeypatch) -> None:
     assert payload["items"][0]["registryVersion"] == payload["registryVersion"]
 
 
+def test_dispatch_persists_canonical_delegation_episode(monkeypatch) -> None:
+    agent = _agent("review-1", "engineering", ops=["review"])
+
+    class _Storage:
+        def get_all_agents(self):
+            return [agent]
+
+        def get_supervisor_config(self):
+            return {}
+
+    persisted: list[tuple[dict, dict]] = []
+
+    def _persist(episode, **kwargs):
+        persisted.append((dict(episode), dict(kwargs)))
+        return dict(episode)
+
+    _patch_delegation_storage(monkeypatch, _Storage())
+    monkeypatch.setattr(delegation_tools, "persist_runtime_episode", _persist)
+    command = delegation_tools.delegation_broker.func(
+        mode="dispatch",
+        tasks=[
+            {
+                "taskBriefId": "review-task",
+                "goal": "Review the proposed risk register.",
+                "expectedOutput": "A compact risk review.",
+                "acceptanceContract": "Return blocking risks and a go/no-go decision.",
+                "preferredAgentId": "review-1",
+                "executionLaneHint": "subagent",
+            }
+        ],
+        state={
+            "session_id": "session-delegation-persist",
+            "run_id": "run-delegation-persist",
+            "workspace_path": "E:/workspace",
+        },
+        tool_call_id="call-delegation-persist",
+    )
+
+    assert persisted
+    episode, bindings = persisted[0]
+    assert episode["kind"] == "delegation"
+    assert episode["state"] == "waiting"
+    assert episode["inputs"]["workerBriefs"][0]["taskBriefId"] == "review-task"
+    assert bindings["session_id"] == "session-delegation-persist"
+    assert bindings["run_id"] == "run-delegation-persist"
+    assert command.update["current_route_context"]["capabilityEpisodes"][0]["kind"] == "delegation"
+
+
 def test_choose_best_agent_accepts_snapshot_members() -> None:
     snapshot = build_subagent_registry_snapshot([_agent("research-1", "research", ops=["research", "cite"])])
     selected, diagnostics = choose_best_local_agent_with_diagnostics(
@@ -206,7 +254,7 @@ def test_request_peer_help_without_child_budget_is_blocked_not_dispatched() -> N
     assert "pending_child_delegations" not in command.update
 
 
-def test_delegation_broker_observe_reads_local_structured_handoff() -> None:
+def test_delegation_broker_observe_does_not_poll_local_structured_handoff() -> None:
     command = delegation_tools.delegation_broker.func(
         mode="observe",
         delegation_id="delegation-local-1",
@@ -236,9 +284,7 @@ def test_delegation_broker_observe_reads_local_structured_handoff() -> None:
     )
 
     payload = _payload_from_command(command)
-    assert payload["ok"] is True
+    assert payload["ok"] is False
     assert payload["mode"] == "observe"
-    assert payload["recommendedNextAction"] == "accept_retry_or_ignore"
-    assert payload["items"][0]["summary"] == "Reviewed the requested slice."
-    assert payload["items"][0]["localSelfCheck"] == "No blocking issue found."
-    assert "registryVersion" not in payload
+    assert payload["error"] == "manual_local_delegation_polling_forbidden"
+    assert payload["recommendedNextAction"] == "wait_for_graph_handoff"

@@ -17,7 +17,7 @@ from core.native_tools import NATIVE_TOOLS
 from core.system_tools.baseline import select_baseline_system_tools
 from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
-from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context
+from graph.agent_factories import _build_agent_system_content, _format_delegated_task_contract
 from graph.parallel_support import _child_request_from_send_state
 from runtimes.extensions.skills.loader import fetch_skill_instructions
 
@@ -218,9 +218,9 @@ def _tool_description_preview() -> dict[str, Any]:
     return {"checks": checks, "previews": previews}
 
 
-def _build_planner_disabled_surfaces(worker_briefs: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_supervisor_owned_surfaces(worker_briefs: list[dict[str, Any]]) -> dict[str, Any]:
     parent_brief = dict(worker_briefs[0]) if worker_briefs else {}
-    delegated_plan = _format_delegated_plan_context(parent_brief, None)
+    delegated_plan = _format_delegated_task_contract(parent_brief)
     subagent_system = _build_agent_system_content(
         agent_name="Dry Run Engineering Worker",
         agent_system_prompt="Follow the delegated task contract and return typed handoff evidence.",
@@ -268,8 +268,8 @@ def _build_planner_disabled_surfaces(worker_briefs: list[dict[str, Any]]) -> dic
         source_agent_id="engineering-worker",
     )
     checks = {
-        "planner_disabled_subagent_prompt_no_planner_origin": "supervisor's planner/delegation pipeline" not in delegated_plan,
-        "planner_disabled_subagent_prompt_has_supervisor_runtime_origin": "supervisor's delegation/runtime pipeline" in delegated_plan,
+        "subagent_prompt_has_no_legacy_planner_origin": "supervisor's planner/delegation pipeline" not in delegated_plan,
+        "subagent_prompt_has_supervisor_runtime_origin": "supervisor's delegation/runtime pipeline" in delegated_plan,
         "subagent_prompt_has_spec_id": _contains(subagent_system, str(parent_context.get("specId") or "")),
         "subagent_prompt_has_task_goal": _contains(subagent_system, str(parent_brief.get("goal") or "")),
         "subagent_prompt_has_requirement_slice": _contains(subagent_system, "REQ-") or _contains(subagent_system, "需求"),
@@ -281,7 +281,7 @@ def _build_planner_disabled_surfaces(worker_briefs: list[dict[str, Any]]) -> dic
     }
     return {
         "checks": checks,
-        "delegatedPlanPreview": delegated_plan[:5000],
+        "delegatedTaskContractPreview": delegated_plan[:5000],
         "subagentSystemPreview": subagent_system[:8000],
         "grandchildRequestPreview": child_request,
     }
@@ -337,9 +337,9 @@ def build_export(*, sample_spec_dir: Path | None = None) -> dict[str, Any]:
             or _contains(agent_preview, "index.html"),
             "tool_surface_is_compact": not str(_tool_payload(command)).lstrip().startswith("["),
         }
-        planner_disabled_surfaces = _build_planner_disabled_surfaces(worker_briefs)
+        supervisor_owned_surfaces = _build_supervisor_owned_surfaces(worker_briefs)
         tool_description_surface = _tool_description_preview()
-        validations.update(planner_disabled_surfaces["checks"])
+        validations.update(supervisor_owned_surfaces["checks"])
         validations.update(tool_description_surface["checks"])
         return {
             "ok": True,
@@ -362,7 +362,7 @@ def build_export(*, sample_spec_dir: Path | None = None) -> dict[str, Any]:
                 "proofExpectations": list(inputs.get("proofExpectations") or []),
             },
             "agentSurfacePreview": agent_preview,
-            "plannerDisabledAgentContent": planner_disabled_surfaces,
+            "supervisorOwnedAgentContent": supervisor_owned_surfaces,
             "subagentToolDescriptions": tool_description_surface,
         }
 
@@ -397,10 +397,10 @@ Sample source: `{payload.get('sampleSource')}`
 {preview}
 ```
 
-## Planner Disabled Content Checks
+## Supervisor-Owned Content Checks
 
 ```json
-{json.dumps(payload.get('plannerDisabledAgentContent') or {}, ensure_ascii=False, indent=2)[:12000]}
+{json.dumps(payload.get('supervisorOwnedAgentContent') or {}, ensure_ascii=False, indent=2)[:12000]}
 ```
 """,
         encoding="utf-8",

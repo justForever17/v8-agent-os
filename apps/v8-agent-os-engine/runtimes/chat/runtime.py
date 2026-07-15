@@ -74,36 +74,9 @@ from erc.run_service import run_service
 from erc.session_admission_service import session_admission_service
 from erc.safety_guardian import safety_guardian
 from erc.workflow_ledger import workflow_ledger_service
-from graph.workflow_assembly import build_planner_auto_dispatch_node
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
 from runtimes.engineering.service import engineering_lane_service
-from runtimes.chat.planner_execution_controller import (
-    compact_planner_error,
-    ensure_planner_plan as run_planner_execution_controller,
-    extract_planner_payload_from_text,
-    try_repair_planner_plan_with_plain_json,
-)
-from runtimes.chat.planner_orchestration import (
-    PLANNER_FIRST_TURN_BUDGET_SECONDS,
-    PLANNER_MAX_DESCRIPTION_CHARS,
-    PLANNER_MAX_REGISTRY_AGENTS,
-    PLANNER_MAX_SKILL_REFERENCES,
-    PLANNER_MODEL_MAX_TOKENS,
-    PLANNER_MODEL_TIMEOUT_SECONDS,
-    PLANNER_OUTPUT_MODE,
-    PLANNER_REPAIR_MAX_TOKENS,
-    PLANNER_REPAIR_TIMEOUT_SECONDS,
-    PlannerPlanPayload,
-    create_planner_chat_model,
-    normalize_planner_plan_payload,
-    planner_clip_text,
-    planner_compact_specialist_entry,
-    planner_json_contract_prompt,
-    planner_registry_lines,
-    planner_system_prompt,
-)
-from runtimes.chat.planner_contract_verifier import verify_and_repair_planner_contract
 from runtimes.chat.supervisor_completion_gate import evaluate_supervisor_completion
 from runtimes.extensions.mcp.client import mcp_manager
 from runtimes.memory.scope_resolution import (
@@ -214,15 +187,10 @@ class ChatPreparedRequest:
     latest_user_content: str
     command_preset_name: str | None = None
     command_preset_hash: str | None = None
-    planner_mode: str = "off"
-    planner_dispatch_mode: str = "suggest"
-    planner_intent_diagnostics: dict[str, Any] = field(default_factory=dict)
-    task_planning_mode: bool = False
     spec_mode: bool = False
     spec_command: dict[str, Any] = field(default_factory=dict)
     spec_id: str = ""
     spec_brief: dict[str, Any] = field(default_factory=dict)
-    planner_deferred: bool = False
     engineering_mode: str = "auto"
     explicit_engineering_requested: bool = False
     engineering_trigger_decision: dict[str, Any] = field(default_factory=dict)
@@ -235,7 +203,6 @@ class ChatPreparedRequest:
     context_session_refs: list[dict[str, str]] = field(default_factory=list)
     session_coordination_message: dict[str, Any] = field(default_factory=dict)
     explicit_subagent_families: list[str] = field(default_factory=list)
-    planner_plan: dict[str, Any] | None = None
     live_audit_context: dict[str, Any] = field(default_factory=dict)
 
 
@@ -1164,18 +1131,6 @@ class ChatRuntime:
                 return candidate.content
         return ""
 
-    def _normalize_planner_mode(self, value: Any, *, task_planning_mode: bool) -> str:
-        normalized = str(value or "").strip().lower()
-        if normalized in {"auto", "force", "off"}:
-            return normalized
-        if task_planning_mode:
-            return "force"
-        return "off"
-
-    def _normalize_planner_dispatch_mode(self, value: Any) -> str:
-        normalized = str(value or "").strip().lower()
-        return normalized if normalized in {"suggest", "auto", "off"} else "suggest"
-
     def _normalize_engineering_mode(self, value: Any) -> str:
         normalized = str(value or "").strip().lower()
         return normalized if normalized in {"auto", "force", "off"} else "auto"
@@ -1347,31 +1302,6 @@ class ChatRuntime:
             "never",
         )
         return any(marker in compact for marker in negation_markers)
-
-    def _detect_planner_intent(self, user_content: str) -> dict[str, Any]:
-        text = str(user_content or "").strip().lower()
-        if not text:
-            return {"matched": False, "signals": [], "reason": "empty_user_request"}
-        signal_patterns: list[tuple[str, tuple[str, ...]]] = [
-            ("explicit_planning", ("plan", "planner", "todo", "todos", "roadmap", "break down", "decompose", "拆解", "计划", "规划", "分工", "任务清单", "执行计划")),
-            ("delegation_or_parallel", ("delegate", "subagent", "parallel", "swarm", "agent", "agents", "并发", "子代理", "子agent", "蜂群", "多代理")),
-            ("large_implementation", ("implement", "refactor", "migration", "architecture", "upgrade", "phase", "rollout", "scaffold", "frontend", "project", "app", "实施", "实现", "改造", "迁移", "架构", "升级", "阶段", "开发", "搭建", "创建", "项目", "应用", "前端")),
-            ("verification_contract", ("acceptance", "test plan", "verify", "validation", "验收", "验证", "测试计划", "回归")),
-        ]
-        signals: list[str] = []
-        for name, patterns in signal_patterns:
-            if any(pattern in text for pattern in patterns):
-                signals.append(name)
-        word_count = len(re.findall(r"\w+", text))
-        if word_count >= 80 or len(text) >= 360:
-            signals.append("large_request")
-        seen: set[str] = set()
-        deduped = [item for item in signals if not (item in seen or seen.add(item))]
-        return {
-            "matched": bool(deduped),
-            "signals": deduped,
-            "reason": "signals_matched" if deduped else "no_planner_signal",
-        }
 
     def _normalize_skill_references(self, request: ChatRequest) -> list[dict[str, str]]:
         request_data = request.data
@@ -1872,49 +1802,20 @@ class ChatRuntime:
     def _resolve_request_context(
         self,
         request: ChatRequest,
-    ) -> tuple[dict[str, Any] | None, bool, str, str, dict[str, Any], str, bool, list[dict[str, str]], list[dict[str, str]], list[str], bool]:
+    ) -> tuple[dict[str, Any] | None, str, bool, list[dict[str, str]], list[dict[str, str]], list[str], bool]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         spec_mode = bool(getattr(request_data, "spec_mode", False)) if request_data else False
         spec_command = self._normalize_spec_command(request)
         if spec_command:
             spec_mode = True
-        task_planning_mode = bool(request_data.task_planning_mode) if request_data else False
-        requested_planner_mode = getattr(request_data, "planner_mode", None) if request_data else None
-        planner_dispatch_mode = self._normalize_planner_dispatch_mode(getattr(request_data, "planner_dispatch_mode", None) if request_data else None)
-        planner_mode = self._normalize_planner_mode(requested_planner_mode, task_planning_mode=task_planning_mode)
         engineering_mode = self._normalize_engineering_mode(getattr(request_data, "engineering_mode", None) if request_data else None)
         latest_user = self._latest_user_content(request)
         if not spec_mode and self._detect_explicit_spec_mode_request(latest_user):
             spec_mode = True
         explicit_engineering_requested = self._detect_explicit_engineering_runtime_request(latest_user)
-        planner_diagnostics = self._detect_planner_intent(latest_user)
         if explicit_engineering_requested:
-            planner_diagnostics = {
-                **planner_diagnostics,
-                "matched": True,
-                "signals": list(dict.fromkeys([*list(planner_diagnostics.get("signals") or []), "explicit_engineering_runtime"])),
-                "reason": "explicit_engineering_runtime_requested",
-            }
             engineering_mode = "force"
-        if spec_mode:
-            planner_diagnostics = {
-                **planner_diagnostics,
-                "matched": True,
-                "signals": list(dict.fromkeys([*list(planner_diagnostics.get("signals") or []), "spec_mode"])),
-                "reason": "spec_mode_requested",
-            }
-        if planner_mode == "auto":
-            planner_diagnostics = {
-                **planner_diagnostics,
-                "advisoryOnly": True,
-                "reason": planner_diagnostics.get("reason") or "planner_auto_advisory_only",
-            }
-            task_planning_mode = False
-        elif planner_mode == "force":
-            task_planning_mode = True
-        elif planner_mode == "off":
-            task_planning_mode = False
 
         command_preset = None
         if command_selection and command_selection.name:
@@ -1925,7 +1826,7 @@ class ChatRuntime:
         skill_references = self._normalize_skill_references(request)
         context_mentions = self._normalize_context_mentions(request, skill_references=skill_references)
         explicit_subagent_families = self._resolve_explicit_subagent_families(request, context_mentions)
-        return command_preset, task_planning_mode, planner_mode, planner_dispatch_mode, planner_diagnostics, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families, spec_mode
+        return command_preset, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families, spec_mode
 
     @staticmethod
     def _runtime_execution_allowed_by_spec(spec_brief: dict[str, Any] | None) -> bool:
@@ -1958,16 +1859,12 @@ class ChatRuntime:
         lc_messages: list[Any],
         *,
         command_preset: dict[str, Any] | None,
-        task_planning_mode: bool,
         spec_mode: bool,
         spec_command: dict[str, Any] | None,
-        planner_mode: str,
-        planner_intent_diagnostics: dict[str, Any],
         skill_references: list[dict[str, str]],
         context_mentions: list[dict[str, str]],
         plugin_references: list[dict[str, Any]] | None = None,
         context_session_refs: list[dict[str, str]],
-        planner_dispatch_mode: str = "suggest",
         spec_continuation: dict[str, Any] | None = None,
     ) -> None:
         if (
@@ -2141,2067 +2038,6 @@ class ChatRuntime:
             message.content = "\n\n".join(section for section in wrapped_sections if section.strip())
             return
 
-    @staticmethod
-    def _planner_registry_snapshot() -> dict[str, Any]:
-        loaded_agents = [
-            item for item in storage.get_all_agents()
-            if isinstance(item, dict) and str(item.get("id") or "").strip() and str(item.get("id") or "").strip() != "supervisor"
-        ]
-        supervisor_config = storage.get_supervisor_config() or {}
-        external_workers = [
-            compact_external_worker_registry_entry(item)
-            for item in list((supervisor_config.get("delegation") or {}).get("externalWorkers") or [])
-            if isinstance(item, dict) and bool(item.get("enabled"))
-        ]
-        return {
-            "subagents": loaded_agents,
-            "externalWorkers": external_workers,
-        }
-
-    @staticmethod
-    def _planner_clip_text(value: Any, *, limit: int = PLANNER_MAX_DESCRIPTION_CHARS) -> str:
-        return planner_clip_text(value, limit=limit)
-
-    @classmethod
-    def _planner_compact_specialist_entry(cls, item: dict[str, Any], *, external: bool = False) -> dict[str, Any]:
-        return planner_compact_specialist_entry(item, external=external)
-
-    @staticmethod
-    def _planner_registry_lines(registry: dict[str, Any]) -> list[str]:
-        return planner_registry_lines(registry)
-
-    def _planner_system_prompt(self) -> str:
-        return planner_system_prompt()
-
-    def _planner_json_contract_prompt(self) -> str:
-        return planner_json_contract_prompt()
-
-    @staticmethod
-    def _writing_execution_brief(
-        *,
-        user_request: str,
-        route: dict[str, Any],
-        research_refs: list[str] | None = None,
-        workspace_refs: list[str] | None = None,
-    ) -> dict[str, Any]:
-        skill_name = str(route.get("skillName") or "").strip()
-        requires_artifact = bool(route.get("requiresArtifact"))
-        required_instruction_reads = []
-        if route.get("requiresSkillExecution") and skill_name:
-            required_instruction_reads.append({"skillName": skill_name, "detailLevel": "full", "reason": "primary workflow"})
-            if requires_artifact and skill_name == "huashu-nuwa":
-                required_instruction_reads.extend(
-                    [
-                        {
-                            "skillName": skill_name,
-                            "relativePath": "references/skill-template.md",
-                            "reason": "huashu-nuwa generated skill template",
-                        },
-                        {
-                            "skillName": skill_name,
-                            "relativePath": "references/extraction-framework.md",
-                            "reason": "huashu-nuwa extraction and synthesis framework",
-                        },
-                    ]
-                )
-        if requires_artifact:
-            required_instruction_reads.append(
-                {
-                    "skillName": "skill-creator",
-                    "detailLevel": "full",
-                    "reason": "generated skills must satisfy the canonical SKILL.md schema and loader contract",
-                }
-            )
-        brief = {
-            "schema": "v8.writing_execution_brief.v1",
-            "userOriginalRequest": user_request,
-            "audience": "unspecified",
-            "tone": "follow user request; otherwise clear and practical",
-            "length": "unspecified",
-            "outputFormat": "chat_body unless a runtime handoff or file target says otherwise",
-            "skill": {
-                "idOrName": skill_name,
-                "selectionReason": str(route.get("reason") or "").strip(),
-                "firstActionRequired": "fetch_skill_instructions" if route.get("requiresSkillExecution") else "",
-            },
-            "authorizedRefs": {
-                "memoryRefs": [],
-                "researchRefs": list(research_refs or []),
-                "workspaceRefs": list(workspace_refs or []),
-            },
-            "knownFacts": [],
-            "forbiddenInventions": [
-                "Do not invent sources, memories, implementation results, tests, dates, or user preferences.",
-                "If a fact is missing, mark it as an assumption or ask the supervisor for clarification.",
-            ],
-            "acceptanceCriteria": [
-                "Follow the user request and delegated brief exactly.",
-                "Return final draft plus brief execution notes.",
-                "Separate verified facts from assumptions.",
-            ],
-            "allowedRuntimeUse": {
-                "research": bool(route.get("requiresResearch")),
-                "engineering": requires_artifact,
-                "memory": False,
-            },
-            "subagentFirstAction": "fetch_skill_instructions" if route.get("requiresSkillExecution") else "",
-            "requiredInstructionReads": required_instruction_reads,
-            "subagentCreationPolicy": {
-                "allowAiCreatedWritingSubagentOnClearMismatch": bool(route.get("allowCreateSubagentOnMismatch")),
-                "requiredMetadata": ["family=writing", "createdBy=ai", "sourceTask", "capabilityGap", "boundaries"],
-                "doNotCreateForOrdinaryShortText": True,
-            },
-        }
-        if requires_artifact:
-            brief["skillArtifactContract"] = {
-                "schema": "v8.skill_artifact_contract.v1",
-                "requiredValidator": "SkillArtifactValidator",
-                "mustReadContracts": [item["skillName"] for item in required_instruction_reads],
-                "requiredFrontmatter": ["name", "description"],
-                "requiredSections": ["使用说明", "身份卡/能力说明", "诚实边界", "调研来源"],
-                "requiredResearchDir": "references/research",
-                "completionStatus": "skill_artifact_ready",
-                "failureStatus": "recoverable_failed",
-            }
-        return brief
-
-    def _fallback_writing_planner_plan(
-        self,
-        *,
-        chat_run: ChatRunContext,
-        reason: str,
-        writing_route: dict[str, Any],
-        fallback_context: dict[str, Any],
-    ) -> dict[str, Any]:
-        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
-        mode = str(writing_route.get("mode") or "direct_supervisor").strip()
-        plan_id = f"plan_{uuid.uuid4().hex[:10]}"
-        common_quality = ["planner_fallback_used", f"writing_route:{mode}"]
-
-        if mode == "ask_user_clarify":
-            brief = normalize_task_brief(
-                {
-                    "taskBriefId": "task-1",
-                    "goal": "Clarify the writing deliverable before execution.",
-                    "context": {
-                        **fallback_context,
-                        "writingRoute": writing_route,
-                        "askUserOptions": ["只要正文", "先调研再写", "保存为文件/仓库文档"],
-                    },
-                    "behaviorScope": ["clarification", "writing_intake"],
-                    "requiredCapabilities": ["ask_user", "requirements_clarification"],
-                    "acceptanceContract": "Ask the user whether they want direct body text, research-backed writing, or a saved file before drafting or delegating.",
-                    "executionLaneHint": "auto",
-                }
-            )
-            return {
-                "planId": plan_id,
-                "executionStrategy": "direct",
-                "planSummary": "Clarify the ambiguous writing deliverable before routing.",
-                "capabilityPlan": [],
-                "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": ""}],
-                "taskBriefs": [brief],
-                "handoffPlan": [],
-                "globalAcceptanceContract": "Do not draft, research, or save files until the user chooses the writing route.",
-                "riskFlags": ["writing_clarification_required"],
-                "qualityFlags": common_quality + ["ask_user_required"],
-                "repairCount": 0,
-                "autoDispatchDecision": {},
-                "dispatchEligibilityReason": "",
-            }
-
-        if mode == "research_then_write":
-            research_brief = normalize_task_brief(
-                {
-                    "taskBriefId": "task-1",
-                    "goal": "Collect source-backed evidence for the requested writing.",
-                    "context": {**fallback_context, "writingRoute": writing_route},
-                    "writeSet": [],
-                    "behaviorScope": ["research", "read_only", "evidence_collection"],
-                    "requiredCapabilities": ["web_research", "source_quality", "citations", "evidence_bundle"],
-                    "acceptanceContract": "Produce a compact evidence bundle with source matrix, conflicts, confidence, citations, and raw refs.",
-                    "executionLaneHint": "auto",
-                    "familyHint": "research",
-                    "runtimeAccess": ["research.core"],
-                }
-            )
-            writing_brief = normalize_task_brief(
-                {
-                    "taskBriefId": "task-2",
-                    "goal": latest_user_content or "Draft source-backed writing from research evidence.",
-                    "context": {
-                        **fallback_context,
-                        "writingRoute": writing_route,
-                        "writingExecutionBrief": self._writing_execution_brief(
-                            user_request=latest_user_content,
-                            route=writing_route,
-                            research_refs=["task-1:evidenceBundleId", "task-1:sourceMatrix"],
-                        ),
-                    },
-                    "writeSet": [],
-                    "behaviorScope": ["writing", "synthesis", "source_grounded"],
-                    "requiredCapabilities": ["writing", "summarize", "source_grounded_synthesis"],
-                    "acceptanceContract": "Draft from research evidence only; cite/attribute source-backed claims and mark assumptions.",
-                    "dependency": ["task-1"],
-                    "executionLaneHint": "subagent",
-                    "familyHint": "writing",
-                    "researchRefs": ["task-1:evidenceBundleId"],
-                },
-                index=1,
-            )
-            return {
-                "planId": plan_id,
-                "executionStrategy": "mixed",
-                "planSummary": "Research first, then draft source-backed writing.",
-                "capabilityPlan": [
-                    {"kind": "research", "source": "planner_fallback", "reason": "source_backed_writing_requires_evidence", "taskBriefId": "task-1", "requiredRuntimeAccess": ["research.core"], "state": "detected"},
-                    {"kind": "delegation", "source": "planner_fallback", "reason": "writing_synthesis_after_research", "taskBriefId": "task-2", "state": "detected"},
-                ],
-                "taskGraph": [
-                    {"taskBriefId": "task-1", "title": research_brief["goal"], "dependency": [], "parallelGroup": "research"},
-                    {"taskBriefId": "task-2", "title": writing_brief["goal"], "dependency": ["task-1"], "parallelGroup": "writing"},
-                ],
-                "taskBriefs": [research_brief, writing_brief],
-                "handoffPlan": [
-                    {"fromTaskBriefId": "task-1", "toTaskBriefId": "task-2", "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"], "reason": "Writing must consume compact research evidence."}
-                ],
-                "globalAcceptanceContract": "Produce source-backed writing or report missing evidence without fabrication.",
-                "riskFlags": ["source_quality_required"],
-                "qualityFlags": common_quality + ["research_before_writing"],
-                "repairCount": 0,
-                "autoDispatchDecision": {},
-                "dispatchEligibilityReason": "",
-            }
-
-        if mode == "artifact_runtime":
-            brief = normalize_task_brief(
-                {
-                    "taskBriefId": "task-1",
-                    "goal": latest_user_content or "Create or update the requested writing artifact.",
-                    "context": {
-                        **fallback_context,
-                        "writingRoute": writing_route,
-                        "writingExecutionBrief": self._writing_execution_brief(user_request=latest_user_content, route=writing_route),
-                    },
-                    "writeSet": ["<requested-writing-artifact>"],
-                    "behaviorScope": ["artifact_writing", "file_mutation", "verification"],
-                    "requiredCapabilities": ["document_artifact", "file_write", "verification"],
-                    "acceptanceContract": "Create/update the requested document artifact, report path, touched files, verification, and residual risks.",
-                    "executionLaneHint": "auto",
-                    "familyHint": "engineering",
-                    "engineeringTaskCapsule": {
-                        "writeSet": ["<requested-writing-artifact>"],
-                        "proofExpectations": ["Report exact artifact path and verification status."],
-                        "riskFlags": ["writing_artifact_path_may_need_clarification"],
-                    },
-                }
-            )
-            return {
-                "planId": plan_id,
-                "executionStrategy": "mixed",
-                "planSummary": "Route file-backed writing through Engineering/document artifact discipline.",
-                "capabilityPlan": [
-                    {"kind": "engineering", "source": "planner_fallback", "reason": "writing_requires_file_or_repository_side_effect", "taskBriefId": "task-1", "state": "detected"}
-                ],
-                "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": "engineering"}],
-                "taskBriefs": [brief],
-                "handoffPlan": [],
-                "globalAcceptanceContract": "Deliver the requested artifact or a recoverable blocker with exact path/format questions.",
-                "riskFlags": ["artifact_side_effect_requires_runtime"],
-                "qualityFlags": common_quality + ["engineering_or_document_runtime_required"],
-                "repairCount": 0,
-                "autoDispatchDecision": {},
-                "dispatchEligibilityReason": "",
-            }
-
-        if mode in {"skill_subagent", "writing_subagent"}:
-            preferred_agent = str(writing_route.get("preferredAgentId") or "").strip()
-            required = ["writing", "follow_skill_workflow", "fetch_skill_instructions"] if mode == "skill_subagent" else ["writing", "document", "explain"]
-            behavior = ["skill_driven_writing", "isolated_context"] if mode == "skill_subagent" else ["writing", "independent_review"]
-            requires_research = bool(writing_route.get("requiresResearch"))
-            requires_artifact = bool(writing_route.get("requiresArtifact"))
-            research_refs = ["task-1:evidenceBundleId", "task-1:sourceMatrix", "task-1:claimTable"] if requires_research else []
-            task_id = "task-2" if requires_research else "task-1"
-            dependency = ["task-1"] if requires_research else []
-            research_brief = None
-            if requires_research:
-                skill_name = str(writing_route.get("skillName") or "").strip()
-                research_goal = latest_user_content or "Collect source-backed evidence for the requested skill-driven writing."
-                if skill_name:
-                    research_goal = f"Collect source-backed evidence required by {skill_name} before writing: {research_goal}"
-                research_brief = normalize_task_brief(
-                    {
-                        "taskBriefId": "task-1",
-                        "goal": research_goal,
-                        "context": {
-                            **fallback_context,
-                            "writingRoute": writing_route,
-                            "sourcePolicy": "multi_source_full_read_required",
-                            "researchFor": "skill_driven_writing",
-                        },
-                        "writeSet": [],
-                        "behaviorScope": ["research", "read_only", "evidence_collection", "source_quality"],
-                        "requiredCapabilities": ["web_research", "source_quality", "citations", "evidence_bundle", "claim_table"],
-                        "acceptanceContract": "Produce a compact evidence bundle with final researchResult, claimTable, sourceMatrix, conflicts, confidence, source URLs, and raw refs. Do not return bare search snippets as conclusions.",
-                        "executionLaneHint": "auto",
-                        "familyHint": "research",
-                        "runtimeAccess": ["research.core"],
-                        "routeQuery": research_goal,
-                    }
-                )
-            brief = normalize_task_brief(
-                {
-                    "taskBriefId": task_id,
-                    "goal": latest_user_content or "Complete the delegated writing task.",
-                    "context": {
-                        **fallback_context,
-                        "writingRoute": writing_route,
-                        "writingExecutionBrief": self._writing_execution_brief(
-                            user_request=latest_user_content,
-                            route=writing_route,
-                            research_refs=research_refs,
-                        ),
-                        **({"requiredResearchEvidence": research_refs} if research_refs else {}),
-                    },
-                    "writeSet": [],
-                    "behaviorScope": behavior,
-                    "requiredCapabilities": (
-                        [*required, "skill_artifact_validation", "skill_creator_contract", "workspace_file_write"]
-                        if requires_artifact
-                        else required
-                    ),
-                    "acceptanceContract": (
-                        "Read huashu-nuwa/full, huashu-nuwa references/skill-template.md, huashu-nuwa references/extraction-framework.md, "
-                        "and skill-creator/full first; consume the required research evidence refs, "
-                        "write the skill artifact through Engineering discipline, validate it with SkillArtifactValidator, "
-                        "and return skill_artifact_ready or recoverable_failed with exact blockers."
-                        if requires_artifact
-                        else "Read any named skill instructions first, consume the required research evidence refs before writing, "
-                        "then return final draft/artifact proof plus execution notes, assumptions, and blockers."
-                        if requires_research
-                        else "Read any named skill instructions first, then return final draft plus execution notes, assumptions, and blockers."
-                    ),
-                    "dependency": dependency,
-                    "executionLaneHint": "engineering" if requires_artifact else "subagent",
-                    "familyHint": "writing" if requires_artifact else (str(writing_route.get("recommendedFamily") or "writing").strip() or "writing"),
-                    "preferredAgentId": preferred_agent,
-                    "routeQuery": "skill workflow writing" if mode == "skill_subagent" else "writing document handoff",
-                    **({"researchRefs": research_refs} if research_refs else {}),
-                    **(
-                        {
-                            "writeSet": [".agents/skills/<generated-skill>/**"],
-                            "validateSkillArtifact": True,
-                            "requiredSkillContracts": ["huashu-nuwa", "skill-creator"],
-                            "proofExpectations": [
-                                "Report generated skill root.",
-                                "Validate YAML frontmatter and SkillLoader loadability.",
-                                "Report references/research file coverage and source markers.",
-                            ],
-                            "engineeringTaskCapsule": {
-                                "writeSet": [".agents/skills/<generated-skill>/**"],
-                                "proofExpectations": ["skill_artifact_ready or recoverable_failed"],
-                                "riskFlags": ["skill_artifact_schema_required", "workspace_skill_root_required"],
-                            },
-                        }
-                        if requires_artifact
-                        else {}
-                    ),
-                }
-            )
-            task_briefs = ([research_brief] if research_brief else []) + [brief]
-            task_graph = []
-            if research_brief:
-                task_graph.append({"taskBriefId": "task-1", "title": research_brief["goal"], "dependency": [], "parallelGroup": "research"})
-            task_graph.append({"taskBriefId": task_id, "title": brief["goal"], "dependency": dependency, "parallelGroup": "writing"})
-            capability_plan = []
-            if research_brief:
-                capability_plan.append(
-                    {
-                        "kind": "research",
-                        "source": "planner_fallback",
-                        "reason": "skill_driven_writing_requires_source_evidence",
-                        "taskBriefId": "task-1",
-                        "requiredRuntimeAccess": ["research.core"],
-                        "state": "detected",
-                    }
-                )
-            capability_plan.append(
-                {
-                    "kind": "engineering" if requires_artifact else "delegation",
-                    "source": "planner_fallback",
-                    "reason": "skill_artifact_requires_engineering_validation" if requires_artifact else "writing_subagent_execution_required",
-                    "taskBriefId": task_id,
-                    "state": "detected",
-                }
-            )
-            return {
-                "planId": plan_id,
-                "executionStrategy": "mixed" if requires_research else "delegate",
-                "planSummary": (
-                    "Research first, then delegate skill-driven writing with a bounded WritingExecutionBrief."
-                    if requires_research
-                    else "Delegate specialized writing execution with a bounded WritingExecutionBrief."
-                ),
-                "capabilityPlan": capability_plan,
-                "taskGraph": task_graph,
-                "taskBriefs": task_briefs,
-                "handoffPlan": (
-                    [
-                        {
-                            "fromTaskBriefId": "task-1",
-                            "toTaskBriefId": task_id,
-                            "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix", "claimTable"],
-                            "reason": "Skill-driven writing must consume compact research evidence before drafting artifacts.",
-                        }
-                    ]
-                    if requires_research
-                    else []
-                ),
-                "globalAcceptanceContract": (
-                    "Use the generated skill artifact only if Engineering returns skill_artifact_ready; otherwise surface recoverable blockers."
-                    if requires_artifact
-                    else "Use the delegated writing result only if it follows the brief, skill boundary, and no-fabrication contract."
-                ),
-                "riskFlags": ["writing_subagent_required"]
-                + (["research_evidence_required_before_skill_output"] if requires_research else [])
-                + (["skill_artifact_schema_required"] if requires_artifact else []),
-                "qualityFlags": common_quality
-                + (["skill_first_action_required"] if mode == "skill_subagent" else [])
-                + (["research_before_skill_writing"] if requires_research else [])
-                + (["skill_creator_contract_required", "skill_artifact_validation_required"] if requires_artifact else []),
-                "repairCount": 0,
-                "autoDispatchDecision": {},
-                "dispatchEligibilityReason": "",
-            }
-
-        brief = normalize_task_brief(
-            {
-                "taskBriefId": "task-1",
-                "goal": latest_user_content or "Write the requested response directly.",
-                "context": {
-                    **fallback_context,
-                    "writingRoute": writing_route,
-                    **(
-                        {
-                            "writingExecutionBrief": self._writing_execution_brief(
-                                user_request=latest_user_content,
-                                route=writing_route,
-                                research_refs=[],
-                            )
-                        }
-                        if writing_route.get("requiresSkillExecution")
-                        else {}
-                    ),
-                },
-                "writeSet": [],
-                "behaviorScope": ["direct_writing"] + (["skill_guided_answer"] if writing_route.get("requiresSkillExecution") else []),
-                "requiredCapabilities": (["fetch_skill_instructions", "writing"] if writing_route.get("requiresSkillExecution") else ["writing"]),
-                "acceptanceContract": (
-                    "Fetch and follow the selected skill instructions first, then answer directly in chat; do not invent sources, files, tests, or memories."
-                    if writing_route.get("requiresSkillExecution")
-                    else "Produce the requested text directly; do not invent sources, files, tests, or memories."
-                ),
-                "executionLaneHint": "auto",
-            }
-        )
-        return {
-            "planId": plan_id,
-            "executionStrategy": "direct",
-            "planSummary": "Simple writing can remain with the supervisor.",
-            "capabilityPlan": [],
-            "taskGraph": [{"taskBriefId": "task-1", "title": brief["goal"], "dependency": [], "parallelGroup": ""}],
-            "taskBriefs": [brief],
-            "handoffPlan": [],
-            "globalAcceptanceContract": "Deliver bounded prose directly and mark assumptions instead of fabricating facts.",
-            "riskFlags": [],
-            "qualityFlags": common_quality + ["simple_writing_direct"],
-            "repairCount": 0,
-            "autoDispatchDecision": {},
-            "dispatchEligibilityReason": "",
-        }
-
-    def _planner_request_requires_runtime_episode_fallback(self, chat_run: ChatRunContext) -> bool:
-        latest_user_content = str(chat_run.prepared.latest_user_content or "")
-        task_shape = (
-            chat_run.prepared.task_shape_hint
-            if isinstance(getattr(chat_run.prepared, "task_shape_hint", None), dict)
-            else {}
-        )
-        primary_shape = str(task_shape.get("primaryTaskShape") or "").strip().lower()
-        live_audit_context = (
-            chat_run.prepared.live_audit_context
-            if isinstance(getattr(chat_run.prepared, "live_audit_context", None), dict)
-            else {}
-        )
-        return bool(
-            (
-                bool(getattr(chat_run.prepared, "spec_mode", False))
-                and self._runtime_execution_allowed_by_spec(getattr(chat_run.prepared, "spec_brief", None))
-            )
-            or
-            self._detect_explicit_runtime_episode_request(latest_user_content)
-            or (
-                primary_shape == "project_coding"
-                and (
-                    bool(getattr(chat_run.prepared, "engineering_required", False))
-                    or bool(getattr(chat_run.prepared, "explicit_engineering_requested", False))
-                    or bool(getattr(chat_run.prepared, "task_planning_mode", False))
-                )
-            )
-            or (
-                live_audit_context.get("runtimeSubagentClosureLiveAudit")
-                and any(
-                    marker in latest_user_content.lower()
-                    for marker in (
-                        "engineering",
-                        "delegation",
-                        "subagent",
-                        "runtime_broker",
-                        "runtime episode",
-                        "工程",
-                        "委派",
-                        "子代理",
-                        "运行时",
-                    )
-                )
-            )
-        )
-
-    @staticmethod
-    def _read_spec_document_excerpt_for_runtime(*, workspace_path: str, relative_path: str, max_chars: int = 2200) -> str:
-        workspace = Path(str(workspace_path or "")).expanduser().resolve()
-        rel = str(relative_path or "").strip()
-        if not rel:
-            return ""
-        try:
-            candidate = Path(rel)
-            path = candidate if candidate.is_absolute() else workspace / candidate
-            path = path.resolve()
-            try:
-                path.relative_to(workspace)
-            except ValueError:
-                return ""
-            text = path.read_text(encoding="utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-        except Exception:
-            return ""
-        lines = text.splitlines()
-        interesting_terms = (
-            "目标",
-            "输出",
-            "交付",
-            "验收",
-            "index.html",
-            "README",
-            "Live marker",
-            "Spec Mode Live Counter",
-            "按钮",
-            "计数",
-            "counter",
-            "TASK-",
-            "TSK-",
-            "REQ-",
-            "FR-",
-            "NFR-",
-            "DES-",
-        )
-        selected: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if any(term.lower() in stripped.lower() for term in interesting_terms):
-                selected.append(stripped)
-            if len("\n".join(selected)) >= max_chars:
-                break
-        if selected:
-            excerpt = "\n".join(selected)
-        else:
-            excerpt = text[:max_chars]
-        if len(excerpt) > max_chars:
-            excerpt = excerpt[: max_chars - 1].rstrip() + "…"
-        return excerpt
-
-    def _approved_spec_execution_digest(self, *, spec_brief: dict[str, Any], workspace_path: str, user_request: str) -> dict[str, Any]:
-        documents = dict(spec_brief.get("documents") or {})
-        traceability = dict(spec_brief.get("traceability") or {}) if isinstance(spec_brief.get("traceability"), dict) else {}
-        excerpts: dict[str, str] = {}
-        combined_parts = [str(user_request or "")]
-        for stage in ("requirements", "design", "tasks"):
-            value = documents.get(stage)
-            if not isinstance(value, dict):
-                continue
-            excerpt = self._read_spec_document_excerpt_for_runtime(
-                workspace_path=workspace_path,
-                relative_path=str(value.get("relativePath") or ""),
-                max_chars=2200 if stage == "requirements" else 1800,
-            )
-            if excerpt:
-                excerpts[stage] = excerpt
-                combined_parts.append(excerpt)
-        combined = "\n".join(combined_parts)
-        target_paths = []
-        for match in re.finditer(r"(?:^|\s)(\.v8[/\\][^\s`'\"，。；;]+)", combined):
-            item = match.group(1).strip().rstrip(".,，。；;")
-            if item and item not in target_paths:
-                target_paths.append(item)
-        required_files = []
-        for name in ("index.html", "README.md"):
-            if name.lower() in combined.lower():
-                required_files.append(name)
-        behavior_hints: list[str] = []
-        if re.search(r"Spec Mode Live Counter|计数|counter", combined, re.IGNORECASE):
-            behavior_hints.append("Build the requested counter app, not an audit/status dashboard.")
-        if re.search(r"按钮|button|click|点击", combined, re.IGNORECASE):
-            behavior_hints.append("Include an interactive button/click handler that changes the visible count.")
-        if re.search(r"Live marker|SPEC_LIVE_", combined, re.IGNORECASE):
-            behavior_hints.append("Preserve the exact live marker in the delivered files.")
-        framework_digest = str(traceability.get("frameworkDigest") or "").strip()
-        task_slices = [
-            item
-            for item in list(traceability.get("tasks") or [])
-            if isinstance(item, dict)
-        ][:10]
-        if framework_digest:
-            combined_parts.append(framework_digest)
-        agent_summary_lines = [
-            "Approved Spec execution bundle:",
-            f"- Framework / architecture everyone must follow: {framework_digest[:900] if framework_digest else 'read design detailRef before choosing implementation stack.'}",
-        ]
-        if task_slices:
-            agent_summary_lines.append("- Task slices with requirement/design context:")
-            for item in task_slices[:6]:
-                reqs = ", ".join(str(ref) for ref in list(item.get("requirementRefs") or [])[:8]) or "(none)"
-                designs = ", ".join(str(ref) for ref in list(item.get("designRefs") or [])[:6]) or "(framework/design detailRef)"
-                title = str(item.get("title") or item.get("taskId") or "").strip()
-                agent_summary_lines.append(f"  - {item.get('taskId')}: {title} | requirements: {reqs} | design: {designs}")
-                excerpt = str(item.get("taskExcerpt") or "").strip()
-                if excerpt:
-                    agent_summary_lines.append(f"    task: {excerpt[:500]}")
-                req_snippets = [
-                    f"{snippet.get('id')}: {snippet.get('summary')}"
-                    for snippet in list(item.get("requirementSnippets") or [])[:3]
-                    if isinstance(snippet, dict) and snippet.get("summary")
-                ]
-                if req_snippets:
-                    agent_summary_lines.append("    requirements: " + " / ".join(req_snippets)[:700])
-                design_snippets = [
-                    f"{snippet.get('title') or snippet.get('id')}: {snippet.get('summary')}"
-                    for snippet in list(item.get("designSnippets") or [])[:2]
-                    if isinstance(snippet, dict) and snippet.get("summary")
-                ]
-                if design_snippets:
-                    agent_summary_lines.append("    design: " + " / ".join(design_snippets)[:700])
-        missing_refs = list(traceability.get("missingRefs") or []) if isinstance(traceability.get("missingRefs"), list) else []
-        return {
-            "summary": "Approved Spec concrete delivery digest generated from requirements/design/tasks.",
-            "targetPaths": target_paths[:5],
-            "requiredFiles": required_files,
-            "behaviorHints": behavior_hints,
-            "stageExcerpts": excerpts,
-            "frameworkDigest": framework_digest,
-            "taskSlices": task_slices,
-            "missingTraceRefs": missing_refs[:12],
-            "agentSummary": "\n".join(agent_summary_lines)[:4200],
-            "distributionChecks": traceability.get("distributionChecks") if isinstance(traceability.get("distributionChecks"), dict) else {},
-        }
-
-    def _fallback_spec_execution_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
-        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
-        spec_brief = dict(getattr(chat_run.prepared, "spec_brief", None) or {})
-        spec_id = str(spec_brief.get("specId") or getattr(chat_run.prepared, "spec_id", "") or "").strip()
-        documents = {
-            stage: {
-                "detailRef": value.get("detailRef"),
-                "ids": list(value.get("ids") or [])[:20],
-                "relativePath": value.get("relativePath"),
-                "version": value.get("version"),
-                "status": value.get("status"),
-            }
-            for stage, value in dict(spec_brief.get("documents") or {}).items()
-            if isinstance(value, dict)
-        }
-        linked_sections = list(spec_brief.get("linkedSections") or [])[:12]
-        task_ids = list((documents.get("tasks") or {}).get("ids") or [])
-        requirement_ids = list((documents.get("requirements") or {}).get("ids") or [])
-        write_set = ["<approved-spec-write-set>"]
-        workspace_path = str(getattr(chat_run.scope_result.binding, "workspace_path", "") or "").strip()
-        if workspace_path:
-            write_set = [workspace_path]
-        approved_spec_digest = self._approved_spec_execution_digest(
-            spec_brief=spec_brief,
-            workspace_path=workspace_path,
-            user_request=latest_user_content,
-        )
-        spec_context = {
-            "source": "planner_spec_execution_fallback",
-            "reason": reason,
-            "specId": spec_id,
-            "specBrief": {
-                "specId": spec_id,
-                "featureName": spec_brief.get("featureName"),
-                "workspacePath": spec_brief.get("workspacePath"),
-                "specDir": spec_brief.get("specDir"),
-                "approvedStages": list(spec_brief.get("approvedStages") or []),
-                "pipelineControl": dict(spec_brief.get("pipelineControl") or {}),
-                "linkedSections": linked_sections,
-                "documents": documents,
-                "traceability": dict(spec_brief.get("traceability") or {}),
-            },
-            "approvedSpecDigest": approved_spec_digest,
-            "specExecutionSummary": approved_spec_digest.get("agentSummary"),
-            "frameworkDigest": approved_spec_digest.get("frameworkDigest"),
-            "taskDetailRefs": [
-                str(item.get("detailRef") or "")
-                for item in list(approved_spec_digest.get("taskSlices") or [])
-                if isinstance(item, dict) and item.get("detailRef")
-            ][:10],
-            "userRequest": latest_user_content,
-        }
-        brief = normalize_task_brief(
-            {
-                "taskBriefId": "task-1",
-                "goal": (
-                    f"Execute the approved Spec {spec_id}: implement the concrete deliverable described in "
-                    "approvedSpecDigest and linked requirements/design/tasks, write only the approved target artifacts, "
-                    "and return proof."
-                ),
-                "context": spec_context,
-                "writeSet": write_set,
-                "behaviorScope": ["approved_spec_execution", "implementation", "file_mutation", "verification"],
-                "requiredCapabilities": ["spec_section_read", "workspace_mutation", "verification", "proof_handoff"],
-                "acceptanceContract": {
-                    "must": [
-                        "Read or consume the approved SpecBrief/detail refs before implementing.",
-                        "Use approvedSpecDigest as the concrete delivery target; do not create an audit/report/provenance dashboard unless the approved Spec explicitly requests one.",
-                        "Follow approvedSpecDigest.frameworkDigest before choosing language/framework; do not let different workers pick conflicting stacks.",
-                        "For every assigned task, consume the task slice plus linked requirement/design snippets or call spec_broker(read_section) using the task detailRef.",
-                        "If approvedSpecDigest describes a counter, the delivered index.html must show a counter title and a click button that increments the visible count.",
-                        "Complete all approved tasks, not just the first blocked command.",
-                        "Return engineering_patch_bundle or recoverable_failed typed handoff with touched files and proof.",
-                        "Reference specId and relevant requirement/task ids in the handoff.",
-                    ],
-                    "should": [
-                        "Preserve the approved scope and do not write outside the approved workspace/target artifacts.",
-                        "Run the narrowest available verification and report any residual risk.",
-                    ],
-                    "nice": ["Use stable task ids in proof summaries."],
-                },
-                "dependency": [],
-                "parallelGroup": "engineering",
-                "executionLaneHint": "auto",
-                "familyHint": "engineering",
-                "runtimeAccess": [],
-                "specRefs": {
-                    "specId": spec_id,
-                    "requirementIds": requirement_ids,
-                    "taskIds": task_ids,
-                    "detailRefs": [str(item.get("detailRef") or "") for item in linked_sections if isinstance(item, dict) and item.get("detailRef")],
-                },
-                "engineeringTaskCapsule": {
-                    "deliverableKind": "artifact",
-                    "writeRequired": True,
-                    "writeSet": write_set,
-                    "specId": spec_id,
-                    "requirementIds": requirement_ids,
-                    "taskIds": task_ids,
-                    "frameworkDigest": approved_spec_digest.get("frameworkDigest"),
-                    "proofExpectations": [
-                        "Report exact touched files.",
-                        "Reference approved spec/task ids.",
-                        "Attach verification result or recoverable blocker.",
-                    ],
-                    "riskFlags": ["spec_execution_requires_full_task_coverage"],
-                },
-            }
-        )
-        return {
-            "planId": f"plan_{uuid.uuid4().hex[:10]}",
-            "executionStrategy": "mixed",
-            "planSummary": f"Execute approved Spec {spec_id} through Engineering Runtime.",
-            "capabilityPlan": [
-                {
-                    "kind": "engineering",
-                    "source": "planner_spec_execution_fallback",
-                    "reason": "approved_spec_runtime_execution_allowed",
-                    "taskBriefId": "task-1",
-                    "requiredRuntimeAccess": [],
-                    "state": "detected",
-                    "specId": spec_id,
-                    "writeRequired": True,
-                    "deliverableKind": "artifact",
-                }
-            ],
-            "taskGraph": [
-                {
-                    "taskBriefId": "task-1",
-                    "title": brief["goal"],
-                    "dependency": [],
-                    "parallelGroup": "engineering",
-                }
-            ],
-            "taskBriefs": [brief],
-            "handoffPlan": [],
-            "globalAcceptanceContract": "Execute only the approved Spec and return a typed Engineering handoff with proof or a recoverable blocker.",
-            "riskFlags": ["planner_fallback_used", "approved_spec_execution", "runtime_first_enforced"],
-            "qualityFlags": ["planner_fallback_used", "spec_execution_fallback", "engineering_required_by_approved_spec"],
-            "repairCount": 0,
-            "autoDispatchDecision": {},
-            "dispatchEligibilityReason": "",
-        }
-
-    @staticmethod
-    def _planner_request_is_plan_only(request_text: str) -> bool:
-        lower_request = str(request_text or "").lower()
-        no_write_markers = (
-            "不需要真实写文件",
-            "不需要写真实文件",
-            "不要真实写",
-            "不要真实写文件",
-            "不要写真实",
-            "不要写真实文件",
-            "不要写真实项目文件",
-            "不要写项目文件",
-            "不用写真实",
-            "不写文件",
-            "不保存",
-            "不创建文件",
-            "不落盘",
-            "不要落盘",
-            "只规划",
-            "只要计划",
-            "只需要计划",
-            "只输出计划",
-            "说明为什么只需要计划",
-            "no file write",
-            "no real file write",
-            "do not write files",
-            "do not create files",
-            "plan only",
-            "plan_only",
-            "writeRequired=false".lower(),
-        )
-        return any(marker in lower_request for marker in no_write_markers)
-
-    def _fallback_runtime_episode_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
-        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
-        lower_request = latest_user_content.lower()
-        diagnostics = dict(chat_run.prepared.planner_intent_diagnostics or {})
-        task_shape_hint = dict(chat_run.prepared.task_shape_hint or {})
-        fallback_context = {
-            "source": "planner_runtime_episode_fallback",
-            "reason": reason,
-            "plannerMode": chat_run.prepared.planner_mode,
-            "intentDiagnostics": diagnostics,
-            "taskShapeHint": task_shape_hint,
-        }
-        wants_research = any(marker in lower_request for marker in ("research", "evidence", "source", "调研", "证据", "来源"))
-        wants_delegation = any(marker in lower_request for marker in ("delegation", "subagent", "child agent", "委派", "子代理", "孙 agent"))
-        no_write = self._planner_request_is_plan_only(lower_request)
-        deliverable_kind = "plan_only" if no_write or "plan_only" in lower_request else "proof"
-
-        task_briefs: list[dict[str, Any]] = []
-        capability_plan: list[dict[str, Any]] = []
-        task_graph: list[dict[str, Any]] = []
-        handoff_plan: list[dict[str, Any]] = []
-
-        if wants_research:
-            research_brief = normalize_task_brief(
-                {
-                    "taskBriefId": "task-1",
-                    "goal": "Collect source-backed evidence required by the runtime validation request.",
-                    "context": fallback_context,
-                    "writeSet": [],
-                    "behaviorScope": ["research", "read_only", "evidence_collection"],
-                    "requiredCapabilities": ["web_research", "source_quality", "citations"],
-                    "acceptanceContract": {
-                        "must": [
-                            "Return evidence_bundle or research_degraded typed handoff.",
-                            "Keep source URLs or raw refs attached to every major claim.",
-                        ],
-                        "should": ["Summarize conflicts and freshness limits."],
-                        "nice": ["Provide reusable compact evidence for downstream runtime lanes."],
-                    },
-                    "dependency": [],
-                    "parallelGroup": "research",
-                    "executionLaneHint": "auto",
-                    "familyHint": "research",
-                    "runtimeAccess": ["research.core"],
-                }
-            )
-            task_briefs.append(research_brief)
-            capability_plan.append(
-                {
-                    "kind": "research",
-                    "source": "planner_runtime_episode_fallback",
-                    "reason": "explicit_runtime_closure_requires_research_evidence",
-                    "taskBriefId": research_brief["taskBriefId"],
-                    "requiredRuntimeAccess": ["research.core"],
-                    "state": "detected",
-                }
-            )
-
-        engineering_task_id = f"task-{len(task_briefs) + 1}"
-        engineering_dependencies = [task_briefs[0]["taskBriefId"]] if wants_research and task_briefs else []
-        engineering_brief = normalize_task_brief(
-            {
-                "taskBriefId": engineering_task_id,
-                "goal": latest_user_content or "Create a runtime engineering work plan and typed handoff.",
-                "context": {
-                    **fallback_context,
-                    "deliverableKind": deliverable_kind,
-                    "writeRequired": not no_write,
-                    "runtimeClosureExpectation": "Create or wait for canonical runtime_episodes and return typed handoff, not supervisor-only prose.",
-                },
-                "deliverableKind": deliverable_kind,
-                "writeRequired": not no_write,
-                "writeSet": [] if no_write else ["<project-workspace>/"],
-                "behaviorScope": ["engineering", "runtime_plan", "verification", deliverable_kind],
-                "requiredCapabilities": ["runtime_episode_planning", "proof_contract", "typed_handoff"],
-                "acceptanceContract": {
-                    "must": [
-                        "Return work_plan_ready, runtime_plan_ready, patch_bundle, proof, or recoverable_failed typed handoff.",
-                        "For plan_only or writeRequired=false, do not fail merely because no patch worker ran.",
-                    ],
-                    "should": ["Bind session_id, run_id, rootRunId, and workspacePath to the episode inputs."],
-                    "nice": ["Attach proof expectations and downstream delegation constraints."],
-                },
-                "dependency": engineering_dependencies,
-                "parallelGroup": "",
-                "executionLaneHint": "auto",
-                "familyHint": "engineering",
-                "runtimeAccess": [],
-                "engineeringTaskCapsule": {
-                    "deliverableKind": deliverable_kind,
-                    "writeRequired": not no_write,
-                    "writeSet": [] if no_write else ["<project-workspace>/"],
-                    "proofExpectations": [
-                        "Produce a plan/proof handoff that can be reconciled by Supervisor.",
-                        "Do not claim file mutation when writeRequired is false.",
-                    ],
-                    "riskFlags": ["planner_runtime_episode_fallback"],
-                },
-            },
-            index=len(task_briefs),
-        )
-        task_briefs.append(engineering_brief)
-        capability_plan.append(
-            {
-                "kind": "engineering",
-                "source": "planner_runtime_episode_fallback",
-                "reason": "explicit_runtime_closure_requires_engineering_episode",
-                "taskBriefId": engineering_task_id,
-                "requiredRuntimeAccess": [],
-                "state": "detected",
-                "deliverableKind": deliverable_kind,
-                "writeRequired": not no_write,
-            }
-        )
-        if wants_research:
-            handoff_plan.append(
-                {
-                    "fromTaskBriefId": "task-1",
-                    "toTaskBriefId": engineering_task_id,
-                    "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"],
-                    "reason": "Engineering lane should consume source-backed evidence when research is requested.",
-                }
-            )
-
-        if wants_delegation:
-            delegation_task_id = f"task-{len(task_briefs) + 1}"
-            delegation_brief = normalize_task_brief(
-                {
-                    "taskBriefId": delegation_task_id,
-                    "goal": "Run a confirmed subagent risk review of the runtime handoff, or return delegation_degraded.",
-                    "context": {
-                        **fallback_context,
-                        "parentEngineeringTaskBriefId": engineering_task_id,
-                        "degradationPolicy": "If no worker can take the task, return delegation_degraded instead of fake Agent Swarm nodes.",
-                    },
-                    "writeSet": [],
-                    "behaviorScope": ["delegated_execution", "risk_review", "child_delegation"],
-                    "requiredCapabilities": ["review", "verification", "subagent_collaboration"],
-                    "acceptanceContract": {
-                        "must": [
-                            "Create a real subagent task or return delegation_degraded typed handoff.",
-                            "Do not show task_confirmed without tasks or subagent.task.* result.",
-                        ],
-                        "should": ["Include residual risks and recovery hints."],
-                        "nice": ["Allow one level of child delegation when useful."],
-                    },
-                    "dependency": [engineering_task_id],
-                    "parallelGroup": "delegation",
-                    "executionLaneHint": "subagent",
-                    "familyHint": "engineering",
-                    "runtimeAccess": ["delegation.recursive"],
-                    "targetCount": 1,
-                    "tasks": [
-                        {
-                            "taskId": "subtask-runtime-risk-review",
-                            "title": "Runtime handoff risk review",
-                            "brief": "Review whether the Engineering handoff is usable after context compaction and identify residual risks.",
-                            "acceptanceContract": "Return status, acceptance check, recovery hints, and residual risks.",
-                            "requiredCapabilities": ["review", "verification"],
-                        }
-                    ],
-                    "allowChildDelegation": False,
-                    "childDelegationBudget": {},
-                },
-                index=len(task_briefs),
-            )
-            task_briefs.append(delegation_brief)
-            capability_plan.append(
-                {
-                    "kind": "delegation",
-                    "source": "planner_runtime_episode_fallback",
-                    "reason": "explicit_runtime_closure_requires_delegation_episode",
-                    "taskBriefId": delegation_task_id,
-                    "requiredRuntimeAccess": ["delegation.recursive"],
-                    "state": "detected",
-                }
-            )
-            handoff_plan.append(
-                {
-                    "fromTaskBriefId": engineering_task_id,
-                    "toTaskBriefId": delegation_task_id,
-                    "refs": ["workPlanId", "proofRefs", "engineeringHandoff"],
-                    "reason": "Subagent review should consume the engineering handoff.",
-                }
-            )
-
-        for brief in task_briefs:
-            task_graph.append(
-                {
-                    "taskBriefId": brief["taskBriefId"],
-                    "title": brief["goal"],
-                    "dependency": list(brief.get("dependency") or []),
-                    "parallelGroup": str(brief.get("parallelGroup") or "").strip(),
-                }
-            )
-
-        quality_flags = ["planner_fallback_used", "runtime_episode_fallback_used"]
-        if no_write:
-            quality_flags.append("plan_only_engineering")
-        if wants_delegation:
-            quality_flags.append("delegation_task_contract_seeded")
-        return {
-            "planId": f"plan_{uuid.uuid4().hex[:10]}",
-            "executionStrategy": "mixed",
-            "planSummary": latest_user_content or "Route explicit runtime episode request through canonical lanes.",
-            "capabilityPlan": capability_plan,
-            "taskGraph": task_graph,
-            "taskBriefs": task_briefs,
-            "handoffPlan": handoff_plan,
-            "globalAcceptanceContract": "Use canonical runtime episodes and typed handoffs; degraded lanes may continue synthesis but must be explicit.",
-            "riskFlags": ["planner_runtime_episode_fallback", "runtime_first_enforced"],
-            "qualityFlags": quality_flags,
-            "repairCount": 0,
-            "autoDispatchDecision": {},
-            "dispatchEligibilityReason": "",
-        }
-
-    def _fallback_planner_plan(self, *, chat_run: ChatRunContext, reason: str) -> dict[str, Any]:
-        latest_user_content = str(chat_run.prepared.latest_user_content or "").strip()
-        diagnostics = dict(chat_run.prepared.planner_intent_diagnostics or {})
-        signals = [str(item).strip() for item in list(diagnostics.get("signals") or []) if str(item).strip()]
-        task_shape_hint = dict(chat_run.prepared.task_shape_hint or {})
-        primary_shape = str(task_shape_hint.get("primaryTaskShape") or "").strip()
-        secondary_shapes = [
-            str(item or "").strip()
-            for item in list(task_shape_hint.get("secondaryTaskShapes") or [])
-            if str(item or "").strip()
-        ]
-        optional_grants = [
-            str(item or "").strip()
-            for item in list(task_shape_hint.get("optionalRuntimeGrants") or [])
-            if str(item or "").strip()
-        ]
-        should_delegate = any(signal in {"delegation_or_parallel", "large_implementation"} for signal in signals)
-        fallback_context = {
-            "source": "planner_fallback",
-            "reason": reason,
-            "plannerMode": chat_run.prepared.planner_mode,
-            "intentSignals": signals,
-            "taskShapeHint": task_shape_hint,
-        }
-        suggested_families = [
-            str(item or "").strip()
-            for item in list(task_shape_hint.get("suggestedFamilies") or [])
-            if str(item or "").strip()
-        ]
-        if bool(getattr(chat_run.prepared, "spec_mode", False)) and self._runtime_execution_allowed_by_spec(getattr(chat_run.prepared, "spec_brief", None)):
-            return self._fallback_spec_execution_planner_plan(chat_run=chat_run, reason=reason)
-        if self._planner_request_requires_runtime_episode_fallback(chat_run):
-            return self._fallback_runtime_episode_planner_plan(chat_run=chat_run, reason=reason)
-        wants_delegation = bool(
-            "delegation" in set(secondary_shapes)
-            or "delegation.recursive" in set(optional_grants)
-            or any(item in {"delegation", "subagent", "subagent_swarm"} for item in suggested_families)
-            or any(signal in {"delegation_or_parallel", "large_implementation"} for signal in signals)
-        )
-        writing_route = task_shape_hint.get("writingRoute") if isinstance(task_shape_hint.get("writingRoute"), dict) else {}
-        if writing_route.get("present"):
-            return self._fallback_writing_planner_plan(
-                chat_run=chat_run,
-                reason=reason,
-                writing_route=writing_route,
-                fallback_context=fallback_context,
-            )
-        if primary_shape == "project_coding" and ("research" in secondary_shapes or "research.core" in optional_grants):
-            research_brief = normalize_task_brief(
-                {
-                    "taskBriefId": "task-1",
-                    "goal": "Research the external facts needed before implementation.",
-                    "context": fallback_context,
-                    "writeSet": [],
-                    "behaviorScope": ["research", "read_only", "evidence_collection"],
-                    "requiredCapabilities": ["web_research", "source_quality", "citations"],
-                    "acceptanceContract": "Produce a compact evidence bundle with source quality, conflicts, citations, raw refs, and confidence notes before implementation decisions.",
-                    "dependency": [],
-                    "parallelGroup": "research",
-                    "executionLaneHint": "auto",
-                    "familyHint": "research",
-                    "runtimeAccess": ["research.core"],
-                }
-            )
-            implementation_brief = normalize_task_brief(
-                {
-                    "taskBriefId": "task-2",
-                    "goal": latest_user_content or "Implement the requested project.",
-                    "context": {
-                        **fallback_context,
-                        "implementationPrerequisite": "Use task-1 evidence refs; do not treat weak ad-hoc search results as implementation truth.",
-                    },
-                    "writeSet": ["<project-workspace>/"],
-                    "behaviorScope": ["implementation", "project_scaffold", "verification"],
-                    "requiredCapabilities": ["project_scaffold", "frontend_implementation", "dependency_management", "verification"],
-                    "acceptanceContract": "Create or modify the project files, use session-observed commands for scaffolding/dependency work, and report touched files, verification commands, and residual risks.",
-                    "dependency": ["task-1"],
-                    "parallelGroup": "",
-                    "executionLaneHint": "auto",
-                    "familyHint": "engineering",
-                    "engineeringTaskCapsule": {
-                        "writeSet": ["<project-workspace>/"],
-                        "proofExpectations": [
-                            "Record scaffold/dependency commands as observable sessions.",
-                            "Run the narrowest available verification and report failures instead of claiming completion.",
-                        ],
-                        "riskFlags": ["planner_fallback_write_set_tentative"],
-                    },
-                },
-                index=1,
-            )
-            briefs = [research_brief, implementation_brief]
-            if wants_delegation:
-                delegation_brief = normalize_task_brief(
-                    {
-                        "taskBriefId": "task-3",
-                        "goal": "Delegate an independent review or child-agent verification of the runtime handoff.",
-                        "context": {
-                            **fallback_context,
-                            "delegationPrerequisite": "Use task-1 evidence and task-2 engineering proof; do not claim subagent work without confirmed tasks.",
-                        },
-                        "writeSet": [],
-                        "behaviorScope": ["delegated_execution", "verification", "child_delegation"],
-                        "requiredCapabilities": ["review", "verification", "subagent_collaboration"],
-                        "acceptanceContract": "Return confirmed subagent task results or a recoverable missing-target diagnostic; do not report fake delegation.",
-                        "dependency": ["task-2"],
-                        "parallelGroup": "delegation",
-                        "executionLaneHint": "subagent",
-                        "familyHint": "engineering",
-                        "runtimeAccess": ["delegation.recursive"],
-                        "targetCount": 1,
-                        "allowChildDelegation": True,
-                        "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
-                    },
-                    index=2,
-                )
-                briefs.append(delegation_brief)
-            capability_plan = [
-                {
-                    "kind": "research",
-                    "source": "planner_fallback",
-                    "reason": "research_required_before_implementation",
-                    "taskBriefId": "task-1",
-                    "requiredRuntimeAccess": ["research.core"],
-                    "state": "detected",
-                },
-                {
-                    "kind": "engineering",
-                    "source": "planner_fallback",
-                    "reason": "project_creation_or_implementation_required",
-                    "taskBriefId": "task-2",
-                    "requiredRuntimeAccess": [],
-                    "state": "detected",
-                },
-            ]
-            if wants_delegation:
-                capability_plan.append(
-                    {
-                        "kind": "delegation",
-                        "source": "planner_fallback",
-                        "reason": "confirmed_subagent_or_child_delegation_required",
-                        "taskBriefId": "task-3",
-                        "requiredRuntimeAccess": ["delegation.recursive"],
-                        "state": "detected",
-                    }
-                )
-            handoff_plan = [
-                {
-                    "fromTaskBriefId": "task-1",
-                    "toTaskBriefId": "task-2",
-                    "refs": ["researchRefs", "evidenceBundleId", "sourceMatrix"],
-                    "reason": "Implementation must consume source-backed research evidence.",
-                }
-            ]
-            if wants_delegation:
-                handoff_plan.append(
-                    {
-                        "fromTaskBriefId": "task-2",
-                        "toTaskBriefId": "task-3",
-                        "refs": ["patchBundleId", "proofRefs", "engineeringHandoff"],
-                        "reason": "Subagent review must consume the engineering handoff instead of inventing work.",
-                    }
-                )
-            return {
-                "planId": f"plan_{uuid.uuid4().hex[:10]}",
-                "executionStrategy": "mixed",
-                "planSummary": latest_user_content or "Research first, then implement with engineering proof discipline.",
-                "capabilityPlan": capability_plan,
-                "taskGraph": [
-                    {
-                        "taskBriefId": brief["taskBriefId"],
-                        "title": brief["goal"],
-                        "dependency": list(brief.get("dependency") or []),
-                        "parallelGroup": str(brief.get("parallelGroup") or "").strip(),
-                    }
-                    for brief in briefs
-                ],
-                "taskBriefs": briefs,
-                "handoffPlan": handoff_plan,
-                "globalAcceptanceContract": "Complete the user request through source-backed research, project implementation, and observable verification, or report the exact recoverable blocker.",
-                "riskFlags": ["planner_fallback_used", "mixed_research_engineering_fallback", "tentative_project_write_set"],
-                "qualityFlags": ["planner_fallback_used", "source_quality_required"] + (["delegation_required_by_task_shape"] if wants_delegation else []),
-                "repairCount": 0,
-                "autoDispatchDecision": {},
-                "dispatchEligibilityReason": "",
-            }
-        brief = normalize_task_brief(
-            {
-                "taskBriefId": "task-1",
-                "goal": latest_user_content or "Handle the current user request.",
-                "context": fallback_context,
-                "writeSet": [],
-                "behaviorScope": ["delegated_execution", "implementation"] if should_delegate else ["direct_execution", "implementation"],
-                "requiredCapabilities": [],
-                "acceptanceContract": "Produce the requested result and report concrete outputs, touched files, and verification status.",
-                "dependency": [],
-                "parallelGroup": "main" if should_delegate else "",
-                "executionLaneHint": "auto" if should_delegate else "subagent",
-                "familyHint": suggested_families[0] if suggested_families else "",
-            }
-        )
-        briefs = [brief]
-        if should_delegate and any(signal in {"large_implementation", "verification_contract"} for signal in signals):
-            briefs.append(
-                normalize_task_brief(
-                    {
-                        "taskBriefId": "task-2",
-                        "goal": "Verify the delegated work against the requested acceptance criteria.",
-                        "context": fallback_context,
-                        "writeSet": [],
-                        "behaviorScope": ["verification", "review"],
-                        "requiredCapabilities": ["verification"],
-                        "acceptanceContract": "Check the result for regressions, missing acceptance criteria, and unresolved risks.",
-                        "dependency": ["task-1"],
-                        "parallelGroup": "",
-                        "executionLaneHint": "auto",
-                    },
-                    index=1,
-                )
-            )
-        execution_strategy = "delegate" if should_delegate else "direct"
-        return {
-            "planId": f"plan_{uuid.uuid4().hex[:10]}",
-            "executionStrategy": execution_strategy,
-            "planSummary": latest_user_content or "Plan the current request.",
-            "capabilityPlan": [
-                {
-                    "kind": "delegation",
-                    "source": "planner_fallback",
-                    "reason": "delegated_or_parallel_work_required",
-                    "taskBriefId": "task-1",
-                    "state": "detected",
-                }
-            ] if should_delegate else [],
-            "taskGraph": [
-                {
-                    "taskBriefId": brief["taskBriefId"],
-                    "title": brief["goal"],
-                    "dependency": list(brief.get("dependency") or []),
-                    "parallelGroup": str(brief.get("parallelGroup") or "").strip(),
-                }
-                for brief in briefs
-            ],
-            "taskBriefs": briefs,
-            "handoffPlan": [],
-            "globalAcceptanceContract": "Satisfy the user request and report concrete outputs, touched files, and verification status.",
-            "riskFlags": ["planner_fallback_used"] if reason else [],
-            "qualityFlags": ["planner_fallback_used"] if reason else [],
-            "repairCount": 0,
-            "autoDispatchDecision": {},
-            "dispatchEligibilityReason": "",
-        }
-
-    @staticmethod
-    def _has_parallel_write_conflict(task_briefs: list[dict[str, Any]]) -> bool:
-        owners: dict[str, str] = {}
-        for brief in task_briefs:
-            task_id = str(brief.get("taskBriefId") or "").strip()
-            dependencies = {str(item).strip() for item in list(brief.get("dependency") or []) if str(item).strip()}
-            for raw_path in list(brief.get("writeSet") or []):
-                path = str(raw_path or "").strip().lower()
-                if not path:
-                    continue
-                owner = owners.get(path)
-                if owner and owner not in dependencies:
-                    return True
-                owners[path] = task_id
-        return False
-
-    @staticmethod
-    def _is_read_only_review_task_brief(brief: Any) -> bool:
-        if not isinstance(brief, dict):
-            return False
-        review_signals = {
-            "review",
-            "reviewer",
-            "reviewing",
-            "verification",
-            "verify",
-            "verifier",
-            "audit",
-            "auditor",
-            "inspect",
-            "inspection",
-            "checker",
-            "checker",
-            "subagent_collaboration",
-            "child_delegation",
-            "复核",
-            "验证",
-            "审查",
-            "审计",
-            "检查",
-            "评审",
-            "校验",
-        }
-        text_chunks = [
-            str(brief.get("goal") or "").strip().lower(),
-            str(brief.get("acceptanceContract") or "").strip().lower(),
-            str(brief.get("fanoutReason") or "").strip().lower(),
-            str(brief.get("parallelGroup") or "").strip().lower(),
-            str(brief.get("familyHint") or "").strip().lower(),
-            str(brief.get("executionLaneHint") or "").strip().lower(),
-        ]
-        for key in ("behaviorScope", "requiredCapabilities", "verificationMatrix", "proofExpectations"):
-            values = brief.get(key) or []
-            if isinstance(values, str):
-                values = [values]
-            text_chunks.extend(str(item).strip().lower() for item in list(values) if str(item).strip())
-        text = " ".join(text_chunks)
-        return any(signal in text for signal in review_signals)
-
-    @staticmethod
-    def _planner_brief_search_text(brief: dict[str, Any]) -> str:
-        chunks = [
-            str(brief.get("goal") or ""),
-            str(brief.get("acceptanceContract") or ""),
-            str(brief.get("familyHint") or ""),
-            str(brief.get("executionLaneHint") or ""),
-            str(brief.get("parallelGroup") or ""),
-        ]
-        for key in ("behaviorScope", "requiredCapabilities", "runtimeAccess", "writeSet", "readSet"):
-            value = brief.get(key)
-            if isinstance(value, list):
-                chunks.extend(str(item or "") for item in value)
-            elif value:
-                chunks.append(str(value))
-        return " ".join(chunks).lower()
-
-    @staticmethod
-    def _planner_brief_kind(brief: dict[str, Any]) -> str:
-        text = ChatRuntime._planner_brief_search_text(brief)
-        family_hint = normalize_capability_kind(brief.get("familyHint"))
-        lane = str(brief.get("executionLaneHint") or "").strip().lower()
-        try:
-            target_count = int(brief.get("targetCount") or 1)
-        except Exception:
-            target_count = 1
-        if (
-            family_hint in {"delegation", "subagent_swarm"}
-            or lane == "subagent"
-            or bool(brief.get("workerBriefs"))
-            or target_count > 1
-            or bool(brief.get("allowChildDelegation"))
-            or "delegation.recursive" in text
-            or "child_delegation" in text
-            or "child delegation" in text
-            or "subagent" in text
-            or "子 agent" in text
-            or "子agent" in text
-            or "委派" in text
-            or "孙 agent" in text
-            or "孙agent" in text
-        ):
-            return "delegation"
-        if (
-            family_hint == "research"
-            or "research" in text
-            or "web_research" in text
-            or "evidence_collection" in text
-            or "citations" in text
-            or "source_quality" in text
-            or "调研" in text
-            or "证据" in text
-            or "来源" in text
-        ):
-            return "research"
-        if (
-            family_hint == "engineering"
-            or bool(brief.get("writeSet"))
-            or "project_scaffold" in text
-            or "software_engineering" in text
-            or "frontend_implementation" in text
-            or "implementation" in text
-            or "工程" in text
-            or "实现" in text
-            or "代码" in text
-        ):
-            return "engineering"
-        if family_hint in {"creative_media", "computer_use", "rpa"}:
-            return family_hint
-        return ""
-
-    @staticmethod
-    def _planner_chain_requirements(
-        *,
-        plan_summary: str,
-        quality_flags: list[str],
-        task_briefs: list[dict[str, Any]],
-    ) -> tuple[bool, bool, bool]:
-        text = " ".join(
-            [
-                plan_summary,
-                " ".join(quality_flags),
-                " ".join(ChatRuntime._planner_brief_search_text(brief) for brief in task_briefs),
-            ]
-        ).lower()
-        wants_research = (
-            "source_quality_required" in quality_flags
-            or "research" in text
-            or "web_research" in text
-            or "调研" in text
-            or "证据" in text
-            or "来源" in text
-        )
-        wants_engineering = (
-            any(brief.get("writeSet") for brief in task_briefs)
-            or "engineering" in text
-            or "project_coding" in text
-            or "project_scaffold" in text
-            or "implementation" in text
-            or "工程" in text
-            or "实现" in text
-            or "代码" in text
-        )
-        wants_delegation = (
-            "delegation_required_by_task_shape" in quality_flags
-            or "delegation.recursive" in text
-            or "child_delegation" in text
-            or "child delegation" in text
-            or "subagent" in text
-            or "子 agent" in text
-            or "子agent" in text
-            or "孙 agent" in text
-            or "孙agent" in text
-            or "委派" in text
-            or any(ChatRuntime._planner_brief_kind(brief) == "delegation" for brief in task_briefs)
-        )
-        return wants_research, wants_engineering, wants_delegation
-
-    @staticmethod
-    def _find_or_create_planner_task_for_kind(
-        *,
-        kind: str,
-        task_briefs: list[dict[str, Any]],
-        plan_summary: str,
-        fallback_context: dict[str, Any],
-        dependency: list[str],
-    ) -> tuple[str, bool]:
-        for brief in task_briefs:
-            if ChatRuntime._planner_brief_kind(brief) == kind:
-                return str(brief.get("taskBriefId") or "").strip(), False
-        task_id = f"task-{len(task_briefs) + 1}"
-        if kind == "research":
-            raw = {
-                "taskBriefId": task_id,
-                "goal": "Research source-backed facts before implementation.",
-                "context": fallback_context,
-                "writeSet": [],
-                "behaviorScope": ["research", "read_only", "evidence_collection"],
-                "requiredCapabilities": ["web_research", "source_quality", "citations"],
-                "acceptanceContract": "Return a compact evidence bundle with source URLs, conflicts, confidence, and raw refs.",
-                "dependency": dependency,
-                "parallelGroup": "research",
-                "executionLaneHint": "auto",
-                "familyHint": "research",
-                "runtimeAccess": ["research.core"],
-            }
-        elif kind == "engineering":
-            raw = {
-                "taskBriefId": task_id,
-                "goal": plan_summary or "Implement the requested project work through Engineering Runtime.",
-                "context": fallback_context,
-                "writeSet": ["<project-workspace>/"],
-                "behaviorScope": ["implementation", "project_scaffold", "verification"],
-                "requiredCapabilities": ["project_scaffold", "software_engineering", "verification"],
-                "acceptanceContract": "Return a work plan, patch/proof bundle, or recoverable no-target diagnostic.",
-                "dependency": dependency,
-                "parallelGroup": "",
-                "executionLaneHint": "auto",
-                "familyHint": "engineering",
-                "engineeringTaskCapsule": {
-                    "writeSet": ["<project-workspace>/"],
-                    "proofExpectations": ["Report touched files and the narrowest verification command/result."],
-                    "riskFlags": ["planner_repair_write_set_tentative"],
-                },
-            }
-        else:
-            raw = {
-                "taskBriefId": task_id,
-                "goal": "Delegate independent review or child-agent verification of the runtime handoff.",
-                "context": fallback_context,
-                "writeSet": [],
-                "behaviorScope": ["delegated_execution", "verification", "child_delegation"],
-                "requiredCapabilities": ["review", "verification", "subagent_collaboration"],
-                "acceptanceContract": "Return confirmed subagent task results or a recoverable missing-target diagnostic.",
-                "dependency": dependency,
-                "parallelGroup": "delegation",
-                "executionLaneHint": "subagent",
-                "familyHint": "engineering",
-                "runtimeAccess": ["delegation.recursive"],
-                "targetCount": 1,
-                "allowChildDelegation": True,
-                "childDelegationBudget": {"maxChildren": 2, "maxDepth": 1, "maxTotalNodes": 3},
-            }
-        task_briefs.append(normalize_task_brief(raw, index=len(task_briefs)))
-        return task_id, True
-
-    @staticmethod
-    def _repair_planner_runtime_chain(
-        *,
-        plan_summary: str,
-        quality_flags: list[str],
-        task_briefs: list[dict[str, Any]],
-        capability_plan: list[dict[str, Any]],
-        handoff_plan: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str], int]:
-        existing_kinds = {
-            normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability"))
-            for item in capability_plan
-            if isinstance(item, dict)
-        }
-        wants_research, wants_engineering, wants_delegation = ChatRuntime._planner_chain_requirements(
-            plan_summary=plan_summary,
-            quality_flags=quality_flags,
-            task_briefs=task_briefs,
-        )
-        fallback_context = {
-            "source": "planner_contract_repair",
-            "planSummary": plan_summary,
-            "qualityFlags": list(quality_flags),
-        }
-        repair_count = 0
-        chain: list[tuple[str, str]] = []
-        if wants_research and "research" not in existing_kinds:
-            task_id, created = ChatRuntime._find_or_create_planner_task_for_kind(
-                kind="research",
-                task_briefs=task_briefs,
-                plan_summary=plan_summary,
-                fallback_context=fallback_context,
-                dependency=[],
-            )
-            capability_plan.append(
-                {
-                    "kind": "research",
-                    "source": "planner_contract_repair",
-                    "reason": "source_quality_required",
-                    "taskBriefId": task_id,
-                    "requiredRuntimeAccess": ["research.core"],
-                    "state": "detected",
-                }
-            )
-            chain.append(("research", task_id))
-            quality_flags.append("capability_plan_research_repaired")
-            repair_count += 1 + int(created)
-        elif wants_research:
-            for item in capability_plan:
-                if normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability")) == "research":
-                    chain.append(("research", str(item.get("taskBriefId") or item.get("taskId") or "").strip()))
-                    break
-        if wants_engineering and "engineering" not in existing_kinds:
-            dependency = [chain[-1][1]] if chain else []
-            task_id, created = ChatRuntime._find_or_create_planner_task_for_kind(
-                kind="engineering",
-                task_briefs=task_briefs,
-                plan_summary=plan_summary,
-                fallback_context=fallback_context,
-                dependency=dependency,
-            )
-            capability_plan.append(
-                {
-                    "kind": "engineering",
-                    "source": "planner_contract_repair",
-                    "reason": "project_creation_or_implementation_required",
-                    "taskBriefId": task_id,
-                    "requiredRuntimeAccess": [],
-                    "state": "detected",
-                }
-            )
-            chain.append(("engineering", task_id))
-            quality_flags.append("capability_plan_engineering_repaired")
-            repair_count += 1 + int(created)
-        elif wants_engineering:
-            for item in capability_plan:
-                if normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability")) == "engineering":
-                    chain.append(("engineering", str(item.get("taskBriefId") or item.get("taskId") or "").strip()))
-                    break
-        if wants_delegation and "delegation" not in existing_kinds:
-            dependency = [chain[-1][1]] if chain else []
-            task_id, created = ChatRuntime._find_or_create_planner_task_for_kind(
-                kind="delegation",
-                task_briefs=task_briefs,
-                plan_summary=plan_summary,
-                fallback_context=fallback_context,
-                dependency=dependency,
-            )
-            capability_plan.append(
-                {
-                    "kind": "delegation",
-                    "source": "planner_contract_repair",
-                    "reason": "confirmed_subagent_or_child_delegation_required",
-                    "taskBriefId": task_id,
-                    "requiredRuntimeAccess": ["delegation.recursive"],
-                    "state": "detected",
-                }
-            )
-            chain.append(("delegation", task_id))
-            quality_flags.append("capability_plan_delegation_repaired")
-            repair_count += 1 + int(created)
-        elif wants_delegation:
-            for item in capability_plan:
-                if normalize_capability_kind(item.get("kind") or item.get("runtimeKind") or item.get("capability")) == "delegation":
-                    chain.append(("delegation", str(item.get("taskBriefId") or item.get("taskId") or "").strip()))
-                    break
-        task_lookup = {str(item.get("taskBriefId") or "").strip(): item for item in task_briefs}
-        for index, (_kind, task_id) in enumerate(chain):
-            if not task_id or task_id not in task_lookup:
-                continue
-            if index > 0:
-                prev_task_id = chain[index - 1][1]
-                deps = [str(dep).strip() for dep in list(task_lookup[task_id].get("dependency") or []) if str(dep).strip()]
-                if prev_task_id and prev_task_id != task_id and prev_task_id not in deps:
-                    deps.append(prev_task_id)
-                    task_lookup[task_id]["dependency"] = deps
-                    quality_flags.append("runtime_chain_dependency_repaired")
-                    repair_count += 1
-        existing_handoffs = {
-            (
-                str(item.get("fromTaskBriefId") or "").strip(),
-                str(item.get("toTaskBriefId") or "").strip(),
-            )
-            for item in handoff_plan
-            if isinstance(item, dict)
-        }
-        for index in range(1, len(chain)):
-            from_kind, from_task_id = chain[index - 1]
-            to_kind, to_task_id = chain[index]
-            if not from_task_id or not to_task_id or (from_task_id, to_task_id) in existing_handoffs:
-                continue
-            refs = ["handoffRef"]
-            if from_kind == "research" and to_kind == "engineering":
-                refs = ["researchRefs", "evidenceBundleId", "sourceMatrix"]
-            elif from_kind == "engineering" and to_kind == "delegation":
-                refs = ["patchBundleId", "proofRefs", "engineeringHandoff"]
-            handoff_plan.append(
-                {
-                    "fromTaskBriefId": from_task_id,
-                    "toTaskBriefId": to_task_id,
-                    "refs": refs,
-                    "reason": f"{to_kind} must consume {from_kind} typed handoff before claiming completion.",
-                }
-            )
-            quality_flags.append("runtime_chain_handoff_repaired")
-            repair_count += 1
-        return task_briefs, capability_plan, handoff_plan, quality_flags, repair_count
-
-    @staticmethod
-    def _validate_and_repair_planner_plan(plan: dict[str, Any], *, fallback_plan: dict[str, Any]) -> dict[str, Any]:
-        repaired = dict(plan or {})
-        quality_flags = [str(item).strip() for item in list(repaired.get("qualityFlags") or []) if str(item).strip()]
-        repair_count = int(repaired.get("repairCount") or 0)
-        task_briefs = normalize_task_briefs(repaired.get("taskBriefs") or [])
-        if not task_briefs:
-            task_briefs = [dict(item) for item in list(fallback_plan.get("taskBriefs") or []) if isinstance(item, dict)]
-            quality_flags.append("missing_task_briefs_repaired")
-            repair_count += 1
-
-        global_acceptance = str(repaired.get("globalAcceptanceContract") or fallback_plan.get("globalAcceptanceContract") or "").strip()
-        plan_summary = str(repaired.get("planSummary") or fallback_plan.get("planSummary") or "Plan the current request.").strip()
-        task_ids: set[str] = set()
-        repaired_briefs: list[dict[str, Any]] = []
-        for index, brief in enumerate(task_briefs):
-            item = normalize_task_brief(brief, index=index)
-            if ChatRuntime._is_read_only_review_task_brief(brief) or ChatRuntime._is_read_only_review_task_brief(item):
-                write_set = [str(path).strip() for path in list(item.get("writeSet") or []) if str(path).strip()]
-                critical_files = [str(path).strip() for path in list(item.get("criticalFiles") or []) if str(path).strip()]
-                if write_set:
-                    merged_read_set = [
-                        *[
-                            str(path).strip()
-                            for path in list(item.get("readSet") or [])
-                            if str(path).strip()
-                        ],
-                        *write_set,
-                    ]
-                    item["readSet"] = list(dict.fromkeys(merged_read_set))
-                    item["writeSet"] = []
-                    quality_flags.append("review_task_write_set_cleared")
-                    repair_count += 1
-                if critical_files:
-                    merged_read_set = [
-                        *[
-                            str(path).strip()
-                            for path in list(item.get("readSet") or [])
-                            if str(path).strip()
-                        ],
-                        *critical_files,
-                    ]
-                    item["readSet"] = list(dict.fromkeys(merged_read_set))
-                    item["criticalFiles"] = []
-                    quality_flags.append("review_task_critical_files_cleared")
-                    repair_count += 1
-            if not str(item.get("taskBriefId") or "").strip() or item["taskBriefId"] in task_ids:
-                item["taskBriefId"] = f"task-{index + 1}"
-                quality_flags.append("task_id_repaired")
-                repair_count += 1
-            task_ids.add(item["taskBriefId"])
-            if not str(item.get("goal") or "").strip():
-                item["goal"] = plan_summary if index == 0 else f"Complete task {index + 1} for the current request."
-                quality_flags.append("missing_goal_repaired")
-                repair_count += 1
-            if not item.get("behaviorScope"):
-                item["behaviorScope"] = ["execution", "verification"]
-                quality_flags.append("missing_behavior_scope_repaired")
-                repair_count += 1
-            if not str(item.get("acceptanceContract") or "").strip():
-                item["acceptanceContract"] = global_acceptance or "Report concrete outputs, verification status, and unresolved risks."
-                quality_flags.append("missing_acceptance_contract_repaired")
-                repair_count += 1
-            repaired_briefs.append(item)
-
-        for item in repaired_briefs:
-            dependencies: list[str] = []
-            for dep in list(item.get("dependency") or []):
-                dep_id = str(dep).strip()
-                if dep_id and dep_id in task_ids and dep_id != item.get("taskBriefId"):
-                    dependencies.append(dep_id)
-                elif dep_id:
-                    quality_flags.append("invalid_dependency_removed")
-                    repair_count += 1
-            item["dependency"] = dependencies
-
-        execution_strategy = str(repaired.get("executionStrategy") or fallback_plan.get("executionStrategy") or "direct").strip().lower()
-        if execution_strategy not in {"direct", "delegate", "mixed"}:
-            execution_strategy = str(fallback_plan.get("executionStrategy") or "direct")
-            quality_flags.append("invalid_execution_strategy_repaired")
-            repair_count += 1
-        if execution_strategy == "direct" and len(repaired_briefs) > 1:
-            execution_strategy = "mixed"
-            quality_flags.append("direct_strategy_with_multiple_tasks_repaired")
-            repair_count += 1
-        if execution_strategy in {"delegate", "mixed"} and not repaired_briefs:
-            repaired_briefs = [dict(item) for item in list(fallback_plan.get("taskBriefs") or []) if isinstance(item, dict)]
-            quality_flags.append("delegation_without_tasks_repaired")
-            repair_count += 1
-
-        if not global_acceptance and repaired_briefs:
-            global_acceptance = str(repaired_briefs[-1].get("acceptanceContract") or "").strip()
-            quality_flags.append("global_acceptance_from_task")
-            repair_count += 1
-
-        repaired["executionStrategy"] = execution_strategy
-        repaired["planSummary"] = plan_summary
-        repaired["taskBriefs"] = repaired_briefs
-        repaired["taskGraph"] = [
-            {
-                "taskBriefId": str(item.get("taskBriefId") or f"task-{index + 1}").strip(),
-                "title": str(item.get("goal") or item.get("taskBriefId") or f"Task {index + 1}").strip(),
-                "dependency": list(item.get("dependency") or []),
-                "parallelGroup": str(item.get("parallelGroup") or "").strip(),
-            }
-            for index, item in enumerate(repaired_briefs)
-        ]
-        capability_plan = [
-            dict(item)
-            for item in list(repaired.get("capabilityPlan") or fallback_plan.get("capabilityPlan") or [])
-            if isinstance(item, dict)
-        ]
-        handoff_plan = [
-            dict(item)
-            for item in list(repaired.get("handoffPlan") or fallback_plan.get("handoffPlan") or [])
-            if isinstance(item, dict)
-        ]
-        (
-            repaired_briefs,
-            capability_plan,
-            handoff_plan,
-            quality_flags,
-            chain_repair_count,
-        ) = ChatRuntime._repair_planner_runtime_chain(
-            plan_summary=plan_summary,
-            quality_flags=quality_flags,
-            task_briefs=repaired_briefs,
-            capability_plan=capability_plan,
-            handoff_plan=handoff_plan,
-        )
-        repair_count += chain_repair_count
-        repaired["taskBriefs"] = repaired_briefs
-        repaired["taskGraph"] = [
-            {
-                "taskBriefId": str(item.get("taskBriefId") or f"task-{index + 1}").strip(),
-                "title": str(item.get("goal") or item.get("taskBriefId") or f"Task {index + 1}").strip(),
-                "dependency": list(item.get("dependency") or []),
-                "parallelGroup": str(item.get("parallelGroup") or "").strip(),
-            }
-            for index, item in enumerate(repaired_briefs)
-        ]
-        repaired["capabilityPlan"] = capability_plan
-        repaired["handoffPlan"] = handoff_plan
-        repaired["globalAcceptanceContract"] = global_acceptance
-        repaired["qualityFlags"] = list(dict.fromkeys(quality_flags))
-        repaired["repairCount"] = repair_count
-        return repaired
-
-    @staticmethod
-    def _planner_plan_violates_skill_execution_contract(chat_run: ChatRunContext, plan: dict[str, Any]) -> bool:
-        skill_refs = list(getattr(chat_run.prepared, "skill_references", None) or [])
-        if not skill_refs:
-            return False
-        hint = getattr(chat_run.prepared, "task_shape_hint", None)
-        writing_route = hint.get("writingRoute") if isinstance(hint, dict) and isinstance(hint.get("writingRoute"), dict) else {}
-        if str(writing_route.get("mode") or "").strip() != "skill_subagent" and not bool(writing_route.get("requiresSkillExecution")):
-            return False
-        for brief in list((plan or {}).get("taskBriefs") or []):
-            if not isinstance(brief, dict):
-                continue
-            required = {
-                str(item or "").strip()
-                for item in list(brief.get("requiredCapabilities") or [])
-                if str(item or "").strip()
-            }
-            if "fetch_skill_instructions" in required:
-                return False
-            context = brief.get("context") if isinstance(brief.get("context"), dict) else {}
-            writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
-            skill = writing_brief.get("skill") if isinstance(writing_brief.get("skill"), dict) else {}
-            first_action = str(writing_brief.get("subagentFirstAction") or skill.get("firstActionRequired") or "").strip()
-            if first_action == "fetch_skill_instructions":
-                return False
-        return True
-
-    @staticmethod
-    def _verify_and_repair_planner_contract(
-        plan: dict[str, Any],
-        *,
-        fallback_plan: dict[str, Any],
-        chat_run: ChatRunContext | None = None,
-    ) -> dict[str, Any]:
-        prepared = getattr(chat_run, "prepared", None)
-        return verify_and_repair_planner_contract(
-            plan,
-            fallback_plan=fallback_plan,
-            skill_references=list(getattr(prepared, "skill_references", None) or []),
-            task_shape_hint=(
-                getattr(prepared, "task_shape_hint", None)
-                if isinstance(getattr(prepared, "task_shape_hint", None), dict)
-                else {}
-            ),
-        )
-
-    @staticmethod
-    def _decide_planner_auto_dispatch(
-        plan: dict[str, Any],
-        *,
-        registry: dict[str, Any],
-        planner_mode: str,
-        planner_dispatch_mode: str,
-    ) -> dict[str, Any]:
-        strategy = str(plan.get("executionStrategy") or "direct").strip().lower()
-        task_briefs = [dict(item) for item in list(plan.get("taskBriefs") or []) if isinstance(item, dict)]
-        if planner_dispatch_mode == "off":
-            return {"mode": "off", "eligible": False, "willDispatch": False, "reason": "planner_dispatch_mode_off"}
-        if planner_dispatch_mode != "auto":
-            return {"mode": planner_dispatch_mode or "suggest", "eligible": False, "willDispatch": False, "reason": "suggest_only"}
-        if strategy == "direct":
-            return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "direct_strategy"}
-        if not task_briefs:
-            return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "no_task_briefs"}
-        expanded_task_briefs = expand_delegation_task_briefs(task_briefs)
-        if len(expanded_task_briefs) > 10:
-            return {
-                "mode": "auto",
-                "eligible": False,
-                "willDispatch": False,
-                "reason": "task_count_exceeds_default_governance_limit",
-                "macroTaskCount": len(task_briefs),
-                "taskCount": len(expanded_task_briefs),
-            }
-        has_write_conflict = ChatRuntime._has_parallel_write_conflict(expanded_task_briefs)
-        quality_flags = {str(item).strip() for item in list(plan.get("qualityFlags") or []) if str(item).strip()}
-        hard_quality_flags = {
-            "invalid_dependency_removed",
-            "delegation_without_tasks_repaired",
-            "spec_runtime_not_approved",
-            "spec_brief_missing",
-        }
-        if quality_flags & hard_quality_flags:
-            return {
-                "mode": "auto",
-                "eligible": False,
-                "willDispatch": False,
-                "reason": "planner_quality_flags_block_dispatch",
-                "qualityFlags": sorted(quality_flags & hard_quality_flags),
-            }
-
-        subagents = list(registry.get("subagents") or [])
-        external_workers = list(registry.get("externalWorkers") or [])
-        capability_by_task_id: dict[str, str] = {}
-        for item in list(plan.get("capabilityPlan") or []):
-            if not isinstance(item, dict):
-                continue
-            task_id = str(item.get("taskBriefId") or item.get("taskId") or "").strip()
-            kind = str(item.get("kind") or item.get("runtimeKind") or item.get("capability") or "").strip().lower()
-            if task_id and kind:
-                capability_by_task_id[task_id] = normalize_capability_kind(kind)
-        local_runtime_kinds = {"research", "engineering", "creative_media", "computer_use", "rpa"}
-        if has_write_conflict and not any(kind in local_runtime_kinds or kind == "delegation" for kind in capability_by_task_id.values()):
-            return {"mode": "auto", "eligible": False, "willDispatch": False, "reason": "write_set_conflict"}
-        selections: list[dict[str, Any]] = []
-        for brief in expanded_task_briefs:
-            lane = str(brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
-            task_id = str(brief.get("taskBriefId") or brief.get("id") or "").strip()
-            family_hint = str(brief.get("familyHint") or "").strip().lower()
-            capability_kind = capability_by_task_id.get(task_id) or family_hint
-            local_runtime_kind = lane if lane in local_runtime_kinds else capability_kind if capability_kind in local_runtime_kinds else ""
-            if local_runtime_kind:
-                selections.append(
-                    {
-                        "taskBriefId": brief.get("taskBriefId"),
-                        "targetId": f"local_runtime:{local_runtime_kind}",
-                        "targetLabel": f"{local_runtime_kind} runtime",
-                        "selectionReason": "local_runtime_episode",
-                        "selectionConfidence": 1.0,
-                        "matchSignals": [f"capability:{local_runtime_kind}", "episode_runner"],
-                    }
-                )
-                continue
-            selected = None
-            diagnostics: dict[str, Any] = {}
-            if lane in {"subagent", "auto"}:
-                selected, diagnostics = choose_best_local_agent_with_diagnostics(brief, subagents)
-            if selected is None and lane in {"external_worker", "auto"}:
-                selected, diagnostics = choose_best_external_worker_with_diagnostics(brief, external_workers)
-            if selected is None:
-                return {
-                    "mode": "auto",
-                    "eligible": False,
-                    "willDispatch": False,
-                    "reason": "no_matching_target",
-                    "taskBriefId": brief.get("taskBriefId"),
-                    "selectionDiagnostics": diagnostics,
-                }
-            selections.append(
-                {
-                    "taskBriefId": brief.get("taskBriefId"),
-                    "targetId": selected.get("id"),
-                    "targetLabel": selected.get("name") or selected.get("id"),
-                    "selectionReason": diagnostics.get("selectionReason"),
-                    "selectionConfidence": diagnostics.get("selectionConfidence"),
-                    "matchSignals": list(diagnostics.get("matchSignals") or []),
-                }
-            )
-        return {
-            "mode": "auto",
-            "eligible": True,
-            "willDispatch": True,
-            "reason": "eligible",
-            "plannerMode": planner_mode,
-            "macroTaskCount": len(task_briefs),
-            "taskCount": len(expanded_task_briefs),
-            "selectedTargets": selections,
-        }
-
-    @staticmethod
-    def _normalize_planner_plan_payload(raw_plan: Any, *, fallback_plan: dict[str, Any]) -> dict[str, Any]:
-        return normalize_planner_plan_payload(raw_plan, fallback_plan=fallback_plan)
-
-    @staticmethod
-    def _extract_planner_payload_from_text(value: Any) -> Any | None:
-        return extract_planner_payload_from_text(value)
-
-    @staticmethod
-    def _create_planner_chat_model(**kwargs: Any) -> Any:
-        return create_planner_chat_model(model_factory=llm_factory, **kwargs)
-
-    async def _try_repair_planner_plan_with_plain_json(
-        self,
-        *,
-        planner_user_message: str,
-        fallback_plan: dict[str, Any],
-        structured_error: str,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        return await try_repair_planner_plan_with_plain_json(
-            self,
-            planner_user_message=planner_user_message,
-            fallback_plan=fallback_plan,
-            structured_error=structured_error,
-            planner_repair_max_tokens=PLANNER_REPAIR_MAX_TOKENS,
-            planner_repair_timeout_seconds=PLANNER_REPAIR_TIMEOUT_SECONDS,
-        )
-
-    @staticmethod
-    def _compact_planner_error(error: Any, *, limit: int = 700) -> str:
-        return compact_planner_error(error, limit=limit)
-
-    async def ensure_planner_plan(
-        self,
-        *,
-        chat_run: ChatRunContext,
-        timeout_seconds: float | None = None,
-        defer_on_timeout: bool = False,
-    ) -> dict[str, Any] | None:
-        return await run_planner_execution_controller(
-            self,
-            chat_run=chat_run,
-            timeout_seconds=timeout_seconds,
-            defer_on_timeout=defer_on_timeout,
-            planner_model_timeout_seconds=PLANNER_MODEL_TIMEOUT_SECONDS,
-            planner_model_max_tokens=PLANNER_MODEL_MAX_TOKENS,
-            planner_output_mode=PLANNER_OUTPUT_MODE,
-            planner_max_registry_agents=PLANNER_MAX_REGISTRY_AGENTS,
-            planner_max_skill_references=PLANNER_MAX_SKILL_REFERENCES,
-        )
 
     def _attach_scope_context(self, lc_messages: list[Any], *, session_id: str, user_id: str, scope_result: Any) -> None:
         scope_payload = {
@@ -4284,10 +2120,6 @@ class ChatRuntime:
         self._inject_uploaded_file_notices(request, lc_messages)
         (
             command_preset,
-            task_planning_mode,
-            planner_mode,
-            planner_dispatch_mode,
-            planner_intent_diagnostics,
             engineering_mode,
             explicit_engineering_requested,
             skill_references,
@@ -4300,34 +2132,8 @@ class ChatRuntime:
             resume_spec_session_id = self._resume_run_spec_session_id(request.resume_run_id)
             if resume_spec_session_id:
                 spec_mode = True
-                planner_intent_diagnostics = {
-                    **planner_intent_diagnostics,
-                    "matched": True,
-                    "signals": list(
-                        dict.fromkeys(
-                            [
-                                *list(planner_intent_diagnostics.get("signals") or []),
-                                "spec_mode_resume",
-                            ]
-                        )
-                    ),
-                    "reason": "spec_mode_governance_resume",
-                }
         if not spec_mode and self._should_continue_recent_spec_mode(session_id, self._latest_user_content(request)):
             spec_mode = True
-            planner_intent_diagnostics = {
-                **planner_intent_diagnostics,
-                "matched": True,
-                "signals": list(
-                    dict.fromkeys(
-                        [
-                            *list(planner_intent_diagnostics.get("signals") or []),
-                            "spec_mode_continuation",
-                        ]
-                    )
-                ),
-                "reason": "recent_spec_mode_continuation",
-            }
         plugin_references = self._normalize_plugin_references(request)
         spec_command = self._normalize_spec_command(request)
         live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
@@ -4343,15 +2149,10 @@ class ChatRuntime:
         if requested_coordination_message_id and not session_coordination_message:
             raise ValueError("session_coordination_message_unavailable")
         if live_audit_requested or explicit_runtime_episode_requested:
-            task_planning_mode = True
-            planner_mode = "force"
-            planner_dispatch_mode = "auto"
-            if explicit_runtime_episode_requested:
-                engineering_mode = "force"
+            engineering_mode = "force"
         self._inject_structured_request_context(
             lc_messages,
             command_preset=command_preset,
-            task_planning_mode=task_planning_mode,
             spec_mode=spec_mode,
             spec_command=spec_command,
             spec_continuation=(
@@ -4360,9 +2161,6 @@ class ChatRuntime:
                 and isinstance(request.resume_value.get("specContinuation"), dict)
                 else None
             ),
-            planner_mode=planner_mode,
-            planner_dispatch_mode=planner_dispatch_mode,
-            planner_intent_diagnostics=planner_intent_diagnostics,
             skill_references=skill_references,
             context_mentions=context_mentions,
             plugin_references=plugin_references,
@@ -4412,10 +2210,6 @@ class ChatRuntime:
             latest_user_content=latest_user_content,
             command_preset_name=(str(command_preset.get("name") or "").strip() or None) if command_preset else None,
             command_preset_hash=(str(command_preset.get("contentHash") or "").strip() or None) if command_preset else None,
-            planner_mode=planner_mode,
-            planner_dispatch_mode=planner_dispatch_mode,
-            planner_intent_diagnostics=planner_intent_diagnostics,
-            task_planning_mode=task_planning_mode,
             spec_mode=spec_mode,
             spec_command=spec_command,
             spec_id=spec_id,
@@ -4787,7 +2581,6 @@ class ChatRuntime:
             prepared.task_shape_hint = attach_task_boundary_decision(
                 prepared.task_shape_hint,
                 user_query=prepared.latest_user_content,
-                planner_plan=prepared.planner_plan if isinstance(prepared.planner_plan, dict) else None,
             )
             primary_shape = str(prepared.task_shape_hint.get("primaryTaskShape") or "").strip()
             shape_reason = str(prepared.task_shape_hint.get("reason") or "").strip()
@@ -4817,36 +2610,20 @@ class ChatRuntime:
             )
             if prepared.explicit_engineering_requested or engineering_required:
                 prepared.engineering_mode = "force"
-            explicit_planner_force_requested = (
-                prepared.task_planning_mode
-                and str(prepared.planner_mode or "").strip() == "force"
-            )
             if (
                 skill_subagent_required
                 or source_backed_writing_required
                 or prepared.explicit_engineering_requested
                 or primary_shape == "project_coding"
                 or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"})
-            ) and not explicit_planner_force_requested:
-                prepared.task_planning_mode = False
-                prepared.planner_mode = "off"
-                prepared.planner_dispatch_mode = "suggest"
-            if prepared.spec_mode:
-                if self._runtime_execution_allowed_by_spec(prepared.spec_brief):
-                    prepared.task_planning_mode = True
-                    prepared.planner_mode = "force"
-                    prepared.planner_dispatch_mode = "auto"
-                else:
-                    prepared.task_planning_mode = False
-                    prepared.planner_mode = "off"
-                    prepared.planner_dispatch_mode = "suggest"
+            ):
+                prepared.engineering_mode = "force" if primary_shape == "project_coding" else prepared.engineering_mode
+            if prepared.spec_mode and self._runtime_execution_allowed_by_spec(prepared.spec_brief):
+                prepared.engineering_mode = "force"
             run_service.update_metadata(
                 run_handle.run_id,
                 {
                     "taskShapeHint": dict(prepared.task_shape_hint or {}),
-                    "plannerMode": prepared.planner_mode,
-                    "plannerDispatchMode": prepared.planner_dispatch_mode,
-                    "taskPlanningMode": prepared.task_planning_mode,
                     "specMode": prepared.spec_mode,
                     "specCommand": dict(prepared.spec_command or {}),
                     "specId": prepared.spec_id or None,
@@ -5021,15 +2798,6 @@ class ChatRuntime:
                 "name": chat_run.prepared.command_preset_name,
                 "contentHash": chat_run.prepared.command_preset_hash,
             }
-        prepared_planner_mode = getattr(chat_run.prepared, "planner_mode", "off")
-        prepared_planner_diagnostics = getattr(chat_run.prepared, "planner_intent_diagnostics", {}) or {}
-        if prepared_planner_mode != "off":
-            metadata["plannerMode"] = prepared_planner_mode
-            metadata["plannerIntentDiagnostics"] = dict(prepared_planner_diagnostics)
-        if getattr(chat_run.prepared, "planner_dispatch_mode", "suggest") != "suggest":
-            metadata["plannerDispatchMode"] = chat_run.prepared.planner_dispatch_mode
-        if chat_run.prepared.task_planning_mode:
-            metadata["taskPlanningMode"] = True
         if bool(getattr(chat_run.prepared, "spec_mode", False)):
             metadata["specMode"] = True
             prepared_spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()
@@ -5111,10 +2879,6 @@ class ChatRuntime:
             user_structured_metadata: dict[str, Any] = {
                 **({"clientMessageId": client_message_id} if client_message_id else {}),
                 **({"commandPreset": dict(metadata["commandPreset"])} if isinstance(metadata.get("commandPreset"), dict) else {}),
-                **({"plannerMode": metadata.get("plannerMode")} if metadata.get("plannerMode") else {}),
-                **({"plannerDispatchMode": metadata.get("plannerDispatchMode")} if metadata.get("plannerDispatchMode") else {}),
-                **({"plannerIntentDiagnostics": dict(metadata["plannerIntentDiagnostics"])} if isinstance(metadata.get("plannerIntentDiagnostics"), dict) else {}),
-                **({"taskPlanningMode": True} if metadata.get("taskPlanningMode") is True else {}),
                 **({"specMode": True} if metadata.get("specMode") is True else {}),
                 **({"specCommand": dict(metadata["specCommand"])} if isinstance(metadata.get("specCommand"), dict) else {}),
                 **({"taskShapeHint": dict(metadata["taskShapeHint"])} if isinstance(metadata.get("taskShapeHint"), dict) else {}),
@@ -5212,29 +2976,6 @@ class ChatRuntime:
                     agent_id=None,
                     node="input_recorder",
                 )
-            if chat_run.prepared.task_planning_mode:
-                chat_run.emit_runtime_event(
-                        "chat.planner_mode.enabled",
-                            {
-                                "messageId": user_message_id,
-                                "plannerMode": prepared_planner_mode,
-                                "plannerDispatchMode": getattr(chat_run.prepared, "planner_dispatch_mode", "suggest"),
-                                "enabled": True,
-                                "intentDiagnostics": dict(prepared_planner_diagnostics),
-                            },
-                        agent_id=None,
-                        node="planner_lane",
-                )
-                chat_run.emit_runtime_event(
-                    "chat.task_planning_mode.enabled",
-                    {
-                        "messageId": user_message_id,
-                        "enabled": True,
-                        "plannerMode": prepared_planner_mode,
-                    },
-                    agent_id=None,
-                    node="input_recorder",
-                )
             if chat_run.prepared.skill_references:
                 chat_run.emit_runtime_event(
                     "chat.skill_references.applied",
@@ -5276,10 +3017,6 @@ class ChatRuntime:
                     "transport": chat_run.transport,
                     "resolved_scope": chat_run.scope_result.binding.resolved_scope,
                     "command_preset_name": chat_run.prepared.command_preset_name,
-                    "planner_mode": prepared_planner_mode,
-                    "planner_dispatch_mode": getattr(chat_run.prepared, "planner_dispatch_mode", "suggest"),
-                    "planner_intent_diagnostics": dict(prepared_planner_diagnostics),
-                    "task_planning_mode": chat_run.prepared.task_planning_mode,
                     "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
                     "skill_references": list(chat_run.prepared.skill_references),
                     "context_mentions": list(context_mentions),
@@ -5411,8 +3148,6 @@ class ChatRuntime:
             "latest_user_content": chat_run.prepared.latest_user_content,
             "userRequest": chat_run.prepared.latest_user_content,
             "user_request": chat_run.prepared.latest_user_content,
-            "taskPlanningMode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
-            "task_planning_mode": bool(getattr(chat_run.prepared, "task_planning_mode", False)),
             "specMode": bool(getattr(chat_run.prepared, "spec_mode", False)),
             "spec_mode": bool(getattr(chat_run.prepared, "spec_mode", False)),
             "contextSessionRefs": list(chat_run.prepared.context_session_refs),
@@ -5481,8 +3216,7 @@ class ChatRuntime:
             if isinstance(resume_value.get("runtimeEpisodeHandoff"), dict)
             else {}
         )
-        runtime_handoff_planner_plan: dict[str, Any] | None = None
-        runtime_handoff_dispatch_status: dict[str, Any] | None = None
+        runtime_dispatch_status: dict[str, Any] | None = None
         if runtime_handoff_resume:
             resume_episode_id = str(runtime_handoff_resume.get("episodeId") or "").strip()
             resume_episode_kind = str(runtime_handoff_resume.get("episodeKind") or "runtime").strip() or "runtime"
@@ -5512,32 +3246,13 @@ class ChatRuntime:
                         resume_episode,
                     ],
                 }
-                runtime_handoff_planner_plan = {
-                    "planId": f"runtime-handoff-resume:{resume_episode_id}",
-                    "strategy": "runtime_episode_resume",
-                    "taskBriefs": [],
-                    "capabilityPlan": [
-                        {
-                            "kind": resume_episode_kind,
-                            "episodeId": resume_episode_id,
-                            "needId": resume_episode_id,
-                            "state": str(runtime_handoff_resume.get("episodeState") or "completed").strip().lower(),
-                            "reason": "runtime_episode_terminal",
-                            "source": "runtime_episode_handoff_resume",
-                        }
-                    ],
-                    "autoDispatchDecision": {
-                        "willDispatch": True,
-                        "mode": "auto",
-                        "reason": "runtime_episode_terminal",
-                    },
-                }
-                runtime_handoff_dispatch_status = {
+                runtime_dispatch_status = {
                     "mode": "runtime_episode",
                     "nextAction": "wait_episode",
                     "state": "handoff_resume_requested",
+                    "episodeId": resume_episode_id,
+                    "episodeKind": resume_episode_kind,
                     "episodeCount": 1,
-                    "episodeIds": [resume_episode_id],
                 }
         if compat_diagnostics:
             current_route_context = {
@@ -5572,7 +3287,6 @@ class ChatRuntime:
             or chat_run.prepared.engineering_trigger_decision
             or task_shape_hint
             or engineering_required
-            or getattr(chat_run.prepared, "planner_dispatch_mode", "suggest") != "suggest"
         ):
             engineering_continuation = task_shape_hint.get("engineeringContinuation") if isinstance(task_shape_hint, dict) else None
             current_route_context = {
@@ -5580,108 +3294,16 @@ class ChatRuntime:
                 "explicitEngineeringRequested": bool(getattr(chat_run.prepared, "explicit_engineering_requested", False)),
                 "engineeringMode": str(getattr(chat_run.prepared, "engineering_mode", "auto") or "auto"),
                 "engineeringRequired": engineering_required,
-                "plannerDispatchMode": str(getattr(chat_run.prepared, "planner_dispatch_mode", "suggest") or "suggest"),
                 "taskShapeHint": task_shape_hint,
                 "engineeringTriggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
                 **({"engineeringContinuation": engineering_continuation} if isinstance(engineering_continuation, dict) else {}),
             }
-        if getattr(chat_run.prepared, "planner_deferred", False):
-            current_route_context = {
-                **current_route_context,
-                "plannerDeferredFirstTurn": True,
-                "planner_deferred_first_turn": True,
-            }
-        planner_dispatch_status: dict[str, Any] | None = runtime_handoff_dispatch_status
-        planner_plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
-        if not planner_plan and runtime_handoff_planner_plan:
-            planner_plan = runtime_handoff_planner_plan
-        planner_decision = dict((planner_plan or {}).get("autoDispatchDecision") or {})
-        planner_auto_dispatch_suppressed = bool(getattr(chat_run.prepared, "planner_deferred", False))
-        if planner_auto_dispatch_suppressed and planner_plan and bool(planner_decision.get("willDispatch")):
-            # Real-first protects ordinary chats from waiting on planner prequeue work.
-            # Explicit runtime-episode/spec execution requests are already route-required, so
-            # suppressing their dispatch lets Supervisor complete with prose instead of the
-            # canonical runtime episode/handoff path.
-            if self._planner_request_requires_runtime_episode_fallback(chat_run):
-                planner_auto_dispatch_suppressed = False
-        workflow_planner_plan = planner_plan
-        if planner_plan and bool(planner_decision.get("willDispatch")) and planner_auto_dispatch_suppressed:
-            chat_run.emit_runtime_event(
-                "planner.auto_dispatch.deferred_until_supervisor",
-                {
-                    "planId": planner_plan.get("planId"),
-                    "summary": "Planner auto-dispatch was deferred so Supervisor can perform the first meaningful turn.",
-                    "reason": "supervisor_real_first_turn",
-                    "messageSurfacePriority": "diagnostic",
-                    "traceRef": {"runId": chat_run.active_run_id, "planId": planner_plan.get("planId")},
-                },
-                agent_id=None,
-                node="planner_auto_dispatch",
-            )
-            workflow_planner_plan = {
-                **planner_plan,
-                "autoDispatchDecision": {
-                    **planner_decision,
-                    "willDispatch": False,
-                    "deferredUntilSupervisor": True,
-                    "reason": "supervisor_real_first_turn",
-                    "originalReason": planner_decision.get("reason"),
-                },
-            }
-        elif planner_plan and bool(planner_decision.get("willDispatch")):
-            try:
-                with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
-                    dispatch_command = build_planner_auto_dispatch_node()(
-                        {
-                            "session_id": chat_run.session_id,
-                            "sessionId": chat_run.session_id,
-                            "run_id": chat_run.active_run_id,
-                            "runId": chat_run.active_run_id,
-                            "workspace_path": chat_run.scope_result.binding.workspace_path,
-                            "workspacePath": chat_run.scope_result.binding.workspace_path,
-                            "current_route_context": current_route_context,
-                            "planner_plan": planner_plan,
-                            "planner_dispatch_status": planner_dispatch_status or {},
-                        }
-                    )
-                dispatch_update = dict(getattr(dispatch_command, "update", None) or {})
-                if isinstance(dispatch_update.get("current_route_context"), dict):
-                    current_route_context = dict(dispatch_update.get("current_route_context") or current_route_context)
-                if isinstance(dispatch_update.get("planner_dispatch_status"), dict):
-                    planner_dispatch_status = dict(dispatch_update.get("planner_dispatch_status") or {})
-                    if str(getattr(dispatch_command, "goto", "") or "").strip() == "runtime_episode":
-                        planner_dispatch_status.setdefault("nextAction", "wait_episode")
-                if planner_dispatch_status:
-                    chat_run.emit_runtime_event(
-                        "planner.auto_dispatch.prequeued",
-                        {
-                            "planId": planner_plan.get("planId"),
-                            "nextAction": planner_dispatch_status.get("nextAction"),
-                            "state": planner_dispatch_status.get("state"),
-                            "episodeCount": planner_dispatch_status.get("episodeCount"),
-                            "blocked": planner_dispatch_status.get("blocked"),
-                        },
-                        agent_id=None,
-                        node="planner_auto_dispatch",
-                    )
-            except Exception as exc:
-                chat_run.emit_runtime_event(
-                    "planner.auto_dispatch.prequeue_failed",
-                    {
-                        "planId": planner_plan.get("planId"),
-                        "error": str(exc),
-                        "errorType": exc.__class__.__name__,
-                    },
-                    agent_id=None,
-                    node="planner_auto_dispatch",
-                )
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,
             messages=chat_run.lc_messages,
             session_id=chat_run.session_id,
             current_route_context=current_route_context,
-            planner_plan=workflow_planner_plan,
-            planner_dispatch_status=planner_dispatch_status,
+            runtime_dispatch_status=runtime_dispatch_status,
             engineering_context=chat_run.prepared.engineering_context_pack,
             task_shape_hint=chat_run.prepared.task_shape_hint,
             explicit_subagent_families=chat_run.prepared.explicit_subagent_families,
@@ -5724,7 +3346,6 @@ class ChatRuntime:
             "routeContext": dict(snapshot.get("current_route_context") or {}),
             "todosCount": len(list(snapshot.get("todos") or [])),
             "messageCount": len(state_messages),
-            "plannerPlanId": str((snapshot.get("planner_plan") or {}).get("planId") or "").strip() or None,
             "sessionId": chat_run.session_id,
             "projectId": chat_run.scope_result.binding.project_id,
             "workspaceId": chat_run.scope_result.binding.workspace_id,
@@ -5739,15 +3360,11 @@ class ChatRuntime:
                 "status": last_todo.get("status"),
                 "text": str(last_todo.get("text") or "")[:240],
             }
-        if isinstance(snapshot.get("planner_plan"), dict) and snapshot.get("planner_plan"):
-            chat_run.prepared.planner_plan = dict(snapshot.get("planner_plan") or {})
-
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
-            planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
-            planner_dispatch_status=snapshot.get("planner_dispatch_status") if isinstance(snapshot.get("planner_dispatch_status"), dict) else None,
+            runtime_dispatch_status=None,
             engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
@@ -5847,15 +3464,11 @@ class ChatRuntime:
             return None
         state_messages.extend(injected_messages)
 
-        if isinstance(snapshot.get("planner_plan"), dict) and snapshot.get("planner_plan"):
-            chat_run.prepared.planner_plan = dict(snapshot.get("planner_plan") or {})
-
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
-            planner_plan=snapshot.get("planner_plan") if isinstance(snapshot.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
-            planner_dispatch_status=snapshot.get("planner_dispatch_status") if isinstance(snapshot.get("planner_dispatch_status"), dict) else None,
+            runtime_dispatch_status=None,
             engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot.get("explicit_subagent_families") if isinstance(snapshot.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
@@ -5961,8 +3574,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
-            planner_plan=snapshot_dict.get("planner_plan") if isinstance(snapshot_dict.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
-            planner_dispatch_status=snapshot_dict.get("planner_dispatch_status") if isinstance(snapshot_dict.get("planner_dispatch_status"), dict) else None,
+            runtime_dispatch_status=None,
             engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
@@ -6022,8 +3634,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
-            planner_plan=snapshot_dict.get("planner_plan") if isinstance(snapshot_dict.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
-            planner_dispatch_status=snapshot_dict.get("planner_dispatch_status") if isinstance(snapshot_dict.get("planner_dispatch_status"), dict) else None,
+            runtime_dispatch_status=None,
             engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
@@ -6086,8 +3697,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
-            planner_plan=snapshot_dict.get("planner_plan") if isinstance(snapshot_dict.get("planner_plan"), dict) else chat_run.prepared.planner_plan,
-            planner_dispatch_status=snapshot_dict.get("planner_dispatch_status") if isinstance(snapshot_dict.get("planner_dispatch_status"), dict) else None,
+            runtime_dispatch_status=None,
             engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
             explicit_subagent_families=snapshot_dict.get("explicit_subagent_families") if isinstance(snapshot_dict.get("explicit_subagent_families"), list) else chat_run.prepared.explicit_subagent_families,
@@ -8676,7 +6286,7 @@ class ChatRuntime:
             "goto": candidate.get("goto"),
             "summary": message_previews[-1] if message_previews else None,
             "messages": message_previews,
-            "plannerDispatchStatus": update.get("planner_dispatch_status"),
+            "runtimeDispatchStatus": update.get("runtime_dispatch_status"),
             "routeContext": compact_route_context,
         }
         return {key: item for key, item in compact.items() if item not in (None, "", [], {})}
@@ -9907,7 +7517,7 @@ class ChatRuntime:
     def _runtime_handoff_summary_from_state(state: dict[str, Any] | None) -> str:
         if not isinstance(state, dict):
             return ""
-        dispatch_status = state.get("planner_dispatch_status")
+        dispatch_status = state.get("runtime_dispatch_status")
         if not isinstance(dispatch_status, dict):
             return ""
         if str(dispatch_status.get("mode") or "").strip() != "runtime_episode":
@@ -10201,122 +7811,6 @@ class ChatRuntime:
             node="canonical_transcript",
         )
 
-    def emit_task_planning_mode_decision(self, chat_run: ChatRunContext, stream_state: ChatStreamState) -> None:
-        if not chat_run.prepared.task_planning_mode:
-            return
-        todo_tool_calls = [
-            call for call in list(stream_state.tool_calls_buffer or [])
-            if str((call or {}).get("name") or "").strip().lower() in {"write_todos", "update_todo"}
-        ]
-        used_todos = len(todo_tool_calls) > 0
-        reason = "todos_used" if used_todos else "single_step_or_not_needed"
-        summary = (
-            "任务规划偏好已命中 Todo 链"
-            if used_todos
-            else "任务规划偏好已开启，但本轮按单步任务完成"
-        )
-        message = (
-            "本轮任务已创建或更新 todos，并按任务规划方式推进。"
-            if used_todos
-            else "本轮没有进入 todos 链，通常表示模型判断当前任务更适合一次性完成或无需持续跟踪。"
-        )
-        chat_run.emit_runtime_event(
-            "chat.planner_mode.decided",
-            {
-                "plannerMode": chat_run.prepared.planner_mode,
-                "enabled": True,
-                "usedTodos": used_todos,
-                "reason": reason,
-                "summary": summary,
-                "message": message,
-                "todoToolCount": len(todo_tool_calls),
-                "intentDiagnostics": dict(chat_run.prepared.planner_intent_diagnostics or {}),
-                "runId": chat_run.active_run_id,
-            },
-            agent_id=None,
-            node="planner_lane",
-        )
-        chat_run.emit_runtime_event(
-            "chat.task_planning_mode.decided",
-            {
-                "enabled": True,
-                "plannerMode": chat_run.prepared.planner_mode,
-                "usedTodos": used_todos,
-                "reason": reason,
-                "summary": summary,
-                "message": message,
-                "todoToolCount": len(todo_tool_calls),
-                "runId": chat_run.active_run_id,
-            },
-            agent_id=None,
-            node="task_planning",
-        )
-
-    async def emit_planner_lane_projection(
-        self,
-        chat_run: ChatRunContext,
-        execution_bundle: ChatExecutionBundle | None,
-    ) -> None:
-        if execution_bundle is None:
-            return
-        try:
-            state = await supervisor_runner.get_state_snapshot(execution_bundle.runner_bundle)
-        except Exception:
-            logging.getLogger("v8chat.chat_runtime").exception(
-                "Failed to inspect final graph state for planner projection in run '%s'",
-                chat_run.active_run_id,
-            )
-            return
-        plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
-        if not plan and isinstance((state or {}).get("planner_plan"), dict):
-            plan = dict((state or {}).get("planner_plan") or {})
-        if not plan:
-            return
-        task_briefs = [dict(item) for item in list(plan.get("taskBriefs") or []) if isinstance(item, dict)]
-        selected_delegations: list[dict[str, Any]] = []
-        for item in [dict(row) for row in list((state or {}).get("parallel_results") or []) if isinstance(row, dict)]:
-            selected_delegations.append(
-                {
-                    "delegationId": item.get("delegationId"),
-                    "taskBriefId": item.get("taskBriefId"),
-                    "lane": item.get("lane"),
-                    "targetId": item.get("targetId"),
-                    "targetLabel": item.get("targetLabel") or item.get("agentName"),
-                    "status": item.get("status"),
-                    "workerType": item.get("workerType"),
-                    "commandSession": item.get("commandSession"),
-                }
-            )
-        chat_run.emit_runtime_event(
-            "planner.plan.projected",
-            {
-                "planId": plan.get("planId"),
-                "executionStrategy": plan.get("executionStrategy"),
-                "planSummary": plan.get("planSummary"),
-                "taskCount": len(task_briefs),
-                "taskBriefs": task_briefs,
-                "dependencies": [
-                    {
-                        "taskBriefId": row.get("taskBriefId"),
-                        "dependency": list(row.get("dependency") or []),
-                        "parallelGroup": row.get("parallelGroup"),
-                    }
-                    for row in list(plan.get("taskGraph") or [])
-                    if isinstance(row, dict)
-                ],
-                "globalAcceptanceContract": plan.get("globalAcceptanceContract"),
-                "riskFlags": list(plan.get("riskFlags") or []),
-                "qualityFlags": list(plan.get("qualityFlags") or []),
-                "repairCount": int(plan.get("repairCount") or 0),
-                "autoDispatchDecision": dict(plan.get("autoDispatchDecision") or {}),
-                "dispatchEligibilityReason": plan.get("dispatchEligibilityReason"),
-                "selectedDelegations": selected_delegations,
-                "traceRef": {"runId": chat_run.active_run_id, "planId": plan.get("planId")},
-            },
-            agent_id=None,
-            node="planner_lane",
-        )
-
     async def emit_engineering_lane_projection(
         self,
         chat_run: ChatRunContext,
@@ -10334,18 +7828,11 @@ class ChatRuntime:
                 chat_run.active_run_id,
             )
             return
-        plan = chat_run.prepared.planner_plan if isinstance(chat_run.prepared.planner_plan, dict) else None
-        if not plan and isinstance((state or {}).get("planner_plan"), dict):
-            plan = dict((state or {}).get("planner_plan") or {})
         engineering_pack = chat_run.prepared.engineering_context_pack if isinstance(chat_run.prepared.engineering_context_pack, dict) else {}
         context_pack = engineering_pack.get("contextPack") if isinstance(engineering_pack.get("contextPack"), dict) else engineering_pack
         coding_contract = {}
-        if isinstance(plan, dict) and isinstance(plan.get("codingPlannerContract"), dict):
-            coding_contract = dict(plan.get("codingPlannerContract") or {})
-        elif isinstance(context_pack.get("codingPlannerContractPreview"), dict):
-            coding_contract = dict(context_pack.get("codingPlannerContractPreview") or {})
-        if not coding_contract and not plan:
-            return
+        if isinstance(context_pack.get("codingExecutionContractPreview"), dict):
+            coding_contract = dict(context_pack.get("codingExecutionContractPreview") or {})
 
         results = [dict(item) for item in list((state or {}).get("parallel_results") or []) if isinstance(item, dict)]
         selected_delegations: list[dict[str, Any]] = []
@@ -10369,7 +7856,7 @@ class ChatRuntime:
                 }
             )
 
-        task_briefs = [dict(item) for item in list((plan or {}).get("taskBriefs") or []) if isinstance(item, dict)]
+        task_briefs: list[dict[str, Any]] = []
         if not task_briefs:
             route_context = (state or {}).get("current_route_context")
             if isinstance(route_context, dict):
@@ -10411,9 +7898,9 @@ class ChatRuntime:
             for row in list(coding_contract.get("verificationMatrix") or [])
             if isinstance(row, dict)
         ][:8]
-        risk_flags = [str(item).strip() for item in list(coding_contract.get("riskFlags") or (plan or {}).get("riskFlags") or []) if str(item).strip()]
+        risk_flags = [str(item).strip() for item in list(coding_contract.get("riskFlags") or []) if str(item).strip()]
         proof_expectations = [str(item).strip() for item in list(coding_contract.get("proofExpectations") or []) if str(item).strip()][:8]
-        summary = str((plan or {}).get("planSummary") or "").strip() or "工程契约已投影"
+        summary = "工程执行合同已投影"
         summary = f"{summary} · {len(task_capsules)} 个工程任务"
         if blocked_count > 0:
             summary += f" · {blocked_count} 个 blocked"
@@ -10423,7 +7910,6 @@ class ChatRuntime:
         chat_run.emit_runtime_event(
             "engineering.plan.projected",
             {
-                "planId": (plan or {}).get("planId"),
                 "summary": summary,
                 "engineeringMode": chat_run.prepared.engineering_mode,
                 "taskCount": len(task_capsules),
@@ -10441,7 +7927,7 @@ class ChatRuntime:
                 "selectedDelegations": selected_delegations[:12],
                 "taskCapsules": task_capsules,
                 "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
-                "traceRef": {"runId": chat_run.active_run_id, "planId": (plan or {}).get("planId")},
+                "traceRef": {"runId": chat_run.active_run_id},
             },
             agent_id=None,
             node="engineering_lane",
@@ -11371,17 +8857,6 @@ class ChatRuntime:
                 yield self.finalize_success_run(chat_run, stream_state)
                 return
 
-            spec_runtime_execution_allowed = bool(
-                chat_run.prepared.spec_mode
-                and self._runtime_execution_allowed_by_spec(getattr(chat_run.prepared, "spec_brief", None))
-            )
-            if not chat_run.prepared.session_coordination_message:
-                await self.ensure_planner_plan(
-                    chat_run=chat_run,
-                    timeout_seconds=PLANNER_MODEL_TIMEOUT_SECONDS if spec_runtime_execution_allowed else PLANNER_FIRST_TURN_BUDGET_SECONDS,
-                    defer_on_timeout=not spec_runtime_execution_allowed,
-                )
-
             continuation_count = 0
             continuation_reason = ""
             continuation_bundle: ChatExecutionBundle | None = None
@@ -11690,11 +9165,9 @@ class ChatRuntime:
             for flushed_event in await self.flush_stream_state(chat_run, stream_state):
                 yield flushed_event
             await self.reconcile_final_assistant_message(chat_run, stream_state, last_execution_bundle)
-            await self.emit_planner_lane_projection(chat_run, last_execution_bundle)
             await self.emit_engineering_lane_projection(chat_run, last_execution_bundle)
             await self.emit_subagent_swarm_projection(chat_run, last_execution_bundle)
             self.persist_final_assistant_message(chat_run, stream_state)
-            self.emit_task_planning_mode_decision(chat_run, stream_state)
             yield self.finalize_success_run(chat_run, stream_state)
         except CompatExternalToolRequest as exc:
             payload = dict(getattr(exc, "payload", {}) or {})

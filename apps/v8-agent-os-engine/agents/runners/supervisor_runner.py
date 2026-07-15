@@ -70,8 +70,7 @@ class SupervisorAgentRunner:
         messages,
         *,
         current_route_context: dict[str, Any] | None = None,
-        planner_plan: dict[str, Any] | None = None,
-        planner_dispatch_status: dict[str, Any] | None = None,
+        runtime_dispatch_status: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
         task_shape_hint: dict[str, Any] | None = None,
         explicit_subagent_families: list[str] | None = None,
@@ -101,10 +100,8 @@ class SupervisorAgentRunner:
                 value = current_route_context.get(source_key)
                 if value:
                     state[state_key] = value
-        if isinstance(planner_plan, dict) and planner_plan:
-            state["planner_plan"] = planner_plan
-        if isinstance(planner_dispatch_status, dict) and planner_dispatch_status:
-            state["planner_dispatch_status"] = planner_dispatch_status
+        if isinstance(runtime_dispatch_status, dict) and runtime_dispatch_status:
+            state["runtime_dispatch_status"] = runtime_dispatch_status
         if isinstance(engineering_context, dict) and engineering_context:
             state["engineering_context"] = engineering_context
         if isinstance(task_shape_hint, dict) and task_shape_hint:
@@ -131,8 +128,7 @@ class SupervisorAgentRunner:
         messages,
         session_id: str,
         current_route_context: dict[str, Any] | None = None,
-        planner_plan: dict[str, Any] | None = None,
-        planner_dispatch_status: dict[str, Any] | None = None,
+        runtime_dispatch_status: dict[str, Any] | None = None,
         engineering_context: dict[str, Any] | None = None,
         task_shape_hint: dict[str, Any] | None = None,
         explicit_subagent_families: list[str] | None = None,
@@ -148,8 +144,7 @@ class SupervisorAgentRunner:
             payload=self.create_state(
                 messages,
                 current_route_context=current_route_context,
-                planner_plan=planner_plan,
-                planner_dispatch_status=planner_dispatch_status,
+                runtime_dispatch_status=runtime_dispatch_status,
                 engineering_context=engineering_context,
                 task_shape_hint=task_shape_hint,
                 explicit_subagent_families=explicit_subagent_families,

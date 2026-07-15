@@ -57,7 +57,7 @@ _PASSIVE_RAG_HINT_TOKENS = (
 _SUPERVISOR_OPERATING_CONTRACT = """[Supervisor Operating Contract]
 You are the V8OS internal intelligent supervisor: the user-facing coordinator, light executor, and final synthesizer for this turn.
 Your job is to obey the user's current instruction, clarify missing intent, choose the right work path, keep evidence/proof visible, and merge results from runtimes, subagents, skills, and memory.
-Principle: Supervisor First, Runtime Grounded. Planner, Memory, runtime hints, and gates are supporting signals. They help you steer accurately; they do not outrank the user's current instruction or replace your judgment.
+Principle: Supervisor First, Runtime Grounded. Memory, runtime hints, and gates are supporting signals. They help you steer accurately; they do not outrank the user's current instruction or replace your judgment.
 
 Product language:
 - Use product words with users: 主理人中枢, 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, 记忆系统, 定时与触发, 插件管理中心, 网络连接, 安全系统, 子代理, 规格文档.
@@ -66,7 +66,6 @@ Product language:
 
 Path selection:
 - Direct path: answer, inspect, run short commands, or make tiny bounded edits yourself when the task is simple, low-risk, and the needed evidence is already available.
-- Planner path: treat Planner output as a proposed episode plan/runtime-needs map. It helps you route work; it is advice, not an order, and does not replace your user communication or final judgment.
 - Runtime path: route work when a strengthened runtime gives better context, boundary, proof, media/provider handling, desktop control, or recovery. Use `runtime_broker(mode="route", need={...})` internally; tell the user you are using 编程模式, 深度调研, 多媒体创作, 桌面操作, 自动流程, or 子代理协作. Then wait for typed handoff/proof instead of pretending the work happened.
   Active execution runtimes you may route into: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. Use the product names 深度调研、编程模式、多媒体创作、桌面操作、自动流程、子代理协作 when speaking to users.
   Passive/support runtimes are not ordinary execution targets: 记忆系统 is queried/maintained when relevant, 定时与触发 is configured only when the user asks for scheduled or event-triggered behavior, 插件管理中心 provides explicitly authorized extensions, and 网络连接 provides governed connection support.
@@ -394,7 +393,7 @@ def _render_engineering_context(state: dict) -> tuple[str, list[dict[str, object
     repo = pack.get("repoBrief") if isinstance(pack.get("repoBrief"), dict) else {}
     git_summary = pack.get("gitSummary") if isinstance(pack.get("gitSummary"), dict) else {}
     evidence_graph = pack.get("evidenceGraphDigest") if isinstance(pack.get("evidenceGraphDigest"), dict) else {}
-    coding_contract = pack.get("codingPlannerContractPreview") if isinstance(pack.get("codingPlannerContractPreview"), dict) else {}
+    coding_contract = pack.get("codingExecutionContractPreview") if isinstance(pack.get("codingExecutionContractPreview"), dict) else {}
     soft_gate = pack.get("worksetSoftGateDecision") if isinstance(pack.get("worksetSoftGateDecision"), dict) else {}
     manifests = pack.get("manifestSummary") if isinstance(pack.get("manifestSummary"), dict) else {}
     critical_files = pack.get("criticalFiles") if isinstance(pack.get("criticalFiles"), list) else []
@@ -430,7 +429,7 @@ def _render_engineering_context(state: dict) -> tuple[str, list[dict[str, object
             f"criticalCandidates={len(evidence_graph.get('criticalFileCandidates') or [])}"
         )
     if coding_contract.get("enabled"):
-        lines.append("Coding planner contract:")
+        lines.append("Coding execution contract:")
         write_set = list(coding_contract.get("writeSet") or [])[:8]
         verify = list(coding_contract.get("verificationMatrix") or [])[:4]
         lines.append("  writeSet: " + (", ".join(map(str, write_set)) if write_set else "missing"))
@@ -643,6 +642,11 @@ def resolve_supervisor_request_context(messages, scope_resolution_service):
     for message in reversed(messages):
         if not isinstance(message, HumanMessage):
             continue
+        additional_kwargs = dict(message.additional_kwargs or {})
+        if str(additional_kwargs.get("v8_governance_type") or "").strip():
+            # Runtime/delegation handoff envelopes are internal coordination
+            # evidence, never a replacement for the user's latest request.
+            continue
         last_human_message = message
         if isinstance(message.content, str):
             user_query = message.content
@@ -651,8 +655,8 @@ def resolve_supervisor_request_context(messages, scope_resolution_service):
                 [item.get("text", "") for item in message.content if isinstance(item, dict) and item.get("type") == "text"]
             )
 
-        if message.additional_kwargs and "exec_context" in message.additional_kwargs:
-            payload = message.additional_kwargs.get("payload", {})
+        if additional_kwargs and "exec_context" in additional_kwargs:
+            payload = additional_kwargs.get("payload", {})
             if isinstance(payload, dict):
                 if "instruction" in payload:
                     user_query = str(payload["instruction"])
@@ -663,8 +667,8 @@ def resolve_supervisor_request_context(messages, scope_resolution_service):
                 else:
                     user_query = ""
 
-        if message.additional_kwargs:
-            session_id = message.additional_kwargs.get("session_id")
+        if additional_kwargs:
+            session_id = additional_kwargs.get("session_id")
         break
 
     if session_id:
@@ -736,70 +740,6 @@ def build_supervisor_system_content(
         lines.append("[/PLUGIN AUTHORIZATION RESOLUTION]")
         return "\n".join(lines) + "\n"
 
-    def _planner_context(plan: dict | None) -> str:
-        if not isinstance(plan, dict) or not plan:
-            return ""
-        lines = ["[PLANNER PLAN]"]
-        plan_id = str(plan.get("planId") or "").strip()
-        execution_strategy = str(plan.get("executionStrategy") or "").strip()
-        plan_summary = str(plan.get("planSummary") or "").strip()
-        if plan_id:
-            lines.append(f"Plan ID: {plan_id}")
-        if execution_strategy:
-            lines.append(f"Execution Strategy: {execution_strategy}")
-        if plan_summary:
-            lines.append(f"Summary: {plan_summary}")
-        task_briefs = [dict(item) for item in list(plan.get("taskBriefs") or []) if isinstance(item, dict)]
-        if task_briefs:
-            lines.append("Task Briefs:")
-            for index, brief in enumerate(task_briefs[:8]):
-                goal = str(brief.get("goal") or brief.get("taskBriefId") or f"Task {index + 1}").strip()
-                task_id = str(brief.get("taskBriefId") or f"task-{index + 1}").strip()
-                lines.append(f"- {task_id}: {goal}")
-                write_set = [str(item).strip() for item in list(brief.get("writeSet") or []) if str(item).strip()]
-                behavior_scope = [str(item).strip() for item in list(brief.get("behaviorScope") or []) if str(item).strip()]
-                capabilities = [str(item).strip() for item in list(brief.get("requiredCapabilities") or []) if str(item).strip()]
-                acceptance = str(brief.get("acceptanceContract") or "").strip()
-                lane_hint = str(brief.get("executionLaneHint") or "").strip()
-                preferred_agent_id = str(brief.get("preferredAgentId") or "").strip()
-                preferred_worker_type = str(brief.get("preferredWorkerType") or "").strip()
-                try:
-                    target_count = int(brief.get("targetCount") or 1)
-                except Exception:
-                    target_count = 1
-                worker_briefs = [item for item in list(brief.get("workerBriefs") or []) if isinstance(item, dict)]
-                if write_set:
-                    lines.append(f"  writeSet: {', '.join(write_set)}")
-                if behavior_scope:
-                    lines.append(f"  behaviorScope: {', '.join(behavior_scope)}")
-                if capabilities:
-                    lines.append(f"  requiredCapabilities: {', '.join(capabilities)}")
-                if acceptance:
-                    lines.append(f"  acceptance: {acceptance}")
-                if lane_hint:
-                    lines.append(f"  laneHint: {lane_hint}")
-                if preferred_agent_id:
-                    lines.append(f"  preferredAgentId: {preferred_agent_id}")
-                if preferred_worker_type:
-                    lines.append(f"  preferredWorkerType: {preferred_worker_type}")
-                if target_count > 1 or worker_briefs:
-                    lines.append(f"  requestedParallelWorkers: {max(target_count, len(worker_briefs))}")
-        global_acceptance = str(plan.get("globalAcceptanceContract") or "").strip()
-        if global_acceptance:
-            lines.append(f"Global Acceptance Contract: {global_acceptance}")
-        risk_flags = [str(item).strip() for item in list(plan.get("riskFlags") or []) if str(item).strip()]
-        if risk_flags:
-            lines.append(f"Risk Flags: {', '.join(risk_flags)}")
-        lines.extend(
-            [
-                "Planner task briefs are the canonical delegation contract for this run.",
-                "If executionStrategy is delegate or mixed, use these task briefs when calling delegation_broker.",
-                "[/PLANNER PLAN]",
-                "",
-            ]
-        )
-        return "\n".join(lines)
-
     def _capability_summary(agent: dict) -> str:
         snapshot = agent.get("capabilitySnapshot") if isinstance(agent, dict) else None
         if not isinstance(snapshot, dict) or not snapshot:
@@ -845,25 +785,8 @@ def build_supervisor_system_content(
         values = [str(item).strip() for item in list(snapshot.get("operationCapabilities") or []) if str(item).strip()]
         return ",".join(values[:limit]) or "delegate"
 
-    def _planner_text(plan: dict | None) -> str:
-        if not isinstance(plan, dict):
-            return ""
-        chunks: list[str] = []
-        for key in ("planSummary", "executionStrategy", "globalAcceptanceContract"):
-            chunks.append(str(plan.get(key) or ""))
-        for brief in list(plan.get("taskBriefs") or []):
-            if not isinstance(brief, dict):
-                continue
-            for key in ("goal", "behaviorScope", "requiredCapabilities", "acceptanceContract", "executionLaneHint"):
-                value = brief.get(key)
-                if isinstance(value, list):
-                    chunks.extend(str(item) for item in value)
-                else:
-                    chunks.append(str(value or ""))
-        return " ".join(item for item in chunks if item)
-
-    def _predict_specialist_families(*, query: str, plan: dict | None) -> list[str]:
-        haystack = f"{query or ''} {_planner_text(plan)}".lower()
+    def _predict_specialist_families(*, query: str) -> list[str]:
+        haystack = str(query or "").lower()
         def has_any_token(tokens: tuple[str, ...]) -> bool:
             for token in tokens:
                 if token.isascii():
@@ -948,7 +871,7 @@ def build_supervisor_system_content(
             f"| ops={','.join(ops[:6]) or 'task_brief_driven'} | domains={','.join(domain_tags[:6]) or 'general'}"
         )
 
-    def _render_specialist_agents_context(*, plan: dict | None, task_shape_hint: dict | None) -> str:
+    def _render_specialist_agents_context(*, task_shape_hint: dict | None) -> str:
         agents = [
             agent for agent in list(loaded_agents or [])
             if isinstance(agent, dict) and str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"
@@ -970,7 +893,7 @@ def build_supervisor_system_content(
                 "--------------------------------\n"
             )
 
-        legacy_matched_families = _predict_specialist_families(query=user_query, plan=plan)
+        legacy_matched_families = _predict_specialist_families(query=user_query)
         hinted_families = [
             str(item or "").strip()
             for item in list((task_shape_hint or {}).get("suggestedFamilies") or [])
@@ -1138,7 +1061,7 @@ def build_supervisor_system_content(
             if overflow:
                 lines.append(f"- ... {overflow} more hidden by familyLimit={family_limit}")
         if not global_agents and not visible_families:
-            lines.append("No family matched this turn; keep work with supervisor unless planner creates a matching task brief.")
+            lines.append("No family matched this turn; keep work with Supervisor unless the current task contract names a matching family.")
         lines.append("--------------------------------")
         return "\n".join(lines) + "\n"
 
@@ -1151,7 +1074,7 @@ def build_supervisor_system_content(
     raw_base_prompt = config.system_prompt or storage.get_supervisor_prompt() or (
         "You are the V8 Agent OS AI Application Architect & Assistant.\n"
         "As the orchestration engine, you should delegate complex specialized tasks using `delegation_broker`; direct execution is for small, bounded tasks only.\n"
-        "Treat planner task briefs as the canonical delegation contract for both local subagents and external workers.\n"
+        "Treat Supervisor-authored task briefs as the canonical delegation contract for both local subagents and external workers.\n"
         "Subagents do not have ComputerUse, RPA, or Memory runtime authority by default; keep those route gates and final verification with the supervisor unless a brokered task explicitly grants a narrow surface.\n"
     )
     base_prompt_budget = enforce_prompt_budget(
@@ -1297,10 +1220,9 @@ def build_supervisor_system_content(
     )
 
     available_tools_context = cached_stable["availableToolsContext"]
-    planner_context = _planner_context(state.get("planner_plan"))
     task_shape_hint = state.get("task_shape_hint") if isinstance(state.get("task_shape_hint"), dict) else {}
     if not task_shape_hint:
-        task_shape_hint = classify_task_shape(user_query, planner_plan=state.get("planner_plan") if isinstance(state.get("planner_plan"), dict) else None)
+        task_shape_hint = classify_task_shape(user_query)
     task_shape_context = render_task_shape_hint(task_shape_hint)
     task_boundary_context = render_task_boundary_hint(
         task_shape_hint.get("boundaryDecision") if isinstance(task_shape_hint.get("boundaryDecision"), dict) else {}
@@ -1340,7 +1262,7 @@ def build_supervisor_system_content(
             lines.append("- Use a writing-family subagent only for complex writing, independent review, or specialist drafting; simple prose remains direct.")
         writing_route_context = "\n".join(lines) + "\n\n"
     language_context = _render_language_context(user_query)
-    specialist_agents_context = _render_specialist_agents_context(plan=state.get("planner_plan"), task_shape_hint=task_shape_hint)
+    specialist_agents_context = _render_specialist_agents_context(task_shape_hint=task_shape_hint)
     artifact_awareness_context, artifact_awareness_diagnostics = _build_artifact_awareness_context(
         memory_runtime=memory_runtime,
         session_id=session_id,
@@ -1425,13 +1347,13 @@ def build_supervisor_system_content(
         "Skill is a method package, not a permission grant; it cannot bypass runtime gates, workspace boundaries, or safety policy.\n"
         "When built-in runtimes and installed Skills/MCP tools can both serve the task, follow the user's explicit choice first. If the user did not name a route and an installed Skill/MCP clearly matches the task and advertises 免费/free use, prefer that installed channel; otherwise choose the route with the best delivery quality and proof.\n"
         "When the user asks to install, remove, list, or inspect an MCP server, collect its name, type (stdio/http/sse), command or URL, and required env/headers, then use `mcp_server_config`; do not call Admin login-only APIs and do not manually edit config.json or mcp.json.\n"
-        "You are a general-purpose intelligent Supervisor: follow the user's current instruction, plan, coordinate, ask clarifying questions, and handle clear tasks directly when that best serves the user. Use Planner/Memory/runtime hints as supporting evidence, not as commands.\n"
+        "You are a general-purpose intelligent Supervisor: follow the user's current instruction, define explicit execution contracts, coordinate, ask clarifying questions, and handle clear tasks directly when that best serves the user. Memory and runtime hints are evidence, not commands.\n"
         "Improving delivery quality is your first principle. For clear and bounded tasks, direct Supervisor execution can be appropriate even if the task has many steps; for vague, hard-to-diagnose, multi-file, multi-source, media, desktop, reusable RPA, or specialist-parallel work, choose the higher-quality runtime/subagent route that can return typed handoff/proof.\n"
         "Active execution runtimes: Research, Engineering, Creative Media, Computer Use, RPA, Delegation/Subagent. User-facing product names are 深度调研、编程模式、多媒体创作、桌面操作、自动流程、子代理协作. Passive/support systems: 记忆系统(Memory), 定时与触发(Automation/Cron/Hook), 扩展生态(Extensions), 插件管理中心(Plugin Manager), 网络连接(Network Supervisor). @插件 是强提示而非唯一入口；当前任务确实需要已安装、已配置且健康的插件时，可先用 plugin_broker 查看组件并创建最小 task grant。\n"
         "Subagent mode bindings are automatic execution rails, not extra Supervisor chores: when you dispatch a bound Research or Creative Media subagent, the engine grants its registered specialist tools to that subagent. Do not spend an extra turn calling runtime_broker only to grant research.core or creative_media.core for an already-bound subagent. Custom subagents without bindings receive only baseline tools unless the task explicitly grants more.\n"
         "When a delegated task needs a plugin covered by an active Supervisor grant, include taskBrief.pluginReferences with the exact pluginId and the smallest required componentIds subset. The broker may copy only that subset to the direct child; it cannot expand components or propagate anything to grandchildren. The parent grant may come from a user @plugin reference or plugin_broker, but it must already be active.\n"
         "Treat plugin reference, active grant, and successful execution as three distinct facts. Never claim a plugin ran merely because it was selected or authorized. If authorization is blocked, report the structured status and configurationUrl instead of fabricating a tool call.\n"
-        "Planner is a weak route/noise-reduction adviser. It may suggest runtime needs or risks, but it does not approve, command, or replace your judgment; do not spend extra turns obeying a stale planner suggestion when the user's current instruction is clear.\n"
+        "You own routing and task decomposition. For every write-capable runtime task, provide a bounded writeSet, expectedOutputs, acceptance, and proof expectations; never delegate that judgment to a hidden planning lane.\n"
         "You are responsible for final delivery judgment. Treat runtime/subagent handoffs as evidence to inspect: verify changed files, tests, artifacts, warnings, and residual risks before telling the user the work is complete.\n"
         "Treat limits stated by the user, such as maximum tool calls, cost, files, or retries, as task constraints. Stop before exceeding them; ask or change approach instead of silently overrunning the limit.\n"
         "Tool calls use structured arguments; quote style in examples is only illustrative. Prefer JSON-style double-quoted strings in examples, and never treat single quotes vs double quotes as different tool semantics.\n"
@@ -1463,7 +1385,6 @@ def build_supervisor_system_content(
         _prompt_part("direct_tool_registry", "scoped_static", f"{available_tools_context}\n", scope="tool_registry"),
         _prompt_part("network_supervisor.context", "dynamic", network_supervisor_context, scope="route_context"),
         _prompt_part("engineering.context_pack", "dynamic", engineering_context, scope="engineering_context"),
-        _prompt_part("planner.plan", "dynamic", planner_context, scope="planner"),
         _prompt_part("artifact_awareness", "dynamic", artifact_awareness_context, scope="artifact_awareness"),
         _prompt_part("todos", "dynamic", todos_context, scope="todos"),
         _prompt_part("memory.session_context", "dynamic", f"{memory_context}\n\n", scope="memory"),
@@ -1492,7 +1413,6 @@ def build_supervisor_system_content(
         "available_tools_context": available_tools_context,
         "network_supervisor_context": network_supervisor_context,
         "engineering_context": engineering_context,
-        "planner_context": planner_context,
         "artifact_awareness_context": artifact_awareness_context,
         "artifact_awareness_diagnostics": artifact_awareness_diagnostics,
         "todos_context": todos_context,

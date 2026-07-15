@@ -42,7 +42,7 @@ from core.tools.native.creative_media_facade import (  # noqa: E402
     creative_media_plan,
     creative_media_quality,
 )
-from graph.agent_factories import _build_agent_system_content, _format_delegated_plan_context  # noqa: E402
+from graph.agent_factories import _build_agent_system_content, _format_delegated_task_contract  # noqa: E402
 
 
 REPO_ROOT = ENGINE_ROOT.parents[1]
@@ -81,15 +81,7 @@ def _creative_agent_prompt() -> str:
             ],
         },
     }
-    delegated_plan_context = _format_delegated_plan_context(
-        task_brief,
-        {
-            "planId": "plan-creative-media-subagent-dry-run",
-            "executionStrategy": "creative_media_jobs",
-            "planSummary": "Use Creative Media Runtime jobs for music and 3D artifact generation.",
-            "globalAcceptanceContract": "Use create -> poll -> artifacts; do not hand off provider raw JSON.",
-        },
-    )
+    delegated_plan_context = _format_delegated_task_contract(task_brief)
     return _build_agent_system_content(
         agent_name=agent.name,
         agent_system_prompt=agent.system_prompt,

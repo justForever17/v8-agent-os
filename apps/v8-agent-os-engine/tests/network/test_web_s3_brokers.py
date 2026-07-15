@@ -783,7 +783,6 @@ class WebAndS3BrokerTests(unittest.TestCase):
                 "domainTags": ["software_engineering"],
                 "operationCapabilities": ["implement", "workspace_changes"],
                 "artifactCapabilities": ["apps/v8-agent-os-engine"],
-                "plannerSuitability": "high",
             },
         }
 
@@ -824,7 +823,6 @@ class WebAndS3BrokerTests(unittest.TestCase):
                 "domainTags": ["software_engineering"],
                 "operationCapabilities": ["implement", "workspace_changes"],
                 "artifactCapabilities": ["apps/v8-agent-os-engine"],
-                "plannerSuitability": "high",
             },
         }
 

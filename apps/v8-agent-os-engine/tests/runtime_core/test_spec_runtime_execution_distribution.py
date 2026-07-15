@@ -361,8 +361,10 @@ def test_spec_write_task_without_explicit_artifact_is_blocked_before_dispatch(mo
 
     quality = enriched["inputs"]["routeBriefQuality"]
     assert quality["blocking"] is True
-    assert quality["reason"] == "spec_write_artifact_contract_missing"
-    assert quality["taskBriefIds"] == ["TASK-001"]
+    assert quality["reason"] == "write_task_contract_incomplete"
+    assert quality["tasks"] == [
+        {"taskBriefId": "TASK-001", "missingFields": ["writeSet", "expectedOutputs"]}
+    ]
     assert enriched["inputs"]["workerBriefs"][0]["writeSet"] == []
 
 

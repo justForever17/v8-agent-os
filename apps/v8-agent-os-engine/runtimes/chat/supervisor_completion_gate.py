@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
+from core.database import db
 from core.runtime_episodes import ACTIVE_EPISODE_STATES
 
 
@@ -191,6 +194,228 @@ def _missing_spec_proof_handoffs(
     }
 
 
+def _episode_task_briefs(episode: Mapping[str, Any]) -> list[dict[str, Any]]:
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    raw = inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or []
+    return [dict(item) for item in list(raw or []) if isinstance(item, Mapping)]
+
+
+def _brief_requires_write(brief: Mapping[str, Any], *, episode_kind: str) -> bool:
+    if bool(brief.get("readOnly") or brief.get("read_only")):
+        return False
+    if bool(brief.get("writeRequired") or brief.get("write_required")):
+        return True
+    if list(brief.get("writeSet") or brief.get("write_set") or []):
+        return True
+    family = str(brief.get("familyHint") or brief.get("family_hint") or "").strip().lower()
+    capabilities = " ".join(str(item or "") for item in list(brief.get("requiredCapabilities") or [])).lower()
+    return episode_kind == "engineering" or family == "engineering" or any(
+        marker in capabilities for marker in ("workspace_mutation", "file_write", "implementation")
+    )
+
+
+def _required_write_episode(episode: Mapping[str, Any]) -> bool:
+    if _is_optional_episode(episode):
+        return False
+    kind = str(episode.get("kind") or "").strip().lower()
+    briefs = _episode_task_briefs(episode)
+    if briefs:
+        return any(_brief_requires_write(brief, episode_kind=kind) for brief in briefs)
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    if bool(inputs.get("readOnly") or inputs.get("read_only")):
+        return False
+    return bool(inputs.get("writeRequired") or inputs.get("write_required") or kind == "engineering")
+
+
+def _handoff_payload(handoff: Mapping[str, Any]) -> dict[str, Any]:
+    payload = handoff.get("payload") if isinstance(handoff.get("payload"), Mapping) else {}
+    return {**dict(handoff), **dict(payload)}
+
+
+def _collect_named_values(value: Any, keys: set[str], *, limit: int = 64) -> list[Any]:
+    collected: list[Any] = []
+
+    def _walk(item: Any) -> None:
+        if len(collected) >= limit:
+            return
+        if isinstance(item, Mapping):
+            for key, child in item.items():
+                if str(key) in keys:
+                    values = child if isinstance(child, list) else [child]
+                    for candidate in values:
+                        if candidate not in (None, "") and candidate not in collected:
+                            collected.append(candidate)
+                            if len(collected) >= limit:
+                                return
+                if isinstance(child, (Mapping, list, tuple)):
+                    _walk(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                _walk(child)
+
+    _walk(value)
+    return collected
+
+
+def _ref_text(value: Any) -> str:
+    if isinstance(value, Mapping):
+        for key in ("path", "filePath", "file_path", "sourcePath", "workspaceRelativePath", "uri", "url", "ref"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+        return ""
+    return str(value or "").strip()
+
+
+def _looks_like_file_path(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.startswith(("artifact://", "workspace://")):
+        return True
+    if text.startswith("file://"):
+        return True
+    return bool(re.search(r"(?:^|[\\/])[^\\/]+\.[A-Za-z0-9]{1,12}$", text) or re.search(r"^[^\\/]+\.[A-Za-z0-9]{1,12}$", text))
+
+
+def _existing_file_evidence(episode: Mapping[str, Any], handoffs: Iterable[Mapping[str, Any]]) -> list[str]:
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    workspace = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip()
+    workspace_path = Path(workspace).resolve() if workspace else None
+    values: list[Any] = []
+    keys = {
+        "artifactRefs",
+        "artifacts",
+        "changedFiles",
+        "changed_files",
+        "touchedFiles",
+        "touched_files",
+        "writtenFiles",
+        "written_files",
+        "outputFiles",
+        "output_files",
+    }
+    for handoff in handoffs:
+        values.extend(_collect_named_values(_handoff_payload(handoff), keys))
+    evidence: list[str] = []
+    episode_session_id = str(episode.get("sessionId") or episode.get("session_id") or "").strip()
+    episode_run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+    for value in values:
+        text = _ref_text(value)
+        if not text or not _looks_like_file_path(text):
+            continue
+        if text.startswith("artifact://"):
+            artifact_id = text[len("artifact://") :].strip("/\\")
+            artifact = db.get_runtime_artifact(artifact_id) if artifact_id else None
+            if not artifact:
+                continue
+            artifact_session_id = str(artifact.get("sessionId") or artifact.get("session_id") or "").strip()
+            artifact_run_id = str(artifact.get("runId") or artifact.get("run_id") or "").strip()
+            if episode_session_id and artifact_session_id and artifact_session_id != episode_session_id:
+                continue
+            if episode_run_id and artifact_run_id and artifact_run_id != episode_run_id:
+                continue
+            source_path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
+            if source_path:
+                try:
+                    candidate = Path(source_path)
+                    if candidate.exists() and candidate.is_file():
+                        evidence.append(str(candidate.resolve()))
+                except Exception:
+                    pass
+            continue
+        candidate_text = text
+        if text.startswith("workspace://"):
+            if workspace_path is None:
+                continue
+            candidate_text = text[len("workspace://") :].lstrip("/\\")
+        elif text.startswith("file://"):
+            candidate_text = text[7:]
+        try:
+            candidate = Path(candidate_text)
+            if not candidate.is_absolute() and workspace_path is not None:
+                candidate = workspace_path / candidate
+            if candidate.exists() and candidate.is_file():
+                evidence.append(str(candidate.resolve()))
+        except Exception:
+            continue
+    return list(dict.fromkeys(evidence))[:32]
+
+
+def _handoff_proof_evidence(handoffs: Iterable[Mapping[str, Any]]) -> list[str]:
+    keys = {
+        "proofRefs",
+        "proof_refs",
+        "verificationRefs",
+        "verification_refs",
+        "evidenceRefs",
+        "evidence_refs",
+        "verificationResults",
+        "verification_results",
+    }
+    evidence: list[str] = []
+    for handoff in handoffs:
+        payload = _handoff_payload(handoff)
+        for value in _collect_named_values(payload, keys):
+            text = _ref_text(value) or str(value or "").strip()
+            if text:
+                evidence.append(text[:800])
+        verification = payload.get("verification")
+        if isinstance(verification, Mapping) and verification:
+            status = str(verification.get("status") or verification.get("state") or "").strip().lower()
+            passed = verification.get("passed")
+            if passed is True or status in {"passed", "verified", "success", "completed"}:
+                evidence.append(f"verification:{status or 'passed'}")
+        acceptance = payload.get("acceptanceCheck")
+        if isinstance(acceptance, Mapping):
+            must = acceptance.get("must") if isinstance(acceptance.get("must"), Mapping) else {}
+            if must.get("passed") is True:
+                evidence.append("acceptance:must_passed")
+    return list(dict.fromkeys(evidence))[:32]
+
+
+def _non_spec_write_delivery_failure(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> dict[str, Any] | None:
+    for episode in episodes:
+        if not _required_write_episode(episode):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        state = str(episode.get("state") or "").strip().lower()
+        handoffs = [dict(item) for item in list(handoffs_by_episode.get(episode_id, []) or []) if isinstance(item, Mapping)]
+        statuses = {
+            str(_handoff_payload(item).get("status") or "").strip().lower()
+            for item in handoffs
+        }
+        if state == "degraded" or statuses.intersection({"degraded", "failed", "blocked", "error"}):
+            return {
+                "episodeId": episode_id,
+                "reason": "required_write_runtime_degraded",
+                "state": state,
+                "handoffStatuses": sorted(status for status in statuses if status),
+                "recoverable": True,
+            }
+        file_evidence = _existing_file_evidence(episode, handoffs)
+        if not file_evidence:
+            return {
+                "episodeId": episode_id,
+                "reason": "required_write_files_missing",
+                "state": state,
+                "recoverable": True,
+            }
+        proof_evidence = _handoff_proof_evidence(handoffs)
+        if not proof_evidence:
+            return {
+                "episodeId": episode_id,
+                "reason": "required_write_proof_missing",
+                "state": state,
+                "fileEvidence": file_evidence[:8],
+                "recoverable": True,
+            }
+    return None
+
+
 def evaluate_supervisor_completion(
     *,
     episodes: Iterable[Mapping[str, Any]] = (),
@@ -252,6 +477,18 @@ def evaluate_supervisor_completion(
                         "status": status,
                     },
                 )
+
+    if not spec_mode:
+        write_delivery_failure = _non_spec_write_delivery_failure(normalized_episodes, normalized_handoffs)
+        if write_delivery_failure:
+            return SupervisorCompletionDecision(
+                action="fail",
+                reason=str(write_delivery_failure.get("reason") or "required_write_delivery_incomplete"),
+                details={
+                    **write_delivery_failure,
+                    "nextAction": "repair_or_retry_required_write_episode",
+                },
+            )
 
     if spec_mode:
         brief = dict(spec_brief or {})

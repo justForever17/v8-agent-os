@@ -81,99 +81,12 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("[route required]", str(result.content))
         enqueue_episode.assert_not_called()
 
-    async def test_planning_mode_allows_bounded_readonly_command_fact_gathering(self) -> None:
-        request = _DummyRequest(
-            "run_system_command",
-            "tool_call_readonly",
-            state={
-                "taskPlanningMode": True,
-                "current_route_context": {"engineeringRequired": True},
-            },
-            args={"command": "rg \"RuntimeEpisode\" apps/v8-agent-os-engine -n"},
-        )
-
-        async def execute(_request):
-            return ToolMessage(content="found RuntimeEpisode", name="run_system_command", tool_call_id="tool_call_readonly")
-
-        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
-
-        self.assertIn("found RuntimeEpisode", str(result.content))
-        self.assertNotIn("[route required]", str(result.content))
-
-    async def test_planning_mode_still_blocks_mutating_or_install_commands(self) -> None:
-        request = _DummyRequest(
-            "run_system_command",
-            "tool_call_install",
-            state={
-                "taskPlanningMode": True,
-                "current_route_context": {"engineeringRequired": True},
-            },
-            args={"command": "npm install left-pad"},
-        )
-
-        async def execute(_request):
-            raise AssertionError("install command should still be blocked in planning mode")
-
-        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
-
-        self.assertIsInstance(result, ToolMessage)
-        self.assertIn("[route required]", str(result.content))
-
-    async def test_planning_mode_allows_expanded_web_fact_gathering_budget(self) -> None:
-        previous_calls = [
-            types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": f"web-{index}"}])
-            for index in range(7)
-        ]
-        request = _DummyRequest(
-            "web_broker",
-            "tool_call_web_8",
-            state={
-                "taskPlanningMode": True,
-                "current_route_context": {"engineeringRequired": True},
-                "messages": previous_calls,
-            },
-            args={"query": "current docs"},
-        )
-
-        async def execute(_request):
-            return ToolMessage(content="web evidence", name="web_broker", tool_call_id="tool_call_web_8")
-
-        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
-
-        self.assertIn("web evidence", str(result.content))
-        self.assertNotIn("[route required]", str(result.content))
-
-    async def test_planning_mode_routes_web_after_expanded_budget(self) -> None:
-        previous_calls = [
-            types.SimpleNamespace(tool_calls=[{"name": "web_broker", "id": f"web-{index}"}])
-            for index in range(8)
-        ]
-        request = _DummyRequest(
-            "web_broker",
-            "tool_call_web_9",
-            state={
-                "taskPlanningMode": True,
-                "current_route_context": {"engineeringRequired": True},
-                "messages": previous_calls,
-            },
-            args={"query": "current docs"},
-        )
-
-        async def execute(_request):
-            raise AssertionError("ninth planning web call should route to Research")
-
-        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
-
-        self.assertIn("[route required]", str(result.content))
-        self.assertEqual(result.additional_kwargs["routeIntent"]["kind"], "research")
-
-
-def test_runtime_broker_route_accepts_json_need_and_returns_waitable_episode() -> None:
+def test_runtime_broker_route_accepts_typed_need_and_marks_runtime_episode_next_action() -> None:
     command = runtime_broker.func(
         mode="route",
-        need=json.dumps(
-            {
-                "tool": "write_native_file",
+        need={
+                "kind": "engineering",
+                "source": "supervisor",
                 "reason": "blocked direct implementation",
                 "inputs": {
                     "workspacePath": r"E:\Projects\test7",
@@ -183,8 +96,7 @@ def test_runtime_broker_route_accepts_json_need_and_returns_waitable_episode() -
                             "title": "Apply a focused application patch",
                             "goal": "Update src/App.tsx with the requested behavior.",
                             "context": {"source": "current_supervisor_turn"},
-                            "expectedOutput": "src/App.tsx",
-                            "expectedArtifacts": ["src/App.tsx"],
+                            "expectedOutputs": ["src/App.tsx"],
                             "writeSet": ["src/App.tsx"],
                             "acceptance": "The requested behavior is present and the focused checks pass.",
                             "constraints": ["Write only src/App.tsx."],
@@ -192,8 +104,7 @@ def test_runtime_broker_route_accepts_json_need_and_returns_waitable_episode() -
                         }
                     ],
                 },
-            }
-        ),
+            },
         state={"current_route_context": {}},
         tool_call_id="call-runtime-route-agent-quality",
     )
@@ -202,7 +113,7 @@ def test_runtime_broker_route_accepts_json_need_and_returns_waitable_episode() -
 
     assert payload["episodeKind"] == "engineering"
     assert payload["queuedEpisodeId"] == episode["episodeId"]
-    assert payload["nextAction"] == "wait_episode"
+    assert payload["nextAction"] == "runtime_episode"
     assert episode["state"] == "queued"
     assert episode["inputs"]["workspacePath"] == r"E:\Projects\test7"
     assert episode["inputs"]["tasks"][0]["taskBriefId"] == "task-agent-quality-route"

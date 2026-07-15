@@ -12,7 +12,7 @@ from graph.agent_factories import (
     _delegated_result_text,
     _delegated_tool_names,
     _delegated_visible_result_text,
-    _format_delegated_plan_context,
+    _format_delegated_task_contract,
     build_specialist_agent_components,
 )
 
@@ -92,8 +92,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("docs_server.query", tool_names)
         self.assertNotIn("gateway.generate", tool_names)
 
-    def test_delegated_plan_context_formats_compact_task_contract(self):
-        content = _format_delegated_plan_context(
+    def test_delegated_task_contract_formats_compact_task_contract(self):
+        content = _format_delegated_task_contract(
             {
                 "taskBriefId": "task-1",
                 "goal": "调研爱因斯坦并产出人物 Skill 草案",
@@ -102,19 +102,9 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                 "requiredCapabilities": ["skill_authoring"],
                 "acceptanceContract": "Supervisor verifies the final skill.",
             },
-            {
-                "planId": "plan-123",
-                "executionStrategy": "delegate",
-                "planSummary": "Use Nuwa workflow with bounded research and synthesis.",
-                "riskFlags": ["network_research"],
-                "dependencies": [{"taskBriefId": "task-1", "dependsOn": []}],
-                "globalAcceptanceContract": "Supervisor acceptance required.",
-                "taskCount": 1,
-            },
         )
 
         self.assertIn("<delegated_task_plan>", content)
-        self.assertIn("Plan ID: plan-123", content)
         self.assertIn("Task Brief ID: task-1", content)
         self.assertIn("Required Capabilities: skill_authoring", content)
         self.assertIn("Acceptance Contract: Supervisor verifies the final skill.", content)
@@ -223,29 +213,33 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         from core.tools.native.delegation import delegation_broker
 
         schema = delegation_broker.args_schema.model_json_schema()
-        task_schema = schema["$defs"]["DelegationTaskInput"]["properties"]
+        task_definition = schema["$defs"]["DelegationTaskInput"]
+        task_schema = task_definition["properties"]
 
         self.assertIn("toolPolicy", task_schema)
         self.assertIn("acceptanceContract", task_schema)
         self.assertIn("expectedOutput", task_schema)
         self.assertIn("constraints", task_schema)
+        self.assertEqual(
+            set(task_definition["required"]),
+            {"taskBriefId", "goal", "expectedOutputs", "acceptanceContract"},
+        )
 
-    def test_delegated_plan_context_explains_exact_tool_authority(self):
-        content = _format_delegated_plan_context(
+    def test_delegated_task_contract_explains_exact_tool_authority(self):
+        content = _format_delegated_task_contract(
             {
                 "taskBriefId": "task-no-tools",
                 "goal": "Return a bounded textual self-check.",
                 "toolPolicy": {"mode": "none", "allowedTools": [], "forbiddenTools": []},
             },
-            None,
         )
 
         self.assertIn("Tool Policy:", content)
         self.assertIn("this task has no tool authority", content)
         self.assertIn("absence of `delegation_broker`", content)
 
-    def test_delegated_plan_context_without_planner_does_not_claim_planner_origin(self):
-        content = _format_delegated_plan_context(
+    def test_delegated_task_contract_uses_supervisor_runtime_origin(self):
+        content = _format_delegated_task_contract(
             {
                 "taskBriefId": "TASK-SUPERVISOR-FIRST",
                 "goal": "根据已批准 Spec 片段实现浏览器计数器。",
@@ -262,7 +256,6 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                     "specExecutionSummary": "TASK-001 绑定 REQ-001 与 DES-001；输出 index.html。",
                 },
             },
-            None,
         )
 
         self.assertIn("supervisor's delegation/runtime pipeline", content)
@@ -272,8 +265,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("REQ-001: 页面必须包含 SPEC_DRY_RUN_COUNTER 标记。", content)
         self.assertIn("DES-001: 使用单文件 index.html 与内联 JavaScript。", content)
 
-    def test_delegated_plan_context_warns_artifact_workers_to_use_write_tool(self):
-        content = _format_delegated_plan_context(
+    def test_delegated_task_contract_warns_artifact_workers_to_use_write_tool(self):
+        content = _format_delegated_task_contract(
             {
                 "taskBriefId": "TASK-010",
                 "goal": "写入 ling-perspective/SKILL.md 和 references/research/*.md",
@@ -288,7 +281,6 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                 },
                 "acceptanceContract": "All expected files must contain substantive, source-backed content.",
             },
-            {"planId": "plan-artifact", "executionStrategy": "delegate"},
         )
 
         self.assertIn("Artifact Write Discipline:", content)
@@ -300,8 +292,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Empty placeholder files", content)
         self.assertIn("Skill files must include source markers.", content)
 
-    def test_delegated_plan_context_keeps_research_runtime_contract_distinct(self):
-        content = _format_delegated_plan_context(
+    def test_delegated_task_contract_keeps_research_runtime_contract_distinct(self):
+        content = _format_delegated_task_contract(
             {
                 "taskBriefId": "TASK-RESEARCH",
                 "goal": "完成 Spec 中的六维调研任务。",
@@ -322,7 +314,6 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                     "proofExpectations": ["Report selected sources and gaps."],
                 },
             },
-            None,
         )
 
         self.assertIn("Runtime Access: research.core", content)
@@ -332,8 +323,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Runtime Lane: research", content)
         self.assertNotIn("Engineering Role: verification", content)
 
-    def test_delegated_plan_context_does_not_dump_runtime_only_context(self):
-        content = _format_delegated_plan_context(
+    def test_delegated_task_contract_does_not_dump_runtime_only_context(self):
+        content = _format_delegated_task_contract(
             {
                 "taskBriefId": "TASK-001",
                 "goal": "执行已批准 Spec 任务。",
@@ -358,7 +349,6 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                     },
                 },
             },
-            None,
         )
 
         self.assertIn("Agent-Visible Context:", content)
@@ -369,8 +359,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertNotIn("SHOULD_NOT_DUMP_DESIGN_FULL_TEXT", content)
         self.assertNotIn("SHOULD_NOT_DUMP_BUNDLE", content)
 
-    def test_delegated_plan_context_renders_engineering_execution_and_handoff_contract(self):
-        content = _format_delegated_plan_context(
+    def test_delegated_task_contract_renders_engineering_execution_and_handoff_contract(self):
+        content = _format_delegated_task_contract(
             {
                 "taskBriefId": "TASK-001",
                 "goal": "实现已批准 Spec 的浏览器计数器。",
@@ -405,7 +395,6 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                     "proofExpectations": ["Report touched files and tests."],
                 },
             },
-            None,
         )
 
         self.assertIn("Engineering Execution Contract:", content)
@@ -416,10 +405,9 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("Required Fields: changedFiles, commandsRun, testResults, artifacts, proofRefs", content)
         self.assertIn("A plain done message is not enough.", content)
 
-    def test_agent_system_content_uses_same_delegated_plan_block(self):
-        delegated_plan = _format_delegated_plan_context(
+    def test_agent_system_content_uses_same_delegated_task_contract(self):
+        delegated_plan = _format_delegated_task_contract(
             {"taskBriefId": "task-1", "goal": "Build bounded output"},
-            {"planId": "plan-123", "executionStrategy": "delegate"},
         )
 
         content = _build_agent_system_content(
@@ -441,7 +429,6 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertIn("same purpose fails twice", content)
         self.assertIn("User decision gates are handled outside delegated worker control", content)
         self.assertIn("return `waiting_for_user`", content)
-        self.assertIn("Plan ID: plan-123", content)
         self.assertIn("Task Brief ID: task-1", content)
         self.assertIn("[Extensions Runtime]", content)
         self.assertIn("run_system_command(mode=auto)", content)

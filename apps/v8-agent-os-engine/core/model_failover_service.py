@@ -21,7 +21,13 @@ from erc.run_service import run_service
 
 logger = logging.getLogger("v8chat.model_failover")
 
-_LOCAL_RETRY_ERROR_CODES = {"rate_limit", "timeout", "provider_unavailable"}
+_RESPONSE_CONTRACT_ERROR_CODE = "response_contract_violation"
+_LOCAL_RETRY_ERROR_CODES = {
+    "rate_limit",
+    "timeout",
+    "provider_unavailable",
+    _RESPONSE_CONTRACT_ERROR_CODE,
+}
 _FAILOVER_ERROR_CODES = _LOCAL_RETRY_ERROR_CODES | {"quota_exceeded"}
 
 
@@ -294,6 +300,8 @@ class ModelFailoverService:
         preferred_model_id: str,
         build_model: Callable[[str], Any],
         invocation_config: Dict[str, Any] | None = None,
+        tool_choice: Any | None = None,
+        result_validator: Callable[[Any], str | None] | None = None,
     ) -> Any:
         ctx = get_runtime_context()
         run_id = ctx.get("run_id")
@@ -382,7 +390,13 @@ class ModelFailoverService:
                 and candidate.model_id in {preferred_model_id, effective_preferred_model_id, effective_preferred_runtime_id}
                 else build_model(candidate.model_id)
             )
-            bound_llm = current_llm.bind_tools(tools) if tools else current_llm
+            bound_llm = (
+                current_llm.bind_tools(tools, tool_choice=tool_choice)
+                if tools and tool_choice is not None
+                else current_llm.bind_tools(tools)
+                if tools
+                else current_llm
+            )
             local_attempts = max_local_retries + 1 if index == 0 else 1
             for retry_index in range(local_attempts):
                 if total_attempts >= max_total_attempts:
@@ -398,6 +412,41 @@ class ModelFailoverService:
                         if invocation_config
                         else bound_llm.invoke(messages)
                     )
+                    validation_error = ""
+                    if result_validator is not None:
+                        try:
+                            validation_error = str(result_validator(result) or "").strip()
+                        except Exception as exc:
+                            validation_error = (
+                                f"response validator failed: {type(exc).__name__}: {exc}"
+                            )
+                    if validation_error:
+                        attempts.append(
+                            {
+                                "modelId": candidate.model_id,
+                                "providerId": candidate.provider_id,
+                                "reason": candidate.reason,
+                                "retryIndex": retry_index,
+                                "attemptOrdinal": total_attempts,
+                                "apiStandard": candidate.api_standard,
+                                "effectiveCapabilityMatch": candidate.effective_capability_match,
+                                "degradeApplied": candidate.degrade_applied,
+                                "degradeReason": candidate.degrade_reason,
+                                "effectiveCapabilityMatrix": candidate.effective_capability_matrix or {},
+                                "code": _RESPONSE_CONTRACT_ERROR_CODE,
+                                "message": validation_error,
+                                "retryable": True,
+                            }
+                        )
+                        logger.warning(
+                            "[ModelFailover] role=%s model=%s attempt=%s code=%s message=%s",
+                            role,
+                            candidate.model_id,
+                            retry_index + 1,
+                            _RESPONSE_CONTRACT_ERROR_CODE,
+                            validation_error,
+                        )
+                        continue
                     self._persist_sticky_choice(
                         config=config,
                         run_id=run_id,

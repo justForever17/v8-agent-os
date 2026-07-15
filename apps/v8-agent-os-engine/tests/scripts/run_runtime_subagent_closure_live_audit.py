@@ -54,6 +54,7 @@ class LiveCaseResult:
     observed_topics: list[str] = field(default_factory=list)
     episode_ids: list[str] = field(default_factory=list)
     episode_kinds: list[str] = field(default_factory=list)
+    top_level_episode_kinds: list[str] = field(default_factory=list)
     handoff_kinds: list[str] = field(default_factory=list)
     handoff_markers: list[str] = field(default_factory=list)
     key_events: list[str] = field(default_factory=list)
@@ -258,14 +259,11 @@ def _submit_message(
         )
     else:
         # Prefill turns only create durable history for compaction tests.
-        # Keep them out of Planner/runtime routing so the test does not
+        # Keep them out of runtime routing so the test does not
         # accidentally validate a synthetic filler message instead of the
         # final runtime request.
         request_data.update(
             {
-                "taskPlanningMode": False,
-                "plannerMode": "off",
-                "plannerDispatchMode": "suggest",
                 "disableExtensionsPrefilter": True,
             }
         )
@@ -381,6 +379,23 @@ def _wait_for_session_idle(session_id: str, *, timeout: int) -> tuple[bool, dict
     return False, last_state
 
 
+def _wait_for_result_idle(result: LiveCaseResult, *, timeout: int) -> tuple[bool, dict[str, Any]]:
+    """Wait for the run to settle while continuing to observe durable acceptance."""
+
+    deadline = time.time() + max(5, timeout)
+    last_state: dict[str, Any] = {}
+    while time.time() < deadline:
+        _summarize_result(result)
+        idle, state = _session_idle_state(str(result.session_id or ""))
+        last_state = state
+        if idle:
+            return True, state
+        if _state_has_model_quota_block(state):
+            return False, state
+        time.sleep(2)
+    return False, last_state
+
+
 def _cancel_active_runs(engine_url: str, session_id: str, idle_state: dict[str, Any], *, reason: str) -> dict[str, Any]:
     api_base = _engine_api_base(engine_url)
     cancelled: list[dict[str, Any]] = []
@@ -458,6 +473,12 @@ def _event_payload(event: dict[str, Any]) -> Any:
 
 def _summarize_result(result: LiveCaseResult) -> None:
     events, episodes, handoffs, error = _load_durable(result)
+    # This function is called repeatedly while a live run is active.  Counts are
+    # snapshot values, not cumulative polling counters.
+    result.context_governance_events = 0
+    result.degraded_count = 0
+    result.active_episode_kinds = []
+    result.top_level_episode_kinds = []
     if error:
         result.key_events.append(_redact({"durableLookupError": error}))
     topics: list[str] = []
@@ -494,6 +515,9 @@ def _summarize_result(result: LiveCaseResult) -> None:
             result.episode_ids.append(episode_id)
         if kind and kind not in result.episode_kinds:
             result.episode_kinds.append(kind)
+        parent_episode_id = str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+        if kind and not parent_episode_id and kind not in result.top_level_episode_kinds:
+            result.top_level_episode_kinds.append(kind)
         state = str(episode.get("state") or episode.get("status") or "").strip().lower()
         if kind and state not in {"completed", "failed", "cancelled", "canceled", "degraded"} and kind not in active_episode_kinds:
             active_episode_kinds.append(kind)
@@ -518,7 +542,7 @@ def _summarize_result(result: LiveCaseResult) -> None:
 
 def _expected_kinds_seen(result: LiveCaseResult) -> bool:
     return all(
-        kind in result.episode_kinds or any(kind in handoff for handoff in result.handoff_kinds)
+        kind in result.top_level_episode_kinds
         for kind in result.spec.expect_kinds
     )
 
@@ -543,7 +567,7 @@ def _evaluate(result: LiveCaseResult) -> None:
     missing_kinds = [
         kind
         for kind in spec.expect_kinds
-        if kind not in result.episode_kinds and not any(kind in handoff for handoff in result.handoff_kinds)
+        if kind not in result.top_level_episode_kinds
     ]
     marker_text = " ".join([*result.handoff_kinds, *result.handoff_markers, *result.observed_topics, *result.key_events]).lower()
     missing_markers = [marker for marker in spec.expect_handoff_markers if marker.lower() not in marker_text]
@@ -651,8 +675,9 @@ def _run_case(
                 break
             time.sleep(3)
     acceptance_seen = _acceptance_contract_observed(result)
-    idle_timeout = min(12, max(5, max_wait // 10)) if acceptance_seen else min(120, max(20, max_wait // 2))
-    idle, idle_state = _wait_for_session_idle(session_id, timeout=idle_timeout)
+    terminal_grace = min(180, max(45, (max_wait * 3) // 4))
+    idle, idle_state = _wait_for_result_idle(result, timeout=terminal_grace)
+    acceptance_seen = _acceptance_contract_observed(result)
     result.key_events.append(_redact({"postRunIdle": idle, "idleState": idle_state}))
     if not idle and not acceptance_seen:
         cleanup = _cancel_active_runs(
@@ -715,6 +740,7 @@ def _write_report(results: list[LiveCaseResult], *, output_dir: Path) -> Path:
                     "failureReason": item.failure_reason,
                     "episodeIds": item.episode_ids,
                     "episodeKinds": item.episode_kinds,
+                    "topLevelEpisodeKinds": item.top_level_episode_kinds,
                     "handoffKinds": item.handoff_kinds,
                     "handoffMarkers": item.handoff_markers[:40],
                     "activeEpisodeKinds": item.active_episode_kinds,

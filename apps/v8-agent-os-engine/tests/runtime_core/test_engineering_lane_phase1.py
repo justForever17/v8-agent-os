@@ -144,7 +144,7 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
                 mode="force",
             )
         evidence = result["evidenceGraphDigest"]
-        contract = result["codingPlannerContractPreview"]
+        contract = result["codingExecutionContractPreview"]
         self.assertTrue(evidence["enabled"])
         self.assertTrue(evidence["repoDetected"])
         self.assertTrue(contract["enabled"])
@@ -173,31 +173,6 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
         self.assertEqual(gate["risk"], "outside_write_set")
         self.assertTrue(gate["warning"])
         self.assertIn("src/admin-panel.tsx", gate["outsideWriteSet"])
-
-    def test_planner_plan_is_enriched_with_engineering_capsule(self) -> None:
-        plan = {
-            "riskFlags": [],
-            "taskBriefs": [{"taskBriefId": "task-1", "goal": "Fix admin panel", "writeSet": []}],
-        }
-        engineering_context = {
-            "triggerDecision": {"active": True},
-            "contextPack": {
-                "evidenceGraphDigest": {"repoDetected": True, "repoRoot": str(Path.cwd()), "branch": "main", "dirtyState": {}, "criticalFileCandidates": []},
-                "codingPlannerContractPreview": {
-                    "enabled": True,
-                    "criticalFiles": ["src/admin-panel.tsx"],
-                    "readSet": ["src/admin-panel.tsx"],
-                    "writeSet": ["src/admin-panel.tsx"],
-                    "verificationMatrix": [{"kind": "typecheck", "command": "npm run typecheck"}],
-                    "riskFlags": [],
-                    "proofExpectations": ["Verification is required."],
-                },
-            },
-        }
-        enriched = engineering_lane_service.enrich_planner_plan_with_engineering_contract(plan, engineering_context=engineering_context)
-        self.assertEqual(enriched["taskBriefs"][0]["writeSet"], ["src/admin-panel.tsx"])
-        self.assertIn("engineeringTaskCapsule", enriched["taskBriefs"][0])
-        self.assertTrue(enriched["codingPlannerContract"]["enabled"])
 
     def test_workset_dispatch_blocks_auto_conflicting_write_sets(self) -> None:
         tasks = [
@@ -276,7 +251,6 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
                     "agentClass": "implementer",
                     "domainTags": ["software_engineering"],
                     "operationCapabilities": ["implement", "debug"],
-                    "plannerSuitability": "high",
                 },
             },
             {
@@ -287,7 +261,6 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
                     "agentClass": "reviewer",
                     "domainTags": ["software_engineering", "architecture", "code_review"],
                     "operationCapabilities": ["review", "audit", "validate_contract"],
-                    "plannerSuitability": "high",
                 },
             },
         ]
@@ -581,7 +554,7 @@ class EngineeringLanePhase1Tests(unittest.TestCase):
                 "trigger",
                 "workspace",
                 "memory",
-                "planner",
+                "runtime",
                 "broker",
                 "proof",
                 "runtime_lane",

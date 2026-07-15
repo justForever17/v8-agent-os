@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command, Send
@@ -20,6 +20,9 @@ from core.runtime_episodes import (
     build_runtime_episode,
     emit_runtime_episode_event,
     enqueue_runtime_episode,
+    heartbeat_runtime_episode,
+    persist_handoff_ref,
+    persist_runtime_episode,
     transition_runtime_episode,
     upsert_runtime_episode,
 )
@@ -28,6 +31,39 @@ from .route_context import merge_route_context
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class ParallelBranchExecutionError(RuntimeError):
+    """Branch failure carrying only the compact execution truth needed for recovery."""
+
+    def __init__(self, message: str, *, compact_trace: str = "", tools_used: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.compact_trace = str(compact_trace or "")[:2400]
+        self.tools_used = list(dict.fromkeys(str(item) for item in list(tools_used or []) if str(item).strip()))[:12]
+
+
+def _publish_parallel_progress(callback: Callable[[dict[str, Any]], Any] | None, **payload: Any) -> None:
+    if callback is None:
+        return
+    try:
+        callback({key: value for key, value in payload.items() if value not in (None, "", [], {})})
+    except Exception:
+        # Progress is observability only and must never change branch semantics.
+        return
+
+
+def _parallel_branch_error(
+    message: str,
+    *,
+    state: dict[str, Any],
+    initial_message_count: int,
+) -> ParallelBranchExecutionError:
+    messages = list(state.get("messages") or [])[initial_message_count:]
+    return ParallelBranchExecutionError(
+        message,
+        compact_trace=_compact_transcript(messages, limit=2400),
+        tools_used=_extract_tool_names(messages),
+    )
 
 
 def _render_delegation_handoff_message(
@@ -272,12 +308,36 @@ def _repeat_sensitive_tool_call_signature(call: dict[str, Any]) -> tuple[str, st
     if name in {"run_system_command", "start_background_command"}:
         command = re.sub(r"\s+", " ", str(args.get("command") or "").strip())
         if command:
+            lowered = command.lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "research_evidence_bundle",
+                    "engineering_patch_bundle",
+                    "research://",
+                    "engineering://",
+                    "episode_",
+                )
+            ):
+                return "runtime_handoff_lookup", "runtime_handoff_identifier_is_not_a_file"
             return name, command.lower()
     if name == "read_native_file":
         path = str(args.get("path") or "").strip()
         start_line = str(args.get("start_line") or args.get("startLine") or "").strip()
         end_line = str(args.get("end_line") or args.get("endLine") or "").strip()
         if path:
+            lowered = path.lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "research_evidence_bundle",
+                    "engineering_patch_bundle",
+                    "research://",
+                    "engineering://",
+                    "episode_",
+                )
+            ):
+                return "runtime_handoff_lookup", "runtime_handoff_identifier_is_not_a_file"
             return name, "|".join([path.lower(), start_line, end_line])
     return None
 
@@ -882,7 +942,12 @@ def _child_delegation_block_summary(
     }
 
 
-async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str, Any]) -> tuple[list[Any], list[Any], dict[str, Any], list[dict[str, Any]]]:
+async def _run_parallel_agent_branch(
+    state: dict[str, Any],
+    agent_data: dict[str, Any],
+    *,
+    progress_callback: Callable[[dict[str, Any]], Any] | None = None,
+) -> tuple[list[Any], list[Any], dict[str, Any], list[dict[str, Any]]]:
     branch = dict(state.get("parallel_branch") or {})
     agent_id = str(branch.get("agentId") or "")
     current_node = agent_id
@@ -894,14 +959,32 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
 
     repeated_state_limit = 8
     seen_progress_states: dict[str, int] = {}
-    repeat_sensitive_tool_limit = 3
+    repeat_sensitive_tool_limit = 2
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
     artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
     artifact_stall_rounds = 0
     artifact_stall_limit = 80
+    last_progress_node = ""
+    _publish_parallel_progress(
+        progress_callback,
+        stage="started",
+        status="running",
+        summary=f"{branch.get('agentName') or agent_id} 已开始处理任务。",
+    )
     while True:
+        if current_node != last_progress_node:
+            stage = "working"
+            summary = f"{branch.get('agentName') or agent_id} 正在处理任务。"
+            if current_node.endswith("_tools"):
+                stage = "tool_execution"
+                summary = f"{branch.get('agentName') or agent_id} 正在执行工具步骤。"
+            elif current_node.endswith("_reviewer"):
+                stage = "reviewing"
+                summary = f"{branch.get('agentName') or agent_id} 正在自检结果。"
+            _publish_parallel_progress(progress_callback, stage=stage, status="running", summary=summary)
+            last_progress_node = current_node
         progress_fingerprint = _parallel_branch_progress_fingerprint(
             current_node=current_node,
             state=local_state,
@@ -910,8 +993,10 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
         )
         seen_progress_states[progress_fingerprint] = seen_progress_states.get(progress_fingerprint, 0) + 1
         if seen_progress_states[progress_fingerprint] > repeated_state_limit:
-            raise RuntimeError(
-                f"{agent_id} 并发分支连续重复同一执行状态，已停止无进展循环。"
+            raise _parallel_branch_error(
+                f"{agent_id} 并发分支连续重复同一执行状态，已停止无进展循环。",
+                state=local_state,
+                initial_message_count=initial_message_count,
             )
         if current_node == agent_id:
             runtime_context = _runtime_context_from_parallel_state(local_state, branch=branch)
@@ -924,7 +1009,11 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
         elif current_node == f"{agent_id}_tools":
             tool_node = agent_data.get("tool_node_func")
             if tool_node is None:
-                raise RuntimeError(f"{agent_id} 没有可用的工具节点。")
+                raise _parallel_branch_error(
+                    f"{agent_id} 没有可用的工具节点。",
+                    state=local_state,
+                    initial_message_count=initial_message_count,
+                )
             with bind_runtime_context(**_runtime_context_from_parallel_state(local_state, branch=branch)):
                 result = await tool_node(
                     local_state,
@@ -942,7 +1031,11 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
 
             result = await asyncio.to_thread(_invoke_reviewer_node)
         else:
-            raise RuntimeError(f"{agent_id} 进入了未识别的并发分支节点：{current_node}")
+            raise _parallel_branch_error(
+                f"{agent_id} 进入了未识别的并发分支节点：{current_node}",
+                state=local_state,
+                initial_message_count=initial_message_count,
+            )
 
         if isinstance(result, list):
             delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
@@ -953,6 +1046,13 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 source_agent_id=agent_id,
             )
             nested_count = len([item for item in result if isinstance(item, (Command, Send))])
+            if child_requests:
+                _publish_parallel_progress(
+                    progress_callback,
+                    stage="child_requested",
+                    status="waiting",
+                    summary=f"{branch.get('agentName') or agent_id} 请求了 {len(child_requests)} 个子任务。",
+                )
             block_reason = _child_delegation_block_reason(branch, child_requests)
             if block_reason:
                 return delta_messages, delta_todos, _child_delegation_block_summary(
@@ -991,10 +1091,33 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 "acceptanceHint": "Route the child delegation through runtime_broker/delegation_broker with explicit child budget; do not assume the child work completed.",
             }, child_requests
         if not isinstance(result, Command):
-            raise RuntimeError(f"{agent_id} 并发分支返回了非 Command 结果。")
+            raise _parallel_branch_error(
+                f"{agent_id} 并发分支返回了非 Command 结果。",
+                state=local_state,
+                initial_message_count=initial_message_count,
+            )
 
         result_update = getattr(result, "update", None) or {}
         local_state = _merge_state_update(local_state, result_update)
+        for message in list(result_update.get("messages") or []) if isinstance(result_update, dict) else []:
+            for tool_name in _extract_tool_names_from_message(message):
+                _publish_parallel_progress(
+                    progress_callback,
+                    stage="tool_started",
+                    status="running",
+                    summary=f"正在使用 {tool_name}。",
+                    toolName=tool_name,
+                )
+            role = str(getattr(message, "type", None) or getattr(message, "role", None) or "").strip().lower()
+            if role == "tool":
+                tool_name = str(getattr(message, "name", None) or "tool").strip() or "tool"
+                _publish_parallel_progress(
+                    progress_callback,
+                    stage="tool_finished",
+                    status="running",
+                    summary=f"{tool_name} 已返回结果。",
+                    toolName=tool_name,
+                )
         delta_messages_for_guard = list(local_state.get("messages") or [])[initial_message_count:]
         if isinstance(result_update, dict) and result_update.get("pending_child_delegations"):
             delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
@@ -1004,6 +1127,12 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 source_agent_id=agent_id,
             )
             if child_requests:
+                _publish_parallel_progress(
+                    progress_callback,
+                    stage="child_requested",
+                    status="waiting",
+                    summary=f"{branch.get('agentName') or agent_id} 请求了 {len(child_requests)} 个子任务。",
+                )
                 block_reason = _child_delegation_block_reason(branch, child_requests)
                 if block_reason:
                     return delta_messages_for_guard, delta_todos, _child_delegation_block_summary(
@@ -1051,10 +1180,12 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 seen_tool_call_ids.add(call_id)
                 repeated_tool_signatures[signature] = repeated_tool_signatures.get(signature, 0) + 1
                 if repeated_tool_signatures[signature] > repeat_sensitive_tool_limit:
-                    raise RuntimeError(
+                    raise _parallel_branch_error(
                         f"{agent_id} repeated the same tool purpose too many times: "
                         f"{signature[0]} {signature[1][:180]}. "
-                        "Return a degraded/blocker handoff instead of retrying the same operation."
+                        "Return a degraded/blocker handoff instead of retrying the same operation.",
+                        state=local_state,
+                        initial_message_count=initial_message_count,
                     )
         if expected_artifact_paths:
             next_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
@@ -1068,9 +1199,11 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
             else:
                 artifact_stall_rounds += 1
                 if artifact_stall_rounds > artifact_stall_limit:
-                    raise RuntimeError(
+                    raise _parallel_branch_error(
                         f"{agent_id} 并发分支声明了产物但长期没有文件进展，已停止语义无进展循环。"
-                        f" missingArtifacts={[str(path) for path in missing_artifacts[:6]]}"
+                        f" missingArtifacts={[str(path) for path in missing_artifacts[:6]]}",
+                        state=local_state,
+                        initial_message_count=initial_message_count,
                     )
         goto = getattr(result, "goto", None)
         if isinstance(goto, str):
@@ -1087,6 +1220,12 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                 source_agent_id=agent_id,
             )
             if child_requests:
+                _publish_parallel_progress(
+                    progress_callback,
+                    stage="child_requested",
+                    status="waiting",
+                    summary=f"{branch.get('agentName') or agent_id} 请求了 {len(child_requests)} 个子任务。",
+                )
                 block_reason = _child_delegation_block_reason(branch, child_requests)
                 if block_reason:
                     return delta_messages, delta_todos, _child_delegation_block_summary(
@@ -1124,7 +1263,11 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
                     "localSelfCheck": "Subagent requested child delegation. The top-level router will schedule it as a child Runtime episode instead of running nested Send inside this branch.",
                     "acceptanceHint": "Wait for the child delegation completion event before merging or judging this branch.",
                 }, child_requests
-        raise RuntimeError(f"{agent_id} 并发分支返回了不支持的 goto 类型。")
+        raise _parallel_branch_error(
+            f"{agent_id} 并发分支返回了不支持的 goto 类型。",
+            state=local_state,
+            initial_message_count=initial_message_count,
+        )
 
     delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
     delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
@@ -1200,6 +1343,12 @@ async def _run_parallel_agent_branch(state: dict[str, Any], agent_data: dict[str
         "supervisorAcceptance": {"status": "pending", "requiredAction": ["accept", "retry", "ignore"]},
         "resultSchemaMatched": True,
     }
+    _publish_parallel_progress(
+        progress_callback,
+        stage="handoff_ready",
+        status="completed",
+        summary=f"{branch.get('agentName') or agent_id} 已回传可验收结果。",
+    )
     return delta_messages, delta_todos, summary, []
 
 
@@ -1237,8 +1386,47 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
                 },
             )
 
+        emitted_progress: set[tuple[str, str]] = set()
+
+        def _progress_callback(progress: dict[str, Any]) -> None:
+            raw_stage = str(progress.get("stage") or "working").strip().lower()
+            stage = "tool_execution" if raw_stage in {"tool_started", "tool_finished"} else raw_stage
+            status = str(progress.get("status") or "running").strip().lower()
+            fingerprint = (stage, status)
+            if fingerprint in emitted_progress:
+                return
+            emitted_progress.add(fingerprint)
+            episode_id = str(branch.get("delegationId") or branch.get("invocationId") or "").strip()
+            summary = str(progress.get("summary") or "子代理正在处理任务。").strip()[:360]
+            if episode_id:
+                heartbeat_runtime_episode(episode_id, progress=summary)
+            runtime_context = _runtime_context_from_parallel_state(state, branch=branch)
+            with bind_runtime_context(**runtime_context):
+                emit_runtime_episode_event(
+                    "runtime.episode.progress",
+                    {
+                        "episodeId": episode_id,
+                        "kind": "delegation",
+                        "state": "completed" if status == "completed" else "failed" if status == "failed" else "active",
+                        "progress": {
+                            "stage": stage,
+                            "status": status,
+                            "summary": summary,
+                            "agentId": agent_id,
+                            "agentName": branch.get("agentName") or agent_id,
+                            "delegationId": branch.get("delegationId"),
+                            "taskBriefId": branch.get("taskBriefId"),
+                        },
+                    },
+                    source={"runtime": "delegation", "component": "parallel_delegate_task"},
+                )
+
         try:
-            delta_messages, delta_todos, summary, child_requests = await _run_parallel_agent_branch(state, agent_data)
+            delta_messages, delta_todos, summary, child_requests = await _run_parallel_agent_branch(
+                state,
+                agent_data,
+                progress_callback=_progress_callback,
+            )
             return Command(
                 goto="parallel_delegate_join",
                 update={
@@ -1248,6 +1436,13 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
                 },
             )
         except Exception as exc:
+            _progress_callback(
+                {
+                    "stage": "failed",
+                    "status": "failed",
+                    "summary": f"{branch.get('agentName') or agent_id} 执行失败，已回传紧凑轨迹。",
+                }
+            )
             return Command(
                 goto="parallel_delegate_join",
                 update={
@@ -1266,6 +1461,8 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
                             "branchIndex": branch.get("branchIndex"),
                             "status": "error",
                             "error": str(exc).strip() or exc.__class__.__name__,
+                            "compactTrace": str(getattr(exc, "compact_trace", "") or "")[:2400],
+                            "toolsUsed": list(getattr(exc, "tools_used", []) or [])[:12],
                             "localSelfCheck": "Subagent branch failed before supervisor acceptance.",
                             "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
                             "completedAt": _now_iso(),
@@ -1458,6 +1655,20 @@ def build_parallel_delegate_join_node():
             )
 
         route_context = dict(state.get("current_route_context") or {})
+        session_id = str(
+            state.get("session_id")
+            or state.get("sessionId")
+            or route_context.get("session_id")
+            or route_context.get("sessionId")
+            or ""
+        ).strip() or None
+        run_id = str(
+            state.get("run_id")
+            or state.get("runId")
+            or route_context.get("run_id")
+            or route_context.get("runId")
+            or ""
+        ).strip() or None
         handoff_refs: list[dict[str, Any]] = []
         handoff_contracts: list[dict[str, Any]] = []
         for item in results:
@@ -1469,11 +1680,15 @@ def build_parallel_delegate_join_node():
                 result_contract["workerStatus"] = worker_status
             producer_episode_id = str(item.get("delegationId") or item.get("invocationId") or invocation_id or "").strip()
             compact = str(item.get("compactTranscript") or item.get("localSelfCheck") or item.get("error") or item.get("taskGoal") or "").strip()
+            compact = (
+                f"Delegation {'completed' if item.get('status') == 'ok' else 'failed'}: "
+                f"{compact or producer_episode_id or invocation_id}"
+            )
             handoff = build_handoff_ref(
                 producer_episode_id=producer_episode_id,
                 kind="subagent_result",
                 status="failed" if item.get("status") != "ok" else "ready",
-                compact_summary=compact or f"Subagent result for {producer_episode_id or invocation_id}",
+                compact_summary=compact,
                 detail_tool=(
                     "delegation_broker(mode='observe', delegation_id="
                     f"'{str(item.get('delegationId') or invocation_id or '').strip()}')"
@@ -1481,6 +1696,13 @@ def build_parallel_delegate_join_node():
                 consumer_hint=str(item.get("acceptanceHint") or "Supervisor should accept, retry, or ignore this delegated result."),
                 extra=result_contract,
             )
+            persisted_handoff = persist_handoff_ref(
+                handoff,
+                session_id=session_id,
+                run_id=run_id,
+            )
+            if isinstance(persisted_handoff, dict):
+                handoff = {**handoff, **persisted_handoff}
             route_context = append_handoff_ref(route_context, handoff)
             route_context, episode = transition_runtime_episode(
                 route_context,
@@ -1488,6 +1710,13 @@ def build_parallel_delegate_join_node():
                 state="completed" if item.get("status") == "ok" else "failed",
                 resultRef=handoff.get("handoffRefId"),
             )
+            if episode:
+                persist_runtime_episode(
+                    episode,
+                    session_id=session_id,
+                    run_id=run_id,
+                    enqueue=False,
+                )
             handoff_refs.append(handoff)
             emit_runtime_episode_event("handoff.ref.created", {"handoffRef": handoff})
             if episode:

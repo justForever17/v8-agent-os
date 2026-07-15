@@ -29,7 +29,6 @@ _DYNAMIC_MARKERS = (
     "<passive_rag",
     "<artifact_awareness",
     "<todos",
-    "<planner_state",
     "<route_context",
     "<runtime_tool_grants",
     "<tool_observations",

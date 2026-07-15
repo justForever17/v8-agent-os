@@ -46,7 +46,6 @@ PLUGIN_ONLY_MEDIA_MODEL_IDS = {
 DEFAULT_ROLE_MAP = {
     "default": "",
     "supervisor": "",
-    "planner": "",
     "subagent": "",
     "summary": "",
     "extraction": "",
@@ -153,7 +152,6 @@ DEFAULT_GOVERNANCE = {
 
 DEFAULT_ROUTING_POLICIES = {
     "chat": "supervisor",
-    "planner": "planner",
     "subagent": "subagent",
     "automation": "automation",
     "summary": "summary",
@@ -197,7 +195,6 @@ DEFAULT_MODEL_CATEGORIES: Dict[str, Dict[str, Any]] = {
 ROLE_DEFAULT_CATEGORY_MAP = {
     "default": "text_generation",
     "supervisor": "text_generation",
-    "planner": "text_generation",
     "subagent": "text_generation",
     "summary": "text_generation",
     "extraction": "text_generation",
@@ -224,12 +221,6 @@ ROLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "description": "主会话编排、多智能体决策与工具调度。",
         "group": "system",
         "capabilityClasses": CHAT_CAPABILITY_CLASSES,
-    },
-    "planner": {
-        "label": "Planner 模型",
-        "description": "把用户需求整理成可执行 runtime needs / episode plan；不直接执行任务。",
-        "group": "system",
-        "capabilityClasses": ["chat_general", "chat_tool_calling", "chat_reasoning"],
     },
     "subagent": {
         "label": "默认 Subagent 模型",
@@ -337,18 +328,9 @@ MODULE_DEFINITIONS: List[Dict[str, Any]] = [
         "pageLabel": "主理人",
     },
     {
-        "key": "planner_lane",
-        "label": "Planner 编排预案",
-        "description": "将用户需求压成 runtime needs、task briefs 和可校验执行计划。",
-        "group": "system",
-        "roles": ["planner"],
-        "pagePath": "/admin/engineering-lane",
-        "pageLabel": "工程运行时",
-    },
-    {
         "key": "subagent_lane",
         "label": "Subagent 执行班子",
-        "description": "Planner / Delegation Broker 调度的本地子代理默认模型。",
+        "description": "Supervisor / Delegation Broker 调度的本地子代理默认模型。",
         "group": "system",
         "roles": ["subagent"],
         "pagePath": "/admin/subagents",

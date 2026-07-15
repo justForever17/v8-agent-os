@@ -178,7 +178,7 @@ class EngineeringLaneService:
                 "识别 project_coding / 工程任务形态并准备轻量 ContextPack",
                 "把 workspace、相关文件、SpecBrief、taskId、验收标准、proof 与禁区整理成执行者能读懂的工程任务单",
                 "维护 Proof Ledger、Workset Observation 与工程行为链证据",
-                "为 Planner / Delegation Broker 提供工程约束、写集边界和验收线索",
+                "为 Supervisor / Delegation Broker 提供工程约束、写集边界和验收线索",
             ],
             "routingKeywords": ["project_coding", "代码", "实现", "修复", "测试", "工程", "ContextPack", "Proof Ledger"],
             "acceptedInputs": ["user_query", "workspace_descriptor", "task_brief", "git_status"],
@@ -358,7 +358,7 @@ class EngineeringLaneService:
             workflow_paths=workflow_paths,
             cfg=cfg,
         )
-        coding_contract = self._coding_planner_contract_preview(
+        coding_contract = self._coding_execution_contract_preview(
             user_query=user_query,
             task_brief=task_brief,
             evidence_graph_digest=evidence_graph_digest,
@@ -390,7 +390,7 @@ class EngineeringLaneService:
             "manifestSummary": manifests,
             "criticalFiles": critical_files,
             "taskBrief": task_brief or None,
-            "codingPlannerContractPreview": coding_contract,
+            "codingExecutionContractPreview": coding_contract,
             "worksetSoftGateDecision": workset_gate,
             "brokerDispatchSimulation": broker_dispatch_simulation,
             "dryRunMatrix": dry_run_matrix,
@@ -418,7 +418,7 @@ class EngineeringLaneService:
             "contextPackTruncated": truncated,
             "contextPack": context_pack,
             "evidenceGraphDigest": evidence_graph_digest,
-            "codingPlannerContractPreview": coding_contract,
+            "codingExecutionContractPreview": coding_contract,
             "worksetSoftGateDecision": workset_gate,
             "brokerDispatchSimulation": broker_dispatch_simulation,
             "dryRunMatrix": dry_run_matrix,
@@ -474,7 +474,7 @@ class EngineeringLaneService:
         trigger = result.get("triggerDecision") if isinstance(result.get("triggerDecision"), dict) else {}
         workspace = result.get("workspace") if isinstance(result.get("workspace"), dict) else {}
         evidence = result.get("evidenceGraphDigest") if isinstance(result.get("evidenceGraphDigest"), dict) else {}
-        coding_contract = result.get("codingPlannerContractPreview") if isinstance(result.get("codingPlannerContractPreview"), dict) else {}
+        coding_contract = result.get("codingExecutionContractPreview") if isinstance(result.get("codingExecutionContractPreview"), dict) else {}
         broker = result.get("brokerDispatchSimulation") if isinstance(result.get("brokerDispatchSimulation"), dict) else {}
         dry_run_matrix = result.get("dryRunMatrix") if isinstance(result.get("dryRunMatrix"), dict) else {}
         proof = result.get("proofDraft") if isinstance(result.get("proofDraft"), dict) else {}
@@ -543,9 +543,9 @@ class EngineeringLaneService:
                     "requiresEngineeringActive": True,
                     "eligible": bool(trigger.get("active")),
                     "rankedPathCount": len(ranked_paths),
-                    "deliveryMode": "planner_checklist_bias" if bool((coding_contract or {}).get("enabled")) else "direct_guide",
+                    "deliveryMode": "execution_contract" if bool((coding_contract or {}).get("enabled")) else "direct_guide",
                 },
-                "codingPlannerContract": {
+                "codingExecutionContract": {
                     "enabled": bool(coding_contract.get("enabled")),
                     "criticalFileCount": len(coding_contract.get("criticalFiles") or []),
                     "readSetCount": len(coding_contract.get("readSet") or []),
@@ -572,7 +572,7 @@ class EngineeringLaneService:
                 "runtimeLaneProjection": {
                     "runtimeId": "engineering",
                     "messageLifecycleExcluded": True,
-                    "separateFrom": ["planner_lane", "subagent_swarm", "chat"],
+                    "separateFrom": ["subagent_swarm", "chat"],
                 },
                 "learningEligibility": {
                     "status": "skipped_dry_run",
@@ -681,14 +681,14 @@ class EngineeringLaneService:
                 ],
             ),
             scenario(
-                "coding_planner_contract",
-                "planner",
-                "Coding Planner Contract 完整性",
+                "coding_execution_contract",
+                "runtime",
+                "Coding Execution Contract 完整性",
                 [
                     check(
                         "contract_enabled",
                         "pass" if bool(coding_contract.get("enabled")) else "fail",
-                        "Coding planner contract should be produced for engineering dry-runs.",
+                        "Coding execution contract should be produced for engineering dry-runs.",
                         coding_contract,
                     ),
                     check(
@@ -788,7 +788,7 @@ class EngineeringLaneService:
                     check(
                         "lane_id_declared",
                         "pass",
-                        "Engineering evidence should project to Engineering Runtime, not chat/planner/subagent cards.",
+                        "Engineering evidence should project to Engineering Runtime, not chat/subagent cards.",
                         {"runtimeId": "engineering"},
                     ),
                     check(
@@ -970,7 +970,7 @@ class EngineeringLaneService:
         if not write_set:
             context_pack = metadata.get("engineeringContextPack") if isinstance(metadata.get("engineeringContextPack"), dict) else {}
             pack = context_pack.get("contextPack") if isinstance(context_pack.get("contextPack"), dict) else context_pack
-            coding_contract = pack.get("codingPlannerContractPreview") if isinstance(pack.get("codingPlannerContractPreview"), dict) else {}
+            coding_contract = pack.get("codingExecutionContractPreview") if isinstance(pack.get("codingExecutionContractPreview"), dict) else {}
             write_set = self._normalize_path_list(coding_contract.get("writeSet") if isinstance(coding_contract, dict) else [])
         read_set = self._read_set_from_events_or_context(events, metadata)
         workset_risk = self._workset_risk(changed_files=changed_files, write_set=write_set, cfg=cfg)
@@ -1339,7 +1339,7 @@ class EngineeringLaneService:
                 run_id=run_id,
                 task_brief_id=task_brief_id,
                 delegation_id=str(dispatch_decision.get("delegationId") or "").strip() or None,
-                decision_source=str(dispatch_decision.get("worksetDecisionSource") or "planner_auto"),
+                decision_source=str(dispatch_decision.get("worksetDecisionSource") or "supervisor_contract"),
                 phase="proof_correlation",
                 decision=correlation,
                 warning_or_block_reason=str(correlation.get("risk") or "").strip(),
@@ -1385,7 +1385,7 @@ class EngineeringLaneService:
                     continue
                 source = str(decision.get("worksetDecisionSource") or item.get("autoDispatchSource") or "").strip()
                 if not source:
-                    source = "planner_auto" if str(item.get("autoDispatchSource") or "").startswith("planner_auto") else "supervisor_manual"
+                    source = "runtime_auto" if str(item.get("autoDispatchSource") or "").startswith("runtime_auto") else "supervisor_manual"
                 warning = bool(decision.get("warning"))
                 blocked = bool(decision.get("blocked")) or str(item.get("status") or "") == "blocked"
                 observations.append(
@@ -1635,13 +1635,13 @@ class EngineeringLaneService:
         ) | {"provider": "unavailable"}
 
     def _task_brief_from_metadata_or_events(self, metadata: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any] | None:
-        for key in ("taskBrief", "plannerTaskBrief", "engineeringTaskBrief"):
+        for key in ("taskBrief", "engineeringTaskBrief"):
             value = metadata.get(key)
             if isinstance(value, dict):
                 return dict(value)
         for event in events:
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-            for key in ("taskBrief", "plannerTaskBrief", "task"):
+            for key in ("taskBrief", "engineeringTaskBrief", "task"):
                 value = payload.get(key)
                 if isinstance(value, dict):
                     return dict(value)
@@ -1666,7 +1666,7 @@ class EngineeringLaneService:
             context = context.get("contextPack") or {}
         critical = context.get("criticalFiles") if isinstance(context.get("criticalFiles"), list) else []
         values = [str(item.get("path") or "") for item in critical if isinstance(item, dict) and item.get("path")]
-        contract = context.get("codingPlannerContractPreview") if isinstance(context.get("codingPlannerContractPreview"), dict) else {}
+        contract = context.get("codingExecutionContractPreview") if isinstance(context.get("codingExecutionContractPreview"), dict) else {}
         values.extend(str(item or "").strip() for item in list(contract.get("readSet") or []) if str(item or "").strip())
         if values:
             return list(dict.fromkeys(values))[:100]
@@ -1751,7 +1751,7 @@ class EngineeringLaneService:
                 "changedFiles": changed_files,
                 "outsideWriteSet": [],
                 "note": "Task brief writeSet is missing; conflicts cannot be proven safe.",
-                "suggestedAction": "Repair planner contract before accepting concurrent or delegated writes.",
+                "suggestedAction": "Repair the Supervisor task contract before accepting concurrent or delegated writes.",
             }
         outside = [path for path in changed_files if not self._path_matches_any_write_set(path, write_set)]
         return {
@@ -1857,7 +1857,7 @@ class EngineeringLaneService:
             "contextPackActive": bool(context) or bool(event_trigger.get("contextPackActive")),
             "criticalFileCount": len(context.get("criticalFiles") or []) if isinstance(context.get("criticalFiles"), list) else None,
             "evidenceGraphEnabled": bool((context.get("evidenceGraphDigest") or {}).get("enabled")) if isinstance(context.get("evidenceGraphDigest"), dict) else False,
-            "codingPlannerContractEnabled": bool((context.get("codingPlannerContractPreview") or {}).get("enabled")) if isinstance(context.get("codingPlannerContractPreview"), dict) else False,
+            "codingExecutionContractEnabled": bool((context.get("codingExecutionContractPreview") or {}).get("enabled")) if isinstance(context.get("codingExecutionContractPreview"), dict) else False,
             "source": "run_metadata" if context else "runtime_event_digest",
         }
 
@@ -2328,7 +2328,7 @@ class EngineeringLaneService:
                 break
         return {"recentCount": len(recent), "statusCounts": status_counts, "recent": recent}
 
-    def _coding_planner_contract_preview(
+    def _coding_execution_contract_preview(
         self,
         *,
         user_query: str,
@@ -2339,7 +2339,7 @@ class EngineeringLaneService:
         git_summary: dict[str, Any],
         cfg: dict[str, Any],
     ) -> dict[str, Any]:
-        if not bool(cfg.get("codingPlannerContractEnabled", True)):
+        if not bool(cfg.get("codingExecutionContractEnabled", True)):
             return {"enabled": False}
         max_files = _safe_int(cfg.get("maxCriticalFiles"), 24, 4, 120)
         critical = [
@@ -2350,7 +2350,7 @@ class EngineeringLaneService:
         changed = self._changed_files_from_status(str(git_summary.get("statusShort") or ""))
         read_set = list(dict.fromkeys([*critical[:12], *changed[:12]]))[:max_files]
         explicit_write_set = self._normalize_path_list((task_brief or {}).get("writeSet") if isinstance(task_brief, dict) else [])
-        write_set = explicit_write_set or self._infer_write_set_from_query(user_query, critical, changed)
+        write_set = explicit_write_set
         verification_matrix = self._verification_matrix(manifest_summary)
         risk_flags: list[str] = []
         if not critical and not changed:
@@ -2373,21 +2373,6 @@ class EngineeringLaneService:
             "riskFlags": list(dict.fromkeys(risk_flags)),
             "proofExpectations": self._proof_expectations(verification_matrix=verification_matrix, write_set=write_set),
         }
-
-    def _infer_write_set_from_query(self, user_query: str, critical_files: list[str], changed_files: list[str]) -> list[str]:
-        text = str(user_query or "").lower()
-        write_set: list[str] = []
-        if any(marker in text for marker in ("test", "测试", "spec", "验证")):
-            write_set.extend([path for path in critical_files if any(marker in path.lower() for marker in TEST_FILE_MARKERS)])
-        if any(marker in text for marker in ("admin", "页面", "ui", "frontend", "tsx", "组件")):
-            write_set.extend([path for path in critical_files if any(part in path.lower() for part in ("admin", "src/", "app/", "components/", ".tsx", ".ts"))])
-        if any(marker in text for marker in ("engine", "runtime", "api", "后端", "接口")):
-            write_set.extend([path for path in critical_files if any(part in path.lower() for part in ("apps/v8-agent-os-engine", "api/", "runtimes/", "core/", ".py"))])
-        if changed_files:
-            write_set.extend(changed_files)
-        if not write_set:
-            write_set.extend(critical_files[:6])
-        return list(dict.fromkeys(write_set))[:24]
 
     def _verification_matrix(self, manifest_summary: dict[str, Any]) -> list[dict[str, Any]]:
         matrix: list[dict[str, Any]] = []
@@ -2412,7 +2397,7 @@ class EngineeringLaneService:
 
     def _ownership_plan(self, *, write_set: list[str], read_set: list[str]) -> list[dict[str, Any]]:
         if not write_set:
-            return [{"owner": "supervisor", "scope": "unknown", "mode": "needs_planner_write_set"}]
+            return [{"owner": "supervisor", "scope": "unknown", "mode": "needs_supervisor_write_set"}]
         buckets: dict[str, list[str]] = {}
         for path in write_set:
             normalized = str(path or "").replace("\\", "/")
@@ -2435,7 +2420,7 @@ class EngineeringLaneService:
         if write_set:
             order.append("Apply implementation patch within declared writeSet")
         else:
-            order.append("Repair planner contract before editing because writeSet is missing")
+            order.append("Repair the Supervisor task contract before editing because writeSet is missing")
         if verification_matrix:
             order.append("Run or request the narrowest listed verification before claiming verified")
         else:
@@ -2479,7 +2464,7 @@ class EngineeringLaneService:
                 "warning": warning_mode,
                 "changedFiles": changed_files,
                 "outsideWriteSet": [],
-                "suggestedAction": "Repair planner writeSet before assigning concurrent edits.",
+                "suggestedAction": "Repair the Supervisor writeSet before assigning concurrent edits.",
             }
         outside = [path for path in changed_files if not self._path_matches_any_write_set(path, write_set)]
         return {
@@ -2492,50 +2477,6 @@ class EngineeringLaneService:
             "suggestedAction": "Ask supervisor to approve or expand writeSet before accepting out-of-scope changes." if outside else "Continue; current changes are within declared writeSet.",
         }
 
-    def enrich_planner_plan_with_engineering_contract(self, plan: dict[str, Any], *, engineering_context: dict[str, Any] | None) -> dict[str, Any]:
-        if not isinstance(plan, dict) or not isinstance(engineering_context, dict):
-            return plan
-        trigger = engineering_context.get("triggerDecision") if isinstance(engineering_context.get("triggerDecision"), dict) else {}
-        if not trigger.get("active"):
-            return plan
-        pack = engineering_context.get("contextPack") if isinstance(engineering_context.get("contextPack"), dict) else {}
-        contract = pack.get("codingPlannerContractPreview") if isinstance(pack.get("codingPlannerContractPreview"), dict) else {}
-        evidence = pack.get("evidenceGraphDigest") if isinstance(pack.get("evidenceGraphDigest"), dict) else {}
-        if not contract.get("enabled"):
-            return plan
-        next_plan = dict(plan)
-        next_plan["codingPlannerContract"] = contract
-        next_plan["engineeringEvidenceGraphDigest"] = {
-            "repoDetected": evidence.get("repoDetected"),
-            "repoRoot": evidence.get("repoRoot"),
-            "branch": evidence.get("branch"),
-            "dirtyState": evidence.get("dirtyState"),
-            "criticalFileCount": len(evidence.get("criticalFileCandidates") or []),
-        }
-        risk_flags = [str(item).strip() for item in list(next_plan.get("riskFlags") or []) if str(item).strip()]
-        risk_flags.extend(str(item).strip() for item in list(contract.get("riskFlags") or []) if str(item).strip())
-        next_plan["riskFlags"] = list(dict.fromkeys(risk_flags))
-        enriched_briefs: list[dict[str, Any]] = []
-        for brief in list(next_plan.get("taskBriefs") or []):
-            item = dict(brief or {})
-            if not item.get("writeSet") and contract.get("writeSet"):
-                item["writeSet"] = list(contract.get("writeSet") or [])[:24]
-            item.setdefault("criticalFiles", list(contract.get("criticalFiles") or [])[:24])
-            item.setdefault("readSet", list(contract.get("readSet") or [])[:24])
-            item.setdefault("verificationMatrix", [str(row.get("command") or row.get("kind") or "") for row in list(contract.get("verificationMatrix") or []) if isinstance(row, dict)][:8])
-            item.setdefault("proofExpectations", list(contract.get("proofExpectations") or [])[:8])
-            item["engineeringTaskCapsule"] = {
-                "criticalFiles": list(contract.get("criticalFiles") or [])[:24],
-                "readSet": list(contract.get("readSet") or [])[:24],
-                "writeSet": list(item.get("writeSet") or [])[:24],
-                "verificationContract": list(contract.get("verificationMatrix") or [])[:8],
-                "riskFlags": list(contract.get("riskFlags") or [])[:8],
-                "proofExpectations": list(contract.get("proofExpectations") or [])[:8],
-            }
-            enriched_briefs.append(item)
-        next_plan["taskBriefs"] = enriched_briefs
-        return next_plan
-
     def _broker_dispatch_simulation(
         self,
         *,
@@ -2544,7 +2485,7 @@ class EngineeringLaneService:
         coding_contract: dict[str, Any],
     ) -> dict[str, Any]:
         if not isinstance(coding_contract, dict) or not coding_contract.get("enabled"):
-            return {"enabled": False, "reason": "coding_planner_contract_unavailable"}
+            return {"enabled": False, "reason": "coding_execution_contract_unavailable"}
         if isinstance(task_brief, dict) and task_brief:
             tasks = [normalize_task_brief(task_brief)]
         else:
@@ -2593,7 +2534,7 @@ class EngineeringLaneService:
         coding_contract: dict[str, Any],
     ) -> dict[str, Any]:
         if not isinstance(coding_contract, dict) or not coding_contract.get("enabled"):
-            return {"enabled": False, "reason": "coding_planner_contract_unavailable", "scenarios": []}
+            return {"enabled": False, "reason": "coding_execution_contract_unavailable", "scenarios": []}
         base_write_set = list(coding_contract.get("writeSet") or []) or ["apps/v8-agent-os-engine/core/example.py"]
         base_read_set = list(coding_contract.get("readSet") or coding_contract.get("criticalFiles") or [])[:8]
         verification = [
@@ -2739,7 +2680,7 @@ class EngineeringLaneService:
     ) -> dict[str, Any]:
         git_summary = context_pack.get("gitSummary") if isinstance(context_pack.get("gitSummary"), dict) else {}
         changed_files = self._changed_files_from_status(str(git_summary.get("statusShort") or ""))
-        coding_contract = context_pack.get("codingPlannerContractPreview") if isinstance(context_pack.get("codingPlannerContractPreview"), dict) else {}
+        coding_contract = context_pack.get("codingExecutionContractPreview") if isinstance(context_pack.get("codingExecutionContractPreview"), dict) else {}
         write_set = (task_brief or {}).get("writeSet") if isinstance(task_brief, dict) else []
         if not write_set and isinstance(coding_contract, dict):
             write_set = list(coding_contract.get("writeSet") or [])
@@ -2758,7 +2699,7 @@ class EngineeringLaneService:
                 "triggerDecision": trigger,
                 "gitSummary": git_summary,
                 "evidenceGraphDigest": context_pack.get("evidenceGraphDigest"),
-                "codingPlannerContractPreview": coding_contract,
+                "codingExecutionContractPreview": coding_contract,
                 "worksetSoftGateDecision": workset_gate,
             },
             "verificationStatus": "planned",

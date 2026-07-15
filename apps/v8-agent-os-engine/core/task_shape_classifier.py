@@ -447,7 +447,7 @@ def _classify_writing_route(
     code_actions: list[str],
     delegation_actions: list[str],
 ) -> dict[str, Any]:
-    """Return non-authoritative writing routing metadata for planner/supervisor use."""
+    """Return non-authoritative writing routing metadata for Supervisor use."""
 
     has_skill = _contains_any(text, _WRITING_SKILL_TERMS)
     normalized_text = _lower_text(text)
@@ -612,7 +612,6 @@ def _classify_writing_route(
 def classify_task_shape(
     user_query: str,
     *,
-    planner_plan: dict[str, Any] | None = None,
     workspace_descriptor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a conservative, non-authoritative task shape hint.
@@ -624,12 +623,11 @@ def classify_task_shape(
     """
 
     text = _lower_text(user_query)
-    plan_text = _lower_text(planner_plan)
     # Workspace descriptors contain paths/scopes such as "workspace:main" for
     # almost every request.  They are execution context, not user intent; using
     # them for keyword matching made ordinary context questions look like
     # engineering work and blocked memory/context flows.
-    combined = "\n".join(part for part in (text, plan_text) if part)
+    combined = text
     term_sets = _task_shape_term_sets()
 
     code_frameworks = _find_terms(combined, term_sets["code_media_framework"])
@@ -891,7 +889,7 @@ def classify_task_shape(
         "lexiconSignature": _lexicon_signature(),
         "policy": "hint_only_conservative_auto_reveal_recommendation_no_grant",
     }
-    return attach_task_boundary_decision(result, user_query=user_query, planner_plan=planner_plan)
+    return attach_task_boundary_decision(result, user_query=user_query)
 
 
 def render_task_shape_hint(hint: dict[str, Any] | None) -> str:

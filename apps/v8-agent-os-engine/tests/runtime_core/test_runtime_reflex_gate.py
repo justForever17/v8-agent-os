@@ -43,32 +43,24 @@ def test_reflex_bias_is_low_token_and_non_executing():
     assert "python-helper" in rendered
 
 
-def test_gate_detects_route_ambiguity_and_missing_write_set():
+def test_gate_detects_route_candidate_spread_without_inventing_task_contracts():
     route = _route_bundle(
         selected_skill_names=["a", "b", "c"],
         skillStage1Entries=[{"id": str(i)} for i in range(9)],
         skillEntries=[{"id": "a"}, {"id": "b"}, {"id": "c"}],
     )
-    state = {
-        "planner_plan": {
-            "executionStrategy": "delegate",
-            "taskBriefs": [{"taskBriefId": "impl-1", "goal": "修改核心代码"}],
-        }
-    }
-
     decision = RuntimePreflightGate().evaluate(
         user_query="修复代码并跑测试",
         scope="project:test1",
         scope_chain=["global", "project:test1"],
         session_id="s1",
         route_bundle=route,
-        state=state,
+        state={},
     )
 
-    assert decision.status == "clarify"
-    assert decision.riskLevel == "medium"
+    assert decision.status == "watch"
+    assert decision.riskLevel == "low"
     assert "route_candidate_spread" in decision.reasons
-    assert "planner_task_missing_write_set" in decision.reasons
     assert "[RUNTIME GATE]" in render_gate_prompt_addition(decision)
 
 
@@ -98,21 +90,47 @@ def test_read_only_reviewer_without_write_set_is_safe():
         scope_chain=["global", "workspace:main"],
         session_id="s1",
         route_bundle=_route_bundle(),
+        state={},
+    )
+
+    assert decision.status in {"clean", "watch"}
+
+
+def test_read_only_multi_runtime_plan_does_not_ask_user_because_workspace_is_dirty():
+    decision = RuntimePreflightGate().evaluate(
+        user_query=(
+            "先做多源调研，再产出工程方案，并派子代理复核；"
+            "不要真实写项目文件。"
+        ),
+        scope="workspace:main",
+        scope_chain=["global", "workspace:main"],
+        session_id="s1",
+        route_bundle=_route_bundle(
+            selected_skill_names=["a", "b", "c"],
+            skillStage1Entries=[{"id": str(i)} for i in range(9)],
+        ),
         state={
-            "planner_plan": {
-                "taskBriefs": [
-                    {
-                        "taskBriefId": "review-1",
-                        "goal": "Review implementation for correctness",
-                        "preferredWorkerType": "review",
-                    }
-                ]
-            }
+            "task_shape_hint": {
+                "writingRoute": {"present": True, "requiresArtifact": False},
+                "boundaryDecision": {
+                    "executionMode": "engineering_runtime",
+                    "askUserNeeded": False,
+                },
+            },
+            "engineering_context": {
+                "worksetSoftGateDecision": {
+                    "risk": "unknown_write_set",
+                    "warning": True,
+                    "changedFiles": ["existing-user-change.py"],
+                }
+            },
         },
     )
 
-    assert "planner_task_missing_write_set" not in decision.reasons
-    assert decision.status in {"clean", "watch"}
+    assert decision.status == "watch"
+    assert decision.diagnostics["readOnlyExecutionIntent"] is True
+    assert "engineering_workset_risk_not_applicable_to_read_only" in decision.reasons
+    assert "engineering_workset_risk" not in decision.reasons
 
 
 def test_evidence_feedback_emits_only_signal_events(monkeypatch):

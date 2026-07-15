@@ -1,16 +1,20 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
     CollaborationMicroStage,
     CollaborationMicroStageActor,
-    CollaborationMicroStageCue,
     CollaborationMicroStageLayout,
     CollaborationMicroStageStatus,
     CollaborationMicroStageStep,
 } from "@v8/session-realtime";
 import { selectCollaborationMicroStageLayout } from "@v8/session-realtime";
 import { cn } from "@/lib/utils";
+import {
+    SubagentRobotSprite,
+    WorkstationDisplay,
+    subagentRobotActionFor,
+} from "./SubagentWorkstation";
 
 export type CollaborationMicroStageDetailTarget = {
     detailRef: string;
@@ -48,7 +52,10 @@ type PositionedStageActorItem = StageActorItem & {
     scale: number;
 };
 
-type SupervisorAction = "idle" | "walk" | "summon" | "command" | "read" | "type" | "receive" | "celebrate";
+type CollisionRect = { left: number; top: number; width: number; height: number };
+type CollisionVolume = CollisionRect;
+
+type SupervisorAction = "idle" | "walk" | "summon" | "command" | "read" | "type" | "receive" | "celebrate" | "inspect";
 type SupervisorDisplayAction = SupervisorAction | "turn";
 type SupervisorSceneMode = "entering" | "working" | "handoff" | "celebrating" | "warning";
 
@@ -63,10 +70,14 @@ const WORK_CELL_HEIGHT = 106;
 const SUPERVISOR_BASE_TOP = 18;
 const SUPERVISOR_LAYER_WIDTH = 136;
 const SUPERVISOR_CENTER_X = SUPERVISOR_LAYER_WIDTH / 2;
+const COLLISION_GAP = 8;
+const SUPERVISOR_COLLISION: CollisionVolume = { left: 43, top: 34, width: 50, height: 92 };
+const WORKSTATION_COLLISION: CollisionVolume = { left: 2, top: 6, width: 76, height: 91 };
+const ROBOT_COLLISION: CollisionVolume = { left: 62, top: 42, width: 29, height: 51 };
 const SUPERVISOR_SPRITE_SRC = "/supervisor_spritesheet.png";
 const SUPERVISOR_SHEET = {
     columns: 7,
-    rows: 5,
+    rows: 6,
     frameWidth: 128,
     frameHeight: 128,
 };
@@ -80,6 +91,7 @@ const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, readonly number[]> = {
     type: [21, 22, 23, 24],
     receive: [25, 26],
     celebrate: [27, 30, 31, 32, 33, 34],
+    inspect: [35, 36, 37, 38],
 };
 const SUPERVISOR_TURN_FRAMES = {
     left: [28],
@@ -94,8 +106,9 @@ const SUPERVISOR_ACTION_DURATIONS: Record<SupervisorAction, readonly number[]> =
     type: [180, 140, 140, 420],
     receive: [500, 1100],
     celebrate: [500, 350, 500, 1500, 1200, 950],
+    inspect: [420, 560, 560, 420],
 };
-const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "read", "type"]);
+const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "read", "type", "inspect"]);
 const TURN_BRIDGE_DURATION_MS = 180;
 const SUPERVISOR_TURN_DURATIONS = [TURN_BRIDGE_DURATION_MS] as const;
 const ENTER_DURATION_MS = 1100;
@@ -211,9 +224,6 @@ function useRetainedMicroStages(stages: CollaborationMicroStage[], executionActi
     useEffect(() => {
         if (executionActive) {
             executionWasActive.current = true;
-            if (!settlementLocked.current) {
-                setSettledOutcome(false);
-            }
         }
         if (!executionActive && executionWasActive.current) {
             executionWasActive.current = false;
@@ -223,11 +233,12 @@ function useRetainedMicroStages(stages: CollaborationMicroStage[], executionActi
         const effectiveStages = shouldSettleIncomplete
             ? stages.map(settleIncompleteStage)
             : stages;
-        if (shouldSettleIncomplete && effectiveStages.some((stage) => isFinalStatus(stage.status))) {
-            setSettledOutcome(true);
-        }
+        const hasSettledFinal = shouldSettleIncomplete
+            && effectiveStages.some((stage) => isFinalStatus(stage.status));
         const now = Date.now();
         const timer = window.setTimeout(() => {
+            if (executionActive && !settlementLocked.current) setSettledOutcome(false);
+            if (hasSettledFinal) setSettledOutcome(true);
             setRetained((current) => {
                 const currentById = new Map(current.map((stage) => [stage.id, stage]));
                 const incomingIds = new Set(effectiveStages.map((stage) => stage.id));
@@ -338,18 +349,18 @@ function buildStageActorItems(stages: RetainedMicroStage[]): StageActorItem[] {
 }
 
 function useElementWidth<T extends HTMLElement>() {
-    const ref = useRef<T | null>(null);
+    const [element, setElement] = useState<T | null>(null);
     const [width, setWidth] = useState(0);
+    const ref = useCallback((node: T | null) => setElement(node), []);
 
     useEffect(() => {
-        const element = ref.current;
         if (!element) return undefined;
         const update = () => setWidth(element.getBoundingClientRect().width || 0);
         update();
         const observer = new ResizeObserver(update);
         observer.observe(element);
         return () => observer.disconnect();
-    }, []);
+    }, [element]);
 
     return [ref, width] as const;
 }
@@ -375,20 +386,6 @@ function statusLabel(status: CollaborationMicroStageStatus) {
         pending: "等待",
     };
     return labels[status] || status;
-}
-
-function screenIcon(cue: CollaborationMicroStageCue, status: CollaborationMicroStageStatus) {
-    if (status === "failed") return "!";
-    if (status === "completed") return "✓";
-    if (status === "degraded") return "△";
-    if (cue === "research") return "⌕";
-    if (cue === "engineering") return "</>";
-    if (cue === "creative") return "✦";
-    if (cue === "desktop") return "▣";
-    if (cue === "rpa") return "↻";
-    if (cue === "handoff") return "⇢";
-    if (cue === "child_agent" || cue === "dispatch" || cue === "summon") return "⟡";
-    return "…";
 }
 
 function positionStageActorItems(items: StageActorItem[], layout: CollaborationMicroStageLayout, width: number): PositionedStageActorItem[] {
@@ -443,17 +440,88 @@ function clamp(value: number, min: number, max: number) {
     return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
+function scaleCollisionVolume(item: PositionedStageActorItem, volume: CollisionVolume): CollisionRect {
+    return {
+        left: item.x + volume.left * item.scale,
+        top: item.y + volume.top * item.scale,
+        width: volume.width * item.scale,
+        height: volume.height * item.scale,
+    };
+}
+
+function collisionRectsForItem(item: PositionedStageActorItem): CollisionRect[] {
+    return [
+        scaleCollisionVolume(item, WORKSTATION_COLLISION),
+        scaleCollisionVolume(item, ROBOT_COLLISION),
+    ];
+}
+
+function supervisorCollisionAt(point: { x: number; y: number }): CollisionRect {
+    return {
+        left: point.x + SUPERVISOR_COLLISION.left,
+        top: SUPERVISOR_BASE_TOP + point.y + SUPERVISOR_COLLISION.top,
+        width: SUPERVISOR_COLLISION.width,
+        height: SUPERVISOR_COLLISION.height,
+    };
+}
+
+function expandCollisionRect(rect: CollisionRect, gap: number): CollisionRect {
+    return {
+        left: rect.left - gap,
+        top: rect.top - gap,
+        width: rect.width + gap * 2,
+        height: rect.height + gap * 2,
+    };
+}
+
+function collisionOverlapArea(first: CollisionRect, second: CollisionRect) {
+    const width = Math.max(0, Math.min(first.left + first.width, second.left + second.width) - Math.max(first.left, second.left));
+    const height = Math.max(0, Math.min(first.top + first.height, second.top + second.height) - Math.max(first.top, second.top));
+    return width * height;
+}
+
 function actorIsUnfinished(item: PositionedStageActorItem) {
     return !isFinalStatus(item.actor.status)
         && item.stage.renderPhase !== "exiting";
 }
 
-function supervisorWaypointForItem(item: PositionedStageActorItem, width: number) {
+function supervisorWaypointForItem(
+    item: PositionedStageActorItem,
+    width: number,
+    allItems: PositionedStageActorItem[] = [item],
+) {
     const canvasWidth = Math.max(300, width || 360);
-    return {
-        x: clamp(item.x - 94, 12, canvasWidth - SUPERVISOR_LAYER_WIDTH - 10),
-        y: Math.max(0, item.y - 32),
-    };
+    const maxX = canvasWidth - SUPERVISOR_LAYER_WIDTH - 10;
+    const y = Math.max(0, item.y - 32);
+    const targetRects = collisionRectsForItem(item);
+    const targetLeft = Math.min(...targetRects.map((rect) => rect.left));
+    const targetRight = Math.max(...targetRects.map((rect) => rect.left + rect.width));
+    const rawCandidates = [
+        targetLeft - COLLISION_GAP - SUPERVISOR_COLLISION.left - SUPERVISOR_COLLISION.width,
+        targetRight + COLLISION_GAP - SUPERVISOR_COLLISION.left,
+        12,
+        maxX,
+    ];
+    const candidates = rawCandidates.reduce<Array<{ x: number; y: number }>>((result, x) => {
+        const candidate = { x: clamp(x, 12, maxX), y };
+        if (!result.some((existing) => Math.abs(existing.x - candidate.x) < 0.5)) result.push(candidate);
+        return result;
+    }, []);
+    const obstacles = allItems
+        .filter((candidate) => candidate.stage.renderPhase !== "exiting")
+        .flatMap(collisionRectsForItem)
+        .map((rect) => expandCollisionRect(rect, COLLISION_GAP));
+    const safeCandidate = candidates.find((candidate) => (
+        obstacles.every((obstacle) => collisionOverlapArea(supervisorCollisionAt(candidate), obstacle) === 0)
+    ));
+    if (safeCandidate) return safeCandidate;
+    return candidates.reduce((best, candidate) => {
+        const penalty = obstacles.reduce(
+            (sum, obstacle) => sum + collisionOverlapArea(supervisorCollisionAt(candidate), obstacle),
+            0,
+        );
+        return penalty < best.penalty ? { candidate, penalty } : best;
+    }, { candidate: candidates[0] || { x: 12, y }, penalty: Number.POSITIVE_INFINITY }).candidate;
 }
 
 function sceneModeForStages(stages: RetainedMicroStage[]): SupervisorSceneMode {
@@ -473,15 +541,14 @@ function sceneModeForStages(stages: RetainedMicroStage[]): SupervisorSceneMode {
 }
 
 function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, mode: SupervisorSceneMode) {
-    const [waypointIndex, setWaypointIndex] = useState(0);
+    const [waypointState, setWaypointState] = useState({ signature: "", index: 0 });
     const [moving, setMoving] = useState(false);
-    const previousX = useRef(24);
     const unfinishedItems = useMemo(() => items.filter(actorIsUnfinished), [items]);
     const workingWaypoints = useMemo(() => {
         const candidates = unfinishedItems.length > 0 ? unfinishedItems : items;
         const seen = new Set<string>();
         return candidates.flatMap((item) => {
-            const waypoint = supervisorWaypointForItem(item, width);
+            const waypoint = supervisorWaypointForItem(item, width, items);
             const key = `${Math.round(waypoint.x)}:${Math.round(waypoint.y)}`;
             if (seen.has(key)) return [];
             seen.add(key);
@@ -496,29 +563,33 @@ function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, m
         )) || items[0];
     }, [items, mode, unfinishedItems]);
     const focusPosition = focusItem
-        ? supervisorWaypointForItem(focusItem, width)
+        ? supervisorWaypointForItem(focusItem, width, items)
         : { x: 24, y: 0 };
     const waypointSignature = workingWaypoints.map((point) => `${Math.round(point.x)}:${Math.round(point.y)}`).join("|");
-
-    useEffect(() => {
-        setWaypointIndex(0);
-    }, [waypointSignature]);
+    const waypointIndex = waypointState.signature === waypointSignature ? waypointState.index : 0;
 
     useEffect(() => {
         if (mode !== "working" || workingWaypoints.length === 0) {
-            setMoving(false);
-            return undefined;
+            const stopTimer = window.setTimeout(() => setMoving(false), 0);
+            return () => window.clearTimeout(stopTimer);
         }
-        setMoving(true);
+        const startTimer = window.setTimeout(() => setMoving(true), 0);
         const settleTimer = window.setTimeout(() => setMoving(false), 1250);
         if (workingWaypoints.length === 1) {
-            return () => window.clearTimeout(settleTimer);
+            return () => {
+                window.clearTimeout(startTimer);
+                window.clearTimeout(settleTimer);
+            };
         }
         const timer = window.setInterval(() => {
             setMoving(true);
-            setWaypointIndex((current) => current + 1);
+            setWaypointState((current) => ({
+                signature: waypointSignature,
+                index: (current.signature === waypointSignature ? current.index : 0) + 1,
+            }));
         }, 3600);
         return () => {
+            window.clearTimeout(startTimer);
             window.clearTimeout(settleTimer);
             window.clearInterval(timer);
         };
@@ -534,10 +605,22 @@ function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, m
     const position = mode === "working"
         ? (workingWaypoints[safeIndex] || focusPosition)
         : focusPosition;
-    const facingLeft = position.x < previousX.current;
-    useEffect(() => {
-        previousX.current = position.x;
-    }, [position.x]);
+    const previousWaypoint = workingWaypoints.length > 1
+        ? workingWaypoints[(safeIndex - 1 + workingWaypoints.length) % workingWaypoints.length]
+        : position;
+    const nearestItem = (unfinishedItems.length > 0 ? unfinishedItems : items).reduce<PositionedStageActorItem | undefined>(
+        (nearest, item) => {
+            if (!nearest) return item;
+            const itemCenter = item.x + WORK_CELL_WIDTH * item.scale / 2;
+            const nearestCenter = nearest.x + WORK_CELL_WIDTH * nearest.scale / 2;
+            const supervisorCenter = position.x + SUPERVISOR_CENTER_X;
+            return Math.abs(itemCenter - supervisorCenter) < Math.abs(nearestCenter - supervisorCenter) ? item : nearest;
+        },
+        undefined,
+    );
+    const facingLeft = moving && workingWaypoints.length > 1
+        ? position.x < previousWaypoint.x
+        : Boolean(nearestItem && position.x + SUPERVISOR_CENTER_X > nearestItem.x + WORK_CELL_WIDTH * nearestItem.scale / 2);
     return { position, facingLeft, moving };
 }
 
@@ -547,8 +630,11 @@ function supervisorActionForScene(mode: SupervisorSceneMode, moving: boolean, it
     if (mode === "celebrating") return "celebrate";
     if (mode === "warning") return "read";
     if (moving) return "walk";
-    if (items.some((item) => item.actor.status === "active")) return "command";
-    if (items.some((item) => item.actor.status === "pending" || item.actor.status === "attempted")) return "read";
+    if (items.some((item) => (
+        item.actor.status === "active"
+        || item.actor.status === "pending"
+        || item.actor.status === "attempted"
+    ))) return "inspect";
     return "idle";
 }
 
@@ -565,15 +651,18 @@ function useSupervisorDisplayState(action: SupervisorAction, facingLeft: boolean
         const crossesWalkBoundary = (previous.action === "walk") !== (action === "walk");
         const needsTurnBridge = previous.facingLeft !== facingLeft || crossesWalkBoundary;
         if (!needsTurnBridge) {
-            setDisplayState({ action, facingLeft });
-            return undefined;
+            const applyTimer = window.setTimeout(() => setDisplayState({ action, facingLeft }), 0);
+            return () => window.clearTimeout(applyTimer);
         }
 
-        setDisplayState({ action: "turn", facingLeft });
-        const timer = window.setTimeout(() => {
+        const turnTimer = window.setTimeout(() => setDisplayState({ action: "turn", facingLeft }), 0);
+        const actionTimer = window.setTimeout(() => {
             setDisplayState({ action, facingLeft });
         }, TURN_BRIDGE_DURATION_MS);
-        return () => window.clearTimeout(timer);
+        return () => {
+            window.clearTimeout(turnTimer);
+            window.clearTimeout(actionTimer);
+        };
     }, [action, facingLeft]);
 
     return displayState;
@@ -585,13 +674,16 @@ function useSupervisorFrame(action: SupervisorDisplayAction, facingLeft: boolean
         : SUPERVISOR_ACTION_FRAMES[action];
     const durations = action === "turn" ? SUPERVISOR_TURN_DURATIONS : SUPERVISOR_ACTION_DURATIONS[action];
     const loops = action !== "turn" && LOOPING_SUPERVISOR_ACTIONS.has(action);
-    const [frameIndex, setFrameIndex] = useState(0);
+    const [frameState, setFrameState] = useState<{ action: SupervisorDisplayAction; index: number }>({
+        action,
+        index: 0,
+    });
+    const frameIndex = frameState.action === action ? frameState.index : 0;
 
     useEffect(() => {
         let cancelled = false;
         let timer: number | undefined;
         let current = 0;
-        setFrameIndex(0);
         if (frames.length <= 1) return undefined;
 
         const scheduleNext = () => {
@@ -599,7 +691,7 @@ function useSupervisorFrame(action: SupervisorDisplayAction, facingLeft: boolean
                 if (cancelled) return;
                 if (!loops && current >= frames.length - 1) return;
                 current = (current + 1) % frames.length;
-                setFrameIndex(current);
+                setFrameState({ action, index: current });
                 scheduleNext();
             }, durations[Math.min(current, durations.length - 1)] || 180);
         };
@@ -624,7 +716,8 @@ function SupervisorSprite({
     const frame = useSupervisorFrame(displayState.action, displayState.facingLeft);
     const column = frame % SUPERVISOR_SHEET.columns;
     const row = Math.floor(frame / SUPERVISOR_SHEET.columns);
-    const mirrorWalkFrame = displayState.action === "walk" && !displayState.facingLeft;
+    const mirrorDirectionalFrame = (displayState.action === "walk" || displayState.action === "inspect")
+        && !displayState.facingLeft;
 
     return (
         <div
@@ -634,7 +727,7 @@ function SupervisorSprite({
             style={{
                 width: SUPERVISOR_SHEET.frameWidth,
                 height: SUPERVISOR_SHEET.frameHeight,
-                transform: mirrorWalkFrame ? "scaleX(-1)" : undefined,
+                transform: mirrorDirectionalFrame ? "scaleX(-1)" : undefined,
             }}
         >
             <div
@@ -679,6 +772,7 @@ function SupervisorAvatar({
     return (
         <div
             className="absolute z-30 h-[136px] w-[136px] transition-transform [transition-duration:1250ms] ease-in-out"
+            data-collision-supervisor={`${SUPERVISOR_COLLISION.left},${SUPERVISOR_COLLISION.top},${SUPERVISOR_COLLISION.width},${SUPERVISOR_COLLISION.height}`}
             style={{ transform: `translate(${x}px, ${SUPERVISOR_BASE_TOP + y}px)` }}
         >
             {speech ? (
@@ -717,10 +811,15 @@ function WorkCell({
     const cue = actor.cue || step?.cue || stage.cue;
     const status = actor.status || stage.status;
     const active = status === "active" && stage.renderPhase !== "exiting";
-    const handoff = isFinalStatus(status) || cue === "handoff" || cue === "completed";
+    const handoff = stage.renderPhase === "handoff" || cue === "handoff";
+    const curtain = stage.renderPhase === "celebrating" && status === "completed";
+    const robotAction = subagentRobotActionFor({ cue, status, phase: stage.renderPhase });
     const detailRef = actor.detailRef || step?.detailRef;
-    const targetX = supervisor.x + SUPERVISOR_CENTER_X - x;
-    const targetY = SUPERVISOR_BASE_TOP + supervisor.y + 55 - y - 48;
+    const actorName = actor.label || step?.actorLabel || stage.title;
+    const reportOriginX = 68 + 8;
+    const reportOriginY = 47 + 10;
+    const targetX = supervisor.x + SUPERVISOR_CENTER_X - x - reportOriginX;
+    const targetY = SUPERVISOR_BASE_TOP + supervisor.y + 55 - y - reportOriginY;
     const opacity = stage.renderPhase === "exiting" ? 0 : 1;
     const handleOpen = () => {
         if (detailRef && step && onOpenDetailRef) {
@@ -740,51 +839,40 @@ function WorkCell({
                 transform: `scale(${scale})`,
                 transformOrigin: "top left",
             }}
+            data-collision-workstation={`${WORKSTATION_COLLISION.left},${WORKSTATION_COLLISION.top},${WORKSTATION_COLLISION.width},${WORKSTATION_COLLISION.height}`}
         >
             {(stage.renderPhase === "entering" || cue === "summon") ? (
                 <div className="absolute left-4 top-[58px] h-8 w-16 animate-[microStagePortal_1.2s_ease-out_forwards] rounded-[50%] border border-dashed" style={{ borderColor: color, backgroundColor: `${color}18` }} />
             ) : null}
-            <div className="absolute left-1 top-3 h-[50px] w-[88px]">
-                <div className="absolute left-3 top-0 h-9 w-16 rounded-md border border-slate-500/40 bg-slate-950 shadow-sm">
-                    <div className="absolute inset-[3px] overflow-hidden rounded bg-slate-900" style={{ boxShadow: `inset 0 0 18px ${color}22` }}>
-                        <div className="absolute inset-x-1 top-1 h-px bg-white/15" />
-                        <div className="absolute inset-x-2 bottom-1 h-px bg-white/10" />
-                        <div className="absolute inset-0 grid place-items-center text-[13px] font-black" style={{ color }}>
-                            {screenIcon(cue, status)}
-                        </div>
-                        {active ? <div className="absolute top-0 h-full w-4 animate-[microStageScan_1.1s_linear_infinite] bg-white/10" /> : null}
-                    </div>
-                </div>
-                <div className="absolute left-[39px] top-9 h-3 w-2 rounded-sm bg-slate-400/80" />
-                <div className="absolute left-0 top-[43px] h-2 w-[88px] rounded-full border border-slate-300/50 bg-gradient-to-r from-white via-slate-100 to-slate-300 shadow-sm dark:border-slate-500/40 dark:from-slate-200 dark:to-slate-500" />
-                <div className="absolute left-4 top-[48px] h-11 w-7 rounded-b-xl border border-slate-300/60 bg-white/80 dark:border-slate-500/40 dark:bg-slate-300/80" />
-                <div className="absolute right-2 top-[48px] h-9 w-6 rounded-sm border border-slate-300/60 bg-slate-100/90 dark:border-slate-500/40 dark:bg-slate-400/80" />
+            <div className="absolute left-0 top-1 z-[3]">
+                <WorkstationDisplay cue={cue} color={color} phase={stage.renderPhase} status={status} />
             </div>
             <div
                 className={cn(
-                    "absolute left-7 top-[54px] h-10 w-10 transition-transform [transition-duration:1320ms] ease-out",
-                    active && "animate-[microStageBotBob_1s_ease-in-out_infinite]",
+                    "absolute left-[45px] top-[29px] z-[8] h-16 w-16 transition-[opacity,transform] ease-out",
+                    active && !handoff && "animate-[microStageBotBob_1.4s_ease-in-out_infinite]",
+                    curtain && "animate-[microStageRobotCurtain_2.05s_ease-out_forwards]",
                 )}
-                style={{
-                    transform: handoff ? `translate(${targetX}px, ${targetY}px)` : "translate(0, 0)",
-                }}
+                data-collision-agent={`${ROBOT_COLLISION.left - 45},${ROBOT_COLLISION.top - 29},${ROBOT_COLLISION.width},${ROBOT_COLLISION.height}`}
             >
-                <div className="absolute left-1 top-1 h-5 w-8 rounded-[10px] border border-slate-600/40 bg-gradient-to-b from-white to-slate-300 shadow-sm">
-                    <span className="absolute left-2 top-2 h-1.5 w-1.5 rounded-full bg-slate-950" />
-                    <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-slate-950" />
-                    <span className="absolute bottom-1 left-3 h-1 w-4 rounded-full" style={{ backgroundColor: color }} />
+                <div
+                    className="absolute -top-2 left-1/2 z-20 flex max-w-[72px] -translate-x-1/2 items-center gap-1 rounded-full border bg-background/90 px-1.5 py-0.5 text-[8px] font-semibold leading-none text-foreground/90 shadow-sm backdrop-blur"
+                    style={{ borderColor: `${color}80` }}
+                    title={actorName}
+                >
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                    <span className="truncate">{actorName}</span>
                 </div>
-                <div className="absolute left-0 top-[19px] h-5 w-10 rounded-t-lg border border-slate-600/40 bg-gradient-to-b from-slate-100 to-slate-400" />
-                <div className="absolute bottom-0 left-1 h-2.5 w-8 rounded-full bg-slate-900 shadow-inner">
-                    <span className="absolute left-1 top-1 h-1 w-1 rounded-full bg-slate-200/80" />
-                    <span className="absolute left-[14px] top-1 h-1 w-1 rounded-full bg-slate-200/70" />
-                    <span className="absolute right-1 top-1 h-1 w-1 rounded-full bg-slate-200/80" />
-                </div>
+                <div className="absolute bottom-1 left-[18px] h-2 w-8 rounded-full bg-slate-950/20 blur-[1px] dark:bg-black/40" />
+                <SubagentRobotSprite action={robotAction} color={color} />
             </div>
             {handoff ? (
                 <div
-                    className="absolute left-10 top-[49px] h-5 w-4 rounded border border-slate-400/70 bg-white shadow-sm transition-transform [transition-duration:1320ms] ease-out"
-                    style={{ transform: `translate(${targetX + 10}px, ${targetY - 6}px)` }}
+                    className="absolute left-[68px] top-[47px] h-5 w-4 animate-[microStageReportTravel_1.32s_ease-out_forwards] rounded border border-slate-400/70 bg-white shadow-sm"
+                    style={{
+                        "--micro-stage-report-x": `${targetX + 6}px`,
+                        "--micro-stage-report-y": `${targetY - 8}px`,
+                    } as CSSProperties}
                 >
                     <span className="absolute left-1 top-1 h-px w-2 bg-slate-400" />
                     <span className="absolute left-1 top-2.5 h-px w-2 bg-slate-300" />
@@ -887,14 +975,17 @@ export const CollaborationMicroStageScene = memo(function CollaborationMicroStag
                     42% { opacity: 1; transform: scale(1.05) rotate(18deg); }
                     100% { opacity: 0; transform: scale(1.15) rotate(38deg); }
                 }
-                @keyframes microStageScan {
-                    0% { transform: translateX(-22px); opacity: 0; }
-                    20% { opacity: 0.7; }
-                    100% { transform: translateX(58px); opacity: 0; }
-                }
                 @keyframes microStageBotBob {
                     0%, 100% { margin-top: 0; }
                     50% { margin-top: -2px; }
+                }
+                @keyframes microStageRobotCurtain {
+                    0%, 72% { opacity: 1; transform: translateY(0) scale(1); }
+                    100% { opacity: 0; transform: translateY(-3px) scale(0.96); }
+                }
+                @keyframes microStageReportTravel {
+                    0% { opacity: 0.66; transform: translate(0, 0); }
+                    100% { opacity: 1; transform: translate(var(--micro-stage-report-x), var(--micro-stage-report-y)); }
                 }
             `}</style>
         </div>

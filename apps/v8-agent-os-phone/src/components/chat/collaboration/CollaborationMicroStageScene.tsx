@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
-import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, Rect, Stop } from "react-native-svg";
+import Svg, { Circle, Ellipse, Path, Rect } from "react-native-svg";
 import Animated, {
     cancelAnimation,
     Easing,
@@ -27,6 +27,11 @@ import { selectCollaborationMicroStageLayout } from "@v8/session-realtime";
 import { createTranslator } from "@/src/lib/locale";
 import type { LocaleCode } from "@/src/providers/ui-prefs";
 import type { ThemeColors } from "@/src/theme/tokens";
+import {
+    SubagentRobotSprite,
+    WorkstationDisplay,
+    subagentRobotActionFor,
+} from "./SubagentWorkstation";
 
 export type CollaborationMicroStageDetailTarget = {
     detailRef: string;
@@ -51,12 +56,12 @@ type CollaborationMicroStageSceneProps = CollaborationMicroStageRendererProps & 
     renderer?: ComponentType<CollaborationMicroStageRendererProps>;
 };
 
-type SupervisorAction = "idle" | "walk" | "summon" | "command" | "read" | "type" | "receive" | "celebrate";
+type SupervisorAction = "idle" | "walk" | "summon" | "command" | "read" | "type" | "receive" | "celebrate" | "inspect";
 type SupervisorDisplayAction = SupervisorAction | "turn";
 
 const SUPERVISOR_SHEET = {
     columns: 7,
-    rows: 5,
+    rows: 6,
     frameWidth: 128,
     frameHeight: 128,
 };
@@ -70,6 +75,7 @@ const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, readonly number[]> = {
     type: [21, 22, 23, 24],
     receive: [25, 26],
     celebrate: [27, 30, 31, 32, 33, 34],
+    inspect: [35, 36, 37, 38],
 };
 const SUPERVISOR_TURN_FRAMES = {
     left: [28],
@@ -84,8 +90,9 @@ const SUPERVISOR_ACTION_DURATIONS: Record<SupervisorAction, readonly number[]> =
     type: [180, 140, 140, 420],
     receive: [500, 1100],
     celebrate: [500, 350, 500, 1500, 1200, 950],
+    inspect: [420, 560, 560, 420],
 };
-const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "read", "type"]);
+const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "read", "type", "inspect"]);
 const TURN_BRIDGE_DURATION_MS = 180;
 const SUPERVISOR_TURN_DURATIONS = [TURN_BRIDGE_DURATION_MS] as const;
 
@@ -98,6 +105,12 @@ const MAX_STAGE_ACTORS = 10;
 const SUPERVISOR_BASE_TOP = 18;
 const SUPERVISOR_LAYER_WIDTH = 136;
 const SUPERVISOR_CENTER_X = SUPERVISOR_LAYER_WIDTH / 2;
+type CollisionRect = { left: number; top: number; width: number; height: number };
+type CollisionVolume = CollisionRect;
+const COLLISION_GAP = 8;
+const SUPERVISOR_COLLISION: CollisionVolume = { left: 43, top: 34, width: 50, height: 92 };
+const WORKSTATION_COLLISION: CollisionVolume = { left: 2, top: 6, width: 76, height: 91 };
+const ROBOT_COLLISION: CollisionVolume = { left: 62, top: 42, width: 29, height: 51 };
 
 type MicroStageRenderPhase = "entering" | "working" | "handoff" | "celebrating" | "warning" | "exiting";
 
@@ -357,8 +370,11 @@ function supervisorActionForScene(mode: SupervisorSceneMode, moving: boolean, it
     if (mode === "celebrating") return "celebrate";
     if (mode === "warning") return "read";
     if (moving) return "walk";
-    if (items.some((item) => item.actor.status === "active")) return "command";
-    if (items.some((item) => item.actor.status === "pending" || item.actor.status === "attempted")) return "read";
+    if (items.some((item) => (
+        item.actor.status === "active"
+        || item.actor.status === "pending"
+        || item.actor.status === "attempted"
+    ))) return "inspect";
     return "idle";
 }
 
@@ -488,16 +504,87 @@ function clamp(value: number, min: number, max: number) {
     return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
+function scaleCollisionVolume(item: PositionedStageActorItem, volume: CollisionVolume): CollisionRect {
+    return {
+        left: item.x + volume.left * item.scale,
+        top: item.y + volume.top * item.scale,
+        width: volume.width * item.scale,
+        height: volume.height * item.scale,
+    };
+}
+
+function collisionRectsForItem(item: PositionedStageActorItem): CollisionRect[] {
+    return [
+        scaleCollisionVolume(item, WORKSTATION_COLLISION),
+        scaleCollisionVolume(item, ROBOT_COLLISION),
+    ];
+}
+
+function supervisorCollisionAt(point: { x: number; y: number }): CollisionRect {
+    return {
+        left: point.x + SUPERVISOR_COLLISION.left,
+        top: SUPERVISOR_BASE_TOP + point.y + SUPERVISOR_COLLISION.top,
+        width: SUPERVISOR_COLLISION.width,
+        height: SUPERVISOR_COLLISION.height,
+    };
+}
+
+function expandCollisionRect(rect: CollisionRect, gap: number): CollisionRect {
+    return {
+        left: rect.left - gap,
+        top: rect.top - gap,
+        width: rect.width + gap * 2,
+        height: rect.height + gap * 2,
+    };
+}
+
+function collisionOverlapArea(first: CollisionRect, second: CollisionRect) {
+    const width = Math.max(0, Math.min(first.left + first.width, second.left + second.width) - Math.max(first.left, second.left));
+    const height = Math.max(0, Math.min(first.top + first.height, second.top + second.height) - Math.max(first.top, second.top));
+    return width * height;
+}
+
 function actorIsUnfinished(item: PositionedStageActorItem) {
     return !isFinalStatus(item.actor.status) && item.stage.renderPhase !== "exiting";
 }
 
-function supervisorWaypointForItem(item: PositionedStageActorItem, width: number) {
+function supervisorWaypointForItem(
+    item: PositionedStageActorItem,
+    width: number,
+    allItems: PositionedStageActorItem[] = [item],
+) {
     const canvasWidth = Math.max(300, width || 320);
-    return {
-        x: clamp(item.x - 94, 12, canvasWidth - SUPERVISOR_LAYER_WIDTH - 10),
-        y: Math.max(0, item.y - 32),
-    };
+    const maxX = canvasWidth - SUPERVISOR_LAYER_WIDTH - 10;
+    const y = Math.max(0, item.y - 32);
+    const targetRects = collisionRectsForItem(item);
+    const targetLeft = Math.min(...targetRects.map((rect) => rect.left));
+    const targetRight = Math.max(...targetRects.map((rect) => rect.left + rect.width));
+    const rawCandidates = [
+        targetLeft - COLLISION_GAP - SUPERVISOR_COLLISION.left - SUPERVISOR_COLLISION.width,
+        targetRight + COLLISION_GAP - SUPERVISOR_COLLISION.left,
+        12,
+        maxX,
+    ];
+    const candidates = rawCandidates.reduce<Array<{ x: number; y: number }>>((result, x) => {
+        const candidate = { x: clamp(x, 12, maxX), y };
+        if (!result.some((existing) => Math.abs(existing.x - candidate.x) < 0.5)) result.push(candidate);
+        return result;
+    }, []);
+    const obstacles = allItems
+        .filter((candidate) => candidate.stage.renderPhase !== "exiting")
+        .flatMap(collisionRectsForItem)
+        .map((rect) => expandCollisionRect(rect, COLLISION_GAP));
+    const safeCandidate = candidates.find((candidate) => (
+        obstacles.every((obstacle) => collisionOverlapArea(supervisorCollisionAt(candidate), obstacle) === 0)
+    ));
+    if (safeCandidate) return safeCandidate;
+    return candidates.reduce((best, candidate) => {
+        const penalty = obstacles.reduce(
+            (sum, obstacle) => sum + collisionOverlapArea(supervisorCollisionAt(candidate), obstacle),
+            0,
+        );
+        return penalty < best.penalty ? { candidate, penalty } : best;
+    }, { candidate: candidates[0] || { x: 12, y }, penalty: Number.POSITIVE_INFINITY }).candidate;
 }
 
 function supervisorWaypointsForItems(items: PositionedStageActorItem[], width: number) {
@@ -505,7 +592,7 @@ function supervisorWaypointsForItems(items: PositionedStageActorItem[], width: n
     const candidates = unfinished.length > 0 ? unfinished : items;
     const seen = new Set<string>();
     return candidates.flatMap((item) => {
-        const waypoint = supervisorWaypointForItem(item, width);
+        const waypoint = supervisorWaypointForItem(item, width, items);
         const key = `${Math.round(waypoint.x)}:${Math.round(waypoint.y)}`;
         if (seen.has(key)) return [];
         seen.add(key);
@@ -585,13 +672,14 @@ function SupervisorSprite({
     const frame = useSupervisorFrame(displayState.action, displayState.facingLeft);
     const column = frame % SUPERVISOR_SHEET.columns;
     const row = Math.floor(frame / SUPERVISOR_SHEET.columns);
-    const mirrorWalkFrame = displayState.action === "walk" && !displayState.facingLeft;
+    const mirrorDirectionalFrame = (displayState.action === "walk" || displayState.action === "inspect")
+        && !displayState.facingLeft;
 
     return (
         <View
             style={[
                 styles.supervisorSpriteClip,
-                mirrorWalkFrame ? styles.supervisorSpriteMirrored : undefined,
+                mirrorDirectionalFrame ? styles.supervisorSpriteMirrored : undefined,
             ]}
             accessibilityLabel={`${displayState.action}:${displayState.facingLeft ? "left" : "right"}`}
         >
@@ -647,197 +735,6 @@ function MagicPortal({ color }: { color: string }) {
                 <Path d="M39 11 L48 27 L30 27 Z" fill="none" stroke={color} strokeWidth={0.9} opacity={0.8} />
                 <Circle cx={39} cy={22} r={2.2} fill={color} opacity={0.86} />
             </Svg>
-        </Animated.View>
-    );
-}
-
-function Workstation({
-    cue,
-    color,
-    status,
-    active,
-    isWalking,
-}: {
-    cue: CollaborationMicroStageCue;
-    color: string;
-    status: CollaborationMicroStageStatus;
-    active: boolean;
-    isWalking: boolean;
-}) {
-    let screenContent = null;
-    let screenBg = "#0f172a";
-
-    if (status === "failed") {
-        screenBg = "#7f1d1d";
-        screenContent = (
-            <G>
-                <Path d="M40 9 L33 21 H47 Z" fill="#ef4444" stroke="#ffffff" strokeWidth={1} />
-                <Path d="M40 13 V17" stroke="#ffffff" strokeWidth={1.5} />
-                <Circle cx="40" cy="19.5" r="0.8" fill="#ffffff" />
-            </G>
-        );
-    } else if (status === "completed") {
-        screenContent = (
-            <G>
-                <Path d="M34 17 L38 21 L46 12" stroke="#10b981" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-                <Circle cx="40" cy="16" r="8" fill="none" stroke="#10b981" strokeWidth={0.8} opacity={0.4} />
-            </G>
-        );
-    } else if (status === "degraded") {
-        screenBg = "#7c2d12";
-        screenContent = (
-            <Path d="M22 17 Q27 10 32 17 T42 17 T52 17" stroke="#f97316" strokeWidth={1.5} fill="none" />
-        );
-    } else if (status === "pending") {
-        screenContent = (
-            <G>
-                <Path d="M37 10 H43 L37 20 H43 Z" fill="none" stroke="#fbbf24" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round" />
-                <Circle cx="40" cy="15" r="5" fill="none" stroke="#fbbf24" strokeWidth={0.8} strokeDasharray="2,2" />
-            </G>
-        );
-    } else if (active || status === "active") {
-        screenBg = "#090d16";
-        screenContent = (
-            <G>
-                <Path d="M22 9 H38 M24 13 H42 M22 17 H35 M26 21 H40" stroke="#00ffcc" strokeWidth={1} strokeLinecap="round" />
-                <Path d="M40 9 H44" stroke="#fbbf24" strokeWidth={1} strokeLinecap="round" />
-                <Path d="M44 13 H46" stroke="#ffffff" strokeWidth={1} strokeLinecap="round" />
-                <Path d="M37 17 H45" stroke="#38bdf8" strokeWidth={1} strokeLinecap="round" />
-            </G>
-        );
-    }
-
-    const showRobotHead = !isWalking;
-
-    return (
-        <View style={styles.workstation}>
-            <Svg width={86} height={64} viewBox="0 0 80 60" style={StyleSheet.absoluteFill}>
-                {/* White workstation tabletop */}
-                <Path d="M2 38 L78 38 L70 32 L10 32 Z" fill="#ffffff" stroke="#e2e8f0" strokeWidth={1} />
-                <Rect x="2" y="38" width="76" height="3" fill="#f1f5f9" />
-                
-                {/* Cabinet drawers */}
-                <Rect x="56" y="41" width="14" height="18" fill="#cbd5e1" stroke="#94a3b8" strokeWidth={0.8} rx={1} />
-                <Path d="M59 46 H67" stroke="#475569" strokeWidth={1} />
-                <Path d="M59 52 H67" stroke="#475569" strokeWidth={1} />
-                
-                {/* Table legs */}
-                <Path d="M6 41 V59" stroke="#94a3b8" strokeWidth={1.5} />
-                <Path d="M50 41 V59" stroke="#94a3b8" strokeWidth={1.5} />
-                
-                {/* Keyboard */}
-                <Path d="M28 36.5 H52 L50 37.8 H30 Z" fill="#e2e8f0" stroke="#94a3b8" strokeWidth={0.5} />
-                
-                {/* Computer stand */}
-                <Path d="M40 32 V28" stroke="#94a3b8" strokeWidth={2.5} />
-                {/* Computer monitor outer frame */}
-                <Rect x="16" y="4" width="48" height="26" rx="2" fill="#e2e8f0" stroke="#cbd5e1" strokeWidth={1} />
-                {/* Computer monitor screen */}
-                <Rect x="18" y="6" width="44" height="22" rx={1} fill={screenBg} />
-                
-                {/* Dynamic screen content */}
-                {screenContent}
-                
-                {/* Glass reflection shine */}
-                <Path d="M62 6 L38 28 H62 Z" fill="#ffffff" opacity={0.08} />
-
-                {/* Chair (Integrated SVG) */}
-                <Path d="M40 53 V58" stroke="#64748b" strokeWidth={1.5} />
-                <Path d="M33 58 H47" stroke="#64748b" strokeWidth={1.5} strokeLinecap="round" />
-                <Rect x="31" y="49" width="18" height="4" rx={1} fill="#e2e8f0" stroke="#cbd5e1" strokeWidth={0.8} />
-                <Rect x="33" y="37" width="14" height="12" rx={3} fill="#ffffff" stroke="#cbd5e1" strokeWidth={1} />
-
-                {/* Sitting robot peeking head */}
-                {showRobotHead && (
-                    <G>
-                        <Circle cx="40" cy="34" r="3.5" fill="#f1f5f9" stroke="#64748b" strokeWidth={0.8} />
-                        <Path d="M40 30.5 V27" stroke="#64748b" strokeWidth={0.8} />
-                        <Circle cx="40" cy="26" r="1.2" fill={color} />
-                        <Rect x="38" y="33.5" width="4" height="1" rx="0.3" fill={color} opacity={0.8} />
-                    </G>
-                )}
-            </Svg>
-        </View>
-    );
-}
-
-function RobotActor({
-    color,
-    active,
-    status,
-}: {
-    color: string;
-    active: boolean;
-    status: CollaborationMicroStageStatus;
-}) {
-    const tread = useSharedValue(0);
-    const bob = useSharedValue(0);
-
-    useEffect(() => {
-        if (active || status === "completed" || status === "degraded") {
-            tread.value = withRepeat(withTiming(1, { duration: 520, easing: Easing.linear }), -1, false);
-            bob.value = withRepeat(
-                withSequence(
-                    withTiming(1, { duration: 520, easing: Easing.inOut(Easing.ease) }),
-                    withTiming(0, { duration: 520, easing: Easing.inOut(Easing.ease) }),
-                ),
-                -1,
-                true,
-            );
-            return;
-        }
-        tread.value = withTiming(0, { duration: 160 });
-        bob.value = withTiming(0, { duration: 160 });
-    }, [active, bob, status, tread]);
-
-    const actorStyle = useAnimatedStyle(() => ({
-        transform: [{ translateY: -bob.value * 2 }],
-    }));
-
-    const treadStyle = useAnimatedStyle(() => ({
-        transform: [{ translateX: -tread.value * 7 }],
-    }));
-
-    return (
-        <Animated.View style={[styles.robotActor, actorStyle]}>
-            <Svg width={38} height={46} viewBox="0 0 38 46">
-                <Defs>
-                    <LinearGradient id="robotBody" x1="0" y1="0" x2="1" y2="1">
-                        <Stop offset="0" stopColor="#FFFFFF" />
-                        <Stop offset="0.55" stopColor="#E2E8F0" />
-                        <Stop offset="1" stopColor="#94A3B8" />
-                    </LinearGradient>
-                    <LinearGradient id="robotTrack" x1="0" y1="0" x2="0" y2="1">
-                        <Stop offset="0" stopColor="#334155" />
-                        <Stop offset="1" stopColor="#0F172A" />
-                    </LinearGradient>
-                </Defs>
-                <Path d="M19 7 V2.5" stroke="#64748B" strokeWidth={1.5} strokeLinecap="round" />
-                <Circle cx={19} cy={2.6} r={2.2} fill={color} />
-                <Rect x={8} y={7} width={22} height={13} rx={5.5} fill="url(#robotBody)" stroke="#64748B" strokeWidth={1.2} />
-                <Path d="M12 11 H26" stroke="#FFFFFF" strokeWidth={1.2} opacity={0.46} />
-                <Circle cx={15} cy={14.2} r={2.1} fill="#0F172A" />
-                <Circle cx={23} cy={14.2} r={2.1} fill="#0F172A" />
-                <Circle cx={15.7} cy={13.4} r={0.7} fill="#FFFFFF" opacity={0.9} />
-                <Circle cx={23.7} cy={13.4} r={0.7} fill="#FFFFFF" opacity={0.9} />
-                <Rect x={14} y={17.5} width={10} height={1.5} rx={0.75} fill={color} opacity={0.8} />
-                <Path d="M9 22 C9 19 12 18 19 18 C26 18 30 19 30 22 V33 C30 36 27 37 19 37 C11 37 8 36 8 33 Z" fill="url(#robotBody)" stroke="#64748B" strokeWidth={1.2} />
-                <Rect x={12} y={23} width={14} height={7} rx={2.4} fill={color} opacity={0.22} />
-                <Path d="M13 27 H25" stroke={color} strokeWidth={1.4} strokeLinecap="round" opacity={0.8} />
-                <Path d="M8 25 L3 30 M30 25 L35 30" stroke="#94A3B8" strokeWidth={2} strokeLinecap="round" />
-                <Circle cx={3} cy={30} r={2} fill={color} opacity={0.72} />
-                <Circle cx={35} cy={30} r={2} fill={color} opacity={0.72} />
-                <Rect x={4} y={35} width={30} height={8.5} rx={4.2} fill="url(#robotTrack)" stroke="#0F172A" strokeWidth={1} />
-                <Circle cx={11} cy={39.2} r={2.2} fill="#CBD5E1" opacity={0.78} />
-                <Circle cx={19} cy={39.2} r={2.2} fill="#CBD5E1" opacity={0.64} />
-                <Circle cx={27} cy={39.2} r={2.2} fill="#CBD5E1" opacity={0.78} />
-                <Path d="M7 35.6 H31" stroke="#64748B" strokeWidth={1.1} strokeLinecap="round" opacity={0.7} />
-            </Svg>
-            <Animated.View style={[styles.treadMarks, treadStyle]} pointerEvents="none">
-                {Array.from({ length: 7 }).map((_, index) => (
-                    <View key={index} style={styles.treadDot} />
-                ))}
-            </Animated.View>
         </Animated.View>
     );
 }
@@ -917,12 +814,14 @@ const WorkCell = memo(function WorkCell({
     const step = latestActorStep(stage, actor);
     const cue = actor.cue || step?.cue || stage.cue;
     const actorStatus = actor.status || stage.status;
-    const active = actorStatus === "active" && phase !== "exiting";
-    const isHandoff = isFinalStatus(actorStatus) || cue === "handoff" || cue === "completed";
+    const isHandoff = phase === "handoff" || cue === "handoff";
+    const isCurtain = phase === "celebrating" && actorStatus === "completed";
+    const robotAction = subagentRobotActionFor({ cue, status: actorStatus, phase });
+    const actorName = actor.label || step?.actorLabel || stage.title;
     const appeared = useSharedValue(0);
-    const shake = useSharedValue(0);
-    const walkBack = useSharedValue(0);
+    const reportTravel = useSharedValue(0);
     const submit = useSharedValue(0);
+    const robotVisibility = useSharedValue(1);
     const warningPulse = useSharedValue(0);
 
     useEffect(() => {
@@ -938,18 +837,6 @@ const WorkCell = memo(function WorkCell({
     }, [appeared, phase]);
 
     useEffect(() => {
-        if (active) {
-            shake.value = withRepeat(
-                withSequence(withTiming(-1, { duration: 76 }), withTiming(1, { duration: 76 })),
-                -1,
-                true,
-            );
-            return;
-        }
-        shake.value = withTiming(0, { duration: 140 });
-    }, [active, shake]);
-
-    useEffect(() => {
         if (actorStatus === "failed" || actorStatus === "degraded") {
             warningPulse.value = withRepeat(
                 withSequence(withTiming(1, { duration: 420 }), withTiming(0, { duration: 420 })),
@@ -963,13 +850,24 @@ const WorkCell = memo(function WorkCell({
 
     useEffect(() => {
         if (isHandoff) {
-            walkBack.value = withDelay(260, withTiming(1, { duration: 1320, easing: Easing.out(Easing.cubic) }));
+            reportTravel.value = withDelay(260, withTiming(1, { duration: 1320, easing: Easing.out(Easing.cubic) }));
             submit.value = withDelay(1420, withTiming(1, { duration: 480, easing: Easing.out(Easing.cubic) }));
             return;
         }
-        walkBack.value = withTiming(0, { duration: 160 });
+        reportTravel.value = withTiming(0, { duration: 160 });
         submit.value = withTiming(0, { duration: 160 });
-    }, [isHandoff, submit, walkBack]);
+    }, [isHandoff, reportTravel, submit]);
+
+    useEffect(() => {
+        if (isCurtain) {
+            robotVisibility.value = withDelay(
+                1450,
+                withTiming(0, { duration: 520, easing: Easing.out(Easing.cubic) }),
+            );
+            return;
+        }
+        robotVisibility.value = withTiming(1, { duration: 160, easing: Easing.out(Easing.cubic) });
+    }, [isCurtain, robotVisibility]);
 
     const cellStyle = useAnimatedStyle(() => ({
         opacity: appeared.value,
@@ -977,22 +875,17 @@ const WorkCell = memo(function WorkCell({
     }));
 
     const botStyle = useAnimatedStyle(() => {
-        const target = supervisorX.value + SUPERVISOR_CENTER_X - 10 - x;
-        const targetY = SUPERVISOR_BASE_TOP + supervisorY.value + 50 - y - 42;
         return {
-            opacity: isHandoff ? (appeared.value * (1 - submit.value * 0.82)) : 0,
-            transform: [
-                { translateX: walkBack.value * target + (walkBack.value < 0.02 ? shake.value * 0.9 : 0) },
-                { translateY: walkBack.value * targetY + (walkBack.value > 0 ? Math.sin(walkBack.value * Math.PI * 10) * 1.4 : 0) },
-            ],
+            opacity: appeared.value * robotVisibility.value,
+            transform: [{ translateY: (1 - robotVisibility.value) * -3 }],
         };
     });
 
     const reportStyle = useAnimatedStyle(() => ({
-        opacity: walkBack.value > 0.72 ? 1 - submit.value : 0,
+        opacity: isHandoff ? Math.min(1, reportTravel.value * 1.5) * (1 - submit.value) : 0,
         transform: [
-            { translateX: walkBack.value * (supervisorX.value + SUPERVISOR_CENTER_X - x) },
-            { translateY: walkBack.value * (SUPERVISOR_BASE_TOP + supervisorY.value + 40 - y - 52) - submit.value * 18 },
+            { translateX: reportTravel.value * (supervisorX.value + SUPERVISOR_CENTER_X - x) },
+            { translateY: reportTravel.value * (SUPERVISOR_BASE_TOP + supervisorY.value + 40 - y - 52) - submit.value * 18 },
         ],
     }));
 
@@ -1012,16 +905,27 @@ const WorkCell = memo(function WorkCell({
         <Animated.View style={[styles.workCell, { left: x, top: y }, cellStyle]}>
             {(phase === "entering" || cue === "summon") && <MagicPortal color={color} />}
             <WorkbenchShadow />
-            <Workstation
-                cue={cue}
-                color={color}
-                status={actorStatus}
-                active={active}
-                isWalking={isHandoff}
-            />
+            <View style={styles.workstationLayer}>
+                <WorkstationDisplay cue={cue} color={color} phase={phase} status={actorStatus} />
+            </View>
             <Animated.View style={[styles.robotLayer, botStyle]}>
+                <View
+                    pointerEvents="none"
+                    style={[
+                        styles.robotNameLabel,
+                        {
+                            backgroundColor: dark ? "rgba(15,23,42,0.9)" : "rgba(255,255,255,0.92)",
+                            borderColor: `${color}80`,
+                        },
+                    ]}
+                >
+                    <View style={[styles.robotNameDot, { backgroundColor: color }]} />
+                    <Text style={[styles.robotNameText, { color: palette.text }]} numberOfLines={1}>
+                        {actorName}
+                    </Text>
+                </View>
                 <GroundShadow width={38} opacity={0.18} />
-                <RobotActor color={color} active={active || isHandoff} status={actorStatus} />
+                <SubagentRobotSprite action={robotAction} color={color} />
             </Animated.View>
             {isHandoff && (
                 <Animated.View style={[styles.reportLayer, reportStyle]} pointerEvents="none">
@@ -1132,7 +1036,7 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
         )) || positionedItems[0];
     }, [positionedItems, sceneMode]);
     const focusPosition = focusItem
-        ? supervisorWaypointForItem(focusItem, canvasWidth)
+        ? supervisorWaypointForItem(focusItem, canvasWidth, positionedItems)
         : { x: 58, y: 0 };
     const patrolSignature = patrolWaypoints.map((point) => `${Math.round(point.x)}:${Math.round(point.y)}`).join("|");
     const action = useMemo(
@@ -1353,11 +1257,12 @@ const styles = StyleSheet.create({
         alignItems: "center",
         zIndex: 10,
     },
-    workstation: {
+    workstationLayer: {
         position: "absolute",
-        bottom: 8,
-        width: 86,
-        height: 64,
+        left: 0,
+        bottom: 5,
+        width: 88,
+        height: 88,
         zIndex: 3,
     },
     workbenchShadow: {
@@ -1365,57 +1270,46 @@ const styles = StyleSheet.create({
         bottom: 6,
         zIndex: 1,
     },
-    screenSurface: {
-        position: "absolute",
-        left: 19,
-        top: 8,
-        width: 48,
-        height: 28,
-        overflow: "hidden",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 4,
-    },
-    screenScanLine: {
-        position: "absolute",
-        top: 4,
-        left: 0,
-        width: 16,
-        height: 22,
-        borderRadius: 8,
-        opacity: 0.3,
-    },
     robotLayer: {
         position: "absolute",
-        bottom: 6,
-        left: 8,
-        width: 42,
-        height: 50,
+        bottom: 7,
+        left: 44,
+        width: 64,
+        height: 64,
         alignItems: "center",
         justifyContent: "flex-end",
         zIndex: 8,
     },
-    robotActor: {
-        width: 38,
-        height: 46,
-        alignItems: "center",
-        overflow: "hidden",
-    },
-    treadMarks: {
+    robotNameLabel: {
         position: "absolute",
-        bottom: 3,
-        left: 7,
-        width: 32,
-        height: 2,
+        top: -8,
+        left: -5,
+        width: 74,
+        minHeight: 14,
+        borderRadius: 999,
+        borderWidth: 1,
+        paddingHorizontal: 5,
         flexDirection: "row",
-        gap: 4,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 3,
+        zIndex: 12,
+        shadowColor: "#020617",
+        shadowOpacity: 0.08,
+        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 1 },
     },
-    treadDot: {
-        width: 3,
-        height: 2,
-        borderRadius: 1,
-        backgroundColor: "#94A3B8",
-        opacity: 0.72,
+    robotNameDot: {
+        width: 5,
+        height: 5,
+        borderRadius: 999,
+        flexShrink: 0,
+    },
+    robotNameText: {
+        flexShrink: 1,
+        fontSize: 7.5,
+        fontWeight: "700",
+        lineHeight: 10,
     },
     portal: {
         position: "absolute",

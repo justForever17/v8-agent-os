@@ -12,7 +12,7 @@ function parseTimelineTimestamp(raw: unknown): number {
       return timestamp;
     }
   }
-  return Date.now();
+  return 0;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -162,7 +162,15 @@ export function normalizeAuthoritativeRuntimeTimeline(input: unknown[]): Authori
     }
   }
 
-  return Array.from(merged.values()).sort((left, right) => right.timestamp - left.timestamp);
+  return Array.from(merged.values()).sort((left, right) => {
+    if (left.seq > 0 && right.seq > 0 && left.seq !== right.seq) {
+      return right.seq - left.seq;
+    }
+    if (left.timestamp !== right.timestamp) {
+      return right.timestamp - left.timestamp;
+    }
+    return right.id.localeCompare(left.id);
+  });
 }
 
 export function buildAuthoritativeRuntimeTimelineEntryFromEvent(

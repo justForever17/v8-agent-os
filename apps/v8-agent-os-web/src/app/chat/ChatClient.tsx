@@ -61,6 +61,7 @@ import {
     type AdminProcessRef,
     deriveMemoryRuntimeInsightFromGovernance,
     deriveAuthoritativeSessionView,
+    evaluateSessionRuntimeEvent,
     flushQueuedSessionRealtimeRuntimeEvents,
     normalizeContextGovernanceDigest,
     normalizeContextGovernanceHistory,
@@ -675,14 +676,15 @@ function mergeProjectedSnapshotMessages(current: Message[], projectedMessages: u
             }
         });
     });
-    return normalizeMessagesForState(
-        normalizedSnapshot.map((snapshotMessage) => {
+    const matchedCurrent = new Set<Message>();
+    const mergedSnapshot = normalizedSnapshot.map((snapshotMessage) => {
             const matchingCurrent = buildWebMessageComparisonKeys(snapshotMessage)
                 .map((key) => currentByKey.get(key))
                 .find(Boolean);
         if (!matchingCurrent) {
             return snapshotMessage;
         }
+        matchedCurrent.add(matchingCurrent);
         const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
         const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
         if (snapshotCanonical) {
@@ -704,8 +706,9 @@ function mergeProjectedSnapshotMessages(current: Message[], projectedMessages: u
             artifacts: (snapshotMessage.artifacts?.length || 0) > 0 ? snapshotMessage.artifacts : matchingCurrent.artifacts,
             toolInvocations: (snapshotMessage.toolInvocations?.length || 0) > 0 ? snapshotMessage.toolInvocations : matchingCurrent.toolInvocations,
         };
-    }),
-  );
+    });
+    const retainedHistory = current.filter((message) => !matchedCurrent.has(message));
+    return normalizeMessagesForState([...retainedHistory, ...mergedSnapshot]);
 }
 
 function dedupeProcesses(processes: AdminProcessRef[]) {
@@ -1324,11 +1327,12 @@ export default function ChatClient() {
         createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS),
     );
     const latestRealtimeSeqRef = useRef<number>(0);
+    const snapshotCoveredRealtimeSeqRef = useRef<number>(0);
+    const seenRealtimeEventIdentitiesRef = useRef(new Set<string>());
     const runtimeFlushFrameRef = useRef<number | null>(null);
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const turnBeforeCursorRef = useRef<string | null>(null);
     const isLoadingOlderTurnsRef = useRef(false);
-    const historyPagingModeRef = useRef(false);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
@@ -1832,7 +1836,11 @@ export default function ChatClient() {
             normalized,
             WEB_STREAM_LIFECYCLE_OPTIONS,
         );
-        latestRealtimeSeqRef.current = latestSeq;
+        if (latestSeq > 0) {
+            snapshotCoveredRealtimeSeqRef.current = Math.max(snapshotCoveredRealtimeSeqRef.current, latestSeq);
+            latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, latestSeq);
+            seenRealtimeEventIdentitiesRef.current.clear();
+        }
         messagesRef.current = normalizeMessagesForState(normalized);
         setMessages(normalizeMessagesForState(normalized));
         return normalized;
@@ -1886,12 +1894,13 @@ export default function ChatClient() {
         const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
         const turnPage = await loadConversationTurnPage(conversationId);
         const normalized = normalizeMessagesForState(turnPage.messages);
-        historyPagingModeRef.current = true;
         turnBeforeCursorRef.current = turnPage.pageInfo.beforeCursor;
         isLoadingOlderTurnsRef.current = false;
         setIsLoadingOlderTurns(false);
         setHasOlderTurns(Boolean(turnPage.pageInfo.hasMore));
         latestRealtimeSeqRef.current = latestSeq;
+        snapshotCoveredRealtimeSeqRef.current = latestSeq;
+        seenRealtimeEventIdentitiesRef.current.clear();
         realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
             normalized,
             WEB_STREAM_LIFECYCLE_OPTIONS,
@@ -2489,12 +2498,24 @@ export default function ChatClient() {
             : 0;
         const normalizedSeq = Number((normalizedEvent as Record<string, unknown>).seq || 0);
         const eventSeq = rawSeq || normalizedSeq;
-        if (eventSeq && eventSeq <= latestRealtimeSeqRef.current) {
+        const acceptance = evaluateSessionRuntimeEvent(
+            { ...normalizedEvent, seq: eventSeq || normalizedEvent.seq },
+            {
+                snapshotCoveredSeq: snapshotCoveredRealtimeSeqRef.current,
+                seenEventIdentities: seenRealtimeEventIdentitiesRef.current,
+            },
+        );
+        if (!acceptance.accept) {
             return;
+        }
+        seenRealtimeEventIdentitiesRef.current.add(acceptance.identity);
+        if (seenRealtimeEventIdentitiesRef.current.size > 2048) {
+            const oldest = seenRealtimeEventIdentitiesRef.current.values().next();
+            if (!oldest.done) seenRealtimeEventIdentitiesRef.current.delete(oldest.value);
         }
 
         if (eventSeq) {
-            latestRealtimeSeqRef.current = eventSeq;
+            latestRealtimeSeqRef.current = Math.max(latestRealtimeSeqRef.current, eventSeq);
         }
 
         if (runtimeTimelineEntry) {
@@ -2705,7 +2726,6 @@ export default function ChatClient() {
             }
         }
 
-        historyPagingModeRef.current = false;
         turnBeforeCursorRef.current = null;
         isLoadingOlderTurnsRef.current = false;
         setHasOlderTurns(false);
@@ -2779,7 +2799,6 @@ export default function ChatClient() {
             return;
         }
 
-        historyPagingModeRef.current = false;
         turnBeforeCursorRef.current = null;
         isLoadingOlderTurnsRef.current = false;
         setHasOlderTurns(false);
@@ -2817,6 +2836,8 @@ export default function ChatClient() {
             console.log("[ChatClient] New conversation reset");
             if (isLoading) stop();
             latestRealtimeSeqRef.current = 0;
+            snapshotCoveredRealtimeSeqRef.current = 0;
+            seenRealtimeEventIdentitiesRef.current.clear();
             realtimeMessageStateRef.current = createInitialSessionRealtimeMessageState<Message>([], WEB_STREAM_LIFECYCLE_OPTIONS);
             setScopeBinding(null);
             setSessionProjection(null);
@@ -2828,7 +2849,6 @@ export default function ChatClient() {
             setEditingQueuedMessage(null);
             setQueuedMessageEditText("");
             setQueuedMessageError("");
-            historyPagingModeRef.current = false;
             turnBeforeCursorRef.current = null;
             isLoadingOlderTurnsRef.current = false;
             setHasOlderTurns(false);
@@ -2880,7 +2900,7 @@ export default function ChatClient() {
                 if (Array.isArray(nextView?.processes) && nextView.processes.length > 0) {
                     applySessionProcessSurface(nextView.processes);
                 }
-                if (!localStreamActive && !historyPagingModeRef.current && Array.isArray(nestedSnapshot.messages)) {
+                if (!localStreamActive && Array.isArray(nestedSnapshot.messages)) {
                     applyProjectedSnapshot(
                         nestedSnapshot.messages,
                         Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0),

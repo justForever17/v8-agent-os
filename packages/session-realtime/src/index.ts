@@ -2,6 +2,7 @@ export * from "./contract.js";
 export * from "./runtime-registry.js";
 export * from "./event-taxonomy.js";
 export * from "./event-normalizer.js";
+export * from "./event-sequence.js";
 export * from "./resources.js";
 export * from "./ui-event.js";
 export * from "./message-lifecycle.js";

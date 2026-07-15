@@ -29,7 +29,31 @@ export type TimelineLikeNode = {
   status?: string | null;
   question?: string | null;
   artifact?: TimelineLikeArtifact | null;
+  timestamp?: number | null;
+  eventSeq?: number | null;
+  eventId?: string | null;
 };
+
+function orderedTimelineNodes<TNode extends TimelineLikeNode>(nodes: TNode[]) {
+  return nodes
+    .map((node, index) => ({ node, index }))
+    .sort((left, right) => {
+      const leftSeq = Number(left.node.eventSeq || 0) || 0;
+      const rightSeq = Number(right.node.eventSeq || 0) || 0;
+      if (leftSeq > 0 && rightSeq > 0 && leftSeq !== rightSeq) {
+        return leftSeq - rightSeq;
+      }
+      if ((leftSeq > 0) !== (rightSeq > 0)) {
+        const leftTimestamp = Number(left.node.timestamp || 0) || 0;
+        const rightTimestamp = Number(right.node.timestamp || 0) || 0;
+        if (leftTimestamp > 0 && rightTimestamp > 0 && leftTimestamp !== rightTimestamp) {
+          return leftTimestamp - rightTimestamp;
+        }
+      }
+      return left.index - right.index;
+    })
+    .map(({ node }) => node);
+}
 
 function normalizeText(value: unknown) {
   return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
@@ -209,5 +233,5 @@ export function mergeTimelineNodesByIdentity<TNode extends TimelineLikeNode>(bas
     identityKeys.forEach((key) => indexByKey.set(key, existingIndex));
   }
 
-  return merged;
+  return orderedTimelineNodes(merged);
 }

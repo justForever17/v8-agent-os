@@ -5,6 +5,9 @@ export interface UiTimelineNodeBase {
     id: string;
     kind: 'narrative' | 'execution' | 'governance' | 'artifact' | 'system';
     timestamp: number;
+    eventSeq?: number;
+    eventId?: string;
+    runId?: string;
     agentName?: string;
     agentAvatar?: string;
     agentRoleLabel?: string;

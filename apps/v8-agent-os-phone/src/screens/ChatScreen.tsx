@@ -158,6 +158,7 @@ import {
     type ContextReferenceItem,
     deriveAuthoritativeSessionView,
     contextUsagePercent as resolveContextUsagePercent,
+    evaluateSessionRuntimeEvent,
     flushQueuedSessionRealtimeRuntimeEvents,
     mergeTimelineNodesByIdentity,
     queueSessionRealtimeRuntimeEvent,
@@ -1500,13 +1501,15 @@ function mergeStructuredSnapshotMessages(
         });
     });
 
-    return normalizeMessagesForState(normalizedSnapshot.map((snapshotMessage) => {
+    const matchedLocal = new Set<ChatMessage>();
+    const mergedSnapshot = normalizedSnapshot.map((snapshotMessage) => {
         const matchingLocal = buildMessageComparisonKeys(snapshotMessage)
             .map((key) => currentByKey.get(key))
             .find(Boolean);
         if (!matchingLocal) {
             return snapshotMessage;
         }
+        matchedLocal.add(matchingLocal);
         const snapshotTranscriptVersion = Number((snapshotMessage.metadata || {}).transcriptVersion || 0);
         const snapshotCanonical = snapshotTranscriptVersion > 0 || (snapshotMessage.nodes?.length || 0) > 0;
         if (snapshotCanonical) {
@@ -1556,7 +1559,9 @@ function mergeStructuredSnapshotMessages(
             return mergeAssistantPlaceholder(snapshotMessage, matchingLocal, mergedMessage);
         }
         return mergeUserStructuredMetadata(snapshotMessage, matchingLocal, mergedMessage);
-    }));
+    });
+    const retainedHistory = current.filter((message) => !matchedLocal.has(message));
+    return normalizeMessagesForState([...retainedHistory, ...mergedSnapshot]);
 }
 
 function mergeAuthoritativeSnapshotMessages(
@@ -1908,36 +1913,6 @@ function summarizeStreamLatencyStats(stats: StreamLatencyStats) {
         clientCommitLagP95: percentile(stats.clientCommitLagMs, 95),
         renderLagP95: percentile(stats.renderLagMs, 95),
     };
-}
-
-function buildRealtimeEventDedupKey(event: PhoneRealtimeUiEvent) {
-    const eventId = String((event as Record<string, unknown>).event_id || "").trim();
-    if (eventId) {
-        return `event:${eventId}`;
-    }
-
-    const data = asRecord(event.data);
-    const tool = asRecord(event.tool);
-    const fingerprint = String(
-        event.content
-        || data.label
-        || data.summary
-        || data.topic
-        || tool.toolCallId
-        || data.toolCallId
-        || data.tool_call_id
-        || "",
-    ).trim().replace(/\s+/g, " ").slice(0, 160);
-
-    return [
-        "seq",
-        Number(event.seq || 0) || 0,
-        String(event.type || "").trim(),
-        String(event.name || "").trim(),
-        String(event.topic || "").trim(),
-        String(event.run_id || "").trim(),
-        fingerprint,
-    ].join("¦");
 }
 
 function buildConversationOverlayPatch(detail: Partial<ConversationDetail> | null | undefined): Partial<ConversationSummary> {
@@ -3664,6 +3639,7 @@ export default function ChatScreen() {
         if (snapshotSeq > 0) {
             latestSeqRef.current = Math.max(latestSeqRef.current, snapshotSeq);
             lastAppliedSnapshotSeqRef.current = Math.max(lastAppliedSnapshotSeqRef.current, snapshotSeq);
+            seenRealtimeEventKeysRef.current.clear();
             lastRealtimeSnapshotAtRef.current = Date.now();
         }
         applyConversationProjection(payload);
@@ -3724,10 +3700,6 @@ export default function ChatScreen() {
                     await localDatabase.setSyncCursor(targetConversationId, syncData.syncCursor);
                 }
                 
-                const timelineMessages = await localDatabase.getMessages(targetConversationId);
-                // Inject the timeline messages from SQLite into the snapshot payload
-                snapshot.messages = timelineMessages;
-
                 if (__DEV__ || isPhonePerfAuditEnabled()) {
                     const elapsedMs = Math.round(getPerfNowMs() - fetchStartedAt);
                     const payloadBytes = measureJsonBytes(snapshot);
@@ -3814,14 +3786,14 @@ export default function ChatScreen() {
         }
         const eventApplyStartedAt = getPerfNowMs();
 
-        const dedupKey = buildRealtimeEventDedupKey(normalized);
-        if (seenRealtimeEventKeysRef.current.has(dedupKey)) {
+        const acceptance = evaluateSessionRuntimeEvent(normalized, {
+            snapshotCoveredSeq: lastAppliedSnapshotSeqRef.current,
+            seenEventIdentities: seenRealtimeEventKeysRef.current,
+        });
+        if (!acceptance.accept) {
             return;
         }
-        if (normalized.seq && normalized.seq < latestSeqRef.current) {
-            return;
-        }
-        seenRealtimeEventKeysRef.current.add(dedupKey);
+        seenRealtimeEventKeysRef.current.add(acceptance.identity);
         if (seenRealtimeEventKeysRef.current.size > 2048) {
             const first = seenRealtimeEventKeysRef.current.values().next();
             if (!first.done) {

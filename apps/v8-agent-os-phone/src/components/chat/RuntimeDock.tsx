@@ -1,7 +1,7 @@
 import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import type { LucideIcon } from "lucide-react-native";
-import { Blocks, Bot, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Search, Shield, Sparkles, TerminalSquare, Workflow } from "lucide-react-native";
+import { Blocks, Bot, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Search, Shield, Sparkles, TerminalSquare, Workflow } from "lucide-react-native";
 import { ScrollView as GestureScrollView } from "react-native-gesture-handler";
 
 import type { PhoneRuntimeId, PhoneRuntimeStageCard } from "@/src/lib/runtime-stage";
@@ -10,7 +10,6 @@ import { radii } from "@/src/theme/tokens";
 
 const RUNTIME_ICON_MAP: Record<PhoneRuntimeId, LucideIcon> = {
     chat: Bot,
-    planner_lane: Route,
     engineering: Code2,
     engineering_lane: Code2,
     extensions: Blocks,

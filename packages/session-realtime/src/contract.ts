@@ -1,6 +1,5 @@
 export const SESSION_RUNTIME_IDS = [
   "chat",
-  "planner_lane",
   "engineering",
   "engineering_lane",
   "memory",

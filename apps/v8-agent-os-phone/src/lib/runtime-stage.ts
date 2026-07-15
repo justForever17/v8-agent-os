@@ -92,7 +92,6 @@ function phoneRuntimeTimelineEntrySemanticallyEqual(
 
 export const PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "chat",
-    "planner_lane",
     "engineering",
     "engineering_lane",
     "research",
@@ -113,7 +112,7 @@ export const VISIBLE_PHONE_RUNTIME_ORDER: PhoneRuntimeId[] = [
     "automation",
     "memory",
     "context_governance",
-    ...VISIBLE_SESSION_RUNTIME_ORDER.filter((runtimeId) => !["chat", "planner_lane", "engineering", "engineering_lane", "extensions", "automation", "memory"].includes(runtimeId)),
+    ...VISIBLE_SESSION_RUNTIME_ORDER.filter((runtimeId) => !["chat", "engineering", "engineering_lane", "extensions", "automation", "memory"].includes(runtimeId)),
 ];
 
 function firstRuntimeMatch(values: Array<string | null | undefined>): PhoneRuntimeId | null {

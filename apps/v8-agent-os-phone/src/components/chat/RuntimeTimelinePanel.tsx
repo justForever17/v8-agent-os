@@ -168,34 +168,6 @@ function getSwarmTaskLabel(activity: PhoneRuntimeStageActivity): { title: string
     };
 }
 
-function getPlannerPlanId(activity?: PhoneRuntimeStageActivity): string {
-    if (!activity) return "";
-    const data = readExecutionData(activity);
-    return readString(data.planId)
-        || readString(data.plan_id)
-        || readString((readRecord(data.traceRef)).planId)
-        || activity.id;
-}
-
-function getPlannerPlanLabel(activity: PhoneRuntimeStageActivity): { title: string; meta: string } {
-    const data = readExecutionData(activity);
-    const title = readString(data.planSummary) || readString(data.summary) || activity.summary || "Planner plan";
-    const executionStrategy = readString(data.executionStrategy) || "direct";
-    const taskCount = Number(data.taskCount || (Array.isArray(data.taskBriefs) ? data.taskBriefs.length : 0) || 0);
-    const selectedDelegations = Array.isArray(data.selectedDelegations) ? data.selectedDelegations.length : 0;
-    const riskFlags = Array.isArray(data.riskFlags)
-        ? data.riskFlags.map((item) => readString(item)).filter(Boolean)
-        : [];
-    const metaParts = [executionStrategy];
-    if (taskCount > 0) metaParts.push(`${taskCount} tasks`);
-    if (selectedDelegations > 0) metaParts.push(`${selectedDelegations} delegated`);
-    if (riskFlags.length > 0) metaParts.push(`risks: ${riskFlags.slice(0, 2).join(", ")}`);
-    return {
-        title,
-        meta: metaParts.join(" · "),
-    };
-}
-
 function getEngineeringGroupId(activity?: PhoneRuntimeStageActivity): string {
     if (!activity) return "";
     const data = readExecutionData(activity);
@@ -753,29 +725,23 @@ export const RuntimeTimelinePanel = memo(function RuntimeTimelinePanel({
 
     const renderActivityItem = useCallback(
         ({ item, index }: { item: PhoneRuntimeStageActivity; index: number }) => {
-            const shouldGroup = effectiveSelectedRuntimeId === "subagent_swarm" || effectiveSelectedRuntimeId === "planner_lane" || effectiveSelectedRuntimeId === "engineering_lane";
+            const shouldGroup = effectiveSelectedRuntimeId === "subagent_swarm" || effectiveSelectedRuntimeId === "engineering_lane";
             const currentGroupId = !shouldGroup
                 ? ""
                 : effectiveSelectedRuntimeId === "subagent_swarm"
                     ? getSwarmTaskBriefId(item)
-                    : effectiveSelectedRuntimeId === "planner_lane"
-                        ? getPlannerPlanId(item)
-                        : getEngineeringGroupId(item);
+                    : getEngineeringGroupId(item);
             const previousGroupId = !shouldGroup
                 ? ""
                 : effectiveSelectedRuntimeId === "subagent_swarm"
                     ? getSwarmTaskBriefId(visibleActivities[index - 1])
-                    : effectiveSelectedRuntimeId === "planner_lane"
-                        ? getPlannerPlanId(visibleActivities[index - 1])
-                        : getEngineeringGroupId(visibleActivities[index - 1]);
+                    : getEngineeringGroupId(visibleActivities[index - 1]);
             const showTaskHeader = shouldGroup && currentGroupId !== previousGroupId;
             const taskLabel = !showTaskHeader
                 ? null
                 : effectiveSelectedRuntimeId === "subagent_swarm"
                     ? getSwarmTaskLabel(item)
-                    : effectiveSelectedRuntimeId === "planner_lane"
-                        ? getPlannerPlanLabel(item)
-                        : getEngineeringLabel(item);
+                    : getEngineeringLabel(item);
             return (
                 <View>
                     {taskLabel ? (

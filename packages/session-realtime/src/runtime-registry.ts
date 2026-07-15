@@ -19,15 +19,6 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
       en: "Carries the supervisor conversation and orchestration flow.",
     },
   },
-  planner_lane: {
-    id: "planner_lane",
-    label: { zh: "规划编排", en: "Planner lane" },
-    shortLabel: { zh: "规划", en: "Plan" },
-    description: {
-      zh: "承接结构化任务切片、task brief、依赖与验收契约。",
-      en: "Carries structured planning, task briefs, dependencies, and acceptance contracts.",
-    },
-  },
   engineering: {
     id: "engineering",
     label: { zh: "工程运行", en: "Engineering runtime" },
@@ -140,7 +131,6 @@ export const SESSION_RUNTIME_REGISTRY: Record<SessionRuntimeId, RuntimeRegistryE
 
 export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
   "chat",
-  "planner_lane",
   "engineering",
   "extensions",
   "research",
@@ -155,7 +145,7 @@ export const SESSION_RUNTIME_ORDER: SessionRuntimeId[] = [
 ];
 
 export const VISIBLE_SESSION_RUNTIME_ORDER: SessionRuntimeId[] = SESSION_RUNTIME_ORDER.filter(
-  (runtimeId) => runtimeId !== "planner_lane" && runtimeId !== "subagent_swarm" && runtimeId !== "desktop_live",
+  (runtimeId) => runtimeId !== "subagent_swarm" && runtimeId !== "desktop_live",
 );
 
 export function isHistoryOnlyRuntimeId(_runtimeId: SessionRuntimeId) {
@@ -179,14 +169,15 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
   const normalized = normalizeRuntimeString(raw);
   if (!normalized) return null;
 
+  // Read-only projection for historical rows written before the global Planner
+  // runtime was removed. Do not use fuzzy matching: new runtimes must declare an
+  // exact canonical id rather than silently inheriting chat authority.
   if (
     normalized === "planner_lane"
-    || normalized.includes("planner")
-    || normalized.includes("plan_lane")
-    || normalized.includes("task_planning")
-    || normalized.includes("task_plan")
+    || normalized === "task_planning"
+    || normalized === "task_plan"
   ) {
-    return "planner_lane";
+    return "chat";
   }
   if (
     normalized === "engineering_lane"
@@ -196,7 +187,7 @@ export function normalizeRuntimeId(raw?: string | null): SessionRuntimeId | null
     || normalized.includes("workset")
     || normalized.includes("proof_ledger")
     || normalized.includes("proofledger")
-    || normalized.includes("coding_planner")
+    || normalized === "coding_planner"
   ) {
     return "engineering";
   }

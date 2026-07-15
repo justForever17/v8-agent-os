@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 
 import { isEffectiveContextGovernancePayload } from "../dist/event-normalizer.js";
-import { VISIBLE_SESSION_RUNTIME_ORDER } from "../dist/runtime-registry.js";
+import { SESSION_RUNTIME_ORDER, VISIBLE_SESSION_RUNTIME_ORDER } from "../dist/runtime-registry.js";
 import { buildRuntimeEpisodeGraph } from "../dist/runtime-episode-graph.js";
 
 const baseTs = Date.parse("2026-05-19T12:00:00.000Z");
 
-assert.ok(!VISIBLE_SESSION_RUNTIME_ORDER.includes("planner_lane"), "planner lane must not be a persistent runtime dock entry");
+assert.ok(!SESSION_RUNTIME_ORDER.includes("planner_lane"), "planner lane must be removed from the active runtime contract");
 assert.ok(!VISIBLE_SESSION_RUNTIME_ORDER.includes("engineering_lane"), "legacy engineering lane must not be a persistent runtime dock entry");
 assert.ok(!VISIBLE_SESSION_RUNTIME_ORDER.includes("subagent_swarm"), "subagent swarm must be merged into the chat execution map entry");
 assert.equal(isEffectiveContextGovernancePayload({ block_count: 3, durable_flush: { reason: "compaction_not_needed" } }), false);

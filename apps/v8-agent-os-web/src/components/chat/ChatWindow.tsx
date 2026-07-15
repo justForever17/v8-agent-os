@@ -34,6 +34,7 @@ interface ChatWindowProps {
     userName?: string | null;
     shellClassName?: string;
     runtimeActivities?: RuntimeStageActivity[];
+    sessionRunning?: boolean;
     hasOlderTurns?: boolean;
     isLoadingOlderTurns?: boolean;
     onReachTop?: () => void;
@@ -50,6 +51,7 @@ export function ChatWindow({
     userName,
     shellClassName,
     runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
+    sessionRunning,
     hasOlderTurns = false,
     isLoadingOlderTurns = false,
     onReachTop,
@@ -260,7 +262,7 @@ export function ChatWindow({
                             ) : (
                                 messages.map((m, index) => (
                                     <ChatMessage
-                                        key={m.id}
+                                        key={m.role === "assistant" && m.runId ? `assistant:${m.runId}` : m.id}
                                         message={m}
                                         processes={processes}
                                         isLoading={(isLoading || false) && index === messages.length - 1}
@@ -269,6 +271,7 @@ export function ChatWindow({
                                         userAvatar={userAvatar}
                                         userName={userName}
                                         runtimeActivities={index === liveRuntimeMessageIndex ? runtimeActivities : EMPTY_RUNTIME_ACTIVITIES}
+                                        executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
                                     />
                                 ))
                             )}

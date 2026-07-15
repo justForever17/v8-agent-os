@@ -81,11 +81,11 @@ assert.equal(selectCollaborationMicroStageLayout(stages), "singleRow");
 
 const unrelated = buildCollaborationMicroStages([
   {
-    id: "evt_planner_noise",
-    topic: "planner.plan.created",
-    summary: "Planner generated a draft.",
+    id: "evt_routing_noise",
+    topic: "runtime.episode.queued",
+    summary: "Runtime routing metadata changed.",
     timestamp: 450,
-    runtimeId: "planner_lane",
+    runtimeId: "chat",
     data: { runId },
   },
   {
@@ -119,6 +119,43 @@ const degraded = buildCollaborationMicroStages([
 assert.equal(degraded.length, 1);
 assert.equal(degraded[0].status, "degraded");
 assert.equal(degraded[0].steps[0].cue, "degraded");
+
+const aliasedDelegation = buildCollaborationMicroStages([
+  {
+    id: "evt_alias_planned",
+    topic: "delegation_broker.dispatch",
+    summary: "子任务已规划。",
+    timestamp: 510,
+    runtimeId: "subagent_swarm",
+    data: { runId, taskBriefId: "task_alias", state: "pending" },
+  },
+  {
+    id: "evt_alias_started",
+    topic: "subagent.task.started",
+    summary: "子代理开始执行。",
+    timestamp: 520,
+    runtimeId: "subagent_swarm",
+    data: {
+      runId,
+      taskBriefId: "task_alias",
+      delegationId: "delegation_alias",
+      state: "active",
+    },
+  },
+  {
+    id: "evt_alias_completed",
+    topic: "delegation.completed",
+    summary: "子代理回流完成。",
+    timestamp: 530,
+    runtimeId: "subagent_swarm",
+    data: { runId, delegationId: "delegation_alias", status: "completed" },
+  },
+], { runId, locale: "zh-CN" });
+
+assert.equal(aliasedDelegation.length, 1);
+assert.equal(aliasedDelegation[0].id, "subagent:task_alias");
+assert.equal(aliasedDelegation[0].status, "completed");
+assert.equal(aliasedDelegation[0].steps.length, 3);
 
 const manyActors = buildCollaborationMicroStages(Array.from({ length: 10 }).map((_, index) => ({
   id: `evt_subagent_${index}`,

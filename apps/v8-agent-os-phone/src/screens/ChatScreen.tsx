@@ -423,7 +423,7 @@ function buildUserMessage(
         skills: SkillReferenceSummary[];
         subagentFamilies: SubagentFamilySummary[];
         plugins: PluginReferenceSummary[];
-        taskPlanningMode: boolean;
+        specModeEnabled: boolean;
         files: UploadedWorkspaceFile[];
         contextSessionRefs: ContextSessionReference[];
     },
@@ -469,11 +469,8 @@ function buildUserMessage(
         ];
         metadata.explicitSubagentFamilies = options.subagentFamilies.map((family) => family.familyId);
     }
-    if (options.taskPlanningMode) {
-        metadata.taskPlanningMode = true;
+    if (options.specModeEnabled) {
         metadata.specMode = true;
-        metadata.taskPlanningSource = "composer";
-        metadata.taskPlanningRequestedByComposer = true;
     }
     if (options.contextSessionRefs.length > 0) {
         metadata.contextSessionRefs = options.contextSessionRefs.map((reference) => ({ ...reference }));
@@ -1284,7 +1281,7 @@ function hasRenderableMessagePayload(message: ChatMessage) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
-    const composerTaskPlanning = (metadata.specMode === true || metadata.taskPlanningMode === true)
+    const composerSpecMode = (metadata.specMode === true || metadata.taskPlanningMode === true)
         && (
             metadata.taskPlanningSource === "composer"
             || metadata.taskPlanningModeSource === "composer"
@@ -1295,7 +1292,7 @@ function hasRenderableMessagePayload(message: ChatMessage) {
         || (Array.isArray(message.images) && message.images.length > 0)
         || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
         || (Array.isArray(message.nodes) && message.nodes.length > 0)
-        || composerTaskPlanning
+        || composerSpecMode
         || (metadata.commandPreset && typeof metadata.commandPreset === "object")
         || (Array.isArray(metadata.skillReferences) && metadata.skillReferences.length > 0)
         || (Array.isArray(metadata.contextSessionRefs) && metadata.contextSessionRefs.length > 0)
@@ -1330,7 +1327,7 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
-    const composerTaskPlanning = (metadata.specMode === true || metadata.taskPlanningMode === true)
+    const composerSpecMode = (metadata.specMode === true || metadata.taskPlanningMode === true)
         && (
             metadata.taskPlanningSource === "composer"
             || metadata.taskPlanningModeSource === "composer"
@@ -1346,7 +1343,7 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
         + (Array.isArray(metadata.contextMentions) ? metadata.contextMentions.length * 40 : 0)
         + (Array.isArray(metadata.contextSessionRefs) ? metadata.contextSessionRefs.length * 50 : 0)
         + (Array.isArray(metadata.attachments) ? metadata.attachments.length * 80 : 0)
-        + (composerTaskPlanning ? 30 : 0)
+        + (composerSpecMode ? 30 : 0)
     );
 }
 
@@ -2184,7 +2181,7 @@ export default function ChatScreen() {
     const [selectedPlugins, setSelectedPlugins] = useState<PluginReferenceSummary[]>([]);
     const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
     const [activeQueryText, setActiveQueryText] = useState("");
-    const [taskPlanningMode, setTaskPlanningMode] = useState(false);
+    const [specModeEnabled, setSpecModeEnabled] = useState(false);
     const [safetyApprovalMode, setSafetyApprovalModeState] = useState<SafetyApprovalMode>("reduced");
     const [reasoningEffortControl, setReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
     const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffortLevel>("auto");
@@ -3183,7 +3180,7 @@ export default function ChatScreen() {
         setSelectedSkills([]);
         setSelectedSubagentFamilies([]);
         setSelectedPlugins([]);
-        setTaskPlanningMode(false);
+        setSpecModeEnabled(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
@@ -5065,7 +5062,7 @@ export default function ChatScreen() {
         setSelectedCommand(null);
         setSelectedSkills([]);
         setSelectedPlugins([]);
-        setTaskPlanningMode(false);
+        setSpecModeEnabled(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
@@ -5097,7 +5094,7 @@ export default function ChatScreen() {
         setSelectedCommand(null);
         setSelectedSkills([]);
         setSelectedPlugins([]);
-        setTaskPlanningMode(false);
+        setSpecModeEnabled(false);
         setWorkspaceInfoOpen(false);
         setWorkspaceChooserVisible(true);
         setNewProjectPath("");
@@ -5132,7 +5129,7 @@ export default function ChatScreen() {
         setUploadedFiles([]);
         setSelectedCommand(null);
         setSelectedSkills([]);
-        setTaskPlanningMode(false);
+        setSpecModeEnabled(false);
         setWorkspaceChooserVisible(false);
         setWorkspaceInfoOpen(false);
         setNewProjectPath("");
@@ -5666,7 +5663,12 @@ export default function ChatScreen() {
     );
 
     const activeRunStatus = String(projection.runControlState.status || "").trim().toLowerCase();
-    const isSessionRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval"].includes(activeRunStatus);
+    const activeConversationStatus = String(projection.activeConversation?.status || "").trim().toLowerCase();
+    const isSessionRunning = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"].includes(activeConversationStatus)
+        ? true
+        : ["idle", "completed", "failed", "cancelled", "recoverable_failed", "degraded", "interrupted"].includes(activeConversationStatus)
+            ? false
+            : ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"].includes(activeRunStatus);
     const isSessionFailed = ["failed", "cancelled"].includes(activeRunStatus);
     const hasRuntimeItems = projection.runtimeStageModel.items.length > 0;
     const showOverviewRail = Boolean(activeConversationId);
@@ -6020,10 +6022,10 @@ export default function ChatScreen() {
         const pendingPlugins = [...selectedPlugins];
         const pendingFiles = [...effectiveUploadedFiles];
         const pendingSessionRefs = [...pendingContextSessionRefs];
-        const pendingTaskPlanningMode = taskPlanningMode;
+        const pendingSpecModeEnabled = specModeEnabled;
         const pendingSafetyApprovalMode = safetyApprovalMode;
-        if (pendingTaskPlanningMode) {
-            setTaskPlanningMode(false);
+        if (pendingSpecModeEnabled) {
+            setSpecModeEnabled(false);
         }
         const previewText = text || (
             pendingFiles.length === 1
@@ -6058,7 +6060,7 @@ export default function ChatScreen() {
                 skills: pendingSkills,
                 subagentFamilies: pendingSubagentFamilies,
                 plugins: pendingPlugins,
-                taskPlanningMode: pendingTaskPlanningMode,
+                specModeEnabled: pendingSpecModeEnabled,
                 files: pendingFiles,
                 contextSessionRefs: pendingSessionRefs,
             }, engineNowMs);
@@ -6125,7 +6127,7 @@ export default function ChatScreen() {
                         workspacePath: scopeBinding?.workspacePath || null,
                         commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
                         specCommand: pendingSpecCommand,
-                        specMode: Boolean(pendingSpecCommand),
+                        specMode: Boolean(pendingSpecCommand || pendingSpecModeEnabled),
                         skillReferences: pendingSkills,
                         pluginReferences: pendingPlugins,
                         contextMentions: [
@@ -6150,7 +6152,6 @@ export default function ChatScreen() {
                         contextSessionRefs: pendingSessionRefs,
                         fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                         attachments: buildUploadedFileAttachments(pendingFiles),
-                        taskPlanningMode: pendingTaskPlanningMode,
                         supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
                         safetyApprovalMode: pendingSafetyApprovalMode,
                     },
@@ -6173,17 +6174,6 @@ export default function ChatScreen() {
                     ...(assistantPlaceholder.metadata || {}),
                     clientMessageId,
                 };
-                if (pendingTaskPlanningMode) {
-                    assistantPlaceholder.uiStreamPhase = "task_planning";
-                    assistantPlaceholder.metadata = {
-                        ...(assistantPlaceholder.metadata || {}),
-                        assistantTaskProgress: {
-                            phase: "task_planning",
-                            label: t("src.screens.chatscreen.planning_task"),
-                            subtitle: t("src.screens.chatscreen.breaking_down_the_steps_and_preparing_execution"),
-                        },
-                    };
-                }
                 const submittedRunId = String(
                     submitResult.runId
                     || submitResult.run_id
@@ -6228,18 +6218,6 @@ export default function ChatScreen() {
             };
             optimisticUserMessageId = userMessage.id;
             optimisticAssistantMessageId = assistantPlaceholder.id;
-            if (pendingTaskPlanningMode) {
-                assistantPlaceholder.uiStreamPhase = "task_planning";
-                assistantPlaceholder.metadata = {
-                    ...(assistantPlaceholder.metadata || {}),
-                    assistantTaskProgress: {
-                        phase: "task_planning",
-                        label: t("src.screens.chatscreen.planning_task"),
-                        subtitle: t("src.screens.chatscreen.breaking_down_the_steps_and_preparing_execution"),
-                    },
-                };
-            }
-
             setMessages((current) => {
                 const next = normalizeMessagesForState([
                     ...current,
@@ -6300,7 +6278,7 @@ export default function ChatScreen() {
                     workspacePath: scopeBinding?.workspacePath || null,
                     commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
                     specCommand: pendingSpecCommand,
-                    specMode: Boolean(pendingSpecCommand),
+                    specMode: Boolean(pendingSpecCommand || pendingSpecModeEnabled),
                     skillReferences: pendingSkills,
                     pluginReferences: pendingPlugins,
                     contextMentions: [
@@ -6325,7 +6303,6 @@ export default function ChatScreen() {
                     contextSessionRefs: pendingSessionRefs,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
-                    taskPlanningMode: pendingTaskPlanningMode,
                     supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
                     safetyApprovalMode: pendingSafetyApprovalMode,
                 },
@@ -6477,7 +6454,7 @@ export default function ChatScreen() {
         scopeBinding?.projectId,
         scopeBinding?.workspaceId,
         scopeBinding?.workspacePath,
-        taskPlanningMode,
+        specModeEnabled,
         t,
         uploadedFiles,
         upsertQueuedMessage,
@@ -6783,8 +6760,8 @@ export default function ChatScreen() {
                     onRemoveContextSessionRef={(sessionId) => {
                         setPendingContextSessionRefs((current) => current.filter((item) => item.sessionId !== sessionId));
                     }}
-                    taskPlanningMode={taskPlanningMode}
-                    onToggleTaskPlanningMode={() => setTaskPlanningMode((current) => !current)}
+                    specModeEnabled={specModeEnabled}
+                    onToggleSpecMode={() => setSpecModeEnabled((current) => !current)}
                     safetyApprovalMode={safetyApprovalMode}
                     onChangeSafetyApprovalMode={setSafetyApprovalMode}
                     reasoningEffortVisible={reasoningEffortVisible}
@@ -7011,6 +6988,7 @@ export default function ChatScreen() {
                                     userDisplayName={user?.name || user?.login || user?.email || ""}
                                     processes={hudProcesses}
                                     runtimeActivities={projection.runtimeStageModel.messageActivities}
+                                    sessionRunning={isSessionRunning}
                                     contextReferences={projection.contextReferences}
                                     pendingApproval={projection.pendingApproval}
                                     pendingApprovalCount={projection.pendingApprovalCount}

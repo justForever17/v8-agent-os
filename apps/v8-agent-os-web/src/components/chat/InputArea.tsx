@@ -294,7 +294,7 @@ export function InputArea({
     const [selectedSkills, setSelectedSkills] = React.useState<SkillReferenceSummary[]>([]);
     const [selectedSubagentFamilies, setSelectedSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
     const [selectedPlugins, setSelectedPlugins] = React.useState<PluginReferenceSummary[]>([]);
-    const [taskPlanningMode, setTaskPlanningMode] = React.useState(false);
+    const [specModeEnabled, setSpecModeEnabled] = React.useState(false);
     const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffortLevel>("auto");
     const [reasoningEffortOpen, setReasoningEffortOpen] = React.useState(false);
     const [safetyApprovalMode, setSafetyApprovalMode] = React.useState<SafetyApprovalMode>("reduced");
@@ -956,7 +956,7 @@ export function InputArea({
         <form
             onSubmit={async (e) => {
                 const nextData: Record<string, unknown> = {};
-                const pendingTaskPlanningMode = taskPlanningMode;
+                const pendingSpecMode = specModeEnabled;
                 nextData.safetyApprovalMode = safetyApprovalMode;
                 if (contextSessionRefs.length > 0) {
                     nextData.contextSessionRefs = contextSessionRefs;
@@ -975,7 +975,6 @@ export function InputArea({
                 if (selectedCommandPreset?.name) {
                     if (selectedCommandPreset.specCommandAction) {
                         nextData.specMode = true;
-                        nextData.plannerMode = "off";
                         nextData.specCommand = { action: selectedCommandPreset.specCommandAction };
                     } else {
                         nextData.commandPreset = { name: selectedCommandPreset.name };
@@ -1021,12 +1020,11 @@ export function InputArea({
                 if (reasoningEffortVisible) {
                     nextData.supervisorReasoningEffort = reasoningEffort;
                 }
-                if (pendingTaskPlanningMode) {
-                    nextData.plannerMode = "off";
+                if (pendingSpecMode) {
                     nextData.specMode = true;
                 }
-                if (pendingTaskPlanningMode) {
-                    setTaskPlanningMode(false);
+                if (pendingSpecMode) {
+                    setSpecModeEnabled(false);
                 }
 
                 await handleSubmit(e, { data: nextData });
@@ -1043,7 +1041,7 @@ export function InputArea({
                 isFocused 
                     ? "bg-stone-50/95 dark:bg-stone-900/90 shadow-[0_8px_32px_rgba(0,0,0,0.06)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] border-orange-500/30 dark:border-amber-500/30" 
                     : "bg-stone-50/60 dark:bg-stone-900/50 backdrop-blur-xl hover:bg-stone-50/80 hover:dark:bg-stone-900/70 border-stone-200/60 dark:border-stone-800/60",
-                taskPlanningMode && "border-red-500/55 shadow-[0_0_0_1px_rgba(239,68,68,0.26),0_0_28px_rgba(248,113,113,0.24)] animate-pulse"
+                specModeEnabled && "border-red-500/55 shadow-[0_0_0_1px_rgba(239,68,68,0.26),0_0_28px_rgba(248,113,113,0.24)] animate-pulse"
             )}
             style={{ backdropFilter: 'blur(16px) saturate(120%)' }}
         >
@@ -1381,19 +1379,19 @@ export function InputArea({
                     <div className="flex items-center gap-1.5">
                         <Button
                             type="button"
-                            variant={taskPlanningMode ? "secondary" : "ghost"}
+                            variant={specModeEnabled ? "secondary" : "ghost"}
                             size="icon"
-                            onClick={() => setTaskPlanningMode((current) => !current)}
-                            aria-pressed={taskPlanningMode}
+                            onClick={() => setSpecModeEnabled((current) => !current)}
+                            aria-pressed={specModeEnabled}
                             className={cn(
                                 "h-[28px] w-[28px] rounded-lg transition-colors",
-                                taskPlanningMode
+                                specModeEnabled
                                     ? "bg-violet-500/12 text-violet-700 shadow-[0_0_16px_rgba(139,92,246,0.22)] hover:bg-violet-500/18 dark:bg-violet-500/15 dark:text-violet-200"
                                     : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
                             )}
                             title={t("web.generated.d802f23b2a")}
                         >
-                            <Orbit className={cn("h-4 w-4", taskPlanningMode && "animate-[spin_1.6s_linear_infinite]")} />
+                            <Orbit className={cn("h-4 w-4", specModeEnabled && "animate-[spin_1.6s_linear_infinite]")} />
                         </Button>
                         <DropdownMenu open={safetyApprovalModeOpen} onOpenChange={setSafetyApprovalModeOpen}>
                             <DropdownMenuTrigger asChild>

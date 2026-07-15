@@ -261,8 +261,8 @@ export const Composer = memo(function Composer({
     onRemovePlugin,
     contextSessionRefs,
     onRemoveContextSessionRef,
-    taskPlanningMode,
-    onToggleTaskPlanningMode,
+    specModeEnabled,
+    onToggleSpecMode,
     safetyApprovalMode,
     onChangeSafetyApprovalMode,
     reasoningEffortVisible = false,
@@ -299,8 +299,8 @@ export const Composer = memo(function Composer({
     onRemovePlugin: (pluginId: string) => void;
     contextSessionRefs: ContextSessionReference[];
     onRemoveContextSessionRef: (sessionId: string) => void;
-    taskPlanningMode: boolean;
-    onToggleTaskPlanningMode: () => void;
+    specModeEnabled: boolean;
+    onToggleSpecMode: () => void;
     safetyApprovalMode: SafetyApprovalMode;
     onChangeSafetyApprovalMode: (mode: SafetyApprovalMode) => void;
     reasoningEffortVisible?: boolean;
@@ -617,21 +617,21 @@ export const Composer = memo(function Composer({
                         <View style={styles.leftControls}>
                             <Pressable
                                 accessibilityRole="button"
-                                accessibilityLabel={taskPlanningMode
+                                accessibilityLabel={specModeEnabled
                                     ? t("src.components.chat.composer.disable_spec_mode")
                                     : t("src.components.chat.composer.enable_spec_mode")}
                                 style={[
                                     styles.taskModeButton,
                                     {
-                                        backgroundColor: taskPlanningMode ? colors.primarySoft : "transparent",
-                                        borderColor: taskPlanningMode ? `${colors.primary}26` : "transparent",
+                                        backgroundColor: specModeEnabled ? colors.primarySoft : "transparent",
+                                        borderColor: specModeEnabled ? `${colors.primary}26` : "transparent",
                                     },
                                 ]}
-                                onPress={onToggleTaskPlanningMode}
+                                onPress={onToggleSpecMode}
                             >
                                 <SpecModeOrbitIcon
-                                    active={taskPlanningMode}
-                                    color={taskPlanningMode ? colors.primaryDeep : colors.textMuted}
+                                    active={specModeEnabled}
+                                    color={specModeEnabled ? colors.primaryDeep : colors.textMuted}
                                 />
                             </Pressable>
 
@@ -779,7 +779,7 @@ export const Composer = memo(function Composer({
                         <ComposerActionButton
                             mode={actionMode}
                             disabled={!canAct}
-                            specMode={taskPlanningMode}
+                            specMode={specModeEnabled}
                             onPress={handlePrimaryAction}
                             colors={colors}
                             t={t}

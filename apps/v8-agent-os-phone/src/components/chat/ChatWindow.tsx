@@ -37,6 +37,7 @@ type ChatWindowProps = {
     userDisplayName?: string;
     processes: AdminProcessRef[];
     runtimeActivities?: PhoneRuntimeStageActivity[];
+    sessionRunning?: boolean;
     contextReferences: ContextReferenceItem[];
     pendingApproval?: ChatPendingInteraction | null;
     pendingApprovalCount?: number;
@@ -120,6 +121,7 @@ export const ChatWindow = memo(function ChatWindow({
     userDisplayName,
     processes,
     runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
+    sessionRunning,
     contextReferences,
     pendingApproval,
     pendingApprovalCount = 0,
@@ -275,6 +277,7 @@ export const ChatWindow = memo(function ChatWindow({
                                         ? runtimeActivities
                                         : EMPTY_RUNTIME_ACTIVITIES
                                 }
+                                executionActive={index === liveRuntimeMessageIndex && Boolean(sessionRunning || isActiveAssistantStreamPhase(message.uiStreamPhase))}
                             />
                         ))
                     )}

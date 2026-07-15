@@ -895,7 +895,7 @@ export default function ChatClient() {
     }, []);
 
     const [input, setInput] = useState("");
-    const { refreshConversations, createConversation, patchConversationSummary } = useConversationContext();
+    const { conversations, refreshConversations, createConversation, patchConversationSummary } = useConversationContext();
     const [askUserModalOpen, setAskUserModalOpen] = useState(false);
     const [askUserQuestion, setAskUserQuestion] = useState("");
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
@@ -1332,6 +1332,18 @@ export default function ChatClient() {
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
+    const activeConversationRunning = useMemo(() => {
+        if (isLoading) return true;
+        const activeConversation = conversations.find((item) => (item.sessionId || item.id) === activeConversationId);
+        const canonicalStatus = String(activeConversation?.status || "").trim().toLowerCase();
+        if (["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"].includes(canonicalStatus)) {
+            return true;
+        }
+        if (["idle", "completed", "failed", "cancelled", "recoverable_failed", "degraded", "interrupted"].includes(canonicalStatus)) {
+            return false;
+        }
+        return isLoading;
+    }, [activeConversationId, conversations, isLoading]);
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
         [sessionProjection?.askUserInteractions],
@@ -3135,6 +3147,7 @@ export default function ChatClient() {
                             userName={chatUserName}
                             shellClassName="w-full"
                             runtimeActivities={runtimeStageModel.messageActivities}
+                            sessionRunning={activeConversationRunning}
                             hasOlderTurns={hasOlderTurns}
                             isLoadingOlderTurns={isLoadingOlderTurns}
                             onReachTop={loadOlderConversationTurn}

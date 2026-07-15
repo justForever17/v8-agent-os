@@ -389,9 +389,6 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
         if (commandPresetName) {
             optimisticMetadata.commandPreset = { name: commandPresetName };
         }
-        if (data?.taskPlanningMode) {
-            optimisticMetadata.taskPlanningMode = true;
-        }
         if (data?.specMode) {
             optimisticMetadata.specMode = true;
         }

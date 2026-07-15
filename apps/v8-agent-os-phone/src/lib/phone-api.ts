@@ -1057,10 +1057,7 @@ export async function submitChatMessage(
                 specCommand: options.specCommand || undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
-                plannerMode: options.taskPlanningMode ? "off" : undefined,
-                specMode: (options.taskPlanningMode || options.specMode || options.specCommand) ? true : undefined,
-                taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
-                taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
+                specMode: (options.specMode || options.specCommand) ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
                 safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0
@@ -1332,7 +1329,6 @@ type SendChatOptions = {
     contextSessionRefs?: Array<{ sessionId: string; source: "history_menu" }>;
     fileUrls?: string[];
     attachments?: Array<Record<string, unknown>>;
-    taskPlanningMode?: boolean;
     specMode?: boolean;
     specCommand?: { action: "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex"; specId?: string; stage?: string };
     supervisorReasoningEffort?: string;
@@ -1367,10 +1363,7 @@ export async function sendChatMessageStream(
                 specCommand: options.specCommand || undefined,
                 fileUrls: Array.isArray(options.fileUrls) && options.fileUrls.length > 0 ? options.fileUrls : undefined,
                 attachments: Array.isArray(options.attachments) && options.attachments.length > 0 ? options.attachments : undefined,
-                plannerMode: options.taskPlanningMode ? "off" : undefined,
-                specMode: (options.taskPlanningMode || options.specMode || options.specCommand) ? true : undefined,
-                taskPlanningSource: options.taskPlanningMode ? "composer" : undefined,
-                taskPlanningRequestedByComposer: options.taskPlanningMode ? true : undefined,
+                specMode: (options.specMode || options.specCommand) ? true : undefined,
                 supervisorReasoningEffort: options.supervisorReasoningEffort || undefined,
                 safetyApprovalMode: options.safetyApprovalMode || undefined,
                 skillReferences: Array.isArray(options.skillReferences) && options.skillReferences.length > 0

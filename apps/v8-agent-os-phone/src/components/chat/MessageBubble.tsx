@@ -614,7 +614,7 @@ function stripCommandPresetPrefix(content: string, commandName: string) {
         .trim();
 }
 
-function isComposerTaskPlanningMode(message: ChatMessage) {
+function isComposerSpecMode(message: ChatMessage) {
     const metadata = message.metadata && typeof message.metadata === "object"
         ? message.metadata as Record<string, unknown>
         : {};
@@ -806,6 +806,7 @@ export const MessageBubble = memo(function MessageBubble({
     userDisplayName,
     processes = [],
     runtimeActivities = EMPTY_RUNTIME_ACTIVITIES,
+    executionActive = false,
     onOpenOverview,
 }: {
     adminBaseUrl: string;
@@ -820,6 +821,7 @@ export const MessageBubble = memo(function MessageBubble({
     userDisplayName?: string;
     processes?: AdminProcessRef[];
     runtimeActivities?: PhoneRuntimeStageActivity[];
+    executionActive?: boolean;
     onOpenOverview?: () => void;
 }) {
     const { width, height } = useWindowDimensions();
@@ -877,7 +879,7 @@ export const MessageBubble = memo(function MessageBubble({
         })),
         [userMediaAttachments],
     );
-    const taskPlanningMode = isComposerTaskPlanningMode(message);
+    const composerSpecMode = isComposerSpecMode(message);
     const userContentText = useMemo(
         () => stripCommandPresetPrefix(String(message.content || "").trim(), commandPresetName),
         [commandPresetName, message.content],
@@ -989,6 +991,7 @@ export const MessageBubble = memo(function MessageBubble({
     const visibleBubbleMicroStages = messageBoundMicroStagePlacement?.stages.length
         ? messageBoundMicroStagePlacement.stages
         : liveFallbackMicroStages;
+    const microStageSceneKey = `collaboration-stage:${message.runId || visibleBubbleMicroStages[0]?.id || messageIdentity}`;
     const microStageAnchorIndex = useMemo(
         () => findMicroStageAnchorIndex(
             rawRenderableNodes,
@@ -1204,14 +1207,14 @@ export const MessageBubble = memo(function MessageBubble({
             commandPresetName ? `/${commandPresetName}` : "",
             ...skillReferences.map((skill) => `@${skill.name || skill.path}`),
             ...contextSessionRefs.map((sessionId) => `${t("shared.conversation.context_session_ref")}: ${sessionId}`),
-            taskPlanningMode ? "Spec" : "",
+            composerSpecMode ? "Spec" : "",
             ...userAttachments.map((attachment) => attachment.name),
         ].filter(Boolean);
         if (metadataLines.length > 0) {
             return metadataLines.join("\n");
         }
         return "";
-    }, [commandPresetName, contextSessionRefs, isUser, renderableNodes, skillReferences, taskPlanningMode, t, userAttachments, userContentText]);
+    }, [commandPresetName, composerSpecMode, contextSessionRefs, isUser, renderableNodes, skillReferences, t, userAttachments, userContentText]);
 
     useEffect(() => {
         if (!copied) {
@@ -1227,7 +1230,7 @@ export const MessageBubble = memo(function MessageBubble({
         commandPresetName
         || skillReferences.length > 0
         || contextSessionRefs.length > 0
-        || taskPlanningMode
+        || composerSpecMode
         || userAttachments.length > 0,
     );
 
@@ -1246,7 +1249,7 @@ export const MessageBubble = memo(function MessageBubble({
                                 end={{ x: 1, y: 1 }}
                                 style={[styles.userBubble, { shadowColor: palette.primaryDeep }]}
                             >
-                                {(commandPresetName || skillReferences.length > 0 || contextSessionRefs.length > 0 || taskPlanningMode) && (
+                                {(commandPresetName || skillReferences.length > 0 || contextSessionRefs.length > 0 || composerSpecMode) && (
                                     <View style={styles.userMetaRow}>
                                         {commandPresetName ? (
                                             <View style={styles.userChip}>
@@ -1268,7 +1271,7 @@ export const MessageBubble = memo(function MessageBubble({
                                                 </Text>
                                             </View>
                                         ))}
-                                        {taskPlanningMode ? (
+                                        {composerSpecMode ? (
                                             <View style={styles.userChip}>
                                                 <MaterialCommunityIcons name="file-document-edit-outline" size={12} color="#FFFFFF" />
                                                 <Text style={styles.userChipText}>Spec</Text>
@@ -1442,9 +1445,10 @@ export const MessageBubble = memo(function MessageBubble({
                                 timelineSegments.map((segment, index) => {
                                     if (segment.kind === "collaboration_stage") {
                                         return (
-                                            <View key={segment.id} style={styles.assistantExecutionMap}>
+                                            <View key={microStageSceneKey} style={styles.assistantExecutionMap}>
                                                 <CollaborationMicroStageScene
                                                     stages={visibleBubbleMicroStages}
+                                                    executionActive={executionActive}
                                                     palette={palette}
                                                     dark={themeMode === "dark"}
                                                     locale={locale}

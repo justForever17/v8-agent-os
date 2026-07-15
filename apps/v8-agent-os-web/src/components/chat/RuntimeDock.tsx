@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import type { ElementType } from "react";
 import { cn } from "@/lib/utils";
 import { RuntimeId, RuntimeStageModel } from "@/lib/runtime-stage";
-import { Blocks, Bot, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Route, Shield, Sparkles, TerminalSquare, Workflow } from "lucide-react";
+import { Blocks, Bot, Code2, Cpu, Database, GitBranch, Globe, RadioTower, Shield, Sparkles, TerminalSquare, Workflow } from "lucide-react";
 
 interface RuntimeDockProps {
     model: RuntimeStageModel;
@@ -15,7 +15,6 @@ interface RuntimeDockProps {
 
 const runtimeIcons: Record<RuntimeId, ElementType<{ className?: string }>> = {
     chat: Bot,
-    planner_lane: Route,
     engineering: Code2,
     engineering_lane: Code2,
     research: Globe,

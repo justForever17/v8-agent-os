@@ -44,6 +44,7 @@ interface ChatMessageProps {
     userAvatar?: string | null;
     userName?: string | null;
     runtimeActivities?: RuntimeStageActivity[];
+    executionActive?: boolean;
 }
 
 interface MessageActionButtonsProps {
@@ -189,7 +190,7 @@ function extractCommandPresetName(message: Message): string | null {
     return typeof name === "string" && name.trim() ? name.trim() : null;
 }
 
-function hasTaskPlanningMode(message: Message): boolean {
+function hasSpecMode(message: Message): boolean {
     return Boolean(message.metadata?.specMode || message.metadata?.taskPlanningMode);
 }
 
@@ -323,15 +324,15 @@ function MessageActionButtons({
     );
 }
 
-function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [] }: ChatMessageProps) {
+function ChatMessageComponent({ message, processes = [], isLoading, onDelete, isLast, userAvatar, userName, runtimeActivities = [], executionActive = false }: ChatMessageProps) {
     const t = useT();
     const [isCopied, setIsCopied] = useState(false);
     const openWorkbenchDocument = useWorkbenchStore((state) => state.openDocument);
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
-    const taskPlanningModeEnabled = useMemo(() => hasTaskPlanningMode(message), [message]);
+    const specModeEnabled = useMemo(() => hasSpecMode(message), [message]);
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
-    const shouldRenderUserMetadata = Boolean(commandPresetName || taskPlanningModeEnabled || skillReferences.length > 0 || contextSessionRefs.length > 0);
+    const shouldRenderUserMetadata = Boolean(commandPresetName || specModeEnabled || skillReferences.length > 0 || contextSessionRefs.length > 0);
     const normalizedContent = useMemo(() => normalizeWorkspaceLinks(message.content || ""), [message.content]);
     const copyLabel = t("web.generated.8095bb5671");
     const deleteLabel = t("web.generated.2f98d36496");
@@ -438,6 +439,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const visibleBubbleMicroStages = messageBoundMicroStagePlacement?.stages.length
         ? messageBoundMicroStagePlacement.stages
         : liveFallbackMicroStages;
+    const microStageSceneKey = `collaboration-stage:${message.runId || visibleBubbleMicroStages[0]?.id || message.id}`;
     const microStageAnchorIndex = useMemo(
         () => findMicroStageAnchorIndex(
             message.nodes || [],
@@ -621,7 +623,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                         {t("web.chat.contextSessionRef")} · {sessionId.slice(0, 12)}
                                     </span>
                                 ))}
-                                {taskPlanningModeEnabled && (
+                                {specModeEnabled && (
                                     <span className="inline-flex items-center rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white/95 backdrop-blur-sm">
                                         Spec
                                     </span>
@@ -776,8 +778,9 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                         if (segment.kind === "collaboration_stage") {
                             return (
                                 <CollaborationMicroStageScene
-                                    key={segment.id}
+                                    key={microStageSceneKey}
                                     stages={visibleBubbleMicroStages}
+                                    executionActive={executionActive}
                                     supervisorSpeech={microStageSupervisorSpeech}
                                     onOpenDetailRef={handleOpenMicroStageDetailRef}
                                     overviewLinkLabel={t("web.collaborationMicroStage.viewOverview")}

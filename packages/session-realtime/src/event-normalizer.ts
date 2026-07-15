@@ -717,6 +717,22 @@ function buildProgressLabel(topic: string, payload: JsonRecord, locale: Normaliz
     return payload.message.trim();
   }
 
+  if (topic === "runtime.episode.progress") {
+    const stage = String(payload.stage || "working").trim().toLowerCase();
+    const toolName = String(payload.toolName || payload.tool_name || "").trim();
+    if (stage === "started") return tr(locale, "子代理开始处理", "Subagent started");
+    if (stage === "tool_started") return toolName
+      ? tr(locale, `正在使用 ${toolName}`, `Using ${toolName}`)
+      : tr(locale, "正在使用工具", "Using a tool");
+    if (stage === "tool_finished") return toolName
+      ? tr(locale, `${toolName} 已完成`, `${toolName} completed`)
+      : tr(locale, "工具步骤已完成", "Tool step completed");
+    if (stage === "child_requested") return tr(locale, "正在分派子任务", "Delegating child work");
+    if (stage === "reviewing") return tr(locale, "正在自检结果", "Reviewing the result");
+    if (stage === "handoff_ready") return tr(locale, "结果已回流，等待主理人验收", "Result returned for Supervisor review");
+    return tr(locale, "子代理正在处理", "Subagent is working");
+  }
+
   const action = String(payload.action || payload.actionType || payload.appName || payload.expectedTitle || "").trim();
   const index = typeof payload.index === "number" ? payload.index : undefined;
   const runtimeId = resolveRuntimeId(topic, payload);

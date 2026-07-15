@@ -175,7 +175,7 @@ function isRuntimeActivity(activity: CollaborationMicroStageActivityInput) {
   const topic = readString(activity.topic);
   if (!topic.startsWith("runtime.episode.") && !topic.startsWith("handoff.ref.")) return false;
   const runtimeKind = getRuntimeKind(activity);
-  return runtimeKind !== "subagent_swarm" && runtimeKind !== "chat" && runtimeKind !== "planner_lane";
+  return runtimeKind !== "subagent_swarm" && runtimeKind !== "chat";
 }
 
 function inferStatus(activity: CollaborationMicroStageActivityInput): CollaborationMicroStageStatus {
@@ -209,18 +209,20 @@ function mergeStatus(left: CollaborationMicroStageStatus, right: CollaborationMi
   return rank[right] >= rank[left] ? right : left;
 }
 
-function getSubagentGroup(activity: CollaborationMicroStageActivityInput) {
+function getSubagentGroupCandidates(activity: CollaborationMicroStageActivityInput) {
   const data = getActivityData(activity);
-  return readString(data.dispatchGroup)
-    || readString(data.dispatch_group)
-    || readString(data.delegationId)
-    || readString(data.delegation_id)
-    || readString(data.parentDelegationId)
-    || readString(data.parent_delegation_id)
-    || readString(data.taskBriefId)
-    || readString(data.task_brief_id)
-    || getRunId(activity)
-    || readString(activity.id);
+  const explicitCandidates = Array.from(new Set([
+    readString(data.dispatchGroup),
+    readString(data.dispatch_group),
+    readString(data.delegationId),
+    readString(data.delegation_id),
+    readString(data.parentDelegationId),
+    readString(data.parent_delegation_id),
+    readString(data.taskBriefId),
+    readString(data.task_brief_id),
+  ].filter(Boolean)));
+  if (explicitCandidates.length > 0) return explicitCandidates;
+  return [getRunId(activity) || readString(activity.id)].filter(Boolean);
 }
 
 function getEpisodeId(activity: CollaborationMicroStageActivityInput) {
@@ -421,6 +423,7 @@ export function buildCollaborationMicroStages(
   const maxStepsPerStage = Math.max(1, options.maxStepsPerStage || 4);
   const limit = Math.max(1, options.limit || 10);
   const drafts = new Map<string, StageDraft>();
+  const subagentStageIdByAlias = new Map<string, string>();
 
   const orderedActivities = [...activities].sort((left, right) => {
     const leftTs = readTimestamp(left.timestamp);
@@ -443,9 +446,18 @@ export function buildCollaborationMicroStages(
     const status = inferStatus(activity);
     const cue = inferCue(activity, kind, status);
     const timestamp = readTimestamp(activity.timestamp);
-    const group = kind === "subagent" ? getSubagentGroup(activity) : getEpisodeId(activity);
+    const subagentGroupCandidates = kind === "subagent" ? getSubagentGroupCandidates(activity) : [];
+    const aliasedSubagentStageId = subagentGroupCandidates
+      .map((candidate) => subagentStageIdByAlias.get(candidate))
+      .find((candidate): candidate is string => Boolean(candidate));
+    const group = kind === "subagent"
+      ? (aliasedSubagentStageId?.slice("subagent:".length) || subagentGroupCandidates[0])
+      : getEpisodeId(activity);
     if (!group) continue;
-    const stageId = `${kind}:${group}`;
+    const stageId = aliasedSubagentStageId || `${kind}:${group}`;
+    if (kind === "subagent") {
+      subagentGroupCandidates.forEach((candidate) => subagentStageIdByAlias.set(candidate, stageId));
+    }
     const summary = getSummary(activity);
     const step: CollaborationMicroStageStep = {
       id: `${stageId}:step:${readString(activity.id) || timestamp}`,

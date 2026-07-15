@@ -4747,6 +4747,8 @@
   "app.admin.dashboard.operations.center.runLedgerDescription": "Review the status, evidence, and next actions for this run.",
   "components.common.messageReference": "Message record",
   "components.memory.GraphViewer.interactionHint": "Drag nodes to tidy the layout; select one to inspect relations",
+  "components.memory.GraphViewer.graphCount": "{nodeCount} nodes · {relationCount} relations",
+  "components.memory.GraphViewer.graphCountTruncated": "Showing {renderedNodeCount}/{totalNodeCount} nodes · {renderedRelationCount}/{totalRelationCount} relations",
   "components.memory.GraphViewer.summaryHint": "The most relevant connections are shown first. Relation editing is a maintenance action.",
   "components.memory.GraphViewer.noRelations": "This node has no visible relations yet.",
   "components.memory.GraphViewer.manageRelations": "Manage relations",

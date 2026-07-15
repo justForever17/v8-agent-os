@@ -719,6 +719,7 @@ class MemoryAgentRunner:
                     "superseded_count": int(knowledge_compaction_result.get("supersededCount") or 0),
                     "merge_suggestion_count": int(knowledge_compaction_result.get("mergeSuggestionCount") or 0),
                     "pruned_isolated_entity_count": int(graph_maintenance_result.get("prunedIsolatedEntityCount") or 0),
+                    "retained_legacy_entity_count": int(graph_maintenance_result.get("retainedLegacyEntityCount") or 0),
                     "budget_stopped": bool(knowledge_compaction_result.get("budgetStopped")),
                 },
             )
@@ -755,6 +756,7 @@ class MemoryAgentRunner:
         knowledge_candidate_count = int(knowledge_compaction_result.get("candidateCount") or 0)
         knowledge_merge_suggestion_count = int(knowledge_compaction_result.get("mergeSuggestionCount") or 0)
         graph_pruned_entity_count = int(graph_result.get("prunedIsolatedEntityCount") or 0)
+        graph_retained_legacy_entity_count = int(graph_result.get("retainedLegacyEntityCount") or 0)
         workflow_candidate_updated_count = int(workflow_maintenance_result.get("updatedCount") or 0)
         workflow_merge_suggestion_count = int(workflow_maintenance_result.get("mergeSuggestionCount") or 0)
         has_mutation = bool(
@@ -801,6 +803,7 @@ class MemoryAgentRunner:
                 "rewiredCount": int(graph_result.get("rewiredRelationCount") or 0),
                 "orphanedCount": int(graph_result.get("orphanedRelationCount") or 0),
                 "prunedIsolatedEntityCount": graph_pruned_entity_count,
+                "retainedLegacyEntityCount": graph_retained_legacy_entity_count,
             },
             {
                 "name": "workflow_chain_maintenance",
@@ -844,6 +847,7 @@ class MemoryAgentRunner:
             "graphIsolatedEntityCountBefore": int(graph_result.get("isolatedEntityCountBefore") or 0),
             "graphIsolatedEntityCount": int(graph_result.get("isolatedEntityCount") or 0),
             "graphPrunedIsolatedEntityCount": graph_pruned_entity_count,
+            "graphRetainedLegacyEntityCount": graph_retained_legacy_entity_count,
             "workflowCandidateCount": int(workflow_maintenance_result.get("candidateCount") or 0),
             "workflowCandidateUpdatedCount": workflow_candidate_updated_count,
             "workflowActiveHintCount": int(workflow_maintenance_result.get("activatedCount") or 0),
@@ -874,6 +878,7 @@ class MemoryAgentRunner:
             "graph_candidate_count": maintenance_meta["graphCandidateCount"],
             "graph_rewired_relation_count": maintenance_meta["graphRewiredRelationCount"],
             "graph_pruned_isolated_entity_count": maintenance_meta["graphPrunedIsolatedEntityCount"],
+            "graph_retained_legacy_entity_count": maintenance_meta["graphRetainedLegacyEntityCount"],
             "workflow_candidate_count": maintenance_meta["workflowCandidateCount"],
             "workflow_candidate_updated_count": maintenance_meta["workflowCandidateUpdatedCount"],
             "workflow_active_hint_count": maintenance_meta["workflowActiveHintCount"],
@@ -910,6 +915,7 @@ class MemoryAgentRunner:
             graphCandidateCount=maintenance_meta["graphCandidateCount"],
             graphRewiredRelationCount=maintenance_meta["graphRewiredRelationCount"],
             graphPrunedIsolatedEntityCount=maintenance_meta["graphPrunedIsolatedEntityCount"],
+            graphRetainedLegacyEntityCount=maintenance_meta["graphRetainedLegacyEntityCount"],
             workflowCandidateCount=maintenance_meta["workflowCandidateCount"],
             workflowCandidateUpdatedCount=maintenance_meta["workflowCandidateUpdatedCount"],
             workflowActiveHintCount=maintenance_meta["workflowActiveHintCount"],

@@ -34,6 +34,14 @@ interface GraphLink {
 interface GraphData {
   nodes: GraphNode[];
   links: GraphLink[];
+  meta?: {
+    totalEntities: number;
+    totalRelations: number;
+    renderedEntities: number;
+    renderedRelations: number;
+    limit: number;
+    truncated: boolean;
+  };
 }
 interface GraphRelation {
   direction: "out" | "in";
@@ -68,6 +76,10 @@ function hashNodeId(value: string) {
 function graphNodeRadius(node: GraphNode) {
   const weight = Math.max(Number(node.val) || 3, 1);
   return 6 + Math.sqrt(weight) * 4;
+}
+function graphScreenRadius(node: GraphNode, scale: number, globalScale: number) {
+  const zoom = Math.max(Number(globalScale) || 1, 0.35);
+  return graphNodeRadius(node) * scale / zoom;
 }
 function seedGraphData(graph: GraphData): GraphData {
   const nodes = [...(graph.nodes || [])].map((node) => ({ ...node }));
@@ -111,7 +123,7 @@ function seedGraphData(graph: GraphData): GraphData {
     node.vy = 0;
     });
   });
-  return { nodes, links };
+  return { nodes, links, meta: graph.meta };
 }
 export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   const { toast } = useToast();
@@ -233,29 +245,32 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
       pulse: 1 + Math.sin(phase * 1.17) * (isFocused ? 0.012 : 0.025),
     };
   }, [data?.nodes.length, hoveredNodeId, motionClock, reducedMotion, selectedNodeId]);
-  const focusPrimaryGraph = useCallback(() => {
+  const focusPrimaryGraph = useCallback((duration = 0) => {
     if (!data?.nodes.length || !fgRef.current) return;
     const positioned = data.nodes.filter((node) => Number.isFinite(node.x) && Number.isFinite(node.y));
-    const denseCore = positioned.filter((node) => (nodeDegrees.get(node.id) || 0) >= 2);
-    const focusNodes = denseCore.length >= 8
-      ? denseCore
-      : positioned.filter((node) => (nodeDegrees.get(node.id) || 0) > 0);
+    const focusNodes = positioned.filter((node) => (nodeDegrees.get(node.id) || 0) > 0);
     const nodes = focusNodes.length ? focusNodes : positioned;
     if (!nodes.length) return;
-    const xs = nodes.map((node) => Number(node.x));
-    const ys = nodes.map((node) => Number(node.y));
+    const xs = nodes.flatMap((node) => {
+      const radius = graphNodeRadius(node) + 18;
+      return [Number(node.x) - radius, Number(node.x) + radius];
+    });
+    const ys = nodes.flatMap((node) => {
+      const radius = graphNodeRadius(node) + 18;
+      return [Number(node.y) - radius, Number(node.y) + radius];
+    });
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
     const width = Math.max(1, maxX - minX);
     const height = Math.max(1, maxY - minY);
-    const zoom = Math.max(0.82, Math.min(1.8, Math.min(
+    const zoom = Math.max(0.62, Math.min(1.24, Math.min(
       (graphSize.width - 180) / width,
       (graphSize.height - 150) / height,
     )));
-    fgRef.current.centerAt?.((minX + maxX) / 2, (minY + maxY) / 2, 520);
-    fgRef.current.zoom?.(zoom, 520);
+    fgRef.current.centerAt?.((minX + maxX) / 2, (minY + maxY) / 2, duration);
+    fgRef.current.zoom?.(zoom, duration);
   }, [data, graphSize.height, graphSize.width, nodeDegrees]);
   const getLabelOpacity = useCallback((nodeId: string) => {
     const isSelected = nodeId === selectedNodeId;
@@ -383,12 +398,18 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
   }, [data?.nodes.length, reducedMotion]);
   useEffect(() => {
     if (!data?.nodes.length || !autoFitPendingRef.current) return;
-    const timer = window.setTimeout(() => {
-      if (!autoFitPendingRef.current) return;
-      autoFitPendingRef.current = false;
-      focusPrimaryGraph();
-    }, 2200);
-    return () => window.clearTimeout(timer);
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        if (!autoFitPendingRef.current) return;
+        autoFitPendingRef.current = false;
+        focusPrimaryGraph();
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
   }, [data, focusPrimaryGraph]);
   useEffect(() => {
     if (!data?.nodes.length || !fgRef.current) {
@@ -689,6 +710,18 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
                 {t("components.memory.GraphViewer.interactionHint")}
             </div>
 
+            <div className="pointer-events-none absolute right-4 top-4 z-10 rounded-full border border-border/50 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
+                {data.meta?.truncated ? t("components.memory.GraphViewer.graphCountTruncated", {
+      renderedNodeCount: data.meta.renderedEntities,
+      totalNodeCount: data.meta.totalEntities,
+      renderedRelationCount: data.meta.renderedRelations,
+      totalRelationCount: data.meta.totalRelations
+    }) : t("components.memory.GraphViewer.graphCount", {
+      nodeCount: data.meta?.totalEntities ?? data.nodes.length,
+      relationCount: data.meta?.totalRelations ?? data.links.length
+    })}
+            </div>
+
 
 
             <ForceGraph2D ref={fgRef} width={graphSize.width} height={graphSize.height} graphData={data} backgroundColor="rgba(0,0,0,0)" warmupTicks={96} cooldownTicks={360} d3AlphaDecay={0.018} d3VelocityDecay={0.38} enableNodeDrag onBackgroundClick={handleBackgroundClick} onEngineStop={() => {
@@ -734,7 +767,11 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
       const graphNode = node as GraphNode;
       const scale = getNodeScale(graphNode.id);
       const motion = getNodeMotion(graphNode);
-      const radius = Math.max(graphNodeRadius(graphNode) * Math.max(scale, 1) * motion.pulse + 4, 10);
+      const currentZoom = Number(fgRef.current?.zoom?.()) || 1;
+      const radius = Math.max(
+        graphScreenRadius(graphNode, Math.max(scale, 1) * motion.pulse, currentZoom) + 4 / currentZoom,
+        8 / currentZoom,
+      );
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.arc((graphNode.x || 0) + motion.x, (graphNode.y || 0) + motion.y, radius, 0, 2 * Math.PI, false);
@@ -742,7 +779,6 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
     }} nodeCanvasObject={(node, ctx, globalScale) => {
       const graphNode = node as GraphNode;
       const label = graphNode.label || graphNode.id;
-      const baseRadius = graphNodeRadius(graphNode);
       const matchesFilter = !normalizedFilter || matchedNodeIds.has(graphNode.id);
       const isSelected = graphNode.id === selectedNodeId;
       const isHovered = graphNode.id === hoveredNodeId;
@@ -752,7 +788,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
       const motion = getNodeMotion(graphNode);
       const drawX = (graphNode.x || 0) + motion.x;
       const drawY = (graphNode.y || 0) + motion.y;
-      const radius = baseRadius * scale * motion.pulse;
+      const radius = graphScreenRadius(graphNode, scale * motion.pulse, globalScale);
       const hasSearchFocus = matchedNodeIds.size > 0;
       if (graphNode.id === firstRenderableNodeId) {
         labelBoxesRef.current = [];
@@ -807,7 +843,7 @@ export default function GraphViewer({ filterNode = "" }: GraphViewerProps) {
         const shouldForceLabel = isSelected || isHovered || isMatched;
         const textWidth = ctx.measureText(label).width;
         const labelX = drawX;
-        const labelY = drawY + radius + 6;
+        const labelY = drawY + radius + 6 / Math.max(globalScale, 0.35);
         const labelHeight = fontSize + 4;
         const labelBox = {
           x: labelX - textWidth / 2 - 6,

@@ -4747,6 +4747,8 @@
   "app.admin.dashboard.operations.center.runLedgerDescription": "查看本次运行的状态、证据与后续动作。",
   "components.common.messageReference": "消息记录",
   "components.memory.GraphViewer.interactionHint": "拖动节点整理布局，单击查看关联",
+  "components.memory.GraphViewer.graphCount": "{nodeCount} 个节点 · {relationCount} 条关系",
+  "components.memory.GraphViewer.graphCountTruncated": "当前显示 {renderedNodeCount}/{totalNodeCount} 个节点 · {renderedRelationCount}/{totalRelationCount} 条关系",
   "components.memory.GraphViewer.summaryHint": "这里先展示与当前节点最相关的连接；编辑关系属于维护操作。",
   "components.memory.GraphViewer.noRelations": "当前节点还没有可展示的关联。",
   "components.memory.GraphViewer.manageRelations": "管理节点关系",

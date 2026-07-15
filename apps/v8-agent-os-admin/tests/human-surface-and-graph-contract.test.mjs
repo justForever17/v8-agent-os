@@ -33,12 +33,15 @@ test("knowledge graph uses clustered spacing, drag, subtle motion, and reduced-m
     const graph = read("src/components/memory/GraphViewer.tsx");
 
     assert.match(graph, /graphClusterKey/);
+    assert.match(graph, /graphScreenRadius/);
     assert.match(graph, /forceCollide/);
     assert.match(graph, /focusPrimaryGraph/);
     assert.match(graph, /centerAt/);
     assert.match(graph, /enableNodeDrag/);
     assert.match(graph, /prefers-reduced-motion: reduce/);
     assert.match(graph, /requestAnimationFrame/);
+    assert.doesNotMatch(graph, /denseCore/);
+    assert.doesNotMatch(graph, /2200/);
     assert.match(graph, /menuMode === "summary"/);
     assert.doesNotMatch(graph, /enableNodeDrag=\{false\}/);
     assert.doesNotMatch(graph, /zoomToFit/);

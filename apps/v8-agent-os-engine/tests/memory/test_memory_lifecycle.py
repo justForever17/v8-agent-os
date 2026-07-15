@@ -175,6 +175,56 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.assertEqual(result["isolatedEntityCount"], 2)
         self.assertEqual(remaining, {"runtime recent", "human old"})
 
+    def test_graph_stats_count_only_active_evidence_backed_entities(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            db.add_knowledge(
+                "graph-fact",
+                "V8OS uses scoped evidence graphs",
+                scope="project:test7",
+                category="memory",
+                confidence=0.9,
+            )
+            db.add_scoped_relation(
+                "V8OS",
+                "USES",
+                "Scoped Evidence Graph",
+                scope="project:test7",
+                source_fact_ids=["graph-fact"],
+            )
+            db.add_entity("isolated runtime")
+            db.add_entity("isolated human", maintainer_source="human_admin")
+
+            stats = db.get_graph_stats()
+            graph = db.get_full_graph(limit=100)
+
+        self.assertEqual(stats["entities"], 2)
+        self.assertEqual(stats["registeredEntities"], 4)
+        self.assertEqual(stats["isolatedEntities"], 2)
+        self.assertEqual(stats["relations"], 1)
+        self.assertEqual(len(graph["nodes"]), stats["entities"])
+        self.assertEqual(len(graph["links"]), stats["relations"])
+        self.assertEqual(graph["meta"]["totalEntities"], stats["entities"])
+        self.assertFalse(graph["meta"]["truncated"])
+
+    def test_graph_maintenance_keeps_entities_referenced_by_legacy_audit_relations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = KnowledgeDB(Path(temp_dir) / "knowledge.db")
+            db.add_relation("legacy subject", "RELATED_TO", "legacy object")
+            with db._conn() as conn:
+                conn.execute(
+                    "UPDATE entities SET created_at = ?, updated_at = ? WHERE name IN (?, ?)",
+                    ("2020-01-01 00:00:00", "2020-01-01 00:00:00", "legacy subject", "legacy object"),
+                )
+
+            result = db.maintenance_compact_graph(limit=20, isolated_entity_grace_days=7)
+            with db._conn() as conn:
+                remaining = {row["name"] for row in conn.execute("SELECT name FROM entities")}
+
+        self.assertEqual(result["prunedIsolatedEntityCount"], 0)
+        self.assertEqual(result["retainedLegacyEntityCount"], 2)
+        self.assertEqual(remaining, {"legacy subject", "legacy object"})
+
     def test_maintenance_compaction_records_uncertain_merge_suggestion(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = KnowledgeDB(Path(temp_dir) / "knowledge.db")

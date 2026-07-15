@@ -2242,6 +2242,21 @@ class KnowledgeDB:
                 )
                 """
             ).fetchone()[0]
+            retained_legacy_entities = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM entities e
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM scoped_relations relation
+                    WHERE relation.status = 'active'
+                      AND (relation.subject = e.name OR relation.object = e.name)
+                )
+                  AND EXISTS (
+                    SELECT 1 FROM relations legacy_relation
+                    WHERE legacy_relation.subject = e.name OR legacy_relation.object = e.name
+                  )
+                """
+            ).fetchone()[0]
             prunable_rows = conn.execute(
                 """
                 SELECT e.name
@@ -2251,6 +2266,10 @@ class KnowledgeDB:
                       SELECT 1 FROM scoped_relations relation
                       WHERE relation.status = 'active'
                         AND (relation.subject = e.name OR relation.object = e.name)
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM relations legacy_relation
+                      WHERE legacy_relation.subject = e.name OR legacy_relation.object = e.name
                   )
                   AND datetime(COALESCE(e.updated_at, e.created_at, '1970-01-01')) <= datetime('now', ?)
                 ORDER BY datetime(COALESCE(e.updated_at, e.created_at, '1970-01-01')) ASC, e.name ASC
@@ -2282,6 +2301,7 @@ class KnowledgeDB:
             "archivedRelationCount": int(archived or 0),
             "isolatedEntityCountBefore": int(isolated_before or 0),
             "isolatedEntityCount": int(isolated_after or 0),
+            "retainedLegacyEntityCount": int(retained_legacy_entities or 0),
             "prunedIsolatedEntityCount": int(pruned or 0),
             "isolatedEntityGraceDays": grace_days,
         }
@@ -2750,7 +2770,31 @@ class KnowledgeDB:
     def get_graph_stats(self) -> Dict:
         """Return active scoped graph health and archived legacy count."""
         with self._conn() as conn:
-            entities_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+            registered_entities_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+            entities_count = conn.execute(
+                """
+                WITH active_relations AS (
+                    SELECT relation.subject, relation.object
+                    FROM scoped_relations relation
+                    WHERE relation.status = 'active'
+                      AND (EXISTS (
+                        SELECT 1 FROM scoped_relation_evidence evidence
+                        JOIN knowledge fact ON fact.id = evidence.fact_id
+                        WHERE evidence.relation_id = relation.id
+                          AND fact.status = 'active'
+                          AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                      ) OR EXISTS (
+                        SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
+                        WHERE evidence_ref.relation_id = relation.id
+                      ))
+                ), active_entities AS (
+                    SELECT subject AS name FROM active_relations
+                    UNION
+                    SELECT object AS name FROM active_relations
+                )
+                SELECT COUNT(*) FROM active_entities
+                """
+            ).fetchone()[0]
             relations_count = conn.execute(
                 """
                 SELECT COUNT(*) FROM scoped_relations relation
@@ -2793,12 +2837,29 @@ class KnowledgeDB:
                          WHERE evidence_ref.relation_id = relation.id
                        ))) as degree
                 FROM entities e
+                WHERE EXISTS (
+                    SELECT 1 FROM scoped_relations relation
+                    WHERE relation.status = 'active'
+                      AND (relation.subject = e.name OR relation.object = e.name)
+                      AND (EXISTS (
+                        SELECT 1 FROM scoped_relation_evidence evidence
+                        JOIN knowledge fact ON fact.id = evidence.fact_id
+                        WHERE evidence.relation_id = relation.id
+                          AND fact.status = 'active'
+                          AND COALESCE(fact.lifecycle_state, 'active') = 'active'
+                      ) OR EXISTS (
+                        SELECT 1 FROM scoped_relation_evidence_refs evidence_ref
+                        WHERE evidence_ref.relation_id = relation.id
+                      ))
+                )
                 ORDER BY degree DESC
                 LIMIT 10
             """).fetchall()
             
             return {
                 "entities": entities_count,
+                "registeredEntities": registered_entities_count,
+                "isolatedEntities": max(registered_entities_count - entities_count, 0),
                 "relations": relations_count,
                 "legacyArchivedRelations": legacy_relations,
                 "sourceCoverage": (float(covered_relations) / float(relations_count)) if relations_count else 1.0,
@@ -2832,6 +2893,8 @@ class KnowledgeDB:
         - display name: name.title() 恢复大小写
         - 性能: 只取 Top N 实体 (按 degree 排序) + 相关 links
         """
+        graph_stats = self.get_graph_stats()
+        bounded_limit = max(1, min(int(limit or 100), 1000))
         with self._conn() as conn:
             # 取 Top N 实体（按关联度排序）
             entities = conn.execute("""
@@ -2866,10 +2929,21 @@ class KnowledgeDB:
                 )
                 ORDER BY effective_confidence DESC, degree DESC
                 LIMIT ?
-            """, (limit,)).fetchall()
+            """, (bounded_limit,)).fetchall()
             
             if not entities:
-                return {"nodes": [], "links": []}
+                return {
+                    "nodes": [],
+                    "links": [],
+                    "meta": {
+                        "totalEntities": int(graph_stats.get("entities") or 0),
+                        "totalRelations": int(graph_stats.get("relations") or 0),
+                        "renderedEntities": 0,
+                        "renderedRelations": 0,
+                        "limit": bounded_limit,
+                        "truncated": False,
+                    },
+                }
             
             # 构建实体名称集合（用于过滤 links）
             entity_names = {e[0] for e in entities}
@@ -2924,7 +2998,18 @@ class KnowledgeDB:
                     "maintainerSource": maintainer_source,
                 })
             
-            return {"nodes": nodes, "links": links}
+            return {
+                "nodes": nodes,
+                "links": links,
+                "meta": {
+                    "totalEntities": int(graph_stats.get("entities") or 0),
+                    "totalRelations": int(graph_stats.get("relations") or 0),
+                    "renderedEntities": len(nodes),
+                    "renderedRelations": len(links),
+                    "limit": bounded_limit,
+                    "truncated": len(nodes) < int(graph_stats.get("entities") or 0),
+                },
+            }
     
     def hard_delete_knowledge(self, fact_id: str, *, confirm: bool = False) -> bool:
         """

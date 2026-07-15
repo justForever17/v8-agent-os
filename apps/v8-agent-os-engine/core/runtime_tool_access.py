@@ -4,7 +4,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from core.engineering_capsule import engineering_tool_allowed, task_brief_from_route_context
+from core.actor_identity import resolve_collaboration_actor
+from core.system_tools.baseline import BASELINE_SYSTEM_TOOL_NAMES
 
 
 RUNTIME_BROKER_TOOL_NAME = "runtime_broker"
@@ -104,11 +105,13 @@ RUNTIME_TOOL_GROUPS: dict[str, dict[str, Any]] = {
 
 SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     RUNTIME_BROKER_TOOL_NAME,
+    "ask_user",
+    "spec_broker",
     "session_message_broker",
+    "session_context_broker",
     "write_todos",
     "update_todo",
     "s3_broker",
-    "http_request",
     "delegate_network_task",
     "web_fetch",
     "web_read",
@@ -116,6 +119,7 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     "web_search",
 }
 RAW_WEB_INTERNAL_TOOL_NAMES = {"web_fetch", "web_read", "web_extract", "web_search"}
+SUBAGENT_PLUGIN_TOOL_NAMES = {"plugin_broker", "plugin_cli"}
 
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_", "creative_media_")
 FEATURE_PACK_GATED_RUNTIME_KINDS = {"computer_use", "desktop_live", "rpa"}
@@ -456,9 +460,8 @@ def filter_visible_tools_for_actor(
     route_context: dict[str, Any] | None = None,
     runtime_access: Iterable[Any] | None = None,
 ) -> list[Any]:
-    normalized_actor = str(actor or "").strip().lower()
-    task_brief = task_brief_from_route_context(route_context)
-    if normalized_actor == "supervisor":
+    actor_identity = resolve_collaboration_actor(actor=actor, route_context=route_context)
+    if actor_identity.is_supervisor:
         granted_groups = runtime_access_from_route_context(route_context)
     else:
         if runtime_access is None:
@@ -475,36 +478,40 @@ def filter_visible_tools_for_actor(
         if not name:
             visible.append(tool_ref)
             continue
+        if not actor_identity.is_collaboration_actor:
+            continue
         if name == RUNTIME_BROKER_TOOL_NAME:
-            if normalized_actor == "supervisor":
+            if actor_identity.is_supervisor:
                 visible.append(tool_ref)
             continue
         if name in RAW_WEB_INTERNAL_TOOL_NAMES:
             continue
         if name == "memory_broker":
-            if normalized_actor == "supervisor" or name in granted_runtime_tools:
+            if actor_identity.is_supervisor or name in granted_runtime_tools:
                 visible.append(tool_ref)
             continue
-        if normalized_actor == "supervisor" and name == "spec_broker":
+        if actor_identity.is_supervisor and name == "spec_broker":
             if _route_context_spec_mode_active(route_context):
                 visible.append(tool_ref)
             continue
-        if normalized_actor == "supervisor" and name == "delegation_broker":
-            visible.append(tool_ref)
-            continue
-        if normalized_actor != "supervisor" and name == "delegation_broker":
-            continue
-        if name == "request_peer_help":
-            if normalized_actor != "supervisor" and name in granted_runtime_tools:
+        if name == "delegation_broker":
+            if actor_identity.is_supervisor or actor_identity.is_direct_subagent:
                 visible.append(tool_ref)
             continue
-        if normalized_actor != "supervisor" and name in SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES:
+        if name in SUBAGENT_PLUGIN_TOOL_NAMES:
+            visible.append(tool_ref)
+            continue
+        if name == "request_peer_help":
+            if actor_identity.is_direct_subagent and name in granted_runtime_tools:
+                visible.append(tool_ref)
+            continue
+        if not actor_identity.is_supervisor and name in SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES:
             continue
         if is_runtime_managed_tool_name(name):
             if name in granted_runtime_tools:
                 visible.append(tool_ref)
             continue
-        if not engineering_tool_allowed(name, task_brief):
+        if not actor_identity.is_supervisor and name not in BASELINE_SYSTEM_TOOL_NAMES:
             continue
         visible.append(tool_ref)
     return _dedupe_tools(visible)

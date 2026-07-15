@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.actor_identity import resolve_collaboration_actor
 from core.command_environment import default_shell_dialect, detect_command_environment
 from core.engineering_capsule import effective_engineering_capsule, engineering_capsule_mode
 from core.workspace_state_digest import build_workspace_state_digest_context
@@ -23,6 +24,7 @@ def build_engineering_kernel_context(
     *,
     state: dict[str, Any] | None = None,
     session_id: str | None = None,
+    actor: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     workspace_text, workspace_diagnostics = build_workspace_state_digest_context(
         state=state,
@@ -31,12 +33,18 @@ def build_engineering_kernel_context(
     task_brief = _task_brief_from_state(state)
     capsule = effective_engineering_capsule(task_brief)
     mode = engineering_capsule_mode(task_brief)
+    actor_identity = resolve_collaboration_actor(actor=actor, route_context=state)
+    execution_posture = (
+        "supervisor_direct_bounded"
+        if actor_identity.is_supervisor and mode == "none"
+        else mode if mode != "none" else "read_only_no_capsule"
+    )
     command_env = detect_command_environment()
     lines = [
         "[ENGINEERING KERNEL]",
         "This run starts with authoritative workspace awareness. Do not spend a tool call rediscovering the active workspace.",
         f"Environment: OS={command_env['osName']}; shellDialect={command_env['shellDialect']}; commandLanguage={command_env['commandLanguage']}",
-        f"Execution posture: {mode if mode != 'none' else 'read_only_no_capsule'}",
+        f"Execution posture: {execution_posture}",
     ]
     if capsule:
         lines.append(
@@ -45,6 +53,10 @@ def build_engineering_kernel_context(
             f"readSet={len(capsule.get('readSet') or [])}; "
             f"writeSet={len(capsule.get('writeSet') or [])}; "
             f"expectedArtifacts={len(capsule.get('expectedArtifacts') or [])}"
+        )
+    elif actor_identity.is_supervisor:
+        lines.append(
+            "No Engineering Task Capsule is attached. The Supervisor may use common file and command tools for clear, bounded work inside the active workspace, subject to workspace binding and Safety approval. Use a typed Engineering episode when durable decomposition, recovery, or proof is materially useful."
         )
     else:
         lines.append("No Engineering Task Capsule is attached. File mutation and shell execution are not authorized; return a blocker or request a routed Engineering episode.")
@@ -56,6 +68,8 @@ def build_engineering_kernel_context(
             "source": "engineering_kernel",
             "shellDialect": command_env["shellDialect"],
             "executionMode": mode,
+            "executionPosture": execution_posture,
+            "actorRole": actor_identity.role,
             "capsuleId": capsule.get("capsuleId") if capsule else None,
             "workspaceSource": (workspace_diagnostics[0] if workspace_diagnostics else {}).get("source"),
             "estimatedTokens": max(1, sum(len(line) for line in lines) // 4),

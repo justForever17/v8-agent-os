@@ -1344,6 +1344,8 @@ class DatabaseManager:
                     expires_at TEXT,
                     revoked_at TEXT,
                     parent_grant_id TEXT,
+                    delegation_id TEXT,
+                    delegation_depth INTEGER,
                     grant_source TEXT NOT NULL DEFAULT 'user_reference',
                     CHECK(scope IN ('task', 'session')),
                     CHECK(grantee_type IN ('supervisor', 'subagent'))

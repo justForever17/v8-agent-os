@@ -93,8 +93,12 @@ class SupervisorAgentRunner:
                 ("workspacePath", "workspacePath"),
                 ("workspace_id", "workspace_id"),
                 ("workspaceId", "workspaceId"),
+                ("project_id", "project_id"),
+                ("projectId", "projectId"),
                 ("resolved_scope", "resolved_scope"),
                 ("resolvedScope", "resolvedScope"),
+                ("safety_approval_mode", "safety_approval_mode"),
+                ("safetyApprovalMode", "safetyApprovalMode"),
             )
             for source_key, state_key in identity_pairs:
                 value = current_route_context.get(source_key)

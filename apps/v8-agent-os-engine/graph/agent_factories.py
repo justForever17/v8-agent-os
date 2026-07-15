@@ -205,15 +205,20 @@ def _bounded_delegated_task_messages(messages: list[Any], task_brief: dict[str, 
 
 
 def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtime_access: list[str]) -> list:
-    """Keep contextual_auto narrow while adding explicitly granted runtime tools."""
+    """Keep contextual_auto narrow while retaining collaboration controls."""
     baseline_tools = list(select_baseline_system_tools(filtered_native_tools))
+    collaboration_tools = [
+        tool_ref
+        for tool_ref in list(filtered_native_tools or [])
+        if str(getattr(tool_ref, "name", "") or "").strip() in {"delegation_broker", "plugin_broker", "plugin_cli"}
+    ]
     granted_runtime_tool_names = runtime_tool_names_for_groups(runtime_access)
     granted_runtime_tools = [
         tool_ref
         for tool_ref in list(filtered_native_tools or [])
         if str(getattr(tool_ref, "name", "")).strip() in granted_runtime_tool_names
     ]
-    return _dedupe_tools(baseline_tools + granted_runtime_tools)
+    return _dedupe_tools(baseline_tools + collaboration_tools + granted_runtime_tools)
 
 
 def _apply_task_tool_policy(tools: list, task_brief: dict[str, Any] | None) -> list:
@@ -578,6 +583,15 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             lines.append("- Tool discipline: only the explicit allowlist is available; do not report other tools as missing.")
         else:
             lines.append("- Tool discipline: call a granted tool only when it is necessary for this task's acceptance contract; do not probe unrelated capabilities.")
+        allowed_tool_names = {
+            str(item or "").strip()
+            for item in list(tool_policy.get("allowedTools") or task_brief.get("allowedTools") or [])
+            if str(item or "").strip()
+        }
+        tool_policy_allows_delegation = (
+            tool_policy_mode not in {"none", "allowlist"}
+            or (tool_policy_mode == "allowlist" and "delegation_broker" in allowed_tool_names)
+        )
         delegation_policy = (
             task_brief.get("delegationPolicy")
             if isinstance(task_brief.get("delegationPolicy"), dict)
@@ -585,29 +599,40 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             if isinstance(task_brief.get("delegation_policy"), dict)
             else {}
         )
-        child_delegation_allowed = bool(
-            task_brief.get("allowChildDelegation")
-            or task_brief.get("allow_child_delegation")
-            or task_brief.get("childDelegationBudget")
-            or task_brief.get("child_delegation_budget")
-            or delegation_policy.get("allowChildDelegation")
-            or delegation_policy.get("allow_child_delegation")
-            or delegation_policy.get("childDelegationBudget")
-            or delegation_policy.get("child_delegation_budget")
+        try:
+            delegation_depth = max(1, int(task_brief.get("delegationDepth") or 1))
+        except (TypeError, ValueError):
+            delegation_depth = 1
+        explicit_child_policy = next(
+            (
+                value
+                for value in (
+                    task_brief.get("allowChildDelegation"),
+                    task_brief.get("allow_child_delegation"),
+                    delegation_policy.get("allowChildDelegation"),
+                    delegation_policy.get("allow_child_delegation"),
+                )
+                if value is not None
+            ),
+            None,
+        )
+        child_delegation_allowed = (
+            delegation_depth == 1
+            and (True if explicit_child_policy is None else bool(explicit_child_policy))
+            and tool_policy_allows_delegation
         )
         lines.append("")
         lines.append("Delegation Authority:")
         if child_delegation_allowed:
             lines.append(
-                "- Bounded child delegation is authorized for this task. Use `request_peer_help`; "
-                "the Supervisor-only `delegation_broker` is intentionally not projected to delegated workers."
+                "- You are a direct subagent. `delegation_broker(mode='dispatch')` is available for one bounded grandchild layer when a real independent subtask is useful."
             )
             lines.append(
-                "- Do not choose or spawn a child directly. State the missing capability and let the broker preserve lineage, budget, and acceptance."
+                "- Supply a complete task brief and let the broker select the worker, preserve lineage, and enforce the parent acceptance contract. Grandchildren cannot delegate again."
             )
         else:
             lines.append(
-                "- Child delegation is not authorized. The absence of `delegation_broker` and `request_peer_help` is intentional, not a missing-tool failure."
+                "- This actor cannot create another delegation layer under the current depth or tool policy. The absence of `delegation_broker` is intentional, not a missing-tool failure."
             )
             lines.append(
                 "- Complete the assigned slice with the tools you have, or return a concrete blocker without attempting to create another worker."
@@ -958,6 +983,7 @@ def build_agent_node(
             engineering_kernel_context, _engineering_kernel_diagnostics = build_engineering_kernel_context(
                 state=state,
                 session_id=state.get("session_id") or state.get("sessionId"),
+                actor="subagent",
             )
             env_context = (
                 f"<environment>\n"
@@ -1020,11 +1046,15 @@ def build_agent_node(
             delegated_query = full_task_brief_query or inherited_query
             extensions_route_query = extensions_route_query or delegated_query
             task_messages = _bounded_delegated_task_messages(messages, delegated_task_brief)
+            actor_route_context = {
+                **dict(inherited_route_context or {}),
+                "taskBrief": delegated_task_brief or {},
+            }
             contextual_base_tools = _dedupe_tools(
                 filter_visible_tools_for_actor(
                     _select_contextual_subagent_native_tools(filtered_native_tools, delegated_runtime_access) + [fetch_skill_instructions_tool],
                     actor="subagent",
-                    route_context={"taskBrief": delegated_task_brief or {}},
+                    route_context=actor_route_context,
                     runtime_access=delegated_runtime_access,
                 )
             )
@@ -1032,7 +1062,7 @@ def build_agent_node(
                 filter_visible_tools_for_actor(
                     list(filtered_native_tools) + [fetch_skill_instructions_tool],
                     actor="subagent",
-                    route_context={"taskBrief": delegated_task_brief or {}},
+                    route_context=actor_route_context,
                     runtime_access=delegated_runtime_access,
                 )
             )
@@ -1066,6 +1096,8 @@ def build_agent_node(
                 workspace_path=state.get("workspace_path"),
                 project_id=state.get("project_id"),
                 runtime_kind="subagent",
+                delegation_id=inherited_route_context.get("delegationId"),
+                delegation_depth=inherited_route_context.get("delegationDepth"),
             )
             try:
                 route_bundle = extensions_runtime_service.build_contextual_route(
@@ -1169,17 +1201,27 @@ def build_agent_node(
                 workspace_path=state.get("workspace_path"),
                 project_id=state.get("project_id"),
                 runtime_kind="subagent",
+                delegation_id=inherited_route_context.get("delegationId"),
+                delegation_depth=inherited_route_context.get("delegationDepth"),
             )
             try:
                 with bind_runtime_context(
                     session_id=state.get("session_id"),
                     run_id=state.get("run_id"),
+                    project_id=state.get("project_id"),
+                    workspace_id=state.get("workspace_id"),
                     workspace_path=state.get("workspace_path"),
                     runtime_kind="subagent",
                     trigger_source="delegation_broker",
                     agent_id=agent_id,
                     subagent_id=agent_id,
                     delegation_id=inherited_route_context.get("delegationId"),
+                    delegation_depth=inherited_route_context.get("delegationDepth"),
+                    safety_approval_mode=(
+                        state.get("safety_approval_mode")
+                        or inherited_route_context.get("safety_approval_mode")
+                        or inherited_route_context.get("safetyApprovalMode")
+                    ),
                 ):
                     response = robust_invoke(
                         agent_specific_llm,
@@ -1465,7 +1507,7 @@ def build_specialist_agent_components(
 
         contextual_base_tools = _dedupe_tools(
             filter_visible_tools_for_actor(
-                select_baseline_system_tools(filtered_native_tools) + [fetch_skill_instructions],
+                _select_contextual_subagent_native_tools(filtered_native_tools, []) + [fetch_skill_instructions],
                 actor="subagent",
                 runtime_access=[],
             )

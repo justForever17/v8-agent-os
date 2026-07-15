@@ -4,18 +4,21 @@ from importlib import import_module
 from typing import Any, Iterable
 
 BASELINE_SYSTEM_TOOL_NAME_ORDER = (
-    "ask_user",
-    "delegation_broker",
     "read_native_file",
     "write_native_file",
     "grep_search",
     "run_system_command",
     "command_session_broker",
-    "download_media_for_vision",
-    "vision_media_analyzer",
+    "read_background_output",
+    "send_background_input",
+    "terminate_background_command",
     "web_broker",
     "http_request",
-    "s3_broker",
+    "download_media_for_vision",
+    "vision_media_analyzer",
+    "fetch_skill_instructions",
+    "tool_observation_detail",
+    "wait",
 )
 
 BASELINE_SYSTEM_TOOL_NAMES = set(BASELINE_SYSTEM_TOOL_NAME_ORDER)

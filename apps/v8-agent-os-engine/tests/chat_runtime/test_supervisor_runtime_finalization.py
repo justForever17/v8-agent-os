@@ -1333,6 +1333,43 @@ def test_finalize_success_does_not_arm_resume_for_terminal_spec_handoff_pending(
     run_handle.fail.assert_not_called()
 
 
+def test_system_resume_restores_persisted_safety_mode_and_workspace_binding(monkeypatch):
+    monkeypatch.setattr(
+        "runtimes.chat.runtime.db.get_run_record",
+        lambda _run_id: {"metadata": {"safetyApprovalMode": "reduced"}},
+    )
+    chat_run = SimpleNamespace(
+        request=SimpleNamespace(data=None, resume_value={}),
+        active_run_id="run-resume",
+        session_id="session-resume",
+        user_id="user-demo",
+        transport="runtime_episode_handoff",
+        prepared=SimpleNamespace(latest_user_content="继续处理", spec_id="", spec_brief={}, live_audit_context={}),
+        scope_result=SimpleNamespace(
+            binding=SimpleNamespace(
+                project_id="project-resume",
+                workspace_id="workspace-resume",
+                workspace_path="E:/Projects/resume",
+                resolved_scope="project:project-resume",
+            )
+        ),
+    )
+    runtime = ChatRuntime()
+
+    context = runtime._runtime_context_kwargs(chat_run)
+    restarted = runtime._restart_route_context(
+        chat_run,
+        {"current_route_context": {"safetyApprovalMode": "reduced"}},
+    )
+
+    assert context["safetyApprovalMode"] == "reduced"
+    assert context["workspace_binding"]["projectId"] == "project-resume"
+    assert context["workspace_binding"]["workspaceId"] == "workspace-resume"
+    assert restarted["safetyApprovalMode"] == "reduced"
+    assert restarted["workspaceBinding"]["projectId"] == "project-resume"
+    assert restarted["workspaceBinding"]["workspaceId"] == "workspace-resume"
+
+
 @pytest.mark.parametrize("terminal_state", ["completed", "degraded", "failed", "cancelled"])
 def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch, terminal_state):
     captured = {}
@@ -1366,7 +1403,11 @@ def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch, t
                 "specId": "spec_runtime",
             }
         },
-        data=ChatRequestData(specMode=True, specId="spec_runtime"),
+        data=ChatRequestData(
+            specMode=True,
+            specId="spec_runtime",
+            safetyApprovalMode="minimal",
+        ),
     )
     runtime = ChatRuntime()
     prepared = runtime.prepare_request(request)
@@ -1399,6 +1440,13 @@ def test_runtime_episode_handoff_resume_enters_wait_episode_state(monkeypatch, t
     assert captured["runtime_dispatch_status"]["nextAction"] == "wait_episode"
     assert captured["runtime_dispatch_status"]["state"] == "handoff_resume_requested"
     route_context = captured["current_route_context"]
+    assert route_context["projectId"] == "test3"
+    assert route_context["workspaceId"] == "test3"
+    assert route_context["workspacePath"] == "E:/Projects/test3"
+    assert route_context["resolvedScope"] == "project:test3"
+    assert route_context["safetyApprovalMode"] == "minimal"
+    assert route_context["workspaceBinding"]["projectId"] == "test3"
+    assert route_context["workspaceBinding"]["workspaceId"] == "test3"
     assert route_context["runtimeEpisodeHandoffResume"]["episodeId"] == "episode_runtime"
     episodes = route_context["capabilityEpisodes"]
     assert episodes and episodes[-1]["episodeId"] == "episode_runtime"

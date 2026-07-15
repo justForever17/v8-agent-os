@@ -29,6 +29,8 @@ async def plugin_cli(
     run_id = str(runtime_context.get("run_id") or runtime_context.get("runId") or "").strip() or None
     agent_id = str(runtime_context.get("agent_id") or runtime_context.get("agentId") or "supervisor").strip()
     runtime_kind = str(runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or "chat").strip()
+    delegation_id = str(runtime_context.get("delegation_id") or runtime_context.get("delegationId") or "").strip() or None
+    delegation_depth = runtime_context.get("delegation_depth") or runtime_context.get("delegationDepth")
     grantee_type = "supervisor" if runtime_kind in {"chat", "supervisor"} or agent_id == "supervisor" else "subagent"
     if not session_id:
         return json.dumps({"ok": False, "error": "plugin_cli requires an active session"}, ensure_ascii=False)
@@ -42,6 +44,8 @@ async def plugin_cli(
             run_id=run_id,
             grantee_type=grantee_type,
             grantee_id=agent_id or "supervisor",
+            delegation_id=delegation_id,
+            delegation_depth=delegation_depth,
             tool_call_id=tool_call_id,
         )
         return json.dumps({"ok": result.get("returnCode") == 0, **result}, ensure_ascii=False)

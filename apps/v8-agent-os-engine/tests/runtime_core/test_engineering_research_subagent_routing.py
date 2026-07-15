@@ -91,16 +91,23 @@ def test_engineering_project_creation_workspace_activates_without_git(tmp_path, 
     assert decision["reason"] == "project_creation_workspace"
 
 
-def test_subagent_peer_help_requires_recursive_grant_and_hides_broker() -> None:
+def test_direct_subagent_has_broker_and_peer_help_remains_compatibility_grant() -> None:
     broker = SimpleNamespace(name="delegation_broker")
     peer_help = SimpleNamespace(name="request_peer_help")
 
-    hidden = filter_visible_tools_for_actor([broker, peer_help], actor="subagent")
+    default_visible = filter_visible_tools_for_actor([broker, peer_help], actor="subagent")
     granted = filter_visible_tools_for_actor(
         [broker, peer_help],
         actor="subagent",
         runtime_access=["delegation.recursive"],
     )
+    grandchild = filter_visible_tools_for_actor(
+        [broker, peer_help],
+        actor="subagent",
+        route_context={"delegationDepth": 2},
+        runtime_access=["delegation.recursive"],
+    )
 
-    assert hidden == []
-    assert [item.name for item in granted] == ["request_peer_help"]
+    assert [item.name for item in default_visible] == ["delegation_broker"]
+    assert [item.name for item in granted] == ["delegation_broker", "request_peer_help"]
+    assert grandchild == []

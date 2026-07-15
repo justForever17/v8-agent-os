@@ -12,6 +12,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, Send
 
+from core.actor_identity import resolve_collaboration_actor
 from core.agents import agents_from_subagent_registry_snapshot, build_subagent_registry_snapshot
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.command_environment import default_shell_dialect
@@ -431,7 +432,7 @@ def _delegation_recursive_policy() -> dict[str, Any]:
     recursive = dict(delegation.get("recursive") or {})
     return {
         "enabled": bool(recursive.get("enabled", True)),
-        "maxDelegationDepth": _safe_int_range(recursive.get("maxDelegationDepth"), 10, 1, 100),
+        "maxDelegationDepth": min(2, _safe_int_range(recursive.get("maxDelegationDepth"), 2, 1, 100)),
         "maxChildrenPerDelegation": _safe_int_range(recursive.get("maxChildrenPerDelegation"), 10, 1, 50),
         "maxTotalDelegationNodes": _safe_int_range(recursive.get("maxTotalDelegationNodes"), 100, 1, 1000),
         "maxConcurrentDelegations": _safe_int_range(recursive.get("maxConcurrentDelegations"), 10, 1, 50),
@@ -1012,6 +1013,64 @@ def delegation_broker(
     Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
     """
     normalized_mode = str(mode or "observe").strip().lower()
+    runtime_context = get_runtime_context()
+    has_explicit_actor_identity = any(
+        runtime_context.get(key) not in (None, "")
+        for key in (
+            "actor_role",
+            "actorRole",
+            "runtime_kind",
+            "runtimeKind",
+            "agent_id",
+            "agentId",
+            "subagent_id",
+            "subagentId",
+            "delegation_id",
+            "delegationId",
+            "delegation_depth",
+            "delegationDepth",
+        )
+    )
+    caller = resolve_collaboration_actor(
+        actor="supervisor" if not has_explicit_actor_identity else None,
+        runtime_context=runtime_context,
+    )
+    if not caller.is_collaboration_actor or caller.is_grandchild:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_delegation_broker_payload(
+                            mode=normalized_mode or "unknown",
+                            ok=False,
+                            summary="当前 actor 不在可继续委派的协作层级。孙 Agent 是委派树的终点。",
+                            recommended_next_action="return_evidence_to_parent",
+                            error="delegation_depth_terminal",
+                            delegationDepth=caller.delegation_depth,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+    if caller.is_direct_subagent and normalized_mode != "dispatch":
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=_delegation_broker_payload(
+                            mode=normalized_mode or "unknown",
+                            ok=False,
+                            summary="直接子 Agent 只可派发一个孙 Agent 层级；目录揭示、外部 worker 观察和控制仍由 Supervisor 负责。",
+                            recommended_next_action="dispatch_with_complete_task_brief",
+                            error="delegation_mode_not_available_to_subagent",
+                            delegationDepth=caller.delegation_depth,
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
     if normalized_mode not in {"reveal", "dispatch", "observe", "resume", "interrupt"}:
         return Command(
             goto="supervisor",
@@ -1139,10 +1198,9 @@ def delegation_broker(
             )
 
         recursive_policy = _delegation_recursive_policy()
-        runtime_context = get_runtime_context()
         supervisor_dispatch = _is_supervisor_delegation_caller(runtime_context)
         parent_delegation_id = _delegation_parent_episode_id(inherited_context, runtime_context)
-        current_depth = 0 if supervisor_dispatch else _safe_int_range(inherited_context.get("delegationDepth"), 0, 0, 100)
+        current_depth = 0 if supervisor_dispatch else caller.delegation_depth
         used_node_count = 0 if supervisor_dispatch else _safe_int_range(inherited_context.get("delegationNodeCount"), 0, 0, 1000)
         is_recursive_dispatch = bool(parent_delegation_id or current_depth > 0)
         macro_task_count = len(macro_tasks)
@@ -1270,6 +1328,8 @@ def delegation_broker(
             task_query = task_brief_query_text(task_brief) or str(task_brief.get("goal") or "").strip()
             task_goal = str(task_brief.get("goal") or "").strip() or task_query or f"Task {index + 1}"
             lane_hint = str(task_brief.get("executionLaneHint") or "auto").strip().lower() or "auto"
+            if caller.is_direct_subagent and lane_hint == "external_worker":
+                lane_hint = "subagent"
             local_agent = None
             local_diagnostics: dict[str, Any] = {}
             external_diagnostics: dict[str, Any] = {}
@@ -1285,29 +1345,53 @@ def delegation_broker(
                 agent_id = str(local_agent.get("id") or "").strip()
                 agent_name = str(local_agent.get("name") or agent_id).strip() or agent_id
                 branch_task_brief = _with_recursive_delegation_access(task_brief)
-                requested_plugin_references = list(branch_task_brief.get("pluginReferences") or [])
-                if requested_plugin_references:
-                    if current_depth > 0:
-                        raise RuntimeError("插件授权只能从 Supervisor 分配给直接子代理，不能继续向孙代理传播。")
-                    from runtimes.plugin_manager.service import plugin_manager_service
-
-                    delegated_plugin_grants = plugin_manager_service.delegate_grants_to_subagent(
-                        plugin_references=requested_plugin_references,
-                        session_id=str(base_state.get("session_id") or "").strip(),
-                        run_id=str(base_state.get("run_id") or "").strip(),
-                        subagent_id=agent_id,
+                if current_depth > 0:
+                    parent_task_brief = (
+                        inherited_context.get("taskBrief")
+                        if isinstance(inherited_context.get("taskBrief"), dict)
+                        else {}
                     )
-                    branch_task_brief["pluginGrantIds"] = [
-                        str(item.get("grantId") or "")
-                        for item in delegated_plugin_grants
-                        if str(item.get("grantId") or "")
-                    ]
+                    branch_task_brief = derive_grandchild_engineering_task(
+                        parent_task_brief,
+                        branch_task_brief,
+                        shell_dialect=default_shell_dialect(),
+                    )
+                branch_task_brief["delegationDepth"] = current_depth + 1
                 delegation_id_value = make_local_delegation_id(
                     invocation_id=invocation_id,
                     branch_index=index,
                     task_brief_id=str(branch_task_brief.get("taskBriefId") or ""),
                     agent_id=agent_id,
                 )
+                requested_plugin_references = list(branch_task_brief.get("pluginReferences") or [])
+                if requested_plugin_references:
+                    from runtimes.plugin_manager.service import plugin_manager_service
+
+                    delegated_plugin_grants = plugin_manager_service.delegate_grants_to_subagent(
+                        plugin_references=requested_plugin_references,
+                        session_id=str(
+                            base_state.get("session_id")
+                            or runtime_context.get("session_id")
+                            or runtime_context.get("sessionId")
+                            or ""
+                        ).strip(),
+                        run_id=str(
+                            base_state.get("run_id")
+                            or runtime_context.get("run_id")
+                            or runtime_context.get("runId")
+                            or ""
+                        ).strip(),
+                        subagent_id=agent_id,
+                        delegation_id=delegation_id_value,
+                        delegation_depth=current_depth + 1,
+                        parent_agent_id=caller.agent_id or None,
+                        parent_delegation_id=caller.delegation_id or parent_delegation_id or None,
+                    )
+                    branch_task_brief["pluginGrantIds"] = [
+                        str(item.get("grantId") or "")
+                        for item in delegated_plugin_grants
+                        if str(item.get("grantId") or "")
+                    ]
                 branch_context = build_delegation_context(
                     agent_id=agent_id,
                     agent_name=agent_name,
@@ -1350,6 +1434,23 @@ def delegation_broker(
                 branch_state["delegation_contexts"] = base_contexts + [branch_context]
                 branch_state["current_route_context"] = branch_context
                 delegation_policy = _delegation_policy_from_task(branch_task_brief)
+                explicit_child_policy = next(
+                    (
+                        value
+                        for value in (
+                            branch_task_brief.get("allowChildDelegation"),
+                            branch_task_brief.get("allow_child_delegation"),
+                            delegation_policy.get("allowChildDelegation"),
+                            delegation_policy.get("allow_child_delegation"),
+                        )
+                        if value is not None
+                    ),
+                    None,
+                )
+                child_delegation_allowed = (
+                    current_depth == 0
+                    and (True if explicit_child_policy is None else bool(explicit_child_policy))
+                )
                 branch_state["parallel_branch"] = {
                     "invocationId": invocation_id,
                     "branchIndex": index,
@@ -1363,7 +1464,7 @@ def delegation_broker(
                     "delegationDepth": current_depth + 1,
                     "lane": "subagent",
                     "acceptanceHint": _delegation_acceptance_hint(branch_task_brief.get("acceptanceContract")),
-                    "allowChildDelegation": bool(delegation_policy.get("allowChildDelegation")),
+                    "allowChildDelegation": child_delegation_allowed,
                     "childDelegationBudget": dict(delegation_policy.get("childDelegationBudget") or {}),
                     "writeSetPartitions": list(delegation_policy.get("writeSetPartitions") or []),
                     "registryVersion": registry_version,

@@ -122,7 +122,7 @@ class PluginManagerService:
     def __init__(self, *, credential_store: CredentialRefStore | None = None) -> None:
         self._cache_lock = threading.RLock()
         self._ownership_cache: tuple[frozenset[str], frozenset[str]] | None = None
-        self._grant_cache: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+        self._grant_cache: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
         self._catalog_projection_cache: tuple[
             tuple[int, int],
             dict[str, Any],
@@ -170,6 +170,8 @@ class PluginManagerService:
                 "state": "TEXT NOT NULL DEFAULT 'active'",
                 "terminal_reason": "TEXT",
                 "grant_source": "TEXT NOT NULL DEFAULT 'user_reference'",
+                "delegation_id": "TEXT",
+                "delegation_depth": "INTEGER",
             }.items():
                 if name not in grant_columns:
                     conn.execute(f"ALTER TABLE plugin_grants ADD COLUMN {name} {definition}")
@@ -212,6 +214,14 @@ class PluginManagerService:
                 UPDATE plugin_grants
                 SET state='invalidated', terminal_reason='schema_upgrade_requires_regrant'
                 WHERE state='active' AND (owner_user_id IS NULL OR manifest_digest IS NULL)
+                """
+            )
+            conn.execute(
+                """
+                UPDATE plugin_grants
+                SET state='invalidated', terminal_reason='delegation_identity_requires_regrant'
+                WHERE state='active' AND grantee_type='subagent'
+                  AND (delegation_id IS NULL OR delegation_id='')
                 """
             )
             conn.commit()
@@ -2207,6 +2217,8 @@ class PluginManagerService:
         tool_call_id: str = "",
         component_ids: Iterable[str] | None = None,
         parent_grant_id: str | None = None,
+        delegation_id: str | None = None,
+        delegation_depth: int | None = None,
         grant_source: str = "user_reference",
     ) -> dict[str, Any]:
         manifest = self._manifest(plugin_id)
@@ -2257,13 +2269,28 @@ class PluginManagerService:
         if not set(selected).issubset(declared):
             raise PluginManagerError("授权包含未声明组件", code="grant_component_invalid")
         if grantee_type == "subagent":
+            normalized_delegation_id = str(delegation_id or "").strip()
+            try:
+                normalized_delegation_depth = int(delegation_depth or 0)
+            except (TypeError, ValueError):
+                normalized_delegation_depth = 0
+            if not normalized_delegation_id or normalized_delegation_depth not in {1, 2}:
+                raise PluginManagerError(
+                    "子代理授权必须绑定精确 delegationId，且仅允许直接子 Agent 或孙 Agent 两层。",
+                    code="delegation_identity_required",
+                    status_code=403,
+                )
             if not parent_grant_id:
                 raise PluginManagerError("子代理授权必须引用父授权", code="parent_grant_required")
             parent = self._grant_row(parent_grant_id)
             if not parent or parent.get("grantee_type") not in {"supervisor", "subagent"}:
                 raise PluginManagerError("父授权不存在", code="parent_grant_invalid")
+            if parent.get("grantee_type") == "supervisor" and normalized_delegation_depth != 1:
+                raise PluginManagerError("Supervisor 授权只能投影给直接子 Agent。", code="grant_depth_invalid", status_code=403)
             if parent.get("grantee_type") == "subagent":
-                raise PluginManagerError("插件授权不得向孙代理继续扩散", code="grant_transitive_denied", status_code=403)
+                parent_depth = int(parent.get("delegation_depth") or 0)
+                if parent_depth != 1 or normalized_delegation_depth != 2:
+                    raise PluginManagerError("插件授权最多传递到孙 Agent，不能继续扩散。", code="grant_transitive_denied", status_code=403)
             if parent.get("plugin_id") != manifest.id or parent.get("session_id") != session_id:
                 raise PluginManagerError("子代理授权必须与父授权属于同一插件和会话", code="parent_grant_scope_invalid")
             if str(parent.get("owner_user_id") or "") != owner_user_id:
@@ -2274,6 +2301,8 @@ class PluginManagerService:
             if not set(selected).issubset(parent_components):
                 raise PluginManagerError("子代理授权不得扩大组件范围", code="grant_scope_escalation", status_code=403)
         selected = sorted(set(selected))
+        normalized_delegation_id = str(delegation_id or "").strip() or None
+        normalized_delegation_depth = int(delegation_depth or 0) if grantee_type == "subagent" else None
         with db.get_connection() as conn:
             existing = conn.execute(
                 """
@@ -2284,6 +2313,7 @@ class PluginManagerService:
                   AND component_ids_json=? AND revoked_at IS NULL
                   AND state='active' AND owner_user_id=?
                   AND COALESCE(parent_grant_id, '')=COALESCE(?, '')
+                  AND COALESCE(delegation_id, '')=COALESCE(?, '')
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 (
@@ -2296,6 +2326,7 @@ class PluginManagerService:
                     _json(selected),
                     owner_user_id,
                     parent_grant_id,
+                    normalized_delegation_id,
                 ),
             ).fetchone()
         if existing:
@@ -2312,8 +2343,9 @@ class PluginManagerService:
                 INSERT INTO plugin_grants
                 (id, plugin_id, scope, session_id, run_id, grantee_type, grantee_id,
                  component_ids_json, created_at, expires_at, parent_grant_id, owner_user_id,
-                 manifest_version, manifest_digest, catalog_revision, state, grant_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                 manifest_version, manifest_digest, catalog_revision, state, grant_source,
+                 delegation_id, delegation_depth)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
                 """,
                 (
                     grant_id,
@@ -2332,6 +2364,8 @@ class PluginManagerService:
                     self._manifest_digest(manifest),
                     plugin_catalog_service.load().revision,
                     normalized_source,
+                    normalized_delegation_id,
+                    normalized_delegation_depth,
                 ),
             )
             conn.commit()
@@ -2366,6 +2400,8 @@ class PluginManagerService:
             "expiresAt": row.get("expires_at"),
             "revokedAt": row.get("revoked_at"),
             "parentGrantId": row.get("parent_grant_id"),
+            "delegationId": row.get("delegation_id"),
+            "delegationDepth": row.get("delegation_depth"),
             "source": row.get("grant_source") or "user_reference",
         }
 
@@ -2376,12 +2412,19 @@ class PluginManagerService:
         run_id: str | None = None,
         grantee_type: str | None = None,
         grantee_id: str | None = None,
+        delegation_id: str | None = None,
     ) -> list[dict[str, Any]]:
+        if str(grantee_type or "").strip() == "subagent" and (
+            not str(grantee_id or "").strip()
+            or not str(delegation_id or "").strip()
+        ):
+            return []
         cache_key = (
             str(session_id or ""),
             str(run_id or ""),
             str(grantee_type or ""),
             str(grantee_id or ""),
+            str(delegation_id or ""),
         )
         cached = self._grant_cache.get(cache_key)
         if cached is not None:
@@ -2400,6 +2443,9 @@ class PluginManagerService:
         if grantee_id:
             query += " AND grantee_id=?"
             params.append(grantee_id)
+        if delegation_id:
+            query += " AND delegation_id=?"
+            params.append(str(delegation_id))
         query += " ORDER BY created_at"
         with db.get_connection() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
@@ -2429,7 +2475,20 @@ class PluginManagerService:
         now = utc_now_iso()
         with db.get_connection() as conn:
             conn.execute("UPDATE plugin_grants SET revoked_at=?, state='revoked', terminal_reason='explicit_revoke' WHERE id=?", (now, grant_id))
-            conn.execute("UPDATE plugin_grants SET revoked_at=?, state='revoked', terminal_reason='parent_revoked' WHERE parent_grant_id=? AND revoked_at IS NULL", (now, grant_id))
+            conn.execute(
+                """
+                WITH RECURSIVE descendants(id) AS (
+                    SELECT id FROM plugin_grants WHERE parent_grant_id=?
+                    UNION ALL
+                    SELECT child.id FROM plugin_grants child
+                    JOIN descendants parent ON child.parent_grant_id=parent.id
+                )
+                UPDATE plugin_grants
+                SET revoked_at=?, state='revoked', terminal_reason='parent_revoked'
+                WHERE id IN (SELECT id FROM descendants) AND revoked_at IS NULL
+                """,
+                (grant_id, now),
+            )
             conn.commit()
         self._invalidate_grant_cache()
         self._event(row["plugin_id"], "grant_revoked", "ok", grant_id=grant_id, session_id=row["session_id"], run_id=row.get("run_id"))
@@ -2473,6 +2532,8 @@ class PluginManagerService:
         run_id: str | None,
         grantee_type: str,
         grantee_id: str,
+        delegation_id: str | None = None,
+        delegation_depth: int | None = None,
         manifest_digest: str | None = None,
     ) -> dict[str, Any]:
         row = self._grant_row(grant_id)
@@ -2501,6 +2562,12 @@ class PluginManagerService:
             or str(row.get("grantee_id") or "") != str(grantee_id or "")
         ):
             raise PluginManagerError("插件授权上下文不匹配", code="plugin_grant_context_mismatch", status_code=403)
+        row_delegation_id = str(row.get("delegation_id") or "").strip()
+        if row.get("grantee_type") == "subagent":
+            if not row_delegation_id or row_delegation_id != str(delegation_id or "").strip():
+                raise PluginManagerError("插件授权 delegation 上下文不匹配", code="plugin_grant_delegation_mismatch", status_code=403)
+            if int(row.get("delegation_depth") or 0) != int(delegation_depth or 0):
+                raise PluginManagerError("插件授权委派深度不匹配", code="plugin_grant_depth_mismatch", status_code=403)
         if row.get("scope") == "task" and str(row.get("run_id") or "") != str(run_id or ""):
             raise PluginManagerError("插件任务授权 run 不匹配", code="plugin_grant_run_mismatch", status_code=403)
         if component_id not in set(_loads(row.get("component_ids_json"), [])):
@@ -2559,6 +2626,10 @@ class PluginManagerService:
         session_id: str,
         run_id: str,
         subagent_id: str,
+        delegation_id: str,
+        delegation_depth: int,
+        parent_agent_id: str | None = None,
+        parent_delegation_id: str | None = None,
     ) -> list[dict[str, Any]]:
         requested: dict[str, set[str]] = {}
         for reference in list(plugin_references or []):
@@ -2579,12 +2650,39 @@ class PluginManagerService:
             requested.setdefault(plugin_id, set()).update(component_ids)
         if not requested:
             return []
-        parent_grants = self.active_grants(
-            session_id=session_id,
-            run_id=run_id,
-            grantee_type="supervisor",
-            grantee_id="supervisor",
-        )
+        try:
+            normalized_depth = int(delegation_depth)
+        except (TypeError, ValueError):
+            normalized_depth = 0
+        if normalized_depth == 1:
+            parent_grants = self.active_grants(
+                session_id=session_id,
+                run_id=run_id,
+                grantee_type="supervisor",
+                grantee_id="supervisor",
+            )
+        elif normalized_depth == 2:
+            normalized_parent_agent = str(parent_agent_id or "").strip()
+            normalized_parent_delegation = str(parent_delegation_id or "").strip()
+            if not normalized_parent_agent or not normalized_parent_delegation:
+                raise PluginManagerError(
+                    "孙 Agent 插件授权缺少父 Agent 的 delegation 身份。",
+                    code="parent_delegation_identity_required",
+                    status_code=403,
+                )
+            parent_grants = self.active_grants(
+                session_id=session_id,
+                run_id=run_id,
+                grantee_type="subagent",
+                grantee_id=normalized_parent_agent,
+                delegation_id=normalized_parent_delegation,
+            )
+        else:
+            raise PluginManagerError(
+                "插件授权只允许投影给直接子 Agent 或孙 Agent。",
+                code="grant_depth_invalid",
+                status_code=403,
+            )
         parent_by_plugin = {str(item.get("pluginId") or "").strip().lower(): item for item in parent_grants}
         missing = sorted(set(requested) - set(parent_by_plugin))
         if missing:
@@ -2612,6 +2710,8 @@ class PluginManagerService:
                 grantee_id=subagent_id,
                 component_ids=selected,
                 parent_grant_id=str(parent_by_plugin[plugin_id].get("grantId") or ""),
+                delegation_id=str(delegation_id or "").strip(),
+                delegation_depth=normalized_depth,
                 grant_source="delegation",
             ))
         return delegated
@@ -2624,6 +2724,8 @@ class PluginManagerService:
         run_id: str | None,
         grantee_type: str = "supervisor",
         grantee_id: str = "supervisor",
+        delegation_id: str | None = None,
+        delegation_depth: int | None = None,
     ) -> dict[str, Any] | None:
         """Resolve a signed, grant-backed adapter to a code-owned handler.
 
@@ -2641,6 +2743,7 @@ class PluginManagerService:
             run_id=run_id,
             grantee_type=grantee_type,
             grantee_id=grantee_id,
+            delegation_id=delegation_id,
         )
         for grant in grants:
             manifest = self._manifest(str(grant.get("pluginId") or ""))
@@ -2660,6 +2763,8 @@ class PluginManagerService:
                 run_id=run_id,
                 grantee_type=grantee_type,
                 grantee_id=grantee_id,
+                delegation_id=delegation_id,
+                delegation_depth=delegation_depth,
                 manifest_digest=str(grant.get("manifestDigest") or "") or None,
             )
             bindings = self._credential_bindings(manifest.id)
@@ -2694,12 +2799,14 @@ class PluginManagerService:
         run_id: str | None,
         grantee_type: str = "supervisor",
         grantee_id: str = "supervisor",
+        delegation_id: str | None = None,
     ) -> dict[str, Any]:
         grants = self.active_grants(
             session_id=session_id,
             run_id=run_id,
             grantee_type=grantee_type,
             grantee_id=grantee_id,
+            delegation_id=delegation_id,
         )
         skills: list[dict[str, Any]] = []
         mcp_tools: list[Any] = []
@@ -2768,6 +2875,8 @@ class PluginManagerService:
         run_id: str | None,
         grantee_type: str = "supervisor",
         grantee_id: str = "supervisor",
+        delegation_id: str | None = None,
+        delegation_depth: int | None = None,
         tool_call_id: str = "",
     ) -> dict[str, Any]:
         projection = self.projection_for(
@@ -2775,6 +2884,7 @@ class PluginManagerService:
             run_id=run_id,
             grantee_type=grantee_type,
             grantee_id=grantee_id,
+            delegation_id=delegation_id,
         )
         profile_payload = next(
             (
@@ -2796,6 +2906,8 @@ class PluginManagerService:
             run_id=run_id,
             grantee_type=grantee_type,
             grantee_id=grantee_id,
+            delegation_id=delegation_id,
+            delegation_depth=delegation_depth,
         )
         normalized_action = str(action_id or "").strip()
         if not normalized_action:

@@ -207,7 +207,7 @@ def test_all_plugins_have_safe_windows_dry_run_plans(runtime, monkeypatch: pytes
         assert job["dryRun"] is True
 
 
-def test_grants_are_explicit_scoped_revocable_and_non_transitive(runtime) -> None:
+def test_grants_are_explicit_scoped_revocable_and_terminal_after_grandchild(runtime) -> None:
     service, _, _ = runtime
     _mark_ready(service, "github")
 
@@ -236,6 +236,8 @@ def test_grants_are_explicit_scoped_revocable_and_non_transitive(runtime) -> Non
         session_id="s1",
         run_id="r1",
         subagent_id="child-1",
+        delegation_id="delegation-child-1",
+        delegation_depth=1,
     )[0]
     assert child["componentIds"] == ["gh"]
     with pytest.raises(PluginManagerError) as implicit_all:
@@ -244,23 +246,39 @@ def test_grants_are_explicit_scoped_revocable_and_non_transitive(runtime) -> Non
             session_id="s1",
             run_id="r1",
             subagent_id="child-implicit",
+            delegation_id="delegation-child-implicit",
+            delegation_depth=1,
         )
     assert implicit_all.value.code == "delegation_components_required"
-    with pytest.raises(PluginManagerError, match="孙代理") as denied:
+    grandchild = service.delegate_grants_to_subagent(
+        plugin_references=[{"pluginId": "github", "componentIds": ["gh"]}],
+        session_id="s1",
+        run_id="r1",
+        subagent_id="grandchild",
+        delegation_id="delegation-grandchild",
+        delegation_depth=2,
+        parent_agent_id="child-1",
+        parent_delegation_id="delegation-child-1",
+    )[0]
+    assert grandchild["parentGrantId"] == child["grantId"]
+    assert grandchild["delegationDepth"] == 2
+    with pytest.raises(PluginManagerError, match="不能继续扩散") as denied:
         service.create_grant(
             plugin_id="github",
             scope="task",
             session_id="s1",
             run_id="r1",
             grantee_type="subagent",
-            grantee_id="grandchild",
+            grantee_id="great-grandchild",
             component_ids=["gh"],
-            parent_grant_id=child["grantId"],
+            parent_grant_id=grandchild["grantId"],
+            delegation_id="delegation-great-grandchild",
+            delegation_depth=2,
         )
     assert denied.value.code == "grant_transitive_denied"
 
     expired = service.expire_task_grants(run_id="r1", reason="test_run_completed")
-    assert expired["expired"] == 2
+    assert expired["expired"] == 3
     assert service.active_grants(session_id="s1", run_id="r1") == []
 
     service.revoke_grant(parent["grantId"])
@@ -304,12 +322,14 @@ def test_supervisor_can_authorize_ready_plugin_without_user_mention_and_delegate
         session_id="s1",
         run_id="r1",
         subagent_id="child-1",
+        delegation_id="delegation-child-1",
+        delegation_depth=1,
     )[0]
     assert child["source"] == "delegation"
     assert child["parentGrantId"] == result["grant"]["grantId"]
 
 
-def test_plugin_broker_is_supervisor_only_and_creates_task_grant(
+def test_plugin_broker_authorizes_with_supervisor_and_projects_exact_subagent_grant(
     runtime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -335,8 +355,24 @@ def test_plugin_broker_is_supervisor_only_and_creates_task_grant(
     assert payload["ok"] is True
     assert payload["grant"]["source"] == "supervisor_task"
 
-    with bind_runtime_context(session_id="s1", run_id="r1", agent_id="child-1", runtime_kind="subagent"):
-        denied_output = asyncio.run(
+    child_grant = service.delegate_grants_to_subagent(
+        plugin_references=[{"pluginId": "github", "componentIds": ["gh"]}],
+        session_id="s1",
+        run_id="r1",
+        subagent_id="child-1",
+        delegation_id="delegation-child-1",
+        delegation_depth=1,
+    )[0]
+
+    with bind_runtime_context(
+        session_id="s1",
+        run_id="r1",
+        agent_id="child-1",
+        runtime_kind="subagent",
+        delegation_id="delegation-child-1",
+        delegation_depth=1,
+    ):
+        child_output = asyncio.run(
             plugin_broker.coroutine(
                 mode="list",
                 plugin_id="",
@@ -344,8 +380,41 @@ def test_plugin_broker_is_supervisor_only_and_creates_task_grant(
                 tool_call_id="tool-plugin-denied",
             )
         )
-    denied = json.loads(denied_output)
-    assert denied["error"]["code"] == "plugin_broker_supervisor_only"
+    child_payload = json.loads(child_output)
+    assert child_payload["ok"] is True
+    assert child_payload["count"] == 1
+    assert child_payload["items"][0]["grantId"] == child_grant["grantId"]
+
+    with bind_runtime_context(
+        session_id="s1",
+        run_id="r1",
+        agent_id="child-1",
+        runtime_kind="subagent",
+        delegation_id="delegation-other",
+        delegation_depth=1,
+    ):
+        isolated_output = asyncio.run(
+            plugin_broker.coroutine(mode="list", plugin_id="", component_ids=None, tool_call_id="tool-plugin-isolated")
+        )
+    assert json.loads(isolated_output)["count"] == 0
+
+    with bind_runtime_context(
+        session_id="s1",
+        run_id="r1",
+        agent_id="child-1",
+        runtime_kind="subagent",
+        delegation_id="delegation-child-1",
+        delegation_depth=1,
+    ):
+        denied_output = asyncio.run(
+            plugin_broker.coroutine(
+                mode="authorize",
+                plugin_id="github",
+                component_ids=["gh"],
+                tool_call_id="tool-plugin-denied",
+            )
+        )
+    assert json.loads(denied_output)["error"]["code"] == "plugin_authorize_supervisor_only"
 
 
 def test_cli_requires_exact_grant_and_structured_manifest_action(runtime) -> None:
@@ -801,6 +870,74 @@ def test_grant_invocation_revalidates_owner_component_digest_and_session_revoke(
             grantee_id="supervisor",
         )
     assert inactive.value.code == "plugin_grant_inactive"
+
+
+def test_subagent_plugin_invocation_requires_exact_delegation_identity(runtime) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "github")
+    service.create_grant(
+        plugin_id="github",
+        scope="task",
+        session_id="s1",
+        run_id="r1",
+        component_ids=["gh"],
+    )
+    child = service.delegate_grants_to_subagent(
+        plugin_references=[{"pluginId": "github", "componentIds": ["gh"]}],
+        session_id="s1",
+        run_id="r1",
+        subagent_id="child-1",
+        delegation_id="delegation-child-1",
+        delegation_depth=1,
+    )[0]
+    assert service.active_grants(
+        session_id="s1",
+        run_id="r1",
+        grantee_type="subagent",
+        grantee_id="child-1",
+    ) == []
+
+    validated = service.validate_grant_for_invocation(
+        grant_id=child["grantId"],
+        plugin_id="github",
+        component_id="gh",
+        session_id="s1",
+        run_id="r1",
+        grantee_type="subagent",
+        grantee_id="child-1",
+        delegation_id="delegation-child-1",
+        delegation_depth=1,
+    )
+    assert validated["delegationId"] == "delegation-child-1"
+    assert validated["delegationDepth"] == 1
+
+    with pytest.raises(PluginManagerError) as wrong_delegation:
+        service.validate_grant_for_invocation(
+            grant_id=child["grantId"],
+            plugin_id="github",
+            component_id="gh",
+            session_id="s1",
+            run_id="r1",
+            grantee_type="subagent",
+            grantee_id="child-1",
+            delegation_id="delegation-other",
+            delegation_depth=1,
+        )
+    assert wrong_delegation.value.code == "plugin_grant_delegation_mismatch"
+
+    with pytest.raises(PluginManagerError) as wrong_depth:
+        service.validate_grant_for_invocation(
+            grant_id=child["grantId"],
+            plugin_id="github",
+            component_id="gh",
+            session_id="s1",
+            run_id="r1",
+            grantee_type="subagent",
+            grantee_id="child-1",
+            delegation_id="delegation-child-1",
+            delegation_depth=2,
+        )
+    assert wrong_depth.value.code == "plugin_grant_depth_mismatch"
 
 
 def test_structured_cli_action_rejects_unknown_and_extra_parameters(runtime) -> None:

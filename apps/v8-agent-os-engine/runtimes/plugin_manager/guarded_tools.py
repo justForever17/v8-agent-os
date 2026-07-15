@@ -57,6 +57,8 @@ def build_guarded_mcp_tool(
         run_id = str(context.get("run_id") or context.get("runId") or "").strip() or None
         agent_id = str(context.get("agent_id") or context.get("agentId") or "supervisor").strip() or "supervisor"
         runtime_kind = str(context.get("runtime_kind") or context.get("runtimeKind") or "chat").strip()
+        delegation_id = str(context.get("delegation_id") or context.get("delegationId") or "").strip() or None
+        delegation_depth = context.get("delegation_depth") or context.get("delegationDepth")
         grantee_type = "subagent" if runtime_kind == "subagent" and agent_id != "supervisor" else "supervisor"
         plugin_manager_service.validate_grant_for_invocation(
             grant_id=alias_payload["grantId"],
@@ -66,6 +68,8 @@ def build_guarded_mcp_tool(
             run_id=run_id,
             grantee_type=grantee_type,
             grantee_id=agent_id,
+            delegation_id=delegation_id,
+            delegation_depth=delegation_depth,
             manifest_digest=alias_payload["pluginDigest"] or None,
         )
         return await original_tool.ainvoke(kwargs)

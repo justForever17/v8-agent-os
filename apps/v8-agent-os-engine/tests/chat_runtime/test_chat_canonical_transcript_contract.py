@@ -405,15 +405,17 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual(request.data.attachments[0].url, "https://example.test/d.png")
         self.assertEqual(request.data.fileUrls, ["https://example.test/c.png"])
 
-    def test_baseline_tools_expose_brokered_web_and_s3_and_hide_legacy_family_variants(self):
-        self.assertIn("ask_user", BASELINE_SYSTEM_TOOL_NAMES)
+    def test_baseline_tools_match_common_collaboration_package(self):
+        self.assertNotIn("ask_user", BASELINE_SYSTEM_TOOL_NAMES)
         self.assertNotIn("list_native_directory", BASELINE_SYSTEM_TOOL_NAMES)
         self.assertIn("command_session_broker", BASELINE_SYSTEM_TOOL_NAMES)
         self.assertIn("web_broker", BASELINE_SYSTEM_TOOL_NAMES)
-        self.assertIn("s3_broker", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertNotIn("s3_broker", BASELINE_SYSTEM_TOOL_NAMES)
         self.assertNotIn("web_fetch", BASELINE_SYSTEM_TOOL_NAMES)
         self.assertNotIn("s3_upload_file", BASELINE_SYSTEM_TOOL_NAMES)
-        self.assertNotIn("read_background_output", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("read_background_output", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("send_background_input", BASELINE_SYSTEM_TOOL_NAMES)
+        self.assertIn("terminate_background_command", BASELINE_SYSTEM_TOOL_NAMES)
 
     def test_ask_user_survives_supervisor_default_tool_filter(self):
         class _Tool:
@@ -479,7 +481,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
             ["web_broker", "s3_broker"],
         )
 
-    def test_supervisor_prefers_command_session_broker_over_legacy_background_trio(self):
+    def test_supervisor_keeps_common_command_session_shortcuts(self):
         class _Tool:
             def __init__(self, name: str):
                 self.name = name
@@ -498,7 +500,13 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
 
         self.assertEqual(
             [tool.name for tool in selected],
-            ["run_system_command", "command_session_broker"],
+            [
+                "run_system_command",
+                "command_session_broker",
+                "read_background_output",
+                "send_background_input",
+                "terminate_background_command",
+            ],
         )
 
     def test_supervisor_toolset_uses_delegation_broker_and_omits_legacy_delegation_entries(self):

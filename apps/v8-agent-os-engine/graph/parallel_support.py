@@ -15,6 +15,7 @@ from langgraph.types import Command, Send
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_result_contract import build_delegation_result_contract
 from core.engineering_capsule import effective_engineering_capsule, engineering_capsule_mode
+from core.workspace_capability import build_workspace_binding
 from core.runtime_episodes import (
     append_handoff_ref,
     build_handoff_ref,
@@ -119,18 +120,32 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
                         allowed_write_paths.append(normalized)
     context = {
         "runtime_kind": "subagent",
+        "actor_role": "grandchild" if int(branch.get("delegationDepth") or 1) >= 2 else "direct_subagent",
         "trigger_source": "delegation_broker",
         "session_id": state.get("session_id") or state.get("sessionId") or route_context.get("session_id") or route_context.get("sessionId"),
         "run_id": state.get("run_id") or state.get("runId") or route_context.get("run_id") or route_context.get("runId"),
         "workspace_path": state.get("workspace_path") or state.get("workspacePath") or route_context.get("workspace_path") or route_context.get("workspacePath"),
+        "workspace_id": state.get("workspace_id") or state.get("workspaceId") or route_context.get("workspace_id") or route_context.get("workspaceId"),
+        "project_id": state.get("project_id") or state.get("projectId") or route_context.get("project_id") or route_context.get("projectId"),
+        "resolved_scope": state.get("resolved_scope") or state.get("resolvedScope") or route_context.get("resolved_scope") or route_context.get("resolvedScope"),
         "goal": branch.get("reason") or branch.get("taskGoal") or branch.get("taskBrief"),
         "delegation_id": branch.get("delegationId"),
+        "delegation_depth": int(branch.get("delegationDepth") or 1),
+        "parent_delegation_id": branch.get("parentDelegationId"),
         "subagent_id": branch.get("agentId"),
+        "agent_id": branch.get("agentId"),
+        "safety_approval_mode": (
+            state.get("safety_approval_mode")
+            or state.get("safetyApprovalMode")
+            or route_context.get("safety_approval_mode")
+            or route_context.get("safetyApprovalMode")
+        ),
         "engineering_capsule_mode": capsule_mode,
         "engineering_capsule_id": task_capsule.get("capsuleId"),
         "engineering_task_capsule": task_capsule or None,
         "allowed_write_paths": allowed_write_paths or None,
     }
+    context["workspace_binding"] = build_workspace_binding(context, runtime_kind="subagent").as_dict()
     return {key: value for key, value in context.items() if value is not None and str(value).strip()}
 
 

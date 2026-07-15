@@ -10,6 +10,13 @@ from unittest.mock import patch
 import pytest
 
 import core.tools.native.delegation as native_delegation
+from core.actor_identity import (
+    DIRECT_SUBAGENT_ACTOR,
+    GRANDCHILD_ACTOR,
+    RUNTIME_INTERNAL_ACTOR,
+    SUPERVISOR_ACTOR,
+    resolve_collaboration_actor,
+)
 from core.delegation_broker import normalize_task_brief
 from core.native_tools import (
     _decode_completed_process_bytes,
@@ -31,6 +38,7 @@ from core.runtime_tool_access import (
     resolve_subagent_runtime_access,
     runtime_access_from_route_context,
 )
+from core.system_tools.baseline import BASELINE_SYSTEM_TOOL_NAME_ORDER
 from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
 from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capability_registry
@@ -48,6 +56,93 @@ def _set_pack_runtime_installed(monkeypatch, installed: bool) -> None:
 
 def _tool(name: str):
     return SimpleNamespace(name=name)
+
+
+def test_collaboration_actor_identity_separates_user_facing_tree_from_internal_models():
+    assert resolve_collaboration_actor(actor="supervisor").role == SUPERVISOR_ACTOR
+    assert resolve_collaboration_actor(
+        actor="subagent",
+        route_context={"delegationDepth": 1},
+    ).role == DIRECT_SUBAGENT_ACTOR
+    assert resolve_collaboration_actor(
+        actor="subagent",
+        route_context={"delegationDepth": 2},
+    ).role == GRANDCHILD_ACTOR
+    assert resolve_collaboration_actor(actor="computer_use_visual_actor").role == RUNTIME_INTERNAL_ACTOR
+    assert resolve_collaboration_actor(
+        runtime_context={"runtime_kind": "memory", "agent_id": "memory_agent"},
+    ).role == RUNTIME_INTERNAL_ACTOR
+
+
+def test_common_default_tool_package_matches_product_contract():
+    assert BASELINE_SYSTEM_TOOL_NAME_ORDER == (
+        "read_native_file",
+        "write_native_file",
+        "grep_search",
+        "run_system_command",
+        "command_session_broker",
+        "read_background_output",
+        "send_background_input",
+        "terminate_background_command",
+        "web_broker",
+        "http_request",
+        "download_media_for_vision",
+        "vision_media_analyzer",
+        "fetch_skill_instructions",
+        "tool_observation_detail",
+        "wait",
+    )
+
+
+def test_collaboration_tree_receives_common_and_plugin_tools_with_bounded_delegation():
+    tool_names = list(BASELINE_SYSTEM_TOOL_NAME_ORDER) + [
+        "ask_user",
+        "delegation_broker",
+        "plugin_broker",
+        "plugin_cli",
+        "runtime_broker",
+    ]
+    tools = [_tool(name) for name in tool_names]
+
+    supervisor = {
+        item.name
+        for item in filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
+    }
+    direct_child = {
+        item.name
+        for item in filter_visible_tools_for_actor(
+            tools,
+            actor="subagent",
+            route_context={"delegationDepth": 1},
+            runtime_access=[],
+        )
+    }
+    grandchild = {
+        item.name
+        for item in filter_visible_tools_for_actor(
+            tools,
+            actor="subagent",
+            route_context={"delegationDepth": 2},
+            runtime_access=[],
+        )
+    }
+    internal_visual_actor = filter_visible_tools_for_actor(
+        tools,
+        actor="computer_use_visual_actor",
+        runtime_access=[],
+    )
+
+    common = set(BASELINE_SYSTEM_TOOL_NAME_ORDER)
+    assert common.issubset(supervisor)
+    assert common.issubset(direct_child)
+    assert common.issubset(grandchild)
+    assert {"ask_user", "runtime_broker", "delegation_broker", "plugin_broker", "plugin_cli"}.issubset(supervisor)
+    assert {"delegation_broker", "plugin_broker", "plugin_cli"}.issubset(direct_child)
+    assert "delegation_broker" not in grandchild
+    assert {"plugin_broker", "plugin_cli"}.issubset(grandchild)
+    assert "ask_user" not in direct_child | grandchild
+    assert "runtime_broker" not in direct_child | grandchild
+    assert internal_visual_actor == []
 
 
 def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_common_tools():
@@ -76,7 +171,7 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     names = {tool.name for tool in visible}
 
     assert {"runtime_broker", "delegation_broker", "read_native_file", "http_request"}.issubset(names)
-    assert "run_system_command" not in names
+    assert "run_system_command" in names
     assert "spec_broker" not in names
     assert "delegate_network_task" not in names
     assert "memory_broker" in names
@@ -1425,6 +1520,83 @@ def test_subagent_recursive_delegation_keeps_explicit_parent():
     assert parent == "subagent::active-parent"
 
 
+def test_direct_subagent_dispatches_one_grandchild_and_grandchild_is_terminal(monkeypatch):
+    monkeypatch.setattr(native_delegation, "persist_runtime_episode", lambda episode, **_kwargs: dict(episode))
+    monkeypatch.setattr(native_delegation, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    state = {
+        "session_id": "session-child-tree",
+        "run_id": "run-child-tree",
+        "project_id": "project-child-tree",
+        "workspace_id": "workspace-child-tree",
+        "workspace_path": "E:/Projects/child-tree",
+        "safety_approval_mode": "reduced",
+        "current_route_context": {
+            "delegationId": "subagent::parent",
+            "delegationDepth": 1,
+            "delegationNodeCount": 1,
+            "taskBrief": {
+                "taskBriefId": "parent-task",
+                "goal": "Review the implementation and return evidence.",
+                "readSet": ["src/page.tsx"],
+                "writeSet": [],
+                "acceptanceContract": "Return a bounded review.",
+            },
+        },
+    }
+
+    with bind_runtime_context(
+        runtime_kind="subagent",
+        actor_role="direct_subagent",
+        agent_id="code-review-architect",
+        delegation_id="subagent::parent",
+        delegation_depth=1,
+        session_id=state["session_id"],
+        run_id=state["run_id"],
+        project_id=state["project_id"],
+        workspace_id=state["workspace_id"],
+        workspace_path=state["workspace_path"],
+        safety_approval_mode="reduced",
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "grandchild-review",
+                    "goal": "Independently verify one implementation result and return evidence.",
+                    "expectedOutputs": ["A concise verification result."],
+                    "acceptanceContract": "Report pass/fail and the evidence used.",
+                    "preferredAgentId": "verification-engineer",
+                    "toolPolicy": {"mode": "none"},
+                }
+            ],
+            state=state,
+            tool_call_id="call-child-grandchild",
+        )
+
+    send = list(command.goto)[0]
+    branch = send.arg["parallel_branch"]
+    assert branch["parentDelegationId"] == "subagent::parent"
+    assert branch["delegationDepth"] == 2
+    assert branch["allowChildDelegation"] is False
+    assert branch["taskBrief"]["delegationDepth"] == 2
+    assert branch["taskBrief"]["writeSet"] == []
+
+    with bind_runtime_context(
+        runtime_kind="subagent",
+        actor_role="grandchild",
+        agent_id="verification-engineer",
+        delegation_id=branch["delegationId"],
+        delegation_depth=2,
+    ):
+        terminal = delegation_broker.func(
+            mode="dispatch",
+            tasks=[{"taskBriefId": "forbidden", "goal": "Do not create this child."}],
+            state=send.arg,
+            tool_call_id="call-grandchild-forbidden",
+        )
+    assert _tool_message_payload(terminal)["error"] == "delegation_depth_terminal"
+
+
 def test_windows_shell_syntax_violation_blocks_posix_mkdir(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
 
@@ -1468,7 +1640,7 @@ def test_automation_ops_tools_are_hidden_until_runtime_grant():
     default_visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     default_names = {tool.name for tool in default_visible}
     assert {"list_processes", "read_audit_log", "manage_cron", "manage_hook"}.isdisjoint(default_names)
-    assert "run_system_command" not in default_names
+    assert "run_system_command" in default_names
 
     visible_after_grant = filter_visible_tools_for_actor(
         tools,
@@ -1502,12 +1674,12 @@ def test_subagent_default_surface_hides_supervisor_only_and_runtime_tools():
     names = {tool.name for tool in visible}
 
     assert {"read_native_file", "web_broker"}.issubset(names)
-    assert "run_system_command" not in names
-    assert "ask_user" in names
+    assert "run_system_command" in names
+    assert "ask_user" not in names
     assert "runtime_broker" not in names
-    assert "delegation_broker" not in names
+    assert "delegation_broker" in names
     assert "s3_broker" not in names
-    assert "http_request" not in names
+    assert "http_request" in names
     assert "delegate_network_task" not in names
     assert "web_search" not in names
     assert "web_read" not in names
@@ -1542,7 +1714,7 @@ def test_subagent_runtime_binding_auto_grants_research_core():
     assert "read_native_file" in names
     assert "research_broker" in names
     assert "creative_media_create_job" not in names
-    assert "delegation_broker" not in names
+    assert "delegation_broker" in names
 
 
 def test_subagent_runtime_binding_merges_explicit_task_grant_without_duplicates():
@@ -1575,7 +1747,7 @@ def test_unbound_custom_subagent_does_not_auto_receive_runtime_tools():
     names = {tool.name for tool in visible}
 
     assert runtime_access == []
-    assert names == {"read_native_file"}
+    assert names == {"read_native_file", "delegation_broker"}
 
 
 def test_local_subagent_dispatch_only_adds_recursive_grant_when_child_delegation_allowed():
@@ -1606,9 +1778,12 @@ def test_subagent_prompt_explains_bounded_delegation_authority_without_false_mis
         },
     )
 
-    assert "absence of `delegation_broker` and `request_peer_help` is intentional" in blocked
-    assert "Use `request_peer_help`" in allowed
-    assert "Supervisor-only `delegation_broker`" in allowed
+    assert "`delegation_broker(mode='dispatch')` is available" in blocked
+    assert "`delegation_broker(mode='dispatch')` is available" in allowed
+    grandchild = _format_delegated_task_contract(
+        {"taskBriefId": "task-3", "goal": "Review one result", "delegationDepth": 2},
+    )
+    assert "cannot create another delegation layer" in grandchild
 
 
 def test_memory_broker_is_default_supervisor_read_only_entry_but_not_default_subagent_tool():
@@ -1905,7 +2080,7 @@ def test_contextual_auto_subagent_base_tools_include_granted_runtime_tools():
     names = {tool.name for tool in selected}
 
     assert "read_native_file" in names
-    assert "run_system_command" not in names
+    assert "run_system_command" in names
     assert {"creative_media_capabilities", "creative_media_jobs"}.issubset(names)
     assert "memory_recall" not in names
-    assert "http_request" not in names
+    assert "http_request" in names

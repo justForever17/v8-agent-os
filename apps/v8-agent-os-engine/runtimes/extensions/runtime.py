@@ -3294,6 +3294,7 @@ class ExtensionsRuntimeService:
             run_id = str(context_payload.get("run_id") or "").strip() or None
             runtime_kind = str(context_payload.get("runtime_kind") or "chat").strip()
             agent_id = str(context_payload.get("agent_id") or "supervisor").strip() or "supervisor"
+            delegation_id = str(context_payload.get("delegation_id") or context_payload.get("delegationId") or "").strip() or None
             grantee_type = "subagent" if runtime_kind == "subagent" and agent_id != "supervisor" else "supervisor"
             if session_id:
                 plugin_projection = plugin_manager_service.projection_for(
@@ -3301,6 +3302,7 @@ class ExtensionsRuntimeService:
                     run_id=run_id,
                     grantee_type=grantee_type,
                     grantee_id=agent_id,
+                    delegation_id=delegation_id,
                 )
             plugin_owned_skill_roots, plugin_owned_mcp_servers = plugin_manager_service.plugin_owned_components()
         except Exception:
@@ -4200,6 +4202,18 @@ class ExtensionsRuntimeService:
                     .plugin_manager_service.active_grants(
                         session_id=str(context_payload.get("session_id") or ""),
                         run_id=str(context_payload.get("run_id") or "").strip() or None,
+                        grantee_type=(
+                            "subagent"
+                            if str(context_payload.get("runtime_kind") or "chat").strip() == "subagent"
+                            and str(context_payload.get("agent_id") or "supervisor").strip() != "supervisor"
+                            else "supervisor"
+                        ),
+                        grantee_id=str(context_payload.get("agent_id") or "supervisor").strip() or "supervisor",
+                        delegation_id=str(
+                            context_payload.get("delegation_id")
+                            or context_payload.get("delegationId")
+                            or ""
+                        ).strip() or None,
                     )
                 ) if str(context_payload.get("session_id") or "").strip() else "",
             ]

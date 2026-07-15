@@ -61,21 +61,21 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
                 fetch_skill_instructions=_tool("fetch_skill_instructions"),
             )
 
-    def test_contextual_auto_static_tool_surface_excludes_full_external_tree(self):
+    def test_contextual_auto_static_tool_surface_keeps_common_package_and_excludes_external_tree(self):
         agent_nodes = self._build_components(tool_mode="contextual_auto")
 
         tool_names = {getattr(tool, "name", "") for tool in agent_nodes["agent-one"]["tools"]}
 
         self.assertEqual(agent_nodes["agent-one"]["tool_mode"], "contextual_auto")
-        self.assertNotIn("run_system_command", tool_names)
-        self.assertNotIn("command_session_broker", tool_names)
+        self.assertIn("run_system_command", tool_names)
+        self.assertIn("command_session_broker", tool_names)
         self.assertIn("web_broker", tool_names)
-        self.assertIn("ask_user", tool_names)
+        self.assertNotIn("ask_user", tool_names)
         self.assertNotIn("s3_broker", tool_names)
         self.assertNotIn("http_request", tool_names)
         self.assertIn("fetch_skill_instructions", tool_names)
-        self.assertNotIn("delegation_broker", tool_names)
-        self.assertNotIn("read_background_output", tool_names)
+        self.assertIn("delegation_broker", tool_names)
+        self.assertIn("read_background_output", tool_names)
         self.assertNotIn("web_fetch", tool_names)
         self.assertNotIn("s3_upload_file", tool_names)
         self.assertNotIn("computer_use_click_target", tool_names)
@@ -89,7 +89,8 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         tool_names = {getattr(tool, "name", "") for tool in agent_nodes["agent-one"]["tools"]}
 
         self.assertEqual(agent_nodes["agent-one"]["tool_mode"], "explicit")
-        self.assertNotIn("run_system_command", tool_names)
+        self.assertIn("run_system_command", tool_names)
+        self.assertIn("delegation_broker", tool_names)
         self.assertIn("fetch_skill_instructions", tool_names)
         self.assertIn("docs_server.query", tool_names)
         self.assertNotIn("gateway.generate", tool_names)
@@ -494,7 +495,9 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
             description = str(getattr(tools_by_name[name], "description", "") or "").strip()
             self.assertGreater(len(description), 60, f"{name} should expose an actionable tool description to subagents")
         for name in ("write_native_file", "run_system_command", "command_session_broker"):
-            self.assertNotIn(name, tools_by_name)
+            self.assertIn(name, tools_by_name)
+            description = str(getattr(tools_by_name[name], "description", "") or "").strip()
+            self.assertGreater(len(description), 60, f"{name} should expose an actionable tool description to subagents")
         skill_description = str(getattr(tools_by_name["fetch_skill_instructions"], "description", "") or "")
         self.assertIn("exact skill name/path", skill_description)
         self.assertIn("complete SKILL.md", skill_description)

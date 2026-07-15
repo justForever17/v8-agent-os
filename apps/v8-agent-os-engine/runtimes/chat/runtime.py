@@ -2352,6 +2352,20 @@ class ChatRuntime:
             user_id=prepared.user_id,
             scope_result=scope_result,
         )
+        requested_safety_mode = (
+            getattr(prepared.request.data, "safety_approval_mode", None)
+            if prepared.request.data
+            else None
+        )
+        if not prepared.is_resume_request or str(requested_safety_mode or "").strip().lower() in {
+            "manual",
+            "reduced",
+            "minimal",
+        }:
+            run_service.update_metadata(
+                run_handle.run_id,
+                {"safetyApprovalMode": normalize_safety_approval_mode(requested_safety_mode)},
+            )
         try:
             prepared.task_shape_hint = classify_task_shape(
                 prepared.latest_user_content,
@@ -3131,19 +3145,104 @@ class ChatRuntime:
         except (TypeError, ValueError):
             return 5
 
+    def _safety_approval_mode_for_run(
+        self,
+        chat_run: ChatRunContext,
+        *,
+        fallback: Any = None,
+    ) -> str:
+        request_data = getattr(chat_run.request, "data", None)
+        request_value = (
+            getattr(request_data, "safety_approval_mode", None)
+            if request_data
+            else None
+        )
+        if str(request_value or "").strip().lower() in {"manual", "reduced", "minimal"}:
+            return normalize_safety_approval_mode(request_value)
+        if str(fallback or "").strip().lower() in {"manual", "reduced", "minimal"}:
+            return normalize_safety_approval_mode(fallback)
+        run_id = str(
+            getattr(chat_run, "active_run_id", "")
+            or getattr(getattr(chat_run, "run_handle", None), "run_id", "")
+            or ""
+        ).strip()
+        run_record = db.get_run_record(run_id) if run_id else {}
+        run_record = run_record or {}
+        metadata = run_record.get("metadata") if isinstance(run_record.get("metadata"), dict) else {}
+        return normalize_safety_approval_mode(
+            metadata.get("safetyApprovalMode") or metadata.get("safety_approval_mode")
+        )
+
+    def _restart_route_context(
+        self,
+        chat_run: ChatRunContext,
+        snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        context = dict((snapshot or {}).get("current_route_context") or {})
+        binding = chat_run.scope_result.binding
+        run_id = str(
+            getattr(chat_run, "active_run_id", "")
+            or getattr(getattr(chat_run, "run_handle", None), "run_id", "")
+            or context.get("run_id")
+            or context.get("runId")
+            or ""
+        ).strip()
+        safety_mode = self._safety_approval_mode_for_run(
+            chat_run,
+            fallback=(
+                context.get("safety_approval_mode")
+                or context.get("safetyApprovalMode")
+            ),
+        )
+        context.update(
+            {
+                "session_id": chat_run.session_id,
+                "sessionId": chat_run.session_id,
+                "run_id": run_id,
+                "runId": run_id,
+                "project_id": binding.project_id,
+                "projectId": binding.project_id,
+                "workspace_id": binding.workspace_id,
+                "workspaceId": binding.workspace_id,
+                "workspace_path": binding.workspace_path,
+                "workspacePath": binding.workspace_path,
+                "resolved_scope": binding.resolved_scope,
+                "resolvedScope": binding.resolved_scope,
+                "safety_approval_mode": safety_mode,
+                "safetyApprovalMode": safety_mode,
+            }
+        )
+        context["workspaceBinding"] = build_workspace_binding(
+            {
+                "runtime_kind": "chat",
+                "session_id": chat_run.session_id,
+                "project_id": binding.project_id,
+                "workspace_id": binding.workspace_id,
+                "workspace_path": binding.workspace_path,
+                "resolved_scope": binding.resolved_scope,
+            },
+            runtime_kind="chat",
+        ).as_dict()
+        return context
+
     async def create_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         compat_diagnostics = _compat_ingress_diagnostics_from_request(chat_run.request)
+        safety_approval_mode = self._safety_approval_mode_for_run(chat_run)
         current_route_context = {
             "session_id": chat_run.session_id,
             "sessionId": chat_run.session_id,
             "run_id": chat_run.active_run_id,
             "runId": chat_run.active_run_id,
+            "project_id": chat_run.scope_result.binding.project_id,
+            "projectId": chat_run.scope_result.binding.project_id,
             "workspace_path": chat_run.scope_result.binding.workspace_path,
             "workspacePath": chat_run.scope_result.binding.workspace_path,
             "workspace_id": chat_run.scope_result.binding.workspace_id,
             "workspaceId": chat_run.scope_result.binding.workspace_id,
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "resolvedScope": chat_run.scope_result.binding.resolved_scope,
+            "safety_approval_mode": safety_approval_mode,
+            "safetyApprovalMode": safety_approval_mode,
             "latestUserContent": chat_run.prepared.latest_user_content,
             "latest_user_content": chat_run.prepared.latest_user_content,
             "userRequest": chat_run.prepared.latest_user_content,
@@ -3157,6 +3256,10 @@ class ChatRuntime:
             "pluginAuthorizations": list(chat_run.prepared.plugin_authorizations),
             "plugin_authorizations": list(chat_run.prepared.plugin_authorizations),
         }
+        current_route_context["workspaceBinding"] = build_workspace_binding(
+            current_route_context,
+            runtime_kind="chat",
+        ).as_dict()
         if chat_run.prepared.session_coordination_message:
             current_route_context["sessionCoordination"] = dict(chat_run.prepared.session_coordination_message)
             current_route_context["session_coordination"] = dict(chat_run.prepared.session_coordination_message)
@@ -3364,6 +3467,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
+            current_route_context=self._restart_route_context(chat_run, snapshot),
             runtime_dispatch_status=None,
             engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
@@ -3468,6 +3572,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
+            current_route_context=self._restart_route_context(chat_run, snapshot),
             runtime_dispatch_status=None,
             engineering_context=snapshot.get("engineering_context") if isinstance(snapshot.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot.get("task_shape_hint") if isinstance(snapshot.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
@@ -3574,6 +3679,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
+            current_route_context=self._restart_route_context(chat_run, snapshot_dict),
             runtime_dispatch_status=None,
             engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
@@ -3634,6 +3740,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
+            current_route_context=self._restart_route_context(chat_run, snapshot_dict),
             runtime_dispatch_status=None,
             engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
@@ -3697,6 +3804,7 @@ class ChatRuntime:
             config=chat_run.request.config,
             messages=state_messages,
             session_id=chat_run.session_id,
+            current_route_context=self._restart_route_context(chat_run, snapshot_dict),
             runtime_dispatch_status=None,
             engineering_context=snapshot_dict.get("engineering_context") if isinstance(snapshot_dict.get("engineering_context"), dict) else chat_run.prepared.engineering_context_pack,
             task_shape_hint=snapshot_dict.get("task_shape_hint") if isinstance(snapshot_dict.get("task_shape_hint"), dict) else chat_run.prepared.task_shape_hint,
@@ -8614,9 +8722,7 @@ class ChatRuntime:
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
             "goal": chat_run.prepared.latest_user_content,
         }
-        safety_approval_mode = normalize_safety_approval_mode(
-            getattr(chat_run.request.data, "safety_approval_mode", None) if chat_run.request.data else None
-        )
+        safety_approval_mode = self._safety_approval_mode_for_run(chat_run)
         context["safety_approval_mode"] = safety_approval_mode
         context["safetyApprovalMode"] = safety_approval_mode
         spec_id = str(getattr(chat_run.prepared, "spec_id", "") or "").strip()

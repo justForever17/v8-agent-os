@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from core.agents import default_subagent_configs
 from core.delegation_broker import (
     build_workset_dispatch_decisions,
@@ -65,12 +67,12 @@ def test_engineering_kernel_publishes_workspace_and_detected_shell(tmp_path: Pat
     assert diagnostics[0]["executionMode"] == "none"
 
 
-def test_supervisor_prompt_does_not_advertise_direct_write_without_capsule(tmp_path: Path) -> None:
+def test_supervisor_prompt_allows_bounded_direct_work_without_weakening_delegated_capsules(tmp_path: Path) -> None:
     content = (Path(__file__).parents[2] / "graph" / "supervisor_context.py").read_text(encoding="utf-8")
 
     assert "read_only_no_capsule" in content
-    assert "route one typed Engineering episode" in content
-    assert "prefer `write_native_file` directly" not in content
+    assert "supervisor_direct_bounded" in content
+    assert "Delegated workers remain Capsule-governed" in content
 
 
 def test_valid_write_contract_derives_capsule_and_invalid_contract_is_blocked(tmp_path: Path) -> None:
@@ -181,7 +183,7 @@ def test_verification_signal_does_not_override_write_capsule_target() -> None:
     assert tasks[0].get("preferredAgentId") != "verification-engineer"
 
 
-def test_no_capsule_projects_only_read_tools_for_supervisor_and_subagent(tmp_path: Path) -> None:
+def test_common_tools_remain_visible_while_native_guards_enforce_capsules(tmp_path: Path) -> None:
     tools = [
         _tool("delegation_broker"),
         _tool("read_native_file"),
@@ -195,7 +197,14 @@ def test_no_capsule_projects_only_read_tools_for_supervisor_and_subagent(tmp_pat
         tool.name
         for tool in filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     }
-    assert supervisor_names == {"delegation_broker", "read_native_file", "grep_search"}
+    assert supervisor_names == {
+        "delegation_broker",
+        "read_native_file",
+        "grep_search",
+        "write_native_file",
+        "run_system_command",
+        "command_session_broker",
+    }
 
     read_task = normalize_task_brief({"goal": "Inspect the code."})
     subagent_names = {
@@ -206,7 +215,14 @@ def test_no_capsule_projects_only_read_tools_for_supervisor_and_subagent(tmp_pat
             route_context={"taskBrief": read_task},
         )
     }
-    assert subagent_names == {"read_native_file", "grep_search"}
+    assert subagent_names == {
+        "delegation_broker",
+        "read_native_file",
+        "grep_search",
+        "write_native_file",
+        "run_system_command",
+        "command_session_broker",
+    }
 
     write_task = _write_task(tmp_path)
     write_names = {
@@ -239,17 +255,38 @@ def test_native_guards_reject_subagent_mutation_without_capsule(tmp_path: Path) 
     assert not (tmp_path / "new.txt").exists()
 
 
-def test_parallel_runtime_context_projects_capsule_mode_and_write_scope(tmp_path: Path) -> None:
+@pytest.mark.parametrize("approval_mode", ["manual", "reduced", "minimal"])
+def test_parallel_runtime_context_projects_capsule_workspace_and_approval(
+    tmp_path: Path,
+    approval_mode: str,
+) -> None:
     write_task = _write_task(tmp_path)
     context = _runtime_context_from_parallel_state(
         {
             "session_id": "session-child",
             "run_id": "run-child",
+            "project_id": "project-child",
+            "workspace_id": "workspace-child",
             "workspace_path": str(tmp_path),
+            "resolved_scope": "project:project-child",
+            "safety_approval_mode": approval_mode,
         },
-        branch={"agentId": "engineer", "taskBrief": write_task},
+        branch={
+            "agentId": "engineer",
+            "delegationId": "delegation-child",
+            "delegationDepth": 1,
+            "taskBrief": write_task,
+        },
     )
 
+    assert context["actor_role"] == "direct_subagent"
+    assert context["delegation_depth"] == 1
+    assert context["safety_approval_mode"] == approval_mode
+    assert context["project_id"] == "project-child"
+    assert context["workspace_id"] == "workspace-child"
+    assert context["workspace_binding"]["projectId"] == "project-child"
+    assert context["workspace_binding"]["workspaceId"] == "workspace-child"
+    assert Path(context["workspace_binding"]["activeWorkspaceRoot"]) == tmp_path.resolve()
     assert context["engineering_capsule_mode"] == "write"
     assert context["engineering_capsule_id"].startswith("engcap_")
     assert context["allowed_write_paths"] == ["src/page.tsx"]

@@ -53,8 +53,12 @@ class AgentState(TypedDict):
     workspacePath: NotRequired[str]
     workspace_id: NotRequired[str]
     workspaceId: NotRequired[str]
+    project_id: NotRequired[str]
+    projectId: NotRequired[str]
     resolved_scope: NotRequired[str]
     resolvedScope: NotRequired[str]
+    safety_approval_mode: NotRequired[str]
+    safetyApprovalMode: NotRequired[str]
 
 from core.context_orchestrator import context_orchestrator
 

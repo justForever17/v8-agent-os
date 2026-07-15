@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -213,4 +214,35 @@ test("Web topbar locale menu stays above the multifunction workbench", () => {
   assert.match(localeToggle, /DropdownMenuContent align="end" className="z-\[100\] w-44"/);
   assert.match(workbench, /"z-\[70\] flex min-h-0 flex-col/);
   assert.match(workbench, /className="relative z-\[71\]/);
+});
+
+test("Local clients consume the packed message-bound execution exports with matching lock integrity", async () => {
+  const tgzRelativePath = "packages/session-realtime/v8-session-realtime-0.0.9.tgz";
+  const tgzPath = path.join(repoRoot, tgzRelativePath);
+  const tgz = readBinary(tgzRelativePath);
+  const expectedIntegrity = `sha512-${crypto.createHash("sha512").update(tgz).digest("base64")}`;
+  for (const lockPath of [
+    "apps/v8-agent-os-web/package-lock.json",
+    "apps/v8-agent-os-phone/package-lock.json",
+    "apps/v8-agent-os-admin/package-lock.json",
+  ]) {
+    const lock = JSON.parse(readText(lockPath));
+    const lockEntry = lock.packages?.["node_modules/@v8/session-realtime"];
+    assert.equal(lockEntry?.resolved, "file:../../packages/session-realtime/v8-session-realtime-0.0.9.tgz");
+    assert.equal(lockEntry?.integrity, expectedIntegrity, lockPath);
+  }
+
+  const packedIndex = execFileSync("tar", ["-xOf", tgzPath, "package/dist/index.js"], { encoding: "utf8" });
+  const packedImplementation = execFileSync(
+    "tar",
+    ["-xOf", tgzPath, "package/dist/message-bound-execution-node.js"],
+    { encoding: "utf8" },
+  );
+  assert.match(packedIndex, /export \* from "\.\/message-bound-execution-node\.js"/);
+  assert.match(packedImplementation, /export function getMessageBoundExecutionTimelineNodeIdentityCandidates/);
+  assert.match(packedImplementation, /export function buildMessageBoundCollaborationMicroStagePlacement/);
+
+  const installed = await import("@v8/session-realtime/message-bound-execution-node");
+  assert.equal(typeof installed.getMessageBoundExecutionTimelineNodeIdentityCandidates, "function");
+  assert.equal(typeof installed.buildMessageBoundCollaborationMicroStagePlacement, "function");
 });

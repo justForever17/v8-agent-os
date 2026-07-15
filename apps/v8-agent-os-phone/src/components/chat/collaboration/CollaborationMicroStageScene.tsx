@@ -65,6 +65,12 @@ const SUPERVISOR_SHEET = {
     frameWidth: 128,
     frameHeight: 128,
 };
+const SUPERVISOR_FAREWELL_SHEET = {
+    columns: 8,
+    rows: 3,
+    frameWidth: 128,
+    frameHeight: 128,
+};
 
 const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, readonly number[]> = {
     idle: [0, 1, 2, 3],
@@ -74,7 +80,7 @@ const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, readonly number[]> = {
     read: [17, 18, 19, 20],
     type: [21, 22, 23, 24],
     receive: [25, 26],
-    celebrate: [27, 30, 31, 32, 33, 34],
+    celebrate: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
     inspect: [35, 36, 37, 38],
 };
 const SUPERVISOR_TURN_FRAMES = {
@@ -89,7 +95,12 @@ const SUPERVISOR_ACTION_DURATIONS: Record<SupervisorAction, readonly number[]> =
     read: [420, 420, 360, 520],
     type: [180, 140, 140, 420],
     receive: [500, 1100],
-    celebrate: [500, 350, 500, 1500, 1200, 950],
+    celebrate: [
+        120, 120, 120, 120, 120, 120, 120, 120,
+        130, 130, 130, 130, 130, 130, 130, 130, 130, 130,
+        150, 150, 150, 150,
+        180, 1960,
+    ],
     inspect: [560, 900, 1000, 720],
 };
 const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "type", "inspect"]);
@@ -684,8 +695,9 @@ function SupervisorSprite({
 }) {
     const displayState = useSupervisorDisplayState(action, facingLeft);
     const frame = useSupervisorFrame(displayState.action, displayState.facingLeft);
-    const column = frame % SUPERVISOR_SHEET.columns;
-    const row = Math.floor(frame / SUPERVISOR_SHEET.columns);
+    const sheet = displayState.action === "celebrate" ? SUPERVISOR_FAREWELL_SHEET : SUPERVISOR_SHEET;
+    const column = frame % sheet.columns;
+    const row = Math.floor(frame / sheet.columns);
     const mirrorDirectionalFrame = (displayState.action === "walk" || displayState.action === "inspect")
         && !displayState.facingLeft;
 
@@ -698,12 +710,16 @@ function SupervisorSprite({
             accessibilityLabel={`${displayState.action}:${displayState.facingLeft ? "left" : "right"}`}
         >
             <Image
-                source={require("../../../../assets/images/supervisor_spritesheet.png")}
+                source={displayState.action === "celebrate"
+                    ? require("../../../../assets/images/supervisor_farewell_spritesheet.png")
+                    : require("../../../../assets/images/supervisor_spritesheet.png")}
                 style={[
                     styles.supervisorSpriteSheet,
                     {
-                        left: -column * SUPERVISOR_SHEET.frameWidth,
-                        top: -row * SUPERVISOR_SHEET.frameHeight,
+                        left: -column * sheet.frameWidth,
+                        top: -row * sheet.frameHeight,
+                        width: sheet.frameWidth * sheet.columns,
+                        height: sheet.frameHeight * sheet.rows,
                     },
                 ]}
                 resizeMode="stretch"
@@ -783,12 +799,33 @@ function StatusBadge({
         failed: "src.components.chat.collaborationmicrostagescene.status_failed",
         pending: "src.components.chat.collaborationmicrostagescene.status_pending",
     };
+    const tone = statusTone(status, palette);
+    const rotation = useSharedValue(0);
+    useEffect(() => {
+        if (status === "active") {
+            rotation.value = withRepeat(withTiming(1, { duration: 820, easing: Easing.linear }), -1, false);
+            return () => cancelAnimation(rotation);
+        }
+        rotation.value = withTiming(0, { duration: 160 });
+        return undefined;
+    }, [rotation, status]);
+    const ringStyle = useAnimatedStyle(() => ({
+        transform: [{ rotate: `${rotation.value * 360}deg` }],
+    }));
     return (
-        <View style={[styles.statusBadge, { borderColor: `${color}55`, backgroundColor: `${color}18` }]}>
-            <View style={[styles.statusDot, { backgroundColor: statusTone(status, palette) }]} />
-            <Text style={[styles.statusText, { color: palette.text }]} numberOfLines={1}>
-                {t(keys[status])}
-            </Text>
+        <View
+            accessible
+            accessibilityLabel={t(keys[status])}
+            style={[styles.statusBadge, { borderColor: `${color}55`, backgroundColor: `${color}18` }]}
+        >
+            <Animated.View
+                style={[
+                    styles.statusRing,
+                    { borderColor: tone, borderTopColor: status === "active" ? "transparent" : tone },
+                    ringStyle,
+                ]}
+            />
+            <View style={[styles.statusDot, { backgroundColor: tone }]} />
         </View>
     );
 }
@@ -1273,8 +1310,6 @@ const styles = StyleSheet.create({
     },
     supervisorSpriteSheet: {
         position: "absolute",
-        width: SUPERVISOR_SHEET.frameWidth * SUPERVISOR_SHEET.columns,
-        height: SUPERVISOR_SHEET.frameHeight * SUPERVISOR_SHEET.rows,
     },
     groundShadow: {
         position: "absolute",
@@ -1389,31 +1424,31 @@ const styles = StyleSheet.create({
     },
     statusBadgeWrap: {
         position: "absolute",
-        bottom: -13,
+        bottom: -10,
         left: 7,
         right: 7,
         alignItems: "center",
         zIndex: 28,
     },
     statusBadge: {
-        flexDirection: "row",
+        width: 18,
+        height: 18,
         alignItems: "center",
-        gap: 4,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
+        justifyContent: "center",
         borderRadius: 999,
         borderWidth: 1,
-        maxWidth: 90,
+    },
+    statusRing: {
+        position: "absolute",
+        width: 11,
+        height: 11,
+        borderRadius: 999,
+        borderWidth: 1.4,
     },
     statusDot: {
-        width: 5,
-        height: 5,
+        width: 4,
+        height: 4,
         borderRadius: 999,
-    },
-    statusText: {
-        fontSize: 7.5,
-        fontWeight: "800",
-        lineHeight: 10,
     },
     supervisorSpeechBubble: {
         position: "absolute",

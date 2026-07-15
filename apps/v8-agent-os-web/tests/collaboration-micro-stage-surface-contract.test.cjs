@@ -61,17 +61,27 @@ test("Web and Phone lock the V4 atlas with natural inspect frames and bridge tur
   const webAtlas = readBinary("apps/v8-agent-os-web/public/supervisor_spritesheet.png");
   const phoneAtlas = readBinary("apps/v8-agent-os-phone/assets/images/supervisor_spritesheet.png");
   const expectedHash = "a9713e456f8c93ddcbf2ee1ede28f82341c2cbfce848b1ac02ea8daf6285a89a";
+  const webFarewellAtlas = readBinary("apps/v8-agent-os-web/public/supervisor_farewell_spritesheet.png");
+  const phoneFarewellAtlas = readBinary("apps/v8-agent-os-phone/assets/images/supervisor_farewell_spritesheet.png");
+  const expectedFarewellHash = "69b71666b04c9aef0fd8f7c3d5ed4ec7bc30d0b76406ac45034b8f441e2be69a";
 
   assert.deepEqual(readPngSize(webAtlas), [1792, 1536]);
   assert.deepEqual(readPngSize(phoneAtlas), [1792, 1536]);
   assert.equal(crypto.createHash("sha256").update(webAtlas).digest("hex"), expectedHash);
   assert.equal(crypto.createHash("sha256").update(phoneAtlas).digest("hex"), expectedHash);
+  assert.deepEqual(readPngSize(webFarewellAtlas), [2048, 768]);
+  assert.deepEqual(readPngSize(phoneFarewellAtlas), [2048, 768]);
+  assert.equal(crypto.createHash("sha256").update(webFarewellAtlas).digest("hex"), expectedFarewellHash);
+  assert.equal(crypto.createHash("sha256").update(phoneFarewellAtlas).digest("hex"), expectedFarewellHash);
 
   for (const scene of [webScene, phoneScene]) {
     assert.match(scene, /frameWidth: 128/);
     assert.match(scene, /left: \[28\]/);
     assert.match(scene, /right: \[29\]/);
     assert.match(scene, /inspect: \[35, 36, 37, 38\]/);
+    assert.match(scene, /celebrate: \[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23\]/);
+    assert.match(scene, /const SUPERVISOR_FAREWELL_SHEET/);
+    assert.match(scene, /displayState\.action === "celebrate"/);
     assert.match(scene, /return "inspect"/);
     assert.match(scene, /displayState\.action === "walk" \|\| displayState\.action === "inspect"/);
     assert.match(scene, /type SupervisorDisplayAction = SupervisorAction \| "turn"/);
@@ -104,6 +114,11 @@ test("Web and Phone lock the V4 atlas with natural inspect frames and bridge tur
   assert.match(webScene, /microStageRobotCurtain/);
   assert.match(phoneScene, /robotVisibility/);
   assert.match(phoneScene, /reportTravel/);
+  assert.match(webScene, /data-subagent-status=\{status\}/);
+  assert.match(webScene, /animate-spin rounded-full border-\[1\.5px\]/);
+  assert.doesNotMatch(webScene, /<span className="text-muted-foreground">\{statusLabel\(status\)\}<\/span>/);
+  assert.match(phoneScene, /styles\.statusRing/);
+  assert.doesNotMatch(phoneScene, /styles\.statusText/);
   assert.match(webScene, /const \[element, setElement\] = useState<T \| null>\(null\)/);
   assert.match(webScene, /const ref = useCallback\(\(node: T \| null\) => setElement\(node\), \[\]\)/);
   assert.match(webScene, /observer\.observe\(element\)/);
@@ -116,6 +131,22 @@ test("Web and Phone lock the V4 atlas with natural inspect frames and bridge tur
   assert.match(readText("apps/v8-agent-os-phone/src/components/chat/MessageBubble.tsx"), /key=\{microStageSceneKey\}/);
   assert.match(readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx"), /sessionRunning=\{activeConversationRunning\}/);
   assert.match(readText("apps/v8-agent-os-phone/src/screens/ChatScreen.tsx"), /sessionRunning=\{isSessionRunning\}/);
+});
+
+test("Web composer follows the authoritative session run state instead of guessing from the local stream", () => {
+  const client = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
+  const input = readText("apps/v8-agent-os-web/src/components/chat/InputArea.tsx");
+
+  assert.match(client, /sessionRunning=\{activeConversationRunning\}/);
+  assert.match(client, /canStopRun=\{isLoading\}/);
+  assert.match(client, /sessionProjection\?\.runtimeStatus/);
+  assert.match(client, /currentRun\?\.status/);
+  assert.match(client, /observedStatuses\.some\(\(status\) => activeStatuses\.includes\(status\)\)/);
+  assert.ok((client.match(/if \(activeConversationRunning\)/g) || []).length >= 2);
+  assert.match(input, /const runActive = sessionRunning \|\| isLoading/);
+  assert.match(input, /const canQueueWhileRunning = runActive && canSubmit/);
+  assert.match(input, /const canStopActiveRun = runActive && !canQueueWhileRunning/);
+  assert.match(input, /const showRunBusy = runActive && !canQueueWhileRunning && !canStopActiveRun/);
 });
 
 test("Web and Phone use the standing subagent workstation and semantic event screen", () => {

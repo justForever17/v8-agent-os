@@ -76,9 +76,16 @@ const SUPERVISOR_COLLISION: CollisionVolume = { left: 43, top: 34, width: 50, he
 const WORKSTATION_COLLISION: CollisionVolume = { left: 2, top: 6, width: 76, height: 91 };
 const ROBOT_COLLISION: CollisionVolume = { left: 62, top: 42, width: 29, height: 51 };
 const SUPERVISOR_SPRITE_SRC = "/supervisor_spritesheet.png";
+const SUPERVISOR_FAREWELL_SPRITE_SRC = "/supervisor_farewell_spritesheet.png";
 const SUPERVISOR_SHEET = {
     columns: 7,
     rows: 6,
+    frameWidth: 128,
+    frameHeight: 128,
+};
+const SUPERVISOR_FAREWELL_SHEET = {
+    columns: 8,
+    rows: 3,
     frameWidth: 128,
     frameHeight: 128,
 };
@@ -91,7 +98,7 @@ const SUPERVISOR_ACTION_FRAMES: Record<SupervisorAction, readonly number[]> = {
     read: [17, 18, 19, 20],
     type: [21, 22, 23, 24],
     receive: [25, 26],
-    celebrate: [27, 30, 31, 32, 33, 34],
+    celebrate: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
     inspect: [35, 36, 37, 38],
 };
 const SUPERVISOR_TURN_FRAMES = {
@@ -106,7 +113,12 @@ const SUPERVISOR_ACTION_DURATIONS: Record<SupervisorAction, readonly number[]> =
     read: [420, 420, 360, 520],
     type: [180, 140, 140, 420],
     receive: [500, 1100],
-    celebrate: [500, 350, 500, 1500, 1200, 950],
+    celebrate: [
+        120, 120, 120, 120, 120, 120, 120, 120,
+        130, 130, 130, 130, 130, 130, 130, 130, 130, 130,
+        150, 150, 150, 150,
+        180, 1960,
+    ],
     inspect: [560, 900, 1000, 720],
 };
 const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "type", "inspect"]);
@@ -397,6 +409,13 @@ function statusLabel(status: CollaborationMicroStageStatus) {
         pending: "等待",
     };
     return labels[status] || status;
+}
+
+function statusIndicatorTone(status: CollaborationMicroStageStatus, familyColor: string) {
+    if (status === "completed") return "#34D399";
+    if (status === "failed") return "#FB7185";
+    if (status === "degraded" || status === "attempted" || status === "pending") return "#FBBF24";
+    return familyColor;
 }
 
 function positionStageActorItems(items: StageActorItem[], layout: CollaborationMicroStageLayout, width: number): PositionedStageActorItem[] {
@@ -718,8 +737,12 @@ function SupervisorSprite({
 }) {
     const displayState = useSupervisorDisplayState(action, facingLeft);
     const frame = useSupervisorFrame(displayState.action, displayState.facingLeft);
-    const column = frame % SUPERVISOR_SHEET.columns;
-    const row = Math.floor(frame / SUPERVISOR_SHEET.columns);
+    const sheet = displayState.action === "celebrate" ? SUPERVISOR_FAREWELL_SHEET : SUPERVISOR_SHEET;
+    const spriteSource = displayState.action === "celebrate"
+        ? SUPERVISOR_FAREWELL_SPRITE_SRC
+        : SUPERVISOR_SPRITE_SRC;
+    const column = frame % sheet.columns;
+    const row = Math.floor(frame / sheet.columns);
     const mirrorDirectionalFrame = (displayState.action === "walk" || displayState.action === "inspect")
         && !displayState.facingLeft;
 
@@ -729,8 +752,8 @@ function SupervisorSprite({
             data-supervisor-action={displayState.action}
             data-supervisor-facing={displayState.facingLeft ? "left" : "right"}
             style={{
-                width: SUPERVISOR_SHEET.frameWidth,
-                height: SUPERVISOR_SHEET.frameHeight,
+                width: sheet.frameWidth,
+                height: sheet.frameHeight,
                 transform: mirrorDirectionalFrame ? "scaleX(-1)" : undefined,
             }}
         >
@@ -738,11 +761,11 @@ function SupervisorSprite({
                 aria-hidden="true"
                 className="absolute left-0 top-0 bg-no-repeat"
                 style={{
-                    backgroundImage: `url(${SUPERVISOR_SPRITE_SRC})`,
-                    backgroundPosition: `-${column * SUPERVISOR_SHEET.frameWidth}px -${row * SUPERVISOR_SHEET.frameHeight}px`,
-                    backgroundSize: `${SUPERVISOR_SHEET.frameWidth * SUPERVISOR_SHEET.columns}px ${SUPERVISOR_SHEET.frameHeight * SUPERVISOR_SHEET.rows}px`,
-                    width: SUPERVISOR_SHEET.frameWidth * SUPERVISOR_SHEET.columns,
-                    height: SUPERVISOR_SHEET.frameHeight * SUPERVISOR_SHEET.rows,
+                    backgroundImage: `url(${spriteSource})`,
+                    backgroundPosition: `-${column * sheet.frameWidth}px -${row * sheet.frameHeight}px`,
+                    backgroundSize: `${sheet.frameWidth * sheet.columns}px ${sheet.frameHeight * sheet.rows}px`,
+                    width: sheet.frameWidth * sheet.columns,
+                    height: sheet.frameHeight * sheet.rows,
                     imageRendering: "auto",
                 }}
             />
@@ -823,6 +846,7 @@ function WorkCell({
     const color = stageColor(stage, index);
     const cue = actor.cue || step?.cue || stage.cue;
     const status = actor.status || stage.status;
+    const statusTone = statusIndicatorTone(status, color);
     const handoff = stage.renderPhase === "handoff" || cue === "handoff";
     const curtain = stage.renderPhase === "celebrating" && status === "completed";
     const robotAction = subagentRobotActionFor({ cue, status, phase: stage.renderPhase });
@@ -897,15 +921,23 @@ function WorkCell({
                 disabled={!detailRef}
                 onClick={handleOpen}
                 className={cn(
-                    "absolute left-0 top-[82px] flex max-w-[96px] items-center gap-1 rounded-full border bg-background/85 px-2 py-1 text-[10px] leading-none shadow-sm backdrop-blur transition hover:bg-background",
+                    "absolute left-[36px] top-[83px] flex h-6 w-6 items-center justify-center rounded-full border bg-background/88 shadow-sm backdrop-blur transition-[transform,background-color,border-color] hover:scale-105 hover:bg-background",
                     !detailRef && "cursor-default",
                 )}
-                style={{ borderColor: `${color}66` }}
-                title={actor.summary || step?.summary || stage.title}
+                style={{ borderColor: `${statusTone}88`, color: statusTone }}
+                title={`${actor.summary || step?.summary || stage.title} · ${statusLabel(status)}`}
+                aria-label={`${actorName}：${statusLabel(status)}`}
+                data-subagent-status={status}
             >
-                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
-                <span className="min-w-0 truncate font-semibold text-foreground/85">{actor.label || stage.title}</span>
-                <span className="text-muted-foreground">{statusLabel(status)}</span>
+                <span className="relative flex h-3.5 w-3.5 items-center justify-center" aria-hidden="true">
+                    {status === "active" ? (
+                        <span className="absolute inset-0 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+                    ) : null}
+                    {status === "pending" || status === "attempted" ? (
+                        <span className="absolute inset-[2px] animate-ping rounded-full bg-current opacity-25" />
+                    ) : null}
+                    <span className="h-1.5 w-1.5 rounded-full bg-current shadow-[0_0_6px_currentColor]" />
+                </span>
             </button>
         </div>
     );

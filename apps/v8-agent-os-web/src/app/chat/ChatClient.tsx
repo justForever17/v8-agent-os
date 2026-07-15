@@ -1335,15 +1335,21 @@ export default function ChatClient() {
     const activeConversationRunning = useMemo(() => {
         if (isLoading) return true;
         const activeConversation = conversations.find((item) => (item.sessionId || item.id) === activeConversationId);
-        const canonicalStatus = String(activeConversation?.status || "").trim().toLowerCase();
-        if (["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"].includes(canonicalStatus)) {
+        const activeStatuses = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"];
+        const terminalStatuses = ["idle", "completed", "failed", "cancelled", "recoverable_failed", "degraded", "interrupted"];
+        const observedStatuses = [
+            activeConversation?.status,
+            sessionProjection?.runtimeStatus,
+            currentRun?.status,
+        ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+        if (observedStatuses.some((status) => activeStatuses.includes(status))) {
             return true;
         }
-        if (["idle", "completed", "failed", "cancelled", "recoverable_failed", "degraded", "interrupted"].includes(canonicalStatus)) {
+        if (observedStatuses.length > 0 && observedStatuses.every((status) => terminalStatuses.includes(status))) {
             return false;
         }
         return isLoading;
-    }, [activeConversationId, conversations, isLoading]);
+    }, [activeConversationId, conversations, currentRun?.status, isLoading, sessionProjection?.runtimeStatus]);
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
         [sessionProjection?.askUserInteractions],
@@ -2682,7 +2688,7 @@ export default function ChatClient() {
             ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
         if (messageOverride === null) setInput(""); // Clear the visible Composer only for Composer submissions.
-        if (isLoading) {
+        if (activeConversationRunning) {
             try {
                 await submitQueuedMessage(currentInput, submissionData);
                 clearPendingContextSessionRefs();
@@ -2759,7 +2765,7 @@ export default function ChatClient() {
             ...data,
             ...(pendingContextSessionRefs.length > 0 ? { contextSessionRefs: pendingContextSessionRefs } : {}),
         };
-        if (isLoading) {
+        if (activeConversationRunning) {
             void submitQueuedMessage("", submissionData).then(() => {
                 clearPendingContextSessionRefs();
             }).catch((error) => {
@@ -3229,6 +3235,8 @@ export default function ChatClient() {
                                     }}
                                     onVoiceAudioMessage={handleVoiceAudioMessage}
                                     isLoading={isLoading}
+                                    sessionRunning={activeConversationRunning}
+                                    canStopRun={isLoading}
                                     onStop={stop}
                                     selectedAgentName={t("web.generated.675df2e7c7")}
                                     shellClassName="w-full"

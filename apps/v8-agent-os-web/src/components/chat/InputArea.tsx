@@ -165,6 +165,8 @@ interface InputAreaProps {
     onVoiceTranscript?: (text: string) => void;
     onVoiceAudioMessage?: (data: VoiceAudioMessageData) => void | Promise<void>;
     isLoading: boolean;
+    sessionRunning?: boolean;
+    canStopRun?: boolean;
     onStop?: () => void;
     selectedAgentName?: string;
     shellClassName?: string;
@@ -273,6 +275,8 @@ export function InputArea({
     onVoiceTranscript,
     onVoiceAudioMessage,
     isLoading,
+    sessionRunning = false,
+    canStopRun = isLoading,
     onStop,
     selectedAgentName,
     shellClassName,
@@ -938,7 +942,10 @@ export function InputArea({
         || selectedSkills.length > 0
         || selectedSubagentFamilies.length > 0
         || selectedPlugins.length > 0;
-    const canQueueWhileRunning = isLoading && canSubmit;
+    const runActive = sessionRunning || isLoading;
+    const canQueueWhileRunning = runActive && canSubmit;
+    const canStopActiveRun = runActive && !canQueueWhileRunning && canStopRun && Boolean(onStop);
+    const showRunBusy = runActive && !canQueueWhileRunning && !canStopActiveRun;
 
     // Convert attached files to MediaItems for Lightbox
     const mediaItems: MediaItem[] = files.map((f) => {
@@ -1523,30 +1530,32 @@ export function InputArea({
                     </div>
 
                     <Button
-                        type={isLoading && !canQueueWhileRunning ? "button" : "submit"}
+                        type={canStopActiveRun || showRunBusy ? "button" : "submit"}
                         size="icon"
                         className={cn(
                             "h-[32px] w-[32px] rounded-xl shadow-sm transition-all duration-300",
-                            isLoading && !canQueueWhileRunning
+                            runActive && !canQueueWhileRunning
                                 ? "bg-stone-200 text-stone-400 dark:bg-stone-800 dark:text-stone-500"
                                 : (canSubmit
                                     ? "bg-gradient-to-br from-orange-400 to-amber-600 dark:from-orange-500 dark:to-amber-700 text-white shadow-[0_0_12px_rgba(249,115,22,0.4)] hover:shadow-[0_0_16px_rgba(249,115,22,0.6)] hover:scale-105 border border-orange-300/50 dark:border-amber-500/50"
                                     : "bg-stone-100 text-stone-300 dark:bg-stone-800/60 dark:text-stone-600 cursor-not-allowed")
                         )}
-                        disabled={uploading || (!isLoading && !canSubmit)}
+                        disabled={uploading || showRunBusy || (!runActive && !canSubmit)}
                         onClick={(e) => {
-                            if (isLoading && !canQueueWhileRunning && onStop) {
+                            if (canStopActiveRun && onStop) {
                                 e.preventDefault();
                                 onStop();
                             }
                         }}
                     >
-                        {isLoading && !canQueueWhileRunning ? (
+                        {runActive && !canQueueWhileRunning ? (
                             <div className="relative flex items-center justify-center w-full h-full group">
                                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-zinc-100 dark:bg-zinc-800 rounded-xl">
-                                    <Square className="h-3 w-3 fill-destructive text-destructive" />
-                                </div>
+                                {canStopActiveRun ? (
+                                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-zinc-100 dark:bg-zinc-800 rounded-xl">
+                                        <Square className="h-3 w-3 fill-destructive text-destructive" />
+                                    </div>
+                                ) : null}
                             </div>
                         ) : canQueueWhileRunning ? (
                             <CornerDownRight className="h-4 w-4" />

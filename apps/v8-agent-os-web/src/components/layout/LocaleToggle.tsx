@@ -80,7 +80,7 @@ export function LocaleToggle() {
     return (
         <DropdownMenu>
             <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuContent align="end" className="z-[100] w-44">
                 {OPTIONS.map((option) => {
                     const active = option.value === locale;
                     return (

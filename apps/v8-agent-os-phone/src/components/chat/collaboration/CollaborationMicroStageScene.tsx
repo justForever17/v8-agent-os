@@ -90,11 +90,13 @@ const SUPERVISOR_ACTION_DURATIONS: Record<SupervisorAction, readonly number[]> =
     type: [180, 140, 140, 420],
     receive: [500, 1100],
     celebrate: [500, 350, 500, 1500, 1200, 950],
-    inspect: [420, 560, 560, 420],
+    inspect: [560, 900, 1000, 720],
 };
-const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "read", "type", "inspect"]);
+const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "type", "inspect"]);
 const TURN_BRIDGE_DURATION_MS = 180;
 const SUPERVISOR_TURN_DURATIONS = [TURN_BRIDGE_DURATION_MS] as const;
+const SUPERVISOR_TRAVEL_DURATION_MS = 1400;
+const PATROL_INTERVAL_MS = 5200;
 
 const STAGE_HEIGHT = 176;
 const OFFICE_STAGE_HEIGHT = 244;
@@ -107,6 +109,7 @@ const SUPERVISOR_LAYER_WIDTH = 136;
 const SUPERVISOR_CENTER_X = SUPERVISOR_LAYER_WIDTH / 2;
 type CollisionRect = { left: number; top: number; width: number; height: number };
 type CollisionVolume = CollisionRect;
+type SupervisorWaypoint = { x: number; y: number; targetCenterX: number };
 const COLLISION_GAP = 8;
 const SUPERVISOR_COLLISION: CollisionVolume = { left: 43, top: 34, width: 50, height: 92 };
 const WORKSTATION_COLLISION: CollisionVolume = { left: 2, top: 6, width: 76, height: 91 };
@@ -149,6 +152,14 @@ function statusTone(status: CollaborationMicroStageStatus, palette: ThemeColors)
 
 function isFinalStatus(status: CollaborationMicroStageStatus) {
     return status === "completed" || status === "failed" || status === "degraded";
+}
+
+function stageDepthZ(groundY: number) {
+    return 40 + Math.round(groundY);
+}
+
+function isDirectionalSupervisorAction(action: SupervisorAction) {
+    return action === "walk" || action === "inspect";
 }
 
 function retainedStageVersion(stage: CollaborationMicroStage) {
@@ -552,13 +563,14 @@ function supervisorWaypointForItem(
     item: PositionedStageActorItem,
     width: number,
     allItems: PositionedStageActorItem[] = [item],
-) {
+): SupervisorWaypoint {
     const canvasWidth = Math.max(300, width || 320);
     const maxX = canvasWidth - SUPERVISOR_LAYER_WIDTH - 10;
     const y = Math.max(0, item.y - 32);
     const targetRects = collisionRectsForItem(item);
     const targetLeft = Math.min(...targetRects.map((rect) => rect.left));
     const targetRight = Math.max(...targetRects.map((rect) => rect.left + rect.width));
+    const targetCenterX = item.x + WORK_CELL_WIDTH * item.scale / 2;
     const rawCandidates = [
         targetLeft - COLLISION_GAP - SUPERVISOR_COLLISION.left - SUPERVISOR_COLLISION.width,
         targetRight + COLLISION_GAP - SUPERVISOR_COLLISION.left,
@@ -577,14 +589,15 @@ function supervisorWaypointForItem(
     const safeCandidate = candidates.find((candidate) => (
         obstacles.every((obstacle) => collisionOverlapArea(supervisorCollisionAt(candidate), obstacle) === 0)
     ));
-    if (safeCandidate) return safeCandidate;
-    return candidates.reduce((best, candidate) => {
+    if (safeCandidate) return { ...safeCandidate, targetCenterX };
+    const selected = candidates.reduce((best, candidate) => {
         const penalty = obstacles.reduce(
             (sum, obstacle) => sum + collisionOverlapArea(supervisorCollisionAt(candidate), obstacle),
             0,
         );
         return penalty < best.penalty ? { candidate, penalty } : best;
     }, { candidate: candidates[0] || { x: 12, y }, penalty: Number.POSITIVE_INFINITY }).candidate;
+    return { ...selected, targetCenterX };
 }
 
 function supervisorWaypointsForItems(items: PositionedStageActorItem[], width: number) {
@@ -610,8 +623,9 @@ function useSupervisorDisplayState(action: SupervisorAction, facingLeft: boolean
     useEffect(() => {
         const previous = previousInput.current;
         previousInput.current = { action, facingLeft };
-        const crossesWalkBoundary = (previous.action === "walk") !== (action === "walk");
-        const needsTurnBridge = previous.facingLeft !== facingLeft || crossesWalkBoundary;
+        const crossesDirectionalBoundary = isDirectionalSupervisorAction(previous.action)
+            !== isDirectionalSupervisorAction(action);
+        const needsTurnBridge = crossesDirectionalBoundary;
         if (!needsTurnBridge) {
             setDisplayState({ action, facingLeft });
             return undefined;
@@ -825,16 +839,19 @@ const WorkCell = memo(function WorkCell({
     const warningPulse = useSharedValue(0);
 
     useEffect(() => {
-        appeared.value = withSpring(1, { damping: 13, stiffness: 120 });
-    }, [appeared]);
-
-    useEffect(() => {
         if (phase === "exiting") {
             appeared.value = withTiming(0, { duration: EXIT_DURATION_MS, easing: Easing.in(Easing.cubic) });
             return;
         }
+        if (phase === "entering") {
+            appeared.value = withDelay(
+                Math.min(index, 6) * 70,
+                withSpring(1, { damping: 14, stiffness: 105 }),
+            );
+            return;
+        }
         appeared.value = withTiming(1, { duration: 220, easing: Easing.out(Easing.cubic) });
-    }, [appeared, phase]);
+    }, [appeared, index, phase]);
 
     useEffect(() => {
         if (actorStatus === "failed" || actorStatus === "degraded") {
@@ -902,7 +919,13 @@ const WorkCell = memo(function WorkCell({
     };
 
     return (
-        <Animated.View style={[styles.workCell, { left: x, top: y }, cellStyle]}>
+        <Animated.View
+            style={[
+                styles.workCell,
+                { left: x, top: y, zIndex: stageDepthZ(y + WORK_CELL_HEIGHT * scale) },
+                cellStyle,
+            ]}
+        >
             {(phase === "entering" || cue === "summon") && <MagicPortal color={color} />}
             <WorkbenchShadow />
             <View style={styles.workstationLayer}>
@@ -1037,7 +1060,7 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
     }, [positionedItems, sceneMode]);
     const focusPosition = focusItem
         ? supervisorWaypointForItem(focusItem, canvasWidth, positionedItems)
-        : { x: 58, y: 0 };
+        : { x: 58, y: 0, targetCenterX: 58 };
     const patrolSignature = patrolWaypoints.map((point) => `${Math.round(point.x)}:${Math.round(point.y)}`).join("|");
     const action = useMemo(
         () => supervisorActionForScene(sceneMode, supervisorMoving, actorItems),
@@ -1049,13 +1072,17 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
     useEffect(() => {
         if (positionedItems.length === 0) return undefined;
         const settleTimers = new Set<ReturnType<typeof setTimeout>>();
-        const moveTo = (next: { x: number; y: number }, duration: number, walking: boolean) => {
-            setSupervisorFacingLeft(next.x < supervisorX.value);
+        const moveTo = (next: SupervisorWaypoint, duration: number, walking: boolean) => {
+            const restingFacingLeft = next.x + SUPERVISOR_CENTER_X > next.targetCenterX;
+            setSupervisorFacingLeft(walking ? next.x < supervisorX.value : restingFacingLeft);
             setSupervisorMoving(walking);
             supervisorX.value = withTiming(next.x, { duration, easing: Easing.inOut(Easing.cubic) });
             supervisorY.value = withTiming(next.y, { duration, easing: Easing.inOut(Easing.cubic) });
             if (walking) {
-                const settleTimer = setTimeout(() => setSupervisorMoving(false), duration);
+                const settleTimer = setTimeout(() => {
+                    setSupervisorMoving(false);
+                    setSupervisorFacingLeft(restingFacingLeft);
+                }, duration);
                 settleTimers.add(settleTimer);
             }
         };
@@ -1066,12 +1093,12 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
         }
 
         let waypointIndex = 0;
-        moveTo(patrolWaypoints[0], 1100, true);
+        moveTo(patrolWaypoints[0], SUPERVISOR_TRAVEL_DURATION_MS, true);
         const timer = patrolWaypoints.length > 1
             ? setInterval(() => {
                 waypointIndex = (waypointIndex + 1) % patrolWaypoints.length;
-                moveTo(patrolWaypoints[waypointIndex], 1250, true);
-            }, 3600)
+                moveTo(patrolWaypoints[waypointIndex], SUPERVISOR_TRAVEL_DURATION_MS, true);
+            }, PATROL_INTERVAL_MS)
             : undefined;
 
         return () => {
@@ -1083,6 +1110,7 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
     }, [
         focusPosition.x,
         focusPosition.y,
+        focusPosition.targetCenterX,
         patrolSignature,
         patrolWaypoints,
         positionedItems.length,
@@ -1116,6 +1144,9 @@ export const CollaborationMicroStageLightRenderer = memo(function CollaborationM
             { translateX: supervisorX.value },
             { translateY: supervisorY.value },
         ],
+        zIndex: 40 + Math.round(
+            SUPERVISOR_BASE_TOP + supervisorY.value + SUPERVISOR_SHEET.frameHeight - 8,
+        ),
     }));
     const sceneStyle = useAnimatedStyle(() => ({ opacity: sceneOpacity.value }));
 
@@ -1230,7 +1261,6 @@ const styles = StyleSheet.create({
         height: 136,
         alignItems: "center",
         justifyContent: "flex-end",
-        zIndex: 24,
     },
     supervisorSpriteClip: {
         width: SUPERVISOR_SHEET.frameWidth,
@@ -1255,7 +1285,6 @@ const styles = StyleSheet.create({
         width: 98,
         height: WORK_CELL_HEIGHT,
         alignItems: "center",
-        zIndex: 10,
     },
     workstationLayer: {
         position: "absolute",

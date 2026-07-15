@@ -54,7 +54,7 @@ const ROBOT_ACTION_DURATIONS: Record<SubagentRobotAction, readonly number[]> = {
     idle: [520, 520, 260, 520],
     walk: [115, 115, 115, 115, 115, 115],
     boot: [220, 240, 320, 480],
-    work: [260, 220, 260, 520],
+    work: [360, 320, 360, 760],
     wait: [560, 520, 560, 720],
     handoff: [280, 340, 420, 680],
     success: [260, 260, 300, 620, 820, 920],
@@ -68,7 +68,6 @@ const LOOPING_ROBOT_ACTIONS = new Set<SubagentRobotAction>([
     "work",
     "wait",
     "success",
-    "failure",
 ]);
 
 type ScreenPattern =

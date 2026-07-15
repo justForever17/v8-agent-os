@@ -54,6 +54,7 @@ type PositionedStageActorItem = StageActorItem & {
 
 type CollisionRect = { left: number; top: number; width: number; height: number };
 type CollisionVolume = CollisionRect;
+type SupervisorWaypoint = { x: number; y: number; targetCenterX: number };
 
 type SupervisorAction = "idle" | "walk" | "summon" | "command" | "read" | "type" | "receive" | "celebrate" | "inspect";
 type SupervisorDisplayAction = SupervisorAction | "turn";
@@ -106,11 +107,13 @@ const SUPERVISOR_ACTION_DURATIONS: Record<SupervisorAction, readonly number[]> =
     type: [180, 140, 140, 420],
     receive: [500, 1100],
     celebrate: [500, 350, 500, 1500, 1200, 950],
-    inspect: [420, 560, 560, 420],
+    inspect: [560, 900, 1000, 720],
 };
-const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "read", "type", "inspect"]);
+const LOOPING_SUPERVISOR_ACTIONS = new Set<SupervisorAction>(["idle", "walk", "command", "type", "inspect"]);
 const TURN_BRIDGE_DURATION_MS = 180;
 const SUPERVISOR_TURN_DURATIONS = [TURN_BRIDGE_DURATION_MS] as const;
+const SUPERVISOR_TRAVEL_DURATION_MS = 1400;
+const PATROL_INTERVAL_MS = 5200;
 const ENTER_DURATION_MS = 1100;
 const HANDOFF_DURATION_MS = 1600;
 const FINAL_FEEDBACK_DURATION_MS = 5000;
@@ -133,6 +136,14 @@ function latestActorStep(stage: CollaborationMicroStage, actor: CollaborationMic
 
 function isFinalStatus(status: CollaborationMicroStageStatus) {
     return status === "completed" || status === "failed" || status === "degraded";
+}
+
+function stageDepthZ(groundY: number) {
+    return 40 + Math.round(groundY);
+}
+
+function isDirectionalSupervisorAction(action: SupervisorAction) {
+    return action === "walk" || action === "inspect";
 }
 
 function retainedStageVersion(stage: CollaborationMicroStage) {
@@ -489,13 +500,14 @@ function supervisorWaypointForItem(
     item: PositionedStageActorItem,
     width: number,
     allItems: PositionedStageActorItem[] = [item],
-) {
+): SupervisorWaypoint {
     const canvasWidth = Math.max(300, width || 360);
     const maxX = canvasWidth - SUPERVISOR_LAYER_WIDTH - 10;
     const y = Math.max(0, item.y - 32);
     const targetRects = collisionRectsForItem(item);
     const targetLeft = Math.min(...targetRects.map((rect) => rect.left));
     const targetRight = Math.max(...targetRects.map((rect) => rect.left + rect.width));
+    const targetCenterX = item.x + WORK_CELL_WIDTH * item.scale / 2;
     const rawCandidates = [
         targetLeft - COLLISION_GAP - SUPERVISOR_COLLISION.left - SUPERVISOR_COLLISION.width,
         targetRight + COLLISION_GAP - SUPERVISOR_COLLISION.left,
@@ -514,14 +526,15 @@ function supervisorWaypointForItem(
     const safeCandidate = candidates.find((candidate) => (
         obstacles.every((obstacle) => collisionOverlapArea(supervisorCollisionAt(candidate), obstacle) === 0)
     ));
-    if (safeCandidate) return safeCandidate;
-    return candidates.reduce((best, candidate) => {
+    if (safeCandidate) return { ...safeCandidate, targetCenterX };
+    const selected = candidates.reduce((best, candidate) => {
         const penalty = obstacles.reduce(
             (sum, obstacle) => sum + collisionOverlapArea(supervisorCollisionAt(candidate), obstacle),
             0,
         );
         return penalty < best.penalty ? { candidate, penalty } : best;
     }, { candidate: candidates[0] || { x: 12, y }, penalty: Number.POSITIVE_INFINITY }).candidate;
+    return { ...selected, targetCenterX };
 }
 
 function sceneModeForStages(stages: RetainedMicroStage[]): SupervisorSceneMode {
@@ -564,7 +577,7 @@ function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, m
     }, [items, mode, unfinishedItems]);
     const focusPosition = focusItem
         ? supervisorWaypointForItem(focusItem, width, items)
-        : { x: 24, y: 0 };
+        : { x: 24, y: 0, targetCenterX: 24 };
     const waypointSignature = workingWaypoints.map((point) => `${Math.round(point.x)}:${Math.round(point.y)}`).join("|");
     const waypointIndex = waypointState.signature === waypointSignature ? waypointState.index : 0;
 
@@ -574,7 +587,7 @@ function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, m
             return () => window.clearTimeout(stopTimer);
         }
         const startTimer = window.setTimeout(() => setMoving(true), 0);
-        const settleTimer = window.setTimeout(() => setMoving(false), 1250);
+        const settleTimer = window.setTimeout(() => setMoving(false), SUPERVISOR_TRAVEL_DURATION_MS);
         if (workingWaypoints.length === 1) {
             return () => {
                 window.clearTimeout(startTimer);
@@ -587,7 +600,7 @@ function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, m
                 signature: waypointSignature,
                 index: (current.signature === waypointSignature ? current.index : 0) + 1,
             }));
-        }, 3600);
+        }, PATROL_INTERVAL_MS);
         return () => {
             window.clearTimeout(startTimer);
             window.clearTimeout(settleTimer);
@@ -597,7 +610,7 @@ function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, m
 
     useEffect(() => {
         if (mode !== "working" || !moving) return undefined;
-        const timer = window.setTimeout(() => setMoving(false), 1250);
+        const timer = window.setTimeout(() => setMoving(false), SUPERVISOR_TRAVEL_DURATION_MS);
         return () => window.clearTimeout(timer);
     }, [mode, moving, waypointIndex]);
 
@@ -608,19 +621,9 @@ function useSupervisorPatrol(items: PositionedStageActorItem[], width: number, m
     const previousWaypoint = workingWaypoints.length > 1
         ? workingWaypoints[(safeIndex - 1 + workingWaypoints.length) % workingWaypoints.length]
         : position;
-    const nearestItem = (unfinishedItems.length > 0 ? unfinishedItems : items).reduce<PositionedStageActorItem | undefined>(
-        (nearest, item) => {
-            if (!nearest) return item;
-            const itemCenter = item.x + WORK_CELL_WIDTH * item.scale / 2;
-            const nearestCenter = nearest.x + WORK_CELL_WIDTH * nearest.scale / 2;
-            const supervisorCenter = position.x + SUPERVISOR_CENTER_X;
-            return Math.abs(itemCenter - supervisorCenter) < Math.abs(nearestCenter - supervisorCenter) ? item : nearest;
-        },
-        undefined,
-    );
     const facingLeft = moving && workingWaypoints.length > 1
         ? position.x < previousWaypoint.x
-        : Boolean(nearestItem && position.x + SUPERVISOR_CENTER_X > nearestItem.x + WORK_CELL_WIDTH * nearestItem.scale / 2);
+        : position.x + SUPERVISOR_CENTER_X > position.targetCenterX;
     return { position, facingLeft, moving };
 }
 
@@ -648,8 +651,9 @@ function useSupervisorDisplayState(action: SupervisorAction, facingLeft: boolean
     useEffect(() => {
         const previous = previousInput.current;
         previousInput.current = { action, facingLeft };
-        const crossesWalkBoundary = (previous.action === "walk") !== (action === "walk");
-        const needsTurnBridge = previous.facingLeft !== facingLeft || crossesWalkBoundary;
+        const crossesDirectionalBoundary = isDirectionalSupervisorAction(previous.action)
+            !== isDirectionalSupervisorAction(action);
+        const needsTurnBridge = crossesDirectionalBoundary;
         if (!needsTurnBridge) {
             const applyTimer = window.setTimeout(() => setDisplayState({ action, facingLeft }), 0);
             return () => window.clearTimeout(applyTimer);
@@ -751,6 +755,7 @@ function SupervisorAvatar({
     stageWidth,
     x,
     y,
+    targetCenterX,
     facingLeft,
     action,
 }: {
@@ -758,6 +763,7 @@ function SupervisorAvatar({
     stageWidth: number;
     x: number;
     y: number;
+    targetCenterX: number;
     facingLeft: boolean;
     action: SupervisorAction;
 }) {
@@ -771,9 +777,16 @@ function SupervisorAvatar({
     const speechTailLeft = clamp(SUPERVISOR_CENTER_X - speechLeft - 5, 16, speechWidth - 26);
     return (
         <div
-            className="absolute z-30 h-[136px] w-[136px] transition-transform [transition-duration:1250ms] ease-in-out"
+            className="absolute h-[136px] w-[136px] transition-transform will-change-transform"
             data-collision-supervisor={`${SUPERVISOR_COLLISION.left},${SUPERVISOR_COLLISION.top},${SUPERVISOR_COLLISION.width},${SUPERVISOR_COLLISION.height}`}
-            style={{ transform: `translate(${x}px, ${SUPERVISOR_BASE_TOP + y}px)` }}
+            data-stage-depth={stageDepthZ(SUPERVISOR_BASE_TOP + y + SUPERVISOR_SHEET.frameHeight - 8)}
+            data-supervisor-target-center-x={targetCenterX}
+            style={{
+                transform: `translate(${x}px, ${SUPERVISOR_BASE_TOP + y}px)`,
+                transitionDuration: `${SUPERVISOR_TRAVEL_DURATION_MS}ms`,
+                transitionTimingFunction: "cubic-bezier(0.22, 0.74, 0.24, 1)",
+                zIndex: stageDepthZ(SUPERVISOR_BASE_TOP + y + SUPERVISOR_SHEET.frameHeight - 8),
+            }}
         >
             {speech ? (
                 <div
@@ -810,7 +823,6 @@ function WorkCell({
     const color = stageColor(stage, index);
     const cue = actor.cue || step?.cue || stage.cue;
     const status = actor.status || stage.status;
-    const active = status === "active" && stage.renderPhase !== "exiting";
     const handoff = stage.renderPhase === "handoff" || cue === "handoff";
     const curtain = stage.renderPhase === "celebrating" && status === "completed";
     const robotAction = subagentRobotActionFor({ cue, status, phase: stage.renderPhase });
@@ -829,7 +841,7 @@ function WorkCell({
 
     return (
         <div
-            className="absolute z-20 transition-[opacity,transform] duration-700 ease-out"
+            className="absolute animate-[microStageCellEnter_620ms_cubic-bezier(0.22,0.74,0.24,1)_both] transition-[opacity,transform] duration-700 ease-out"
             style={{
                 left: x,
                 top: y,
@@ -838,7 +850,10 @@ function WorkCell({
                 opacity,
                 transform: `scale(${scale})`,
                 transformOrigin: "top left",
+                animationDelay: `${Math.min(index, 6) * 70}ms`,
+                zIndex: stageDepthZ(y + WORK_CELL_HEIGHT * scale),
             }}
+            data-stage-depth={stageDepthZ(y + WORK_CELL_HEIGHT * scale)}
             data-collision-workstation={`${WORKSTATION_COLLISION.left},${WORKSTATION_COLLISION.top},${WORKSTATION_COLLISION.width},${WORKSTATION_COLLISION.height}`}
         >
             {(stage.renderPhase === "entering" || cue === "summon") ? (
@@ -850,7 +865,6 @@ function WorkCell({
             <div
                 className={cn(
                     "absolute left-[45px] top-[29px] z-[8] h-16 w-16 transition-[opacity,transform] ease-out",
-                    active && !handoff && "animate-[microStageBotBob_1.4s_ease-in-out_infinite]",
                     curtain && "animate-[microStageRobotCurtain_2.05s_ease-out_forwards]",
                 )}
                 data-collision-agent={`${ROBOT_COLLISION.left - 45},${ROBOT_COLLISION.top - 29},${ROBOT_COLLISION.width},${ROBOT_COLLISION.height}`}
@@ -957,6 +971,7 @@ export const CollaborationMicroStageScene = memo(function CollaborationMicroStag
                 stageWidth={width}
                 x={position.x}
                 y={position.y}
+                targetCenterX={position.targetCenterX}
                 facingLeft={facingLeft}
                 action={action}
             />
@@ -975,9 +990,9 @@ export const CollaborationMicroStageScene = memo(function CollaborationMicroStag
                     42% { opacity: 1; transform: scale(1.05) rotate(18deg); }
                     100% { opacity: 0; transform: scale(1.15) rotate(38deg); }
                 }
-                @keyframes microStageBotBob {
-                    0%, 100% { margin-top: 0; }
-                    50% { margin-top: -2px; }
+                @keyframes microStageCellEnter {
+                    0% { opacity: 0; filter: blur(3px); }
+                    100% { opacity: 1; filter: blur(0); }
                 }
                 @keyframes microStageRobotCurtain {
                     0%, 72% { opacity: 1; transform: translateY(0) scale(1); }

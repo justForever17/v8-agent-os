@@ -75,7 +75,12 @@ test("Web and Phone lock the V4 atlas with natural inspect frames and bridge tur
     assert.match(scene, /displayState\.action === "walk" \|\| displayState\.action === "inspect"/);
     assert.match(scene, /type SupervisorDisplayAction = SupervisorAction \| "turn"/);
     assert.match(scene, /function useSupervisorDisplayState/);
-    assert.match(scene, /const needsTurnBridge = previous\.facingLeft !== facingLeft \|\| crossesWalkBoundary/);
+    assert.match(scene, /function isDirectionalSupervisorAction/);
+    assert.match(scene, /const crossesDirectionalBoundary = isDirectionalSupervisorAction\(previous\.action\)/);
+    assert.match(scene, /const needsTurnBridge = crossesDirectionalBoundary/);
+    assert.match(scene, /inspect: \[560, 900, 1000, 720\]/);
+    assert.match(scene, /const SUPERVISOR_TRAVEL_DURATION_MS = 1400/);
+    assert.match(scene, /const PATROL_INTERVAL_MS = 5200/);
     assert.match(scene, /function settleIncompleteStage/);
     assert.match(scene, /function preserveMonotonicFinalStageState/);
     assert.match(scene, /const renderStage = preserveMonotonicFinalStageState\(stage, previous\)/);
@@ -89,6 +94,12 @@ test("Web and Phone lock the V4 atlas with natural inspect frames and bridge tur
 
   assert.doesNotMatch(webScene, /transition-transform duration-300/);
   assert.doesNotMatch(webScene, /transform: handoff \?/);
+  assert.doesNotMatch(webScene, /microStageBotBob/);
+  assert.match(webScene, /data-stage-depth/);
+  assert.match(webScene, /data-supervisor-target-center-x/);
+  assert.match(webScene, /zIndex: stageDepthZ\(y \+ WORK_CELL_HEIGHT \* scale\)/);
+  assert.match(phoneScene, /zIndex: stageDepthZ\(y \+ WORK_CELL_HEIGHT \* scale\)/);
+  assert.match(phoneScene, /Math\.min\(index, 6\) \* 70/);
   assert.match(webScene, /microStageRobotCurtain/);
   assert.match(phoneScene, /robotVisibility/);
   assert.match(phoneScene, /reportTravel/);
@@ -160,6 +171,11 @@ test("Web and Phone use the standing subagent workstation and semantic event scr
     assert.match(component, /return "curtain"/);
     assert.match(component, /subagent_robot_neutral/);
     assert.match(component, /subagent_robot_emissive_mask/);
+    assert.match(component, /work: \[360, 320, 360, 760\]/);
+    assert.doesNotMatch(
+      component.match(/const LOOPING_ROBOT_ACTIONS[\s\S]*?\]\);/)?.[0] || "",
+      /"failure"/,
+    );
     assert.doesNotMatch(component, /Chair \(Integrated SVG\)|Sitting robot peeking head/);
   }
 
@@ -179,6 +195,7 @@ test("Web and Phone keep Supervisor, robot, and workstation collision volumes se
     assert.match(scene, /function supervisorCollisionAt/);
     assert.match(scene, /collisionOverlapArea/);
     assert.match(scene, /supervisorWaypointForItem\(item, width, items\)/);
+    assert.match(scene, /targetCenterX/);
     assert.match(scene, /const actorName = actor\.label \|\| step\?\.actorLabel \|\| stage\.title/);
   }
 
@@ -186,4 +203,14 @@ test("Web and Phone keep Supervisor, robot, and workstation collision volumes se
   assert.match(webScene, /data-collision-workstation/);
   assert.match(webScene, /data-collision-agent/);
   assert.match(phoneScene, /styles\.robotNameLabel/);
+  assert.match(phoneScene, /setSupervisorFacingLeft\(restingFacingLeft\)/);
+});
+
+test("Web topbar locale menu stays above the multifunction workbench", () => {
+  const localeToggle = readText("apps/v8-agent-os-web/src/components/layout/LocaleToggle.tsx");
+  const workbench = readText("apps/v8-agent-os-web/src/components/workbench/WorkbenchShell.tsx");
+
+  assert.match(localeToggle, /DropdownMenuContent align="end" className="z-\[100\] w-44"/);
+  assert.match(workbench, /"z-\[70\] flex min-h-0 flex-col/);
+  assert.match(workbench, /className="relative z-\[71\]/);
 });

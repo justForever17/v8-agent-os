@@ -27,7 +27,7 @@ interface ConversationContextType {
     isLoading: boolean;
     refreshConversations: () => Promise<void>;
     createConversation: (payload?: CreateConversationPayload) => Promise<Conversation | null>;
-    updateConversationPresentation: (id: string, patch: { title?: string; pinned?: boolean }) => Promise<Conversation | null>;
+    updateConversationPresentation: (id: string, patch: { title?: string; pinned?: boolean; supervisorWorkMode?: "daily" | "engineering" }) => Promise<Conversation | null>;
     patchConversationSummary: (id: string, patch: Partial<Conversation>) => void;
     deleteConversation: (id: string) => Promise<boolean>;
     clearConversations: () => Promise<boolean>;
@@ -137,7 +137,7 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         });
     }, []);
 
-    const updateConversationPresentation = useCallback(async (id: string, patch: { title?: string; pinned?: boolean }) => {
+    const updateConversationPresentation = useCallback(async (id: string, patch: { title?: string; pinned?: boolean; supervisorWorkMode?: "daily" | "engineering" }) => {
         try {
             const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {
                 method: "PATCH",

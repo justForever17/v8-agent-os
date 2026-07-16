@@ -34,6 +34,7 @@ export type AuthoritativeSessionHistoryRecord = {
   id: string;
   sessionId?: string;
   title: string;
+  supervisorWorkMode?: "daily" | "engineering";
   pinned?: boolean;
   pinnedAt?: string;
   projectId?: string;
@@ -313,6 +314,11 @@ export function normalizeAuthoritativeSessionHistoryRecord(raw: unknown): Author
     id: canonicalSessionId,
     sessionId: canonicalSessionId,
     title: coerceString(record.title) || "新对话",
+    supervisorWorkMode: (
+      coerceString(record.supervisorWorkMode || record.supervisor_work_mode || parsedMetadata.supervisorWorkMode || parsedMetadata.supervisor_work_mode) === "engineering"
+        ? "engineering"
+        : "daily"
+    ),
     pinned: Boolean(record.pinned ?? parsedMetadata.pinned),
     pinnedAt: normalizeUtcTimestamp(record.pinnedAt || record.pinned_at || parsedMetadata.pinnedAt || parsedMetadata.pinned_at),
     projectId: readBindingString(record, parsedMetadata, "projectId", "project_id"),

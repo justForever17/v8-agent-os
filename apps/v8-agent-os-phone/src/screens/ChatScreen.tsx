@@ -2115,6 +2115,11 @@ export default function ChatScreen() {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+    const activeConversationSummary = useMemo(
+        () => conversations.find((item) => (item.sessionId || item.id) === activeConversationId) || null,
+        [activeConversationId, conversations],
+    );
+    const supervisorWorkMode = activeConversationSummary?.supervisorWorkMode === "engineering" ? "engineering" : "daily";
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
     const [mainWorkspacePath, setMainWorkspacePath] = useState("");
     const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
@@ -5144,7 +5149,7 @@ export default function ChatScreen() {
 
     const handleUpdateConversationPresentation = useCallback(async (
         item: ConversationSummary,
-        patch: { title?: string; pinned?: boolean },
+        patch: { title?: string; pinned?: boolean; supervisorWorkMode?: "daily" | "engineering" },
     ) => {
         const canonicalSessionId = item.sessionId || item.id;
         try {
@@ -5162,6 +5167,33 @@ export default function ChatScreen() {
             return false;
         }
     }, [authorizedFetch, t]);
+
+    const handleChangeSupervisorWorkMode = useCallback(async (nextMode: "daily" | "engineering") => {
+        const sessionId = String(activeConversationIdRef.current || activeConversationId || "").trim();
+        if (!sessionId || nextMode === supervisorWorkMode) return;
+        setConversations((current) => current.map((conversation) =>
+            (conversation.sessionId || conversation.id) === sessionId
+                ? { ...conversation, supervisorWorkMode: nextMode }
+                : conversation
+        ));
+        try {
+            const updated = await updateConversationPresentation(authorizedFetch, sessionId, { supervisorWorkMode: nextMode });
+            setConversations((current) => sortSessionHistory([
+                updated,
+                ...current.filter((conversation) => (conversation.sessionId || conversation.id) !== sessionId),
+            ]));
+        } catch (error) {
+            setConversations((current) => current.map((conversation) =>
+                (conversation.sessionId || conversation.id) === sessionId
+                    ? { ...conversation, supervisorWorkMode }
+                    : conversation
+            ));
+            Alert.alert(
+                t("shared.conversation.update_failed"),
+                error instanceof Error ? error.message : t("shared.conversation.update_failed_detail"),
+            );
+        }
+    }, [activeConversationId, authorizedFetch, supervisorWorkMode, t]);
 
     const handleUpdateWorkspacePresentation = useCallback(async (
         group: ConversationWorkspaceGroup,
@@ -5412,20 +5444,26 @@ export default function ChatScreen() {
         if (input.trim()) {
             return;
         }
-        if (selectedSkills.length > 0) {
-            setSelectedSkills((current) => current.slice(0, -1));
+        if (selectedPlugins.length > 0) {
+            setSelectedPlugins((current) => current.slice(0, -1));
             return;
         }
         if (selectedSubagentFamilies.length > 0) {
             setSelectedSubagentFamilies((current) => current.slice(0, -1));
             return;
         }
-        if (selectedPlugins.length > 0) {
-            setSelectedPlugins((current) => current.slice(0, -1));
+        if (selectedSkills.length > 0) {
+            setSelectedSkills((current) => current.slice(0, -1));
             return;
         }
-        setSelectedCommand((current) => (current ? null : current));
-    }, [input, selectedSkills.length, selectedSubagentFamilies.length, selectedPlugins.length]);
+        if (selectedCommand) {
+            setSelectedCommand(null);
+            return;
+        }
+        if (pendingContextSessionRefs.length > 0) {
+            setPendingContextSessionRefs((current) => current.slice(0, -1));
+        }
+    }, [input, pendingContextSessionRefs.length, selectedCommand, selectedSkills.length, selectedSubagentFamilies.length, selectedPlugins.length]);
 
     const handleSpeakVoice = useCallback(async (text: string, messageKey: string) => {
         const voiceText = text.trim();
@@ -6106,6 +6144,7 @@ export default function ChatScreen() {
                         commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
                         specCommand: pendingSpecCommand,
                         specMode: Boolean(pendingSpecCommand || pendingSpecModeEnabled),
+                        supervisorWorkMode,
                         skillReferences: pendingSkills,
                         pluginReferences: pendingPlugins,
                         contextMentions: [
@@ -6257,6 +6296,7 @@ export default function ChatScreen() {
                     commandPresetName: pendingCommand?.specCommandAction ? null : (pendingCommand?.name || null),
                     specCommand: pendingSpecCommand,
                     specMode: Boolean(pendingSpecCommand || pendingSpecModeEnabled),
+                    supervisorWorkMode,
                     skillReferences: pendingSkills,
                     pluginReferences: pendingPlugins,
                     contextMentions: [
@@ -6433,6 +6473,7 @@ export default function ChatScreen() {
         scopeBinding?.workspaceId,
         scopeBinding?.workspacePath,
         specModeEnabled,
+        supervisorWorkMode,
         t,
         uploadedFiles,
         upsertQueuedMessage,
@@ -6740,6 +6781,8 @@ export default function ChatScreen() {
                     }}
                     specModeEnabled={specModeEnabled}
                     onToggleSpecMode={() => setSpecModeEnabled((current) => !current)}
+                    supervisorWorkMode={supervisorWorkMode}
+                    onChangeSupervisorWorkMode={(mode) => void handleChangeSupervisorWorkMode(mode)}
                     safetyApprovalMode={safetyApprovalMode}
                     onChangeSafetyApprovalMode={setSafetyApprovalMode}
                     reasoningEffortVisible={reasoningEffortVisible}

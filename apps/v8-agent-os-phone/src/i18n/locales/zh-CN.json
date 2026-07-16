@@ -905,5 +905,9 @@
   "src.components.chat.sessionoverviewpanel.subagent_needs_attention": "需要处理",
   "src.components.chat.sessionoverviewpanel.subagent_self_check": "自检",
   "src.components.chat.sessionoverviewpanel.subagent_artifacts": "已回流 {count} 个产物引用",
-  "src.components.chat.collaborationmicrostagescene.view_overview": "协作已收起，查看概览"
+  "src.components.chat.collaborationmicrostagescene.view_overview": "协作已收起，查看概览",
+  "src.components.chat.composer.switch_daily_mode": "切换到日常模式",
+  "src.components.chat.composer.switch_engineering_mode": "切换到编程模式",
+  "src.components.chat.composer.mode_daily": "日常",
+  "src.components.chat.composer.mode_engineering": "编程"
 }

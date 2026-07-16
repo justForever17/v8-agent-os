@@ -6,7 +6,7 @@ import type { PluginReferenceSummary } from "@v8/session-realtime";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight, Shield, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight, Shield, ShieldAlert, ShieldCheck, Code2 } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -174,6 +174,8 @@ interface InputAreaProps {
     contextSessionRefs?: ContextSessionReference[];
     onRemoveContextSessionRef?: (sessionId: string) => void;
     contextUsagePercent?: number | null;
+    supervisorWorkMode?: "daily" | "engineering";
+    onSupervisorWorkModeChange?: (mode: "daily" | "engineering") => void | Promise<void>;
     uploadScope?: {
         sessionId?: string | null;
         workspaceId?: string | null;
@@ -270,7 +272,7 @@ function ContextUsageRing({ percent }: { percent: number }) {
     const circumference = Math.PI * 2 * radius;
     const dash = circumference * Math.max(0, Math.min(100, percent)) / 100;
     return (
-        <svg viewBox="0 0 20 20" className="mt-0.5 h-5 w-5 shrink-0 -rotate-90" aria-hidden="true">
+        <svg viewBox="0 0 20 20" className="h-5 w-5 shrink-0 -rotate-90" aria-hidden="true">
             <circle cx="10" cy="10" r={radius} fill="none" stroke="currentColor" strokeWidth="2.5" className="text-muted-foreground/25" />
             <circle cx="10" cy="10" r={radius} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray={`${dash} ${circumference - dash}`} className="text-primary" />
         </svg>
@@ -324,6 +326,8 @@ export function InputArea({
     contextSessionRefs = [],
     onRemoveContextSessionRef,
     contextUsagePercent = null,
+    supervisorWorkMode = "daily",
+    onSupervisorWorkModeChange,
     uploadScope,
 }: InputAreaProps) {
     const t = useT();
@@ -511,6 +515,11 @@ export function InputArea({
         } as ChangeEvent<HTMLTextAreaElement>);
     }, [handleInputChange]);
 
+    const focusTextarea = React.useCallback(() => {
+        if (typeof window === "undefined") return;
+        window.requestAnimationFrame(() => textareaRef.current?.focus());
+    }, []);
+
     const clearInlineNoticeTimer = React.useCallback(() => {
         if (typeof window !== "undefined" && inlineNoticeTimerRef.current !== null) {
             window.clearTimeout(inlineNoticeTimerRef.current);
@@ -653,12 +662,14 @@ export function InputArea({
         if (preset.readOnlyKind === "context_usage") {
             updateInputValue("");
             dismissInlineNotice();
+            focusTextarea();
             return;
         }
         setSelectedCommandPreset(preset);
         updateInputValue("");
         dismissInlineNotice();
-    }, [dismissInlineNotice, updateInputValue]);
+        focusTextarea();
+    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
 
     const selectSkillReference = React.useCallback((skill: SkillReferenceSummary) => {
         setSelectedSkills((current) => {
@@ -670,7 +681,8 @@ export function InputArea({
         });
         updateInputValue("");
         dismissInlineNotice();
-    }, [dismissInlineNotice, updateInputValue]);
+        focusTextarea();
+    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
 
     const selectSubagentFamilyReference = React.useCallback((family: SubagentFamilySummary) => {
         setSelectedSubagentFamilies((current) => {
@@ -682,7 +694,8 @@ export function InputArea({
         });
         updateInputValue("");
         dismissInlineNotice();
-    }, [dismissInlineNotice, updateInputValue]);
+        focusTextarea();
+    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
 
     const selectPluginReference = React.useCallback((plugin: PluginReferenceSummary) => {
         setSelectedPlugins((current) => current.some((item) => item.pluginId === plugin.pluginId)
@@ -690,7 +703,8 @@ export function InputArea({
             : [...current, { ...plugin, grantScope: "task" }]);
         updateInputValue("");
         dismissInlineNotice();
-    }, [dismissInlineNotice, updateInputValue]);
+        focusTextarea();
+    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
 
     const selectMentionItem = React.useCallback((item: MentionPickerItem) => {
         if (item.kind === "skill") {
@@ -704,7 +718,46 @@ export function InputArea({
         selectPluginReference(item.plugin);
     }, [selectPluginReference, selectSkillReference, selectSubagentFamilyReference]);
 
+    const hasReferenceTokens = Boolean(
+        selectedCommandPreset
+        || selectedSkills.length > 0
+        || selectedSubagentFamilies.length > 0
+        || selectedPlugins.length > 0
+        || contextSessionRefs.length > 0
+    );
+
+    const removeLastReferenceToken = React.useCallback(() => {
+        if (selectedPlugins.length > 0) {
+            setSelectedPlugins((current) => current.slice(0, -1));
+            return true;
+        }
+        if (selectedSubagentFamilies.length > 0) {
+            setSelectedSubagentFamilies((current) => current.slice(0, -1));
+            return true;
+        }
+        if (selectedSkills.length > 0) {
+            setSelectedSkills((current) => current.slice(0, -1));
+            return true;
+        }
+        if (selectedCommandPreset) {
+            setSelectedCommandPreset(null);
+            return true;
+        }
+        const lastContextRef = contextSessionRefs[contextSessionRefs.length - 1];
+        if (lastContextRef && onRemoveContextSessionRef) {
+            onRemoveContextSessionRef(lastContextRef.sessionId);
+            return true;
+        }
+        return false;
+    }, [contextSessionRefs, onRemoveContextSessionRef, selectedCommandPreset, selectedPlugins.length, selectedSkills.length, selectedSubagentFamilies.length]);
+
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === "Backspace" && input.length === 0 && !isCommandPickerOpen && !isSkillPickerOpen) {
+            if (removeLastReferenceToken()) {
+                e.preventDefault();
+            }
+            return;
+        }
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             if (isCommandPickerOpen) {
@@ -1015,6 +1068,7 @@ export function InputArea({
                 const nextData: Record<string, unknown> = {};
                 const pendingSpecMode = specModeEnabled;
                 nextData.safetyApprovalMode = safetyApprovalMode;
+                nextData.supervisorWorkMode = supervisorWorkMode;
                 if (contextSessionRefs.length > 0) {
                     nextData.contextSessionRefs = contextSessionRefs;
                 }
@@ -1104,7 +1158,7 @@ export function InputArea({
                 setSelectedPlugins([]);
             }}
             className={cn(
-                "relative mx-auto flex w-full flex-col overflow-hidden rounded-[1.25rem] border shadow-sm transition-all duration-500",
+                "relative mx-auto flex w-full flex-col overflow-visible rounded-[1.25rem] border shadow-sm transition-all duration-500",
                 shellClassName ?? "max-w-4xl",
                 isFocused 
                     ? "bg-stone-50/95 dark:bg-stone-900/90 shadow-[0_8px_32px_rgba(0,0,0,0.06)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] border-orange-500/30 dark:border-amber-500/30" 
@@ -1177,20 +1231,19 @@ export function InputArea({
             )}
 
             <div className="flex flex-col relative">
-                {(selectedCommandPreset || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || selectedPlugins.length > 0 || contextSessionRefs.length > 0) && (
-                    <div className="flex min-h-[28px] flex-wrap items-center gap-1 px-2.5 pt-1.5">
+                <div className="flex min-h-[44px] w-full flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
                         {contextSessionRefs.map((reference) => (
                             <div
                                 key={reference.sessionId}
-                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-2 py-0.5 text-[10px] font-medium text-cyan-700 dark:border-cyan-500/20 dark:bg-cyan-500/10 dark:text-cyan-200 sm:text-[11px]"
+                                className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-cyan-700 dark:text-cyan-300 sm:text-[15px]"
                                 title={reference.sessionId}
                             >
-                                <CornerDownRight className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
+                                <CornerDownRight className="h-4 w-4 shrink-0" />
                                 <span className="truncate">{t("web.chat.contextSessionRef")} · {reference.sessionId.slice(0, 12)}</span>
                                 <button
                                     type="button"
                                     onClick={() => onRemoveContextSessionRef?.(reference.sessionId)}
-                                    className="rounded-full text-current/70 transition hover:text-current"
+                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                                     aria-label={t("web.chat.removeContextSessionRef")}
                                 >
                                     <X className="h-3 w-3" />
@@ -1198,13 +1251,13 @@ export function InputArea({
                             </div>
                         ))}
                         {selectedCommandPreset && (
-                            <div className="inline-flex max-w-full items-center gap-1 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-200 sm:text-[11px]">
-                                <Command className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
-                                <span className="truncate">{t("web.generated.91c1d26378")}：{selectedCommandPreset.name}</span>
+                            <div className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]">
+                                <span aria-hidden="true" className="shrink-0 font-bold">/</span>
+                                <span className="truncate">{selectedCommandPreset.name}</span>
                                 <button
                                     type="button"
                                     onClick={() => setSelectedCommandPreset(null)}
-                                    className="rounded-full text-current/70 transition hover:text-current"
+                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                                     aria-label={t("web.generated.6b8a8efb3b")}
                                 >
                                     <X className="h-3 w-3" />
@@ -1214,15 +1267,15 @@ export function InputArea({
                         {selectedSkills.map((skill) => (
                             <div
                                 key={`${skill.name}:${skill.path || ""}`}
-                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-fuchsia-200 bg-fuchsia-50 px-2 py-0.5 text-[10px] font-medium text-fuchsia-700 dark:border-fuchsia-500/20 dark:bg-fuchsia-500/10 dark:text-fuchsia-200 sm:text-[11px]"
+                                className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]"
                                 title={skill.path || skill.description || skill.name}
                             >
-                                <AtSign className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
+                                <AtSign className="h-4 w-4 shrink-0" />
                                 <span className="truncate">{skill.name}</span>
                                 <button
                                     type="button"
                                     onClick={() => setSelectedSkills((current) => current.filter((item) => !(item.name === skill.name && (item.path || "") === (skill.path || ""))))}
-                                    className="rounded-full text-current/70 transition hover:text-current"
+                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                                     aria-label={t("web.generated.67c18a5ab0")}
                                 >
                                     <X className="h-3 w-3" />
@@ -1232,15 +1285,15 @@ export function InputArea({
                         {selectedSubagentFamilies.map((family) => (
                             <div
                                 key={family.familyId}
-                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200 sm:text-[11px]"
+                                className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]"
                                 title={family.description || family.familyId}
                             >
-                                <AtSign className="h-3 w-3 shrink-0 sm:h-3.5 sm:w-3.5" />
+                                <AtSign className="h-4 w-4 shrink-0" />
                                 <span className="truncate">{family.displayName || family.familyId}</span>
                                 <button
                                     type="button"
                                     onClick={() => setSelectedSubagentFamilies((current) => current.filter((item) => item.familyId !== family.familyId))}
-                                    className="rounded-full text-current/70 transition hover:text-current"
+                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                                     aria-label={t("web.generated.0f220b7fb7")}
                                 >
                                     <X className="h-3 w-3" />
@@ -1250,14 +1303,14 @@ export function InputArea({
                         {selectedPlugins.map((plugin) => (
                             <div
                                 key={plugin.pluginId}
-                                className="inline-flex max-w-full items-center gap-1 border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200 sm:text-[11px]"
+                                className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]"
                                 title={plugin.description || plugin.pluginId}
                             >
                                 <span className={cn("size-1.5 rounded-full", plugin.status === "ready" ? "bg-emerald-500" : "bg-amber-500")} />
                                 <span className="truncate">{plugin.displayName}</span>
                                 <DropdownMenu>
                                     <DropdownMenuTrigger asChild>
-                                        <button type="button" className="border-l border-current/15 pl-1 text-[9px] text-current/75 hover:text-current">
+                                        <button type="button" className="text-[10px] font-medium text-muted-foreground hover:text-foreground">
                                             {plugin.grantScope === "session" ? "本会话" : "本任务"}
                                         </button>
                                     </DropdownMenuTrigger>
@@ -1273,56 +1326,57 @@ export function InputArea({
                                 <button
                                     type="button"
                                     onClick={() => setSelectedPlugins((current) => current.filter((item) => item.pluginId !== plugin.pluginId))}
-                                    className="text-current/65 transition hover:text-current"
+                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
                                     aria-label={`移除 ${plugin.displayName}`}
                                 >
                                     <X className="h-3 w-3" />
                                 </button>
                             </div>
                         ))}
-                    </div>
-                )}
-
-                <Textarea
-                    ref={textareaRef}
-                    value={input}
-                    onChange={handleInputChange}
-                    onKeyDown={handleKeyDown}
-                    onFocus={() => setIsFocused(true)}
-                    onBlur={() => setIsFocused(false)}
-                    placeholder={selectedAgentName ? t("web.generated.04cdce87c7", { value0: selectedAgentName }) : t("web.generated.a706426e02")}
-                    className="custom-scrollbar min-h-[44px] max-h-[172px] w-full resize-none overflow-y-auto border-none bg-transparent px-3 py-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/50 shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-[15px]"
-                />
+                    <Textarea
+                        ref={textareaRef}
+                        value={input}
+                        onChange={handleInputChange}
+                        onKeyDown={handleKeyDown}
+                        onFocus={() => setIsFocused(true)}
+                        onBlur={() => setIsFocused(false)}
+                        placeholder={selectedAgentName ? t("web.generated.04cdce87c7", { value0: selectedAgentName }) : t("web.generated.a706426e02")}
+                        className={cn(
+                            "custom-scrollbar min-h-[26px] max-h-[172px] min-w-[10rem] flex-[1_1_12rem] resize-none overflow-y-auto border-none bg-transparent px-0 py-0 text-[14px] leading-6 placeholder:text-muted-foreground/50 shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-[15px]",
+                            !hasReferenceTokens && "min-h-[32px]"
+                        )}
+                    />
+                </div>
 
                 {isCommandPickerOpen && (
-                    <div className="mx-3 mb-2 rounded-2xl border border-border/60 bg-background/95 shadow-lg backdrop-blur-xl">
-                        <div className="border-b border-border/50 px-3 py-2 text-[11px] text-muted-foreground">
-                            {t("web.generated.b27144499f")}<span className="font-medium text-foreground">/</span>{t("web.generated.2e1be7fa21")}
-                        </div>
-                        <div className="max-h-32 sm:max-h-40 overflow-y-auto px-1 py-1">
+                    <div role="listbox" aria-label="Commands" className="absolute inset-x-2 bottom-full z-[80] mb-2 overflow-hidden rounded-xl border border-border/70 bg-popover/98 p-1.5 shadow-[0_18px_48px_rgba(15,23,42,0.18)] backdrop-blur-xl dark:shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+                        <div className="custom-scrollbar max-h-56 overflow-y-auto">
                             {commandsLoading ? (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">{t("web.generated.8a3ecc1a85")}</div>
                             ) : filteredCommandPresets.length > 0 ? (
-                                filteredCommandPresets.map((preset) => (
+                                filteredCommandPresets.map((preset, index) => (
                                     <button
                                         key={preset.name}
                                         type="button"
+                                        role="option"
+                                        aria-selected={index === 0}
+                                        onMouseDown={(event) => event.preventDefault()}
                                         onClick={() => selectCommandPreset(preset)}
-                                        className="flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-accent/50"
+                                        className={cn(
+                                            "grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 py-2 text-left",
+                                            index === 0 ? "bg-muted/80" : "hover:bg-muted/55"
+                                        )}
                                     >
                                         {preset.readOnlyKind === "context_usage" && typeof preset.usagePercent === "number"
                                             ? <ContextUsageRing percent={preset.usagePercent} />
-                                            : <Command className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />}
-                                        <div className="min-w-0 flex-1">
-                                            <div className="truncate text-sm font-medium text-foreground">
-                                                {preset.name}
-                                            </div>
-                                            {preset.summary && (
-                                                <div className="line-clamp-1 sm:line-clamp-2 text-[11px] leading-4.5 text-muted-foreground">
-                                                    {preset.summary}
-                                                </div>
-                                            )}
-                                        </div>
+                                            : <Command className="h-4 w-4 shrink-0 text-primary" />}
+                                        <span className="flex min-w-0 items-baseline gap-2">
+                                            <span className="max-w-[48%] shrink-0 truncate text-sm font-semibold text-foreground">{preset.name}</span>
+                                            {preset.summary ? <span className="truncate text-xs text-muted-foreground">{preset.summary}</span> : null}
+                                        </span>
+                                        <span className="text-[10px] font-medium text-muted-foreground">
+                                            {preset.readOnlyKind === "context_usage" && typeof preset.usagePercent === "number" ? `${preset.usagePercent}%` : "Command"}
+                                        </span>
                                     </button>
                                 ))
                             ) : (
@@ -1337,73 +1391,45 @@ export function InputArea({
                 )}
 
                 {isSkillPickerOpen && (
-                    <div className="mx-3 mb-2 rounded-md border border-border/70 bg-background/98 shadow-md backdrop-blur-xl">
-                        <div className="border-b border-fuchsia-200/40 px-3 py-2 text-[11px] text-muted-foreground dark:border-fuchsia-500/10">
-                            {t("web.generated.b27144499f")}<span className="font-medium text-fuchsia-600">@</span>{t("web.generated.7c6c5d2a05")}
-                        </div>
-                        <div className="max-h-32 overflow-y-auto px-1 py-1 sm:max-h-40">
+                    <div role="listbox" aria-label="Mentions" className="absolute inset-x-2 bottom-full z-[80] mb-2 overflow-hidden rounded-xl border border-border/70 bg-popover/98 p-1.5 shadow-[0_18px_48px_rgba(15,23,42,0.18)] backdrop-blur-xl dark:shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+                        <div className="custom-scrollbar max-h-56 overflow-y-auto">
                             {skillsLoading ? (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">{t("web.generated.2aeb46969c")}</div>
                             ) : filteredMentionItems.length > 0 ? (
-                                filteredMentionItems.map((item, index) => (
-                                    <button
-                                        key={item.key}
-                                        type="button"
-                                        onClick={() => selectMentionItem(item)}
-                                        className={cn(
-                                            "flex w-full items-start gap-2 rounded-md px-3 py-2 text-left transition",
-                                            item.kind === "skill"
-                                                ? "hover:bg-fuchsia-50/70 dark:hover:bg-fuchsia-500/10"
-                                                : item.kind === "subagent_family"
-                                                    ? "hover:bg-sky-50/70 dark:hover:bg-sky-500/10"
-                                                    : "hover:bg-emerald-50/70 dark:hover:bg-emerald-500/10",
-                                            index > 0 && filteredMentionItems[index - 1]?.kind !== item.kind ? "mt-1 border-t border-border/50 pt-3" : ""
-                                        )}
-                                    >
-                                        <AtSign className={cn(
-                                            "mt-0.5 h-4 w-4 shrink-0",
-                                            item.kind === "skill" ? "text-fuchsia-500" : item.kind === "subagent_family" ? "text-sky-500" : "text-emerald-500"
-                                        )} />
-                                        <div className="min-w-0 flex-1">
-                                            <div className="flex items-center gap-2">
-                                                <span className="truncate text-sm font-medium text-foreground">
-                                                    {item.kind === "skill" ? item.skill.name : item.kind === "subagent_family" ? (item.family.displayName || item.family.familyId) : item.plugin.displayName}
-                                                </span>
-                                                <span className="shrink-0 border border-border/60 bg-muted/50 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                                                    {item.kind === "skill" ? "Skill" : item.kind === "subagent_family" ? "Family" : "Plugin"}
-                                                </span>
-                                            </div>
-                                            {(item.kind === "skill" ? item.skill.description : item.kind === "subagent_family" ? item.family.description : item.plugin.description) && (
-                                                <div className="line-clamp-1 text-[11px] leading-4.5 text-muted-foreground sm:line-clamp-2">
-                                                    {item.kind === "skill" ? item.skill.description : item.kind === "subagent_family" ? item.family.description : item.plugin.description}
-                                                </div>
+                                filteredMentionItems.map((item, index) => {
+                                    const title = item.kind === "skill" ? item.skill.name : item.kind === "subagent_family" ? (item.family.displayName || item.family.familyId) : item.plugin.displayName;
+                                    const summary = item.kind === "skill" ? item.skill.description : item.kind === "subagent_family" ? item.family.description : item.plugin.description;
+                                    const meta = item.kind === "skill"
+                                        ? "Skill"
+                                        : item.kind === "subagent_family"
+                                            ? "Agent"
+                                            : `Plugin · ${item.plugin.status === "ready" ? "Ready" : "Setup"}`;
+                                    return (
+                                        <button
+                                            key={item.key}
+                                            type="button"
+                                            role="option"
+                                            aria-selected={index === 0}
+                                            onMouseDown={(event) => event.preventDefault()}
+                                            onClick={() => selectMentionItem(item)}
+                                            className={cn(
+                                                "grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 py-2 text-left",
+                                                index === 0 ? "bg-muted/80" : "hover:bg-muted/55"
                                             )}
-                                            {item.kind === "skill" && item.skill.path && (
-                                                <div className="truncate text-[10px] text-fuchsia-700/80 dark:text-fuchsia-300/80">
-                                                    {item.skill.path}
-                                                </div>
-                                            )}
-                                            {item.kind === "subagent_family" && item.family.memberCount ? (
-                                                <div className="truncate text-[10px] text-sky-700/80 dark:text-sky-300/80">
-                                                    {t("web.generated.87a9341147", { value0: item.family.memberCount })}
-                                                </div>
-                                            ) : null}
+                                        >
                                             {item.kind === "plugin" ? (
-                                                <div className={cn("text-[10px]", item.plugin.status === "ready" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>
-                                                    {item.plugin.status === "ready"
-                                                        ? "已就绪 · 默认仅当前任务"
-                                                        : item.plugin.status === "not_installed"
-                                                            ? "未安装 · 提交后返回安装入口"
-                                                            : item.plugin.status === "needs_configuration"
-                                                                ? "需配置 · 提交后返回配置入口"
-                                                                : item.plugin.status === "offline"
-                                                                    ? "离线 · 提交后返回阻断原因"
-                                                                    : "状态不可用 · 提交后返回诊断入口"}
-                                                </div>
-                                            ) : null}
-                                        </div>
-                                    </button>
-                                ))
+                                                <span className={cn("size-2 shrink-0 rounded-full", item.plugin.status === "ready" ? "bg-emerald-500" : "bg-amber-500")} />
+                                            ) : (
+                                                <AtSign className="h-4 w-4 shrink-0 text-primary" />
+                                            )}
+                                            <span className="flex min-w-0 items-baseline gap-2">
+                                                <span className="max-w-[48%] shrink-0 truncate text-sm font-semibold text-foreground">{title}</span>
+                                                {summary ? <span className="truncate text-xs text-muted-foreground">{summary}</span> : null}
+                                            </span>
+                                            <span className="text-[10px] font-medium text-muted-foreground">{meta}</span>
+                                        </button>
+                                    );
+                                })
                             ) : (
                                 <div className="px-3 py-3 text-sm text-muted-foreground">
                                     {skillsLoaded
@@ -1445,6 +1471,24 @@ export function InputArea({
 
                 <div className="flex items-center justify-between px-3 pb-2 pt-0">
                     <div className="flex items-center gap-1.5">
+                        <Button
+                            type="button"
+                            variant={supervisorWorkMode === "engineering" ? "secondary" : "ghost"}
+                            size="sm"
+                            onClick={() => void onSupervisorWorkModeChange?.(supervisorWorkMode === "engineering" ? "daily" : "engineering")}
+                            aria-pressed={supervisorWorkMode === "engineering"}
+                            aria-label={supervisorWorkMode === "engineering" ? t("web.chat.workMode.switchDaily") : t("web.chat.workMode.switchEngineering")}
+                            className={cn(
+                                "h-[28px] gap-1 rounded-lg px-2 transition-colors",
+                                supervisorWorkMode === "engineering"
+                                    ? "bg-violet-500/12 text-violet-700 shadow-[0_0_16px_rgba(139,92,246,0.2)] hover:bg-violet-500/18 dark:bg-violet-500/15 dark:text-violet-200"
+                                    : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
+                            )}
+                            title={supervisorWorkMode === "engineering" ? t("web.chat.workMode.engineering") : t("web.chat.workMode.daily")}
+                        >
+                            <Code2 className="h-4 w-4" />
+                            <span>{supervisorWorkMode === "engineering" ? t("web.chat.workMode.engineering") : t("web.chat.workMode.daily")}</span>
+                        </Button>
                         <Button
                             type="button"
                             variant={specModeEnabled ? "secondary" : "ghost"}

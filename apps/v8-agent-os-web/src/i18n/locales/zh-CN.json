@@ -456,5 +456,9 @@
   "web.uiPatch.status.verified": "已写入并验证",
   "web.uiPatch.status.failed": "验证未通过",
   "web.uiPatch.status.verifying": "正在重载验证",
-  "web.uiPatch.status.undone": "已恢复原文件"
+  "web.uiPatch.status.undone": "已恢复原文件",
+  "web.chat.workMode.daily": "日常模式",
+  "web.chat.workMode.engineering": "编程模式",
+  "web.chat.workMode.switchDaily": "切换到日常模式",
+  "web.chat.workMode.switchEngineering": "切换到编程模式"
 }

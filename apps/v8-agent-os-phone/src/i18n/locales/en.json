@@ -905,5 +905,9 @@
   "src.components.chat.sessionoverviewpanel.subagent_needs_attention": "Needs attention",
   "src.components.chat.sessionoverviewpanel.subagent_self_check": "Self-check",
   "src.components.chat.sessionoverviewpanel.subagent_artifacts": "{count} artifact references returned",
-  "src.components.chat.collaborationmicrostagescene.view_overview": "Collaboration finished · View overview"
+  "src.components.chat.collaborationmicrostagescene.view_overview": "Collaboration finished · View overview",
+  "src.components.chat.composer.switch_daily_mode": "Switch to daily mode",
+  "src.components.chat.composer.switch_engineering_mode": "Switch to engineering mode",
+  "src.components.chat.composer.mode_daily": "Daily",
+  "src.components.chat.composer.mode_engineering": "Engineering"
 }

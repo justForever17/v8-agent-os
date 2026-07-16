@@ -263,6 +263,8 @@ export const Composer = memo(function Composer({
     onRemoveContextSessionRef,
     specModeEnabled,
     onToggleSpecMode,
+    supervisorWorkMode = "daily",
+    onChangeSupervisorWorkMode,
     safetyApprovalMode,
     onChangeSafetyApprovalMode,
     reasoningEffortVisible = false,
@@ -301,6 +303,8 @@ export const Composer = memo(function Composer({
     onRemoveContextSessionRef: (sessionId: string) => void;
     specModeEnabled: boolean;
     onToggleSpecMode: () => void;
+    supervisorWorkMode?: "daily" | "engineering";
+    onChangeSupervisorWorkMode?: (mode: "daily" | "engineering") => void;
     safetyApprovalMode: SafetyApprovalMode;
     onChangeSafetyApprovalMode: (mode: SafetyApprovalMode) => void;
     reasoningEffortVisible?: boolean;
@@ -441,16 +445,10 @@ export const Composer = memo(function Composer({
                             {contextSessionRefs.map((reference) => (
                                 <View
                                     key={reference.sessionId}
-                                    style={[
-                                        styles.tokenChip,
-                                        {
-                                            backgroundColor: themeMode === "dark" ? "rgba(6,182,212,0.16)" : "rgba(6,182,212,0.12)",
-                                            borderColor: themeMode === "dark" ? "rgba(6,182,212,0.26)" : "rgba(6,182,212,0.22)",
-                                        },
-                                    ]}
+                                    style={styles.tokenChip}
                                 >
-                                    <MaterialCommunityIcons name="message-arrow-right-outline" size={11} color={colors.accent} />
-                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                    <MaterialCommunityIcons name="message-arrow-right-outline" size={14} color={colors.accent} />
+                                    <Text style={[styles.tokenText, { color: colors.accent }]} numberOfLines={1}>
                                         {t("shared.conversation.context_session_ref")} · {reference.sessionId.slice(0, 10)}
                                     </Text>
                                     <Pressable
@@ -465,17 +463,10 @@ export const Composer = memo(function Composer({
                             ))}
                             {selectedCommand ? (
                                 <View
-                                    style={[
-                                        styles.tokenChip,
-                                        styles.commandTokenChip,
-                                        {
-                                            backgroundColor: themeMode === "dark" ? "rgba(167,139,250,0.18)" : "rgba(139,92,246,0.12)",
-                                            borderColor: themeMode === "dark" ? "rgba(167,139,250,0.28)" : "rgba(139,92,246,0.22)",
-                                        },
-                                    ]}
+                                    style={[styles.tokenChip, styles.commandTokenChip]}
                                 >
-                                    <MaterialCommunityIcons name="text-short" size={11} color={colors.primary} />
-                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                    <Text style={[styles.tokenPrefix, { color: colors.primary }]}>/</Text>
+                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>
                                         {selectedCommand.name}
                                     </Text>
                                 </View>
@@ -483,16 +474,10 @@ export const Composer = memo(function Composer({
                             {selectedSkills.map((skill) => (
                                 <View
                                     key={`${skill.name}:${skill.path || ""}`}
-                                    style={[
-                                        styles.tokenChip,
-                                        {
-                                            backgroundColor: themeMode === "dark" ? "rgba(251,191,36,0.16)" : "rgba(251,191,36,0.14)",
-                                            borderColor: themeMode === "dark" ? "rgba(251,191,36,0.24)" : "rgba(251,191,36,0.22)",
-                                        },
-                                    ]}
+                                    style={styles.tokenChip}
                                 >
-                                    <MaterialCommunityIcons name="at" size={11} color={colors.warning} />
-                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                    <MaterialCommunityIcons name="at" size={14} color={colors.primary} />
+                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>
                                         {skill.name}
                                     </Text>
                                 </View>
@@ -500,16 +485,10 @@ export const Composer = memo(function Composer({
                             {selectedSubagentFamilies.map((family) => (
                                 <View
                                     key={family.familyId}
-                                    style={[
-                                        styles.tokenChip,
-                                        {
-                                            backgroundColor: themeMode === "dark" ? "rgba(14,165,233,0.16)" : "rgba(14,165,233,0.12)",
-                                            borderColor: themeMode === "dark" ? "rgba(14,165,233,0.24)" : "rgba(14,165,233,0.22)",
-                                        },
-                                    ]}
+                                    style={styles.tokenChip}
                                 >
-                                    <MaterialCommunityIcons name="account-group-outline" size={11} color={colors.accent} />
-                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>
+                                    <MaterialCommunityIcons name="at" size={14} color={colors.primary} />
+                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>
                                         {family.displayName || family.familyId}
                                     </Text>
                                 </View>
@@ -518,28 +497,16 @@ export const Composer = memo(function Composer({
                                 <Pressable
                                     key={plugin.pluginId}
                                     onPress={() => setPluginSheetId(plugin.pluginId)}
-                                    style={[
-                                        styles.tokenChip,
-                                        {
-                                            backgroundColor: themeMode === "dark" ? "rgba(16,185,129,0.15)" : "rgba(16,185,129,0.11)",
-                                            borderColor: themeMode === "dark" ? "rgba(16,185,129,0.25)" : "rgba(16,185,129,0.20)",
-                                        },
-                                    ]}
+                                    style={styles.tokenChip}
                                 >
-                                    <MaterialCommunityIcons name="puzzle-outline" size={11} color={plugin.status === "ready" ? colors.success : colors.warning} />
-                                    <Text style={[styles.tokenText, { color: colors.text }]} numberOfLines={1}>{plugin.displayName}</Text>
-                                        <Text style={[styles.tokenText, { color: colors.textMuted }]}>{plugin.grantScope === "session" ? t("src.components.chat.composer.plugin_scope_session_short") : t("src.components.chat.composer.plugin_scope_task_short")}</Text>
+                                    <MaterialCommunityIcons name="puzzle-outline" size={14} color={plugin.status === "ready" ? colors.success : colors.warning} />
+                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>{plugin.displayName}</Text>
+                                    <Text style={[styles.tokenMetaText, { color: colors.textMuted }]}>{plugin.grantScope === "session" ? t("src.components.chat.composer.plugin_scope_session_short") : t("src.components.chat.composer.plugin_scope_task_short")}</Text>
                                 </Pressable>
                             ))}
                             {activeQueryMode ? (
                                 <View
-                                    style={[
-                                        styles.queryChip,
-                                        {
-                                            backgroundColor: themeMode === "dark" ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.78)",
-                                            borderColor: `${colors.primary}26`,
-                                        },
-                                    ]}
+                                    style={styles.queryChip}
                                 >
                                     <Text style={[styles.queryPrefix, { color: colors.primary }]}>
                                         {activeQueryMode === "command" ? "/" : "@"}
@@ -615,6 +582,37 @@ export const Composer = memo(function Composer({
 
                     <View style={styles.bottomControls}>
                         <View style={styles.leftControls}>
+                            <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={supervisorWorkMode === "engineering"
+                                    ? t("src.components.chat.composer.switch_daily_mode")
+                                    : t("src.components.chat.composer.switch_engineering_mode")}
+                                style={[
+                                    styles.taskModeButton,
+                                    styles.workModeButton,
+                                    {
+                                        backgroundColor: supervisorWorkMode === "engineering" ? colors.primarySoft : "transparent",
+                                        borderColor: supervisorWorkMode === "engineering" ? `${colors.primary}26` : "transparent",
+                                    },
+                                ]}
+                                onPress={() => onChangeSupervisorWorkMode?.(supervisorWorkMode === "engineering" ? "daily" : "engineering")}
+                            >
+                                <MaterialCommunityIcons
+                                    name="code-tags"
+                                    size={19}
+                                    color={supervisorWorkMode === "engineering" ? colors.primaryDeep : colors.textMuted}
+                                />
+                                <Text
+                                    style={[
+                                        styles.workModeText,
+                                        { color: supervisorWorkMode === "engineering" ? colors.primaryDeep : colors.textMuted },
+                                    ]}
+                                >
+                                    {supervisorWorkMode === "engineering"
+                                        ? t("src.components.chat.composer.mode_engineering")
+                                        : t("src.components.chat.composer.mode_daily")}
+                                </Text>
+                            </Pressable>
                             <Pressable
                                 accessibilityRole="button"
                                 accessibilityLabel={specModeEnabled
@@ -933,8 +931,8 @@ const styles = StyleSheet.create({
         flexWrap: "wrap",
         alignItems: "center",
         alignContent: "flex-start",
-        columnGap: 6,
-        rowGap: 6,
+        columnGap: 7,
+        rowGap: 2,
     },
     input: {
         minHeight: 24,
@@ -965,8 +963,8 @@ const styles = StyleSheet.create({
     inputInline: {
         flexGrow: 1,
         flexShrink: 1,
-        flexBasis: 108,
-        minWidth: 92,
+        flexBasis: 64,
+        minWidth: 48,
         maxWidth: "100%",
         paddingLeft: 0,
         paddingRight: 0,
@@ -976,9 +974,7 @@ const styles = StyleSheet.create({
     tokenChip: {
         minHeight: 24,
         maxWidth: "100%",
-        paddingHorizontal: 8,
-        borderRadius: 12,
-        borderWidth: 1,
+        paddingHorizontal: 1,
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
@@ -987,33 +983,46 @@ const styles = StyleSheet.create({
         maxWidth: 176,
     },
     tokenText: {
+        fontSize: 16,
+        fontWeight: "700",
+        lineHeight: 24,
+        flexShrink: 1,
+        includeFontPadding: false,
+    },
+    tokenPrefix: {
+        fontSize: 16,
+        fontWeight: "800",
+        lineHeight: 24,
+        includeFontPadding: false,
+    },
+    tokenMetaText: {
         fontSize: 12,
         fontWeight: "700",
-        lineHeight: 16,
-        flexShrink: 1,
+        lineHeight: 18,
+        includeFontPadding: false,
     },
     queryChip: {
         minHeight: 24,
         minWidth: 68,
-        maxWidth: 180,
-        paddingHorizontal: 8,
-        borderRadius: 12,
-        borderWidth: 1,
+        maxWidth: 220,
+        paddingHorizontal: 1,
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
     },
     queryPrefix: {
-        fontSize: 12,
+        fontSize: 16,
         fontWeight: "800",
+        lineHeight: 24,
+        includeFontPadding: false,
     },
     queryInput: {
         minWidth: 36,
-        maxWidth: 120,
+        maxWidth: 168,
         paddingVertical: 0,
         paddingHorizontal: 0,
-        fontSize: 12,
-        lineHeight: 16,
+        fontSize: 16,
+        lineHeight: 24,
         includeFontPadding: false,
     },
     bottomControls: {
@@ -1038,6 +1047,15 @@ const styles = StyleSheet.create({
         justifyContent: "center",
         borderRadius: 12,
         borderWidth: 1,
+    },
+    workModeButton: {
+        width: "auto",
+        paddingHorizontal: 8,
+        gap: 4,
+    },
+    workModeText: {
+        fontSize: 12,
+        fontWeight: "600",
     },
     safetyControl: {
         zIndex: 20,

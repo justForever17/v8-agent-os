@@ -456,5 +456,9 @@
   "web.uiPatch.status.verified": "Written and verified",
   "web.uiPatch.status.failed": "Verification failed",
   "web.uiPatch.status.verifying": "Reloading to verify",
-  "web.uiPatch.status.undone": "Original file restored"
+  "web.uiPatch.status.undone": "Original file restored",
+  "web.chat.workMode.daily": "Daily mode",
+  "web.chat.workMode.engineering": "Engineering mode",
+  "web.chat.workMode.switchDaily": "Switch to daily mode",
+  "web.chat.workMode.switchEngineering": "Switch to engineering mode"
 }

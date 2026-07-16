@@ -228,12 +228,44 @@ def _artifact_nodes_for_message(message_id: str, artifacts: list[dict[str, Any]]
     return nodes
 
 
+def _is_human_surface_artifact(artifact: dict[str, Any]) -> bool:
+    metadata = _as_dict(artifact.get("metadata"))
+    resource_role = str(
+        artifact.get("resourceRole")
+        or artifact.get("resource_role")
+        or metadata.get("resourceRole")
+        or metadata.get("resource_role")
+        or "artifact"
+    ).strip()
+    if resource_role != "artifact":
+        return False
+    origin = " ".join(
+        str(value or "").strip().lower()
+        for value in (
+            artifact.get("origin"),
+            artifact.get("artifactOrigin"),
+            metadata.get("origin"),
+            metadata.get("source"),
+            artifact.get("sourceComponent"),
+            artifact.get("source_component"),
+        )
+    )
+    if any(marker in origin for marker in ("upload", "chat_attachment", "vision_media_analyzer", "desktop_pet_voice")):
+        return False
+    path_probe = str(artifact.get("workspacePath") or artifact.get("sourcePath") or "").replace("\\", "/").lower()
+    return "/.v8/uploads/" not in path_probe
+
+
 def format_canonical_message(row: CanonicalMessage, runtime_artifacts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     metadata = _as_dict(row.get("metadata"))
     stored_nodes = [dict(node) for node in _as_list(row.get("nodes")) if isinstance(node, dict)]
     base_nodes = normalize_canonical_nodes(stored_nodes, role=str(row.get("role") or ""))
     stored_artifacts = [dict(item) for item in _as_list(row.get("artifacts")) if isinstance(item, dict)]
-    effective_artifacts = merge_artifacts(stored_artifacts, [dict(item) for item in _as_list(runtime_artifacts) if isinstance(item, dict)])
+    effective_artifacts = [
+        artifact
+        for artifact in merge_artifacts(stored_artifacts, [dict(item) for item in _as_list(runtime_artifacts) if isinstance(item, dict)])
+        if _is_human_surface_artifact(artifact)
+    ]
     nodes = base_nodes + _artifact_nodes_for_message(str(row.get("id") or ""), effective_artifacts, metadata)
     derived_content_text, derived_reasoning_text = derive_text_fields(base_nodes)
     has_canonical_text_nodes = any(

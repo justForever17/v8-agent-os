@@ -174,6 +174,12 @@ interface InputAreaProps {
     contextSessionRefs?: ContextSessionReference[];
     onRemoveContextSessionRef?: (sessionId: string) => void;
     contextUsagePercent?: number | null;
+    uploadScope?: {
+        sessionId?: string | null;
+        workspaceId?: string | null;
+        workspacePath?: string | null;
+        projectId?: string | null;
+    };
 }
 
 interface ContextSessionReference {
@@ -198,6 +204,40 @@ interface VoiceAudioMessageData {
     fileUrls: string[];
     attachments: Array<Record<string, unknown>>;
     safetyApprovalMode?: SafetyApprovalMode;
+}
+
+type UploadedSourceDescriptor = {
+    id?: string;
+    sourceId?: string;
+    sourceKind?: string;
+    resourceRole?: string;
+    name?: string;
+    url?: string;
+    publicUrl?: string;
+    previewUrl?: string;
+    workspacePath?: string;
+    workspaceRelativePath?: string;
+    resourceRef?: Record<string, unknown>;
+    type?: string;
+    size?: number;
+};
+
+function appendUploadScope(
+    formData: FormData,
+    scope: InputAreaProps["uploadScope"],
+    sourceKind: "web_upload" | "web_voice",
+) {
+    formData.set("sourceKind", sourceKind);
+    const entries = {
+        sessionId: scope?.sessionId,
+        workspaceId: scope?.workspaceId,
+        workspacePath: scope?.workspacePath,
+        projectId: scope?.projectId,
+    };
+    for (const [key, value] of Object.entries(entries)) {
+        const normalized = String(value || "").trim();
+        if (normalized) formData.set(key, normalized);
+    }
 }
 
 interface AudioInputStatusPayload {
@@ -284,6 +324,7 @@ export function InputArea({
     contextSessionRefs = [],
     onRemoveContextSessionRef,
     contextUsagePercent = null,
+    uploadScope,
 }: InputAreaProps) {
     const t = useT();
     const [commandPresets, setCommandPresets] = React.useState<CommandPresetSummary[]>([]);
@@ -304,7 +345,7 @@ export function InputArea({
     const [safetyApprovalMode, setSafetyApprovalMode] = React.useState<SafetyApprovalMode>("reduced");
     const [safetyApprovalModeOpen, setSafetyApprovalModeOpen] = React.useState(false);
     const [files, setFiles] = React.useState<File[]>([]);
-    const [uploadedUrls, setUploadedUrls] = React.useState<string[]>([]);
+    const [uploadedSources, setUploadedSources] = React.useState<UploadedSourceDescriptor[]>([]);
     const [uploading, setUploading] = React.useState(false);
     const [isRecording, setIsRecording] = React.useState(false);
     const [isTranscribing, setIsTranscribing] = React.useState(false);
@@ -697,13 +738,13 @@ export function InputArea({
                 const uploadPromises = newFiles.map(async (file) => {
                     const formData = new FormData();
                     formData.append('file', file);
+                    appendUploadScope(formData, uploadScope, "web_upload");
                     const res = await fetch(`/api/upload`, { method: 'POST', body: formData });
                     if (!res.ok) throw new Error("Failed to upload file");
-                    const { url } = await res.json();
-                    return url;
+                    return await res.json() as UploadedSourceDescriptor;
                 });
-                const urls = await Promise.all(uploadPromises);
-                setUploadedUrls((prev) => [...prev, ...urls]);
+                const uploaded = await Promise.all(uploadPromises);
+                setUploadedSources((prev) => [...prev, ...uploaded]);
             } catch (error) {
                 console.error('Upload failed:', error);
                 showInlineNotice("error", t("web.generated.a0608c519e"));
@@ -715,7 +756,7 @@ export function InputArea({
 
     const removeFile = (index: number) => {
         setFiles((prev) => prev.filter((_, i) => i !== index));
-        setUploadedUrls((prev) => prev.filter((_, i) => i !== index));
+        setUploadedSources((prev) => prev.filter((_, i) => i !== index));
     };
 
     React.useEffect(() => {
@@ -770,6 +811,7 @@ export function InputArea({
         const file = new File([blob], "voice-input.wav", { type: "audio/wav" });
         const formData = new FormData();
         formData.append("file", file);
+        appendUploadScope(formData, uploadScope, "web_voice");
         const res = await fetch("/api/upload", { method: "POST", body: formData });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -786,12 +828,20 @@ export function InputArea({
         const messageData = {
             fileUrls: [url],
             attachments: [{
+                id: payload?.id,
+                sourceId: payload?.sourceId || payload?.id,
+                sourceKind: payload?.sourceKind || "web_voice",
+                resourceRole: "source",
                 url,
                 publicUrl: String(payload?.publicUrl || url),
+                previewUrl: String(payload?.previewUrl || payload?.publicUrl || url),
                 name: file.name,
                 mimeType: file.type,
                 size: file.size,
                 mediaKind: "audio",
+                workspacePath: payload?.workspacePath,
+                workspaceRelativePath: payload?.workspaceRelativePath,
+                resourceRef: payload?.resourceRef,
                 source: "os_web_voice_upload",
             }],
             safetyApprovalMode,
@@ -806,7 +856,7 @@ export function InputArea({
             const message = error instanceof Error ? error.message : t("web.generated.accc20bbec");
             showInlineNotice("error", t("web.generated.8b30d36521", { value0: message }));
         }
-    }, [onVoiceAudioMessage, safetyApprovalMode, showInlineNotice, t]);
+    }, [onVoiceAudioMessage, safetyApprovalMode, showInlineNotice, t, uploadScope]);
 
     const transcribeAudio = React.useCallback(async (blob: Blob) => {
         try {
@@ -968,14 +1018,25 @@ export function InputArea({
                 if (contextSessionRefs.length > 0) {
                     nextData.contextSessionRefs = contextSessionRefs;
                 }
-                if (uploadedUrls.length > 0) {
-                    nextData.fileUrls = uploadedUrls;
-                    nextData.attachments = uploadedUrls.map((url, index) => ({
-                        url,
-                        publicUrl: url,
-                        name: files[index]?.name || undefined,
-                        mimeType: files[index]?.type || undefined,
-                        size: typeof files[index]?.size === "number" ? files[index]?.size : undefined,
+                if (uploadedSources.length > 0) {
+                    nextData.fileUrls = uploadedSources
+                        .map((item) => String(item.url || item.publicUrl || "").trim())
+                        .filter(Boolean);
+                    nextData.attachments = uploadedSources.map((item, index) => ({
+                        id: item.id,
+                        sourceId: item.sourceId || item.id,
+                        sourceKind: item.sourceKind || "web_upload",
+                        resourceRole: "source",
+                        url: item.url || item.publicUrl,
+                        publicUrl: item.publicUrl || item.url,
+                        previewUrl: item.previewUrl || item.publicUrl || item.url,
+                        name: item.name || files[index]?.name || undefined,
+                        mimeType: item.type || files[index]?.type || undefined,
+                        mediaKind: item.type?.split("/", 1)[0] || undefined,
+                        size: item.size ?? (typeof files[index]?.size === "number" ? files[index]?.size : undefined),
+                        workspacePath: item.workspacePath,
+                        workspaceRelativePath: item.workspaceRelativePath,
+                        resourceRef: item.resourceRef,
                         source: "os_web_upload",
                     }));
                 }
@@ -1036,7 +1097,7 @@ export function InputArea({
 
                 await handleSubmit(e, { data: nextData });
                 setFiles([]);
-                setUploadedUrls([]);
+                setUploadedSources([]);
                 setSelectedCommandPreset(null);
                 setSelectedSkills([]);
                 setSelectedSubagentFamilies([]);

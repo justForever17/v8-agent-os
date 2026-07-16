@@ -659,18 +659,28 @@ type UserAttachmentItem = {
     kind: "image" | "video" | "audio" | "file";
 };
 
-function attachmentKind(name: string, mimeType: string): UserAttachmentItem["kind"] {
-    const normalizedName = String(name || "").toLowerCase();
+function attachmentKind(name: string, mimeType: string, mediaKind = ""): UserAttachmentItem["kind"] {
+    const normalizedName = (() => {
+        try {
+            return decodeURIComponent(String(name || "")).toLowerCase();
+        } catch {
+            return String(name || "").toLowerCase();
+        }
+    })();
     const normalizedType = String(mimeType || "").toLowerCase();
-    if (normalizedType.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(normalizedName)) {
+    const normalizedKind = String(mediaKind || "").toLowerCase();
+    if (normalizedKind === "image" || normalizedType.startsWith("image/")) {
         return "image";
     }
-    if (normalizedType.startsWith("video/") || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(normalizedName)) {
+    if (normalizedKind === "video" || normalizedType.startsWith("video/")) {
         return "video";
     }
-    if (normalizedType.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)$/i.test(normalizedName)) {
+    if (normalizedKind === "audio" || normalizedType.startsWith("audio/")) {
         return "audio";
     }
+    if (/\.(png|jpe?g|webp|gif|bmp|heic|heif)(?:[?#\s].*)?$/i.test(normalizedName)) return "image";
+    if (/\.(mp4|mov|m4v|webm|mkv|avi)(?:[?#\s].*)?$/i.test(normalizedName)) return "video";
+    if (/\.(mp3|m4a|wav|ogg|opus|aac|flac)(?:[?#\s].*)?$/i.test(normalizedName)) return "audio";
     return "file";
 }
 
@@ -743,7 +753,11 @@ function extractUserAttachments(message: ChatMessage, adminBaseUrl: string): Use
                     url,
                     mimeType,
                     size: typeof item.size === "number" ? item.size : Number(item.size) || undefined,
-                    kind: attachmentKind(name, mimeType),
+                    kind: attachmentKind(
+                        `${name} ${previewCandidate} ${displayPath}`,
+                        mimeType,
+                        String(item.mediaKind || item.previewKind || item.kind || ""),
+                    ),
                 };
             });
     }

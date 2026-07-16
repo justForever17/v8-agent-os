@@ -14,13 +14,16 @@ import {
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import {
     buildSessionOutputProjection,
+    buildSessionSourceProjection,
     buildSubagentReturnProjection,
+    type SessionSourceProjection,
+    type SessionSourceRef,
     type SubagentReturnProjection,
 } from "@v8/session-realtime";
 import Animated, { SlideInRight } from "react-native-reanimated";
 
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
-import { listSessionArtifacts, readSessionWorkbenchFile } from "@/src/lib/phone-api";
+import { listSessionArtifacts, listSessionSources, readSessionWorkbenchFile } from "@/src/lib/phone-api";
 import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
@@ -140,6 +143,45 @@ function SubagentReturnsSection({ items }: { items: SubagentReturnProjection[] }
                 <MaterialCommunityIcons name={expanded ? "chevron-up" : "chevron-down"} size={20} color={colors.textMuted} />
             </Pressable>
             {expanded ? <View style={[styles.subagentList, { borderTopColor: colors.border }]}>{items.map((item) => <SubagentReturnItem key={item.id} item={item} />)}</View> : null}
+        </View>
+    );
+}
+
+function SourcesSection({ items }: { items: SessionSourceProjection[] }) {
+    const { colors, t } = useUiPrefs();
+    const [expanded, setExpanded] = useState(false);
+    if (!items.length) return null;
+    const mediaLabel = (item: SessionSourceProjection) => {
+        if (item.mediaKind === "audio") return t("src.components.chat.sessionoverviewpanel.source_audio");
+        if (item.mediaKind === "image") return t("src.components.chat.sessionoverviewpanel.source_image");
+        if (item.mediaKind === "video") return t("src.components.chat.sessionoverviewpanel.source_video");
+        return t("src.components.chat.sessionoverviewpanel.source_file");
+    };
+    return (
+        <View style={[styles.sourceSection, { borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}>
+            <Pressable onPress={() => setExpanded((value) => !value)} style={styles.sourceSectionHeader} accessibilityRole="button">
+                <MaterialCommunityIcons name="paperclip" size={18} color={colors.textMuted} />
+                <Text style={[styles.sourceSectionTitle, { color: colors.text }]}>{t("src.components.chat.sessionoverviewpanel.sources")}</Text>
+                <Text style={[styles.sourceSectionCount, { color: colors.textMuted }]}>{items.length}</Text>
+                <MaterialCommunityIcons name={expanded ? "chevron-up" : "chevron-down"} size={20} color={colors.textMuted} />
+            </Pressable>
+            {expanded ? (
+                <View style={[styles.sourceList, { borderTopColor: colors.border }]}>
+                    {items.map((item) => (
+                        <View key={item.id} style={[styles.sourceItem, { borderBottomColor: colors.border }]}>
+                            <MaterialCommunityIcons
+                                name={item.mediaKind === "audio" ? "music-note" : item.mediaKind === "image" ? "image-outline" : item.mediaKind === "video" ? "video-outline" : "file-outline"}
+                                size={18}
+                                color={colors.textMuted}
+                            />
+                            <View style={styles.sourceBody}>
+                                <Text numberOfLines={1} style={[styles.sourceName, { color: colors.text }]}>{item.name}</Text>
+                                <Text numberOfLines={1} style={[styles.sourceMeta, { color: colors.textMuted }]}>{mediaLabel(item)}</Text>
+                            </View>
+                        </View>
+                    ))}
+                </View>
+            ) : null}
         </View>
     );
 }
@@ -288,6 +330,7 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
     const { width } = useWindowDimensions();
     const { colors, t } = useUiPrefs();
     const [sessionArtifacts, setSessionArtifacts] = useState<ArtifactDetail[]>([]);
+    const [sessionSources, setSessionSources] = useState<SessionSourceRef[]>([]);
     const [loading, setLoading] = useState(false);
     const files = useMemo<OverviewFile[]>(() => buildSessionOutputProjection(messages, sessionArtifacts, { sessionId, evidence: outputEvidence })
         .filter((output) => Boolean(output.path))
@@ -301,6 +344,7 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
         () => buildSubagentReturnProjection(messages, runtimeActivities.map((activity) => activity.node)),
         [messages, runtimeActivities],
     );
+    const sources = useMemo(() => buildSessionSourceProjection(messages, sessionSources), [messages, sessionSources]);
 
     useEffect(() => {
         let disposed = false;
@@ -319,6 +363,22 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
             .finally(() => {
                 if (!disposed) setLoading(false);
         });
+        return () => { disposed = true; };
+    }, [authorizedFetch, sessionId, visible]);
+
+    useEffect(() => {
+        let disposed = false;
+        if (!visible || !sessionId.trim()) {
+            if (!sessionId.trim()) setSessionSources([]);
+            return () => { disposed = true; };
+        }
+        void listSessionSources(authorizedFetch, sessionId.trim())
+            .then((items) => {
+                if (!disposed) setSessionSources(items);
+            })
+            .catch(() => {
+                if (!disposed) setSessionSources([]);
+            });
         return () => { disposed = true; };
     }, [authorizedFetch, sessionId, visible]);
 
@@ -364,6 +424,7 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
                     </View>
                     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
                         <SubagentReturnsSection items={subagentReturns} />
+                        <SourcesSection items={sources} />
                         {loading && files.length === 0 ? <ActivityIndicator color={colors.primary} style={styles.loading} /> : null}
                         {!loading && files.length === 0 ? (
                             <View style={styles.emptyState}>
@@ -430,4 +491,13 @@ const styles = StyleSheet.create({
     subagentSummaryCard: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radii.md, padding: spacing.sm, gap: spacing.xs },
     subagentSummaryTitle: { fontSize: 11, fontWeight: "700" },
     subagentDetailMuted: { fontSize: 11, lineHeight: 17 },
+    sourceSection: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radii.lg, overflow: "hidden" },
+    sourceSectionHeader: { minHeight: 52, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    sourceSectionTitle: { flex: 1, fontSize: 14, fontWeight: "700" },
+    sourceSectionCount: { fontSize: 11 },
+    sourceList: { borderTopWidth: StyleSheet.hairlineWidth },
+    sourceItem: { minHeight: 48, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm },
+    sourceBody: { flex: 1, minWidth: 0, gap: 2 },
+    sourceName: { fontSize: 12, fontWeight: "600" },
+    sourceMeta: { fontSize: 10 },
 });

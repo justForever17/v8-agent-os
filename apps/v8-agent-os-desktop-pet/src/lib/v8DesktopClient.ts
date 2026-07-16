@@ -396,7 +396,7 @@ export class V8DesktopClientAdapter {
     });
   }
 
-  async uploadFile(file: File, scope: { conversationId?: string; workspacePath?: string }) {
+  async uploadFile(file: File, scope: { conversationId?: string; workspacePath?: string; sourceKind?: "desktop_pet_upload" | "desktop_pet_voice" }) {
     const session = this.session;
     if (!session?.accessToken) {
       throw new Error("尚未连接 V8OS Admin");
@@ -410,6 +410,7 @@ export class V8DesktopClientAdapter {
     if (scope.workspacePath) {
       form.append("workspacePath", scope.workspacePath);
     }
+    form.append("sourceKind", scope.sourceKind || "desktop_pet_upload");
     const response = await fetch(localProxyPath("/api/client/upload"), {
       method: "POST",
       headers: {

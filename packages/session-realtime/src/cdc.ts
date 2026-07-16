@@ -206,6 +206,12 @@ export function coerceAuthoritativeSessionSnapshot(raw: unknown): AuthoritativeS
       : Array.isArray(root.artifacts)
         ? (root.artifacts as unknown[])
         : undefined,
+    sources: asRecordArray(
+      root.sources,
+      nestedSnapshot.sources,
+      effectiveProjection.sources,
+      workflowProjection.sources,
+    ) as AuthoritativeSessionSnapshot["sources"],
     processes: normalizeProcesses(
       root.processes
       || effectiveProjection.processes

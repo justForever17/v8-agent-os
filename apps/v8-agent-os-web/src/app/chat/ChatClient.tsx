@@ -3263,6 +3263,12 @@ export default function ChatClient() {
                                     reasoningEffortControl={supervisorReasoningEffortControl}
                                     contextSessionRefs={pendingContextSessionRefs}
                                     contextUsagePercent={projectionContextUsagePercent}
+                                    uploadScope={{
+                                        sessionId: activeConversationId,
+                                        workspaceId: scopeBinding?.workspaceId,
+                                        workspacePath: scopeBinding?.workspacePath || mainWorkspacePath,
+                                        projectId: scopeBinding?.projectId,
+                                    }}
                                     onRemoveContextSessionRef={(sessionId) => {
                                         setPendingContextSessionRefs((current) => {
                                             const next = current.filter((item) => item.sessionId !== sessionId);

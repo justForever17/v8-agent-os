@@ -277,17 +277,31 @@ function extractMessageAttachments(message: Message): MessageAttachmentRecord[] 
 }
 
 function isAudioAttachmentRecord(item: MessageAttachmentRecord) {
+    const probe = (() => {
+        try {
+            return decodeURIComponent(`${item.name} ${item.url}`);
+        } catch {
+            return `${item.name} ${item.url}`;
+        }
+    })();
     return item.mediaKind === "audio"
         || item.mimeType.startsWith("audio/")
-        || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#].*)?$/i.test(item.url);
+        || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#\s].*)?$/i.test(probe);
 }
 
 function isVisualAttachmentRecord(item: MessageAttachmentRecord) {
+    const probe = (() => {
+        try {
+            return decodeURIComponent(`${item.name} ${item.url}`);
+        } catch {
+            return `${item.name} ${item.url}`;
+        }
+    })();
     return item.mediaKind === "image"
         || item.mediaKind === "video"
         || item.mimeType.startsWith("image/")
         || item.mimeType.startsWith("video/")
-        || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|webm|mov|m4v)(?:[?#].*)?$/i.test(item.url);
+        || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|webm|mov|m4v)(?:[?#\s].*)?$/i.test(probe);
 }
 
 function MessageActionButtons({

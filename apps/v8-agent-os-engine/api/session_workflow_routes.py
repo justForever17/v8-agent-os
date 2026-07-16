@@ -1045,6 +1045,14 @@ async def list_runtime_artifacts(session_id: str | None = None, run_id: str | No
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/sources")
+async def list_session_sources(session_id: str, limit: int = 100):
+    try:
+        return {"sources": db.list_session_sources(session_id=session_id, limit=limit)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/artifacts/adopt-workspace-file")
 async def adopt_workspace_artifact(body: dict = Body(...)):
     try:

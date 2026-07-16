@@ -1120,7 +1120,11 @@ class ChatRuntime:
                         "prompt": prompt,
                     }
                     invoke_payload = {key: value for key, value in invoke_payload.items() if value not in (None, "", [], {})}
-                    with bind_runtime_context(**self._runtime_context_kwargs(chat_run)):
+                    attachment_runtime_context = {
+                        **self._runtime_context_kwargs(chat_run),
+                        "source_id": str(attachment.get("sourceId") or attachment.get("source_id") or "").strip() or None,
+                    }
+                    with bind_runtime_context(**attachment_runtime_context):
                         output = await asyncio.to_thread(vision_media_analyzer.invoke, invoke_payload)
                 status = "completed"
             except Exception as exc:
@@ -2969,6 +2973,8 @@ class ChatRuntime:
                     "kind": "artifact",
                     "artifact": {
                         "id": str(attachment.get("id") or f"{user_message_id}:attachment:{index}"),
+                        "sourceId": str(attachment.get("sourceId") or attachment.get("source_id") or attachment.get("id") or "").strip() or None,
+                        "resourceRole": "source",
                         "kind": "file",
                         "title": self._attachment_name(attachment),
                         "displayLabel": self._attachment_name(attachment),
@@ -2978,7 +2984,10 @@ class ChatRuntime:
                         "previewUrl": attachment.get("publicUrl") or attachment.get("public_url") or attachment.get("url"),
                         "mimeType": attachment.get("mimeType") or attachment.get("mime_type") or attachment.get("type"),
                         "size": attachment.get("size"),
-                        "metadata": {"source": attachment.get("source") or "chat_attachment"},
+                        "metadata": {
+                            "source": attachment.get("source") or "chat_attachment",
+                            "resourceRole": "source",
+                        },
                     },
                     "timestamp": self._now_timestamp_ms(),
                 }
@@ -3021,6 +3030,16 @@ class ChatRuntime:
                     **({"attachments": attachments} if attachments else {}),
                 },
             )
+            bind_session_sources = getattr(db, "bind_session_sources_to_message", None)
+            if callable(bind_session_sources):
+                bind_session_sources(
+                    session_id=chat_run.session_id,
+                    source_ids=[
+                        str(attachment.get("sourceId") or attachment.get("source_id") or attachment.get("id") or "").strip()
+                        for attachment in attachments
+                    ],
+                    message_id=user_message_id,
+                )
             chat_run.emit_runtime_event(
                 "message.user.recorded",
                 {

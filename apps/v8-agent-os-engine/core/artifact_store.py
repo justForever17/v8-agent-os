@@ -26,7 +26,7 @@ class ArtifactStore:
         source_component: str,
         node: str,
     ) -> None:
-        if not session_id or not run_id:
+        if not session_id or not run_id or str(descriptor.get("resourceRole") or "artifact") != "artifact":
             return
         emitter = event_bus.create_emitter(
             session_id=session_id,
@@ -41,6 +41,47 @@ class ArtifactStore:
         )
         emitter.emit("artifact.recorded", descriptor)
 
+    @staticmethod
+    def _apply_resource_contract(
+        descriptor: Dict[str, Any],
+        *,
+        session_id: Optional[str],
+        run_id: Optional[str],
+        resource_role: str,
+        source_id: Optional[str],
+        auto_attach_to_message: Optional[bool],
+    ) -> Dict[str, Any]:
+        role = str(resource_role or "artifact").strip()
+        if role not in {"artifact", "source_derivative"}:
+            role = "artifact"
+        metadata = dict(descriptor.get("metadata") or {})
+        metadata["resourceRole"] = role
+        if source_id:
+            metadata["sourceId"] = source_id
+        descriptor["metadata"] = metadata
+        descriptor["resourceRole"] = role
+        descriptor["sourceId"] = source_id
+        descriptor = apply_artifact_surface_policy(descriptor, session_id=session_id, run_id=run_id)
+
+        effective_auto_attach = bool(descriptor.get("autoAttachToMessage"))
+        if auto_attach_to_message is not None:
+            effective_auto_attach = bool(auto_attach_to_message)
+        if role != "artifact":
+            effective_auto_attach = False
+        metadata = dict(descriptor.get("metadata") or {})
+        metadata["resourceRole"] = role
+        metadata["autoAttachToMessage"] = effective_auto_attach
+        if source_id:
+            metadata["sourceId"] = source_id
+        if not effective_auto_attach:
+            metadata["surfaceVisible"] = False
+            descriptor["surfaceVisible"] = False
+        descriptor["metadata"] = metadata
+        descriptor["resourceRole"] = role
+        descriptor["sourceId"] = source_id
+        descriptor["autoAttachToMessage"] = effective_auto_attach
+        return descriptor
+
     def record_artifact(
         self,
         *,
@@ -49,6 +90,9 @@ class ArtifactStore:
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        resource_role: str = "artifact",
+        source_id: Optional[str] = None,
+        auto_attach_to_message: Optional[bool] = None,
         title: Optional[str] = None,
         source_path: Optional[str] = None,
         workspace_path: Optional[str] = None,
@@ -82,10 +126,13 @@ class ArtifactStore:
                 "previewKind": artifact_kind if artifact_kind in {"image", "video", "audio"} else "metadata",
             }
         )
-        descriptor = apply_artifact_surface_policy(
+        descriptor = self._apply_resource_contract(
             descriptor,
             session_id=session_id,
             run_id=run_id,
+            resource_role=resource_role,
+            source_id=source_id,
+            auto_attach_to_message=auto_attach_to_message,
         )
         db.add_runtime_artifact(
             artifact_id=artifact_id,
@@ -94,6 +141,9 @@ class ArtifactStore:
             session_id=session_id,
             run_id=run_id,
             message_id=message_id,
+            resource_role=descriptor.get("resourceRole") or "artifact",
+            source_id=descriptor.get("sourceId"),
+            auto_attach_to_message=bool(descriptor.get("autoAttachToMessage")),
             title=descriptor.get("title"),
             source_path=descriptor.get("sourcePath"),
             workspace_path=descriptor.get("workspacePath"),
@@ -117,6 +167,9 @@ class ArtifactStore:
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        resource_role: str = "artifact",
+        source_id: Optional[str] = None,
+        auto_attach_to_message: Optional[bool] = None,
         workspace_path: Optional[str] = None,
         external_url: Optional[str] = None,
         preview_url: Optional[str] = None,
@@ -150,10 +203,13 @@ class ArtifactStore:
                 "previewKind": descriptor.get("kind") if descriptor.get("kind") in {"image", "video", "audio"} else "metadata",
             }
         )
-        descriptor = apply_artifact_surface_policy(
+        descriptor = self._apply_resource_contract(
             descriptor,
             session_id=session_id,
             run_id=run_id,
+            resource_role=resource_role,
+            source_id=source_id,
+            auto_attach_to_message=auto_attach_to_message,
         )
         db.add_runtime_artifact(
             artifact_id=descriptor["artifactId"],
@@ -162,6 +218,9 @@ class ArtifactStore:
             session_id=session_id,
             run_id=run_id,
             message_id=message_id,
+            resource_role=descriptor.get("resourceRole") or "artifact",
+            source_id=descriptor.get("sourceId"),
+            auto_attach_to_message=bool(descriptor.get("autoAttachToMessage")),
             title=descriptor.get("title"),
             source_path=descriptor.get("sourcePath"),
             workspace_path=descriptor.get("workspacePath"),

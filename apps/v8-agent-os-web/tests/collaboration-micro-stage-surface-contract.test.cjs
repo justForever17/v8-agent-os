@@ -248,7 +248,9 @@ test("Web topbar locale menu stays above the multifunction workbench", () => {
 });
 
 test("Local clients consume the packed message-bound execution exports with matching lock integrity", async () => {
-  const tgzRelativePath = "packages/session-realtime/v8-session-realtime-0.0.9.tgz";
+  const sharedPackage = JSON.parse(readText("packages/session-realtime/package.json"));
+  const archiveName = `v8-session-realtime-${sharedPackage.version}.tgz`;
+  const tgzRelativePath = `packages/session-realtime/${archiveName}`;
   const tgzPath = path.join(repoRoot, tgzRelativePath);
   const tgz = readBinary(tgzRelativePath);
   const expectedIntegrity = `sha512-${crypto.createHash("sha512").update(tgz).digest("base64")}`;
@@ -259,7 +261,7 @@ test("Local clients consume the packed message-bound execution exports with matc
   ]) {
     const lock = JSON.parse(readText(lockPath));
     const lockEntry = lock.packages?.["node_modules/@v8/session-realtime"];
-    assert.equal(lockEntry?.resolved, "file:../../packages/session-realtime/v8-session-realtime-0.0.9.tgz");
+    assert.equal(lockEntry?.resolved, `file:../../packages/session-realtime/${archiveName}`);
     assert.equal(lockEntry?.integrity, expectedIntegrity, lockPath);
   }
 

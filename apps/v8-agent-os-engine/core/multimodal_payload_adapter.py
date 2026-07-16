@@ -315,6 +315,24 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
     title = record.get("title") or artifact_id
     created_at = record.get("createdAt") or record.get("created_at")
     source_component = record.get("sourceComponent") or record.get("source_component")
+    resource_role = (
+        record.get("resourceRole")
+        or record.get("resource_role")
+        or metadata.get("resourceRole")
+        or metadata.get("resource_role")
+        or "artifact"
+    )
+    source_id = record.get("sourceId") or record.get("source_id") or metadata.get("sourceId") or metadata.get("source_id")
+    raw_auto_attach = (
+        record.get("autoAttachToMessage")
+        if record.get("autoAttachToMessage") is not None
+        else record.get("auto_attach_to_message")
+        if record.get("auto_attach_to_message") is not None
+        else metadata.get("autoAttachToMessage")
+        if metadata.get("autoAttachToMessage") is not None
+        else metadata.get("auto_attach_to_message")
+    )
+    auto_attach_to_message = bool(raw_auto_attach)
     supports_inline_preview = bool(
         record.get("supportsInlinePreview")
         if record.get("supportsInlinePreview") is not None
@@ -365,6 +383,10 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             "created_at": created_at,
             "sourceComponent": source_component,
             "source_component": source_component,
+            "resourceRole": resource_role,
+            "resource_role": resource_role,
+            "sourceId": source_id,
+            "source_id": source_id,
             "supportsInlinePreview": supports_inline_preview,
             "supports_inline_preview": supports_inline_preview,
             "previewKind": preview_kind,
@@ -389,12 +411,8 @@ def normalize_artifact_record(record: Dict[str, Any]) -> Dict[str, Any]:
             "surface_visible": metadata.get("surfaceVisible")
                 if metadata.get("surfaceVisible") is not None
                 else metadata.get("surface_visible"),
-            "autoAttachToMessage": metadata.get("autoAttachToMessage")
-                if metadata.get("autoAttachToMessage") is not None
-                else metadata.get("auto_attach_to_message"),
-            "auto_attach_to_message": metadata.get("autoAttachToMessage")
-                if metadata.get("autoAttachToMessage") is not None
-                else metadata.get("auto_attach_to_message"),
+            "autoAttachToMessage": auto_attach_to_message,
+            "auto_attach_to_message": auto_attach_to_message,
             "ephemeral": metadata.get("ephemeral"),
             "artifactSurfacePolicyRuleId": metadata.get("artifactSurfacePolicyRuleId")
                 or metadata.get("artifact_surface_policy_rule_id"),

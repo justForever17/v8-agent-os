@@ -1,13 +1,67 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "react-native";
-import { Linking } from "react-native";
 import { WebView } from "react-native-webview";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 
 import { MediaViewerLightbox, type MediaItem } from "@/src/components/chat/MediaViewerLightbox";
 import { usePreparedPhoneMediaSource } from "@/src/lib/phone-media-source";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
+
+const InlineAudioPlayback = memo(function InlineAudioPlayback({
+    src,
+    title,
+    isMusic,
+}: {
+    src: string;
+    title: string;
+    isMusic: boolean;
+}) {
+    const { colors, t } = useUiPrefs();
+    const player = useAudioPlayer();
+    const status = useAudioPlayerStatus(player);
+    useEffect(() => {
+        player.pause();
+        player.replace({ uri: src });
+        return () => player.pause();
+    }, [player, src]);
+    const duration = Number(status.duration || 0);
+    const currentTime = Number(status.currentTime || 0);
+    const progress = duration > 0 ? Math.max(0, Math.min(100, currentTime / duration * 100)) : 0;
+    return (
+        <View style={[styles.audioCard, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
+            <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                    if (status.playing) player.pause();
+                    else player.play();
+                }}
+                style={[styles.audioIcon, { backgroundColor: colors.primarySoft }]}
+            >
+                <MaterialCommunityIcons name={status.playing ? "pause" : "play"} size={20} color={colors.primaryDeep} />
+            </Pressable>
+            <View style={styles.audioBody}>
+                <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{title}</Text>
+                <View style={[styles.audioTrack, { backgroundColor: colors.border }]}>
+                    <View style={[styles.audioTrackProgress, { backgroundColor: colors.primary, width: `${progress}%` }]} />
+                </View>
+                <Text style={[styles.audioSubtitle, { color: colors.textMuted }]} numberOfLines={1}>
+                    {isMusic ? t("src.components.chat.mediarenderers.tap_to_open_music_artifact") : t("src.components.chat.mediarenderers.tap_to_open_audio")}
+                </Text>
+            </View>
+            <Pressable
+                onPress={() => {
+                    const seekable = player as typeof player & { seekTo?: (position: number) => void };
+                    seekable.seekTo?.(0);
+                }}
+                style={styles.openButton}
+            >
+                <MaterialCommunityIcons name="replay" size={16} color={colors.textSoft} />
+            </Pressable>
+        </View>
+    );
+});
 
 export const MediaPlayer = memo(function MediaPlayer({
     src,
@@ -54,22 +108,7 @@ export const MediaPlayer = memo(function MediaPlayer({
                 </View>
             );
         }
-        return (
-            <View style={[styles.audioCard, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
-                <View style={[styles.audioIcon, { backgroundColor: colors.primarySoft }]}>
-                    <MaterialCommunityIcons name={isMusic ? "album" : "music-note-outline"} size={18} color={colors.primaryDeep} />
-                </View>
-                <View style={styles.audioBody}>
-                    <Text style={[styles.audioTitle, { color: colors.text }]} numberOfLines={1}>{displayTitle}</Text>
-                    <Text style={[styles.audioSubtitle, { color: colors.textMuted }]} numberOfLines={1}>
-                        {isMusic ? t("src.components.chat.mediarenderers.tap_to_open_music_artifact") : t("src.components.chat.mediarenderers.tap_to_open_audio")}
-                    </Text>
-                </View>
-                <Pressable onPress={() => void Linking.openURL(resolvedSrc)} style={styles.openButton}>
-                    <MaterialCommunityIcons name="open-in-new" size={16} color={colors.textSoft} />
-                </Pressable>
-            </View>
-        );
+        return <InlineAudioPlayback src={resolvedSrc} title={displayTitle} isMusic={isMusic} />;
     }
 
     if (loading) {
@@ -252,6 +291,15 @@ const styles = StyleSheet.create({
     audioSubtitle: {
         fontSize: 11,
         lineHeight: 16,
+    },
+    audioTrack: {
+        height: 3,
+        borderRadius: 999,
+        overflow: "hidden",
+    },
+    audioTrackProgress: {
+        height: "100%",
+        borderRadius: 999,
     },
     openButton: {
         width: 32,

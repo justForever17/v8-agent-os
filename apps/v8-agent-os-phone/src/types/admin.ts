@@ -355,6 +355,9 @@ export type ArtifactDetail = {
 export type UploadedWorkspaceFile = {
     localId?: string;
     id?: string;
+    sourceId?: string;
+    sourceKind?: string;
+    resourceRole?: "source" | string;
     name?: string;
     url?: string;
     publicUrl?: string;

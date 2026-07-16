@@ -73,3 +73,20 @@ def test_normalized_artifact_exposes_auto_attach_fields():
     assert normalized["previewKind"] == "image"
     assert normalized["ephemeral"] is True
     assert normalized["artifactSurfacePolicyRuleId"] == "computer_use_screenshot"
+
+
+def test_normalized_source_derivative_keeps_explicit_role_and_never_auto_attaches():
+    normalized = normalize_artifact_record(
+        {
+            "id": "art-source",
+            "artifact_kind": "audio",
+            "mime_type": "audio/mpeg",
+            "resource_role": "source_derivative",
+            "source_id": "src-1",
+            "auto_attach_to_message": 0,
+        }
+    )
+
+    assert normalized["resourceRole"] == "source_derivative"
+    assert normalized["sourceId"] == "src-1"
+    assert normalized["autoAttachToMessage"] is False

@@ -1564,6 +1564,7 @@ If the user uploaded an image representation (which represents what you 'see' th
     const uploadRes = await client.uploadFile(file, {
       conversationId,
       workspacePath: settingsRef.current.v8WorkspacePath || undefined,
+      sourceKind: 'desktop_pet_voice',
     });
     const fileUrl = String(uploadRes.url || uploadRes.path || '').trim();
     if (!fileUrl) {
@@ -1587,6 +1588,7 @@ If the user uploaded an image representation (which represents what you 'see' th
         const visualUploadRes = await client.uploadFile(visualFile, {
           conversationId,
           workspacePath: settingsRef.current.v8WorkspacePath || undefined,
+          sourceKind: 'desktop_pet_upload',
         });
         const visualUrl = String(visualUploadRes.url || visualUploadRes.path || '').trim();
         if (visualUrl) {

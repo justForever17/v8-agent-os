@@ -125,9 +125,13 @@ function artifactOrigin(record: Record<string, unknown>): string {
 }
 
 function isUserSuppliedArtifact(record: Record<string, unknown>): boolean {
+  const metadata = recordOf(record.metadata);
+  const resourceRole = text(record.resourceRole || record.resource_role || metadata.resourceRole || metadata.resource_role || "artifact");
+  if (resourceRole !== "artifact") return true;
   const origin = artifactOrigin(record);
   const component = text(record.sourceComponent || record.source_component).toLowerCase();
   return origin === "workspace_adopted"
+    || origin === "vision_media_analyzer"
     || /(user|web|phone|composer|attachment).*upload|upload.*(user|web|phone|composer|attachment)/.test(origin)
     || /(user|web|phone|composer|attachment).*upload|upload.*(user|web|phone|composer|attachment)/.test(component);
 }

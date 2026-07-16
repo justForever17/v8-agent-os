@@ -655,6 +655,19 @@ def _form_text(form: object, *names: str) -> str:
     return ""
 
 
+def _normalize_upload_source_kind(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    allowed = {
+        "web_upload",
+        "web_voice",
+        "phone_upload",
+        "phone_voice",
+        "desktop_pet_upload",
+        "desktop_pet_voice",
+    }
+    return normalized if normalized in allowed else "client_upload"
+
+
 @router.post("/chat/upload")
 async def chat_upload(request: Request):
     form = await request.form()
@@ -667,6 +680,7 @@ async def chat_upload(request: Request):
     workspace_id = _form_text(form, "workspaceId", "workspace_id")
     workspace_path = _form_text(form, "workspacePath", "workspace_path")
     project_id = _form_text(form, "projectId", "project_id")
+    source_kind = _normalize_upload_source_kind(_form_text(form, "sourceKind", "source_kind"))
     if not any((workspace_id, workspace_path, project_id)) and not _session_has_workspace_binding(session_id):
         raise HTTPException(status_code=400, detail=_workspace_binding_required_payload())
     binding = build_workspace_binding(
@@ -741,8 +755,28 @@ async def chat_upload(request: Request):
         surface_visible=True,
     )
     admin_path = str(resource_ref.get("adminPath") or "")
+    source_id = f"src_{uuid.uuid4().hex}"
+    if session_id and db.get_session(session_id):
+        db.add_session_source(
+            source_id=source_id,
+            session_id=session_id,
+            source_kind=source_kind,
+            mime_type=content_type,
+            title=filename,
+            workspace_path=workspace_relative_path,
+            external_url=admin_path,
+            preview_url=admin_path,
+            resource_ref=resource_ref,
+            metadata={
+                "byteSize": len(content),
+                "workspaceBinding": binding.as_dict(),
+            },
+        )
     return {
-        "id": f"upload_{uuid.uuid4().hex[:16]}",
+        "id": source_id,
+        "sourceId": source_id,
+        "resourceRole": "source",
+        "sourceKind": source_kind,
         "name": filename,
         "url": admin_path,
         "publicUrl": admin_path,
@@ -759,7 +793,7 @@ async def chat_upload(request: Request):
         "resourceRef": resource_ref,
         "metadata": {
             "sessionId": session_id or None,
-            "source": "os_phone_upload",
+            "source": source_kind,
             "workspaceBinding": binding.as_dict(),
         },
     }

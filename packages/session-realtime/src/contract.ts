@@ -233,6 +233,21 @@ export type ActiveRunScopedTodos = {
   items: SessionTodoItem[];
 };
 
+export type SessionSourceRef = {
+  sourceId: string;
+  sessionId?: string | null;
+  messageId?: string | null;
+  sourceKind?: string | null;
+  title?: string | null;
+  mimeType?: string | null;
+  workspacePath?: string | null;
+  externalUrl?: string | null;
+  previewUrl?: string | null;
+  resourceRef?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown>;
+  createdAt?: string | null;
+};
+
 export type AuthoritativeSessionSnapshot = {
   session?: Record<string, unknown> | null;
   sessionId?: string;
@@ -243,6 +258,7 @@ export type AuthoritativeSessionSnapshot = {
   controls?: Record<string, unknown> | null;
   recoverable?: unknown;
   artifacts?: unknown[];
+  sources?: SessionSourceRef[];
   processes?: AdminProcessRef[];
   contextReferences?: ContextReferenceItem[];
   contextGovernance?: Record<string, unknown> | null;
@@ -260,6 +276,7 @@ export type AuthoritativeSessionSnapshot = {
   snapshot?: {
     messages?: unknown[];
     artifacts?: unknown[];
+    sources?: SessionSourceRef[];
     [key: string]: unknown;
   };
 };

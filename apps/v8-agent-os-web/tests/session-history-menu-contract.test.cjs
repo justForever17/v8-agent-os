@@ -133,7 +133,8 @@ test("human session surfaces compact oversized live-session payloads before Web 
   const phoneDb = readText("apps/v8-agent-os-phone/src/services/LocalDatabaseService.ts");
   const webClient = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
 
-  assert.match(engineRoutes, /"runtimeTimeline": \[\]/);
+  assert.match(engineRoutes, /compact_runtime_timeline = list\(runtime_timeline\[-160:\]\)/);
+  assert.match(engineRoutes, /"runtimeTimeline": compact_runtime_timeline/);
   assert.match(engineRoutes, /"sourceCount": runtime_timeline_count/);
   assert.match(adminResource, /compactSurfaceValue/);
   assert.match(adminResource, /visibleResult \?\? record\.result/);

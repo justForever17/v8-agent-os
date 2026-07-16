@@ -158,3 +158,24 @@ test("Subagent details stream the shared Human Surface components without exposi
   assert.match(phoneOverview, /<ContentDispatcher/);
   assert.doesNotMatch(webRenderer, /\[runtime\.episode\./);
 });
+
+test("User sources stay separate from session artifacts and Phone renders voice playback inline", () => {
+  const database = readText("apps/v8-agent-os-engine/core/database.py");
+  const artifactStore = readText("apps/v8-agent-os-engine/core/artifact_store.py");
+  const vision = readText("apps/v8-agent-os-engine/core/tools/vision_media_analyzer.py");
+  const sourceProjection = readText("packages/session-realtime/src/session-source-projection.ts");
+  const webOverview = readText("apps/v8-agent-os-web/src/components/chat/WorkspaceWorkbenchPanel.tsx");
+  const phoneOverview = readText("apps/v8-agent-os-phone/src/components/chat/SessionOverviewPanel.tsx");
+  const phoneMedia = readText("apps/v8-agent-os-phone/src/components/chat/MediaRenderers.tsx");
+
+  assert.match(database, /CREATE TABLE IF NOT EXISTS session_sources/);
+  assert.match(database, /COALESCE\(resource_role, 'artifact'\) = 'artifact'/);
+  assert.match(database, /COALESCE\(auto_attach_to_message, 1\) = 1/);
+  assert.match(artifactStore, /resource_role: str = "artifact"/);
+  assert.match(vision, /resource_role="source_derivative"/);
+  assert.match(sourceProjection, /text\(message\.role\)\.toLowerCase\(\) !== "user"/);
+  assert.match(webOverview, /buildSessionSourceProjection/);
+  assert.match(phoneOverview, /<SourcesSection items=\{sources\}/);
+  assert.match(phoneMedia, /useAudioPlayerStatus/);
+  assert.match(phoneMedia, /InlineAudioPlayback/);
+});

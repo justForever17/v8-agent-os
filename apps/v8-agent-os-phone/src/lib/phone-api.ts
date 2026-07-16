@@ -41,6 +41,7 @@ import type {
     WorkbenchFilePage,
 } from "@/src/types/admin";
 import { orderAdminBaseUrlCandidates } from "@/src/lib/admin-connection-profiles";
+import type { SessionSourceRef } from "@v8/session-realtime";
 
 type AuthorizedFetch = (path: string, init?: RequestInit) => Promise<Response>;
 type AuthorizedRealtimeStream = (
@@ -289,7 +290,7 @@ export async function uploadUserAvatar(
 export async function uploadAttachment(
     authorizedFetch: AuthorizedFetch,
     file: { uri: string; name?: string; type?: string },
-    scope?: { sessionId?: string | null; conversationId?: string | null; workspaceId?: string | null; workspacePath?: string | null; projectId?: string | null },
+    scope?: { sessionId?: string | null; conversationId?: string | null; workspaceId?: string | null; workspacePath?: string | null; projectId?: string | null; sourceKind?: "phone_upload" | "phone_voice" },
 ) {
     try {
         const form = new FormData();
@@ -309,6 +310,7 @@ export async function uploadAttachment(
         if (workspacePath) form.append("workspacePath", workspacePath);
         const projectId = String(scope?.projectId || "").trim();
         if (projectId) form.append("projectId", projectId);
+        form.append("sourceKind", scope?.sourceKind || "phone_upload");
         const response = await authorizedFetch("/api/client/upload", {
             method: "POST",
             body: form,
@@ -833,6 +835,20 @@ export async function listSessionArtifacts(authorizedFetch: AuthorizedFetch, ses
         { cache: "no-store" },
     );
     return normalizeArray<ArtifactDetail>(payload.artifacts);
+}
+
+export async function listSessionSources(authorizedFetch: AuthorizedFetch, sessionId: string, limit = 100) {
+    const query = new URLSearchParams({
+        sessionId,
+        limit: String(Math.max(1, Math.min(160, limit))),
+    });
+    const payload = await authorizedJson<{ sources?: SessionSourceRef[] }>(
+        authorizedFetch,
+        `/api/client/sources?${query.toString()}`,
+        translateCurrent("src.lib.phone_api.sources"),
+        { cache: "no-store" },
+    );
+    return normalizeArray<SessionSourceRef>(payload.sources);
 }
 
 export async function getSpecDetail(authorizedFetch: AuthorizedFetch, specId: string, workspacePath: string) {

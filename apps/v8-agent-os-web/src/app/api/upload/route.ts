@@ -16,12 +16,15 @@ export async function POST(req: NextRequest) {
 
     try {
         const formData = await req.formData();
+        if (!String(formData.get("sourceKind") || "").trim()) {
+            formData.set("sourceKind", "web_upload");
+        }
 
         // Headers manipulation: Next.js/Browser fetch automatically sets Content-Type boundary for FormData
         // But we are proxying. We need to pass the incoming body stream or recreate FormData?
         // Node/Next Fetch with FormData is tricky.
 
-        const res = await fetch(`${adminApiBaseUrl}/upload`, {
+        const res = await fetch(`${adminApiBaseUrl}/client/upload`, {
             method: "POST",
             headers: {
                 // Do NOT set Content-Type here, let fetch handle the boundary

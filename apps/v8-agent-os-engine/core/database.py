@@ -1129,6 +1129,9 @@ class DatabaseManager:
                     session_id TEXT,
                     run_id TEXT,
                     message_id TEXT,
+                    resource_role TEXT NOT NULL DEFAULT 'artifact',
+                    source_id TEXT,
+                    auto_attach_to_message INTEGER NOT NULL DEFAULT 1,
                     artifact_kind TEXT NOT NULL,
                     mime_type TEXT,
                     title TEXT,
@@ -1140,6 +1143,26 @@ class DatabaseManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL,
                     FOREIGN KEY (run_id) REFERENCES run_records (id) ON DELETE SET NULL,
+                    FOREIGN KEY (message_id) REFERENCES messages (id) ON DELETE SET NULL
+                )
+            ''')
+
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS session_sources (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    message_id TEXT,
+                    source_kind TEXT NOT NULL,
+                    mime_type TEXT,
+                    title TEXT,
+                    workspace_path TEXT,
+                    external_url TEXT,
+                    preview_url TEXT,
+                    resource_ref_json TEXT,
+                    metadata_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
                     FOREIGN KEY (message_id) REFERENCES messages (id) ON DELETE SET NULL
                 )
             ''')
@@ -1264,6 +1287,8 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_computer_use_fact_ledger_target ON computer_use_fact_ledger (target_kind, updated_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_session_id ON runtime_artifacts (session_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_run_id ON runtime_artifacts (run_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_sources_session_id ON session_sources (session_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_session_sources_message_id ON session_sources (message_id, created_at ASC)')
 
             # Plugin Manager owns installation, component provenance, transaction,
             # explicit grants and audit history.  Runtime state belongs in SQLite;
@@ -1416,6 +1441,13 @@ class DatabaseManager:
                 artifact_columns = [row['name'] for row in cursor.fetchall()]
                 if artifact_columns and 'message_id' not in artifact_columns:
                     conn.execute("ALTER TABLE runtime_artifacts ADD COLUMN message_id TEXT")
+                if artifact_columns and 'resource_role' not in artifact_columns:
+                    conn.execute("ALTER TABLE runtime_artifacts ADD COLUMN resource_role TEXT NOT NULL DEFAULT 'artifact'")
+                if artifact_columns and 'source_id' not in artifact_columns:
+                    conn.execute("ALTER TABLE runtime_artifacts ADD COLUMN source_id TEXT")
+                if artifact_columns and 'auto_attach_to_message' not in artifact_columns:
+                    conn.execute("ALTER TABLE runtime_artifacts ADD COLUMN auto_attach_to_message INTEGER NOT NULL DEFAULT 1")
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_source_id ON runtime_artifacts (source_id, created_at DESC)')
 
                 cursor.execute("PRAGMA table_info(chat_canonical_messages)")
                 canonical_columns = [row['name'] for row in cursor.fetchall()]
@@ -5934,6 +5966,9 @@ class DatabaseManager:
         session_id: Optional[str] = None,
         run_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        resource_role: str = "artifact",
+        source_id: Optional[str] = None,
+        auto_attach_to_message: bool = True,
         title: Optional[str] = None,
         source_path: Optional[str] = None,
         workspace_path: Optional[str] = None,
@@ -5946,14 +5981,17 @@ class DatabaseManager:
                 conn.execute(
                     '''
                     INSERT OR REPLACE INTO runtime_artifacts
-                    (id, session_id, run_id, message_id, artifact_kind, mime_type, title, source_path, workspace_path, external_url, preview_url, metadata_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, session_id, run_id, message_id, resource_role, source_id, auto_attach_to_message, artifact_kind, mime_type, title, source_path, workspace_path, external_url, preview_url, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         artifact_id,
                         session_id,
                         run_id,
                         message_id,
+                        str(resource_role or "artifact").strip() or "artifact",
+                        source_id,
+                        1 if auto_attach_to_message else 0,
                         artifact_kind,
                         mime_type,
                         title,
@@ -5967,6 +6005,137 @@ class DatabaseManager:
                 conn.commit()
 
         self._run_write_with_retry(_write)
+
+    @staticmethod
+    def _hydrate_session_source_row(row: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(row)
+        try:
+            resource_ref = json.loads(data.get("resource_ref_json") or "{}")
+        except (TypeError, ValueError):
+            resource_ref = {}
+        try:
+            metadata = json.loads(data.get("metadata_json") or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        return {
+            **data,
+            "sourceId": data.get("id"),
+            "sessionId": data.get("session_id"),
+            "messageId": data.get("message_id"),
+            "sourceKind": data.get("source_kind"),
+            "mimeType": data.get("mime_type"),
+            "workspacePath": data.get("workspace_path"),
+            "externalUrl": data.get("external_url"),
+            "previewUrl": data.get("preview_url"),
+            "resourceRef": resource_ref,
+            "metadata": metadata,
+            "createdAt": data.get("created_at"),
+            "updatedAt": data.get("updated_at"),
+        }
+
+    def add_session_source(
+        self,
+        *,
+        source_id: str,
+        session_id: str,
+        source_kind: str,
+        message_id: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        title: Optional[str] = None,
+        workspace_path: Optional[str] = None,
+        external_url: Optional[str] = None,
+        preview_url: Optional[str] = None,
+        resource_ref: Optional[dict] = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        normalized_source_id = str(source_id or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_source_id or not normalized_session_id:
+            return
+
+        def _write():
+            with self.get_connection() as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO session_sources
+                    (id, session_id, message_id, source_kind, mime_type, title, workspace_path, external_url, preview_url, resource_ref_json, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        session_id = excluded.session_id,
+                        message_id = COALESCE(excluded.message_id, session_sources.message_id),
+                        source_kind = excluded.source_kind,
+                        mime_type = excluded.mime_type,
+                        title = excluded.title,
+                        workspace_path = excluded.workspace_path,
+                        external_url = excluded.external_url,
+                        preview_url = excluded.preview_url,
+                        resource_ref_json = excluded.resource_ref_json,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''',
+                    (
+                        normalized_source_id,
+                        normalized_session_id,
+                        message_id,
+                        str(source_kind or "upload").strip() or "upload",
+                        mime_type,
+                        title,
+                        workspace_path,
+                        external_url,
+                        preview_url,
+                        json.dumps(to_jsonable(resource_ref or {}), ensure_ascii=False),
+                        json.dumps(to_jsonable(metadata or {}), ensure_ascii=False),
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_with_retry(_write)
+
+    def bind_session_sources_to_message(
+        self,
+        *,
+        session_id: str,
+        source_ids: List[str],
+        message_id: str,
+    ) -> int:
+        normalized_ids = list(dict.fromkeys(str(item or "").strip() for item in source_ids if str(item or "").strip()))
+        if not normalized_ids:
+            return 0
+        placeholders = ",".join("?" for _ in normalized_ids)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                UPDATE session_sources
+                SET message_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ? AND id IN ({placeholders})
+                ''',
+                [message_id, session_id, *normalized_ids],
+            )
+            conn.commit()
+            return cursor.rowcount
+
+    def list_session_sources(
+        self,
+        *,
+        session_id: str,
+        message_id: Optional[str] = None,
+        include_unbound: bool = False,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM session_sources WHERE session_id = ?"
+        params: list[Any] = [session_id]
+        if message_id:
+            query += " AND message_id = ?"
+            params.append(message_id)
+        elif not include_unbound:
+            query += " AND message_id IS NOT NULL AND message_id != ''"
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(int(limit or 100), 500)))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [self._hydrate_session_source_row(dict(row)) for row in cursor.fetchall()]
 
     def attach_runtime_artifacts_to_message(
         self,
@@ -5984,6 +6153,8 @@ class DatabaseManager:
                 WHERE session_id = ?
                   AND run_id = ?
                   AND (message_id IS NULL OR message_id = '')
+                  AND COALESCE(resource_role, 'artifact') = 'artifact'
+                  AND COALESCE(auto_attach_to_message, 1) = 1
                 ''',
                 (message_id, session_id, run_id),
             )
@@ -5997,7 +6168,7 @@ class DatabaseManager:
         run_id: Optional[str] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM runtime_artifacts WHERE 1=1"
+        query = "SELECT * FROM runtime_artifacts WHERE COALESCE(resource_role, 'artifact') = 'artifact'"
         params: list[Any] = []
         if session_id:
             query += " AND session_id = ?"

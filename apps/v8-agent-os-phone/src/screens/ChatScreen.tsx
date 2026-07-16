@@ -706,9 +706,13 @@ function buildUploadedFileAttachments(files: UploadedWorkspaceFile[]) {
             if (!url && !workspacePath) return null;
             return {
                 id: file.id || file.localId,
+                sourceId: file.sourceId || file.id,
+                sourceKind: file.sourceKind || "phone_upload",
+                resourceRole: "source",
                 name: file.name,
                 url: url || undefined,
                 publicUrl: String(file.publicUrl || file.url || "").trim() || undefined,
+                previewUrl: String(file.previewUrl || file.publicUrl || file.url || "").trim() || undefined,
                 workspacePath: workspacePath || undefined,
                 workspaceRelativePath: file.workspaceRelativePath,
                 resourceRef: file.resourceRef || undefined,
@@ -5249,6 +5253,7 @@ export default function ChatScreen() {
                         workspaceId: scopeBinding?.workspaceId,
                         workspacePath: scopeBinding?.workspacePath,
                         projectId: scopeBinding?.projectId,
+                        sourceKind: "phone_upload",
                     });
                     uploaded.push({
                         ...previewDraft,
@@ -5322,6 +5327,7 @@ export default function ChatScreen() {
                     workspaceId: scopeBinding?.workspaceId,
                     workspacePath: scopeBinding?.workspacePath,
                     projectId: scopeBinding?.projectId,
+                    sourceKind: "phone_voice",
                 });
                 const voiceFile: UploadedWorkspaceFile = {
                     ...uploaded,

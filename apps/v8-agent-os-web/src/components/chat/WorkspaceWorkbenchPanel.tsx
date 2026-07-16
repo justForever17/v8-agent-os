@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, ChevronDown, ChevronRight, CircleDot, FileText, ListTodo, TerminalSquare, Users } from "lucide-react";
+import { Box, ChevronDown, ChevronRight, CircleDot, FileText, ListTodo, Paperclip, TerminalSquare, Users } from "lucide-react";
 import {
     buildSessionOutputProjection,
+    buildSessionSourceProjection,
     buildSubagentReturnProjection,
     type AdminProcessRef,
     type SessionOutputProjection,
+    type SessionSourceRef,
     type SubagentReturnProjection,
 } from "@v8/session-realtime";
 
@@ -108,6 +110,9 @@ function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentRet
                 <span className="shrink-0 text-[10px] text-muted-foreground">{subagentStatusLabel(item.status)}</span>
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
             </button>
+            {item.children.map((child) => (
+                <SubagentReturnRow key={child.id} item={child} onOpen={onOpen} nested />
+            ))}
         </div>
     );
 }
@@ -129,6 +134,7 @@ export function WorkspaceWorkbenchPanel({
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const [fileError, setFileError] = useState("");
     const [runtimeArtifacts, setRuntimeArtifacts] = useState<Array<Record<string, unknown>>>([]);
+    const [sessionSources, setSessionSources] = useState<SessionSourceRef[]>([]);
     const subagentReturns = useMemo(
         () => buildSubagentReturnProjection(messages, runtimeModel.messageActivities.map((activity) => activity.node)),
         [messages, runtimeModel.messageActivities],
@@ -136,6 +142,10 @@ export function WorkspaceWorkbenchPanel({
     const outputs = useMemo(
         () => buildSessionOutputProjection(messages, runtimeArtifacts, { sessionId, evidence: outputEvidence }),
         [messages, outputEvidence, runtimeArtifacts, sessionId],
+    );
+    const sources = useMemo(
+        () => buildSessionSourceProjection(messages, sessionSources),
+        [messages, sessionSources],
     );
     const activeProcesses = useMemo(() => processes.filter(activeProcess), [processes]);
     const visibleTodos = useMemo(() => todos.filter((item) => text(item.content || item.text)), [todos]);
@@ -145,7 +155,7 @@ export function WorkspaceWorkbenchPanel({
             || null,
         [runtimeModel.items],
     );
-    const hasSecondaryContent = visibleTodos.length > 0 || subagentReturns.length > 0 || outputs.length > 0 || activeProcesses.length > 0;
+    const hasSecondaryContent = visibleTodos.length > 0 || subagentReturns.length > 0 || outputs.length > 0 || sources.length > 0 || activeProcesses.length > 0;
 
     const openSubagentReturn = useCallback((item: SubagentReturnProjection) => {
         openDocument(createSubagentActivityDocument({
@@ -170,6 +180,7 @@ export function WorkspaceWorkbenchPanel({
     useEffect(() => {
         if (!sessionId) {
             setRuntimeArtifacts([]);
+            setSessionSources([]);
             return;
         }
         const controller = new AbortController();
@@ -186,6 +197,24 @@ export function WorkspaceWorkbenchPanel({
             })
             .catch(() => {
                 if (!controller.signal.aborted) setRuntimeArtifacts([]);
+            });
+        return () => controller.abort();
+    }, [sessionId]);
+
+    useEffect(() => {
+        if (!sessionId) return;
+        const controller = new AbortController();
+        const query = new URLSearchParams({ sessionId, limit: "100" });
+        void fetch(`/api/sources?${query.toString()}`, { cache: "no-store", signal: controller.signal })
+            .then(async (response) => {
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response.json();
+            })
+            .then((payload) => {
+                if (!controller.signal.aborted) setSessionSources(Array.isArray(payload?.sources) ? payload.sources : []);
+            })
+            .catch(() => {
+                if (!controller.signal.aborted) setSessionSources([]);
             });
         return () => controller.abort();
     }, [sessionId]);
@@ -234,6 +263,20 @@ export function WorkspaceWorkbenchPanel({
                         {output.statusLabel ? <span className="shrink-0 text-[10px] text-muted-foreground">{output.statusLabel}</span> : null}
                         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                     </button>
+                ))}
+            </Section> : null}
+
+            {sources.length ? <Section title="来源" icon={Paperclip} count={sources.length} defaultOpen={false}>
+                {sources.map((source) => (
+                    <div key={source.id} className="flex min-h-10 items-center gap-2 border-b border-border/30 px-3 py-1.5 text-[11px] last:border-b-0">
+                        <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{source.name}</span>
+                            <span className="block truncate text-[10px] text-muted-foreground">
+                                {source.mediaKind === "audio" ? "语音" : source.mediaKind === "image" ? "图片" : source.mediaKind === "video" ? "视频" : "文件"}
+                            </span>
+                        </span>
+                    </div>
                 ))}
             </Section> : null}
 

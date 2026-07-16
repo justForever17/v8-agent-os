@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any, Dict, Optional
 
 from core.context_governance import (
     extract_context_governance_history,
@@ -30,6 +31,13 @@ from erc.workflow_projection import workflow_projection_service
 
 
 class SnapshotService:
+    @staticmethod
+    def _session_sources(session_id: str) -> list[dict[str, Any]]:
+        list_sources = getattr(db, "list_session_sources", None)
+        if not callable(list_sources):
+            return []
+        return list_sources(session_id=session_id, limit=100)
+
     @staticmethod
     def _flatten_artifacts(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         artifacts: list[dict[str, Any]] = []
@@ -96,6 +104,7 @@ class SnapshotService:
         legacy_chat_unsupported: bool = False,
     ) -> Dict:
         messages = build_canonical_chat_messages(session_id) if canonical_version > 0 else []
+        sources = self._session_sources(session_id)
         return {
             "session_id": session_id,
             "latest_seq": latest_seq,
@@ -103,6 +112,7 @@ class SnapshotService:
             "legacyChatUnsupported": legacy_chat_unsupported,
             "messages": messages,
             "artifacts": self._flatten_artifacts(messages),
+            "sources": sources,
         }
 
     def record_runtime_snapshot(
@@ -232,6 +242,7 @@ class SnapshotService:
                 "workflowProjection": workflow_projection,
                 "approvals": pending_approvals,
                 "askUserInteractions": ask_user_interactions,
+                "sources": self._session_sources(session_id),
                 "queuedMessages": queued_messages,
                 "controls": controls,
                 "recoverable": build_recoverable_view(workflow_view, controls),
@@ -276,6 +287,7 @@ class SnapshotService:
             "workflowProjection": workflow_projection,
             "approvals": pending_approvals,
             "askUserInteractions": ask_user_interactions,
+            "sources": self._session_sources(session_id),
             "queuedMessages": queued_messages,
             "controls": controls,
             "recoverable": build_recoverable_view(workflow_view, controls),

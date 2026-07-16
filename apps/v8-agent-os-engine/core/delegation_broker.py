@@ -180,6 +180,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "parallelGroup": "",
         "executionLaneHint": "auto",
         "familyHint": "",
+        "targetAgentName": "",
         "preferredAgentId": "",
         "preferredWorkerType": "",
         "researchRefs": [],
@@ -303,6 +304,7 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "parallelGroup": str(payload.get("parallelGroup") or payload.get("parallel_group") or "").strip(),
         "executionLaneHint": str(payload.get("executionLaneHint") or payload.get("execution_lane_hint") or "auto").strip().lower() or "auto",
         "familyHint": str(payload.get("familyHint") or payload.get("family_hint") or payload.get("specialistFamily") or "").strip(),
+        "targetAgentName": str(payload.get("targetAgentName") or payload.get("target_agent_name") or "").strip(),
         "preferredAgentId": str(payload.get("preferredAgentId") or payload.get("preferred_agent_id") or "").strip(),
         "preferredWorkerType": str(payload.get("preferredWorkerType") or payload.get("preferred_worker_type") or "").strip(),
         "researchRefs": _normalize_scope_values(payload.get("researchRefs") or payload.get("research_refs")),
@@ -1303,16 +1305,56 @@ def reveal_subagent_family(family: str, agents: Iterable[dict[str, Any]], *, lim
         "memberCount": len(family_agents),
         "members": members,
         "suggestedRequiredCapabilities": suggested_capabilities[:12],
-        "selectionRule": "Dispatch with familyHint plus requiredCapabilities. Bound research/creative-media subagents receive their runtime tools automatically; unbound custom subagents stay on baseline tools unless the task explicitly grants more.",
+        "selectionRule": "Choose one exact member name, then dispatch with task.targetAgentName. familyHint and capabilities explain the choice but never authorize blind selection. Bound research/creative-media subagents receive their runtime tools automatically; unbound custom subagents stay on baseline tools unless the task explicitly grants more.",
     }
 
 
 def choose_best_local_agent_with_diagnostics(task_brief: dict[str, Any], agents: Iterable[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    target_name = str(task_brief.get("targetAgentName") or "").strip()
     preferred_id = str(task_brief.get("preferredAgentId") or "").strip()
     normalized_agents = [agent for agent in list(agents or []) if isinstance(agent, dict) and str(agent.get("id") or "").strip() and str(agent.get("id") or "").strip() != "supervisor"]
     capsule_mode = str(engineering_task_capsule(task_brief).get("executionMode") or "").strip().lower()
     write_execution = bool(capsule_mode == "write" or task_brief.get("writeRequired") or task_brief.get("writeSet"))
     ignored_preferred_signal = ""
+    if target_name:
+        exact_matches = [
+            agent
+            for agent in normalized_agents
+            if str(agent.get("name") or "").strip().casefold() == target_name.casefold()
+            and agent.get("isEnabled") is not False
+        ]
+        if not exact_matches:
+            return None, {
+                "selectionReason": "targetAgentName_not_found",
+                "selectionConfidence": 0.0,
+                "matchSignals": [f"targetAgentName:{target_name}"],
+                "targetName": target_name,
+            }
+        if len(exact_matches) > 1:
+            return None, {
+                "selectionReason": "targetAgentName_ambiguous",
+                "selectionConfidence": 0.0,
+                "matchSignals": [f"targetAgentName:{target_name}"],
+                "targetName": target_name,
+                "candidateIds": [str(agent.get("id") or "").strip() for agent in exact_matches],
+            }
+        exact_agent = exact_matches[0]
+        exact_id = str(exact_agent.get("id") or "").strip()
+        if preferred_id and preferred_id != exact_id:
+            return None, {
+                "selectionReason": "targetAgentName_preferredAgentId_mismatch",
+                "selectionConfidence": 0.0,
+                "matchSignals": [f"targetAgentName:{target_name}", f"preferredAgentId:{preferred_id}"],
+                "targetName": target_name,
+                "targetId": exact_id,
+            }
+        return exact_agent, {
+            "selectionReason": "targetAgentName",
+            "selectionConfidence": 1.0,
+            "matchSignals": [f"targetAgentName:{target_name}"],
+            "targetName": target_name,
+            "targetId": exact_id,
+        }
     if preferred_id:
         preferred_agent = None
         for agent in normalized_agents:

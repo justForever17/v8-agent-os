@@ -13,9 +13,17 @@ def test_explicit_engineering_request_is_detected() -> None:
 
     assert runtime._detect_explicit_engineering_runtime_request("请使用 Engineering Runtime 开发这个项目")
     assert runtime._detect_explicit_engineering_runtime_request("这次必须进入工程运行时，不要主管盲写")
-    assert runtime._detect_explicit_engineering_runtime_request("用工程模式做前端实现")
+    assert not runtime._detect_explicit_engineering_runtime_request("用工程模式做前端实现")
     assert not runtime._detect_explicit_engineering_runtime_request("做一个小的文字说明")
     assert not runtime._detect_explicit_engineering_runtime_request("只写正文，不调用工程运行时")
+
+
+def test_engineering_work_mode_is_session_posture_not_runtime_route() -> None:
+    runtime = ChatRuntime()
+
+    assert runtime._detect_explicit_supervisor_work_mode_request("用工程模式做前端实现") == "engineering"
+    assert runtime._detect_explicit_supervisor_work_mode_request("切换到日常模式") == "daily"
+    assert runtime._detect_explicit_supervisor_work_mode_request("请使用 Engineering Runtime 开发") is None
 
 
 def test_engineering_continuation_detects_same_session_debug_signal(monkeypatch, tmp_path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from copy import deepcopy
 from typing import Any, Iterable
 
@@ -320,10 +321,11 @@ def derive_grandchild_engineering_task(
     *,
     shell_dialect: str = "",
 ) -> dict[str, Any]:
-    """Derive a lossless, read-only Capsule for recursive delegation.
+    """Derive a lossless Capsule for a disposable grandchild mirror.
 
-    Facts, acceptance, verification, and proof requirements are preserved.
-    Write authority is intentionally not inherited across a delegation depth.
+    Write authority is never inherited implicitly. A child may receive an explicit,
+    narrower partition only when every requested path is covered by the parent's
+    writeSet and the partition is strictly smaller than the parent authority.
     """
 
     child = deepcopy(dict(child_task_brief or {}))
@@ -331,6 +333,13 @@ def derive_grandchild_engineering_task(
     if not parent_capsule:
         return child
     child_context = _task_context(child)
+    for stale_key in (
+        "engineeringExecutionContract",
+        "engineering_execution_contract",
+        "engineeringTaskCapsule",
+        "engineering_task_capsule",
+    ):
+        child_context.pop(stale_key, None)
     child_context["inheritedEngineeringContract"] = deepcopy(parent_capsule)
     child_context.setdefault("shellDialect", shell_dialect or parent_capsule.get("shellDialect") or "")
     child_context.setdefault(
@@ -338,8 +347,43 @@ def derive_grandchild_engineering_task(
         "This grandchild receives engineering facts and acceptance criteria but no inherited write authority. Return evidence to the parent.",
     )
     child["context"] = child_context
-    child["readOnly"] = True
-    child["writeRequired"] = False
+    parent_write_set = _unique_text(_values(parent_capsule.get("writeSet")))
+    requested_child_write_set = _unique_text(_values(child.get("writeSet")))
+
+    def _path_key(value: Any) -> str:
+        text = str(value or "").strip().strip("`'\"").replace("\\", "/")
+        while text.startswith("./"):
+            text = text[2:]
+        return re.sub(r"/+", "/", text).rstrip("/").casefold()
+
+    def _covered_by_parent(child_path: str) -> bool:
+        child_key = _path_key(child_path)
+        return bool(
+            child_key
+            and any(
+                child_key == parent_key or child_key.startswith(parent_key + "/")
+                for parent_key in (_path_key(item) for item in parent_write_set)
+                if parent_key
+            )
+        )
+
+    child_keys = {_path_key(item) for item in requested_child_write_set if _path_key(item)}
+    parent_keys = {_path_key(item) for item in parent_write_set if _path_key(item)}
+    explicit_subset = bool(
+        child_keys
+        and parent_keys
+        and all(_covered_by_parent(item) for item in requested_child_write_set)
+        and (
+            child_keys != parent_keys
+            or any(
+                child_key != parent_key and child_key.startswith(parent_key + "/")
+                for child_key in child_keys
+                for parent_key in parent_keys
+            )
+        )
+    )
+    child["readOnly"] = not explicit_subset
+    child["writeRequired"] = explicit_subset
     child["readSet"] = _unique_text(
         [
             *_values(parent_capsule.get("readSet")),
@@ -347,7 +391,7 @@ def derive_grandchild_engineering_task(
             *_values(child.get("readSet")),
         ]
     )
-    child["writeSet"] = []
+    child["writeSet"] = requested_child_write_set if explicit_subset else []
     if not list(child.get("expectedOutputs") or []):
         child["expectedOutputs"] = ["Compact evidence handoff for the parent task"]
     if child.get("acceptanceContract") in (None, "", [], {}):
@@ -357,22 +401,39 @@ def derive_grandchild_engineering_task(
             if parent_acceptance
             else "Return a compact evidence handoff to the parent."
         )
+    requested_expected_artifacts = _unique_text(_values(child.get("expectedArtifacts")))
+    expected_artifacts = (
+        [item for item in requested_expected_artifacts if any(_path_key(item) == key or _path_key(item).startswith(key + "/") for key in child_keys)]
+        or list(requested_child_write_set)
+        if explicit_subset
+        else []
+    )
+    child["expectedArtifacts"] = expected_artifacts
+    child_context["artifactWriteDiscipline"] = (
+        "This disposable grandchild may write only the explicit strict-subset partition in its writeSet. It receives no other parent write authority."
+        if explicit_subset
+        else "This grandchild receives engineering facts and acceptance criteria but no inherited write authority. Return evidence to the parent."
+    )
+    child["context"] = child_context
     child["engineeringTaskCapsule"] = {
         "schemaVersion": "v8.engineering_task_capsule.v1",
         "parentCapsuleId": parent_capsule.get("capsuleId"),
         "taskId": str(child.get("taskBriefId") or child.get("id") or "").strip(),
         "workspacePath": parent_capsule.get("workspacePath"),
         "shellDialect": shell_dialect or parent_capsule.get("shellDialect") or "",
-        "executionMode": "read_only",
-        "writeRequired": False,
+        "executionMode": "write" if explicit_subset else "read_only",
+        "writeRequired": explicit_subset,
         "criticalFiles": list(parent_capsule.get("criticalFiles") or []),
         "readSet": list(child.get("readSet") or []),
-        "writeSet": [],
+        "writeSet": list(child.get("writeSet") or []),
         "expectedOutputs": list(child.get("expectedOutputs") or []),
-        "expectedArtifacts": [],
+        "expectedArtifacts": expected_artifacts,
         "verificationContract": deepcopy(parent_capsule.get("verificationContract") or []),
         "proofExpectations": list(parent_capsule.get("proofExpectations") or []),
-        "riskFlags": [*list(parent_capsule.get("riskFlags") or []), "grandchild_write_authority_not_inherited"],
+        "riskFlags": [
+            *list(parent_capsule.get("riskFlags") or []),
+            "grandchild_explicit_write_subset" if explicit_subset else "grandchild_write_authority_not_inherited",
+        ],
         "acceptance": deepcopy(child.get("acceptanceContract") or ""),
     }
     return ensure_engineering_task_capsule(child, shell_dialect=shell_dialect)

@@ -97,6 +97,7 @@ def test_common_default_tool_package_matches_product_contract():
 def test_collaboration_tree_receives_common_and_plugin_tools_with_bounded_delegation():
     tool_names = list(BASELINE_SYSTEM_TOOL_NAME_ORDER) + [
         "ask_user",
+        "agent_broker",
         "delegation_broker",
         "plugin_broker",
         "plugin_cli",
@@ -136,11 +137,12 @@ def test_collaboration_tree_receives_common_and_plugin_tools_with_bounded_delega
     assert common.issubset(supervisor)
     assert common.issubset(direct_child)
     assert common.issubset(grandchild)
-    assert {"ask_user", "runtime_broker", "delegation_broker", "plugin_broker", "plugin_cli"}.issubset(supervisor)
+    assert {"ask_user", "runtime_broker", "agent_broker", "delegation_broker", "plugin_broker", "plugin_cli"}.issubset(supervisor)
     assert {"delegation_broker", "plugin_broker", "plugin_cli"}.issubset(direct_child)
     assert "delegation_broker" not in grandchild
     assert {"plugin_broker", "plugin_cli"}.issubset(grandchild)
     assert "ask_user" not in direct_child | grandchild
+    assert "agent_broker" not in direct_child | grandchild
     assert "runtime_broker" not in direct_child | grandchild
     assert internal_visual_actor == []
 
@@ -148,6 +150,7 @@ def test_collaboration_tree_receives_common_and_plugin_tools_with_bounded_delega
 def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_common_tools():
     tools = [
         _tool("runtime_broker"),
+        _tool("agent_broker"),
         _tool("delegation_broker"),
         _tool("spec_broker"),
         _tool("read_native_file"),
@@ -170,7 +173,7 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
     visible = filter_visible_tools_for_actor(tools, actor="supervisor", route_context={})
     names = {tool.name for tool in visible}
 
-    assert {"runtime_broker", "delegation_broker", "read_native_file", "http_request"}.issubset(names)
+    assert {"runtime_broker", "agent_broker", "delegation_broker", "read_native_file", "http_request"}.issubset(names)
     assert "run_system_command" in names
     assert "spec_broker" not in names
     assert "delegate_network_task" not in names
@@ -1359,6 +1362,30 @@ def test_delegation_broker_missing_tasks_is_structured_and_diagnostic_only():
     assert payload["exampleTasks"]
 
 
+def test_supervisor_manual_local_dispatch_requires_exact_registered_name():
+    with bind_runtime_context(runtime_kind="chat", actor_role="supervisor", agent_id="supervisor"):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "unnamed-local",
+                    "goal": "Review one result.",
+                    "expectedOutputs": ["A concise review."],
+                    "acceptanceContract": "Report pass or fail with evidence.",
+                    "toolPolicy": {"mode": "none"},
+                }
+            ],
+            state={"current_route_context": {}},
+            tool_call_id="call-unnamed-local",
+        )
+
+    payload = _tool_message_payload(command)
+    assert payload["error"] == "target_agent_name_required"
+    assert payload["missingTaskBriefIds"] == ["unnamed-local"]
+    assert payload["availableAgents"]
+    assert all(item.get("name") and "description" in item for item in payload["availableAgents"])
+
+
 def test_direct_subagent_missing_tasks_returns_to_same_agent_for_one_contract_repair():
     state = {
         "current_route_context": {
@@ -1387,6 +1414,73 @@ def test_direct_subagent_missing_tasks_returns_to_same_agent_for_one_contract_re
     assert payload["recommendedNextAction"] == "retry_dispatch_with_complete_flat_task"
     assert payload["exampleTasks"][0]["taskBriefId"] == "child-check-1"
     assert payload["exampleTasks"][0]["expectedOutputs"]
+
+
+def test_direct_subagent_children_are_disposable_parent_mirrors_with_peer_boundaries(monkeypatch):
+    monkeypatch.setattr(native_delegation, "persist_runtime_episode", lambda episode, **_kwargs: dict(episode))
+    monkeypatch.setattr(native_delegation, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    state = {
+        "session_id": "session-mirror-workers",
+        "run_id": "run-mirror-workers",
+        "current_route_context": {
+            "delegationId": "subagent::parent-mirror",
+            "delegationDepth": 1,
+            "delegationNodeCount": 1,
+            "taskBrief": {
+                "taskBriefId": "parent-task",
+                "goal": "Coordinate two independent checks.",
+                "acceptanceContract": "Both checks return evidence.",
+            },
+        },
+    }
+
+    with bind_runtime_context(
+        runtime_kind="subagent",
+        actor_role="direct_subagent",
+        agent_id="implementation-engineer",
+        delegation_id="subagent::parent-mirror",
+        delegation_depth=1,
+        session_id=state["session_id"],
+        run_id=state["run_id"],
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "mirror-a",
+                    "goal": "Inspect component A and return evidence.",
+                    "expectedOutputs": ["A evidence"],
+                    "acceptanceContract": "Return the relevant line and conclusion.",
+                    "preferredAgentId": "verification-engineer",
+                    "toolPolicy": {"mode": "none"},
+                },
+                {
+                    "taskBriefId": "mirror-b",
+                    "goal": "Inspect component B and return evidence.",
+                    "expectedOutputs": ["B evidence"],
+                    "acceptanceContract": "Return the relevant line and conclusion.",
+                    "preferredAgentId": "code-review-architect",
+                    "toolPolicy": {"mode": "none"},
+                },
+            ],
+            state=state,
+            tool_call_id="call-mirror-workers",
+        )
+
+    branches = [send.arg["parallel_branch"] for send in list(command.goto)]
+    assert [branch["agentId"] for branch in branches] == ["implementation-engineer", "implementation-engineer"]
+    assert [branch["agentName"] for branch in branches] == [
+        "Implementation Engineer · worker-01",
+        "Implementation Engineer · worker-02",
+    ]
+    assert branches[0]["targetId"].endswith("worker-01")
+    assert branches[1]["targetId"].endswith("worker-02")
+    assert branches[0]["taskBrief"]["targetAgentName"] == "Implementation Engineer"
+    assert branches[0]["taskBrief"]["ephemeralMirror"] is True
+    peers_a = branches[0]["taskBrief"]["context"]["activeCollaborators"]
+    peers_b = branches[1]["taskBrief"]["context"]["activeCollaborators"]
+    assert peers_a[0]["name"] == "Implementation Engineer · worker-02"
+    assert peers_b[0]["name"] == "Implementation Engineer · worker-01"
 
 
 def test_delegation_broker_null_task_is_structured_and_diagnostic_only():
@@ -1437,9 +1531,10 @@ def test_supervisor_delegation_starts_new_top_level_tree_and_routes_risk_review(
         command = delegation_broker.func(
             mode="dispatch",
             tasks=[
-                {
-                    "taskBriefId": "risk-review",
-                    "goal": "Perform a final risk review of the research and engineering handoffs without writing files.",
+                    {
+                        "taskBriefId": "risk-review",
+                        "targetAgentName": "Verification Engineer",
+                        "goal": "Perform a final risk review of the research and engineering handoffs without writing files.",
                     "expectedOutput": "A concise verification report with blocking risks and evidence refs.",
                     "acceptanceContract": "Verify the result against both upstream handoffs and report pass or fail.",
                     "toolPolicy": {"mode": "none"},
@@ -1478,9 +1573,10 @@ def test_supervisor_dispatch_persists_recursive_policy_on_durable_task_brief(mon
         command = delegation_broker.func(
             mode="dispatch",
             tasks=[
-                {
-                    "taskBriefId": "recursive-read",
-                    "goal": "Read README.md and delegate one independent read-only verification.",
+                    {
+                        "taskBriefId": "recursive-read",
+                        "targetAgentName": "Implementation Engineer",
+                        "goal": "Read README.md and delegate one independent read-only verification.",
                     "expectedOutputs": ["direct result", "child result"],
                     "acceptanceContract": "Both read-only results agree.",
                     "preferredAgentId": "implementation-engineer",
@@ -1885,8 +1981,10 @@ def test_subagent_prompt_explains_bounded_delegation_authority_without_false_mis
         },
     )
 
-    assert "`delegation_broker(mode='dispatch')` is available" in blocked
-    assert "`delegation_broker(mode='dispatch')` is available" in allowed
+    assert "`delegation_broker(mode='dispatch')` may create one concurrent layer" in blocked
+    assert "disposable mirror workers" in blocked
+    assert "`delegation_broker(mode='dispatch')` may create one concurrent layer" in allowed
+    assert "Do not select another registered subagent as your grandchild" in allowed
     grandchild = _format_delegated_task_contract(
         {"taskBriefId": "task-3", "goal": "Review one result", "delegationDepth": 2},
     )

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 
+from langchain_core.messages import ToolMessage
+
 from core.agents import (
     agents_from_subagent_registry_snapshot,
     build_subagent_registry_snapshot,
@@ -11,6 +13,7 @@ from core.agents import (
 )
 from core.delegation_broker import choose_best_local_agent_with_diagnostics, reveal_subagent_family
 from core.tools.native import delegation as delegation_tools
+from erc.runtime_context import bind_runtime_context
 
 
 def _agent(agent_id: str, family: str | None, *, ops: list[str] | None = None, enabled: bool = True) -> dict:
@@ -136,6 +139,58 @@ def test_next_run_snapshot_can_dispatch_new_agent(monkeypatch) -> None:
     assert payload["items"][0]["status"] == "queued"
     assert payload["items"][0]["targetId"] == "new-1"
     assert payload["items"][0]["registryVersion"] == payload["registryVersion"]
+
+
+def test_successful_agent_broker_create_refreshes_only_that_agent_inside_current_run(monkeypatch) -> None:
+    old_agent = _agent("eng-1", "engineering", ops=["implement"])
+    new_agent = _agent("new-1", "engineering", ops=["implement"])
+    unrelated_agent = _agent("unrelated-1", "research", ops=["research"])
+    run_snapshot = build_subagent_registry_snapshot([old_agent])
+
+    class _Storage:
+        def get_all_agents(self):
+            return [old_agent, new_agent, unrelated_agent]
+
+        def get_supervisor_config(self):
+            return {}
+
+    _patch_delegation_storage(monkeypatch, _Storage())
+    create_message = ToolMessage(
+        name="agent_broker",
+        tool_call_id="create-new-agent",
+        content=json.dumps(
+            {
+                "ok": True,
+                "tool": "agent_broker",
+                "mode": "create",
+                "status": "created",
+                "item": {"agentId": "new-1", "name": "new-1"},
+            }
+        ),
+    )
+    with bind_runtime_context(runtime_kind="chat", actor_role="supervisor", agent_id="supervisor"):
+        command = delegation_tools.delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "task-1",
+                    "targetAgentName": "new-1",
+                    "goal": "Use the newly approved worker",
+                    "expectedOutputs": ["result"],
+                    "acceptanceContract": "Return the requested result.",
+                    "toolPolicy": {"mode": "none"},
+                    "executionLaneHint": "subagent",
+                }
+            ],
+            state={"subagent_registry_snapshot": run_snapshot, "messages": [create_message]},
+            tool_call_id="call-test",
+        )
+
+    payload = _payload_from_command(command)
+    assert payload["items"][0]["status"] == "queued"
+    assert payload["items"][0]["targetId"] == "new-1"
+    assert payload["registryVersion"] == build_subagent_registry_snapshot([old_agent, new_agent])["version"]
+    assert payload["registryVersion"] != build_subagent_registry_snapshot([old_agent, unrelated_agent])["version"]
 
 
 def test_dispatch_persists_canonical_delegation_episode(monkeypatch) -> None:

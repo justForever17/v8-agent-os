@@ -5,7 +5,9 @@ import re
 import sys
 import uuid
 from pathlib import Path
-from typing import Annotated, Any, Required, TypedDict
+from typing import Annotated, Any
+
+from typing_extensions import Required, TypedDict
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -359,26 +361,27 @@ class DelegationTaskInput(TypedDict, total=False):
     expectedOutputs: Required[list[str]]
     acceptanceContract: Required[str | dict[str, Any] | list[Any]]
     acceptanceTiers: Any
-    constraints: list[str]
-    behaviorScope: list[str]
+    constraints: list[str] | str
+    behaviorScope: list[str] | str
     toolPolicy: DelegationToolPolicyInput
-    allowedTools: list[str]
-    forbiddenTools: list[str]
+    allowedTools: list[str] | str
+    forbiddenTools: list[str] | str
     noTools: bool
-    requiredCapabilities: list[str]
-    runtimeAccess: list[str]
-    readSet: list[str]
-    writeSet: list[str]
-    proofExpectations: list[str]
-    evidenceRefs: list[str]
-    detailRefs: list[str]
-    researchRefs: list[str]
+    requiredCapabilities: list[str] | str
+    runtimeAccess: list[str] | str
+    readSet: list[str] | str
+    writeSet: list[str] | str
+    proofExpectations: list[str] | str
+    evidenceRefs: list[str] | str
+    detailRefs: list[str] | str
+    researchRefs: list[str] | str
     pluginReferences: list[dict[str, Any]]
     executionLaneHint: str
     familyHint: str
+    targetAgentName: str
     preferredAgentId: str
     preferredWorkerType: str
-    dependency: list[str]
+    dependency: list[str] | str
     allowChildDelegation: bool
     childDelegationBudget: dict[str, Any]
 
@@ -406,6 +409,44 @@ def _registry_snapshot_from_state_or_agents(
     if isinstance(state_snapshot, dict) and str(state_snapshot.get("schemaVersion") or "") == "v8.subagent_registry_snapshot.v1":
         snapshot_agents = agents_from_subagent_registry_snapshot(state_snapshot)
         if snapshot_agents:
+            created_agent_ids: set[str] = set()
+            for message in list(base_state.get("messages") or [])[-24:]:
+                content = getattr(message, "content", "")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        str(item.get("text") or item.get("content") or "") if isinstance(item, dict) else str(item or "")
+                        for item in content
+                    )
+                try:
+                    payload = json.loads(str(content or ""))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                message_name = str(getattr(message, "name", "") or "").strip().lower()
+                if message_name != "agent_broker" and str(payload.get("tool") or "").strip().lower() != "agent_broker":
+                    continue
+                if not (
+                    payload.get("ok") is True
+                    and str(payload.get("mode") or "").strip().lower() == "create"
+                    and str(payload.get("status") or "").strip().lower() == "created"
+                ):
+                    continue
+                item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+                created_id = str(item.get("agentId") or item.get("id") or "").strip()
+                if created_id:
+                    created_agent_ids.add(created_id)
+
+            snapshot_ids = {str(agent.get("id") or "").strip() for agent in snapshot_agents}
+            newly_created_agents = [
+                dict(agent)
+                for agent in loaded_agents
+                if isinstance(agent, dict)
+                and str(agent.get("id") or "").strip() in created_agent_ids - snapshot_ids
+            ]
+            if newly_created_agents:
+                refreshed = build_subagent_registry_snapshot([*snapshot_agents, *newly_created_agents])
+                return refreshed, agents_from_subagent_registry_snapshot(refreshed)
             return dict(state_snapshot), snapshot_agents
     snapshot = build_subagent_registry_snapshot(loaded_agents)
     return snapshot, agents_from_subagent_registry_snapshot(snapshot)
@@ -417,6 +458,59 @@ def _registry_version(snapshot: dict[str, Any]) -> str:
 
 def _registry_hash(snapshot: dict[str, Any]) -> str:
     return str(snapshot.get("hash") or "").strip()
+
+
+def _compact_registered_agent_catalog(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    for agent in agents:
+        if not isinstance(agent, dict) or agent.get("isEnabled") is False:
+            continue
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id or agent_id == "supervisor":
+            continue
+        snapshot = agent.get("capabilitySnapshot") if isinstance(agent.get("capabilitySnapshot"), dict) else {}
+        catalog.append(
+            {
+                "name": str(agent.get("name") or agent_id).strip() or agent_id,
+                "description": re.sub(r"\s+", " ", str(agent.get("description") or "").strip())[:240],
+                "family": str(snapshot.get("specialistFamily") or snapshot.get("family") or "freelancers").strip(),
+            }
+        )
+    catalog.sort(key=lambda item: (str(item.get("family") or ""), str(item.get("name") or "").casefold()))
+    return catalog
+
+
+def _active_collaborator_summaries(
+    tasks: list[dict[str, Any]],
+    agents: list[dict[str, Any]],
+    *,
+    current_index: int,
+    mirror_parent: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for peer_index, peer_task in enumerate(tasks):
+        if peer_index == current_index or not isinstance(peer_task, dict):
+            continue
+        lane_hint = str(peer_task.get("executionLaneHint") or "auto").strip().lower() or "auto"
+        if lane_hint == "external_worker":
+            continue
+        if mirror_parent:
+            parent_name = str(mirror_parent.get("name") or mirror_parent.get("id") or "subagent").strip()
+            peer_name = f"{parent_name} · worker-{peer_index + 1:02d}"
+        else:
+            peer_agent, _diagnostics = choose_best_local_agent_with_diagnostics(peer_task, agents)
+            if not peer_agent:
+                continue
+            peer_name = str(peer_agent.get("name") or peer_agent.get("id") or "subagent").strip()
+        summaries.append(
+            {
+                "name": peer_name,
+                "workSummary": str(peer_task.get("goal") or task_brief_summary(peer_task) or "delegated task").strip()[:360],
+                "taskBriefId": str(peer_task.get("taskBriefId") or f"task-{peer_index + 1}").strip(),
+                "status": "queued_or_active",
+            }
+        )
+    return summaries
 
 
 # --- Background Command Manager ---
@@ -1023,12 +1117,12 @@ def delegation_broker(
     mode: str = "observe",
     family: str = "",
     tasks: Annotated[
-        list[dict[str, Any]] | dict[str, Any] | str | None,
+        list[DelegationTaskInput] | dict[str, Any] | str | None,
         "Flat task briefs. Minimal dispatch form: tasks=[{taskBriefId, goal, expectedOutputs, acceptanceContract, toolPolicy}]. Never pass tasks={} and never wrap an item inside taskBrief.",
     ] = None,
     target_count: int | None = None,
     worker_briefs: Annotated[
-        list[dict[str, Any]] | dict[str, Any] | str | None,
+        list[DelegationTaskInput] | dict[str, Any] | str | None,
         "Alias for a flat task-brief list; each item uses the same fields as tasks.",
     ] = None,
     allow_child_delegation: bool = False,
@@ -1042,7 +1136,7 @@ def delegation_broker(
     """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
-    Use `mode='reveal'` to inspect a family, then `mode='dispatch'` with explicit flat tasks/worker_briefs. Example: `tasks=[{"taskBriefId":"task-1","goal":"...","expectedOutput":"...","acceptanceContract":"...","constraints":["..."],"toolPolicy":{"mode":"none"}}]`. Never wrap a task inside `{taskBrief:{...}}`. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
+    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Example: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"...","expectedOutput":"...","acceptanceContract":"...","constraints":["..."],"toolPolicy":{"mode":"none"}}]`. Never wrap a task inside `{taskBrief:{...}}`. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     Subagents may request child work only through their brokered path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
     Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
@@ -1311,9 +1405,37 @@ def delegation_broker(
         external_descriptors = _delegation_external_worker_descriptors()
         dispatch_source = str(base_state.get("delegationDispatchSource") or inherited_context.get("delegationDispatchSource") or "").strip()
         compat_source = str(base_state.get("delegationCompatSource") or inherited_context.get("delegationCompatSource") or "").strip()
-        auto_dispatch_source = dispatch_source if dispatch_source.startswith("runtime_auto") else ""
         if dispatch_task_source != "explicit" and not dispatch_source:
             dispatch_source = dispatch_task_source
+        auto_dispatch_source = dispatch_source if dispatch_source.startswith("runtime_auto") else ""
+        runtime_managed_dispatch = dispatch_source.startswith(("runtime_auto", "runtime_episode_runner"))
+        if supervisor_dispatch and not runtime_managed_dispatch:
+            missing_named_targets = [
+                str(task.get("taskBriefId") or f"task-{index + 1}").strip()
+                for index, task in enumerate(normalized_tasks)
+                if str(task.get("executionLaneHint") or "auto").strip().lower() != "external_worker"
+                and not str(task.get("targetAgentName") or "").strip()
+            ]
+            if missing_named_targets:
+                return Command(
+                    goto="supervisor",
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=_delegation_broker_payload(
+                                    mode=normalized_mode,
+                                    ok=False,
+                                    summary="手工本地委派必须明确选择已注册子 Agent 的精确名称，不能只按家族或能力猜测。",
+                                    error="target_agent_name_required",
+                                    missingTaskBriefIds=missing_named_targets,
+                                    availableAgents=_compact_registered_agent_catalog(registry_agents),
+                                    recommended_next_action="Call agent_broker(mode='list'), then retry with task.targetAgentName.",
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ]
+                    },
+                )
         workset_decisions = build_workset_dispatch_decisions(
             normalized_tasks,
             auto_dispatch=bool(auto_dispatch_source),
@@ -1385,7 +1507,22 @@ def delegation_broker(
             local_agent = None
             local_diagnostics: dict[str, Any] = {}
             external_diagnostics: dict[str, Any] = {}
-            if lane_hint in {"subagent", "auto"}:
+            if caller.is_direct_subagent and lane_hint in {"subagent", "auto"}:
+                local_agent = next(
+                    (
+                        agent
+                        for agent in registry_agents
+                        if str(agent.get("id") or "").strip() == str(caller.agent_id or "").strip()
+                        and agent.get("isEnabled") is not False
+                    ),
+                    None,
+                )
+                local_diagnostics = {
+                    "selectionReason": "ephemeral_parent_mirror",
+                    "selectionConfidence": 1.0 if local_agent else 0.0,
+                    "matchSignals": [f"parentAgentId:{caller.agent_id}"],
+                }
+            elif lane_hint in {"subagent", "auto"}:
                 local_agent, local_diagnostics = choose_best_local_agent_with_diagnostics(task_brief, registry_agents)
             external_worker = None
             if lane_hint == "external_worker":
@@ -1395,7 +1532,11 @@ def delegation_broker(
 
             if local_agent and lane_hint != "external_worker":
                 agent_id = str(local_agent.get("id") or "").strip()
-                agent_name = str(local_agent.get("name") or agent_id).strip() or agent_id
+                persistent_agent_name = str(local_agent.get("name") or agent_id).strip() or agent_id
+                ephemeral_mirror = bool(caller.is_direct_subagent)
+                ephemeral_agent_id = f"{agent_id}::worker-{index + 1:02d}" if ephemeral_mirror else ""
+                agent_name = f"{persistent_agent_name} · worker-{index + 1:02d}" if ephemeral_mirror else persistent_agent_name
+                target_id = ephemeral_agent_id or agent_id
                 branch_task_brief = _with_recursive_delegation_access(task_brief)
                 if current_depth > 0:
                     parent_task_brief = (
@@ -1408,12 +1549,45 @@ def delegation_broker(
                         branch_task_brief,
                         shell_dialect=default_shell_dialect(),
                     )
+                active_collaborators = _active_collaborator_summaries(
+                    normalized_tasks,
+                    registry_agents,
+                    current_index=index,
+                    mirror_parent=local_agent if ephemeral_mirror else None,
+                )
+                branch_context_payload = (
+                    dict(branch_task_brief.get("context") or {})
+                    if isinstance(branch_task_brief.get("context"), dict)
+                    else {"taskContext": str(branch_task_brief.get("context") or "").strip()}
+                )
+                if active_collaborators:
+                    branch_context_payload["activeCollaborators"] = active_collaborators
+                    branch_context_payload["collaborationBoundary"] = (
+                        "These peers are concurrently active. Use their names and work summaries as reverse-boundary warnings: "
+                        "do not duplicate or mutate their scope; return a conflict if your assigned boundary overlaps."
+                    )
+                if ephemeral_mirror:
+                    branch_context_payload["ephemeralMirror"] = {
+                        "agentId": ephemeral_agent_id,
+                        "name": agent_name,
+                        "parentAgentId": agent_id,
+                        "parentAgentName": persistent_agent_name,
+                        "disposable": True,
+                        "persistToRegistry": False,
+                    }
+                    branch_task_brief["ephemeralMirror"] = True
+                    branch_task_brief["ephemeralAgentId"] = ephemeral_agent_id
+                    branch_task_brief["ephemeralParentAgentId"] = agent_id
+                    branch_task_brief["targetAgentName"] = persistent_agent_name
+                    branch_task_brief["ephemeralAgentName"] = agent_name
+                    branch_task_brief["preferredAgentId"] = agent_id
+                branch_task_brief["context"] = branch_context_payload
                 branch_task_brief["delegationDepth"] = current_depth + 1
                 delegation_id_value = make_local_delegation_id(
                     invocation_id=invocation_id,
                     branch_index=index,
                     task_brief_id=str(branch_task_brief.get("taskBriefId") or ""),
-                    agent_id=agent_id,
+                    agent_id=target_id,
                 )
                 requested_plugin_references = list(branch_task_brief.get("pluginReferences") or [])
                 if requested_plugin_references:
@@ -1472,9 +1646,14 @@ def delegation_broker(
                     }
                 )
                 branch_state = dict(base_state)
+                instruction_owner = (
+                    str(local_agent.get("name") or caller.agent_id or "Parent Agent").strip()
+                    if caller.is_direct_subagent
+                    else "Supervisor"
+                )
                 branch_state["messages"] = base_messages + [
                     HumanMessage(
-                        content=f"[Supervisor Delegated Task to {agent_name}]:\n{task_query or task_goal}",
+                        content=f"[{instruction_owner} Delegated Task to {agent_name}]:\n{task_query or task_goal}",
                         additional_kwargs={
                             "v8_governance_type": "delegated_task_instruction",
                             "v8_task_brief_id": str(branch_task_brief.get("taskBriefId") or "").strip(),
@@ -1508,6 +1687,10 @@ def delegation_broker(
                     "branchIndex": index,
                     "agentId": agent_id,
                     "agentName": agent_name,
+                    "targetId": target_id,
+                    "ephemeralMirror": ephemeral_mirror,
+                    "ephemeralAgentId": ephemeral_agent_id or None,
+                    "ephemeralParentAgentId": agent_id if ephemeral_mirror else None,
                     "reason": task_goal,
                     "taskBriefId": str(branch_task_brief.get("taskBriefId") or f"{invocation_id}:{index}").strip(),
                     "taskBrief": branch_task_brief,

@@ -941,7 +941,7 @@ def _child_delegation_block_summary(
         "agentName": branch.get("agentName") or agent_id,
         "delegationId": branch.get("delegationId"),
         "lane": branch.get("lane") or "subagent",
-        "targetId": agent_id,
+        "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
         "targetLabel": branch.get("agentName") or agent_id,
         "branchIndex": branch.get("branchIndex"),
         "status": "blocked",
@@ -1095,7 +1095,7 @@ async def _run_parallel_agent_branch(
                 "agentName": branch.get("agentName") or agent_id,
                 "delegationId": branch.get("delegationId"),
                 "lane": branch.get("lane") or "subagent",
-                "targetId": agent_id,
+                "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
                 "targetLabel": branch.get("agentName") or agent_id,
                 "branchIndex": branch.get("branchIndex"),
                 "status": "waiting_child_delegation" if child_requests else "blocked",
@@ -1174,7 +1174,7 @@ async def _run_parallel_agent_branch(
                 "agentName": branch.get("agentName") or agent_id,
                 "delegationId": branch.get("delegationId"),
                 "lane": branch.get("lane") or "subagent",
-                "targetId": agent_id,
+                "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
                 "targetLabel": branch.get("agentName") or agent_id,
                 "branchIndex": branch.get("branchIndex"),
                 "status": "waiting_child_delegation",
@@ -1267,7 +1267,7 @@ async def _run_parallel_agent_branch(
                     "agentName": branch.get("agentName") or agent_id,
                     "delegationId": branch.get("delegationId"),
                     "lane": branch.get("lane") or "subagent",
-                    "targetId": agent_id,
+                    "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
                     "targetLabel": branch.get("agentName") or agent_id,
                     "branchIndex": branch.get("branchIndex"),
                     "status": "waiting_child_delegation",
@@ -1307,7 +1307,7 @@ async def _run_parallel_agent_branch(
             "agentName": branch.get("agentName") or agent_id,
             "delegationId": branch.get("delegationId"),
             "lane": branch.get("lane") or "subagent",
-            "targetId": agent_id,
+            "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
             "targetLabel": branch.get("agentName") or agent_id,
             "branchIndex": branch.get("branchIndex"),
             "completedAt": _now_iso(),
@@ -1326,7 +1326,7 @@ async def _run_parallel_agent_branch(
         "agentName": branch.get("agentName") or agent_id,
         "delegationId": branch.get("delegationId"),
         "lane": branch.get("lane") or "subagent",
-        "targetId": agent_id,
+        "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
         "targetLabel": branch.get("agentName") or agent_id,
         "branchIndex": branch.get("branchIndex"),
         "status": "ok",
@@ -1373,11 +1373,20 @@ async def _run_parallel_agent_branch(
     return delta_messages, delta_todos, summary, []
 
 
-def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
+def build_parallel_delegate_task_node(
+    agent_nodes_map: dict[str, Any],
+    *,
+    resolve_agent_node: Callable[[str], Any | None] | None = None,
+):
     async def parallel_delegate_task(state: dict[str, Any]) -> Command:
         branch = dict(state.get("parallel_branch") or {})
         agent_id = str(branch.get("agentId") or "")
         agent_data = agent_nodes_map.get(agent_id)
+        if not agent_data and resolve_agent_node is not None:
+            try:
+                agent_data = resolve_agent_node(agent_id)
+            except Exception:
+                agent_data = None
         if not agent_data:
             return Command(
                 goto="parallel_delegate_join",
@@ -1392,7 +1401,7 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
                             "agentName": branch.get("agentName") or agent_id,
                             "delegationId": branch.get("delegationId"),
                             "lane": branch.get("lane") or "subagent",
-                            "targetId": agent_id,
+                            "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
                             "targetLabel": branch.get("agentName") or agent_id,
                             "branchIndex": branch.get("branchIndex"),
                             "status": "error",
@@ -1477,7 +1486,7 @@ def build_parallel_delegate_task_node(agent_nodes_map: dict[str, Any]):
                             "agentName": branch.get("agentName") or agent_id,
                             "delegationId": branch.get("delegationId"),
                             "lane": branch.get("lane") or "subagent",
-                            "targetId": agent_id,
+                            "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
                             "targetLabel": branch.get("agentName") or agent_id,
                             "branchIndex": branch.get("branchIndex"),
                             "status": "error",

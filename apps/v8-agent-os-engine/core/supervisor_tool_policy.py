@@ -11,6 +11,7 @@ from core.runtime_tool_access import runtime_kind_available, runtime_tool_availa
 
 FALLBACK_NATIVE_TOOL_NAMES = {
     "delegation_broker",
+    "agent_broker",
     "tool_observation_detail",
     "run_system_command",
     "command_session_broker",

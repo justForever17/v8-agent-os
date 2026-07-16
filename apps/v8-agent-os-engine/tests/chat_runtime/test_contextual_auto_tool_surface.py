@@ -259,9 +259,14 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         task_schema = task_definition["properties"]
 
         self.assertIn("toolPolicy", task_schema)
+        self.assertIn("targetAgentName", task_schema)
         self.assertIn("acceptanceContract", task_schema)
         self.assertIn("expectedOutput", task_schema)
         self.assertIn("constraints", task_schema)
+        self.assertEqual(
+            {item.get("type") for item in task_schema["writeSet"]["anyOf"]},
+            {"array", "string"},
+        )
         self.assertEqual(
             set(task_definition["required"]),
             {"taskBriefId", "goal", "expectedOutputs", "acceptanceContract"},

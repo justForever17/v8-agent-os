@@ -33,6 +33,8 @@ class AgentState(TypedDict):
     transport: NotRequired[str]
     runtime_dispatch_status: NotRequired[dict]
     engineering_context: NotRequired[dict]
+    supervisor_work_mode: NotRequired[str]
+    supervisorWorkMode: NotRequired[str]
     task_shape_hint: NotRequired[dict]
     explicit_subagent_families: NotRequired[list]
     subagent_registry_snapshot: NotRequired[dict]
@@ -99,6 +101,7 @@ def create_supervisor_graph(config: EngineConfig, checkpointer=None):
         supervisor_node=supervisor_node,
         supervisor_tools=bundle.supervisor_tools,
         agent_nodes_map=bundle.agent_nodes_map,
+        resolve_agent_node=bundle.resolve_agent_node,
         create_routed_tool_node=tool_routing_create_routed_tool_node,
         checkpointer=checkpointer,
     )

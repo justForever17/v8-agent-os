@@ -1808,6 +1808,10 @@ class DatabaseManager:
                 else:
                     metadata.pop("pinned", None)
                     metadata.pop("pinnedAt", None)
+            if "supervisorWorkMode" in updates:
+                work_mode = str(updates.get("supervisorWorkMode") or "").strip().lower()
+                if work_mode in {"daily", "engineering"}:
+                    metadata["supervisorWorkMode"] = work_mode
 
             conn.execute(
                 """

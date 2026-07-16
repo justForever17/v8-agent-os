@@ -498,6 +498,10 @@ def filter_visible_tools_for_actor(
             if actor_identity.is_supervisor or actor_identity.is_direct_subagent:
                 visible.append(tool_ref)
             continue
+        if name == "agent_broker":
+            if actor_identity.is_supervisor:
+                visible.append(tool_ref)
+            continue
         if name in SUBAGENT_PLUGIN_TOOL_NAMES:
             visible.append(tool_ref)
             continue

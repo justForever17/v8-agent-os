@@ -105,6 +105,7 @@ from core.tools.native.creative_media_facade import (
     creative_media_quality,
 )
 from core.tools.native.delegation import *  # delegation broker tool family compatibility exports
+from core.tools.native.agent import *  # persistent subagent registry control plane
 from core.tools.native.runtime import *  # runtime broker tool family compatibility exports
 from core.tools.native.session_context import *  # V8OS session context broker compatibility exports
 from core.tools.native.session_coordination import *  # same-user Supervisor cross-session coordination

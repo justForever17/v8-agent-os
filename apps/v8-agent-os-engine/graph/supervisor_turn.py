@@ -600,6 +600,13 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
     }
     allowed.discard("")
     query = str(user_query or "").lower()
+    if re.search(
+        r"(?:不要|禁止|无需|不(?:要|再)?使用|do\s+not|don't|without)\s*"
+        r"(?:调用|使用|call|use)?\s*`?runtime_broker`?",
+        query,
+        flags=re.IGNORECASE,
+    ):
+        return []
     positions: list[tuple[int, str]] = []
     for kind, markers in _RUNTIME_ORCHESTRATION_MARKERS:
         if kind not in allowed:

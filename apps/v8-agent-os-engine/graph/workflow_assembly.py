@@ -637,11 +637,15 @@ def compile_supervisor_workflow(
     supervisor_node,
     supervisor_tools: list,
     agent_nodes_map: dict,
+    resolve_agent_node=None,
     create_routed_tool_node,
     checkpointer=None,
 ):
     workflow = StateGraph(agent_state_type)
-    parallel_task_node = build_parallel_delegate_task_node(agent_nodes_map)
+    parallel_task_node = build_parallel_delegate_task_node(
+        agent_nodes_map,
+        resolve_agent_node=resolve_agent_node,
+    )
     parallel_join_node = build_parallel_delegate_join_node()
 
     workflow.add_node("workflow_entry", _workflow_entry_command)

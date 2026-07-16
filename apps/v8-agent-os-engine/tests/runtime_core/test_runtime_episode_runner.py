@@ -38,12 +38,25 @@ def _delegation_send(task_id: str, *, deps: list[str] | None = None, agent_id: s
     )
 
 
-def test_child_target_inference_prioritizes_verification_over_research_evidence_terms():
-    target = RuntimeEpisodeRunner._infer_child_delegation_target(
-        "Verify the research evidence bundle and perform a final risk review before completion."
+def test_child_target_repair_uses_parent_identity_not_goal_keywords():
+    repaired = RuntimeEpisodeRunner._repair_child_worker_target(
+        {
+            "goal": "Verify the research evidence bundle and perform a final risk review before completion.",
+            "agentId": "web-research-architect",
+            "agentName": "Web Research Architect",
+        },
+        request={
+            "sourceAgentId": "implementation-engineer",
+            "sourceAgentName": "Implementation Engineer",
+            "childDelegationId": "delegation-child-keyword-test",
+        },
+        child_branch={},
     )
 
-    assert target == ("verification-engineer", "Verification Engineer", "verification_goal")
+    assert repaired["agentId"] == "implementation-engineer"
+    assert repaired["agentName"].startswith("Implementation Engineer · worker-")
+    assert repaired["originalAgentId"] == "web-research-architect"
+    assert repaired["mirrorRepairReason"] == "parent_mirror_enforced"
 
 
 def test_runtime_episode_queue_claim_and_unknown_executor_completes_recoverably(tmp_path, monkeypatch):
@@ -86,7 +99,15 @@ def test_runtime_episode_build_inherits_runtime_context_binding():
             """
         )
         binding_row = cur.fetchone()
-    assert binding_row is not None
+    if binding_row is None:
+        db.create_or_update_session("session-runtime-binding", "Runtime binding test", user_id="test")
+        db.create_run_record(
+            run_id="run-runtime-binding",
+            session_id="session-runtime-binding",
+            run_type="chat",
+            status="running",
+        )
+        binding_row = {"session_id": "session-runtime-binding", "run_id": "run-runtime-binding"}
     session_id = binding_row["session_id"]
     run_id = binding_row["run_id"]
     with bind_runtime_context(session_id=session_id, run_id=run_id, rootRunId=run_id):
@@ -2547,7 +2568,7 @@ def test_child_delegation_budget_boundary_requeues_parent_without_failure():
     assert resume["childHandoffs"][0]["budgetBlockedChildDelegations"][0]["dispatchStatus"] == "dispatch_missing_child_budget"
 
 
-def test_child_delegation_retargets_research_goal_away_from_source_agent():
+def test_child_delegation_keeps_research_goal_on_disposable_parent_mirror():
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "creative worker asks for research"},
         kind="delegation",
@@ -2592,11 +2613,12 @@ def test_child_delegation_retargets_research_goal_away_from_source_agent():
     child = db.get_runtime_episode(child_ids[0])
     assert child is not None
     brief = child["inputs"]["workerBriefs"][0]
-    assert brief["agentId"] == "web-research-architect"
-    assert brief["agentName"] == "Web Research Architect"
-    assert brief["targetRepairReason"] == "research_goal"
-    assert brief["originalAgentId"] == "creative-media-director"
-    assert child["metadata"]["targetRepairReason"] == "research_goal"
+    assert brief["agentId"] == "creative-media-director"
+    assert brief["targetAgentName"] == "Creative Media Director"
+    assert brief["agentName"].startswith("Creative Media Director · worker-")
+    assert brief["ephemeralMirror"] is True
+    assert brief["persistToRegistry"] is False
+    assert "targetRepairReason" not in brief
 
 
 def test_child_delegation_request_preserves_rich_task_brief_for_grandchild():
@@ -2648,7 +2670,7 @@ def test_child_delegation_request_preserves_rich_task_brief_for_grandchild():
     assert worker_brief["workspacePath"] == "E:/Projects/test3"
 
 
-def test_child_delegation_retargets_runtime_verification_away_from_skill_curator():
+def test_child_delegation_repairs_malformed_target_back_to_parent_mirror():
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "verification child target repair"},
         kind="delegation",
@@ -2694,8 +2716,8 @@ def test_child_delegation_retargets_runtime_verification_away_from_skill_curator
     assert child is not None
     brief = child["inputs"]["workerBriefs"][0]
     assert brief["agentId"] == "verification-engineer"
-    assert brief["agentName"] == "Verification Engineer"
-    assert brief["targetRepairReason"] == "verification_goal"
+    assert brief["agentName"].startswith("Verification Engineer · worker-")
+    assert brief["mirrorRepairReason"] == "parent_mirror_enforced"
     assert brief["originalAgentId"] == "skill-workflow-curator"
 
 

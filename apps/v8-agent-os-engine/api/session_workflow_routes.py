@@ -613,6 +613,11 @@ async def patch_session_presentation(session_id: str, data: dict = Body(...)):
             if not isinstance(data.get("pinned"), bool):
                 raise HTTPException(status_code=400, detail="session_pinned_must_be_boolean")
             updates["pinned"] = data.get("pinned")
+        if "supervisorWorkMode" in data:
+            supervisor_work_mode = str(data.get("supervisorWorkMode") or "").strip().lower()
+            if supervisor_work_mode not in {"daily", "engineering"}:
+                raise HTTPException(status_code=400, detail="session_supervisor_work_mode_invalid")
+            updates["supervisorWorkMode"] = supervisor_work_mode
         if not updates:
             raise HTTPException(status_code=400, detail="session_presentation_update_required")
 

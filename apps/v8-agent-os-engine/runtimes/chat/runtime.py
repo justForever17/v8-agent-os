@@ -254,6 +254,7 @@ class ChatPreparedRequest:
     spec_command: dict[str, Any] = field(default_factory=dict)
     spec_id: str = ""
     spec_brief: dict[str, Any] = field(default_factory=dict)
+    supervisor_work_mode: str = "daily"
     engineering_mode: str = "auto"
     explicit_engineering_requested: bool = False
     engineering_trigger_decision: dict[str, Any] = field(default_factory=dict)
@@ -1202,6 +1203,46 @@ class ChatRuntime:
         normalized = str(value or "").strip().lower()
         return normalized if normalized in {"auto", "force", "off"} else "auto"
 
+    @staticmethod
+    def _normalize_supervisor_work_mode(value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        return normalized if normalized in {"daily", "engineering"} else "daily"
+
+    def _session_supervisor_work_mode(self, session_id: str) -> str:
+        if not session_id:
+            return "daily"
+        session = db.get_session(session_id) or {}
+        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+        return self._normalize_supervisor_work_mode(
+            metadata.get("supervisorWorkMode") or metadata.get("supervisor_work_mode")
+        )
+
+    def _detect_explicit_supervisor_work_mode_request(self, user_content: str) -> str | None:
+        text = str(user_content or "").strip().lower()
+        if not text:
+            return None
+        daily_patterns = (
+            r"\b(?:use|switch to|enter)\s+daily\s+mode\b",
+            r"退出\s*(?:编程|工程)模式",
+            r"进入\s*日常模式",
+            r"切换到\s*日常模式",
+            r"用\s*日常模式",
+        )
+        engineering_patterns = (
+            r"\b(?:use|switch to|enter)\s+engineering\s+mode\b",
+            r"进入\s*(?:编程|工程)模式",
+            r"切换到\s*(?:编程|工程)模式",
+            r"使用\s*(?:编程|工程)模式",
+            r"用\s*(?:编程|工程)模式",
+        )
+        for pattern in daily_patterns:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                return "daily"
+        for pattern in engineering_patterns:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                return "engineering"
+        return None
+
     def _detect_explicit_engineering_runtime_request(self, user_content: str) -> bool:
         text = str(user_content or "").strip().lower()
         if not text:
@@ -1209,15 +1250,11 @@ class ChatRuntime:
         patterns = (
             r"\buse\s+engineering\s+runtime\b",
             r"\bengineering\s+runtime\b",
-            r"\bengineering\s+mode\b",
             r"使用\s*engineering\s*runtime",
             r"用\s*engineering\s*runtime",
             r"使用\s*工程运行时",
             r"用\s*工程运行时",
             r"进入\s*工程运行时",
-            r"使用\s*工程模式",
-            r"用\s*工程模式",
-            r"进入\s*工程模式",
         )
         for pattern in patterns:
             for match in re.finditer(pattern, text, flags=re.IGNORECASE):
@@ -1869,13 +1906,21 @@ class ChatRuntime:
     def _resolve_request_context(
         self,
         request: ChatRequest,
-    ) -> tuple[dict[str, Any] | None, str, bool, list[dict[str, str]], list[dict[str, str]], list[str], bool]:
+        *,
+        session_id: str,
+    ) -> tuple[dict[str, Any] | None, str, str, bool, list[dict[str, str]], list[dict[str, str]], list[str], bool]:
         request_data = request.data
         command_selection = request_data.command_preset if request_data else None
         spec_mode = bool(getattr(request_data, "spec_mode", False)) if request_data else False
         spec_command = self._normalize_spec_command(request)
         if spec_command:
             spec_mode = True
+        requested_work_mode = getattr(request_data, "supervisor_work_mode", None) if request_data else None
+        supervisor_work_mode = (
+            self._normalize_supervisor_work_mode(requested_work_mode)
+            if str(requested_work_mode or "").strip()
+            else self._session_supervisor_work_mode(session_id)
+        )
         engineering_mode = self._normalize_engineering_mode(getattr(request_data, "engineering_mode", None) if request_data else None)
         latest_user = self._latest_user_content(request)
         if not spec_mode and self._detect_explicit_spec_mode_request(latest_user):
@@ -1883,6 +1928,9 @@ class ChatRuntime:
         explicit_engineering_requested = self._detect_explicit_engineering_runtime_request(latest_user)
         if explicit_engineering_requested:
             engineering_mode = "force"
+        explicit_work_mode = self._detect_explicit_supervisor_work_mode_request(latest_user)
+        if explicit_work_mode:
+            supervisor_work_mode = explicit_work_mode
 
         command_preset = None
         if command_selection and command_selection.name:
@@ -1893,7 +1941,7 @@ class ChatRuntime:
         skill_references = self._normalize_skill_references(request)
         context_mentions = self._normalize_context_mentions(request, skill_references=skill_references)
         explicit_subagent_families = self._resolve_explicit_subagent_families(request, context_mentions)
-        return command_preset, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families, spec_mode
+        return command_preset, supervisor_work_mode, engineering_mode, explicit_engineering_requested, skill_references, context_mentions, explicit_subagent_families, spec_mode
 
     @staticmethod
     def _runtime_execution_allowed_by_spec(spec_brief: dict[str, Any] | None) -> bool:
@@ -2187,13 +2235,14 @@ class ChatRuntime:
         self._inject_uploaded_file_notices(request, lc_messages)
         (
             command_preset,
+            supervisor_work_mode,
             engineering_mode,
             explicit_engineering_requested,
             skill_references,
             context_mentions,
             explicit_subagent_families,
             spec_mode,
-        ) = self._resolve_request_context(request)
+        ) = self._resolve_request_context(request, session_id=session_id)
         resume_spec_session_id = ""
         if not spec_mode and request.resume_run_id:
             resume_spec_session_id = self._resume_run_spec_session_id(request.resume_run_id)
@@ -2280,6 +2329,7 @@ class ChatRuntime:
             spec_mode=spec_mode,
             spec_command=spec_command,
             spec_id=spec_id,
+            supervisor_work_mode=supervisor_work_mode,
             engineering_mode=engineering_mode,
             explicit_engineering_requested=explicit_engineering_requested,
             skill_references=skill_references,
@@ -2366,6 +2416,7 @@ class ChatRuntime:
                     "provider": prepared.request.config.provider,
                     "conversation_id": prepared.conversation_id,
                     "transport": transport,
+                    "supervisorWorkMode": prepared.supervisor_work_mode,
                     "externalSurface": transport if compat_ephemeral else None,
                     "hideFromChatHistory": compat_ephemeral,
                     "compatEphemeral": compat_ephemeral,
@@ -2397,6 +2448,12 @@ class ChatRuntime:
                     model_name=prepared.request.config.model_name,
                     run_id=run_id,
                 )
+
+        if prepared.is_resume_request:
+            db.update_session_metadata(
+                prepared.session_id,
+                {"supervisorWorkMode": prepared.supervisor_work_mode},
+            )
 
         if scope_result is None:
             existing_binding = session_scope_binding_service.get_binding(prepared.session_id)
@@ -2433,6 +2490,10 @@ class ChatRuntime:
                 run_handle.run_id,
                 {"safetyApprovalMode": normalize_safety_approval_mode(requested_safety_mode)},
             )
+        run_service.update_metadata(
+            run_handle.run_id,
+            {"supervisorWorkMode": prepared.supervisor_work_mode},
+        )
         try:
             prepared.task_shape_hint = classify_task_shape(
                 prepared.latest_user_content,
@@ -2815,6 +2876,7 @@ class ChatRuntime:
             chat_run.emit_runtime_event(
                 "engineering_lane.trigger.decided",
                 {
+                    "supervisorWorkMode": chat_run.prepared.supervisor_work_mode,
                     "engineeringMode": chat_run.prepared.engineering_mode,
                     "triggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
                     "contextPackActive": bool(chat_run.prepared.engineering_context_pack),
@@ -2888,6 +2950,9 @@ class ChatRuntime:
             metadata["specCommand"] = dict(chat_run.prepared.spec_command)
         if isinstance(getattr(chat_run.prepared, "task_shape_hint", None), dict) and chat_run.prepared.task_shape_hint:
             metadata["taskShapeHint"] = dict(chat_run.prepared.task_shape_hint)
+        metadata["supervisorWorkMode"] = str(
+            getattr(chat_run.prepared, "supervisor_work_mode", "daily") or "daily"
+        )
         engineering_mode = getattr(chat_run.prepared, "engineering_mode", "auto")
         engineering_trigger_decision = getattr(chat_run.prepared, "engineering_trigger_decision", None)
         if engineering_mode != "auto" or engineering_trigger_decision:
@@ -2963,6 +3028,7 @@ class ChatRuntime:
                 **({"specMode": True} if metadata.get("specMode") is True else {}),
                 **({"specCommand": dict(metadata["specCommand"])} if isinstance(metadata.get("specCommand"), dict) else {}),
                 **({"taskShapeHint": dict(metadata["taskShapeHint"])} if isinstance(metadata.get("taskShapeHint"), dict) else {}),
+                **({"supervisorWorkMode": metadata.get("supervisorWorkMode")} if metadata.get("supervisorWorkMode") else {}),
                 **({"engineeringMode": metadata.get("engineeringMode")} if metadata.get("engineeringMode") else {}),
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
@@ -3292,6 +3358,8 @@ class ChatRuntime:
                 "resolvedScope": binding.resolved_scope,
                 "safety_approval_mode": safety_mode,
                 "safetyApprovalMode": safety_mode,
+                "supervisor_work_mode": chat_run.prepared.supervisor_work_mode,
+                "supervisorWorkMode": chat_run.prepared.supervisor_work_mode,
             }
         )
         context["workspaceBinding"] = build_workspace_binding(
@@ -3325,6 +3393,8 @@ class ChatRuntime:
             "resolvedScope": chat_run.scope_result.binding.resolved_scope,
             "safety_approval_mode": safety_approval_mode,
             "safetyApprovalMode": safety_approval_mode,
+            "supervisor_work_mode": chat_run.prepared.supervisor_work_mode,
+            "supervisorWorkMode": chat_run.prepared.supervisor_work_mode,
             "latestUserContent": chat_run.prepared.latest_user_content,
             "latest_user_content": chat_run.prepared.latest_user_content,
             "userRequest": chat_run.prepared.latest_user_content,
@@ -3453,19 +3523,8 @@ class ChatRuntime:
                 "externalToolsPrimary": compat_diagnostics.get("externalToolsPrimary"),
             }
         task_shape_hint = dict(getattr(chat_run.prepared, "task_shape_hint", None) or {})
-        secondary_shapes = [
-            str(item or "").strip()
-            for item in list(task_shape_hint.get("secondaryTaskShapes") or [])
-            if str(item or "").strip()
-        ]
         engineering_required = bool(
             getattr(chat_run.prepared, "explicit_engineering_requested", False)
-            or task_shape_hint.get("primaryTaskShape") == "project_coding"
-            or (
-                task_shape_hint.get("primaryTaskShape")
-                and "research" in set(secondary_shapes)
-                and task_shape_hint.get("primaryTaskShape") in {"creative_media", "automation"}
-            )
         )
         if (
             getattr(chat_run.prepared, "explicit_engineering_requested", False)

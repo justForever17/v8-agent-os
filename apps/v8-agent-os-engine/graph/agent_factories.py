@@ -625,10 +625,10 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
         lines.append("Delegation Authority:")
         if child_delegation_allowed:
             lines.append(
-                "- You are a direct subagent. `delegation_broker(mode='dispatch')` is available for one bounded grandchild layer when a real independent subtask is useful."
+                "- You are a direct subagent. `delegation_broker(mode='dispatch')` may create one concurrent layer of disposable mirror workers when independent shards materially speed up this exact task."
             )
             lines.append(
-                "- Supply a complete task brief and let the broker select the worker, preserve lineage, and enforce the parent acceptance contract. Grandchildren cannot delegate again."
+                "- Each grandchild is a temporary, cleaner-context mirror of you, named from your own name plus a worker suffix. Do not select another registered subagent as your grandchild; supply explicit shard boundaries and acceptance, then let the broker preserve lineage. Grandchildren cannot delegate again and are never persisted."
             )
         else:
             lines.append(
@@ -638,6 +638,19 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
                 "- Complete the assigned slice with the tools you have, or return a concrete blocker without attempting to create another worker."
             )
         context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        active_collaborators = [
+            item for item in list(context.get("activeCollaborators") or [])
+            if isinstance(item, dict)
+        ]
+        if active_collaborators:
+            lines.append("")
+            lines.append("Concurrent Collaboration Boundaries:")
+            lines.append("- These are reverse-boundary warnings, not work you should absorb. Do not duplicate or mutate a peer's scope; report a conflict when boundaries overlap.")
+            for item in active_collaborators[:12]:
+                name = _compact_prompt_value(item.get("name")) or "peer"
+                work_summary = _compact_prompt_value(item.get("workSummary")) or "concurrent delegated work"
+                status = _compact_prompt_value(item.get("status"))
+                lines.append(f"- {name}: {work_summary}" + (f" ({status})" if status else ""))
         lines.extend(_agent_visible_context_lines(context))
         writing_brief = context.get("writingExecutionBrief") if isinstance(context.get("writingExecutionBrief"), dict) else {}
         if writing_brief:
@@ -1030,6 +1043,26 @@ def build_agent_node(
             delegated_query = _extract_delegated_query(task_messages)
             inherited_route_context = _resolve_inherited_route_context(state, task_messages, agent_id=agent_id)
             delegated_task_brief = inherited_route_context.get("taskBrief") if isinstance(inherited_route_context.get("taskBrief"), dict) else None
+            delegated_context = (
+                delegated_task_brief.get("context")
+                if isinstance(delegated_task_brief, dict) and isinstance(delegated_task_brief.get("context"), dict)
+                else {}
+            )
+            ephemeral_info = delegated_context.get("ephemeralMirror") if isinstance(delegated_context.get("ephemeralMirror"), dict) else {}
+            ephemeral_mirror = bool(ephemeral_info or (delegated_task_brief or {}).get("ephemeralMirror"))
+            effective_agent_name = str(
+                ephemeral_info.get("name")
+                or (state.get("parallel_branch") or {}).get("agentName")
+                or agent_name
+            ).strip() or agent_name
+            effective_agent_system_prompt = agent_system_prompt
+            if ephemeral_mirror:
+                parent_name = str(ephemeral_info.get("parentAgentName") or agent_name).strip() or agent_name
+                effective_agent_system_prompt = (
+                    f"You are a disposable execution mirror of the registered subagent {parent_name}.\n"
+                    "Execute only the assigned task brief and acceptance contract. Keep context narrow, do not adopt another persistent role, do not create or modify Agent registry assets, and return a compact typed handoff to your parent. Your identity ends when this delegated shard is delivered."
+                )
+                active_plan_context = ""
             delegated_runtime_access = resolve_subagent_runtime_access(
                 agent_data,
                 (delegated_task_brief or {}).get("runtimeAccess"),
@@ -1117,8 +1150,8 @@ def build_agent_node(
                 extensions_runtime_service.reset_execution_context(route_context_token)
 
             system_bundle = _build_agent_system_bundle(
-                agent_name=agent_name,
-                agent_system_prompt=agent_system_prompt,
+                agent_name=effective_agent_name,
+                agent_system_prompt=effective_agent_system_prompt,
                 env_context=env_context,
                 active_plan_context=active_plan_context,
                 delegated_plan_context=delegated_plan_context,
@@ -1149,7 +1182,7 @@ def build_agent_node(
             route_context_record = {
                 **build_delegation_context(
                     agent_id=agent_id,
-                    agent_name=agent_name,
+                    agent_name=effective_agent_name,
                     query=extensions_route_query,
                     mode=str(inherited_route_context.get("mode") or "serial"),
                     source_runtime_kind=inherited_route_context.get("sourceRuntimeKind") or "chat",
@@ -1177,7 +1210,7 @@ def build_agent_node(
             from core.automation.hooks import hooks_manager
 
             try:
-                hooks_manager.execute_hook("on_agent_start", agent_name=agent_name, agent_id=agent_id)
+                hooks_manager.execute_hook("on_agent_start", agent_name=effective_agent_name, agent_id=agent_id)
             except Exception as hook_err:
                 fallback_msg = AIMessage(content="I was stopped before I could even start generating.", id=str(uuid.uuid4()))
                 feedback_msg = HumanMessage(
@@ -1245,7 +1278,7 @@ def build_agent_node(
             try:
                 hooks_manager.execute_hook(
                     "on_agent_end",
-                    agent_name=agent_name,
+                    agent_name=effective_agent_name,
                     agent_id=agent_id,
                     response_content=response.content,
                 )

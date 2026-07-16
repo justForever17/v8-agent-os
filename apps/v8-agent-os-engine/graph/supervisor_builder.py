@@ -33,8 +33,29 @@ class SupervisorRuntimeBundle:
     robust_invoke: Callable
     supervisor_tools: list[Any]
     agent_nodes_map: dict[str, Callable]
+    resolve_agent_node: Callable[[str], Any | None]
     subagent_registry_snapshot: dict[str, Any]
     supervisor_reasoning_effort: str = "auto"
+
+
+def _make_dynamic_agent_node_resolver(*, storage_manager, agent_nodes_map, build_agent_components):
+    """Load a newly registered Agent into the current graph on first use."""
+
+    def resolve(agent_id: str) -> Any | None:
+        normalized_id = str(agent_id or "").strip()
+        if not normalized_id:
+            return None
+        existing = agent_nodes_map.get(normalized_id)
+        if existing:
+            return existing
+        fresh_agent = storage_manager.get_agent(normalized_id)
+        if not isinstance(fresh_agent, dict):
+            return None
+        fresh_components = build_agent_components([fresh_agent])
+        agent_nodes_map.update(fresh_components)
+        return agent_nodes_map.get(normalized_id)
+
+    return resolve
 
 
 def _is_request_model_override(config: EngineConfig, default_role_model: str | None) -> bool:
@@ -111,19 +132,28 @@ def build_supervisor_runtime_bundle(
         supervisor_reasoning_effort=supervisor_reasoning_effort,
     )
 
-    agent_nodes_map = build_specialist_agent_components(
-        loaded_agents=loaded_agents,
-        all_mcp_tools=all_mcp_tools,
-        filtered_native_tools=filtered_native_tools,
-        default_agent_llm=default_agent_llm,
-        supervisor_model_id=sup_model_name,
-        robust_invoke=robust_invoke,
-        build_failure_command=build_failure_command,
-        extract_task_context=extract_task_context,
-        resolve_todos=resolve_todos,
-        sanitize_message_chain=sanitize_message_chain,
-        sanitize_response_tool_calls=sanitize_response_tool_calls,
-        fetch_skill_instructions=fetch_skill_instructions_tool,
+    def _build_agent_components(agent_records: list[dict[str, Any]]) -> dict[str, Any]:
+        return build_specialist_agent_components(
+            loaded_agents=agent_records,
+            all_mcp_tools=all_mcp_tools,
+            filtered_native_tools=filtered_native_tools,
+            default_agent_llm=default_agent_llm,
+            supervisor_model_id=sup_model_name,
+            robust_invoke=robust_invoke,
+            build_failure_command=build_failure_command,
+            extract_task_context=extract_task_context,
+            resolve_todos=resolve_todos,
+            sanitize_message_chain=sanitize_message_chain,
+            sanitize_response_tool_calls=sanitize_response_tool_calls,
+            fetch_skill_instructions=fetch_skill_instructions_tool,
+        )
+
+    agent_nodes_map = _build_agent_components(loaded_agents)
+
+    resolve_agent_node = _make_dynamic_agent_node_resolver(
+        storage_manager=storage,
+        agent_nodes_map=agent_nodes_map,
+        build_agent_components=_build_agent_components,
     )
 
     supervisor_tools = build_supervisor_toolset(
@@ -143,6 +173,7 @@ def build_supervisor_runtime_bundle(
         robust_invoke=robust_invoke,
         supervisor_tools=supervisor_tools,
         agent_nodes_map=agent_nodes_map,
+        resolve_agent_node=resolve_agent_node,
         subagent_registry_snapshot=subagent_registry_snapshot,
         supervisor_reasoning_effort=supervisor_reasoning_effort,
     )
@@ -162,9 +193,14 @@ def build_supervisor_node(
     from core.automation.hooks import hooks_manager
 
     def supervisor_node(state):
+        current_agents = storage.get_all_agents()
+        current_registry_snapshot = build_subagent_registry_snapshot(
+            current_agents,
+            ((storage.get_supervisor_config() or {}).get("specialistRegistry") or {}),
+        )
         state_with_registry = {
             **dict(state),
-            "subagent_registry_snapshot": dict(bundle.subagent_registry_snapshot or {}),
+            "subagent_registry_snapshot": dict(current_registry_snapshot or {}),
         }
         messages = list(state_with_registry["messages"])
         hooks_manager.execute_hook("on_supervisor_start")
@@ -172,7 +208,7 @@ def build_supervisor_node(
             state=state_with_registry,
             config=config,
             messages=messages,
-            loaded_agents=bundle.loaded_agents,
+            loaded_agents=current_agents,
             supervisor_tools=bundle.supervisor_tools,
             memory_runtime=memory_runtime,
             scope_resolution_service=scope_resolution_service,

@@ -34,7 +34,7 @@ def _agent(agent_id: str, *, family: str, global_exposure: bool = False) -> dict
 
 
 class SpecialistRegistryPromptTests(unittest.TestCase):
-    def test_registry_is_family_scoped_top_k_and_compact(self):
+    def test_registry_exposes_all_exact_names_and_descriptions(self):
         agents = [_agent(f"eng-{index:02d}", family="engineering") for index in range(12)]
         agents.extend(
             [
@@ -68,20 +68,19 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
 
         specialist_context = result["specialist_agents_context"]
         self.assertIn("--- SPECIALIST FAMILIES ---", specialist_context)
-        self.assertIn("familyMode=family_cards", specialist_context)
+        self.assertIn("[registeredAgentIndex]", specialist_context)
         self.assertIn("primary=project_coding", result["task_shape_context"])
         self.assertIn("[globalExposure]", specialist_context)
         self.assertIn("writer-global", specialist_context)
-        self.assertIn("[familyCapabilityCards]", specialist_context)
-        self.assertIn("- engineering | members=12", specialist_context)
-        self.assertIn("recommended=true", specialist_context)
-        self.assertNotIn("eng-09", specialist_context)
-        self.assertNotIn("eng-10", specialist_context)
-        self.assertNotIn("writer-plain", specialist_context)
-        self.assertNotIn("Long description", specialist_context)
-        self.assertLess(estimate_prompt_tokens(specialist_context), 700)
+        self.assertIn("[registeredAgentIndex]", specialist_context)
+        self.assertIn("eng-09", specialist_context)
+        self.assertIn("eng-10", specialist_context)
+        self.assertIn("writer-plain", specialist_context)
+        self.assertIn("description=Long description for eng-00", specialist_context)
+        self.assertIn("pass task.targetAgentName", specialist_context)
+        self.assertLess(estimate_prompt_tokens(specialist_context), 2200)
 
-    def test_registry_predicts_creative_media_family_as_card_only(self):
+    def test_registry_keeps_task_family_hint_but_does_not_hide_other_agents(self):
         agents = [
             _agent("creative-media-director", family="creative_media"),
             _agent("implementation-engineer", family="engineering"),
@@ -113,13 +112,12 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
 
         specialist_context = result["specialist_agents_context"]
         self.assertIn("primary=creative_media", result["task_shape_context"])
-        self.assertIn("- creative_media | members=1", specialist_context)
-        self.assertIn("recommended=true", specialist_context)
-        self.assertNotIn("creative-media-director | class=", specialist_context)
-        self.assertNotIn("implementation-engineer", specialist_context)
-        self.assertNotIn("docs-delivery-writer", specialist_context)
+        self.assertIn("taskFamilyHint=creative_media", specialist_context)
+        self.assertIn("name=creative-media-director", specialist_context)
+        self.assertIn("name=implementation-engineer", specialist_context)
+        self.assertIn("name=docs-delivery-writer", specialist_context)
 
-    def test_explicit_state_reveals_family_members(self):
+    def test_explicit_family_state_keeps_full_registry_index_visible(self):
         agents = [
             _agent("creative-media-director", family="creative_media"),
             _agent("implementation-engineer", family="engineering"),
@@ -149,10 +147,9 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
             )
 
         specialist_context = result["specialist_agents_context"]
-        self.assertIn("[revealedFamilyMembers]", specialist_context)
-        self.assertIn("[creative_media] revealSource=user_explicit_mention", specialist_context)
-        self.assertIn("creative-media-director | class=", specialist_context)
-        self.assertNotIn("implementation-engineer | class=", specialist_context)
+        self.assertIn("[registeredAgentIndex]", specialist_context)
+        self.assertIn("name=creative-media-director", specialist_context)
+        self.assertIn("name=implementation-engineer", specialist_context)
 
     def test_execution_hints_block_is_closed(self):
         with patch("graph.supervisor_context.capability_registry.build_supervisor_summary", return_value=""), patch(
@@ -264,7 +261,8 @@ class SpecialistRegistryPromptTests(unittest.TestCase):
 
         system_content = result["system_content"]
         specialist_context = result["specialist_agents_context"]
-        self.assertIn("selectionRule=Use delegation_broker", specialist_context)
+        self.assertIn("Choose one exact name", specialist_context)
+        self.assertIn("task.targetAgentName", specialist_context)
         self.assertIn("`delegation_broker` is your direct, governed entry", system_content)
         self.assertIn("Do not use it as a shortcut for internal runtimes", system_content)
         self.assertIn("- delegation_broker: Dispatch subagents.", system_content)

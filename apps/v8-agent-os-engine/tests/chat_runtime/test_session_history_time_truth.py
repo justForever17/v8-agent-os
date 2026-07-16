@@ -149,6 +149,29 @@ class SessionHistoryTimeTruthTests(unittest.TestCase):
             gc.collect()
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_supervisor_work_mode_is_session_presentation_truth(self):
+        temp_dir = Path(tempfile.mkdtemp())
+        try:
+            db = DatabaseManager(temp_dir / "state.db")
+            db.create_or_update_session("sess_work_mode", "工程任务", user_id="user")
+            updated = db.update_session_presentation(
+                "sess_work_mode",
+                {"supervisorWorkMode": "engineering"},
+            )
+
+            self.assertEqual(updated["metadata"]["supervisorWorkMode"], "engineering")
+            db.create_or_update_session("sess_work_mode", "运行中标题", user_id="user")
+            session = db.get_session("sess_work_mode")
+            self.assertEqual(session["metadata"]["supervisorWorkMode"], "engineering")
+
+            db.update_session_presentation("sess_work_mode", {"supervisorWorkMode": "daily"})
+            session = db.get_session("sess_work_mode")
+            self.assertEqual(session["metadata"]["supervisorWorkMode"], "daily")
+        finally:
+            del db
+            gc.collect()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_materialized_record_keeps_history_sort_at_stable_when_runtime_is_newer(self):
         record = build_session_history_materialized_record(
             session_row={

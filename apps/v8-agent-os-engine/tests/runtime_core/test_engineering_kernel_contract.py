@@ -67,12 +67,35 @@ def test_engineering_kernel_publishes_workspace_and_detected_shell(tmp_path: Pat
     assert diagnostics[0]["executionMode"] == "none"
 
 
-def test_supervisor_prompt_allows_bounded_direct_work_without_weakening_delegated_capsules(tmp_path: Path) -> None:
-    content = (Path(__file__).parents[2] / "graph" / "supervisor_context.py").read_text(encoding="utf-8")
+def test_supervisor_prompt_allows_long_direct_engineering_work_without_weakening_delegated_capsules(tmp_path: Path) -> None:
+    supervisor_content = (Path(__file__).parents[2] / "graph" / "supervisor_context.py").read_text(encoding="utf-8")
+    kernel_content = (Path(__file__).parents[2] / "core" / "engineering_kernel.py").read_text(encoding="utf-8")
 
-    assert "read_only_no_capsule" in content
-    assert "supervisor_direct_bounded" in content
-    assert "Delegated workers remain Capsule-governed" in content
+    assert "read_only_no_capsule" in kernel_content
+    assert "supervisor_direct_bounded" not in supervisor_content + kernel_content
+    assert "task size alone is never a reason to forbid direct Supervisor execution" in supervisor_content
+    assert "delegated worker remains Capsule-governed" in supervisor_content
+
+
+def test_engineering_kernel_projects_session_work_mode_without_forcing_runtime(tmp_path: Path) -> None:
+    daily_text, daily_diagnostics = build_engineering_kernel_context(
+        state={"workspace_path": str(tmp_path), "supervisorWorkMode": "daily"},
+        session_id="session-daily",
+        actor="supervisor",
+    )
+    engineering_text, engineering_diagnostics = build_engineering_kernel_context(
+        state={"workspace_path": str(tmp_path), "supervisorWorkMode": "engineering"},
+        session_id="session-engineering",
+        actor="supervisor",
+    )
+
+    assert "Execution posture: supervisor_daily" in daily_text
+    assert daily_diagnostics[0]["supervisorWorkMode"] == "daily"
+    assert daily_diagnostics[0]["executionPosture"] == "supervisor_daily"
+    assert "Execution posture: supervisor_engineering" in engineering_text
+    assert engineering_diagnostics[0]["supervisorWorkMode"] == "engineering"
+    assert engineering_diagnostics[0]["executionPosture"] == "supervisor_engineering"
+    assert "independently execute long-running project work" in engineering_text
 
 
 def test_valid_write_contract_derives_capsule_and_invalid_contract_is_blocked(tmp_path: Path) -> None:
@@ -161,6 +184,41 @@ def test_write_capsule_routes_away_from_review_and_verification_agents(tmp_path:
     assert selected["capabilitySnapshot"]["agentClass"] == "executor"
     assert selected["id"] not in {"code-review-architect", "verification-engineer"}
     assert "preferredAgentId_incompatible_with_write:verification-engineer" in diagnostics["matchSignals"]
+
+
+def test_exact_target_agent_name_is_authoritative_and_mismatch_is_rejected() -> None:
+    agents = [
+        {
+            "id": "implementation-engineer",
+            "name": "Implementation Engineer",
+            "description": "Implements code.",
+            "capabilitySnapshot": {"agentClass": "executor", "specialistFamily": "engineering"},
+        },
+        {
+            "id": "verification-engineer",
+            "name": "Verification Engineer",
+            "description": "Verifies results.",
+            "capabilitySnapshot": {"agentClass": "verifier", "specialistFamily": "engineering"},
+        },
+    ]
+
+    selected, diagnostics = choose_best_local_agent_with_diagnostics(
+        {"goal": "Implement a component.", "targetAgentName": "Implementation Engineer"},
+        agents,
+    )
+    rejected, mismatch = choose_best_local_agent_with_diagnostics(
+        {
+            "goal": "Implement a component.",
+            "targetAgentName": "Implementation Engineer",
+            "preferredAgentId": "verification-engineer",
+        },
+        agents,
+    )
+
+    assert selected is agents[0]
+    assert diagnostics["selectionReason"] == "targetAgentName"
+    assert rejected is None
+    assert mismatch["selectionReason"] == "targetAgentName_preferredAgentId_mismatch"
 
 
 def test_verification_signal_does_not_override_write_capsule_target() -> None:
@@ -313,6 +371,56 @@ def test_grandchild_capsule_preserves_parent_contract_without_write_authority(tm
     assert inherited["writeSet"] == ["src/page.tsx"]
     assert inherited["acceptance"] == "The page builds and the requested interaction works."
     assert inherited["proofExpectations"] == ["test output", "file artifact"]
+
+
+def test_grandchild_capsule_allows_only_explicit_strict_write_partition(tmp_path: Path) -> None:
+    parent = normalize_task_brief(
+        {
+            "taskBriefId": "parent-partitioned-write",
+            "goal": "Implement two independent components.",
+            "context": {"workspacePath": str(tmp_path)},
+            "writeRequired": True,
+            "writeSet": ["src/components/a.tsx", "src/components/b.tsx"],
+            "expectedOutputs": ["src/components/a.tsx", "src/components/b.tsx"],
+            "acceptanceContract": "Both components build.",
+        }
+    )
+    allowed = derive_grandchild_engineering_task(
+        parent,
+        normalize_task_brief(
+            {
+                "taskBriefId": "child-a",
+                "goal": "Implement component A only.",
+                "writeRequired": True,
+                "writeSet": ["src/components/a.tsx"],
+                "expectedOutputs": ["src/components/a.tsx"],
+                "expectedArtifacts": ["src/components/a.tsx"],
+                "acceptanceContract": "Component A builds.",
+            }
+        ),
+        shell_dialect=detect_command_environment()["shellDialect"],
+    )
+    rejected = derive_grandchild_engineering_task(
+        parent,
+        normalize_task_brief(
+            {
+                "taskBriefId": "child-outside",
+                "goal": "Write outside the assigned parent partition.",
+                "writeRequired": True,
+                "writeSet": ["src/other.tsx"],
+                "expectedOutputs": ["src/other.tsx"],
+                "acceptanceContract": "The unrelated file exists.",
+            }
+        ),
+        shell_dialect=detect_command_environment()["shellDialect"],
+    )
+
+    assert engineering_capsule_mode(allowed) == "write"
+    assert allowed["writeSet"] == ["src/components/a.tsx"]
+    assert "grandchild_explicit_write_subset" in allowed["engineeringTaskCapsule"]["riskFlags"]
+    assert engineering_capsule_mode(rejected) == "read_only"
+    assert rejected["writeSet"] == []
+    assert "grandchild_write_authority_not_inherited" in rejected["engineeringTaskCapsule"]["riskFlags"]
 
 
 def test_peer_help_derives_read_only_grandchild_capsule(tmp_path: Path) -> None:

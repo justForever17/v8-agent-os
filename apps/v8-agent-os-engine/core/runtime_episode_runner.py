@@ -3484,6 +3484,10 @@ class RuntimeEpisodeRunner:
             or {}
         )
         target_label = str(episode.get("targetLabel") or target_id).strip() or target_id
+        task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+        ephemeral_info = task_context.get("ephemeralMirror") if isinstance(task_context.get("ephemeralMirror"), dict) else {}
+        ephemeral_agent_id = str(ephemeral_info.get("agentId") or task_brief.get("ephemeralAgentId") or "").strip()
+        ephemeral_mirror = bool(ephemeral_info or task_brief.get("ephemeralMirror"))
         route_context = {
             "activeCapabilityEpisodeId": episode_id,
             "capabilityEpisodes": [episode],
@@ -3513,6 +3517,10 @@ class RuntimeEpisodeRunner:
                 "branchIndex": branch_index,
                 "agentId": target_id,
                 "agentName": target_label,
+                "targetId": ephemeral_agent_id or target_id,
+                "ephemeralMirror": ephemeral_mirror,
+                "ephemeralAgentId": ephemeral_agent_id or None,
+                "ephemeralParentAgentId": target_id if ephemeral_mirror else None,
                 "reason": task_goal,
                 "taskBriefId": str(task_brief.get("taskBriefId") or f"{invocation_id}:{branch_index}").strip(),
                 "taskBrief": task_brief,
@@ -4031,79 +4039,6 @@ class RuntimeEpisodeRunner:
             },
         }
 
-    @staticmethod
-    def _infer_child_delegation_target(text: str) -> tuple[str, str, str] | None:
-        normalized = (text or "").lower()
-        research_tokens = (
-            "research",
-            "web research",
-            "source",
-            "sources",
-            "evidence",
-            "fact",
-            "facts",
-            "citation",
-            "citations",
-            "调研",
-            "资料",
-            "来源",
-            "证据",
-            "搜索",
-            "查证",
-            "检索",
-            "事实",
-        )
-        engineering_tokens = (
-            "implement",
-            "implementation",
-            "coding",
-            "code",
-            "patch",
-            "build",
-            "file",
-            "workspace",
-            "工程",
-            "实现",
-            "代码",
-            "修复",
-            "补丁",
-            "文件",
-            "构建",
-        )
-        verification_tokens = (
-            "verify",
-            "verification",
-            "test",
-            "review",
-            "audit",
-            "validate",
-            "proof",
-            "handoff",
-            "runtime handoff",
-            "runtime",
-            "delegation",
-            "delegate",
-            "orchestration",
-            "验证",
-            "测试",
-            "复核",
-            "审计",
-            "校验",
-            "证明",
-            "回流",
-            "派发",
-            "委派",
-            "编排",
-            "主链",
-        )
-        if any(token in normalized for token in verification_tokens):
-            return ("verification-engineer", "Verification Engineer", "verification_goal")
-        if any(token in normalized for token in research_tokens):
-            return ("web-research-architect", "Web Research Architect", "research_goal")
-        if any(token in normalized for token in engineering_tokens):
-            return ("implementation-engineer", "Implementation Engineer", "engineering_goal")
-        return None
-
     @classmethod
     def _repair_child_worker_target(
         cls,
@@ -4112,47 +4047,59 @@ class RuntimeEpisodeRunner:
         request: dict[str, Any],
         child_branch: dict[str, Any],
     ) -> dict[str, Any]:
-        text = " ".join(
-            str(value or "")
-            for value in (
-                request.get("childTaskGoal"),
-                worker_brief.get("title"),
-                worker_brief.get("goal"),
-                worker_brief.get("brief"),
-                child_branch.get("reason"),
-                child_branch.get("acceptanceHint"),
-            )
-        )
-        inferred = cls._infer_child_delegation_target(text)
-        if inferred is None:
-            return worker_brief
-        inferred_id, inferred_name, reason = inferred
-        current_id = str(worker_brief.get("agentId") or "").strip()
-        current_norm = current_id.lower()
-        source_norm = str(request.get("sourceAgentId") or "").strip().lower()
-        conflict_targets = {
-            "web-research-architect": {"creative-media-director", "implementation-engineer", "skill-workflow-curator"},
-            "implementation-engineer": {"creative-media-director", "web-research-architect", "skill-workflow-curator"},
-            "verification-engineer": {
-                "creative-media-director",
-                "implementation-engineer",
-                "web-research-architect",
-                "skill-workflow-curator",
-            },
-        }
-        should_repair = (
-            not current_norm
-            or bool(source_norm and current_norm == source_norm)
-            or current_norm in conflict_targets.get(inferred_id, set())
-        )
-        if not should_repair:
-            return worker_brief
+        # A grandchild is a disposable mirror of its direct parent. Durable
+        # rehydration must therefore repair malformed/legacy requests back to the
+        # source Agent, never retarget them semantically to another registry member.
         repaired = dict(worker_brief)
-        repaired["agentId"] = inferred_id
-        repaired["agentName"] = inferred_name
-        repaired["targetRepairReason"] = reason
-        repaired["originalAgentId"] = current_id or request.get("childAgentId")
-        repaired["originalAgentName"] = worker_brief.get("agentName") or request.get("childAgentName")
+        parent_id = str(
+            request.get("sourceAgentId")
+            or child_branch.get("ephemeralParentAgentId")
+            or repaired.get("ephemeralParentAgentId")
+            or repaired.get("agentId")
+            or ""
+        ).strip()
+        parent_name = str(
+            request.get("sourceAgentName")
+            or child_branch.get("ephemeralParentAgentName")
+            or repaired.get("ephemeralParentAgentName")
+            or parent_id
+        ).strip()
+        if not parent_id:
+            return repaired
+
+        original_id = str(repaired.get("agentId") or "").strip()
+        original_name = str(repaired.get("agentName") or "").strip()
+        existing_ephemeral_name = str(
+            repaired.get("ephemeralAgentName")
+            or child_branch.get("ephemeralAgentName")
+            or request.get("childAgentName")
+            or ""
+        ).strip()
+        if parent_name and existing_ephemeral_name.startswith(parent_name) and "worker-" in existing_ephemeral_name:
+            ephemeral_name = existing_ephemeral_name
+        else:
+            identity_seed = str(
+                request.get("childDelegationId")
+                or request.get("childInvocationId")
+                or request.get("childTaskBriefId")
+                or parent_id
+            ).strip()
+            suffix = uuid.uuid5(uuid.NAMESPACE_URL, identity_seed).hex[:4]
+            ephemeral_name = f"{parent_name or parent_id} · worker-{suffix}"
+
+        repaired["agentId"] = parent_id
+        repaired["agentName"] = ephemeral_name
+        repaired["targetAgentName"] = parent_name or parent_id
+        repaired["preferredAgentId"] = parent_id
+        repaired["ephemeralMirror"] = True
+        repaired["ephemeralAgentName"] = ephemeral_name
+        repaired["ephemeralParentAgentId"] = parent_id
+        repaired["ephemeralParentAgentName"] = parent_name or parent_id
+        repaired["persistToRegistry"] = False
+        if original_id and original_id != parent_id:
+            repaired["originalAgentId"] = original_id
+            repaired["originalAgentName"] = original_name
+            repaired["mirrorRepairReason"] = "parent_mirror_enforced"
         return repaired
 
     @classmethod
@@ -4268,12 +4215,13 @@ class RuntimeEpisodeRunner:
                 "childAgentName": worker_brief.get("agentName") or item.get("childAgentName"),
                 "childDepth": item.get("childDepth"),
             }
-            if worker_brief.get("targetRepairReason"):
-                extra["targetRepairReason"] = worker_brief.get("targetRepairReason")
+            repair_reason = worker_brief.get("mirrorRepairReason") or worker_brief.get("targetRepairReason")
+            if repair_reason:
+                extra["mirrorRepairReason"] = repair_reason
                 extra["originalChildAgentId"] = worker_brief.get("originalAgentId")
                 extra["originalChildAgentName"] = worker_brief.get("originalAgentName")
                 extra["metadata"] = {
-                    "targetRepairReason": worker_brief.get("targetRepairReason"),
+                    "mirrorRepairReason": repair_reason,
                     "originalChildAgentId": worker_brief.get("originalAgentId"),
                     "originalChildAgentName": worker_brief.get("originalAgentName"),
                 }

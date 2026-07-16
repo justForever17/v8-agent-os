@@ -104,7 +104,8 @@ class SpecialistRegistryConfigTests(unittest.TestCase):
         self.assertIn("familyMode=legacy_matched_members; familyLimit=10", rendered)
         self.assertIn("[engineering]", rendered)
         self.assertIn("eng-9", rendered)
-        self.assertNotIn("eng-10", rendered)
+        self.assertNotIn("- eng-10 | class=", rendered)
+        self.assertIn("- name=eng-10 | id=eng-10", rendered)
         self.assertIn("2 more hidden by familyLimit=10", rendered)
 
     def test_family_mode_off_exposes_all_subagents_in_compact_form(self):

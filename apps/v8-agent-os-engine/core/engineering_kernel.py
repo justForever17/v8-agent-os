@@ -20,6 +20,19 @@ def _task_brief_from_state(state: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+def _supervisor_work_mode_from_state(state: dict[str, Any] | None) -> str:
+    raw = dict(state or {})
+    route = raw.get("current_route_context") if isinstance(raw.get("current_route_context"), dict) else {}
+    normalized = str(
+        raw.get("supervisor_work_mode")
+        or raw.get("supervisorWorkMode")
+        or route.get("supervisor_work_mode")
+        or route.get("supervisorWorkMode")
+        or "daily"
+    ).strip().lower()
+    return normalized if normalized in {"daily", "engineering"} else "daily"
+
+
 def build_engineering_kernel_context(
     *,
     state: dict[str, Any] | None = None,
@@ -34,8 +47,9 @@ def build_engineering_kernel_context(
     capsule = effective_engineering_capsule(task_brief)
     mode = engineering_capsule_mode(task_brief)
     actor_identity = resolve_collaboration_actor(actor=actor, route_context=state)
+    supervisor_work_mode = _supervisor_work_mode_from_state(state)
     execution_posture = (
-        "supervisor_direct_bounded"
+        f"supervisor_{supervisor_work_mode}"
         if actor_identity.is_supervisor and mode == "none"
         else mode if mode != "none" else "read_only_no_capsule"
     )
@@ -55,12 +69,20 @@ def build_engineering_kernel_context(
             f"expectedArtifacts={len(capsule.get('expectedArtifacts') or [])}"
         )
     elif actor_identity.is_supervisor:
-        lines.append(
-            "No Engineering Task Capsule is attached. The Supervisor may use common file and command tools for clear, bounded work inside the active workspace, subject to workspace binding and Safety approval. Use a typed Engineering episode when durable decomposition, recovery, or proof is materially useful."
-        )
+        if supervisor_work_mode == "engineering":
+            lines.append(
+                "Engineering work mode is active. The Supervisor may independently execute long-running project work with common file and command tools inside the active workspace. Delegation and Engineering episodes are optional execution strategies for parallelism, specialist context, recovery, or durable proof; they are not prerequisites for direct implementation."
+            )
+            lines.append(
+                "For direct implementation, inspect before editing, keep changes scoped to the user's task, preserve unrelated work, verify proportionally to risk, and report concrete evidence."
+            )
+        else:
+            lines.append(
+                "Daily work mode is active. The Supervisor may still use common tools directly when useful, but should keep the interaction concise and should not silently turn an ordinary request into a persistent engineering project."
+            )
     else:
         lines.append("No Engineering Task Capsule is attached. File mutation and shell execution are not authorized; return a blocker or request a routed Engineering episode.")
-    lines.append("Engineering episodes remain the durable execution, proof, dependency, and recovery control plane.")
+    lines.append("Engineering episodes are the optional durable execution, proof, dependency, and recovery control plane.")
     lines.append(workspace_text.strip())
     lines.append("[/ENGINEERING KERNEL]")
     diagnostics = [
@@ -69,6 +91,7 @@ def build_engineering_kernel_context(
             "shellDialect": command_env["shellDialect"],
             "executionMode": mode,
             "executionPosture": execution_posture,
+            "supervisorWorkMode": supervisor_work_mode,
             "actorRole": actor_identity.role,
             "capsuleId": capsule.get("capsuleId") if capsule else None,
             "workspaceSource": (workspace_diagnostics[0] if workspace_diagnostics else {}).get("source"),

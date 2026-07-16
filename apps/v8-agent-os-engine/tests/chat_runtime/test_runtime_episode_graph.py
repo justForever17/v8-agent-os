@@ -116,6 +116,26 @@ def test_explicit_runtime_orchestration_recognizes_engineering_execution_plan_wo
     ) == ["research", "engineering", "delegation"]
 
 
+def test_explicit_runtime_orchestration_honors_user_runtime_broker_denial() -> None:
+    state = {
+        "task_shape_hint": {
+            "boundaryDecision": {
+                "primaryRuntime": "engineering",
+                "supportingRuntimes": ["delegation"],
+                "askUserNeeded": False,
+            }
+        }
+    }
+
+    assert _explicit_runtime_orchestration_kinds(
+        state,
+        (
+            "Supervisor 必须直接调用 delegation_broker，不要调用 runtime_broker。"
+            "targetAgentName='Implementation Engineer'，familyHint='engineering'。"
+        ),
+    ) == []
+
+
 def test_response_runtime_route_kinds_reads_runtime_and_delegation_calls() -> None:
     response = SimpleNamespace(
         tool_calls=[

@@ -401,6 +401,13 @@ function mergeTerminalProjection(
   if (terminalKind === "completed" || terminalKind === "failed") item.completedEventSeq = seq;
 }
 
+function isGenericCollaborationStatus(event: SubagentActivityEvent) {
+  return event.kind === "status"
+    && event.node.kind === "execution"
+    && event.node.executionType === "runtime_progress"
+    && text(event.node.label) === "协作状态已更新";
+}
+
 export function buildSubagentReturnProjection(
   messages: SubagentReturnMessage[] | null | undefined,
   runtimeNodes: SubagentReturnTimelineNode[] | null | undefined = [],
@@ -517,6 +524,12 @@ export function buildSubagentReturnProjection(
   const items = Array.from(byId.values());
   for (const item of items) {
     item.events.sort((left, right) => left.eventSeq - right.eventSeq || left.timestamp - right.timestamp || left.eventId.localeCompare(right.eventId));
+    const meaningfulEvents = item.events.filter((event) => !isGenericCollaborationStatus(event));
+    if (meaningfulEvents.length) {
+      item.events = meaningfulEvents;
+    } else if (item.events.length > 1) {
+      item.events = item.events.slice(-1);
+    }
     if (!item.startedEventSeq && item.events.length) item.startedEventSeq = item.events[0].eventSeq;
   }
   const byDelegationId = new Map(items.filter((item) => item.delegationId).map((item) => [item.delegationId as string, item]));

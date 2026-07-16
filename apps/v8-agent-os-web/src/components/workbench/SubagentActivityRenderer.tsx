@@ -171,7 +171,7 @@ export function SubagentActivityRenderer({
                                 <h2 className="truncate text-sm font-semibold text-foreground">{item.name}</h2>
                                 <span className="inline-flex items-center gap-1 rounded-full border border-border/65 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground"><span className={`h-1.5 w-1.5 rounded-full ${statusTone(item.status)}`} />{statusLabel(item.status)}</span>
                             </div>
-                            {item.taskGoal ? <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{item.taskGoal}</p> : null}
+                            {item.taskGoal ? <p className="mt-1 line-clamp-4 break-words text-[11px] leading-5 text-muted-foreground" title={item.taskGoal}>{item.taskGoal}</p> : null}
                         </div>
                         {!item.completedEventSeq ? <CircleDot className="h-4 w-4 animate-pulse text-primary" /> : null}
                     </div>

@@ -211,3 +211,21 @@ test("subagent activity starts from the durable episode and keeps fine-grained e
   const result = projection[0].events.at(-1).node.result;
   assert.deepEqual(result, { ok: true, summary: "Evidence confirmed" });
 });
+
+test("subagent activity hides generic runtime updates when meaningful collaboration events exist", () => {
+  const episode = {
+    episodeId: "delegation-status-noise",
+    kind: "delegation",
+    targetKind: "local_agent",
+    targetLabel: "Reviewer",
+    state: "active",
+    inputs: { taskBrief: { goal: "Verify the result" } },
+  };
+  const projection = buildSubagentReturnProjection([], [
+    { eventSeq: 1, kind: "execution", topic: "runtime.episode.updated", data: { episode } },
+    { eventSeq: 2, kind: "execution", topic: "runtime.episode.started", data: { episode } },
+    { eventSeq: 3, kind: "execution", topic: "runtime.episode.updated", data: { episode } },
+    { eventSeq: 4, kind: "execution", topic: "runtime.episode.completed", data: { episode: { ...episode, state: "completed" } } },
+  ]);
+  assert.deepEqual(projection[0].events.map((event) => event.node.label), ["已接入协作任务", "协作执行已完成"]);
+});

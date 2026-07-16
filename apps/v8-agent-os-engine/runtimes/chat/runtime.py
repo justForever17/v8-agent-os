@@ -111,9 +111,14 @@ _DELEGATION_ACCEPTANCE_PATTERN = re.compile(
 def _delegation_acceptance_from_final_text(final_text: str | None) -> dict[str, Any] | None:
     text = str(final_text or "").strip()
     matches = list(_DELEGATION_ACCEPTANCE_PATTERN.finditer(text))
-    if len(matches) != 1:
+    decisions = {
+        str(match.group(1) or "").strip().upper()
+        for match in matches
+        if str(match.group(1) or "").strip()
+    }
+    if len(decisions) != 1:
         return None
-    decision = str(matches[0].group(1) or "").strip().upper()
+    decision = next(iter(decisions))
     status = {
         "ACCEPT": "accepted",
         "RETRY": "retry",
@@ -121,7 +126,7 @@ def _delegation_acceptance_from_final_text(final_text: str | None) -> dict[str, 
     }.get(decision)
     if not status:
         return None
-    evidence_basis = text[matches[0].end():].strip()
+    evidence_basis = text[matches[-1].end():].strip()
     evidence_basis = re.sub(r"^[`*\s>—–:：-]+", "", evidence_basis)
     if len(evidence_basis) > 600:
         evidence_basis = f"{evidence_basis[:599].rstrip()}…"

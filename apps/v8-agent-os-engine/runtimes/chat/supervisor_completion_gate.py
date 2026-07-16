@@ -123,7 +123,12 @@ def _delegation_acceptance_missing(
     *,
     final_text: str,
 ) -> list[str]:
-    if DELEGATION_ACCEPTANCE_DECISION_RE.search(str(final_text or "")):
+    acceptance_decisions = {
+        str(match.group(1) or "").strip().upper()
+        for match in DELEGATION_ACCEPTANCE_DECISION_RE.finditer(str(final_text or ""))
+        if str(match.group(1) or "").strip()
+    }
+    if len(acceptance_decisions) == 1:
         return []
     pending: list[str] = []
     for episode in episodes:

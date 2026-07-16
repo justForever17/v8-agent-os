@@ -157,6 +157,14 @@ def test_delegation_acceptance_parser_requires_one_explicit_decision():
         "decision": "ACCEPT",
         "summary": "依据：证据完整。",
     }
+    repeated_accepted = _delegation_acceptance_from_final_text(
+        "验收决定：ACCEPT\n前置结论。\n### 验收决定：ACCEPT\n依据：父子结果一致。"
+    )
+    assert repeated_accepted == {
+        "status": "accepted",
+        "decision": "ACCEPT",
+        "summary": "依据：父子结果一致。",
+    }
     assert _delegation_acceptance_from_final_text("结果已完成。") is None
     assert _delegation_acceptance_from_final_text("验收决定：ACCEPT\n验收决定：RETRY") is None
 
@@ -228,10 +236,23 @@ def test_completion_gate_blocks_terminal_delegation_without_parent_acceptance():
         handoffs_by_episode=handoffs,
         final_text="> 验收决定：**ACCEPT**\n> 依据：证据完整。",
     )
+    repeated_accepted = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode=handoffs,
+        final_text="验收决定：ACCEPT\n摘要。\n### 验收决定：ACCEPT\n依据：证据完整。",
+    )
+    conflicting = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode=handoffs,
+        final_text="验收决定：ACCEPT\n验收决定：RETRY",
+    )
 
     assert missing.action == "fail"
     assert missing.reason == "delegation_supervisor_acceptance_missing"
     assert accepted.action == "complete"
+    assert repeated_accepted.action == "complete"
+    assert conflicting.action == "fail"
+    assert conflicting.reason == "delegation_supervisor_acceptance_missing"
 
 
 def test_runtime_episode_handoff_ready_requires_resume_terminal_state():

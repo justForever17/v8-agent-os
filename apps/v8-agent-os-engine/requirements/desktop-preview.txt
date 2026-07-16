@@ -3,13 +3,11 @@
 edge_tts
 beautifulsoup4
 playwright
-msgspec
 yt-dlp
 jieba
 chromadb
-langchain
 langchain-text-splitters
-pyperclip
+numpy
 Pillow
 psd-tools[composite]>=1.10.0
 

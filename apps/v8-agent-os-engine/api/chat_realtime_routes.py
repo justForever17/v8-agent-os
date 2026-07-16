@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from starlette.concurrency import run_in_threadpool
+from fastapi.concurrency import run_in_threadpool
 
 from .models import ChatMessage, ChatRequest
 from core.database import db

@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 pydantic>=2.9.0
-python-dotenv
 pyyaml
 python-multipart
 requests
@@ -17,9 +16,9 @@ langchain-google-genai
 mcp
 langchain-mcp-adapters
 httpx
+websockets>=15,<16
 psutil
 aiohttp
 apscheduler
-lark-oapi
 boto3
 botocore

@@ -1,7 +1,7 @@
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
-from starlette.concurrency import run_in_threadpool
+from fastapi.concurrency import run_in_threadpool
 
 from core.time_truth import utc_now_iso
 

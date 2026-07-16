@@ -1,5 +1,5 @@
 -r minimal.txt
 soundcard>=0.4.3
-pyperclip
+numpy
 Pillow
 psd-tools[composite]>=1.10.0

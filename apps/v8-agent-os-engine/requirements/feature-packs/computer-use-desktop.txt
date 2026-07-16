@@ -1,4 +1,5 @@
 mss
 pywinauto; sys_platform == "win32"
+pycaw==20251023; sys_platform == "win32"
 av
 aiortc

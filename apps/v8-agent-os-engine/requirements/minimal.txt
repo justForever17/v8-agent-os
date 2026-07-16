@@ -5,12 +5,7 @@ beautifulsoup4
 scrapling
 playwright
 patchright
-curl_cffi
-browserforge
-apify-fingerprint-datapoints
-msgspec
 yt-dlp
 jieba
 chromadb
-langchain
 langchain-text-splitters

@@ -42,6 +42,7 @@ test-results/
 **/dist/
 **/build/
 **/.turbo/
+packages/product-ui/styles.css
 
 # .NET native helper artifacts
 apps/v8-agent-os-engine/native/**/bin/
@@ -75,7 +76,7 @@ apps/v8-agent-os-phone-tmp/
 !bootstrap.sh
 !bootstrap.command
 
-# Public docs boundary: only these four docs are intended for source control.
+# Public docs boundary: only the explicitly allowlisted docs are source controlled.
 docs/**
 !docs/assets/
 !docs/assets/banner.svg
@@ -84,6 +85,7 @@ docs/**
 !docs/V8_AGENT_OS_DEVELOPER_GUIDE_ZH.md
 !docs/V8_AGENT_OS_QUICK_START_ZH.md
 !docs/V8OS/
+!docs/V8OS/V8OS_DEPENDENCY_GOVERNANCE_REPORT_ZH.md
 !docs/V8OS/V8OS_PRODUCTIZATION_MASTERPLAN_ZH.md
 !docs/V8OS/V8OS_RELEASE_VERSIONING_BASELINE_ZH.md
 
@@ -93,6 +95,8 @@ docs/software-copyright
 apps/v8-agent-os-admin/scripts/*
 !apps/v8-agent-os-admin/scripts/
 !apps/v8-agent-os-admin/scripts/validate-i18n.mjs
+!apps/v8-agent-os-admin/scripts/validate-theme-coverage.mjs
+!apps/v8-agent-os-admin/scripts/sync-lobe-icons.mjs
 !apps/v8-agent-os-admin/scripts/verify-instance-pairing.mjs
 !apps/v8-agent-os-admin/scripts/verify-device-connect-ui.mjs
 !apps/v8-agent-os-admin/scripts/verify-desktop-pet-settings.mjs

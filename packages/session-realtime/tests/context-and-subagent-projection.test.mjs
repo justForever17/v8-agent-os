@@ -83,6 +83,34 @@ test("subagent projection drops raw JSON-shaped payload noise", () => {
   assert.equal(projection[0].summary, null);
 });
 
+test("subagent projection removes raw role transcript noise from the human conclusion", () => {
+  const projection = buildSubagentReturnProjection([{ nodes: [{
+    kind: "execution",
+    topic: "subagent.task.completed",
+    data: {
+      delegationId: "delegation-transcript",
+      subagentName: "Worker",
+      resultText: [
+        "ai: 使用工具: read_native_file Reading README.md.",
+        "tool: 使用工具: read_native_file --- File: README.md --- raw payload",
+        "assistant: 首个标题是 ## What Is V8 Agent OS?，第 13 行。",
+      ].join("\n"),
+    },
+  }] }]);
+  assert.equal(projection[0].summary, "首个标题是 ## What Is V8 Agent OS?，第 13 行。");
+
+  const toolOnlyProjection = buildSubagentReturnProjection([{ nodes: [{
+    kind: "execution",
+    topic: "subagent.task.completed",
+    data: {
+      delegationId: "delegation-tool-only-transcript",
+      subagentName: "Worker",
+      compactTranscript: "ai: 使用工具: inspect Checking.\ntool: 使用工具: inspect raw payload",
+    },
+  }] }]);
+  assert.equal(toolOnlyProjection[0].summary, null);
+});
+
 test("subagent returns can be restored from the durable runtime timeline without leaking raw reasoning", () => {
   const projection = buildSubagentReturnProjection([], [{
     id: "runtime-subagent-event",

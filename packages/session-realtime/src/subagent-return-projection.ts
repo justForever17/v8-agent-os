@@ -83,6 +83,27 @@ function compactTruth(value: unknown, limit = 1600): string | null {
   return normalized.length <= limit ? normalized : `${normalized.slice(0, limit - 1).trimEnd()}…`;
 }
 
+const TRANSCRIPT_ROLE_PREFIX = /^(ai|assistant|tool|system|human|user):\s*/i;
+const TRANSCRIPT_ROLE_BOUNDARY = /\n(?=(?:ai|assistant|tool|system|human|user):\s*)/i;
+
+function humanConclusion(value: unknown): unknown {
+  const normalized = text(value);
+  if (!normalized || !/(?:^|\n)(?:ai|assistant|tool|system|human|user):\s*/i.test(normalized)) return value;
+  const assistantConclusions = normalized
+    .split(TRANSCRIPT_ROLE_BOUNDARY)
+    .map((segment) => {
+      const match = TRANSCRIPT_ROLE_PREFIX.exec(segment);
+      if (!match) return null;
+      const role = match[1].toLowerCase();
+      const content = segment.slice(match[0].length).trim();
+      if (!content || !["ai", "assistant"].includes(role)) return null;
+      if (/^(?:使用工具|调用工具|tool\b)/i.test(content)) return null;
+      return content;
+    })
+    .filter((item): item is string => Boolean(item));
+  return assistantConclusions[assistantConclusions.length - 1] || "";
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? Array.from(new Set(value.map((item) => text(item)).filter(Boolean))).slice(0, 12)
@@ -338,12 +359,14 @@ function mergeTerminalProjection(
 ) {
   const acceptance = recordOf(payload.supervisorAcceptance || payload.supervisor_acceptance);
   const summary = compactTruth(
-    payload.resultText
+    humanConclusion(
+      payload.resultText
       || payload.result_text
       || payload.summary
       || payload.compactTranscript
       || payload.taskGoal
       || payload.task_goal,
+    ),
   );
   const selfCheckCandidate = compactTruth(payload.localSelfCheck || payload.local_self_check, 900);
   const selfCheck = selfCheckCandidate?.startsWith("Subagent branch completed; supervisor must still")

@@ -2,6 +2,8 @@ type EngineProviderMeta = {
     name?: string;
     icon?: string | null;
     logoAsset?: string | null;
+    base_url?: string | null;
+    baseUrl?: string | null;
 };
 
 type EngineModelMeta = Record<string, unknown>;
@@ -21,6 +23,7 @@ export type AdminModelRecord = {
     maxTokens: number | null;
     rerankApiFlavor: string;
     thinkingControl?: Record<string, unknown> | null;
+    mediaLimits?: Record<string, unknown> | null;
     logoAsset?: string | null;
     isEnabled: boolean;
     provider: {
@@ -28,6 +31,7 @@ export type AdminModelRecord = {
         name: string;
         icon?: string | null;
         logoAsset?: string | null;
+        baseUrl?: string | null;
     };
 };
 
@@ -88,6 +92,9 @@ export function mapEngineModel(
         thinkingControl: modelMeta.thinkingControl && typeof modelMeta.thinkingControl === "object"
             ? modelMeta.thinkingControl as Record<string, unknown>
             : null,
+        mediaLimits: modelMeta.mediaLimits && typeof modelMeta.mediaLimits === "object"
+            ? modelMeta.mediaLimits as Record<string, unknown>
+            : null,
         logoAsset: String(modelMeta.logoAsset || "") || null,
         isEnabled: modelMeta.isEnabled !== false,
         provider: {
@@ -95,6 +102,7 @@ export function mapEngineModel(
             name: String(providerMeta.name || providerId),
             icon: providerMeta.icon || null,
             logoAsset: providerMeta.logoAsset || null,
+            baseUrl: String(providerMeta.base_url || providerMeta.baseUrl || "") || null,
         },
     };
 }

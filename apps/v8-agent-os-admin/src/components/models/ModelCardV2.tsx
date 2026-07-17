@@ -28,6 +28,7 @@ interface ModelCardV2Props {
       name: string;
       icon?: string | null;
       logoAsset?: string | null;
+      baseUrl?: string | null;
     } | null;
     logoAsset?: string | null;
     isEnabled: boolean;
@@ -44,6 +45,7 @@ interface ModelCardV2Props {
       confidence?: string | null;
       missingFields?: string[];
     } | null;
+    mediaLimits?: Record<string, unknown> | null;
   };
   controlMeta?: ControlPlaneModel | null;
   isDefault?: boolean;
@@ -117,6 +119,25 @@ type DefaultCategoryOption = {
   key: string;
   labelKey: TranslationKey;
 };
+function stringRecordValue(record: Record<string, unknown> | null | undefined, key: string): string {
+  const value = record?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+function resolveVisibleModelRoute(model: ModelCardV2Props["model"], controlMeta?: ControlPlaneModel | null) {
+  const mediaLimits = {
+    ...(model.mediaLimits || {}),
+    ...(controlMeta?.mediaLimits || {}),
+  };
+  const displayModelId = stringRecordValue(mediaLimits, "displayModelId") || model.modelId;
+  const providerModelId = stringRecordValue(mediaLimits, "providerModelId");
+  const hasExplicitRoute = Boolean(providerModelId && displayModelId !== providerModelId);
+  return {
+    displayModelId,
+    providerModelId,
+    requestSuffix: hasExplicitRoute ? `/${displayModelId.replace(/^\/+/, "")}` : "",
+    submitPath: stringRecordValue(mediaLimits, "submitPath"),
+  };
+}
 function modelCategoryShape(modelType: string, controlMeta?: ControlPlaneModel | null) {
   const normalizedType = String(modelType || controlMeta?.type || "").toUpperCase();
   const capabilityClass = String(controlMeta?.capabilityClass || "").toLowerCase();
@@ -254,6 +275,7 @@ export function ModelCardV2({
   const thinkingControl = controlMeta?.thinkingControl || null;
   const supportsNoThink = Boolean(thinkingControl?.supportsNoThink);
   const noThinkDisabled = Boolean(thinkingControl?.disabled);
+  const visibleRoute = resolveVisibleModelRoute(model, controlMeta);
   const missingFields = registry?.missingFields || [];
   const roleDoctor = (controlMeta as ControlPlaneModelWithDoctor | null | undefined)?.roleDoctor || (model as ModelWithDoctor).roleDoctor || null;
   const roleDoctorIssues = Array.isArray(roleDoctor?.issues) ? roleDoctor.issues : [];
@@ -281,7 +303,7 @@ export function ModelCardV2({
     providerName: model.provider?.name,
     explicitAsset: model.logoAsset || null
   });
-  const details = [`ID: ${model.modelId}`, `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", supportsNoThink ? `No-think control: ${noThinkDisabled ? "disabled reasoning on request" : "model default thinking"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
+  const details = [`ID: ${model.modelId}`, visibleRoute.requestSuffix ? `Request suffix: ${visibleRoute.requestSuffix}` : "", visibleRoute.providerModelId ? `Provider model ID: ${visibleRoute.providerModelId}` : "", visibleRoute.submitPath ? `Catalog submit path: ${visibleRoute.submitPath}` : "", `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, model.provider?.baseUrl ? `Base URL: ${model.provider.baseUrl}` : "", `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", supportsNoThink ? `No-think control: ${noThinkDisabled ? "disabled reasoning on request" : "model default thinking"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
   return <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${defaultBadges.length ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex min-w-0 items-start gap-2">
@@ -291,8 +313,8 @@ export function ModelCardV2({
                     </AdminHoverInfo>
                     <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate text-sm font-semibold leading-5" title={`${model.modelId} · ${model.provider?.name || ""}`}>
-                                {model.modelId}
+                            <span className="truncate text-sm font-semibold leading-5" title={`${visibleRoute.requestSuffix || model.modelId} · ${model.provider?.name || ""}`}>
+                                {visibleRoute.requestSuffix || model.modelId}
                                 <span className="font-normal text-muted-foreground"> · {model.provider?.name || t("components.models.ModelCardV2.k4f162e67")}</span>
                             </span>
                             {defaultBadges.map((category) => {
@@ -306,6 +328,11 @@ export function ModelCardV2({
             })}
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground">
+                            {visibleRoute.providerModelId ? (
+                                <span className="mr-1 truncate font-mono text-[10px]" title={t("components.models.ModelCardV2.providerModelId", { modelId: visibleRoute.providerModelId })}>
+                                    {t("components.models.ModelCardV2.providerModelId", { modelId: visibleRoute.providerModelId })} · {t("components.models.ModelCardV2.routeFromCatalog")}
+                                </span>
+                            ) : null}
                             {capabilityIconItems.map(({
               key,
               labelKey,

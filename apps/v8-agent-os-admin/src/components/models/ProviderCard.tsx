@@ -96,8 +96,10 @@ export function ProviderCard({ provider, health, onEdit, onDelete, onToggle }: P
                 </div>
                 <div className="mt-auto flex items-end justify-between gap-2">
                     <div className="min-w-0 space-y-1 text-[11px] font-medium">
+                        <div className="truncate font-mono text-[10px] text-muted-foreground" title={provider.baseUrl || provider.code}>
+                            {provider.baseUrl || provider.code}
+                        </div>
                         <div className="truncate">{provider.models.length} {t("components.models.ProviderCard.k5503fbe2")}</div>
-                        <div className="truncate text-muted-foreground">{provider.isEnabled ? t("components.models.ProviderCard.k57c1ee90") : t("components.models.ProviderCard.k31ff46bd")}</div>
                     </div>
                     <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover/card:opacity-100">
                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onToggle(provider.id, !provider.isEnabled)}>

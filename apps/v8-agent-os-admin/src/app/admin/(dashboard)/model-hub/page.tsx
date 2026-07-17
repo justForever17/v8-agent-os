@@ -63,6 +63,7 @@ type AIModel = {
     maxTokens?: number | null;
     rerankApiFlavor?: string;
     thinkingControl?: Record<string, unknown> | null;
+    mediaLimits?: Record<string, unknown> | null;
     logoAsset?: string | null;
     isEnabled: boolean;
     provider?: {
@@ -70,6 +71,7 @@ type AIModel = {
         name: string;
         icon?: string | null;
         logoAsset?: string | null;
+        baseUrl?: string | null;
     };
 };
 type ModelHubPayload = {
@@ -446,6 +448,8 @@ function endpointMediaCatalogModel(model: CatalogModel, sourceProvider: CatalogP
             adapterProviderId: sourceProvider.id,
             providerModelId,
             displayModelId,
+            requestPath: relativePath ? `/${relativePath}` : "",
+            routeSource: "provider_catalog",
         },
         sourceProviderId: sourceProvider.id,
         sourceProviderName: sourceProvider.name,
@@ -1904,6 +1908,9 @@ export default function ModelHubPage() {
                                     <div className="max-h-64 overflow-y-auto rounded-xl border bg-background p-2">
                                         {visibleCatalogModels.map((model) => {
                                             const modelId = model.modelId || model.id;
+                                            const providerModelId = typeof model.mediaLimits?.providerModelId === "string" ? model.mediaLimits.providerModelId : "";
+                                            const hasExplicitRoute = Boolean(providerModelId && providerModelId !== modelId);
+                                            const visibleModelPath = hasExplicitRoute ? `/${modelId.replace(/^\/+/, "")}` : modelId;
                                             const modelIcon = resolveModelIcon({
                                                 modelId,
                                                 providerId: probedCatalogProviderId || selectedCatalogProvider?.id || selectedCatalogProviderId,
@@ -1924,7 +1931,14 @@ export default function ModelHubPage() {
                                                         <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md ${selectedCatalogModelId === modelId ? "bg-card/10 dark:bg-slate-950/10" : "bg-muted dark:bg-card/10"}`}>
                                                             {modelIcon ? <Image src={modelIcon} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : null}
                                                         </span>
-                                                        <span className="truncate">{modelId}</span>
+                                                        <span className="min-w-0">
+                                                            <span className="block truncate">{visibleModelPath}</span>
+                                                            {hasExplicitRoute ? (
+                                                                <span className="block truncate text-[10px] opacity-70">
+                                                                    {t("app.admin.dashboard.model.hub.catalog.providerModelId", { modelId: providerModelId })} · {t("app.admin.dashboard.model.hub.catalog.routeFromCatalog")}
+                                                                </span>
+                                                            ) : null}
+                                                        </span>
                                                     </span>
                                                     {model.contextWindow ? <span className="ml-3 shrink-0 text-xs opacity-70">{model.contextWindow}</span> : null}
                                                 </button>

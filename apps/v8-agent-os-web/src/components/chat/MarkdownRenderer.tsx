@@ -10,6 +10,7 @@ import { CodeBlock as SharedCodeBlock } from './CodeBlock';
 import { PPTCard } from './PPTCard';
 import { useDebouncedValue } from '@/hooks/use-debounce';
 import { createExternalArtifactDocument } from '@/lib/workbench';
+import { useT } from '@/components/providers/LocaleProvider';
 import { decodeWorkbenchFileHref, resolveAndOpenWorkspaceFile } from '@/lib/workbench-actions';
 import { useWorkbenchStore } from '@/store/workbench-store';
 
@@ -194,6 +195,7 @@ function DocumentLinkCard({
     label: string;
     type: "pdf" | "model3d";
 }) {
+    const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const filename = decodeFilenameFromUrl(href, label || (type === "pdf" ? "document.pdf" : "model.glb"));
     const document = createExternalArtifactDocument({
@@ -219,7 +221,7 @@ function DocumentLinkCard({
                     {filename}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                    {type === "model3d" ? "3D file" : "PDF document"}
+                    {type === "model3d" ? t("web.markdown.model3d") : t("web.markdown.pdf")}
                 </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -227,7 +229,7 @@ function DocumentLinkCard({
                     type="button"
                     onClick={() => openDocument(document, { activate: true, mode: "split" })}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                    title="在工作台打开"
+                    title={t("web.artifactCard.openWorkbench")}
                 >
                     <ExternalLink className="h-4 w-4" />
                 </button>
@@ -237,7 +239,7 @@ function DocumentLinkCard({
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                    title="下载"
+                    title={t("web.artifactCard.download")}
                 >
                     <Download className="h-4 w-4" />
                 </a>

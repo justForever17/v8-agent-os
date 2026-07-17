@@ -463,14 +463,14 @@ export function InputArea({
         return labels[reasoningEffort] || labels.auto;
     }, [reasoningEffort, t]);
     const specCommandPresets = React.useMemo<CommandPresetSummary[]>(() => ([
-        { name: "spec new", summary: "新建一套 Spec，并从澄清问题开始。", specCommandAction: "new" },
-        { name: "spec continue", summary: "继续当前或最近的 Spec。", specCommandAction: "continue" },
-        { name: "spec list", summary: "列出当前工作区的 Spec。", specCommandAction: "list" },
-        { name: "spec approve", summary: "打开当前 Spec 阶段审批上下文。", specCommandAction: "approve" },
-        { name: "spec clarify", summary: "补充 Spec 澄清问题和记录。", specCommandAction: "clarify" },
-        { name: "spec analyze", summary: "只读分析需求、设计和任务的闭环质量。", specCommandAction: "analyze" },
-        { name: "spec annex", summary: "为复杂 Spec 生成或查看 research/contracts/quickstart 附录。", specCommandAction: "annex" },
-    ]), []);
+        { name: "spec new", summary: t("web.composer.spec.new"), specCommandAction: "new" },
+        { name: "spec continue", summary: t("web.composer.spec.continue"), specCommandAction: "continue" },
+        { name: "spec list", summary: t("web.composer.spec.list"), specCommandAction: "list" },
+        { name: "spec approve", summary: t("web.composer.spec.approve"), specCommandAction: "approve" },
+        { name: "spec clarify", summary: t("web.composer.spec.clarify"), specCommandAction: "clarify" },
+        { name: "spec analyze", summary: t("web.composer.spec.analyze"), specCommandAction: "analyze" },
+        { name: "spec annex", summary: t("web.composer.spec.annex"), specCommandAction: "annex" },
+    ]), [t]);
     const contextUsageCommand = React.useMemo<CommandPresetSummary | null>(() => (
         typeof contextUsagePercent === "number" && Number.isFinite(contextUsagePercent)
             ? {
@@ -663,7 +663,7 @@ export function InputArea({
             const nextFamilies: unknown[] = Array.isArray(payload?.subagentFamilies) ? payload.subagentFamilies : [];
             const pluginPayload = await pluginRes.json().catch(() => ({}));
             if (!pluginRes.ok) {
-                throw new Error(typeof pluginPayload?.error === "string" ? pluginPayload.error : "插件目录加载失败");
+                throw new Error(typeof pluginPayload?.error === "string" ? pluginPayload.error : t("web.composer.pluginLoadFailed"));
             }
             const nextPlugins: unknown[] = Array.isArray(pluginPayload?.items) ? pluginPayload.items : [];
             setSkills(

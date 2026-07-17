@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { Button } from "@/components/ui/button";
+import { useT } from "@/components/providers/LocaleProvider";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import type { SessionApprovalView } from "@v8/session-realtime";
@@ -39,12 +40,12 @@ function errorMessage(payload: unknown, fallback: string) {
     return firstText(nested.message, root.message, root.error) || fallback;
 }
 
-function stageLabel(stage: string) {
-    if (stage === "requirements") return "确认需求";
-    if (stage === "design") return "确认设计";
-    if (stage === "tasks") return "确认任务";
-    if (stage === "bugfix") return "确认修复说明";
-    return "确认 Spec 文档";
+function stageLabel(stage: string, t: (key: string) => string) {
+    if (stage === "requirements") return t("web.specConfirmation.stage.requirements");
+    if (stage === "design") return t("web.specConfirmation.stage.design");
+    if (stage === "tasks") return t("web.specConfirmation.stage.tasks");
+    if (stage === "bugfix") return t("web.specConfirmation.stage.bugfix");
+    return t("web.specConfirmation.stage.default");
 }
 
 export function SpecDocumentConfirmationDialog({
@@ -64,6 +65,7 @@ export function SpecDocumentConfirmationDialog({
     onViewDetails: () => void;
     onCancel: () => void;
 }) {
+    const t = useT();
     const request = useMemo(() => recordOf(approval.request), [approval.request]);
     const specBrief = useMemo(() => recordOf(request.specBrief), [request.specBrief]);
     const specId = firstText(request.specId, request.spec_id);
@@ -98,7 +100,7 @@ export function SpecDocumentConfirmationDialog({
                 const query = new URLSearchParams({ workspace_path: workspacePath, max_chars: "160000" });
                 const response = await fetch(`/api/specs/${encodeURIComponent(specId)}?${query.toString()}`, { cache: "no-store" });
                 const payload = await response.json().catch(() => ({})) as SpecDetailPayload;
-                if (!response.ok) throw new Error(errorMessage(payload, "无法读取 Spec 文档。"));
+                if (!response.ok) throw new Error(errorMessage(payload, t("web.specConfirmation.loadFailed")));
                 if (cancelled) return;
                 const nextContent = String(payload.stages?.[stage]?.content || fallbackSummary || "").trim();
                 setContent(nextContent);
@@ -115,7 +117,7 @@ export function SpecDocumentConfirmationDialog({
         };
         void load();
         return () => { cancelled = true; };
-    }, [fallbackSummary, isOpen, specId, stage, workspacePath]);
+    }, [fallbackSummary, isOpen, specId, stage, t, workspacePath]);
 
     const saveDocument = async () => {
         if (!specId || !stage || !workspacePath || content === savedContent) return;
@@ -130,7 +132,7 @@ export function SpecDocumentConfirmationDialog({
             }),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(errorMessage(payload, "保存 Spec 文档失败。"));
+        if (!response.ok) throw new Error(errorMessage(payload, t("web.specConfirmation.saveFailed")));
         setSavedContent(content);
     };
 
@@ -176,9 +178,9 @@ export function SpecDocumentConfirmationDialog({
                             <FileText className="h-4 w-4" />
                         </div>
                         <div className="min-w-0 flex-1">
-                            <DialogTitle className="text-base font-semibold text-foreground">{stageLabel(stage)}</DialogTitle>
+                            <DialogTitle className="text-base font-semibold text-foreground">{stageLabel(stage, t)}</DialogTitle>
                             <DialogDescription className="mt-1 truncate text-sm text-muted-foreground">
-                                {featureName || "请检查文档是否准确表达了你的要求。"}
+                                {featureName || t("web.specConfirmation.description")}
                             </DialogDescription>
                         </div>
                         <div className="flex shrink-0 items-center gap-1.5">
@@ -191,9 +193,9 @@ export function SpecDocumentConfirmationDialog({
                                 className="h-8 rounded-lg px-2.5"
                             >
                                 {editing ? <Eye className="mr-1.5 h-3.5 w-3.5" /> : <Pencil className="mr-1.5 h-3.5 w-3.5" />}
-                                {editing ? "预览" : "编辑"}
+                                {editing ? t("web.specConfirmation.preview") : t("web.specConfirmation.edit")}
                             </Button>
-                            <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={onViewDetails} disabled={unavailable} aria-label="在独立页面打开">
+                            <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={onViewDetails} disabled={unavailable} aria-label={t("web.specConfirmation.openPage")}>
                                 <ExternalLink className="h-3.5 w-3.5" />
                             </Button>
                         </div>
@@ -203,19 +205,19 @@ export function SpecDocumentConfirmationDialog({
                 <div className="min-h-0 flex-1 overflow-hidden bg-muted/15">
                     {loading ? (
                         <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-                            <LoaderCircle className="h-4 w-4 animate-spin" />正在读取文档…
+                            <LoaderCircle className="h-4 w-4 animate-spin" />{t("web.specConfirmation.loading")}
                         </div>
                     ) : editing ? (
                         <Textarea
                             value={content}
                             onChange={(event) => setContent(event.target.value)}
                             className="h-full min-h-0 resize-none rounded-none border-0 bg-background px-6 py-5 text-sm leading-7 shadow-none focus-visible:ring-0"
-                            aria-label="编辑 Spec 文档"
+                            aria-label={t("web.specConfirmation.editDocument")}
                         />
                     ) : (
                         <div className="scrollbar-none h-full overflow-y-auto px-6 py-5 sm:px-8">
                             <article className="prose prose-sm mx-auto max-w-[780px] break-words text-foreground dark:prose-invert prose-headings:scroll-mt-4 prose-pre:overflow-x-auto">
-                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || "文档内容为空。"}</ReactMarkdown>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content || t("web.specConfirmation.empty")}</ReactMarkdown>
                             </article>
                         </div>
                     )}
@@ -226,7 +228,7 @@ export function SpecDocumentConfirmationDialog({
                         <Textarea
                             value={revisionNote}
                             onChange={(event) => setRevisionNote(event.target.value)}
-                            placeholder="指出需要修改的内容，Agent 会据此更新文档。"
+                            placeholder={t("web.specConfirmation.revisionPlaceholder")}
                             className="min-h-[84px] resize-none rounded-xl"
                             autoFocus
                         />
@@ -236,21 +238,21 @@ export function SpecDocumentConfirmationDialog({
 
                 <DialogFooter className="shrink-0 border-t border-border/60 bg-background px-5 py-3 sm:justify-between sm:space-x-0">
                     <div className="text-xs text-muted-foreground">
-                        {content !== savedContent ? "文档已修改，同意时会先保存。" : "确认后 Agent 会继续下一阶段。"}
+                        {content !== savedContent ? t("web.specConfirmation.changedHint") : t("web.specConfirmation.continueHint")}
                     </div>
                     <div className="flex items-center gap-2">
-                        <Button type="button" variant="ghost" onClick={onCancel} disabled={unavailable} className="rounded-lg">稍后</Button>
+                        <Button type="button" variant="ghost" onClick={onCancel} disabled={unavailable} className="rounded-lg">{t("web.specConfirmation.later")}</Button>
                         {revisionMode ? (
                             <>
-                                <Button type="button" variant="ghost" onClick={() => setRevisionMode(false)} disabled={unavailable} className="rounded-lg">返回文档</Button>
-                                <Button type="button" variant="outline" onClick={() => void reject()} disabled={unavailable || !revisionNote.trim()} className="rounded-lg">发送修改意见</Button>
+                                <Button type="button" variant="ghost" onClick={() => setRevisionMode(false)} disabled={unavailable} className="rounded-lg">{t("web.specConfirmation.backDocument")}</Button>
+                                <Button type="button" variant="outline" onClick={() => void reject()} disabled={unavailable || !revisionNote.trim()} className="rounded-lg">{t("web.specConfirmation.sendRevision")}</Button>
                             </>
                         ) : (
-                            <Button type="button" variant="outline" onClick={() => setRevisionMode(true)} disabled={unavailable} className="rounded-lg">需要修改</Button>
+                            <Button type="button" variant="outline" onClick={() => setRevisionMode(true)} disabled={unavailable} className="rounded-lg">{t("web.specConfirmation.requestRevision")}</Button>
                         )}
                         <Button type="button" onClick={() => void approve()} disabled={unavailable || !content.trim()} className="rounded-lg">
                             {saving ? <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                            同意并继续
+                            {t("web.specConfirmation.approve")}
                         </Button>
                     </div>
                 </DialogFooter>

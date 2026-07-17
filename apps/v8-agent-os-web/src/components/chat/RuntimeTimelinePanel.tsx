@@ -54,12 +54,12 @@ const runtimeIcons: Record<RuntimeId, React.ElementType<{ className?: string }>>
     desktop_live: RadioTower,
 };
 
-const kindMeta: Record<RuntimeStageActivity["kind"], { label: string; icon: React.ElementType<{ className?: string }>; tone: string }> = {
-    progress: { label: "运行", icon: Activity, tone: "text-emerald-600 dark:text-emerald-300" },
-    tool: { label: "工具", icon: TerminalSquare, tone: "text-sky-600 dark:text-sky-300" },
-    governance: { label: "控制", icon: AlertTriangle, tone: "text-rose-600 dark:text-rose-300" },
-    artifact: { label: "产物", icon: Box, tone: "text-violet-600 dark:text-violet-300" },
-    handoff: { label: "交接", icon: Workflow, tone: "text-amber-600 dark:text-amber-300" },
+const kindMeta: Record<RuntimeStageActivity["kind"], { labelKey: string; icon: React.ElementType<{ className?: string }>; tone: string }> = {
+    progress: { labelKey: "web.runtimeTimeline.kind.progress", icon: Activity, tone: "text-emerald-600 dark:text-emerald-300" },
+    tool: { labelKey: "web.runtimeTimeline.kind.tool", icon: TerminalSquare, tone: "text-sky-600 dark:text-sky-300" },
+    governance: { labelKey: "web.runtimeTimeline.kind.governance", icon: AlertTriangle, tone: "text-rose-600 dark:text-rose-300" },
+    artifact: { labelKey: "web.runtimeTimeline.kind.artifact", icon: Box, tone: "text-violet-600 dark:text-violet-300" },
+    handoff: { labelKey: "web.runtimeTimeline.kind.handoff", icon: Workflow, tone: "text-amber-600 dark:text-amber-300" },
 };
 
 function readExecutionData(activity: RuntimeStageActivity): Record<string, unknown> {
@@ -194,7 +194,7 @@ function buildEpisodeKindLabels(t: ReturnType<typeof useT>): Record<string, stri
         research: t("web.generated.1e1e342d4a"),
         creative_media: t("web.generated.05dc567273"),
         computer_use: t("web.generated.07d3a36915"),
-        rpa: t("web.generated.6ee7a4c326"),
+        rpa: t("web.runtimeTimeline.episode.rpa"),
         delegation: t("web.generated.0e62d69473"),
         handoff: t("web.generated.608efdd419"),
     };
@@ -339,6 +339,7 @@ function buildSwarmGraph(activities: RuntimeStageActivity[]): SwarmGraphNode[] {
 }
 
 function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) {
+    const t = useT();
     const nodes = React.useMemo(() => buildSwarmGraph(activities), [activities]);
     const visibleNodes = nodes.filter((node) => node.id !== "supervisor" || nodes.length > 1);
     const activeIds = new Set(nodes.filter((node) => node.status === "active").map((node) => node.id));
@@ -350,24 +351,24 @@ function SwarmNodeBoard({ activities }: { activities: RuntimeStageActivity[] }) 
         attempted: "bg-amber-500 text-amber-700 dark:text-amber-300",
     };
     const statusLabel: Record<SwarmNodeStatus, string> = {
-        active: "运行",
-        completed: "完成",
-        failed: "失败",
-        pending: "等待",
-        attempted: "未确认",
+        active: t("web.runtimeTimeline.swarm.active"),
+        completed: t("web.runtimeTimeline.swarm.completed"),
+        failed: t("web.runtimeTimeline.swarm.failed"),
+        pending: t("web.runtimeTimeline.swarm.pending"),
+        attempted: t("web.runtimeTimeline.swarm.attempted"),
     };
 
     if (visibleNodes.length <= 1) {
         return (
             <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/55 px-4 py-6 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
-                当前还没有真实子代理派发。若 Supervisor 只是口头声称派发，这里不会伪造节点。
+                {t("web.runtimeTimeline.swarm.empty")}
             </div>
         );
     }
 
     return (
         <div className="space-y-3">
-            <div className="text-[13px] font-semibold tracking-tight text-foreground">实际派发拓扑</div>
+            <div className="text-[13px] font-semibold tracking-tight text-foreground">{t("web.runtimeTimeline.swarm.topology")}</div>
             <div className="space-y-2.5">
                 {visibleNodes.map((node) => {
                     const activeLine = Boolean(node.parentId && activeIds.has(node.id));
@@ -485,6 +486,8 @@ export function RuntimeEpisodeBoard({ activities }: { activities: RuntimeStageAc
 }
 
 function BroadcastRail({ activities }: { activities: RuntimeStageActivity[] }) {
+    const t = useT();
+    const { locale } = useLocale();
     const [index, setIndex] = React.useState(0);
     const rowHeight = 78;
 
@@ -519,7 +522,7 @@ function BroadcastRail({ activities }: { activities: RuntimeStageActivity[] }) {
                     </span>
                     <span>Broadcast</span>
                 </div>
-                <span>{activities.length} 条</span>
+                <span>{t("web.runtimeTimeline.eventCount", { count: activities.length })}</span>
             </div>
             <div className="grid gap-2.5 px-3 py-3 md:grid-cols-[1.1fr_0.9fr]">
                 <div className="relative h-[196px] overflow-hidden rounded-[20px] border border-white/10 bg-white/[0.04]">
@@ -550,7 +553,7 @@ function BroadcastRail({ activities }: { activities: RuntimeStageActivity[] }) {
                                             {activity.summary}
                                         </div>
                                         <div className="mt-0.5 truncate text-[11px] text-stone-400">
-                                            {activity.actorLabel || itemMeta.label} · {formatRelativeRuntimeTime(activity.timestamp)}
+                                            {activity.actorLabel || t(itemMeta.labelKey)} · {formatRelativeRuntimeTime(activity.timestamp, locale)}
                                         </div>
                                     </div>
                                 </div>
@@ -576,12 +579,12 @@ function BroadcastRail({ activities }: { activities: RuntimeStageActivity[] }) {
                                 <div className="min-w-0 flex-1">
                                     <div className="truncate text-[13px] font-semibold text-stone-100">{active.summary}</div>
                                     <div className="mt-0.5 text-[11px] text-stone-400">
-                                        {active.actorLabel || meta.label} · {formatRelativeRuntimeTime(active.timestamp)}
+                                        {active.actorLabel || t(meta.labelKey)} · {formatRelativeRuntimeTime(active.timestamp, locale)}
                                     </div>
                                 </div>
                             </div>
                             <div className="mt-3 text-[13px] leading-6 text-stone-300">
-                                {active.topic || "运行轨迹正在持续刷新。你可以继续停留在聊天主界面，细节会在这里循环播报。"}
+                                {active.topic || t("web.runtimeTimeline.broadcastDefault")}
                             </div>
                         </div>
 
@@ -602,6 +605,8 @@ function ActivityFeedItem({
     activity: RuntimeStageActivity;
     processes: AdminProcessRef[];
 }) {
+    const t = useT();
+    const { locale } = useLocale();
     const meta = kindMeta[activity.kind];
     const Icon = meta.icon;
 
@@ -610,7 +615,7 @@ function ActivityFeedItem({
             <div className="mb-2.5 flex flex-wrap items-center gap-2">
                 <span className={cn("inline-flex items-center gap-1.5 rounded-full bg-stone-100 px-2.5 py-0.5 text-[10px] font-semibold dark:bg-white/5", meta.tone)}>
                     <Icon className="h-3.5 w-3.5" />
-                    {meta.label}
+                    {t(meta.labelKey)}
                 </span>
                 {activity.actorLabel && (
                     <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-[10px] text-muted-foreground dark:bg-white/5">
@@ -623,7 +628,7 @@ function ActivityFeedItem({
                     </span>
                 )}
                 <span className="ml-auto text-[10px] text-muted-foreground">
-                    {formatRelativeRuntimeTime(activity.timestamp)}
+                    {formatRelativeRuntimeTime(activity.timestamp, locale)}
                 </span>
             </div>
 
@@ -633,7 +638,7 @@ function ActivityFeedItem({
 
             <div className="rounded-[18px] border border-stone-200/70 bg-stone-50/85 p-2.5 dark:border-white/5 dark:bg-white/[0.025]">
                 {activity.node.kind === "artifact" ? (
-                    <div className="text-sm text-muted-foreground">产物已记录，可在 Artifacts 面板查看详细内容。</div>
+                    <div className="text-sm text-muted-foreground">{t("web.runtimeTimeline.artifactRecorded")}</div>
                 ) : (
                     <ContentDispatcher node={activity.node} isExecuting={false} isStreaming={false} processes={processes} />
                 )}
@@ -649,6 +654,7 @@ function ContextGovernanceSection({
     contextGovernance?: ContextGovernanceView | null;
     contextGovernanceHistory?: ContextGovernanceView[];
 }) {
+    const t = useT();
     const latest = React.useMemo(
         () => normalizeContextGovernanceDigest(contextGovernance || null),
         [contextGovernance],
@@ -686,7 +692,7 @@ function ContextGovernanceSection({
             >
                 <div className="flex flex-wrap items-center gap-2">
                     <span className="rounded-full bg-white/80 px-2.5 py-0.5 text-[10px] font-semibold text-stone-700 shadow-sm dark:bg-white/10 dark:text-stone-100">
-                        {variant === "latest" ? "最近治理" : "治理记录"}
+                        {variant === "latest" ? t("web.runtimeTimeline.governance.latest") : t("web.runtimeTimeline.governance.history")}
                     </span>
                     {item.runtimeKind && (
                         <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-muted-foreground dark:bg-white/5">
@@ -718,8 +724,8 @@ function ContextGovernanceSection({
                     )}
                     {hasCompactionNote && (
                         <span className="rounded-full bg-stone-100 px-2.5 py-1 dark:bg-white/5">
-                            {item.compactionApplied ? "已压缩" : "未压缩"}
-                            {item.estimatedSavedTokens ? ` · 节省 ${item.estimatedSavedTokens} tokens` : ""}
+                            {item.compactionApplied ? t("web.runtimeTimeline.governance.compacted") : t("web.runtimeTimeline.governance.notCompacted")}
+                            {item.estimatedSavedTokens ? ` · ${t("web.runtimeTimeline.governance.savedTokens", { count: item.estimatedSavedTokens })}` : ""}
                         </span>
                     )}
                     {item.durableFlushReason && (
@@ -744,8 +750,8 @@ function ContextGovernanceSection({
 
                 {(item.scopeChain.length > 0 || item.triggerReason || item.blockSummaryLines.length > 0) && (
                     <div className="mt-2.5 space-y-1.5 text-[12px] leading-5 text-muted-foreground">
-                        {item.triggerReason && <div>触发原因：{item.triggerReason}</div>}
-                        {item.scopeChain.length > 0 && <div>Scope 链：{item.scopeChain.join(" -> ")}</div>}
+                        {item.triggerReason && <div>{t("web.runtimeTimeline.governance.trigger", { value: item.triggerReason })}</div>}
+                        {item.scopeChain.length > 0 && <div>{t("web.runtimeTimeline.governance.scope", { value: item.scopeChain.join(" -> ") })}</div>}
                         {item.blockSummaryLines.length > 0 && (
                             <ul className="space-y-1">
                                 {item.blockSummaryLines.slice(0, 2).map((line) => (
@@ -791,6 +797,7 @@ export function RuntimeTimelinePanel({
     onSelectRuntime,
 }: RuntimeTimelinePanelProps) {
     const { locale } = useLocale();
+    const t = useT();
     const runtimeId = selectedRuntimeId && model.items.some((item) => item.id === selectedRuntimeId)
         ? selectedRuntimeId
         : model.activeRuntimeId || model.items[0]?.id || null;
@@ -850,7 +857,7 @@ export function RuntimeTimelinePanel({
                                             </div>
                                             <div className="mt-0.5 flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-[11px] text-muted-foreground">
                                                 {overallStatus && <span>{overallStatus}</span>}
-                                                {pendingApproval && <span className="text-rose-600 dark:text-rose-300">等待审批</span>}
+                                                {pendingApproval && <span className="text-rose-600 dark:text-rose-300">{t("web.runtimeTimeline.pendingApproval")}</span>}
                                                 {currentStepTitle && <span className="truncate">· {currentStepTitle}</span>}
                                             </div>
                                         </div>
@@ -858,7 +865,7 @@ export function RuntimeTimelinePanel({
 
                                     <button
                                         type="button"
-                                        aria-label="关闭"
+                                        aria-label={t("web.runtimeTimeline.close")}
                                         onClick={onClose}
                                         className="flex h-[34px] w-[34px] shrink-0 flex-none items-center justify-center rounded-full border border-stone-200/80 bg-white/80 text-stone-600 transition-colors hover:bg-white hover:text-stone-900 dark:border-white/10 dark:bg-white/[0.05] dark:text-stone-300 dark:hover:bg-white/10 dark:hover:text-stone-50"
                                     >
@@ -909,13 +916,13 @@ export function RuntimeTimelinePanel({
                                             {swarmActivities.length > 0 && <SwarmNodeBoard activities={swarmActivities} />}
                                             {!hasChatExecutionMap && (
                                                 <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
-                                                    当前还没有可展示的执行地图节点。
+                                                    {t("web.runtimeTimeline.emptyMap")}
                                                 </div>
                                             )}
                                         </>
                                     ) : isSubagentRuntime ? (
                                         <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
-                                            子代理蜂群已合并到对话运行的执行地图里；请在 Supervisor 气泡或对话运行入口查看调度树。
+                                            {t("web.runtimeTimeline.swarmMerged")}
                                         </div>
                                     ) : activities.length > 0 ? (
                                         <>
@@ -950,7 +957,7 @@ export function RuntimeTimelinePanel({
                                         </>
                                     ) : (
                                         <div className="rounded-[20px] border border-dashed border-stone-300/80 bg-white/80 px-4 py-5 text-center text-sm leading-6 text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
-                                            当前还没有可展示的运行记录。
+                                            {t("web.runtimeTimeline.empty")}
                                         </div>
                                     )}
                                 </div>

@@ -11,11 +11,13 @@ import { useWorkbenchStore } from "@/store/workbench-store";
 import type { AdminProcessRef } from "@v8/session-realtime";
 import type { TodoHudItem } from "@/components/chat/TodosHUD";
 import { WorkspaceWorkbenchPanel } from "@/components/chat/WorkspaceWorkbenchPanel";
+import { useT } from "@/components/providers/LocaleProvider";
 import { McpAppRenderer } from "@/components/chat/McpAppFrame";
 import { ArtifactRenderer } from "./ArtifactRenderer";
 import { WorkspaceFileRenderer, type WorkspaceFileLineComment } from "./WorkspaceFileRenderer";
 import { SubagentActivityRenderer } from "./SubagentActivityRenderer";
 import type { WorkbenchTab } from "@/lib/workbench";
+import { isTranslationKey } from "@/lib/locale";
 
 type WorkbenchShellProps = {
     sessionId: string;
@@ -44,6 +46,7 @@ type WorkbenchTabStripProps = {
 };
 
 function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocument }: WorkbenchTabStripProps) {
+    const t = useT();
     const scrollerRef = useRef<HTMLDivElement | null>(null);
     const autoScrollFrameRef = useRef<number | null>(null);
     const lastFrameAtRef = useRef(0);
@@ -127,7 +130,7 @@ function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocu
                     direction < 0 ? "left-0 bg-gradient-to-r from-background via-background/95 to-transparent" : "right-0 bg-gradient-to-l from-background via-background/95 to-transparent",
                     visible ? "pointer-events-auto" : "pointer-events-none !opacity-0",
                 )}
-                aria-label={direction < 0 ? "向左浏览标签" : "向右浏览标签"}
+                aria-label={direction < 0 ? t("web.workbench.tabs.previous") : t("web.workbench.tabs.next")}
             >
                 <Icon className="h-3.5 w-3.5" />
             </button>
@@ -140,7 +143,7 @@ function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocu
             <div
                 ref={scrollerRef}
                 role="tablist"
-                aria-label="工作台文档"
+                aria-label={t("web.workbench.tabs.label")}
                 className="scrollbar-hide min-w-0 overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden"
                 style={{ scrollbarWidth: "none" }}
                 data-workbench-tab-scroller
@@ -149,6 +152,7 @@ function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocu
                     {tabs.map((tab) => {
                         const Icon = documentIcon(tab.document.kind);
                         const active = tab.document.documentId === activeDocumentId;
+                        const title = isTranslationKey(tab.document.title) ? t(tab.document.title) : tab.document.title;
                         return (
                             <div key={tab.document.documentId} className={cn("group flex h-8 min-w-[112px] max-w-[220px] items-center rounded-xl", active ? "bg-muted/70 text-foreground" : "text-muted-foreground hover:bg-muted/35")}>
                                 <button
@@ -159,10 +163,10 @@ function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocu
                                     className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-xl px-2 text-left text-[11px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                                 >
                                     <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                    <span className="min-w-0 flex-1 truncate">{tab.document.title}</span>
-                                    {tab.unread ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-label="未读" /> : null}
+                                    <span className="min-w-0 flex-1 truncate">{title}</span>
+                                    {tab.unread ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-label={t("web.workbench.tabs.unread")} /> : null}
                                 </button>
-                                <button type="button" onClick={() => closeDocument(tab.document.documentId)} className="mr-1 hidden rounded-md p-1 text-muted-foreground hover:bg-background/80 hover:text-foreground focus:block group-hover:block" aria-label={`关闭 ${tab.document.title}`}><X className="h-3 w-3" /></button>
+                                <button type="button" onClick={() => closeDocument(tab.document.documentId)} className="mr-1 hidden rounded-md p-1 text-muted-foreground hover:bg-background/80 hover:text-foreground focus:block group-hover:block" aria-label={t("web.workbench.tabs.close", { title })}><X className="h-3 w-3" /></button>
                             </div>
                         );
                     })}
@@ -174,6 +178,7 @@ function WorkbenchTabStrip({ tabs, activeDocumentId, activateDocument, closeDocu
 }
 
 export function WorkbenchShell(props: WorkbenchShellProps) {
+    const t = useT();
     const boundSessionId = useWorkbenchStore((state) => state.sessionId);
     const mode = useWorkbenchStore((state) => state.mode);
     const width = useWorkbenchStore((state) => state.width);
@@ -219,14 +224,17 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
 
     const content = (() => {
         if (document.status === "unavailable") {
-            return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{document.unavailableReason || "该内容当前不可用。"}</div>;
+            const reason = document.unavailableReason && isTranslationKey(document.unavailableReason)
+                ? t(document.unavailableReason)
+                : document.unavailableReason;
+            return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{reason || t("web.workbench.unavailable")}</div>;
         }
         if (document.kind === "session_overview") return <WorkspaceWorkbenchPanel {...props} />;
         if (document.kind === "subagent_activity") return <SubagentActivityRenderer document={document} messages={props.messages} runtimeModel={props.runtimeModel} processes={props.processes} />;
         if (document.kind === "workspace_file") return <WorkspaceFileRenderer document={document} onSendLineComment={props.onSendFileLineComment} />;
         if (document.kind === "artifact") return <ArtifactRenderer document={document} />;
         if (document.kind === "ui_app") return <McpAppRenderer mcpApp={document.subjectRef.app} />;
-        return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">Agent 浏览器已在独立窗口中运行。</div>;
+        return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{t("web.workbench.browserExternal")}</div>;
     })();
 
     const panel = (
@@ -237,7 +245,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                 effectiveMode === "focus" ? "absolute inset-0" : "relative h-full shrink-0",
             )}
             style={effectiveMode === "split" ? { width: panelWidth } : undefined}
-            aria-label="工作台"
+            aria-label={t("web.workbench.label")}
         >
             <div className="flex h-10 shrink-0 items-center gap-1.5 border-b border-border/60 px-1.5">
                 <WorkbenchTabStrip
@@ -250,7 +258,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                     type="button"
                     onClick={() => setMode(mode === "focus" ? "split" : "focus")}
                     className="rounded-lg p-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
-                    aria-label={mode === "focus" ? "退出聚焦" : "聚焦工作台"}
+                    aria-label={mode === "focus" ? t("web.workbench.exitFocus") : t("web.workbench.focus")}
                 >
                     {mode === "focus" ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
                 </button>
@@ -290,7 +298,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                     <div
                         role="separator"
                         aria-orientation="vertical"
-                        aria-label="调整工作台宽度"
+                        aria-label={t("web.workbench.resize")}
                         className="relative z-[71] w-1.5 shrink-0 cursor-col-resize bg-transparent before:absolute before:inset-y-0 before:left-1/2 before:w-px before:bg-border/80 hover:bg-primary/[0.025] hover:before:bg-primary/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                         tabIndex={0}
                         onKeyDown={(event) => {

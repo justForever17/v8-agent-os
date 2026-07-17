@@ -1306,6 +1306,23 @@ export async function speechToText(authorizedFetch: AuthorizedFetch, formData: F
     return readJsonOrThrow<Record<string, unknown>>(response, translateCurrent("src.lib.phone_api.text_34"));
 }
 
+export async function runRpaTemplate(
+    authorizedFetch: AuthorizedFetch,
+    templateId: string,
+    variables: Record<string, unknown>,
+) {
+    return authorizedJson<Record<string, unknown>>(
+        authorizedFetch,
+        `/api/client/rpa/templates/${encodeURIComponent(templateId)}/run`,
+        translateCurrent("src.lib.phone_api.rpa_template_run_failed"),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ variables, triggerSource: "rpa_phone", nonChatRun: true }),
+        },
+    );
+}
+
 export async function getAudioInputStatus(authorizedFetch: AuthorizedFetch) {
     return authorizedJson<Record<string, unknown>>(
         authorizedFetch,

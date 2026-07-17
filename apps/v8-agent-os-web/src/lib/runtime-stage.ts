@@ -414,16 +414,17 @@ function buildNodeFromTimelineEntry(entry: RuntimeTimelineEntry): UiTimelineNode
     } satisfies UiExecutionNode;
 }
 
-export function formatRelativeRuntimeTime(timestamp?: number): string {
-    if (!timestamp) return "刚刚";
+export function formatRelativeRuntimeTime(timestamp?: number, locale: Locale = "zh-CN"): string {
+    const english = locale === "en";
+    if (!timestamp) return english ? "just now" : "刚刚";
     const diffMs = Date.now() - timestamp;
     const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
-    if (diffMinutes < 1) return "刚刚";
-    if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+    if (diffMinutes < 1) return english ? "just now" : "刚刚";
+    if (diffMinutes < 60) return english ? `${diffMinutes}m ago` : `${diffMinutes} 分钟前`;
     const diffHours = Math.floor(diffMinutes / 60);
-    if (diffHours < 24) return `${diffHours} 小时前`;
+    if (diffHours < 24) return english ? `${diffHours}h ago` : `${diffHours} 小时前`;
     const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays} 天前`;
+    return english ? `${diffDays}d ago` : `${diffDays} 天前`;
 }
 
 export function getRuntimeDescriptor(runtimeId: RuntimeId, locale: Locale = "zh-CN"): RuntimeDescriptor {

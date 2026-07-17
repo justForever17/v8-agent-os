@@ -104,7 +104,7 @@ export function normalizeWorkbenchDocument(value: unknown): WorkbenchDocument | 
     const record = recordOf(value);
     const kind = stringOf(record.kind) as WorkbenchDocument["kind"];
     const documentId = stringOf(record.documentId || record.document_id);
-    const title = stringOf(record.title) || "工作台文档";
+    const title = stringOf(record.title) || "web.workbench.document";
     const renderer = stringOf(record.renderer);
     const subjectRef = recordOf(record.subjectRef || record.subject_ref);
     if (!DOCUMENT_KINDS.has(kind) || !documentId || !renderer) return null;
@@ -193,7 +193,7 @@ export function createSessionOverviewDocument(sessionId: string): SessionOvervie
     return {
         kind: "session_overview",
         documentId: `session-overview:${sessionId}`,
-        title: "概览",
+        title: "web.workbench.overview",
         renderer: "session_overview",
         lifecycle: "session",
         status: "ready",

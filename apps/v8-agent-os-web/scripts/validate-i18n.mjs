@@ -14,6 +14,9 @@ const LEGACY_PATTERN = /\blt\s*\(|\bLocalizedText\b|\bpickLocalizedText\b/;
 const DIRECT_CHINESE_T_PATTERN = /\bt\(\s*["'`][^"'`]*[\u4e00-\u9fff][^"'`]*["'`]/;
 const DIRECT_CHINESE_RESOLVE_PATTERN = /\bresolveText\(\s*[^,]+,\s*["'`][^"'`]*[\u4e00-\u9fff][^"'`]*["'`]/;
 const TRANSLATION_KEY_PATTERN = /["'`](web\.generated\.[0-9a-f]+)["'`]/g;
+const SEMANTIC_T_KEY_PATTERN = /\bt\(\s*["'`](web\.[a-zA-Z0-9_.-]+)["'`]/g;
+const HAN_PATTERN = /[\u4e00-\u9fff]/;
+const EN_HAN_ALLOWED_KEYS = new Set(["layout.locale.label.zhCN"]);
 
 const SCAN_ROOTS = [
     path.join(srcRoot, "app"),
@@ -24,6 +27,33 @@ const SCAN_ROOTS = [
 const SCAN_EXCLUDES = [
     path.join(srcRoot, "app", "api"),
     path.join(srcRoot, "i18n"),
+];
+
+const I18N_REQUIRED_FILES = [
+    path.join(srcRoot, "app", "specs", "SpecApprovalClient.tsx"),
+    path.join(srcRoot, "components", "chat", "ArtifactCard.tsx"),
+    path.join(srcRoot, "components", "chat", "collaboration", "CollaborationMicroStageScene.tsx"),
+    path.join(srcRoot, "components", "chat", "ContentDispatcher.tsx"),
+    path.join(srcRoot, "components", "chat", "GovernanceApprovalModal.tsx"),
+    path.join(srcRoot, "components", "chat", "HTMLFileCard.tsx"),
+    path.join(srcRoot, "components", "chat", "InputArea.tsx"),
+    path.join(srcRoot, "components", "chat", "InteractiveTerminalCard.tsx"),
+    path.join(srcRoot, "components", "chat", "ManualTerminalPanel.tsx"),
+    path.join(srcRoot, "components", "chat", "MediaRenderers.tsx"),
+    path.join(srcRoot, "components", "chat", "McpAppFrame.tsx"),
+    path.join(srcRoot, "components", "chat", "MessageBlockItem.tsx"),
+    path.join(srcRoot, "components", "chat", "PPTCard.tsx"),
+    path.join(srcRoot, "components", "chat", "RunControlBar.tsx"),
+    path.join(srcRoot, "components", "chat", "RuntimeTimelinePanel.tsx"),
+    path.join(srcRoot, "components", "chat", "SpecDocumentConfirmationDialog.tsx"),
+    path.join(srcRoot, "components", "chat", "ToolCard.tsx"),
+    path.join(srcRoot, "components", "chat", "VoiceCard.tsx"),
+    path.join(srcRoot, "components", "chat", "WorkspaceWorkbenchPanel.tsx"),
+    path.join(srcRoot, "components", "rpa", "RPAQuickPanel.tsx"),
+    path.join(srcRoot, "components", "workbench", "ArtifactRenderer.tsx"),
+    path.join(srcRoot, "components", "workbench", "SubagentActivityRenderer.tsx"),
+    path.join(srcRoot, "components", "workbench", "WorkbenchShell.tsx"),
+    path.join(srcRoot, "components", "workbench", "WorkspaceFileRenderer.tsx"),
 ];
 
 function placeholdersOf(message) {
@@ -86,6 +116,9 @@ for (const key of zhKeys) {
         problems.push(`en.json 的值必须是字符串：${key}`);
         continue;
     }
+    if (HAN_PATTERN.test(enCatalog[key]) && !EN_HAN_ALLOWED_KEYS.has(key)) {
+        problems.push(`en.json 含中文：${key}`);
+    }
     const zhPlaceholders = Array.from(placeholdersOf(zhCatalog[key])).sort();
     const enPlaceholders = Array.from(placeholdersOf(enCatalog[key])).sort();
     if (zhPlaceholders.join("|") !== enPlaceholders.join("|")) {
@@ -114,6 +147,19 @@ for (const file of scanFiles) {
         if (!(key in zhCatalog) || !(key in enCatalog)) {
             problems.push(`检测到缺失的 web 翻译 key：${relativeFile} -> ${key}`);
         }
+    }
+    for (const match of code.matchAll(SEMANTIC_T_KEY_PATTERN)) {
+        const key = match[1];
+        if (!(key in zhCatalog) || !(key in enCatalog)) {
+            problems.push(`检测到缺失的 web 翻译 key：${relativeFile} -> ${key}`);
+        }
+    }
+}
+
+for (const file of I18N_REQUIRED_FILES) {
+    const code = stripComments(fs.readFileSync(file, "utf8"));
+    if (HAN_PATTERN.test(code)) {
+        problems.push(`工作台/RPA 用户界面仍含硬编码中文：${path.relative(root, file)}`);
     }
 }
 

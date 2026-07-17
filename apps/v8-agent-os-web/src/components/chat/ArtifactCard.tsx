@@ -3,6 +3,7 @@
 import { Disc3, FileAudio, FileImage, FileText, FileVideo, Layout, Code, Download, Maximize2, Link2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/components/providers/LocaleProvider";
 
 interface ArtifactCardProps {
     id: string;
@@ -15,6 +16,7 @@ interface ArtifactCardProps {
 }
 
 export function ArtifactCard({ title, type, subtitle, className, onClick, onDownload }: ArtifactCardProps) {
+    const t = useT();
     const icon = type === 'code'
         ? <Code className="h-5 w-5" />
         : type === 'html'
@@ -48,7 +50,7 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
 
             <div className="min-w-0 flex-1 cursor-pointer" onClick={onClick}>
                 <div className="truncate text-xs font-medium transition-colors group-hover:text-primary">{title}</div>
-                <div className="truncate text-[10px] text-muted-foreground">{subtitle || `${type} Artifact`}</div>
+                <div className="truncate text-[10px] text-muted-foreground">{subtitle || t("web.artifactCard.defaultSubtitle", { type })}</div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -63,7 +65,7 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                         }}
                     >
                         <Maximize2 className="h-3.5 w-3.5" />
-                        在工作台打开
+                        {t("web.artifactCard.openWorkbench")}
                     </Button>
                 )}
                 {onDownload && (
@@ -77,7 +79,7 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                         }}
                     >
                         <Download className="h-3.5 w-3.5" />
-                        下载
+                        {t("web.artifactCard.download")}
                     </Button>
                 )}
             </div>

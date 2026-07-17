@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 
 import { requireAdminConnection } from "@/lib/server/page-guards";
-import SpecApprovalClient from "./SpecApprovalClient";
+import SpecApprovalClient, { SpecApprovalLoading } from "./SpecApprovalClient";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +23,7 @@ export default async function SpecsPage({
     const specId = typeof params.specId === "string" ? params.specId : "";
     const stage = typeof params.stage === "string" ? params.stage : "";
     return (
-        <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">正在读取 Spec 审批台…</div>}>
+        <Suspense fallback={<SpecApprovalLoading />}>
             <SpecApprovalClient initialWorkspacePath={workspacePath} initialSpecId={specId} initialStage={stage} />
         </Suspense>
     );

@@ -3,6 +3,7 @@
 import { AlertCircle, CornerDownRight, PauseCircle, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useT } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
 
 // IMPORTANT: Keep this component as a dormant diagnostic/admin run-control surface.
@@ -18,15 +19,15 @@ interface RunControlBarProps {
     onOpenApproval?: () => void;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-    queued: "排队中",
-    running: "执行中",
-    waiting_approval: "等待审批",
-    waiting_input: "等待输入",
-    paused: "已暂停",
-    completed: "已完成",
-    failed: "失败",
-    cancelled: "已取消",
+const STATUS_LABEL_KEYS: Record<string, string> = {
+    queued: "web.runControl.status.queued",
+    running: "web.runControl.status.running",
+    waiting_approval: "web.runControl.status.waitingApproval",
+    waiting_input: "web.runControl.status.waitingInput",
+    paused: "web.runControl.status.paused",
+    completed: "web.runControl.status.completed",
+    failed: "web.runControl.status.failed",
+    cancelled: "web.runControl.status.cancelled",
 };
 
 const STATUS_TONES: Record<string, { dot: string; pill: string; text: string }> = {
@@ -81,12 +82,14 @@ export function RunControlBar({
     onRetry,
     onOpenApproval,
 }: RunControlBarProps) {
+    const t = useT();
     if (!runId) {
         return null;
     }
 
     const normalizedStatus = status || "running";
-    const label = STATUS_LABELS[normalizedStatus] || normalizedStatus;
+    const labelKey = STATUS_LABEL_KEYS[normalizedStatus];
+    const label = labelKey ? t(labelKey) : normalizedStatus;
     const tone = STATUS_TONES[normalizedStatus] || STATUS_TONES.running;
 
     return (
@@ -107,7 +110,7 @@ export function RunControlBar({
                 {pendingApproval && (
                     <span className="hidden items-center gap-1 rounded-full bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300 min-[430px]:inline-flex">
                         <AlertCircle className="h-3.5 w-3.5" />
-                        待审批
+                        {t("web.runControl.pendingApproval")}
                     </span>
                 )}
             </div>
@@ -116,25 +119,25 @@ export function RunControlBar({
                 {pendingApproval && onOpenApproval && (
                     <Button type="button" variant="outline" size="sm" onClick={onOpenApproval} className="h-6 rounded-full border-stone-200/80 bg-white/70 px-2 text-[10px] dark:border-white/10 dark:bg-white/[0.04] sm:h-[26px] sm:px-2.5 sm:text-[11px]">
                         <CornerDownRight className="h-3.5 w-3.5 sm:mr-1.5" />
-                        <span className="hidden sm:inline">审批</span>
+                        <span className="hidden sm:inline">{t("web.runControl.review")}</span>
                     </Button>
                 )}
                 {normalizedStatus === "running" && onInterrupt && (
                     <Button type="button" variant="outline" size="sm" onClick={onInterrupt} disabled={isBusy} className="h-6 rounded-full border-stone-200/80 bg-white/70 px-2 text-[10px] dark:border-white/10 dark:bg-white/[0.04] sm:h-[26px] sm:px-2.5 sm:text-[11px]">
                         <PauseCircle className="h-3.5 w-3.5 sm:mr-1.5" />
-                        <span className="hidden sm:inline">中断</span>
+                        <span className="hidden sm:inline">{t("web.runControl.interrupt")}</span>
                     </Button>
                 )}
                 {["paused", "failed", "cancelled", "waiting_input"].includes(normalizedStatus) && onRetry && (
                     <Button type="button" variant="outline" size="sm" onClick={onRetry} disabled={isBusy} className="h-6 rounded-full border-stone-200/80 bg-white/70 px-2 text-[10px] dark:border-white/10 dark:bg-white/[0.04] sm:h-[26px] sm:px-2.5 sm:text-[11px]">
                         <RefreshCw className="h-3.5 w-3.5 sm:mr-1.5" />
-                        <span className="hidden sm:inline">重试</span>
+                        <span className="hidden sm:inline">{t("web.runControl.retry")}</span>
                     </Button>
                 )}
                 {!pendingApproval && normalizedStatus === "waiting_approval" && (
                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300">
                         <AlertCircle className="h-3.5 w-3.5" />
-                        等待恢复
+                        {t("web.runControl.waitingResume")}
                     </span>
                 )}
             </div>

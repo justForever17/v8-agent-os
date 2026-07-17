@@ -301,7 +301,7 @@ export const ContentDispatcher = React.memo(function ContentDispatcher({
                     return null;
                 }
                 const resultExecNode = resultNode as UiExecutionNode | undefined;
-                const toolName = node.toolName || resultExecNode?.toolName || '工具调用';
+                const toolName = node.toolName || resultExecNode?.toolName || t('web.toolCard.defaultName');
                 const isFinished = node.executionType === 'tool_result' || !!resultNode || !!node.result || !isExecuting;
                 const result = resultExecNode?.agentVisibleResult
                     ?? resultExecNode?.data?.agentVisibleResult

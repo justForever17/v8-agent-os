@@ -946,18 +946,18 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                         <div className="min-w-0 flex-1">
                                             <div className="text-xs font-semibold text-foreground/80 leading-normal">
                                                 {hasActiveProgress ? (
-                                                    "正在进行推理与工具调用..."
+                                                    t("web.chat.trace.active")
                                                 ) : (
                                                     <>
-                                                        {segment.reasoningCount > 0 && `进行了 ${segment.reasoningCount} 次思考`}
-                                                        {segment.reasoningCount > 0 && segment.toolCount > 0 && "，"}
-                                                        {segment.toolCount > 0 && `调用了 ${segment.toolCount} 次工具`}
+                                                        {segment.reasoningCount > 0 && t("web.chat.trace.reasoningCount", { count: segment.reasoningCount })}
+                                                        {segment.reasoningCount > 0 && segment.toolCount > 0 && " · "}
+                                                        {segment.toolCount > 0 && t("web.chat.trace.toolCount", { count: segment.toolCount })}
                                                     </>
                                                 )}
                                             </div>
                                             {segment.totalDuration > 0 && (
                                                 <div className="mt-0.5 text-[10px] text-muted-foreground/60 leading-none truncate">
-                                                    累计耗时 {segment.totalDuration}s
+                                                    {t("web.chat.trace.duration", { seconds: segment.totalDuration })}
                                                 </div>
                                             )}
                                         </div>
@@ -1000,7 +1000,7 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                             key={artifact.id}
                                             id={artifact.id}
                                             title={artifact.displayLabel || artifact.title || artifact.id}
-                                            subtitle={artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifactUrl || "暂无路径信息"}
+                                            subtitle={artifact.displaySubtitle || artifact.canonicalPath || artifact.workspaceRelativePath || artifactUrl || t("web.chat.artifact.noPath")}
                                             type={inferArtifactCardType(artifact)}
                                             onClick={() => openWorkbenchDocument(createArtifactDocument(artifact), { activate: true, mode: "split" })}
                                             onDownload={artifactUrl ? () => window.open(artifactUrl, "_blank", "noopener,noreferrer") : undefined}

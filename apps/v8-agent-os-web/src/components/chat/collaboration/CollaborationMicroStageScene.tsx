@@ -9,6 +9,7 @@ import type {
     CollaborationMicroStageStep,
 } from "@v8/session-realtime";
 import { selectCollaborationMicroStageLayout } from "@v8/session-realtime";
+import { useT } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
 import {
     SubagentRobotSprite,
@@ -399,14 +400,14 @@ function stageColor(stage: CollaborationMicroStage, index: number) {
     return "#38BDF8";
 }
 
-function statusLabel(status: CollaborationMicroStageStatus) {
+function statusLabel(status: CollaborationMicroStageStatus, t: (key: string) => string) {
     const labels: Record<CollaborationMicroStageStatus, string> = {
-        active: "运行中",
-        attempted: "已尝试",
-        completed: "完成",
-        degraded: "降级",
-        failed: "失败",
-        pending: "等待",
+        active: t("web.collaborationMicroStage.status.active"),
+        attempted: t("web.collaborationMicroStage.status.attempted"),
+        completed: t("web.collaborationMicroStage.status.completed"),
+        degraded: t("web.collaborationMicroStage.status.degraded"),
+        failed: t("web.collaborationMicroStage.status.failed"),
+        pending: t("web.collaborationMicroStage.status.pending"),
     };
     return labels[status] || status;
 }
@@ -841,6 +842,7 @@ function WorkCell({
     supervisor: { x: number; y: number };
     onOpenDetailRef?: (target: CollaborationMicroStageDetailTarget) => void;
 }) {
+    const t = useT();
     const { stage, actor, x, y, scale } = item;
     const step = latestActorStep(stage, actor);
     const color = stageColor(stage, index);
@@ -925,8 +927,8 @@ function WorkCell({
                     !detailRef && "cursor-default",
                 )}
                 style={{ borderColor: `${statusTone}88`, color: statusTone }}
-                title={`${actor.summary || step?.summary || stage.title} · ${statusLabel(status)}`}
-                aria-label={`${actorName}：${statusLabel(status)}`}
+                title={`${actor.summary || step?.summary || stage.title} · ${statusLabel(status, t)}`}
+                aria-label={`${actorName}: ${statusLabel(status, t)}`}
                 data-subagent-status={status}
             >
                 <span className="relative flex h-3.5 w-3.5 items-center justify-center" aria-hidden="true">
@@ -948,9 +950,11 @@ export const CollaborationMicroStageScene = memo(function CollaborationMicroStag
     executionActive = false,
     supervisorSpeech,
     onOpenDetailRef,
-    overviewLinkLabel = "查看概览",
+    overviewLinkLabel,
     onOpenOverview,
 }: CollaborationMicroStageSceneProps) {
+    const t = useT();
+    const resolvedOverviewLinkLabel = overviewLinkLabel || t("web.collaborationMicroStage.viewOverview");
     const { initialized, retained: retainedStages, settledOutcome } = useRetainedMicroStages(stages, executionActive);
     const actorItems = useMemo(() => buildStageActorItems(retainedStages), [retainedStages]);
     const layout = useMemo(() => selectCollaborationMicroStageLayout(retainedStages), [retainedStages]);
@@ -975,7 +979,7 @@ export const CollaborationMicroStageScene = memo(function CollaborationMicroStag
                         onClick={onOpenOverview}
                         className="group inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                     >
-                        <span className="underline decoration-border underline-offset-4 group-hover:decoration-current">{overviewLinkLabel}</span>
+                        <span className="underline decoration-border underline-offset-4 group-hover:decoration-current">{resolvedOverviewLinkLabel}</span>
                         <span aria-hidden="true" className="transition-transform duration-200 group-hover:translate-x-0.5">→</span>
                     </button>
                 </div>

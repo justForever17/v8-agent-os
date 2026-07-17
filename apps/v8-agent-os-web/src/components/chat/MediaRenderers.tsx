@@ -2,6 +2,7 @@ import React from 'react';
 import { Play, Pause, Volume2, VolumeX, Maximize2, Download } from 'lucide-react';
 import { useState, useRef } from 'react';
 import { Button } from '@/components/ui/button';
+import { useT } from '@/components/providers/LocaleProvider';
 import { cn } from '@/lib/utils';
 
 interface MediaPlayerProps {
@@ -11,6 +12,7 @@ interface MediaPlayerProps {
 }
 
 export function MediaPlayer({ src, type, title }: MediaPlayerProps) {
+    const t = useT();
     const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isMuted, setIsMuted] = useState(false);
@@ -106,7 +108,7 @@ export function MediaPlayer({ src, type, title }: MediaPlayerProps) {
                         size="icon"
                         className={cn("h-8 w-8", type === 'video' && "text-white hover:text-white hover:bg-white/20")}
                         onClick={handleDownload}
-                        title="下载"
+                        title={t('web.media.download')}
                     >
                         <Download className="w-4 h-4" />
                     </Button>
@@ -126,6 +128,7 @@ export function MediaPlayer({ src, type, title }: MediaPlayerProps) {
 }
 
 export function ImagePreview({ src, alt }: { src: string; alt?: string }) {
+    const t = useT();
     const [isOpen, setIsOpen] = useState(false);
 
     const handleDownload = async (e: React.MouseEvent) => {
@@ -177,7 +180,7 @@ export function ImagePreview({ src, alt }: { src: string; alt?: string }) {
                             size="icon"
                             className="h-8 w-8 text-white hover:bg-black/20 hover:text-white"
                             onClick={handleDownload}
-                            title="下载图片"
+                            title={t('web.media.downloadImage')}
                         >
                             <Download className="w-4 h-4 drop-shadow-md" />
                         </Button>

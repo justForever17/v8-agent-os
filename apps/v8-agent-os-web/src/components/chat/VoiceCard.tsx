@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Square, RotateCcw, Volume2, Loader2, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/components/providers/LocaleProvider";
 import { useVoiceStore } from "@/store/useVoiceStore";
 import { cn } from "@/lib/utils";
 
@@ -12,6 +13,7 @@ interface VoiceCardProps {
 }
 
 export function VoiceCard({ content, isStreaming }: VoiceCardProps) {
+    const t = useT();
     const { isVoiceEnabled, setSpeaking } = useVoiceStore();
     const [isPlaying, setIsPlaying] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -150,9 +152,9 @@ export function VoiceCard({ content, isStreaming }: VoiceCardProps) {
                         ) : (
                             <div className="flex items-center gap-2 text-sm text-muted-foreground font-medium">
                                 <Volume2 className="h-4 w-4" />
-                                {isGenerating ? '生成语音中...' : 
-                                 isStreaming ? '接收文本中...' : 
-                                 hasPlayed ? '语音片段' : '点击播放语音'}
+                                {isGenerating ? t('web.voice.generating') :
+                                 isStreaming ? t('web.voice.receiving') :
+                                 hasPlayed ? t('web.voice.clip') : t('web.voice.play')}
                             </div>
                         )}
                     </div>

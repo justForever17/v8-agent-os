@@ -5,6 +5,7 @@ import { ExternalLink, LayoutPanelTop, Maximize2, RefreshCw } from "lucide-react
 import type { McpAppViewRef } from "@v8/session-realtime";
 
 import { createUiAppDocument } from "@/lib/workbench";
+import { useT } from "@/components/providers/LocaleProvider";
 import { useWorkbenchStore } from "@/store/workbench-store";
 
 
@@ -75,6 +76,7 @@ function safeFigmaUrl(value?: string) {
 }
 
 function FigmaCanvasRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
+    const t = useT();
     const [revision, setRevision] = useState(0);
     const grantExpired = Boolean(mcpApp.expiresAt && Date.parse(mcpApp.expiresAt) <= Date.now());
     const externalUrl = grantExpired ? "" : safeFigmaUrl(mcpApp.externalUrl);
@@ -87,15 +89,15 @@ function FigmaCanvasRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
         <div className="flex h-full min-h-0 flex-col bg-background">
             <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 px-2 text-[11px] text-muted-foreground">
                 <span className="h-2 w-2 bg-[#A259FF]" />
-                <span className="min-w-0 flex-1 truncate">实时 Embed · 修改通过已授权 Figma MCP 完成</span>
-                <button type="button" onClick={() => setRevision((value) => value + 1)} className="rounded-sm p-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label="刷新 Figma 画布"><RefreshCw className="h-3.5 w-3.5" /></button>
-                {externalUrl ? <a href={externalUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm px-1.5 py-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary">在 Figma 打开<ExternalLink className="h-3 w-3" /></a> : null}
+                <span className="min-w-0 flex-1 truncate">{t("web.mcpApp.figma.live")}</span>
+                <button type="button" onClick={() => setRevision((value) => value + 1)} className="rounded-sm p-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.mcpApp.figma.refresh")}><RefreshCw className="h-3.5 w-3.5" /></button>
+                {externalUrl ? <a href={externalUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-sm px-1.5 py-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary">{t("web.mcpApp.figma.open")}<ExternalLink className="h-3 w-3" /></a> : null}
             </div>
             <div className="min-h-0 flex-1 bg-[#f5f5f5]">
                 {embedUrl ? (
                     <iframe key={revision} title={mcpApp.title || "Figma Canvas"} src={embedUrl} className="h-full w-full border-0" allowFullScreen sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer" />
                 ) : (
-                    <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">{grantExpired ? "Figma 插件授权已过期，请重新 @ 插件。" : !figmaFrameAllowed ? "Figma 画布来源未通过插件白名单校验。" : "未收到可验证的 Figma file/frame URL。"}</div>
+                    <div className="flex h-full items-center justify-center px-6 text-sm text-muted-foreground">{grantExpired ? t("web.mcpApp.figma.expired") : !figmaFrameAllowed ? t("web.mcpApp.figma.blocked") : t("web.mcpApp.figma.missingUrl")}</div>
                 )}
             </div>
         </div>
@@ -103,6 +105,7 @@ function FigmaCanvasRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
 }
 
 export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
+    const t = useT();
     const frameRef = useRef<HTMLIFrameElement | null>(null);
     const setMode = useWorkbenchStore((state) => state.setMode);
     const [resource, setResource] = useState<McpAppResource | null>(null);
@@ -119,7 +122,7 @@ export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
                 const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
                 if (!response.ok) throw new Error(String(payload.detail || payload.error || response.statusText));
                 const html = String(payload.html || "");
-                if (!html.trim()) throw new Error("MCP App 没有返回可展示内容。");
+                if (!html.trim()) throw new Error(t("web.mcpApp.empty"));
                 if (!cancelled) {
                     setResource({
                         html,
@@ -130,7 +133,7 @@ export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
             })
             .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
         return () => { cancelled = true; };
-    }, [mcpApp.csp, mcpApp.permissions, mcpApp.renderer, mcpApp.resourceUri, mcpApp.serverName]);
+    }, [mcpApp.csp, mcpApp.permissions, mcpApp.renderer, mcpApp.resourceUri, mcpApp.serverName, t]);
 
     useEffect(() => {
         if (mcpApp.renderer === "figma") return;
@@ -183,12 +186,13 @@ export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
 
     if (mcpApp.renderer === "figma") return <FigmaCanvasRenderer mcpApp={mcpApp} />;
     if (error) return <div className="flex h-full items-center justify-center px-6 text-sm text-destructive">{error}</div>;
-    if (!resource) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">正在加载 UI App…</div>;
+    if (!resource) return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t("web.mcpApp.loading")}</div>;
     const srcDoc = injectMcpAppHost(resource.html, mcpApp.appInstanceId, resource.csp);
     return <iframe ref={frameRef} title={mcpApp.title || `MCP App ${mcpApp.appInstanceId}`} className="h-full w-full border-0 bg-transparent" sandbox="allow-scripts allow-forms allow-popups" srcDoc={srcDoc} />;
 }
 
 export const McpAppFrame = memo(function McpAppFrame({ mcpApp }: { mcpApp: McpAppViewRef }) {
+    const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const document = useMemo(() => createUiAppDocument(mcpApp), [mcpApp]);
     return (
@@ -199,7 +203,7 @@ export const McpAppFrame = memo(function McpAppFrame({ mcpApp }: { mcpApp: McpAp
         >
             <LayoutPanelTop className="h-3.5 w-3.5 shrink-0 text-primary" />
             <span className="min-w-0 flex-1 truncate font-medium">{document.title}</span>
-            <span className="text-[10px] text-muted-foreground">在工作台打开</span>
+            <span className="text-[10px] text-muted-foreground">{t("web.mcpApp.openWorkbench")}</span>
             <Maximize2 className="h-3.5 w-3.5 text-muted-foreground" />
         </button>
     );

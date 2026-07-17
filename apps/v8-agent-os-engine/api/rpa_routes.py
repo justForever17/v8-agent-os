@@ -556,6 +556,31 @@ async def get_rpa_template(template_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/rpa/templates/{template_id}/run")
+async def run_rpa_template(template_id: str, payload: RPADraftRunPayload):
+    try:
+        return await run_in_threadpool(
+            _rpa_runtime().run_template,
+            template_id=template_id,
+            variables=dict(payload.variables or {}),
+            output_dir=payload.output_dir,
+            timeout_ms=payload.timeout_ms,
+            cwd=payload.cwd,
+            session_id=payload.session_id,
+            run_id=payload.run_id,
+            user_id=payload.user_id or "anonymous",
+            project_id=payload.project_id,
+            workspace_id=payload.workspace_id,
+            workspace_path=payload.workspace_path,
+            trigger_source=payload.trigger_source or "manual",
+            non_chat_run=payload.non_chat_run,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/rpa/templates/{template_id}/history")
 async def list_rpa_template_history(template_id: str, limit: int = 50):
     try:

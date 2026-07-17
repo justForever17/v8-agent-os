@@ -49,7 +49,6 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { HistoryDrawer } from "@/src/components/layout/HistoryDrawer";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
-import { RpaMenuOverlay } from "@/src/components/chat/RpaMenuOverlay";
 import { ProfileMenuOverlay } from "@/src/components/chat/ProfileMenuOverlay";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
@@ -2112,7 +2111,6 @@ export default function ChatScreen() {
     const [speakingId, setSpeakingId] = useState("");
     const [historyOpen, setHistoryOpen] = useState(false);
     const [historyCreatingGroupKey, setHistoryCreatingGroupKey] = useState<string | null>(null);
-    const [rpaMenuVisible, setRpaMenuVisible] = useState(false);
     const [profileMenuVisible, setProfileMenuVisible] = useState(false);
 
     // Reconstruct Drawers & Indicators Animation / Ref state
@@ -3111,7 +3109,7 @@ export default function ChatScreen() {
             indicatorColor: desktopLiveConnected ? "#10B981" : undefined,
             disabled: desktopPreviewBusy || (desktopLiveStatus?.bridgeStartable === false && !desktopLiveConnecting && !desktopLiveConnected && !desktopLiveReady),
         },
-        { key: "rpa", onPress: () => setRpaMenuVisible(true) },
+        { key: "rpa", onPress: () => router.push("/rpa" as Href) },
         { key: "voice", onPress: () => void toggleVoiceEnabled() },
         { key: "theme", onPress: () => void toggleThemeMode() },
     ], [desktopLiveConnected, desktopLiveConnecting, desktopLiveReady, desktopLiveStatus?.bridgeStartable, desktopPreviewBusy, openDesktopPreview, toggleThemeMode, toggleVoiceEnabled]);
@@ -7444,7 +7442,6 @@ export default function ChatScreen() {
                 />
             </SafeAreaView>
 
-            <RpaMenuOverlay visible={rpaMenuVisible} onClose={() => setRpaMenuVisible(false)} />
             <ProfileMenuOverlay visible={profileMenuVisible} onClose={() => setProfileMenuVisible(false)} />
         </LinearGradient>
     );

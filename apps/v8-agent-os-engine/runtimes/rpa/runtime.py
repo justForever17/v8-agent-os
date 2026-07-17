@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+from copy import deepcopy
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -681,7 +682,7 @@ class RPARuntime:
             "routingKeywords": ["RPA", "复现流程", "Robot Framework", "自动化脚本", "流程模板"],
             "acceptedInputs": ["trace run ids", "draft id", "robot script", "variables"],
             "producedOutputs": ["draft", "robot script", "execution result", "repair metadata"],
-            "ownedSteps": ["rpa.compile", "rpa.execute_draft", "rpa.local_repair", "rpa.export_robot"],
+            "ownedSteps": ["rpa.compile", "rpa.execute_draft", "rpa.execute_template", "rpa.local_repair", "rpa.export_robot"],
             "supportsPause": True,
             "supportsResume": False,
             "supportsApproval": False,
@@ -3309,6 +3310,55 @@ class RPARuntime:
         )
         return prepared
 
+    def prepare_template_run(
+        self,
+        *,
+        template_id: str,
+        variables: Optional[Dict[str, Any]] = None,
+        output_dir: str | Path | None = None,
+    ) -> Dict[str, Any]:
+        template = self.get_template(template_id)
+        if not isinstance(template, dict):
+            raise ValueError(f"未找到 template: {template_id}")
+        status = str(template.get("status") or (template.get("metadata") or {}).get("templateStatus") or "").strip().lower()
+        if status != "approved":
+            raise ValueError(f"template '{template_id}' 尚未批准，不能从用户入口执行。")
+
+        script = deepcopy(template)
+        source = dict(script.get("source") or {})
+        source["templateId"] = template_id
+        source["templateStatus"] = status
+        source["templateStage"] = str((script.get("governance") or {}).get("stage") or "approved_live")
+        script["source"] = source
+        metadata = dict(script.get("metadata") or {})
+        metadata["templateStatus"] = status
+        metadata["templateGovernance"] = deepcopy(script.get("governance") or {})
+        script["metadata"] = metadata
+
+        target_dir = Path(output_dir) if output_dir is not None else None
+        uses_computer_use_playbook = self._uses_computer_use_playbook(script)
+        exported = {} if uses_computer_use_playbook else self.adapter.export_script(script=script, output_dir=target_dir)
+        prepared = {
+            "available": self.adapter.availability(),
+            "script": script,
+            "export": exported,
+            "command": (
+                []
+                if uses_computer_use_playbook
+                else self.adapter.build_command(
+                    robot_file=exported["path"],
+                    variables=variables,
+                    output_dir=target_dir,
+                )
+            ),
+        }
+        self._log_audit(
+            action=f"Prepare RPA template run: {template_id}",
+            status="INFO",
+            details=json.dumps({"templateId": template_id, "variableNames": sorted((variables or {}).keys())}, ensure_ascii=False),
+        )
+        return prepared
+
     def prepare_existing_run(
         self,
         *,
@@ -3746,7 +3796,9 @@ class RPARuntime:
         elif promotion_gate_blocked:
             rollout_mode = "computer_use_first"
         execution_path = "robot"
-        if has_computer_use_source and rollout_mode == "computer_use_first":
+        if has_computer_use_source and self._uses_computer_use_playbook(script):
+            execution_path = "computer_use_first"
+        elif has_computer_use_source and rollout_mode == "computer_use_first":
             execution_path = "computer_use_first"
         elif rollout_mode == "template_preferred_with_fallback":
             execution_path = "template_preferred_with_fallback"
@@ -3774,8 +3826,16 @@ class RPARuntime:
             "reasons": list(governance.get("reasons") or []),
         }
 
+    @staticmethod
+    def _uses_computer_use_playbook(script: Dict[str, Any]) -> bool:
+        return any(
+            str(step.get("use") or "").strip() == "computer_use_playbook"
+            for step in list(script.get("steps") or [])
+            if isinstance(step, dict)
+        )
+
     def _has_computer_use_replay_capability(self, *, mode: str, prepared: Dict[str, Any]) -> bool:
-        if mode != "draft":
+        if mode not in {"draft", "template"}:
             return False
         script = prepared.get("script") if isinstance(prepared.get("script"), dict) else {}
         if not script or not list(script.get("steps") or []):
@@ -4518,7 +4578,13 @@ class RPARuntime:
         workflow_ledger_service.activate_runtime_step(
             run_handle.run_id,
             owner_runtime="rpa",
-            step_key="rpa.execute_draft" if mode == "draft" else "rpa.execute_existing",
+            step_key=(
+                "rpa.execute_template"
+                if mode == "template"
+                else "rpa.execute_draft"
+                if mode == "draft"
+                else "rpa.execute_existing"
+            ),
             title="RPA 执行流程",
             owner_agent_id="rpa_runtime",
             input_payload={
@@ -5242,6 +5308,43 @@ class RPARuntime:
             prepared=prepared,
             subject=subject,
             mode="draft",
+            variables=variables,
+            output_dir=output_dir,
+            timeout_ms=timeout_ms,
+            cwd=cwd,
+            session_id=session_id,
+            run_id=run_id,
+            user_id=user_id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            workspace_path=workspace_path,
+            trigger_source=trigger_source,
+            non_chat_run=non_chat_run,
+        )
+
+    def run_template(
+        self,
+        *,
+        template_id: str,
+        variables: Optional[Dict[str, Any]] = None,
+        output_dir: str | Path | None = None,
+        timeout_ms: int = 600000,
+        cwd: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        user_id: str = "system",
+        project_id: str | None = None,
+        workspace_id: str | None = None,
+        workspace_path: str | None = None,
+        trigger_source: str | None = "manual",
+        non_chat_run: bool = False,
+    ) -> Dict[str, Any]:
+        prepared = self.prepare_template_run(template_id=template_id, variables=variables, output_dir=output_dir)
+        subject = str(((prepared.get("script") or {}).get("name")) or template_id)
+        return self._execute_prepared(
+            prepared=prepared,
+            subject=subject,
+            mode="template",
             variables=variables,
             output_dir=output_dir,
             timeout_ms=timeout_ms,

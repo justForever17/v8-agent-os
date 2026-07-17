@@ -1076,7 +1076,7 @@ export default function ChatClient() {
                     return;
                 }
                 if (!response.ok || payload?.ok === false) {
-                    setTerminalError(String(payload?.error || payload?.detail || "终端配置不可用"));
+                    setTerminalError(String(payload?.error || payload?.detail || t("web.terminal.profilesUnavailable")));
                     return;
                 }
                 const profiles = Array.isArray(payload?.profiles) ? payload.profiles : [];
@@ -1084,7 +1084,7 @@ export default function ChatClient() {
                 setTerminalProfileId((prev) => prev || profiles[0]?.id || "");
             } catch (error) {
                 if (!cancelled) {
-                    setTerminalError(error instanceof Error ? error.message : "终端配置读取失败");
+                    setTerminalError(error instanceof Error ? error.message : t("web.terminal.profilesLoadFailed"));
                 }
             }
         }
@@ -1092,7 +1092,7 @@ export default function ChatClient() {
         return () => {
             cancelled = true;
         };
-    }, [terminalOpen]);
+    }, [t, terminalOpen]);
 
     const startManualTerminal = useCallback(async () => {
         if (terminalBusy) {
@@ -1114,13 +1114,13 @@ export default function ChatClient() {
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok || payload?.ok === false) {
-                setTerminalError(String(payload?.error || payload?.detail || "终端启动失败"));
+                setTerminalError(String(payload?.error || payload?.detail || t("web.terminal.startFailed")));
                 return;
             }
             upsertManualTerminalSession(payload, true);
             setTerminalProfileId((prev) => prev || payload?.profileId || "");
         } catch (error) {
-            setTerminalError(error instanceof Error ? error.message : "终端启动失败");
+            setTerminalError(error instanceof Error ? error.message : t("web.terminal.startFailed"));
         } finally {
             setTerminalBusy(false);
         }
@@ -1131,6 +1131,7 @@ export default function ChatClient() {
         terminalBusy,
         terminalProfileId,
         terminalWorkspacePath,
+        t,
         upsertManualTerminalSession,
     ]);
 
@@ -1544,15 +1545,10 @@ export default function ChatClient() {
     const contentShellClassName = "w-full max-w-[68rem]";
     const greetingText = useMemo(() => {
         const hour = localHour;
-        if (locale === "en") {
-            if (hour < 12) return "Good morning";
-            if (hour < 18) return "Good afternoon";
-            return "Good evening";
-        }
-        if (hour < 12) return "上午好";
-        if (hour < 18) return "下午好";
-        return "晚上好";
-    }, [localHour, locale]);
+        if (hour < 12) return t("web.chat.greeting.morning");
+        if (hour < 18) return t("web.chat.greeting.afternoon");
+        return t("web.chat.greeting.evening");
+    }, [localHour, t]);
 
     useEffect(() => {
         setLocalHour(new Date().getHours());
@@ -2793,12 +2789,12 @@ export default function ChatClient() {
     };
 
     const handleFileLineComment = async (reference: { path: string; line: number; lineText: string; comment: string }) => {
-        const quotedLine = String(reference.lineText || "").replace(/\r?\n/g, " ").trim() || "（空行）";
+        const quotedLine = String(reference.lineText || "").replace(/\r?\n/g, " ").trim() || t("web.workbench.file.emptyLine");
         const message = [
             reference.comment.trim(),
             "",
-            `文件定位：\`${reference.path}:${reference.line}\``,
-            `第 ${reference.line} 行：\`${quotedLine.replace(/`/g, "\\`")}\``,
+            t("web.workbench.file.locationMessage", { path: reference.path, line: reference.line }),
+            t("web.workbench.file.lineMessage", { line: reference.line, value: quotedLine.replace(/`/g, "\\`") }),
         ].join("\n");
         const syntheticEvent = { preventDefault() {} } as React.FormEvent<HTMLFormElement>;
         return Boolean(await handleSend(syntheticEvent, { data: { messageOverride: message } }));

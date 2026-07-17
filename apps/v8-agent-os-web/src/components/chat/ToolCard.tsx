@@ -4,6 +4,7 @@ import { useState, memo } from "react";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClientToolSurface } from "@v8/session-realtime";
+import { useT } from "@/components/providers/LocaleProvider";
 
 export interface ToolInvocation {
     toolCallId: string;
@@ -30,15 +31,15 @@ function looksLikeRawStructuredOutput(value: unknown) {
     return typeof value === "object";
 }
 
-function buildReadableResult(toolInvocation: ToolInvocation) {
+function buildReadableResult(toolInvocation: ToolInvocation, t: (key: string, values?: Record<string, string | number>) => string) {
     const result = 'result' in toolInvocation ? toolInvocation.result : null;
     const surface = toolInvocation.clientSurface;
     if (looksLikeRawStructuredOutput(result) && surface) {
         const lines = [
             surface.summary,
-            surface.progress ? `进度：${surface.progress}` : "",
-            surface.actionable ? `下一步：${surface.actionable}` : "",
-            surface.refIds.length ? `续读引用：${surface.refIds.join(", ")}` : "",
+            surface.progress ? t("web.toolCard.progress", { value: surface.progress }) : "",
+            surface.actionable ? t("web.toolCard.nextStep", { value: surface.actionable }) : "",
+            surface.refIds.length ? t("web.toolCard.references", { value: surface.refIds.join(", ") }) : "",
         ].filter(Boolean);
         if (lines.length) {
             return lines.join("\n");
@@ -48,11 +49,12 @@ function buildReadableResult(toolInvocation: ToolInvocation) {
 }
 
 export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => {
+    const t = useT();
     const [isExpanded, setIsExpanded] = useState(false);
     const { toolName, state } = toolInvocation;
     const isComplete = state === 'result';
     const args = 'args' in toolInvocation ? toolInvocation.args : {};
-    const readableResult = buildReadableResult(toolInvocation);
+    const readableResult = buildReadableResult(toolInvocation, t);
 
     return (
         <div className="group relative my-0.5 w-full">
@@ -105,12 +107,12 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                             {isComplete ? (
                                 <>
                                     <CheckCircle2 className="h-2.5 w-2.5" />
-                                    <span>已完成</span>
+                                    <span>{t("web.toolCard.completed")}</span>
                                 </>
                             ) : (
                                 <>
                                     <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                                    <span>执行中</span>
+                                    <span>{t("web.toolCard.running")}</span>
                                 </>
                             )}
                         </span>
@@ -147,7 +149,7 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                                 ) : null}
                                 {/* Arguments */}
                                 <div>
-                                    <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">输入</div>
+                                    <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">{t("web.toolCard.input")}</div>
                                     <div className="overflow-x-auto rounded border border-black/5 bg-black/5 p-2 shadow-inner dark:border-white/5 dark:bg-black/20">
                                         <pre className="text-[11px] font-mono text-zinc-600 dark:text-zinc-400">{JSON.stringify(args, null, 2)}</pre>
                                     </div>
@@ -160,7 +162,7 @@ export const ToolCard = memo(({ toolInvocation, hideResult }: ToolCardProps) => 
                                         animate={{ opacity: 1, y: 0 }}
                                         transition={{ delay: 0.1, type: "spring", stiffness: 300, damping: 25 }}
                                     >
-                                        <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">输出</div>
+                                        <div className="mb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground">{t("web.toolCard.output")}</div>
                                         <div className="custom-scrollbar max-h-56 overflow-x-auto rounded border border-black/5 bg-black/5 p-2 shadow-inner dark:border-white/5 dark:bg-black/20">
                                             <pre className="text-[11px] font-mono text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-all">
                                                 {readableResult}

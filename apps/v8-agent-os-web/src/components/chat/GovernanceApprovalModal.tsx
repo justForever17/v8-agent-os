@@ -291,21 +291,21 @@ export function GovernanceApprovalModal({
                             <div className="space-y-2 text-sm leading-6 text-foreground">
                                 <div>
                                     {specDetails.checklist.title}: {specDetails.checklist.status || "pending"}
-                                    {specDetails.checklist.unresolved > 0 ? `，未完成 ${specDetails.checklist.unresolved} 项` : ""}
+                                    {specDetails.checklist.unresolved > 0 ? ` · ${t("web.governance.unresolved", { count: specDetails.checklist.unresolved })}` : ""}
                                 </div>
                                 {specDetails.clarificationCount > 0 ? (
-                                    <div>澄清记录：{specDetails.clarificationCount} 条{specDetails.latestClarification ? `，最近：${specDetails.latestClarification}` : ""}</div>
+                                    <div>{t("web.governance.clarifications", { count: specDetails.clarificationCount })}{specDetails.latestClarification ? ` · ${t("web.governance.latest", { value: specDetails.latestClarification })}` : ""}</div>
                                 ) : (
-                                    <div>澄清记录：暂无。</div>
+                                    <div>{t("web.governance.noClarifications")}</div>
                                 )}
                                 {specDetails.analysisSummary.blockers.length > 0 ? (
                                     <div className="text-red-600 dark:text-red-300">
-                                        阻断：{specDetails.analysisSummary.blockers.join("；")}
+                                        {t("web.governance.blockers", { value: specDetails.analysisSummary.blockers.join("; ") })}
                                     </div>
                                 ) : null}
                                 {specDetails.analysisSummary.warnings.length > 0 ? (
                                     <div className="text-amber-700 dark:text-amber-300">
-                                        提醒：{specDetails.analysisSummary.warnings.join("；")}
+                                        {t("web.governance.warnings", { value: specDetails.analysisSummary.warnings.join("; ") })}
                                     </div>
                                 ) : null}
                             </div>
@@ -372,7 +372,7 @@ export function GovernanceApprovalModal({
                                 {specDetails.isSpecApproval ? t("web.generated.71055e26d6") : t("web.generated.b34027e86b")}
                             </Button>
                             <Button variant="outline" onClick={() => void onReject(answer.trim())} disabled={busy} className="rounded-xl">
-                                {busy ? t("web.generated.0a921f2e7e") : t("web.generated.39589b7736")}
+                                {busy ? t("web.generated.0a921f2e7e") : t("web.governance.reject")}
                             </Button>
                             <Button onClick={() => void onApprove(answer.trim())} disabled={busy} className="rounded-xl">
                                 <ArrowRight className="mr-2 h-4 w-4" />

@@ -15,6 +15,7 @@ import {
 import { createArtifactDocument, createSubagentActivityDocument } from "@/lib/workbench";
 import { resolveAndOpenWorkspaceFile } from "@/lib/workbench-actions";
 import { useWorkbenchStore } from "@/store/workbench-store";
+import { useT } from "@/components/providers/LocaleProvider";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
 import type { Message } from "@/store/chat-types";
 import { normalizeRuntimeArtifact } from "@/lib/artifacts";
@@ -88,13 +89,14 @@ function SubagentAvatar({ item }: { item: SubagentReturnProjection }) {
     );
 }
 
-function subagentStatusLabel(status: string) {
-    if (["ok", "completed", "success", "terminated"].includes(status)) return "已回流";
-    if (["queued", "running", "starting", "streaming", "updated"].includes(status)) return "进行中";
-    return "需要处理";
+function subagentStatusLabel(status: string, t: ReturnType<typeof useT>) {
+    if (["ok", "completed", "success", "terminated"].includes(status)) return t("web.workbench.subagent.returned");
+    if (["queued", "running", "starting", "streaming", "updated"].includes(status)) return t("web.workbench.subagent.running");
+    return t("web.workbench.subagent.needsAttention");
 }
 
 function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentReturnProjection; onOpen: (item: SubagentReturnProjection) => void; nested?: boolean }) {
+    const t = useT();
     return (
         <div className={`${nested ? "ml-5 border-l border-border/45" : ""} border-b border-border/30 last:border-b-0`}>
             <button
@@ -105,9 +107,9 @@ function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentRet
                 <SubagentAvatar item={item} />
                 <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium text-foreground">{item.name}</span>
-                    <span className="block truncate text-[10px] text-muted-foreground">{item.taskGoal || item.summary || "已返回协作结果"}</span>
+                    <span className="block truncate text-[10px] text-muted-foreground">{item.taskGoal || item.summary || t("web.workbench.subagent.defaultSummary")}</span>
                 </span>
-                <span className="shrink-0 text-[10px] text-muted-foreground">{subagentStatusLabel(item.status)}</span>
+                <span className="shrink-0 text-[10px] text-muted-foreground">{subagentStatusLabel(item.status, t)}</span>
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
             </button>
             {item.children.map((child) => (
@@ -131,6 +133,7 @@ export function WorkspaceWorkbenchPanel({
     todoStale,
     runtimeModel,
 }: WorkspaceWorkbenchPanelProps) {
+    const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const [fileError, setFileError] = useState("");
     const [runtimeArtifacts, setRuntimeArtifacts] = useState<Array<Record<string, unknown>>>([]);
@@ -225,12 +228,12 @@ export function WorkspaceWorkbenchPanel({
             {currentRuntime ? (
                 <div className="flex min-h-10 items-center gap-2 border-b border-border/55 px-3 py-2 text-[11px]">
                     <CircleDot className={`h-3 w-3 shrink-0 ${currentRuntime.status === "attention" ? "text-amber-500" : "text-emerald-500"}`} />
-                    <span className="font-medium text-foreground">{currentRuntime.status === "attention" ? "等待你的确认" : "任务进行中"}</span>
+                    <span className="font-medium text-foreground">{currentRuntime.status === "attention" ? t("web.workbench.runtime.awaiting") : t("web.workbench.runtime.running")}</span>
                     <span className="min-w-0 flex-1 truncate text-muted-foreground">{currentRuntime.lastActivity || currentRuntime.stepTitle || currentRuntime.shortLabel || currentRuntime.label}</span>
                 </div>
             ) : null}
 
-            {visibleTodos.length ? <Section title="任务" icon={ListTodo} count={visibleTodos.length}>
+            {visibleTodos.length ? <Section title={t("web.workbench.section.tasks")} icon={ListTodo} count={visibleTodos.length}>
                 {visibleTodos.slice(0, 20).map((todo, index) => {
                     const status = text(todo.status || "pending").toLowerCase();
                     return (
@@ -242,11 +245,11 @@ export function WorkspaceWorkbenchPanel({
                 })}
             </Section> : null}
 
-            {subagentReturns.length ? <Section title="子 Agent" icon={Users} count={subagentReturns.length}>
+            {subagentReturns.length ? <Section title={t("web.workbench.section.subagents")} icon={Users} count={subagentReturns.length}>
                 {subagentReturns.map((item) => <SubagentReturnRow key={item.id} item={item} onOpen={openSubagentReturn} />)}
             </Section> : null}
 
-            {outputs.length || fileError ? <Section title="产物" icon={Box} count={outputs.length}>
+            {outputs.length || fileError ? <Section title={t("web.workbench.section.outputs")} icon={Box} count={outputs.length}>
                 {fileError ? <div className="border-b border-destructive/25 bg-destructive/5 px-3 py-2 text-[10px] text-destructive">{fileError}</div> : null}
                 {outputs.map((output) => (
                     <button
@@ -266,31 +269,31 @@ export function WorkspaceWorkbenchPanel({
                 ))}
             </Section> : null}
 
-            {sources.length ? <Section title="来源" icon={Paperclip} count={sources.length} defaultOpen={false}>
+            {sources.length ? <Section title={t("web.workbench.section.sources")} icon={Paperclip} count={sources.length} defaultOpen={false}>
                 {sources.map((source) => (
                     <div key={source.id} className="flex min-h-10 items-center gap-2 border-b border-border/30 px-3 py-1.5 text-[11px] last:border-b-0">
                         <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 flex-1">
                             <span className="block truncate font-medium">{source.name}</span>
                             <span className="block truncate text-[10px] text-muted-foreground">
-                                {source.mediaKind === "audio" ? "语音" : source.mediaKind === "image" ? "图片" : source.mediaKind === "video" ? "视频" : "文件"}
+                                {source.mediaKind === "audio" ? t("web.workbench.source.audio") : source.mediaKind === "image" ? t("web.workbench.source.image") : source.mediaKind === "video" ? t("web.workbench.source.video") : t("web.workbench.source.file")}
                             </span>
                         </span>
                     </div>
                 ))}
             </Section> : null}
 
-            {activeProcesses.length ? <Section title="后台任务" icon={TerminalSquare} count={activeProcesses.length} defaultOpen={false}>
+            {activeProcesses.length ? <Section title={t("web.workbench.section.background")} icon={TerminalSquare} count={activeProcesses.length} defaultOpen={false}>
                 {activeProcesses.map((process) => (
                     <div key={process.processId} className="flex min-h-9 items-center gap-2 border-b border-border/30 px-3 py-1.5 text-[11px] last:border-b-0">
                         <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate">{process.title || "后台任务"}</span>
-                        <span className="text-[10px] text-muted-foreground">运行中</span>
+                        <span className="min-w-0 flex-1 truncate">{process.title || t("web.workbench.process.default")}</span>
+                        <span className="text-[10px] text-muted-foreground">{t("web.workbench.process.running")}</span>
                     </div>
                 ))}
             </Section> : null}
 
-            {!hasSecondaryContent && !currentRuntime ? <EmptyRow>{todoStale ? "任务信息正在更新。" : "当前没有需要关注的内容。"}</EmptyRow> : null}
+            {!hasSecondaryContent && !currentRuntime ? <EmptyRow>{todoStale ? t("web.workbench.empty.updating") : t("web.workbench.empty.default")}</EmptyRow> : null}
             </div>
         </div>
     );

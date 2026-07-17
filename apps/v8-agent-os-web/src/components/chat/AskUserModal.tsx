@@ -372,7 +372,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                 const foundIndex = mediaItems.findIndex((item, index) => mediaKey(item, index) === key);
                 return foundIndex >= 0 ? mediaLabel(mediaItems[foundIndex], foundIndex) : key;
             });
-            lines.unshift(`参考产物: ${labels.join("、")}`);
+            lines.unshift(t("web.askUser.referenceOutputs", { value: labels.join(", ") }));
         }
         return lines.join("\n").trim();
     };
@@ -435,7 +435,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                             {details ? <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{details}</p> : null}
                             {specContext ? (
                                 <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] font-medium text-violet-700 dark:text-violet-200">
-                                    <span className="rounded-full bg-violet-500/10 px-2 py-0.5">Spec 澄清</span>
+                                    <span className="rounded-full bg-violet-500/10 px-2 py-0.5">{t("web.askUser.specClarification")}</span>
                                     {specContext.featureName ? <span className="rounded-full bg-muted px-2 py-0.5">{specContext.featureName}</span> : null}
                                     {specContext.stage ? <span className="rounded-full bg-muted px-2 py-0.5">{specContext.stage}</span> : null}
                                 </div>
@@ -447,7 +447,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 onClick={() => goToPage(pageIndex - 1)}
                                 disabled={pageIndex <= 0}
                                 className="rounded-lg p-1 text-muted-foreground transition hover:bg-muted disabled:opacity-30"
-                                aria-label={t("web.generated.dae8bf43e5")}
+                                aria-label={t("web.askUser.back")}
                             >
                                 <ChevronLeft className="h-4 w-4" />
                             </button>
@@ -569,7 +569,7 @@ export function AskUserModal({ isOpen, question, request, toolCallId, onSubmit, 
                                 disabled={pageIndex <= 0 || isSubmitting}
                                 className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
                             >
-                                ← {t("web.generated.dae8bf43e5")}
+                                ← {t("web.askUser.back")}
                             </button>
                             <button
                                 type="button"

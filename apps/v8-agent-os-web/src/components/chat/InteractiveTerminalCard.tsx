@@ -10,6 +10,7 @@ import {
     resolveAdminProcessWsUrl,
     type AdminProcessRef,
 } from '@v8/session-realtime';
+import { useT } from '@/components/providers/LocaleProvider';
 import { cn } from '@/lib/utils';
 import '@xterm/xterm/css/xterm.css';
 
@@ -20,6 +21,7 @@ interface InteractiveTerminalCardProps {
 }
 
 export function InteractiveTerminalCard({ process, compact = false, onTerminated }: InteractiveTerminalCardProps) {
+    const t = useT();
     const processRecord = process as AdminProcessRef & { stableScreenSnapshot?: string };
     const processStatusRunning = useMemo(
         () => String(process.status || '').trim().toLowerCase() !== 'stopped',
@@ -218,7 +220,7 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
     const title = process.title || process.commandPreview || shortId;
     const encodingState = String(process.encodingState || '').trim().toLowerCase();
     const encodingWarning = encodingState && encodingState !== 'clean'
-        ? (String(process.encodingNotes || '').trim() || '终端编码异常，内容可能失真。')
+        ? (String(process.encodingNotes || '').trim() || t('web.terminal.encodingWarning'))
         : '';
 
     return (
@@ -259,20 +261,20 @@ export function InteractiveTerminalCard({ process, compact = false, onTerminated
                                     ? "bg-amber-500/90 text-white hover:bg-amber-600"
                                     : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700",
                             )}
-                            title="一次性敏感输入：不会通过普通输入响应回显"
+                            title={t('web.terminal.sensitiveHint')}
                         >
                             <LockKeyhole className="w-2.5 h-2.5" />
-                            <span>敏感</span>
+                            <span>{t('web.terminal.sensitive')}</span>
                         </button>
                     )}
                     {isRunning && process.canTerminate && (
                         <button
                             onClick={(e) => { e.stopPropagation(); handleTerminate(); }}
                             className="flex items-center justify-center px-2 py-0.5 gap-1 text-[10px] font-semibold text-white bg-red-500/90 hover:bg-red-600 rounded-full transition-colors active:scale-95"
-                            title="终止进程"
+                            title={t('web.terminal.terminateProcess')}
                         >
                             <Square className="w-2.5 h-2.5 fill-current" />
-                            <span>停止</span>
+                            <span>{t('web.terminal.stop')}</span>
                         </button>
                     )}
                     <motion.div

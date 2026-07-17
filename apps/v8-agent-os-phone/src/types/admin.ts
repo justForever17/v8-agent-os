@@ -744,6 +744,20 @@ export type RPATemplateSummary = {
         templateStatus?: string;
     };
     metadata?: Record<string, unknown>;
+    goal?: string;
+    variables?: Array<{
+        name?: string;
+        label?: string;
+        description?: string;
+        type?: string;
+        required?: boolean;
+        enum?: string[];
+        exampleValue?: unknown;
+        defaultValue?: unknown;
+        default?: unknown;
+    }>;
+    steps?: Array<{ use?: string }>;
+    robot?: { metadata?: { executionAdapter?: string } };
     view?: {
         statusLabel?: string;
         stageLabel?: string;

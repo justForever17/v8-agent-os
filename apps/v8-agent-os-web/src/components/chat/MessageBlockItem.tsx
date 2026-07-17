@@ -11,16 +11,22 @@ import { MarkdownRenderer } from "./MarkdownRenderer";
 import { createInlineArtifactDocument } from "@/lib/workbench";
 import { useWorkbenchStore } from "@/store/workbench-store";
 import { resolveTextLayoutEngine, shouldUseStreamingPlainTextRenderer } from "@/lib/text-layout-engine";
+import { useT } from "@/components/providers/LocaleProvider";
+
+function ModelViewerLoading() {
+    const t = useT();
+    return (
+        <div className="flex aspect-video w-full items-center justify-center rounded-lg border border-border bg-muted/30 text-sm text-muted-foreground">
+            {t("web.media.loading3d")}
+        </div>
+    );
+}
 
 const ModelViewer = dynamic(
     () => import("./ModelViewer").then((mod) => mod.ModelViewer),
     {
         ssr: false,
-        loading: () => (
-            <div className="flex aspect-video w-full items-center justify-center rounded-lg border border-border bg-muted/30 text-sm text-muted-foreground">
-                正在加载 3D 预览...
-            </div>
-        ),
+        loading: () => <ModelViewerLoading />,
     }
 );
 
@@ -29,6 +35,7 @@ interface MessageBlockItemProps {
 }
 
 export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
+    const t = useT();
     const openWorkbenchDocument = useWorkbenchStore((state) => state.openDocument);
     const textLayoutEngine = resolveTextLayoutEngine();
     if (block.type === 'file-ppt') {
@@ -61,7 +68,7 @@ export const MessageBlockItem = memo(({ block }: MessageBlockItemProps) => {
         return <div className="w-full my-3 overflow-x-auto"><MermaidRenderer code={block.content} /></div>;
     }
     if (block.type === 'model-3d') {
-        return <div className="w-full my-4"><ModelViewer src={block.content} /><div className="mt-1 text-xs text-muted-foreground text-center"><a href={block.content} target="_blank" rel="noopener noreferrer" className="hover:underline">Download Model</a></div></div>;
+        return <div className="w-full my-4"><ModelViewer src={block.content} /><div className="mt-1 text-xs text-muted-foreground text-center"><a href={block.content} target="_blank" rel="noopener noreferrer" className="hover:underline">{t("web.media.downloadModel")}</a></div></div>;
     }
     if (block.type === 'voice') {
         return <VoiceCard content={block.content} isStreaming={Boolean(block.isStreaming)} />;

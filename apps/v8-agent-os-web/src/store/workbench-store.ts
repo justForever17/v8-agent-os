@@ -267,7 +267,7 @@ export const useWorkbenchStore = create<WorkbenchStoreState>((set, get) => {
                         document: {
                             ...tab.document,
                             status: "unavailable",
-                            unavailableReason: reason || "该内容当前不可用。",
+                            unavailableReason: reason || "web.workbench.unavailable",
                         },
                     }
                     : tab),

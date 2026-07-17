@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useT } from "@/components/providers/LocaleProvider";
 
 type SpecSummary = {
     specId?: string;
@@ -62,6 +63,7 @@ export default function SpecApprovalClient({
     initialSpecId?: string;
     initialStage?: string;
 }) {
+    const t = useT();
     const normalizedInitialStage = STAGES.includes(initialStage.trim().toLowerCase())
         ? initialStage.trim().toLowerCase()
         : "requirements";
@@ -90,24 +92,24 @@ export default function SpecApprovalClient({
 
     const loadSpecs = useCallback(async () => {
         if (!workspacePath.trim()) {
-            setError("请先输入当前工作区路径。");
+            setError(t("web.specReview.workspaceRequired"));
             return;
         }
         setBusy(true);
         setError("");
         try {
             const query = new URLSearchParams({ workspace_path: workspacePath.trim(), include_archived: "false", limit: "120" });
-            const payload = await readJson<{ specs?: SpecSummary[] }>(await fetch(`/api/specs?${query.toString()}`, { cache: "no-store" }), "无法读取 Spec 列表");
+            const payload = await readJson<{ specs?: SpecSummary[] }>(await fetch(`/api/specs?${query.toString()}`, { cache: "no-store" }), t("web.specReview.listLoadFailed"));
             const nextSpecs = Array.isArray(payload.specs) ? payload.specs : [];
             setSpecs(nextSpecs);
             const nextSelected = selectedSpecId || initialSpecId || nextSpecs[0]?.specId || "";
             setSelectedSpecId(nextSelected);
         } catch (err) {
-            setError(err instanceof Error ? err.message : "无法读取 Spec 列表");
+            setError(err instanceof Error ? err.message : t("web.specReview.listLoadFailed"));
         } finally {
             setBusy(false);
         }
-    }, [initialSpecId, selectedSpecId, workspacePath]);
+    }, [initialSpecId, selectedSpecId, t, workspacePath]);
 
     const loadSpecDetail = useCallback(async (specId: string) => {
         if (!workspacePath.trim() || !specId) {
@@ -118,7 +120,7 @@ export default function SpecApprovalClient({
         setError("");
         try {
             const query = new URLSearchParams({ workspace_path: workspacePath.trim(), max_chars: "160000" });
-            const payload = await readJson<SpecDetail>(await fetch(`/api/specs/${encodeURIComponent(specId)}?${query.toString()}`, { cache: "no-store" }), "无法读取 Spec 文档");
+            const payload = await readJson<SpecDetail>(await fetch(`/api/specs/${encodeURIComponent(specId)}?${query.toString()}`, { cache: "no-store" }), t("web.specReview.documentLoadFailed"));
             setDetail(payload);
             const preferredStage = STAGES.includes(initialStage.trim().toLowerCase())
                 ? initialStage.trim().toLowerCase()
@@ -130,11 +132,11 @@ export default function SpecApprovalClient({
                 setSelectedStage(firstStage);
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : "无法读取 Spec 文档");
+            setError(err instanceof Error ? err.message : t("web.specReview.documentLoadFailed"));
         } finally {
             setBusy(false);
         }
-    }, [initialStage, selectedStage, workspacePath]);
+    }, [initialStage, selectedStage, t, workspacePath]);
 
     useEffect(() => {
         if (initialWorkspacePath) {
@@ -151,7 +153,7 @@ export default function SpecApprovalClient({
 
     const postStageAction = async (action: "approve" | "revise" | "edit") => {
         if (!selectedSpecId || !selectedStage) {
-            setError("请先选择 Spec 和阶段。");
+            setError(t("web.specReview.selectionRequired"));
             return;
         }
         setBusy(true);
@@ -175,14 +177,14 @@ export default function SpecApprovalClient({
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(body),
                 }),
-                action === "approve" ? "批准失败" : action === "revise" ? "打回失败" : "编辑失败",
+                action === "approve" ? t("web.specReview.approveFailed") : action === "revise" ? t("web.specReview.reviseFailed") : t("web.specReview.editFailed"),
             );
             setComment("");
             setReplacement("");
             await loadSpecDetail(selectedSpecId);
             await loadSpecs();
         } catch (err) {
-            setError(err instanceof Error ? err.message : "操作失败");
+            setError(err instanceof Error ? err.message : t("web.specReview.actionFailed"));
         } finally {
             setBusy(false);
         }
@@ -193,21 +195,21 @@ export default function SpecApprovalClient({
             <header className="flex shrink-0 flex-wrap items-center gap-3 border-b border-zinc-200 bg-white/90 px-5 py-3 dark:border-zinc-800 dark:bg-zinc-950/90">
                 <div>
                     <div className="text-sm font-semibold uppercase tracking-[0.24em] text-rose-500">Spec Approval</div>
-                    <div className="text-xs text-zinc-500">长文档审批、段落批注、局部替换和阶段批准</div>
+                    <div className="text-xs text-zinc-500">{t("web.specReview.subtitle")}</div>
                 </div>
                 <div className="ml-auto flex min-w-[280px] flex-1 items-center gap-2 md:max-w-[720px]">
                     <input
                         className="h-10 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-rose-400 dark:border-zinc-800 dark:bg-zinc-900"
                         value={workspacePath}
                         onChange={(event) => setWorkspacePath(event.target.value)}
-                        placeholder="输入工作区路径，例如 E:\\Projects\\test3"
+                        placeholder={t("web.specReview.workspacePlaceholder")}
                     />
                     <button
                         className="h-10 rounded-md bg-zinc-950 px-4 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-zinc-950"
                         disabled={busy}
                         onClick={() => void loadSpecs()}
                     >
-                        读取
+                        {t("web.specReview.load")}
                     </button>
                 </div>
             </header>
@@ -233,7 +235,7 @@ export default function SpecApprovalClient({
                                     <div className="mt-2 flex flex-wrap gap-1 text-[11px] text-zinc-500">
                                         <span>{spec.currentStage || "unknown"}</span>
                                         <span>·</span>
-                                        <span>{spec.pipelineControl?.runtimeExecutionAllowed ? "可执行" : "审批中"}</span>
+                                        <span>{spec.pipelineControl?.runtimeExecutionAllowed ? t("web.specReview.executable") : t("web.specReview.inReview")}</span>
                                     </div>
                                 </button>
                             );
@@ -252,11 +254,11 @@ export default function SpecApprovalClient({
                                 {stage}
                             </button>
                         ))}
-                        {detail?.stages?.[selectedStage]?.truncated ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800">内容已截断，可按段落续读</span> : null}
+                        {detail?.stages?.[selectedStage]?.truncated ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800">{t("web.specReview.truncated")}</span> : null}
                     </div>
                     <article className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
                         <pre className="whitespace-pre-wrap break-words font-sans text-[15px] leading-7 text-zinc-900 dark:text-zinc-100">
-                            {stageContent || "请选择一个 Spec 阶段。"}
+                            {stageContent || t("web.specReview.chooseStage")}
                         </pre>
                     </article>
                 </main>
@@ -264,12 +266,12 @@ export default function SpecApprovalClient({
                 <aside className="min-h-0 overflow-y-auto border-l border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
                     <div className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Review</div>
                     <div className="mt-3 rounded-md border border-zinc-200 p-3 text-sm dark:border-zinc-800">
-                        <div className="font-semibold">{selectedSpec?.featureName || "未选择 Spec"}</div>
-                        <div className="mt-2 text-xs text-zinc-500">下一步：{selectedSpec?.pipelineControl?.nextStage || "unknown"}</div>
-                        <div className="mt-1 text-xs text-zinc-500">阻塞：{selectedSpec?.pipelineControl?.blockedByApproval || "无"}</div>
+                        <div className="font-semibold">{selectedSpec?.featureName || t("web.specReview.noSelection")}</div>
+                        <div className="mt-2 text-xs text-zinc-500">{t("web.specReview.nextStage", { value: selectedSpec?.pipelineControl?.nextStage || "unknown" })}</div>
+                        <div className="mt-1 text-xs text-zinc-500">{t("web.specReview.blockedBy", { value: selectedSpec?.pipelineControl?.blockedByApproval || t("web.specReview.none") })}</div>
                     </div>
 
-                    <label className="mt-5 block text-xs font-semibold text-zinc-500">段落 ID</label>
+                    <label className="mt-5 block text-xs font-semibold text-zinc-500">{t("web.specReview.sectionId")}</label>
                     <input
                         className="mt-2 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm outline-none focus:border-rose-400 dark:border-zinc-800 dark:bg-zinc-900"
                         value={sectionRef}
@@ -290,20 +292,20 @@ export default function SpecApprovalClient({
                         </div>
                     ) : null}
 
-                    <label className="mt-5 block text-xs font-semibold text-zinc-500">批注 / 修改原因</label>
+                    <label className="mt-5 block text-xs font-semibold text-zinc-500">{t("web.specReview.comment")}</label>
                     <textarea
                         className="mt-2 min-h-28 w-full resize-y rounded-md border border-zinc-200 bg-white p-3 text-sm outline-none focus:border-rose-400 dark:border-zinc-800 dark:bg-zinc-900"
                         value={comment}
                         onChange={(event) => setComment(event.target.value)}
-                        placeholder="说明为什么批准、打回或局部替换。"
+                        placeholder={t("web.specReview.commentPlaceholder")}
                     />
 
-                    <label className="mt-5 block text-xs font-semibold text-zinc-500">局部替换 / 追加内容</label>
+                    <label className="mt-5 block text-xs font-semibold text-zinc-500">{t("web.specReview.replacement")}</label>
                     <textarea
                         className="mt-2 min-h-40 w-full resize-y rounded-md border border-zinc-200 bg-white p-3 text-sm outline-none focus:border-rose-400 dark:border-zinc-800 dark:bg-zinc-900"
                         value={replacement}
                         onChange={(event) => setReplacement(event.target.value)}
-                        placeholder="填写后可按段落 ID 替换；不填段落 ID 时追加到当前阶段末尾。"
+                        placeholder={t("web.specReview.replacementPlaceholder")}
                     />
 
                     <div className="mt-5 grid gap-2">
@@ -312,25 +314,30 @@ export default function SpecApprovalClient({
                             disabled={busy || !selectedSpecId}
                             onClick={() => void postStageAction("approve")}
                         >
-                            批准进入下一阶段
+                            {t("web.specReview.approve")}
                         </button>
                         <button
                             className="h-11 rounded-md border border-amber-300 bg-amber-50 text-sm font-semibold text-amber-800 disabled:opacity-50 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
                             disabled={busy || !selectedSpecId || !comment.trim()}
                             onClick={() => void postStageAction("revise")}
                         >
-                            打回重写
+                            {t("web.specReview.revise")}
                         </button>
                         <button
                             className="h-11 rounded-md border border-zinc-300 text-sm font-semibold disabled:opacity-50 dark:border-zinc-700"
                             disabled={busy || !selectedSpecId || !replacement.trim()}
                             onClick={() => void postStageAction("edit")}
                         >
-                            局部替换 / 追加
+                            {t("web.specReview.edit")}
                         </button>
                     </div>
                 </aside>
             </div>
         </div>
     );
+}
+
+export function SpecApprovalLoading() {
+    const t = useT();
+    return <div className="p-6 text-sm text-muted-foreground">{t("web.specReview.loading")}</div>;
 }

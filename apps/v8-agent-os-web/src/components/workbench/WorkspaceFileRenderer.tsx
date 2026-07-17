@@ -230,14 +230,14 @@ export function WorkspaceFileRenderer({
     }, [document.renderer, sessionId, workspacePath]);
 
     if (loading && !payload) {
-        return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">正在读取文件…</div>;
+        return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{t("web.workbench.file.loading")}</div>;
     }
     if (error) {
         return (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center text-sm text-muted-foreground">
                 <FileWarning className="h-6 w-6" />
                 <span>{error}</span>
-                <button type="button" onClick={() => void load()} className="rounded border border-border px-3 py-1.5 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-primary">重试</button>
+                <button type="button" onClick={() => void load()} className="rounded border border-border px-3 py-1.5 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-primary">{t("web.workbench.file.retry")}</button>
             </div>
         );
     }
@@ -278,8 +278,8 @@ export function WorkspaceFileRenderer({
             type="button"
             onClick={() => openLineComment(item)}
             className="sticky right-2 my-0.5 hidden h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm group-hover/line:flex focus:flex focus-visible:ring-2 focus-visible:ring-primary"
-            aria-label={`评论第 ${item.number} 行`}
-            title={`评论第 ${item.number} 行`}
+            aria-label={t("web.workbench.file.commentLine", { line: item.number })}
+            title={t("web.workbench.file.commentLine", { line: item.number })}
         >
             <MessageSquarePlus className="h-3 w-3" />
         </button>
@@ -288,8 +288,8 @@ export function WorkspaceFileRenderer({
     const renderLineCommentEditor = (item: FileLine) => commentLine?.number === item.number ? (
         <div className="sticky left-14 right-2 z-10 ml-14 mr-2 mb-2 rounded-xl border border-slate-600/70 bg-slate-900 p-2 font-sans shadow-xl">
             <div className="mb-1 flex items-center gap-2 text-[10px] text-slate-400">
-                <span className="min-w-0 flex-1 truncate">{payload.name} · 第 {item.number} 行</span>
-                <button type="button" onClick={() => setCommentLine(null)} className="rounded p-1 hover:bg-white/10" aria-label="取消评论"><X className="h-3 w-3" /></button>
+                <span className="min-w-0 flex-1 truncate">{t("web.workbench.file.lineLabel", { name: payload.name, line: item.number })}</span>
+                <button type="button" onClick={() => setCommentLine(null)} className="rounded p-1 hover:bg-white/10" aria-label={t("web.workbench.file.cancelComment")}><X className="h-3 w-3" /></button>
             </div>
             <textarea
                 value={commentText}
@@ -302,13 +302,13 @@ export function WorkspaceFileRenderer({
                 }}
                 autoFocus
                 rows={2}
-                placeholder="说明希望如何修改这一行…"
+                placeholder={t("web.workbench.file.commentPlaceholder")}
                 className="w-full resize-none rounded-lg border border-slate-600 bg-slate-950 px-2.5 py-2 text-xs text-slate-100 outline-none focus:border-violet-400/70 focus:ring-2 focus:ring-violet-400/15"
             />
             <div className="mt-2 flex justify-end gap-1.5">
-                <button type="button" onClick={() => setCommentLine(null)} className="rounded-md px-2 py-1 text-[11px] text-slate-400 hover:bg-white/10">取消</button>
+                <button type="button" onClick={() => setCommentLine(null)} className="rounded-md px-2 py-1 text-[11px] text-slate-400 hover:bg-white/10">{t("web.workbench.file.cancel")}</button>
                 <button type="button" disabled={!commentText.trim() || commentBusy} onClick={() => void submitLineComment()} className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-[11px] text-primary-foreground disabled:opacity-45">
-                    <Send className="h-3 w-3" />发送
+                    <Send className="h-3 w-3" />{t("web.workbench.file.send")}
                 </button>
             </div>
         </div>
@@ -320,33 +320,33 @@ export function WorkspaceFileRenderer({
                 <span className="min-w-0 flex-1 truncate font-mono" title={payload.workspacePath}>{payload.workspacePath}</span>
                 <span>{formatBytes(payload.size)}</span>
                 <span>{payload.encoding || "binary"}</span>
-                <button type="button" onClick={() => void load()} className="rounded-sm p-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label="刷新文件"><RefreshCw className="h-3.5 w-3.5" /></button>
-                <a href={downloadUrl} download={payload.name} className="rounded-sm p-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label="下载文件"><Download className="h-3.5 w-3.5" /></a>
+                <button type="button" onClick={() => void load()} className="rounded-sm p-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.workbench.file.refresh")}><RefreshCw className="h-3.5 w-3.5" /></button>
+                <a href={downloadUrl} download={payload.name} className="rounded-sm p-1 hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("web.workbench.file.download")}><Download className="h-3.5 w-3.5" /></a>
             </div>
             {payload.binary ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center text-sm text-muted-foreground">
                     <FileWarning className="h-7 w-7" />
-                    <div className="font-medium text-foreground">该文件不支持文本预览</div>
+                    <div className="font-medium text-foreground">{t("web.workbench.file.binaryNoPreview")}</div>
                     <div>{payload.mimeType || "application/octet-stream"} · {formatBytes(payload.size)}</div>
-                    <a href={downloadUrl} download={payload.name} className="mt-2 rounded border border-border px-3 py-1.5 text-xs text-foreground hover:bg-muted">下载文件</a>
+                    <a href={downloadUrl} download={payload.name} className="mt-2 rounded border border-border px-3 py-1.5 text-xs text-foreground hover:bg-muted">{t("web.workbench.file.download")}</a>
                 </div>
             ) : (
                 <>
                     <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
                         <label className="flex h-6 min-w-0 max-w-64 flex-1 items-center gap-1.5 border-b border-border/80 px-1 text-xs focus-within:border-primary">
                             <Search className="h-3.5 w-3.5 text-muted-foreground" />
-                            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="在当前片段搜索" className="min-w-0 flex-1 bg-transparent outline-none" />
+                            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("web.workbench.file.search")} className="min-w-0 flex-1 bg-transparent outline-none" />
                         </label>
                         <span className="text-[10px] text-muted-foreground">{matchCount ? `${activeMatchIndex + 1} / ${matchCount}` : ""}</span>
                         {matchCount ? (
                             <div className="flex items-center">
-                                <button type="button" onClick={() => focusMatch(activeMatchIndex - 1)} className="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="上一个匹配"><ChevronUp className="h-3.5 w-3.5" /></button>
-                                <button type="button" onClick={() => focusMatch(activeMatchIndex + 1)} className="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="下一个匹配"><ChevronDown className="h-3.5 w-3.5" /></button>
+                                <button type="button" onClick={() => focusMatch(activeMatchIndex - 1)} className="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.file.previousMatch")}><ChevronUp className="h-3.5 w-3.5" /></button>
+                                <button type="button" onClick={() => focusMatch(activeMatchIndex + 1)} className="rounded-sm p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={t("web.workbench.file.nextMatch")}><ChevronDown className="h-3.5 w-3.5" /></button>
                             </div>
                         ) : null}
                         {canPreview ? (
                             <button type="button" onClick={() => setShowPreview((value) => !value)} className="ml-auto rounded-sm px-2 py-1 text-[11px] hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary">
-                                {showPreview ? "查看源码" : "查看预览"}
+                                {showPreview ? t("web.workbench.file.viewSource") : t("web.workbench.file.viewPreview")}
                             </button>
                         ) : <span className="ml-auto" />}
                         {uiPatchUrl ? (
@@ -362,7 +362,7 @@ export function WorkspaceFileRenderer({
                                 window.setTimeout(() => setCopied(false), 1200);
                             }}
                             className="rounded-sm p-1 hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary"
-                            aria-label="复制当前片段"
+                            aria-label={t("web.workbench.file.copy")}
                         >
                             {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
                         </button>
@@ -421,10 +421,10 @@ export function WorkspaceFileRenderer({
                         )}
                     </div>
                     <div className="flex h-8 shrink-0 items-center justify-between border-t border-border/60 px-2 text-[10px] text-muted-foreground">
-                        <span>行 {payload.startLine || 0}–{payload.endLine || 0} / {payload.totalLines ?? "—"}{payload.truncatedByBytes ? " · 已达 512 KiB 上限" : ""}</span>
+                        <span>{t("web.workbench.file.range", { start: payload.startLine || 0, end: payload.endLine || 0, total: payload.totalLines ?? "—" })}{payload.truncatedByBytes ? t("web.workbench.file.byteLimit") : ""}</span>
                         <div className="flex items-center gap-1">
-                            <button type="button" disabled={!canGoPrevious} onClick={() => setStartLine(previousStart)} className="rounded-sm p-1 disabled:opacity-35 hover:bg-muted" aria-label="上一段"><ChevronLeft className="h-3.5 w-3.5" /></button>
-                            <button type="button" disabled={!canGoNext} onClick={() => setStartLine((payload.endLine || startLine) + 1)} className="rounded-sm p-1 disabled:opacity-35 hover:bg-muted" aria-label="下一段"><ChevronRight className="h-3.5 w-3.5" /></button>
+                            <button type="button" disabled={!canGoPrevious} onClick={() => setStartLine(previousStart)} className="rounded-sm p-1 disabled:opacity-35 hover:bg-muted" aria-label={t("web.workbench.file.previousPage")}><ChevronLeft className="h-3.5 w-3.5" /></button>
+                            <button type="button" disabled={!canGoNext} onClick={() => setStartLine((payload.endLine || startLine) + 1)} className="rounded-sm p-1 disabled:opacity-35 hover:bg-muted" aria-label={t("web.workbench.file.nextPage")}><ChevronRight className="h-3.5 w-3.5" /></button>
                         </div>
                     </div>
                 </>

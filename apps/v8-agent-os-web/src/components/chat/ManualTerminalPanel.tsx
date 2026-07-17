@@ -5,6 +5,7 @@ import { Plus, Square, TerminalSquare, X } from 'lucide-react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import type { AdminProcessRef } from '@v8/session-realtime';
+import { useT } from '@/components/providers/LocaleProvider';
 import { cn } from '@/lib/utils';
 import { InteractiveTerminalCard } from './InteractiveTerminalCard';
 import '@xterm/xterm/css/xterm.css';
@@ -103,6 +104,7 @@ interface ManualTerminalXtermProps {
 }
 
 function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
+    const t = useT();
     const terminalHostRef = useRef<HTMLDivElement | null>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -271,14 +273,14 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
                 const ticketPayload = await ticketResponse.json().catch(() => ({}));
                 const ticket = String(ticketPayload?.ticket || '').trim();
                 if (!ticketResponse.ok || !ticket) {
-                    throw new Error(String(ticketPayload?.detail || ticketPayload?.error || 'Terminal connection ticket is unavailable.'));
+                    throw new Error(String(ticketPayload?.detail || ticketPayload?.error || t('web.terminal.ticketUnavailable')));
                 }
                 if (disposed) {
                     return;
                 }
                 const wsUrl = buildTerminalSessionWsUrl(sessionId, ticket);
                 if (!wsUrl) {
-                    throw new Error('Terminal session is missing a connection URL.');
+                    throw new Error(t('web.terminal.missingUrl'));
                 }
 
                 ws = new WebSocket(wsUrl);
@@ -334,11 +336,11 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
                         return;
                     }
                     if (type === 'error') {
-                        setSocketError(String(payload.message || '终端连接异常'));
+                        setSocketError(String(payload.message || t('web.terminal.connectionError')));
                     }
                 };
                 ws.onerror = () => {
-                    setSocketError('终端连接异常。');
+                    setSocketError(t('web.terminal.connectionError'));
                 };
                 ws.onclose = () => {
                     wsRef.current = null;
@@ -348,7 +350,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
                 if (disposed) {
                     return;
                 }
-                const message = connectError instanceof Error ? connectError.message : '终端连接异常。';
+                const message = connectError instanceof Error ? connectError.message : t('web.terminal.connectionError');
                 setSocketError(message);
                 term.writeln(`\r\n[${message}]`);
             }
@@ -370,7 +372,7 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, [flushPendingInput, pasteClipboard, scheduleResize, sendFrame, sendTerminalInput, session.isRunning, sessionId, sessionUsesLocalEcho]);
+    }, [flushPendingInput, pasteClipboard, scheduleResize, sendFrame, sendTerminalInput, session.isRunning, sessionId, sessionUsesLocalEcho, t]);
 
     return (
         <div
@@ -393,13 +395,13 @@ function ManualTerminalXterm({ session, error }: ManualTerminalXtermProps) {
             <div className="flex items-center gap-2 border-t border-white/10 bg-black/40 px-3 py-1.5 text-[11px] text-slate-300">
                 <span className={cn("h-2 w-2 rounded-full", connected ? "bg-emerald-400" : "bg-slate-500")} />
                 <span className="truncate">
-                    {error || socketError || (connected ? (running ? '已连接' : '已停止') : '正在连接')}
+                    {error || socketError || (connected ? (running ? t('web.terminal.connected') : t('web.terminal.stopped')) : t('web.terminal.connecting'))}
                 </span>
                 {running && sessionId && (
                     <button
                         type="button"
                         className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded hover:bg-white/10"
-                        title="终止"
+                        title={t('web.terminal.terminate')}
                         onClick={terminate}
                     >
                         <Square className="h-3.5 w-3.5" />
@@ -427,6 +429,7 @@ export function ManualTerminalPanel({
     onShowHidden,
     onClosePanel,
 }: ManualTerminalPanelProps) {
+    const t = useT();
     const tabs = useMemo(() => {
         const manualCommandIds = new Set(
             sessions
@@ -477,9 +480,9 @@ export function ManualTerminalPanel({
             <div className="flex min-h-10 items-center gap-2 border-b border-border/50 bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground">
                 <div className="flex min-w-0 items-center gap-2">
                     <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
-                    <span className="font-semibold text-foreground">终端</span>
+                    <span className="font-semibold text-foreground">{t('web.terminal.title')}</span>
                     <span className="max-w-[28vw] truncate font-mono text-muted-foreground/80">
-                        {workspacePath || "未绑定工作区"}
+                        {workspacePath || t('web.terminal.unboundWorkspace')}
                     </span>
                 </div>
                 <div className="ml-2 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -521,7 +524,7 @@ export function ManualTerminalPanel({
                                             void onHideTab(tab.id);
                                         }
                                     }}
-                                    title="隐藏标签"
+                                    title={t('web.terminal.hideTab')}
                                 >
                                     <X className="h-3 w-3" />
                                 </span>
@@ -534,9 +537,9 @@ export function ManualTerminalPanel({
                         type="button"
                         className="inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
                         onClick={onShowHidden}
-                        title="显示隐藏的终端"
+                        title={t('web.terminal.showHidden')}
                     >
-                        显示 {hiddenTabCount}
+                        {t('web.terminal.showHiddenCount', { count: hiddenTabCount })}
                     </button>
                 )}
                 {profiles.length > 1 && (
@@ -557,16 +560,16 @@ export function ManualTerminalPanel({
                     className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
                     onClick={onStart}
                     disabled={busy || !profiles.length}
-                    title="新建终端"
+                    title={t('web.terminal.newTerminal')}
                 >
                     <Plus className="h-3.5 w-3.5" />
-                    新建
+                    {t('web.terminal.new')}
                 </button>
                 <button
                     type="button"
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                     onClick={onClosePanel}
-                    title="折叠终端"
+                    title={t('web.terminal.collapse')}
                 >
                     <X className="h-3.5 w-3.5" />
                 </button>
@@ -593,7 +596,7 @@ export function ManualTerminalPanel({
                         onClick={onStart}
                         disabled={busy || !profiles.length}
                     >
-                        新建当前工作区终端
+                        {t('web.terminal.createWorkspaceTerminal')}
                     </button>
                     {error && <div className="max-w-md text-center text-red-300">{error}</div>}
                 </div>

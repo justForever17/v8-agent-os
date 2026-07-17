@@ -12,6 +12,7 @@ import {
 import { ArtifactCard } from "@/components/chat/ArtifactCard";
 import { ContentDispatcher } from "@/components/chat/ContentDispatcher";
 import { ImagePreview, MediaPlayer } from "@/components/chat/MediaRenderers";
+import { useT } from "@/components/providers/LocaleProvider";
 import { inferArtifactCardType, normalizeRuntimeArtifact, resolveRuntimeArtifactUrl } from "@/lib/artifacts";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
 import { createArtifactDocument } from "@/lib/workbench";
@@ -27,12 +28,12 @@ function findProjection(items: SubagentReturnProjection[], id: string): Subagent
     return null;
 }
 
-function statusLabel(status: string) {
+function statusLabel(status: string, t: ReturnType<typeof useT>) {
     const normalized = String(status || "").toLowerCase();
-    if (["ok", "completed", "success", "terminated"].includes(normalized)) return "已完成";
-    if (["failed", "cancelled", "degraded"].includes(normalized)) return "需要处理";
-    if (normalized.includes("waiting")) return "等待协作";
-    return "进行中";
+    if (["ok", "completed", "success", "terminated"].includes(normalized)) return t("web.workbench.subagent.status.completed");
+    if (["failed", "cancelled", "degraded"].includes(normalized)) return t("web.workbench.subagent.status.attention");
+    if (normalized.includes("waiting")) return t("web.workbench.subagent.status.waiting");
+    return t("web.workbench.subagent.status.running");
 }
 
 function statusTone(status: string) {
@@ -43,6 +44,7 @@ function statusTone(status: string) {
 }
 
 function SubagentEventStream({ item, processes }: { item: SubagentReturnProjection; processes: AdminProcessRef[] }) {
+    const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const resultByToolCall = useMemo(() => {
         const results = new Map<string, UiExecutionNode>();
@@ -80,7 +82,7 @@ function SubagentEventStream({ item, processes }: { item: SubagentReturnProjecti
                             id={artifact.id}
                             title={artifact.displayLabel}
                             type={type}
-                            subtitle={artifact.displaySubtitle || "子 Agent 产物"}
+                            subtitle={artifact.displaySubtitle || t("web.workbench.subagent.artifact")}
                             onClick={() => openDocument(createArtifactDocument(artifact), { activate: true, mode: "split" })}
                             onDownload={url ? () => window.open(url, "_blank", "noopener,noreferrer") : undefined}
                         />
@@ -109,26 +111,27 @@ function SubagentEventStream({ item, processes }: { item: SubagentReturnProjecti
 }
 
 function SubagentSection({ item, processes, nested = false }: { item: SubagentReturnProjection; processes: AdminProcessRef[]; nested?: boolean }) {
+    const t = useT();
     return (
         <section className={nested ? "mt-5 border-l border-border/60 pl-4" : ""}>
             {nested ? (
                 <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-foreground">
                     <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
                     <span>{item.name}</span>
-                    <span className="text-[10px] font-normal text-muted-foreground">下级协作</span>
+                    <span className="text-[10px] font-normal text-muted-foreground">{t("web.workbench.subagent.child")}</span>
                 </div>
             ) : null}
             <SubagentEventStream item={item} processes={processes} />
             {item.summary ? (
                 <div className="mt-4 rounded-xl border border-border/60 bg-muted/20 p-3">
-                    <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-foreground"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />回流结论</div>
+                    <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-foreground"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />{t("web.workbench.subagent.conclusion")}</div>
                     <ContentDispatcher node={{ id: `${item.id}:summary`, kind: "narrative", role: "assistant", content: item.summary, timestamp: item.timestamp }} isExecuting={false} isStreaming={false} />
                 </div>
             ) : null}
             {item.acceptanceStatus && item.acceptanceStatus !== "pending" ? (
                 <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-[11px] leading-5 text-foreground/85">
                     <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                    <span>{item.acceptanceSummary || "主理人已完成验收。"}</span>
+                    <span>{item.acceptanceSummary || t("web.workbench.subagent.accepted")}</span>
                 </div>
             ) : null}
             {item.children.map((child) => <SubagentSection key={child.id} item={child} processes={processes} nested />)}
@@ -147,6 +150,7 @@ export function SubagentActivityRenderer({
     runtimeModel: RuntimeStageModel;
     processes: AdminProcessRef[];
 }) {
+    const t = useT();
     const projections = useMemo(
         () => buildSubagentReturnProjection(messages, runtimeModel.messageActivities.map((activity) => activity.node)),
         [messages, runtimeModel.messageActivities],
@@ -157,7 +161,7 @@ export function SubagentActivityRenderer({
     );
 
     if (!item) {
-        return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">协作详情正在同步。</div>;
+        return <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">{t("web.workbench.subagent.syncing")}</div>;
     }
 
     return (
@@ -169,7 +173,7 @@ export function SubagentActivityRenderer({
                         <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                                 <h2 className="truncate text-sm font-semibold text-foreground">{item.name}</h2>
-                                <span className="inline-flex items-center gap-1 rounded-full border border-border/65 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground"><span className={`h-1.5 w-1.5 rounded-full ${statusTone(item.status)}`} />{statusLabel(item.status)}</span>
+                                <span className="inline-flex items-center gap-1 rounded-full border border-border/65 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground"><span className={`h-1.5 w-1.5 rounded-full ${statusTone(item.status)}`} />{statusLabel(item.status, t)}</span>
                             </div>
                             {item.taskGoal ? <p className="mt-1 line-clamp-4 break-words text-[11px] leading-5 text-muted-foreground" title={item.taskGoal}>{item.taskGoal}</p> : null}
                         </div>

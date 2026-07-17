@@ -62,10 +62,10 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
             )}
             actions={(
                 <>
-                <TopbarGlowActionButton asChild tone="emerald" aria-label={t("web.generated.6ee7a4c326")} title={t("web.generated.6ee7a4c326")}>
+                <TopbarGlowActionButton asChild tone="emerald" aria-label={t("web.rpa.title")} title={t("web.rpa.title")}>
                     <Link href="/rpa">
                         <Bot />
-                        <span className="sr-only">{t("web.generated.6ee7a4c326")}</span>
+                        <span className="sr-only">{t("web.rpa.title")}</span>
                     </Link>
                 </TopbarGlowActionButton>
                 <LocaleToggle />

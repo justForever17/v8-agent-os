@@ -2,11 +2,20 @@
 /* eslint-disable @next/next/no-img-element */
 
 import * as React from "react";
+import {
+    buildComposerInlineSegments,
+    composerTextContainsReference,
+    insertComposerReference,
+    removeComposerReferenceAtBackspace,
+    resolveComposerInlineQuery,
+    stripComposerReferences,
+    type ComposerInlineReference,
+} from "@v8/session-realtime/composer-inline-references";
 import type { PluginReferenceSummary } from "@v8/session-realtime";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight, Shield, ShieldAlert, ShieldCheck, Code2 } from "lucide-react";
+import { Paperclip, Send, Mic, Loader2, Square, X, PlayCircle, AlertCircle, CheckCircle2, Info, Command, AtSign, Gauge, Orbit, CornerDownRight, Shield, ShieldAlert, ShieldCheck, Code2, MessageCircle } from "lucide-react";
 import { ChangeEvent, FormEvent } from "react";
 import { MediaViewerLightbox, MediaItem } from "./MediaViewerLightbox";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -355,6 +364,8 @@ export function InputArea({
     const [isTranscribing, setIsTranscribing] = React.useState(false);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+    const inputMirrorRef = React.useRef<HTMLDivElement>(null);
+    const [selectionRange, setSelectionRange] = React.useState({ start: input.length, end: input.length });
     const mediaStreamRef = React.useRef<MediaStream | null>(null);
     const audioContextRef = React.useRef<AudioContext | null>(null);
     const sourceNodeRef = React.useRef<MediaStreamAudioSourceNode | null>(null);
@@ -363,6 +374,33 @@ export function InputArea({
     const audioChunksRef = React.useRef<Float32Array[]>([]);
     const sampleRateRef = React.useRef(16000);
     const inlineNoticeTimerRef = React.useRef<number | null>(null);
+
+    const composerReferences = React.useMemo<ComposerInlineReference[]>(() => [
+        ...(selectedCommandPreset ? [{
+            kind: "command" as const,
+            id: `command:${selectedCommandPreset.name}`,
+            label: selectedCommandPreset.name,
+        }] : []),
+        ...selectedSkills.map((skill) => ({
+            kind: "skill" as const,
+            id: `skill:${skill.path || skill.name}`,
+            label: skill.name || skill.path || "skill",
+        })),
+        ...selectedSubagentFamilies.map((family) => ({
+            kind: "subagent_family" as const,
+            id: `subagent_family:${family.familyId}`,
+            label: family.displayName || family.familyId,
+        })),
+        ...selectedPlugins.map((plugin) => ({
+            kind: "plugin" as const,
+            id: `plugin:${plugin.pluginId}`,
+            label: plugin.displayName || plugin.pluginId,
+        })),
+    ], [selectedCommandPreset, selectedPlugins, selectedSkills, selectedSubagentFamilies]);
+    const composerSegments = React.useMemo(
+        () => buildComposerInlineSegments(input, composerReferences),
+        [composerReferences, input],
+    );
 
     const safetyApprovalOptions = React.useMemo(() => ([
         {
@@ -444,19 +482,14 @@ export function InputArea({
             : null
     ), [contextUsagePercent]);
 
-    const slashQuery = React.useMemo(() => {
-        if (selectedCommandPreset) return "";
-        const trimmed = input.trimStart();
-        if (!trimmed.startsWith("/")) return "";
-        return trimmed.slice(1).trim();
-    }, [input, selectedCommandPreset]);
-    const skillQuery = React.useMemo(() => {
-        const trimmed = input.trimStart();
-        if (!trimmed.startsWith("@")) return "";
-        return trimmed.slice(1).trim();
-    }, [input]);
-    const isCommandPickerOpen = !selectedCommandPreset && input.trimStart().startsWith("/");
-    const isSkillPickerOpen = input.trimStart().startsWith("@");
+    const inlineQuery = React.useMemo(
+        () => resolveComposerInlineQuery(input, selectionRange.end, Boolean(selectedCommandPreset), composerReferences),
+        [composerReferences, input, selectedCommandPreset, selectionRange.end],
+    );
+    const slashQuery = inlineQuery?.kind === "command" ? inlineQuery.query.trim() : "";
+    const skillQuery = inlineQuery?.kind === "mention" ? inlineQuery.query.trim() : "";
+    const isCommandPickerOpen = inlineQuery?.kind === "command";
+    const isSkillPickerOpen = inlineQuery?.kind === "mention";
     const filteredCommandPresets = React.useMemo(() => {
         const allCommands = [...(contextUsageCommand ? [contextUsageCommand] : []), ...specCommandPresets, ...commandPresets];
         if (!slashQuery) {
@@ -515,10 +548,51 @@ export function InputArea({
         } as ChangeEvent<HTMLTextAreaElement>);
     }, [handleInputChange]);
 
-    const focusTextarea = React.useCallback(() => {
-        if (typeof window === "undefined") return;
-        window.requestAnimationFrame(() => textareaRef.current?.focus());
-    }, []);
+    const reconcileSelectedReferences = React.useCallback((nextValue: string) => {
+        if (selectedCommandPreset && !composerTextContainsReference(nextValue, {
+            kind: "command",
+            id: `command:${selectedCommandPreset.name}`,
+            label: selectedCommandPreset.name,
+        })) {
+            setSelectedCommandPreset(null);
+        }
+        setSelectedSkills((current) => current.filter((skill) => composerTextContainsReference(nextValue, {
+            kind: "skill",
+            id: `skill:${skill.path || skill.name}`,
+            label: skill.name || skill.path || "skill",
+        })));
+        setSelectedSubagentFamilies((current) => current.filter((family) => composerTextContainsReference(nextValue, {
+            kind: "subagent_family",
+            id: `subagent_family:${family.familyId}`,
+            label: family.displayName || family.familyId,
+        })));
+        setSelectedPlugins((current) => current.filter((plugin) => composerTextContainsReference(nextValue, {
+            kind: "plugin",
+            id: `plugin:${plugin.pluginId}`,
+            label: plugin.displayName || plugin.pluginId,
+        })));
+    }, [selectedCommandPreset]);
+
+    const setInputAndCaret = React.useCallback((nextValue: string, caret: number) => {
+        updateInputValue(nextValue);
+        const nextCaret = Math.max(0, Math.min(nextValue.length, caret));
+        setSelectionRange({ start: nextCaret, end: nextCaret });
+        if (typeof window !== "undefined") {
+            window.requestAnimationFrame(() => {
+                textareaRef.current?.focus();
+                textareaRef.current?.setSelectionRange(nextCaret, nextCaret);
+            });
+        }
+    }, [updateInputValue]);
+
+    const handleComposerInputChange = React.useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+        const nextValue = event.target.value;
+        const start = event.target.selectionStart ?? nextValue.length;
+        const end = event.target.selectionEnd ?? start;
+        handleInputChange(event);
+        setSelectionRange({ start, end });
+        reconcileSelectedReferences(nextValue);
+    }, [handleInputChange, reconcileSelectedReferences]);
 
     const clearInlineNoticeTimer = React.useCallback(() => {
         if (typeof window !== "undefined" && inlineNoticeTimerRef.current !== null) {
@@ -659,19 +733,31 @@ export function InputArea({
     }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
 
     const selectCommandPreset = React.useCallback((preset: CommandPresetSummary) => {
+        if (!inlineQuery || inlineQuery.kind !== "command") return;
         if (preset.readOnlyKind === "context_usage") {
-            updateInputValue("");
+            setInputAndCaret(`${input.slice(0, inlineQuery.start)}${input.slice(inlineQuery.end)}`, inlineQuery.start);
             dismissInlineNotice();
-            focusTextarea();
             return;
         }
+        const reference: ComposerInlineReference = {
+            kind: "command",
+            id: `command:${preset.name}`,
+            label: preset.name,
+        };
+        const inserted = insertComposerReference(input, inlineQuery, reference);
         setSelectedCommandPreset(preset);
-        updateInputValue("");
+        setInputAndCaret(inserted.text, inserted.caret);
         dismissInlineNotice();
-        focusTextarea();
-    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
+    }, [dismissInlineNotice, inlineQuery, input, setInputAndCaret]);
 
     const selectSkillReference = React.useCallback((skill: SkillReferenceSummary) => {
+        if (!inlineQuery || inlineQuery.kind !== "mention") return;
+        const reference: ComposerInlineReference = {
+            kind: "skill",
+            id: `skill:${skill.path || skill.name}`,
+            label: skill.name || skill.path || "skill",
+        };
+        const inserted = insertComposerReference(input, inlineQuery, reference);
         setSelectedSkills((current) => {
             const alreadySelected = current.some((item) => item.name === skill.name && (item.path || "") === (skill.path || ""));
             if (alreadySelected) {
@@ -679,12 +765,18 @@ export function InputArea({
             }
             return [...current, skill];
         });
-        updateInputValue("");
+        setInputAndCaret(inserted.text, inserted.caret);
         dismissInlineNotice();
-        focusTextarea();
-    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
+    }, [dismissInlineNotice, inlineQuery, input, setInputAndCaret]);
 
     const selectSubagentFamilyReference = React.useCallback((family: SubagentFamilySummary) => {
+        if (!inlineQuery || inlineQuery.kind !== "mention") return;
+        const reference: ComposerInlineReference = {
+            kind: "subagent_family",
+            id: `subagent_family:${family.familyId}`,
+            label: family.displayName || family.familyId,
+        };
+        const inserted = insertComposerReference(input, inlineQuery, reference);
         setSelectedSubagentFamilies((current) => {
             const alreadySelected = current.some((item) => item.familyId === family.familyId);
             if (alreadySelected) {
@@ -692,19 +784,24 @@ export function InputArea({
             }
             return [...current, family];
         });
-        updateInputValue("");
+        setInputAndCaret(inserted.text, inserted.caret);
         dismissInlineNotice();
-        focusTextarea();
-    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
+    }, [dismissInlineNotice, inlineQuery, input, setInputAndCaret]);
 
     const selectPluginReference = React.useCallback((plugin: PluginReferenceSummary) => {
+        if (!inlineQuery || inlineQuery.kind !== "mention") return;
+        const reference: ComposerInlineReference = {
+            kind: "plugin",
+            id: `plugin:${plugin.pluginId}`,
+            label: plugin.displayName || plugin.pluginId,
+        };
+        const inserted = insertComposerReference(input, inlineQuery, reference);
         setSelectedPlugins((current) => current.some((item) => item.pluginId === plugin.pluginId)
             ? current
             : [...current, { ...plugin, grantScope: "task" }]);
-        updateInputValue("");
+        setInputAndCaret(inserted.text, inserted.caret);
         dismissInlineNotice();
-        focusTextarea();
-    }, [dismissInlineNotice, focusTextarea, updateInputValue]);
+    }, [dismissInlineNotice, inlineQuery, input, setInputAndCaret]);
 
     const selectMentionItem = React.useCallback((item: MentionPickerItem) => {
         if (item.kind === "skill") {
@@ -718,45 +815,35 @@ export function InputArea({
         selectPluginReference(item.plugin);
     }, [selectPluginReference, selectSkillReference, selectSubagentFamilyReference]);
 
-    const hasReferenceTokens = Boolean(
-        selectedCommandPreset
-        || selectedSkills.length > 0
-        || selectedSubagentFamilies.length > 0
-        || selectedPlugins.length > 0
-        || contextSessionRefs.length > 0
-    );
+    const hasReferenceTokens = contextSessionRefs.length > 0;
 
     const removeLastReferenceToken = React.useCallback(() => {
-        if (selectedPlugins.length > 0) {
-            setSelectedPlugins((current) => current.slice(0, -1));
-            return true;
-        }
-        if (selectedSubagentFamilies.length > 0) {
-            setSelectedSubagentFamilies((current) => current.slice(0, -1));
-            return true;
-        }
-        if (selectedSkills.length > 0) {
-            setSelectedSkills((current) => current.slice(0, -1));
-            return true;
-        }
-        if (selectedCommandPreset) {
-            setSelectedCommandPreset(null);
-            return true;
-        }
         const lastContextRef = contextSessionRefs[contextSessionRefs.length - 1];
         if (lastContextRef && onRemoveContextSessionRef) {
             onRemoveContextSessionRef(lastContextRef.sessionId);
             return true;
         }
         return false;
-    }, [contextSessionRefs, onRemoveContextSessionRef, selectedCommandPreset, selectedPlugins.length, selectedSkills.length, selectedSubagentFamilies.length]);
+    }, [contextSessionRefs, onRemoveContextSessionRef]);
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === "Backspace" && input.length === 0 && !isCommandPickerOpen && !isSkillPickerOpen) {
-            if (removeLastReferenceToken()) {
+        if (e.key === "Backspace") {
+            const deletion = removeComposerReferenceAtBackspace(
+                input,
+                composerReferences,
+                e.currentTarget.selectionStart,
+                e.currentTarget.selectionEnd,
+            );
+            if (deletion) {
                 e.preventDefault();
+                reconcileSelectedReferences(deletion.text);
+                setInputAndCaret(deletion.text, deletion.caret);
+                return;
             }
-            return;
+            if (input.length === 0 && !isCommandPickerOpen && !isSkillPickerOpen && removeLastReferenceToken()) {
+                e.preventDefault();
+                return;
+            }
         }
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -1145,17 +1232,28 @@ export function InputArea({
                 if (pendingSpecMode) {
                     nextData.specMode = true;
                 }
-                if (pendingSpecMode) {
-                    setSpecModeEnabled(false);
+                if (composerReferences.length > 0) {
+                    const plainMessage = stripComposerReferences(input, composerReferences);
+                    nextData.messageOverride = plainMessage || input.trim();
+                    nextData.composerPresentation = {
+                        text: input,
+                        references: composerReferences,
+                    };
                 }
 
-                await handleSubmit(e, { data: nextData });
+                const accepted = await handleSubmit(e, { data: nextData });
+                if (accepted === false) return;
+                updateInputValue("");
+                setSelectionRange({ start: 0, end: 0 });
                 setFiles([]);
                 setUploadedSources([]);
                 setSelectedCommandPreset(null);
                 setSelectedSkills([]);
                 setSelectedSubagentFamilies([]);
                 setSelectedPlugins([]);
+                if (pendingSpecMode) {
+                    setSpecModeEnabled(false);
+                }
             }}
             className={cn(
                 "relative mx-auto flex w-full flex-col overflow-visible rounded-[1.25rem] border shadow-sm transition-all duration-500",
@@ -1250,102 +1348,45 @@ export function InputArea({
                                 </button>
                             </div>
                         ))}
-                        {selectedCommandPreset && (
-                            <div className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]">
-                                <span aria-hidden="true" className="shrink-0 font-bold">/</span>
-                                <span className="truncate">{selectedCommandPreset.name}</span>
-                                <button
-                                    type="button"
-                                    onClick={() => setSelectedCommandPreset(null)}
-                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                                    aria-label={t("web.generated.6b8a8efb3b")}
+                    <div className={cn("relative min-h-[26px] min-w-[10rem] flex-[1_1_12rem]", !hasReferenceTokens && "min-h-[32px]")}>
+                        <div
+                            ref={inputMirrorRef}
+                            aria-hidden="true"
+                            className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-[14px] leading-6 text-foreground sm:text-[15px]"
+                        >
+                            {composerSegments.map((segment, index) => (
+                                <span
+                                    key={`${segment.start}:${segment.end}:${index}`}
+                                    className={segment.type === "reference"
+                                        ? segment.reference?.kind === "command"
+                                            ? "text-violet-600 dark:text-violet-300"
+                                            : "text-orange-600 dark:text-orange-300"
+                                        : undefined}
                                 >
-                                    <X className="h-3 w-3" />
-                                </button>
-                            </div>
-                        )}
-                        {selectedSkills.map((skill) => (
-                            <div
-                                key={`${skill.name}:${skill.path || ""}`}
-                                className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]"
-                                title={skill.path || skill.description || skill.name}
-                            >
-                                <AtSign className="h-4 w-4 shrink-0" />
-                                <span className="truncate">{skill.name}</span>
-                                <button
-                                    type="button"
-                                    onClick={() => setSelectedSkills((current) => current.filter((item) => !(item.name === skill.name && (item.path || "") === (skill.path || ""))))}
-                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                                    aria-label={t("web.generated.67c18a5ab0")}
-                                >
-                                    <X className="h-3 w-3" />
-                                </button>
-                            </div>
-                        ))}
-                        {selectedSubagentFamilies.map((family) => (
-                            <div
-                                key={family.familyId}
-                                className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]"
-                                title={family.description || family.familyId}
-                            >
-                                <AtSign className="h-4 w-4 shrink-0" />
-                                <span className="truncate">{family.displayName || family.familyId}</span>
-                                <button
-                                    type="button"
-                                    onClick={() => setSelectedSubagentFamilies((current) => current.filter((item) => item.familyId !== family.familyId))}
-                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                                    aria-label={t("web.generated.0f220b7fb7")}
-                                >
-                                    <X className="h-3 w-3" />
-                                </button>
-                            </div>
-                        ))}
-                        {selectedPlugins.map((plugin) => (
-                            <div
-                                key={plugin.pluginId}
-                                className="group inline-flex h-6 max-w-full items-center gap-1 text-[14px] font-semibold leading-6 text-primary sm:text-[15px]"
-                                title={plugin.description || plugin.pluginId}
-                            >
-                                <span className={cn("size-1.5 rounded-full", plugin.status === "ready" ? "bg-emerald-500" : "bg-amber-500")} />
-                                <span className="truncate">{plugin.displayName}</span>
-                                <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                        <button type="button" className="text-[10px] font-medium text-muted-foreground hover:text-foreground">
-                                            {plugin.grantScope === "session" ? "本会话" : "本任务"}
-                                        </button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="start" side="top" className="w-48 rounded-md p-1">
-                                        <DropdownMenuItem onSelect={() => setSelectedPlugins((current) => current.map((item) => item.pluginId === plugin.pluginId ? { ...item, grantScope: "task" } : item))} className="rounded-sm text-xs">
-                                            <span className="flex-1">仅当前任务</span>{plugin.grantScope === "task" ? <CheckCircle2 className="size-3.5" /> : null}
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem onSelect={() => setSelectedPlugins((current) => current.map((item) => item.pluginId === plugin.pluginId ? { ...item, grantScope: "session" } : item))} className="rounded-sm text-xs">
-                                            <span className="flex-1">本会话持续授权</span>{plugin.grantScope === "session" ? <CheckCircle2 className="size-3.5" /> : null}
-                                        </DropdownMenuItem>
-                                    </DropdownMenuContent>
-                                </DropdownMenu>
-                                <button
-                                    type="button"
-                                    onClick={() => setSelectedPlugins((current) => current.filter((item) => item.pluginId !== plugin.pluginId))}
-                                    className="grid h-4 w-4 shrink-0 place-items-center rounded text-current/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
-                                    aria-label={`移除 ${plugin.displayName}`}
-                                >
-                                    <X className="h-3 w-3" />
-                                </button>
-                            </div>
-                        ))}
-                    <Textarea
-                        ref={textareaRef}
-                        value={input}
-                        onChange={handleInputChange}
-                        onKeyDown={handleKeyDown}
-                        onFocus={() => setIsFocused(true)}
-                        onBlur={() => setIsFocused(false)}
-                        placeholder={selectedAgentName ? t("web.generated.04cdce87c7", { value0: selectedAgentName }) : t("web.generated.a706426e02")}
-                        className={cn(
-                            "custom-scrollbar min-h-[26px] max-h-[172px] min-w-[10rem] flex-[1_1_12rem] resize-none overflow-y-auto border-none bg-transparent px-0 py-0 text-[14px] leading-6 placeholder:text-muted-foreground/50 shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-[15px]",
-                            !hasReferenceTokens && "min-h-[32px]"
-                        )}
-                    />
+                                    {segment.text}
+                                </span>
+                            ))}
+                            {input.endsWith("\n") ? <br /> : null}
+                        </div>
+                        <Textarea
+                            ref={textareaRef}
+                            value={input}
+                            onChange={handleComposerInputChange}
+                            onSelect={(event) => setSelectionRange({
+                                start: event.currentTarget.selectionStart,
+                                end: event.currentTarget.selectionEnd,
+                            })}
+                            onScroll={(event) => {
+                                if (inputMirrorRef.current) inputMirrorRef.current.scrollTop = event.currentTarget.scrollTop;
+                            }}
+                            onKeyDown={handleKeyDown}
+                            onFocus={() => setIsFocused(true)}
+                            onBlur={() => setIsFocused(false)}
+                            placeholder={selectedAgentName ? t("web.generated.04cdce87c7", { value0: selectedAgentName }) : t("web.generated.a706426e02")}
+                            spellCheck={false}
+                            className="custom-scrollbar relative z-10 min-h-[26px] max-h-[172px] w-full resize-none overflow-y-auto border-none bg-transparent px-0 py-0 text-[14px] leading-6 text-transparent caret-foreground placeholder:text-muted-foreground/50 shadow-none selection:bg-violet-300/30 focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-[15px]"
+                        />
+                    </div>
                 </div>
 
                 {isCommandPickerOpen && (
@@ -1474,20 +1515,21 @@ export function InputArea({
                         <Button
                             type="button"
                             variant={supervisorWorkMode === "engineering" ? "secondary" : "ghost"}
-                            size="sm"
+                            size="icon"
                             onClick={() => void onSupervisorWorkModeChange?.(supervisorWorkMode === "engineering" ? "daily" : "engineering")}
                             aria-pressed={supervisorWorkMode === "engineering"}
                             aria-label={supervisorWorkMode === "engineering" ? t("web.chat.workMode.switchDaily") : t("web.chat.workMode.switchEngineering")}
                             className={cn(
-                                "h-[28px] gap-1 rounded-lg px-2 transition-colors",
+                                "h-[28px] w-[28px] rounded-lg transition-colors",
                                 supervisorWorkMode === "engineering"
                                     ? "bg-violet-500/12 text-violet-700 shadow-[0_0_16px_rgba(139,92,246,0.2)] hover:bg-violet-500/18 dark:bg-violet-500/15 dark:text-violet-200"
                                     : "text-muted-foreground hover:bg-zinc-100/50 hover:text-foreground dark:hover:bg-zinc-800/50"
                             )}
                             title={supervisorWorkMode === "engineering" ? t("web.chat.workMode.engineering") : t("web.chat.workMode.daily")}
                         >
-                            <Code2 className="h-4 w-4" />
-                            <span>{supervisorWorkMode === "engineering" ? t("web.chat.workMode.engineering") : t("web.chat.workMode.daily")}</span>
+                            {supervisorWorkMode === "engineering"
+                                ? <Code2 className="h-4 w-4" />
+                                : <MessageCircle className="h-4 w-4" />}
                         </Button>
                         <Button
                             type="button"

@@ -104,6 +104,10 @@
     "./session-output-projection": {
       "types": "./dist/session-output-projection.d.ts",
       "default": "./dist/session-output-projection.js"
+    },
+    "./composer-inline-references": {
+      "types": "./dist/composer-inline-references.d.ts",
+      "default": "./dist/composer-inline-references.js"
     }
   },
   "devDependencies": {

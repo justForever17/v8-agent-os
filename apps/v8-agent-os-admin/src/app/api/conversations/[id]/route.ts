@@ -118,6 +118,9 @@ export async function PATCH(
             body: JSON.stringify({
                 ...(typeof body?.title === "string" ? { title: body.title } : {}),
                 ...(typeof body?.pinned === "boolean" ? { pinned: body.pinned } : {}),
+                ...(body?.supervisorWorkMode === "daily" || body?.supervisorWorkMode === "engineering"
+                    ? { supervisorWorkMode: body.supervisorWorkMode }
+                    : {}),
                 userId: userEmail,
             }),
         });

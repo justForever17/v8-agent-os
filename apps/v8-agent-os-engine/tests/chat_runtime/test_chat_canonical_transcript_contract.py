@@ -685,6 +685,15 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
             {
                 "messages": [{"role": "user", "content": "请执行当前命令"}],
                 "clientMessageId": "user-client-1",
+                "data": {
+                    "composerPresentation": {
+                        "text": "请 @algorithmic-art 执行 /test4",
+                        "references": [
+                            {"kind": "skill", "id": "skill:algorithmic-art", "label": "algorithmic-art"},
+                            {"kind": "command", "id": "command:test4", "label": "test4"},
+                        ],
+                    }
+                },
                 "attachments": [
                     {
                         "name": "demo.txt",
@@ -716,6 +725,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
                 command_preset_hash="hash-123",
                 spec_mode=True,
                 skill_references=[{"name": "algorithmic-art", "path": "C:/Users/sunny/.agents/skills/algorithmic-art"}],
+                composer_presentation=request.data.composer_presentation.model_dump(by_alias=True),
                 context_session_refs=[{"sessionId": "session-source-1", "source": "history_menu"}],
             ),
             is_resume_request=False,
@@ -733,6 +743,7 @@ class ChatCanonicalTranscriptContractTests(unittest.TestCase):
         self.assertEqual((metadata.get("commandPreset") or {}).get("name"), "test4")
         self.assertTrue(metadata.get("specMode"))
         self.assertEqual((metadata.get("skillReferences") or [{}])[0].get("name"), "algorithmic-art")
+        self.assertEqual((metadata.get("composerPresentation") or {}).get("text"), "请 @algorithmic-art 执行 /test4")
         self.assertEqual((metadata.get("contextSessionRefs") or [{}])[0].get("sessionId"), "session-source-1")
         self.assertEqual((metadata.get("attachments") or [{}])[0].get("name"), "demo.txt")
 

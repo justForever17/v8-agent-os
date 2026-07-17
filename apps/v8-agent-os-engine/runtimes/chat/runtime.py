@@ -263,6 +263,7 @@ class ChatPreparedRequest:
     skill_references: list[dict[str, str]] = field(default_factory=list)
     context_mentions: list[dict[str, str]] = field(default_factory=list)
     plugin_references: list[dict[str, Any]] = field(default_factory=list)
+    composer_presentation: dict[str, Any] = field(default_factory=dict)
     plugin_authorizations: list[dict[str, Any]] = field(default_factory=list)
     context_session_refs: list[dict[str, str]] = field(default_factory=list)
     session_coordination_message: dict[str, Any] = field(default_factory=dict)
@@ -2251,6 +2252,11 @@ class ChatRuntime:
         if not spec_mode and self._should_continue_recent_spec_mode(session_id, self._latest_user_content(request)):
             spec_mode = True
         plugin_references = self._normalize_plugin_references(request)
+        composer_presentation = (
+            request.data.composer_presentation.model_dump(by_alias=True, exclude_none=True)
+            if request.data and request.data.composer_presentation
+            else {}
+        )
         spec_command = self._normalize_spec_command(request)
         live_audit_requested = bool(getattr(request.data, "runtime_subagent_closure_live_audit", False))
         explicit_runtime_episode_requested = self._detect_explicit_runtime_episode_request(self._latest_user_content(request))
@@ -2966,6 +2972,9 @@ class ChatRuntime:
         plugin_references = list(getattr(chat_run.prepared, "plugin_references", None) or [])
         if plugin_references:
             metadata["pluginReferences"] = plugin_references
+        composer_presentation = dict(getattr(chat_run.prepared, "composer_presentation", None) or {})
+        if composer_presentation:
+            metadata["composerPresentation"] = composer_presentation
         context_mentions = [
             item
             for item in list(getattr(chat_run.prepared, "context_mentions", None) or [])
@@ -3033,6 +3042,7 @@ class ChatRuntime:
                 **({"engineeringTriggerDecision": dict(metadata["engineeringTriggerDecision"])} if isinstance(metadata.get("engineeringTriggerDecision"), dict) else {}),
                 **({"skillReferences": list(metadata.get("skillReferences") or [])} if isinstance(metadata.get("skillReferences"), list) and metadata.get("skillReferences") else {}),
                 **({"pluginReferences": list(metadata.get("pluginReferences") or [])} if isinstance(metadata.get("pluginReferences"), list) and metadata.get("pluginReferences") else {}),
+                **({"composerPresentation": dict(metadata["composerPresentation"])} if isinstance(metadata.get("composerPresentation"), dict) and metadata.get("composerPresentation") else {}),
                 **({"contextMentions": list(metadata.get("contextMentions") or [])} if isinstance(metadata.get("contextMentions"), list) and metadata.get("contextMentions") else {}),
                 **({"contextSessionRefs": list(metadata.get("contextSessionRefs") or [])} if isinstance(metadata.get("contextSessionRefs"), list) and metadata.get("contextSessionRefs") else {}),
                 **({"explicitSubagentFamilies": list(metadata.get("explicitSubagentFamilies") or [])} if isinstance(metadata.get("explicitSubagentFamilies"), list) and metadata.get("explicitSubagentFamilies") else {}),

@@ -131,6 +131,7 @@ import { radii, spacing } from "@/src/theme/tokens";
 import type {
     ChatArtifact,
     ChatMessage,
+    ComposerPresentation,
     CommandPresetSummary,
     ConversationDetail,
     ConversationSummary,
@@ -166,6 +167,14 @@ import {
     syncSessionRealtimeMessageState,
     shouldApplyRuntimeEventToMessage,
 } from "@v8/session-realtime";
+import {
+    composerTextContainsReference,
+    insertComposerReference,
+    removeComposerReferenceAtBackspace,
+    resolveComposerInlineQuery,
+    stripComposerReferences,
+    type ComposerInlineReference,
+} from "@v8/session-realtime/composer-inline-references";
 
 const REPLY_POP_SOUND = require("../../assets/audio/message-pop.mp3");
 const PHONE_PROJECTION_RUNTIME_TIMELINE_LIMIT = PHONE_RUNTIME_TIMELINE_LIMIT;
@@ -427,6 +436,7 @@ function buildUserMessage(
         specModeEnabled: boolean;
         files: UploadedWorkspaceFile[];
         contextSessionRefs: ContextSessionReference[];
+        composerPresentation?: ComposerPresentation;
     },
     nowMs: number,
 ): ChatMessage {
@@ -475,6 +485,9 @@ function buildUserMessage(
     }
     if (options.contextSessionRefs.length > 0) {
         metadata.contextSessionRefs = options.contextSessionRefs.map((reference) => ({ ...reference }));
+    }
+    if (options.composerPresentation) {
+        metadata.composerPresentation = options.composerPresentation;
     }
     if (attachments.length > 0) {
         metadata.attachments = attachments;
@@ -1347,6 +1360,7 @@ function buildMessageRichness(message: ChatMessage | null | undefined) {
         + (Array.isArray(metadata.skillReferences) ? metadata.skillReferences.length * 40 : 0)
         + (Array.isArray(metadata.contextMentions) ? metadata.contextMentions.length * 40 : 0)
         + (Array.isArray(metadata.contextSessionRefs) ? metadata.contextSessionRefs.length * 50 : 0)
+        + (metadata.composerPresentation ? 80 : 0)
         + (Array.isArray(metadata.attachments) ? metadata.attachments.length * 80 : 0)
         + (composerSpecMode ? 30 : 0)
     );
@@ -1384,6 +1398,13 @@ function mergeUserStructuredMetadata(
         preservedMetadata.skillReferences = localMetadata.skillReferences;
     }
     if (
+        (!Array.isArray(snapshotMetadata.pluginReferences) || snapshotMetadata.pluginReferences.length === 0)
+        && Array.isArray(localMetadata.pluginReferences)
+        && localMetadata.pluginReferences.length > 0
+    ) {
+        preservedMetadata.pluginReferences = localMetadata.pluginReferences;
+    }
+    if (
         (!Array.isArray(snapshotMetadata.contextMentions) || snapshotMetadata.contextMentions.length === 0)
         && Array.isArray(localMetadata.contextMentions)
         && localMetadata.contextMentions.length > 0
@@ -1403,6 +1424,9 @@ function mergeUserStructuredMetadata(
         && localMetadata.explicitSubagentFamilies.length > 0
     ) {
         preservedMetadata.explicitSubagentFamilies = localMetadata.explicitSubagentFamilies;
+    }
+    if (!snapshotMetadata.composerPresentation && localMetadata.composerPresentation) {
+        preservedMetadata.composerPresentation = localMetadata.composerPresentation;
     }
     if (snapshotMetadata.taskPlanningMode !== true && localMetadata.taskPlanningMode === true) {
         preservedMetadata.taskPlanningMode = true;
@@ -2165,6 +2189,7 @@ export default function ChatScreen() {
     const [selectedPlugins, setSelectedPlugins] = useState<PluginReferenceSummary[]>([]);
     const [activeQueryMode, setActiveQueryMode] = useState<"command" | "skill" | null>(null);
     const [activeQueryText, setActiveQueryText] = useState("");
+    const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 });
     const [specModeEnabled, setSpecModeEnabled] = useState(false);
     const [safetyApprovalMode, setSafetyApprovalModeState] = useState<SafetyApprovalMode>("reduced");
     const [reasoningEffortControl, setReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
@@ -2190,7 +2215,37 @@ export default function ChatScreen() {
     const [desktopPreviewFallbackUrl, setDesktopPreviewFallbackUrl] = useState("");
     const [desktopLiveStatus, setDesktopLiveStatus] = useState<DesktopLiveStatus | null>(null);
 
+    const composerReferences = useMemo<ComposerInlineReference[]>(() => [
+        ...(selectedCommand ? [{
+            kind: "command" as const,
+            id: `command:${selectedCommand.name}`,
+            label: selectedCommand.name,
+        }] : []),
+        ...selectedSkills.map((skill) => ({
+            kind: "skill" as const,
+            id: `skill:${skill.path || skill.name}`,
+            label: skill.name || skill.path || "skill",
+        })),
+        ...selectedSubagentFamilies.map((family) => ({
+            kind: "subagent_family" as const,
+            id: `subagent_family:${family.familyId}`,
+            label: family.displayName || family.familyId,
+        })),
+        ...selectedPlugins.map((plugin) => ({
+            kind: "plugin" as const,
+            id: `plugin:${plugin.pluginId}`,
+            label: plugin.displayName || plugin.pluginId,
+        })),
+    ], [selectedCommand, selectedPlugins, selectedSkills, selectedSubagentFamilies]);
+    const activeInlineQuery = useMemo(
+        () => resolveComposerInlineQuery(input, composerSelection.end, Boolean(selectedCommand), composerReferences),
+        [composerReferences, composerSelection.end, input, selectedCommand],
+    );
     const queryTerm = activeQueryText.trim().toLowerCase();
+    useEffect(() => {
+        setActiveQueryMode(activeInlineQuery?.kind === "command" ? "command" : activeInlineQuery?.kind === "mention" ? "skill" : null);
+        setActiveQueryText(activeInlineQuery?.query || "");
+    }, [activeInlineQuery]);
     const commandPickerOpen = activeQueryMode === "command" && !selectedCommand;
     const skillPickerOpen = activeQueryMode === "skill";
     const reasoningEffortLevels = useMemo<ReasoningEffortLevel[]>(() => {
@@ -3156,6 +3211,7 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
         setInput("");
+        setComposerSelection({ start: 0, end: 0 });
         setActiveQueryMode(null);
         setActiveQueryText("");
         clearActiveConversationViewState();
@@ -5037,6 +5093,7 @@ export default function ChatScreen() {
         const canonicalSessionId = item.sessionId || item.id;
         setHistoryOpen(false);
         setInput("");
+        setComposerSelection({ start: 0, end: 0 });
         setActiveQueryMode(null);
         setActiveQueryText("");
         setUploadedFiles([]);
@@ -5068,6 +5125,7 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
         setInput("");
+        setComposerSelection({ start: 0, end: 0 });
         setActiveQueryMode(null);
         setActiveQueryText("");
         clearActiveConversationViewState();
@@ -5104,6 +5162,7 @@ export default function ChatScreen() {
         loadingConversationIdRef.current = null;
         setHistoryOpen(false);
         setInput("");
+        setComposerSelection({ start: 0, end: 0 });
         setActiveQueryMode(null);
         setActiveQueryText("");
         clearActiveConversationViewState();
@@ -5398,7 +5457,9 @@ export default function ChatScreen() {
             if (!text) {
                 throw new Error(String(payload.error || t("src.screens.chatscreen.no_speech_detected")));
             }
-            setInput((current) => [current.trim(), text].filter(Boolean).join(current.trim() ? "\n" : ""));
+            const nextInput = [input.trim(), text].filter(Boolean).join(input.trim() ? "\n" : "");
+            setInput(nextInput);
+            setComposerSelection({ start: nextInput.length, end: nextInput.length });
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_transcribe_recording");
             if (isWorkspaceBindingErrorMessage(errorMessage)) {
@@ -5409,61 +5470,65 @@ export default function ChatScreen() {
         } finally {
             setTranscribing(false);
         }
-    }, [authorizedFetch, recorder, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, t]);
+    }, [authorizedFetch, input, recorder, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, t]);
+
+    const reconcileComposerReferences = useCallback((next: string) => {
+        if (selectedCommand && !composerTextContainsReference(next, {
+            kind: "command",
+            id: `command:${selectedCommand.name}`,
+            label: selectedCommand.name,
+        })) {
+            setSelectedCommand(null);
+        }
+        setSelectedSkills((current) => current.filter((skill) => composerTextContainsReference(next, {
+            kind: "skill",
+            id: `skill:${skill.path || skill.name}`,
+            label: skill.name || skill.path || "skill",
+        })));
+        setSelectedSubagentFamilies((current) => current.filter((family) => composerTextContainsReference(next, {
+            kind: "subagent_family",
+            id: `subagent_family:${family.familyId}`,
+            label: family.displayName || family.familyId,
+        })));
+        setSelectedPlugins((current) => current.filter((plugin) => composerTextContainsReference(next, {
+            kind: "plugin",
+            id: `plugin:${plugin.pluginId}`,
+            label: plugin.displayName || plugin.pluginId,
+        })));
+    }, [selectedCommand]);
 
     const handleBodyInputChange = useCallback((next: string) => {
-        const leading = next.trimStart();
-        const commandQuery = leading.match(/^\/([^\s]*)$/);
-        const skillQuery = leading.match(/^@([^\s]*)$/);
-        if (!input.trim() && !activeQueryMode) {
-            if (!selectedCommand && commandQuery) {
-                setActiveQueryMode("command");
-                setActiveQueryText(commandQuery[1] || "");
-                setInput("");
-                return;
-            }
-            if (skillQuery) {
-                setActiveQueryMode("skill");
-                setActiveQueryText(skillQuery[1] || "");
-                setInput("");
+        if (next.length < input.length) {
+            const deletion = removeComposerReferenceAtBackspace(
+                input,
+                composerReferences,
+                composerSelection.start,
+                composerSelection.end,
+            );
+            if (deletion) {
+                setInput(deletion.text);
+                setComposerSelection({ start: deletion.caret, end: deletion.caret });
+                reconcileComposerReferences(deletion.text);
                 return;
             }
         }
         setInput(next);
-    }, [activeQueryMode, input, selectedCommand]);
-
-    const handleQueryBackspace = useCallback(() => {
-        if (activeQueryText) {
-            return;
-        }
-        setActiveQueryMode(null);
-        setActiveQueryText("");
-    }, [activeQueryText]);
+        const selectedLength = Math.max(0, composerSelection.end - composerSelection.start);
+        const nextCaret = next.length < input.length
+            ? Math.max(0, composerSelection.start - (selectedLength > 0 ? 0 : input.length - next.length))
+            : Math.min(next.length, composerSelection.start + Math.max(0, next.length - (input.length - selectedLength)));
+        setComposerSelection({ start: nextCaret, end: nextCaret });
+        reconcileComposerReferences(next);
+    }, [composerReferences, composerSelection.end, composerSelection.start, input, reconcileComposerReferences]);
 
     const handleComposerBackspace = useCallback(() => {
         if (input.trim()) {
             return;
         }
-        if (selectedPlugins.length > 0) {
-            setSelectedPlugins((current) => current.slice(0, -1));
-            return;
-        }
-        if (selectedSubagentFamilies.length > 0) {
-            setSelectedSubagentFamilies((current) => current.slice(0, -1));
-            return;
-        }
-        if (selectedSkills.length > 0) {
-            setSelectedSkills((current) => current.slice(0, -1));
-            return;
-        }
-        if (selectedCommand) {
-            setSelectedCommand(null);
-            return;
-        }
         if (pendingContextSessionRefs.length > 0) {
             setPendingContextSessionRefs((current) => current.slice(0, -1));
         }
-    }, [input, pendingContextSessionRefs.length, selectedCommand, selectedSkills.length, selectedSubagentFamilies.length, selectedPlugins.length]);
+    }, [input, pendingContextSessionRefs.length]);
 
     const handleSpeakVoice = useCallback(async (text: string, messageKey: string) => {
         const voiceText = text.trim();
@@ -6017,7 +6082,13 @@ export default function ChatScreen() {
     const handleSend = useCallback(async (options: SendComposerOptions = {}) => {
         const hasExplicitFiles = Array.isArray(options.files);
         const preserveComposer = Boolean(options.preserveComposer);
-        const text = String(options.text ?? input).trim();
+        const displayText = String(options.text ?? input);
+        const pendingComposerPresentation = options.text === undefined && composerReferences.length > 0
+            ? { text: displayText, references: composerReferences }
+            : undefined;
+        const text = pendingComposerPresentation
+            ? stripComposerReferences(displayText, composerReferences)
+            : displayText.trim();
         const effectiveUploadedFiles = hasExplicitFiles ? [...(options.files || [])] : uploadedFiles;
         if (!text && !selectedCommand && selectedSkills.length === 0 && selectedSubagentFamilies.length === 0 && selectedPlugins.length === 0 && effectiveUploadedFiles.length === 0) {
             return;
@@ -6043,7 +6114,7 @@ export default function ChatScreen() {
         if (pendingSpecModeEnabled) {
             setSpecModeEnabled(false);
         }
-        const previewText = text || (
+        const previewText = displayText.trim() || (
             pendingFiles.length === 1
                 ? t("shared.upload.uploaded_single")
                 : pendingFiles.length > 1
@@ -6079,6 +6150,7 @@ export default function ChatScreen() {
                 specModeEnabled: pendingSpecModeEnabled,
                 files: pendingFiles,
                 contextSessionRefs: pendingSessionRefs,
+                composerPresentation: pendingComposerPresentation,
             }, engineNowMs);
             const clientMessageId = userMessage.id;
             submittedClientMessageId = clientMessageId;
@@ -6110,6 +6182,7 @@ export default function ChatScreen() {
                     setSelectedSkills([]);
                     setSelectedSubagentFamilies([]);
                     setSelectedPlugins([]);
+                    setComposerSelection({ start: 0, end: 0 });
                 }
                 if (!hasExplicitFiles) {
                     setUploadedFiles([]);
@@ -6167,6 +6240,7 @@ export default function ChatScreen() {
                             })),
                         ],
                         contextSessionRefs: pendingSessionRefs,
+                        composerPresentation: pendingComposerPresentation,
                         fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                         attachments: buildUploadedFileAttachments(pendingFiles),
                         supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
@@ -6262,6 +6336,7 @@ export default function ChatScreen() {
                 setSelectedSkills([]);
                 setSelectedSubagentFamilies([]);
                 setSelectedPlugins([]);
+                setComposerSelection({ start: 0, end: 0 });
             }
             if (!hasExplicitFiles) {
                 setUploadedFiles([]);
@@ -6319,6 +6394,7 @@ export default function ChatScreen() {
                         })),
                     ],
                     contextSessionRefs: pendingSessionRefs,
+                    composerPresentation: pendingComposerPresentation,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
                     supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
@@ -6419,7 +6495,8 @@ export default function ChatScreen() {
         } catch (error) {
             if (!submissionAccepted) {
                 if (!preserveComposer) {
-                    setInput(text);
+                    setInput(displayText);
+                    setComposerSelection({ start: displayText.length, end: displayText.length });
                     setSelectedCommand(pendingCommand);
                     setSelectedSkills(pendingSkills);
                     setSelectedSubagentFamilies(pendingSubagentFamilies);
@@ -6456,6 +6533,7 @@ export default function ChatScreen() {
     }, [
         authorizedFetch,
         clearNewConversationIntent,
+        composerReferences,
         getEngineNowMs,
         input,
         projection.runControlState.runId,
@@ -6565,40 +6643,65 @@ export default function ChatScreen() {
     });
 
     const handleSelectCommandFromPicker = (command: CommandPresetSummary) => {
+        if (!activeInlineQuery || activeInlineQuery.kind !== "command") return;
         if (command.readOnlyKind === "context_usage") {
-            setActiveQueryMode(null);
-            setActiveQueryText("");
+            const next = `${input.slice(0, activeInlineQuery.start)}${input.slice(activeInlineQuery.end)}`;
+            setInput(next);
+            setComposerSelection({ start: activeInlineQuery.start, end: activeInlineQuery.start });
             return;
         }
+        const inserted = insertComposerReference(input, activeInlineQuery, {
+            kind: "command",
+            id: `command:${command.name}`,
+            label: command.name,
+        });
         setSelectedCommand(command);
-        setActiveQueryMode(null);
-        setActiveQueryText("");
+        setInput(inserted.text);
+        setComposerSelection({ start: inserted.caret, end: inserted.caret });
     };
 
     const handleSelectSkillFromPicker = (skill: SkillReferenceSummary) => {
+        if (!activeInlineQuery || activeInlineQuery.kind !== "mention") return;
+        const inserted = insertComposerReference(input, activeInlineQuery, {
+            kind: "skill",
+            id: `skill:${skill.path || skill.name}`,
+            label: skill.name || skill.path || "skill",
+        });
         setSelectedSkills((current) => {
             const exists = current.some((item) => item.name === skill.name && (item.path || "") === (skill.path || ""));
             return exists ? current : [...current, skill];
         });
-        setActiveQueryMode(null);
-        setActiveQueryText("");
+        setInput(inserted.text);
+        setComposerSelection({ start: inserted.caret, end: inserted.caret });
     };
 
     const handleSelectSubagentFamilyFromPicker = (family: SubagentFamilySummary) => {
+        if (!activeInlineQuery || activeInlineQuery.kind !== "mention") return;
+        const inserted = insertComposerReference(input, activeInlineQuery, {
+            kind: "subagent_family",
+            id: `subagent_family:${family.familyId}`,
+            label: family.displayName || family.familyId,
+        });
         setSelectedSubagentFamilies((current) => {
             const exists = current.some((item) => item.familyId === family.familyId);
             return exists ? current : [...current, family];
         });
-        setActiveQueryMode(null);
-        setActiveQueryText("");
+        setInput(inserted.text);
+        setComposerSelection({ start: inserted.caret, end: inserted.caret });
     };
 
     const handleSelectPluginFromPicker = (plugin: PluginReferenceSummary) => {
+        if (!activeInlineQuery || activeInlineQuery.kind !== "mention") return;
+        const inserted = insertComposerReference(input, activeInlineQuery, {
+            kind: "plugin",
+            id: `plugin:${plugin.pluginId}`,
+            label: plugin.displayName || plugin.pluginId,
+        });
         setSelectedPlugins((current) => current.some((item) => item.pluginId === plugin.pluginId)
             ? current
             : [...current, { ...plugin, grantScope: "task" }]);
-        setActiveQueryMode(null);
-        setActiveQueryText("");
+        setInput(inserted.text);
+        setComposerSelection({ start: inserted.caret, end: inserted.caret });
     };
 
     const overlayDockContent = hasOverlayLayer ? (
@@ -6758,11 +6861,10 @@ export default function ChatScreen() {
                 <Composer
                     bodyValue={input}
                     onChangeBody={handleBodyInputChange}
-                    activeQueryMode={activeQueryMode}
-                    activeQueryText={activeQueryText}
-                    onChangeQueryText={setActiveQueryText}
                     onBodyBackspace={handleComposerBackspace}
-                    onQueryBackspace={handleQueryBackspace}
+                    composerReferences={composerReferences}
+                    selection={composerSelection}
+                    onSelectionChange={setComposerSelection}
                     onSend={() => void handleSend()}
                     busy={sending}
                     isRunning={composerRunActive}

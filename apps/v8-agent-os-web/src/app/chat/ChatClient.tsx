@@ -606,6 +606,9 @@ function hasStructuredAssistantPayload(message: Message | null | undefined) {
 }
 
 function hasRenderableWebMessagePayload(message: Message | null | undefined) {
+    const metadata = message?.metadata && typeof message.metadata === "object"
+        ? message.metadata as Record<string, unknown>
+        : {};
     return Boolean(
         message
         && (
@@ -613,6 +616,9 @@ function hasRenderableWebMessagePayload(message: Message | null | undefined) {
             || (Array.isArray(message.nodes) && message.nodes.length > 0)
             || (Array.isArray(message.artifacts) && message.artifacts.length > 0)
             || (Array.isArray(message.images) && message.images.length > 0)
+            || (metadata.composerPresentation && typeof metadata.composerPresentation === "object")
+            || (Array.isArray(metadata.contextMentions) && metadata.contextMentions.length > 0)
+            || (Array.isArray(metadata.pluginReferences) && metadata.pluginReferences.length > 0)
         ),
     );
 }
@@ -2708,8 +2714,10 @@ export default function ChatClient() {
         const hasText = currentInput.trim().length > 0;
         const hasCommandPreset = Boolean(optionData.commandPreset?.name);
         const hasSkillReferences = Array.isArray(optionData.skillReferences) && optionData.skillReferences.length > 0;
+        const hasContextMentions = Array.isArray(optionData.contextMentions) && optionData.contextMentions.length > 0;
+        const hasPluginReferences = Array.isArray(optionData.pluginReferences) && optionData.pluginReferences.length > 0;
         const hasFiles = Array.isArray(optionData.fileUrls) && optionData.fileUrls.length > 0;
-        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasSkillReferences && !hasFiles)) return false;
+        if (status !== 'authenticated' || (!hasText && !hasCommandPreset && !hasSkillReferences && !hasContextMentions && !hasPluginReferences && !hasFiles)) return false;
         if (!activeConversationIdRef.current) {
             setWorkspaceChooserVisible(true);
             if (!newConversationIntent) {

@@ -6,6 +6,7 @@ import type {
     AuthSessionPayload,
     ChatStreamEvent,
     ChatSubmitResponse,
+    ComposerPresentation,
     CommandPresetSummary,
     ConnectionSummary,
     ContextMentionSummary,
@@ -1098,6 +1099,7 @@ export async function submitChatMessage(
                 contextSessionRefs: Array.isArray(options.contextSessionRefs) && options.contextSessionRefs.length > 0
                     ? options.contextSessionRefs
                     : undefined,
+                composerPresentation: options.composerPresentation || undefined,
             },
         }),
     });
@@ -1344,6 +1346,7 @@ type SendChatOptions = {
     pluginReferences?: PluginReferenceSummary[];
     contextMentions?: ContextMentionSummary[];
     contextSessionRefs?: Array<{ sessionId: string; source: "history_menu" }>;
+    composerPresentation?: ComposerPresentation;
     fileUrls?: string[];
     attachments?: Array<Record<string, unknown>>;
     specMode?: boolean;
@@ -1406,6 +1409,7 @@ export async function sendChatMessageStream(
                 contextSessionRefs: Array.isArray(options.contextSessionRefs) && options.contextSessionRefs.length > 0
                     ? options.contextSessionRefs
                     : undefined,
+                composerPresentation: options.composerPresentation || undefined,
             },
         }),
     });

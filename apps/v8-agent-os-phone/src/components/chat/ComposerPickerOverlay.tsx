@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import {
     Pressable,
     StyleSheet,
@@ -11,7 +11,6 @@ import { FlatList as GestureFlatList } from "react-native-gesture-handler";
 import Svg, { Circle } from "react-native-svg";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
-import { radii } from "@/src/theme/tokens";
 import type { CommandPresetSummary, PluginReferenceSummary, SkillReferenceSummary, SubagentFamilySummary } from "@/src/types/admin";
 
 const PICKER_MIN_VIEWPORT_HEIGHT = 248;
@@ -87,80 +86,74 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
 
     const isCommand = mode === "command";
     const data: Array<CommandPresetSummary | ComposerMentionItem> = isCommand ? commands : mentions;
-    const renderCommandItem = ({ item }: { item: CommandPresetSummary }) => (
-        <Pressable onPress={() => onSelectCommand(item)} style={styles.row}>
-            {item.readOnlyKind === "context_usage" && typeof item.usagePercent === "number" ? (
-                <ContextUsageRing percent={item.usagePercent} color={colors.primary} trackColor={colors.border} />
-            ) : (
-                <MaterialCommunityIcons
-                    name={item.specCommandAction ? "file-document-check-outline" : "text-short"}
-                    size={16}
-                    color={item.specCommandAction ? colors.primary : colors.accent}
-                />
-            )}
-            <View style={styles.body}>
-                <Text style={[styles.title, { color: colors.text }]}>{item.name}</Text>
-                {item.summary ? (
-                    <Text style={[styles.summary, { color: colors.textMuted }]} numberOfLines={2}>
-                        {item.summary}
-                    </Text>
-                ) : null}
-            </View>
+    const panelHeight = Math.min(viewportHeight, Math.max(64, Math.min(data.length, 7) * 48 + 8));
+    const renderRow = ({
+        title,
+        summary,
+        meta,
+        icon,
+        onPress,
+    }: {
+        title: string;
+        summary?: string;
+        meta: string;
+        icon: ReactNode;
+        onPress: () => void;
+    }) => (
+        <Pressable
+            onPress={onPress}
+            style={({ pressed }) => [styles.row, pressed ? { backgroundColor: colors.primarySoft } : null]}
+        >
+            <View style={styles.iconSlot}>{icon}</View>
+            <Text style={styles.rowCopy} numberOfLines={1}>
+                <Text style={[styles.rowTitle, { color: colors.text }]}>{title}</Text>
+                {summary ? <Text style={[styles.rowSummary, { color: colors.textMuted }]}>  {summary}</Text> : null}
+            </Text>
+            <Text style={[styles.rowMeta, { color: colors.textSoft }]} numberOfLines={1}>{meta}</Text>
         </Pressable>
     );
-    const renderSkillItem = ({ item }: { item: SkillReferenceSummary }) => (
-        <Pressable onPress={() => onSelectSkill(item)} style={styles.row}>
-            <MaterialCommunityIcons name="at" size={16} color={colors.primary} />
-            <View style={styles.body}>
-                <Text style={[styles.title, { color: colors.text }]}>{item.name}</Text>
-                {item.description ? (
-                    <Text style={[styles.summary, { color: colors.textMuted }]} numberOfLines={2}>
-                        {item.description}
-                    </Text>
-                ) : null}
-                {item.path ? (
-                    <Text style={[styles.pathText, { color: colors.textSoft }]} numberOfLines={1}>
-                        {item.path}
-                    </Text>
-                ) : null}
-            </View>
-        </Pressable>
-    );
-    const renderMentionItem = ({ item }: { item: ComposerMentionItem }) => (
-        item.kind === "skill" ? renderSkillItem({ item: item.skill }) : item.kind === "subagent_family" ? (
-            <Pressable onPress={() => onSelectSubagentFamily(item.family)} style={styles.row}>
-                <MaterialCommunityIcons name="account-group-outline" size={16} color={colors.accent} />
-                <View style={styles.body}>
-                    <Text style={[styles.title, { color: colors.text }]}>{item.family.displayName || item.family.familyId}</Text>
-                    {item.family.description ? (
-                        <Text style={[styles.summary, { color: colors.textMuted }]} numberOfLines={2}>
-                            {item.family.description}
-                        </Text>
-                    ) : null}
-                    <Text style={[styles.pathText, { color: colors.textSoft }]} numberOfLines={1}>
-                        {item.family.memberCount ? `${item.family.memberCount} members` : item.family.familyId}
-                    </Text>
-                </View>
-            </Pressable>
+    const renderCommandItem = ({ item }: { item: CommandPresetSummary }) => renderRow({
+        title: item.name,
+        summary: item.summary,
+        meta: item.readOnlyKind === "context_usage" && typeof item.usagePercent === "number" ? `${item.usagePercent}%` : "Command",
+        icon: item.readOnlyKind === "context_usage" && typeof item.usagePercent === "number" ? (
+            <ContextUsageRing percent={item.usagePercent} color={colors.primary} trackColor={colors.border} />
         ) : (
-            <Pressable onPress={() => onSelectPlugin(item.plugin)} style={styles.row}>
-                <MaterialCommunityIcons name="puzzle-outline" size={16} color={item.plugin.status === "ready" ? colors.success : colors.warning} />
-                <View style={styles.body}>
-                    <Text style={[styles.title, { color: colors.text }]}>{item.plugin.displayName}</Text>
-                    {item.plugin.description ? <Text style={[styles.summary, { color: colors.textMuted }]} numberOfLines={2}>{item.plugin.description}</Text> : null}
-                    <Text style={[styles.pathText, { color: item.plugin.status === "ready" ? colors.success : colors.warning }]} numberOfLines={1}>
-                                            {item.plugin.status === "ready"
-                                                ? t("src.components.chat.composerpickeroverlay.plugin_ready_task_default")
-                                                : item.plugin.status === "not_installed"
-                                                    ? t("src.components.chat.composerpickeroverlay.plugin_not_installed")
-                                                    : item.plugin.status === "needs_configuration"
-                                                        ? t("src.components.chat.composerpickeroverlay.plugin_needs_configuration")
-                                                        : t("src.components.chat.composerpickeroverlay.plugin_offline")}
-                    </Text>
-                </View>
-            </Pressable>
-        )
-    );
+            <MaterialCommunityIcons
+                name={item.specCommandAction ? "file-document-check-outline" : "text-short"}
+                size={16}
+                color={colors.primary}
+            />
+        ),
+        onPress: () => onSelectCommand(item),
+    });
+    const renderMentionItem = ({ item }: { item: ComposerMentionItem }) => {
+        if (item.kind === "skill") {
+            return renderRow({
+                title: item.skill.name,
+                summary: item.skill.description || item.skill.path,
+                meta: "Skill",
+                icon: <MaterialCommunityIcons name="at" size={16} color={colors.primary} />,
+                onPress: () => onSelectSkill(item.skill),
+            });
+        }
+        if (item.kind === "subagent_family") {
+            return renderRow({
+                title: item.family.displayName || item.family.familyId,
+                summary: item.family.description,
+                meta: "Agent",
+                icon: <MaterialCommunityIcons name="account-group-outline" size={16} color={colors.primary} />,
+                onPress: () => onSelectSubagentFamily(item.family),
+            });
+        }
+        return renderRow({
+            title: item.plugin.displayName,
+            summary: item.plugin.description,
+            meta: item.plugin.status === "ready" ? "Plugin · Ready" : "Plugin · Setup",
+            icon: <MaterialCommunityIcons name="puzzle-outline" size={16} color={item.plugin.status === "ready" ? colors.success : colors.warning} />,
+            onPress: () => onSelectPlugin(item.plugin),
+        });
+    };
     const renderPickerItem = ({ item }: { item: CommandPresetSummary | ComposerMentionItem }) => (
         isCommand
             ? renderCommandItem({ item: item as CommandPresetSummary })
@@ -205,23 +198,16 @@ export const ComposerPickerOverlay = memo(function ComposerPickerOverlay({
                     ]}
                     pointerEvents="auto"
                 >
-                    <Text style={[styles.hint, { color: colors.textMuted }]}>
-                        {isCommand
-                            ? t("src.components.chat.composerpickeroverlay.type_to_choose_a_preset")
-                            : t("src.components.chat.composerpickeroverlay.type_to_choose_one_or_more_skills")}
-                    </Text>
-
-                    <View style={[styles.viewport, { height: viewportHeight }]}>
+                    <View style={[styles.viewport, { height: panelHeight }]}>
                         <GestureFlatList
                             data={data}
                             keyExtractor={(item) => isCommand ? (item as CommandPresetSummary).name : (item as ComposerMentionItem).key}
                             renderItem={renderPickerItem}
                             scrollEnabled
                             nestedScrollEnabled
-                            persistentScrollbar
                             keyboardShouldPersistTaps="handled"
                             keyboardDismissMode="none"
-                            showsVerticalScrollIndicator
+                            showsVerticalScrollIndicator={false}
                             overScrollMode="never"
                             removeClippedSubviews={false}
                             contentContainerStyle={styles.listContent}
@@ -259,50 +245,54 @@ const styles = StyleSheet.create({
         width: "100%",
     },
     panel: {
-        borderRadius: 8,
+        borderRadius: 18,
         borderWidth: 1,
-        paddingHorizontal: 12,
-        paddingTop: 10,
-        paddingBottom: 8,
-        shadowOpacity: 0.12,
+        padding: 6,
+        shadowOpacity: 0.1,
         shadowRadius: 18,
         shadowOffset: { width: 0, height: 12 },
         elevation: 8,
     },
-    hint: {
-        fontSize: 12,
-        fontWeight: "700",
-        marginBottom: 8,
-    },
     viewport: {
-        borderRadius: 6,
+        borderRadius: 12,
         overflow: "hidden",
     },
     listContent: {
-        paddingBottom: 8,
+        paddingVertical: 2,
     },
     row: {
+        minHeight: 46,
         flexDirection: "row",
-        alignItems: "flex-start",
-        gap: 10,
-        paddingVertical: 10,
-        paddingHorizontal: 2,
+        alignItems: "center",
+        gap: 8,
+        paddingVertical: 8,
+        paddingHorizontal: 10,
+        borderRadius: 10,
     },
-    body: {
+    iconSlot: {
+        width: 24,
+        height: 24,
+        alignItems: "center",
+        justifyContent: "center",
+    },
+    rowCopy: {
         flex: 1,
         minWidth: 0,
-        gap: 2,
     },
-    title: {
+    rowTitle: {
         fontSize: 14,
         fontWeight: "800",
+        lineHeight: 20,
     },
-    summary: {
+    rowSummary: {
         fontSize: 12,
-        lineHeight: 18,
+        lineHeight: 20,
     },
-    pathText: {
+    rowMeta: {
+        maxWidth: 92,
         fontSize: 11,
+        fontWeight: "700",
+        lineHeight: 16,
     },
     emptyText: {
         fontSize: 12,

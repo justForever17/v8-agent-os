@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
     Modal,
     Platform,
@@ -21,6 +21,10 @@ import Animated, {
     withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+    buildComposerInlineSegments,
+    type ComposerInlineReference,
+} from "@v8/session-realtime/composer-inline-references";
 
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
@@ -242,11 +246,10 @@ function ComposerActionButton({
 export const Composer = memo(function Composer({
     bodyValue,
     onChangeBody,
-    activeQueryMode,
-    activeQueryText,
-    onChangeQueryText,
     onBodyBackspace,
-    onQueryBackspace,
+    composerReferences,
+    selection,
+    onSelectionChange,
     onSend,
     busy = false,
     isRunning = false,
@@ -282,11 +285,10 @@ export const Composer = memo(function Composer({
 }: {
     bodyValue: string;
     onChangeBody: (next: string) => void;
-    activeQueryMode: "command" | "skill" | null;
-    activeQueryText: string;
-    onChangeQueryText: (next: string) => void;
     onBodyBackspace?: () => void;
-    onQueryBackspace?: () => void;
+    composerReferences: ComposerInlineReference[];
+    selection: { start: number; end: number };
+    onSelectionChange: (selection: { start: number; end: number }) => void;
     onSend: () => void;
     busy?: boolean;
     isRunning?: boolean;
@@ -325,15 +327,20 @@ export const Composer = memo(function Composer({
     const [isFocused, setIsFocused] = useState(false);
     const [safetyApprovalOpen, setSafetyApprovalOpen] = useState(false);
     const [pluginSheetId, setPluginSheetId] = useState("");
+    const [editorScrollY, setEditorScrollY] = useState(0);
     const bodyInputRef = useRef<TextInput | null>(null);
-    const queryInputRef = useRef<TextInput | null>(null);
     const hasPayload = Boolean(bodyValue.trim() || selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || selectedPlugins.length > 0 || uploadedFiles.length > 0);
     const stopAvailable = Boolean(isRunning && canStop && onStop);
     const canQueue = Boolean(hasPayload && !busy && isRunning && allowQueueWhileRunning);
     const canSend = hasPayload && !busy && (!isRunning || allowQueueWhileRunning);
     const canAct = canSend || (stopAvailable && !hasPayload);
-    const hasFlowTokens = Boolean(selectedCommand || selectedSkills.length > 0 || selectedSubagentFamilies.length > 0 || selectedPlugins.length > 0 || contextSessionRefs.length > 0 || activeQueryMode);
     const pluginInSheet = selectedPlugins.find((plugin) => plugin.pluginId === pluginSheetId) || null;
+    const composerSegments = useMemo(
+        () => buildComposerInlineSegments(bodyValue, composerReferences),
+        [bodyValue, composerReferences],
+    );
+    const commandColor = themeMode === "dark" ? "#C4B5FD" : "#7C3AED";
+    const mentionColor = themeMode === "dark" ? "#FDBA74" : "#F97316";
     const reasoningEffortLabelMap: Record<ReasoningEffortLevel, string> = {
         auto: t("src.components.chat.composer.reasoning_effort_auto_short"),
         low: t("src.components.chat.composer.reasoning_effort_low_short"),
@@ -400,14 +407,6 @@ export const Composer = memo(function Composer({
         : null;
     const bodyPlaceholder = "";
 
-    useEffect(() => {
-        const targetRef = activeQueryMode ? queryInputRef : bodyInputRef;
-        const timer = setTimeout(() => {
-            targetRef.current?.focus();
-        }, 16);
-        return () => clearTimeout(timer);
-    }, [activeQueryMode]);
-
     const handlePrimaryAction = () => {
         if (canSend) {
             onSend();
@@ -461,86 +460,39 @@ export const Composer = memo(function Composer({
                                     </Pressable>
                                 </View>
                             ))}
-                            {selectedCommand ? (
-                                <View
-                                    style={[styles.tokenChip, styles.commandTokenChip]}
-                                >
-                                    <Text style={[styles.tokenPrefix, { color: colors.primary }]}>/</Text>
-                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>
-                                        {selectedCommand.name}
+                            <View style={styles.composerInputLayer}>
+                                <View pointerEvents="none" style={styles.inputMirrorViewport}>
+                                    <Text
+                                        style={[
+                                            styles.inputMirrorText,
+                                            {
+                                                color: colors.text,
+                                                transform: [{ translateY: -editorScrollY }],
+                                            },
+                                        ]}
+                                    >
+                                        {composerSegments.map((segment, index) => (
+                                            <Text
+                                                key={`${segment.start}:${segment.end}:${index}`}
+                                                style={segment.type === "reference"
+                                                    ? {
+                                                        color: segment.reference?.kind === "command" ? commandColor : mentionColor,
+                                                        fontWeight: "700",
+                                                    }
+                                                    : undefined}
+                                            >
+                                                {segment.text}
+                                            </Text>
+                                        ))}
                                     </Text>
                                 </View>
-                            ) : null}
-                            {selectedSkills.map((skill) => (
-                                <View
-                                    key={`${skill.name}:${skill.path || ""}`}
-                                    style={styles.tokenChip}
-                                >
-                                    <MaterialCommunityIcons name="at" size={14} color={colors.primary} />
-                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>
-                                        {skill.name}
-                                    </Text>
-                                </View>
-                            ))}
-                            {selectedSubagentFamilies.map((family) => (
-                                <View
-                                    key={family.familyId}
-                                    style={styles.tokenChip}
-                                >
-                                    <MaterialCommunityIcons name="at" size={14} color={colors.primary} />
-                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>
-                                        {family.displayName || family.familyId}
-                                    </Text>
-                                </View>
-                            ))}
-                            {selectedPlugins.map((plugin) => (
-                                <Pressable
-                                    key={plugin.pluginId}
-                                    onPress={() => setPluginSheetId(plugin.pluginId)}
-                                    style={styles.tokenChip}
-                                >
-                                    <MaterialCommunityIcons name="puzzle-outline" size={14} color={plugin.status === "ready" ? colors.success : colors.warning} />
-                                    <Text style={[styles.tokenText, { color: colors.primary }]} numberOfLines={1}>{plugin.displayName}</Text>
-                                    <Text style={[styles.tokenMetaText, { color: colors.textMuted }]}>{plugin.grantScope === "session" ? t("src.components.chat.composer.plugin_scope_session_short") : t("src.components.chat.composer.plugin_scope_task_short")}</Text>
-                                </Pressable>
-                            ))}
-                            {activeQueryMode ? (
-                                <View
-                                    style={styles.queryChip}
-                                >
-                                    <Text style={[styles.queryPrefix, { color: colors.primary }]}>
-                                        {activeQueryMode === "command" ? "/" : "@"}
-                                    </Text>
-                                    <TextInput
-                                        ref={queryInputRef}
-                                        value={activeQueryText}
-                                        onChangeText={onChangeQueryText}
-                                        onFocus={() => setIsFocused(true)}
-                                        onBlur={() => setIsFocused(false)}
-                                        onKeyPress={(event) => {
-                                            if (event.nativeEvent.key === "Backspace" && !activeQueryText) {
-                                                onQueryBackspace?.();
-                                            }
-                                        }}
-                                        placeholder={activeQueryMode === "command"
-                                            ? t("src.components.chat.composer.search_command")
-                                            : t("src.components.chat.composer.search_skill")}
-                                        placeholderTextColor={colors.textSoft}
-                                        autoCorrect={false}
-                                        spellCheck={false}
-                                        autoComplete="off"
-                                        importantForAutofill="no"
-                                        selectionColor={colors.primary}
-                                        cursorColor={colors.accent}
-                                        returnKeyType="done"
-                                        style={[styles.queryInput, { color: colors.text }, inputWebStyle]}
-                                    />
-                                </View>
-                            ) : (
                                 <TextInput
                                     ref={bodyInputRef}
                                     value={bodyValue}
                                     onChangeText={onChangeBody}
+                                    selection={selection}
+                                    onSelectionChange={(event) => onSelectionChange(event.nativeEvent.selection)}
+                                    onScroll={(event) => setEditorScrollY(event.nativeEvent.contentOffset?.y || 0)}
                                     onFocus={() => setIsFocused(true)}
                                     onBlur={() => setIsFocused(false)}
                                     onKeyPress={(event) => {
@@ -571,12 +523,12 @@ export const Composer = memo(function Composer({
                                     textAlignVertical="top"
                                     style={[
                                         styles.input,
-                                        hasFlowTokens ? styles.inputInline : styles.inputStandalone,
-                                        { color: colors.text },
+                                        styles.inputStandalone,
+                                        { color: "transparent" },
                                         inputWebStyle,
                                     ]}
                                 />
-                            )}
+                            </View>
                         </View>
                     </View>
 
@@ -598,20 +550,10 @@ export const Composer = memo(function Composer({
                                 onPress={() => onChangeSupervisorWorkMode?.(supervisorWorkMode === "engineering" ? "daily" : "engineering")}
                             >
                                 <MaterialCommunityIcons
-                                    name="code-tags"
+                                    name={supervisorWorkMode === "engineering" ? "code-tags" : "message-processing-outline"}
                                     size={19}
                                     color={supervisorWorkMode === "engineering" ? colors.primaryDeep : colors.textMuted}
                                 />
-                                <Text
-                                    style={[
-                                        styles.workModeText,
-                                        { color: supervisorWorkMode === "engineering" ? colors.primaryDeep : colors.textMuted },
-                                    ]}
-                                >
-                                    {supervisorWorkMode === "engineering"
-                                        ? t("src.components.chat.composer.mode_engineering")
-                                        : t("src.components.chat.composer.mode_daily")}
-                                </Text>
                             </Pressable>
                             <Pressable
                                 accessibilityRole="button"
@@ -930,9 +872,27 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         flexWrap: "wrap",
         alignItems: "center",
-        alignContent: "flex-start",
         columnGap: 7,
         rowGap: 2,
+    },
+    composerInputLayer: {
+        position: "relative",
+        width: "100%",
+        minHeight: 32,
+        overflow: "hidden",
+    },
+    inputMirrorViewport: {
+        ...StyleSheet.absoluteFillObject,
+        overflow: "hidden",
+    },
+    inputMirrorText: {
+        minHeight: 32,
+        paddingHorizontal: 2,
+        paddingTop: 2,
+        paddingBottom: 4,
+        fontSize: 16,
+        lineHeight: 24,
+        includeFontPadding: false,
     },
     input: {
         minHeight: 24,
@@ -960,17 +920,6 @@ const styles = StyleSheet.create({
         paddingTop: 2,
         paddingBottom: 4,
     },
-    inputInline: {
-        flexGrow: 1,
-        flexShrink: 1,
-        flexBasis: 64,
-        minWidth: 48,
-        maxWidth: "100%",
-        paddingLeft: 0,
-        paddingRight: 0,
-        paddingTop: 0,
-        paddingBottom: 0,
-    },
     tokenChip: {
         minHeight: 24,
         maxWidth: "100%",
@@ -979,50 +928,11 @@ const styles = StyleSheet.create({
         alignItems: "center",
         gap: 4,
     },
-    commandTokenChip: {
-        maxWidth: 176,
-    },
     tokenText: {
         fontSize: 16,
         fontWeight: "700",
         lineHeight: 24,
         flexShrink: 1,
-        includeFontPadding: false,
-    },
-    tokenPrefix: {
-        fontSize: 16,
-        fontWeight: "800",
-        lineHeight: 24,
-        includeFontPadding: false,
-    },
-    tokenMetaText: {
-        fontSize: 12,
-        fontWeight: "700",
-        lineHeight: 18,
-        includeFontPadding: false,
-    },
-    queryChip: {
-        minHeight: 24,
-        minWidth: 68,
-        maxWidth: 220,
-        paddingHorizontal: 1,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 4,
-    },
-    queryPrefix: {
-        fontSize: 16,
-        fontWeight: "800",
-        lineHeight: 24,
-        includeFontPadding: false,
-    },
-    queryInput: {
-        minWidth: 36,
-        maxWidth: 168,
-        paddingVertical: 0,
-        paddingHorizontal: 0,
-        fontSize: 16,
-        lineHeight: 24,
         includeFontPadding: false,
     },
     bottomControls: {
@@ -1049,13 +959,8 @@ const styles = StyleSheet.create({
         borderWidth: 1,
     },
     workModeButton: {
-        width: "auto",
-        paddingHorizontal: 8,
-        gap: 4,
-    },
-    workModeText: {
-        fontSize: 12,
-        fontWeight: "600",
+        width: 32,
+        paddingHorizontal: 0,
     },
     safetyControl: {
         zIndex: 20,

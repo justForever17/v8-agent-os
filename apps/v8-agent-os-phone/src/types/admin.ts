@@ -3,6 +3,7 @@ import type {
     AdminResourceRef,
     AuthoritativeSessionHistoryRecord,
     ContextReferenceItem,
+    ComposerPresentation,
     PluginReferenceSummary,
     SessionHistoryControls,
 } from "@v8/session-realtime";
@@ -12,6 +13,7 @@ export type {
     AdminResourceRef,
     AuthoritativeSessionHistoryRecord,
     ContextReferenceItem,
+    ComposerPresentation,
     PluginReferenceSummary,
     SessionHistoryControls,
 } from "@v8/session-realtime";
@@ -403,6 +405,7 @@ export type ChatMessage = {
         skillReferences?: SkillReferenceSummary[];
         pluginReferences?: PluginReferenceSummary[];
         contextMentions?: ContextMentionSummary[];
+        composerPresentation?: ComposerPresentation;
         explicitSubagentFamilies?: string[];
         specMode?: boolean;
         taskPlanningMode?: boolean;

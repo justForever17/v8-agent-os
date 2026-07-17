@@ -406,6 +406,20 @@ export function useLangGraphStream({ apiEndpoint, onError, onFinish, onConnect, 
                 }))
                 .filter((item: { name: string; description: string; path: string }) => item.name || item.path);
         }
+        if (data?.composerPresentation && typeof data.composerPresentation === "object") {
+            const presentationText = typeof data.composerPresentation.text === "string"
+                ? data.composerPresentation.text
+                : "";
+            const presentationReferences = Array.isArray(data.composerPresentation.references)
+                ? data.composerPresentation.references.filter((item: unknown) => Boolean(item) && typeof item === "object")
+                : [];
+            if (presentationText && presentationReferences.length > 0) {
+                optimisticMetadata.composerPresentation = {
+                    text: presentationText,
+                    references: presentationReferences,
+                };
+            }
+        }
         if (Array.isArray(data?.contextSessionRefs) && data.contextSessionRefs.length > 0) {
             optimisticMetadata.contextSessionRefs = data.contextSessionRefs
                 .filter((item: unknown) => item && typeof item === "object")

@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element */
 
-import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, Orbit } from "lucide-react";
+import { User, Copy, Trash2, Check, TerminalSquare, ChevronDown, Orbit, AtSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, memo, useMemo, useCallback } from "react";
 import { groupTimelineNodes, type TimelineSegment } from "@/lib/chat/timeline-grouper";
@@ -14,6 +14,10 @@ import {
     type AdminProcessRef,
     type CollaborationMicroStageActivityInput,
 } from "@v8/session-realtime";
+import {
+    buildComposerInlineSegments,
+    type ComposerPresentation,
+} from "@v8/session-realtime/composer-inline-references";
 import {
     buildMessageBoundCollaborationMicroStagePlacement,
     buildMessageBoundExecutionNodes,
@@ -60,6 +64,13 @@ type SkillReferenceMetadata = {
     name: string;
     description?: string;
     path?: string;
+};
+
+type MentionReferenceMetadata = {
+    key: string;
+    kind: "subagent_family" | "plugin";
+    label: string;
+    description?: string;
 };
 
 function isExecutionNode(node: UiTimelineNode): node is UiExecutionNode {
@@ -222,6 +233,46 @@ function extractSkillReferences(message: Message): SkillReferenceMetadata[] {
     return normalized;
 }
 
+function extractMentionReferences(message: Message): MentionReferenceMetadata[] {
+    const normalized: MentionReferenceMetadata[] = [];
+    const seen = new Set<string>();
+    const contextMentions = message.metadata?.contextMentions;
+    if (Array.isArray(contextMentions)) {
+        for (const item of contextMentions) {
+            if (!item || typeof item !== "object") continue;
+            const record = item as Record<string, unknown>;
+            if (record.kind !== "subagent_family") continue;
+            const id = typeof record.familyId === "string" ? record.familyId.trim() : typeof record.id === "string" ? record.id.trim() : "";
+            const label = typeof record.label === "string" ? record.label.trim() : typeof record.name === "string" ? record.name.trim() : id;
+            if (!label) continue;
+            const key = `subagent_family:${id || label.toLowerCase()}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            normalized.push({
+                key,
+                kind: "subagent_family",
+                label,
+                description: typeof record.description === "string" ? record.description.trim() : "",
+            });
+        }
+    }
+    const pluginReferences = message.metadata?.pluginReferences;
+    if (Array.isArray(pluginReferences)) {
+        for (const item of pluginReferences) {
+            if (!item || typeof item !== "object") continue;
+            const record = item as Record<string, unknown>;
+            const id = typeof record.pluginId === "string" ? record.pluginId.trim() : "";
+            const label = typeof record.name === "string" ? record.name.trim() : typeof record.displayName === "string" ? record.displayName.trim() : id;
+            if (!label) continue;
+            const key = `plugin:${id || label.toLowerCase()}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            normalized.push({ key, kind: "plugin", label });
+        }
+    }
+    return normalized;
+}
+
 function extractContextSessionRefs(message: Message): string[] {
     const raw = message.metadata?.contextSessionRefs;
     if (!Array.isArray(raw)) {
@@ -233,6 +284,24 @@ function extractContextSessionRefs(message: Message): string[] {
             .map((item) => typeof item.sessionId === "string" ? item.sessionId.trim() : "")
             .filter(Boolean),
     )).slice(0, 3);
+}
+
+function extractComposerPresentation(message: Message): ComposerPresentation | null {
+    const raw = message.metadata?.composerPresentation;
+    if (!raw || typeof raw !== "object") return null;
+    const record = raw as Record<string, unknown>;
+    const text = typeof record.text === "string" ? record.text : "";
+    const rawReferences = Array.isArray(record.references) ? record.references : [];
+    const references = rawReferences.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const reference = item as Record<string, unknown>;
+        const kind = String(reference.kind || "").trim();
+        const id = String(reference.id || "").trim();
+        const label = String(reference.label || "").trim();
+        if (!id || !label || !["command", "skill", "subagent_family", "plugin"].includes(kind)) return [];
+        return [{ kind: kind as ComposerPresentation["references"][number]["kind"], id, label }];
+    });
+    return text && references.length > 0 ? { text, references } : null;
 }
 
 const LOOPBACK_WORKSPACE_URL_PATTERN = /https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::9530)?\/workspace\/([^\s)]+)/gi;
@@ -345,8 +414,18 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const specModeEnabled = useMemo(() => hasSpecMode(message), [message]);
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
+    const mentionReferences = useMemo(() => extractMentionReferences(message), [message]);
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
-    const shouldRenderUserMetadata = Boolean(commandPresetName || specModeEnabled || skillReferences.length > 0 || contextSessionRefs.length > 0);
+    const composerPresentation = useMemo(() => extractComposerPresentation(message), [message]);
+    const composerPresentationSegments = useMemo(
+        () => composerPresentation ? buildComposerInlineSegments(composerPresentation.text, composerPresentation.references) : [],
+        [composerPresentation],
+    );
+    const shouldRenderUserMetadata = Boolean(
+        contextSessionRefs.length > 0
+        || specModeEnabled
+        || (!composerPresentation && (commandPresetName || skillReferences.length > 0 || mentionReferences.length > 0)),
+    );
     const normalizedContent = useMemo(() => normalizeWorkspaceLinks(message.content || ""), [message.content]);
     const copyLabel = t("web.generated.8095bb5671");
     const deleteLabel = t("web.generated.2f98d36496");
@@ -613,32 +692,46 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                             : "bg-gradient-to-br from-violet-600 to-indigo-600 text-white selection:bg-slate-950/45 selection:text-white rounded-3xl rounded-tr-sm shadow-violet-500/20 backdrop-blur-md border border-white/10"
                     )}>
                         {!isTool && shouldRenderUserMetadata && (
-                            <div className="mb-3 flex flex-wrap gap-2">
-                                {commandPresetName && (
-                                    <span className="inline-flex items-center rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white/95 backdrop-blur-sm">
-                                        /{commandPresetName}
+                            <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[14px] font-semibold leading-6 sm:text-[15px]">
+                                {!composerPresentation && commandPresetName && (
+                                    <span className="inline-flex h-6 items-center gap-1 text-white/95">
+                                        <span aria-hidden="true" className="font-bold">/</span>
+                                        <span>{commandPresetName.replace(/^\/+/, "")}</span>
                                     </span>
                                 )}
-                                {skillReferences.map((skill) => (
+                                {!composerPresentation && skillReferences.map((skill) => (
                                     <span
                                         key={`${skill.name}:${skill.path || ""}`}
-                                        className="inline-flex items-center rounded-full border border-fuchsia-200/60 bg-fuchsia-500/20 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white backdrop-blur-sm"
+                                        className="inline-flex h-6 items-center gap-1 text-white/95"
                                         title={skill.path || skill.description || skill.name}
                                     >
-                                        @{skill.name}
+                                        <AtSign className="h-4 w-4 shrink-0" />
+                                        <span>{skill.name}</span>
+                                    </span>
+                                ))}
+                                {!composerPresentation && mentionReferences.map((reference) => (
+                                    <span
+                                        key={reference.key}
+                                        className="inline-flex h-6 items-center gap-1 text-white/95"
+                                        title={reference.description || reference.label}
+                                    >
+                                        {reference.kind === "plugin"
+                                            ? <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-emerald-300" />
+                                            : <AtSign className="h-4 w-4 shrink-0" />}
+                                        <span>{reference.label}</span>
                                     </span>
                                 ))}
                                 {contextSessionRefs.map((sessionId) => (
                                     <span
                                         key={sessionId}
-                                        className="inline-flex items-center rounded-full border border-cyan-200/60 bg-cyan-500/20 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white backdrop-blur-sm"
+                                        className="inline-flex h-6 items-center gap-1 text-cyan-100"
                                         title={sessionId}
                                     >
                                         {t("web.chat.contextSessionRef")} · {sessionId.slice(0, 12)}
                                     </span>
                                 ))}
                                 {specModeEnabled && (
-                                    <span className="inline-flex items-center rounded-full border border-white/30 bg-white/15 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-white/95 backdrop-blur-sm">
+                                    <span className="inline-flex h-6 items-center text-white/95">
                                         Spec
                                     </span>
                                 )}
@@ -699,16 +792,31 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                                 })}
                             </div>
                         )}
-                        {normalizedContent.trim() ? (
+                        {composerPresentation ? (
+                            <div className="whitespace-pre-wrap break-words text-[14px] leading-relaxed sm:text-[15px]">
+                                {composerPresentationSegments.map((segment, index) => (
+                                    <span
+                                        key={`${segment.start}:${segment.end}:${index}`}
+                                        className={segment.type === "reference"
+                                            ? segment.reference?.kind === "command"
+                                                ? "font-semibold text-violet-200"
+                                                : "font-semibold text-orange-200"
+                                            : undefined}
+                                    >
+                                        {segment.text}
+                                    </span>
+                                ))}
+                            </div>
+                        ) : normalizedContent.trim() ? (
                             <div className={cn("leading-relaxed", isTool ? "whitespace-pre-wrap break-all" : "prose-invert")}>
                                 <MarkdownRenderer content={normalizedContent} />
                             </div>
                         ) : null}
 
-                        {!isLoading && normalizedContent && !isTool && (
+                        {!isLoading && (composerPresentation?.text || normalizedContent) && !isTool && (
                             <MessageActionButtons
                                 copied={isCopied}
-                                onCopy={() => handleCopy(normalizedContent)}
+                                onCopy={() => handleCopy(composerPresentation?.text || normalizedContent)}
                                 onDelete={() => onDelete(message.id)}
                                 copyLabel={copyLabel}
                                 deleteLabel={deleteLabel}

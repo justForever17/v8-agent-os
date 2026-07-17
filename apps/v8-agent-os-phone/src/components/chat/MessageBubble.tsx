@@ -11,6 +11,7 @@ import {
     type CollaborationMicroStageActivityInput,
     type MessageTimelineSegment,
 } from "@v8/session-realtime";
+import { buildComposerInlineSegments } from "@v8/session-realtime/composer-inline-references";
 import {
     buildMessageBoundCollaborationMicroStagePlacement,
     buildMessageBoundExecutionNodes,
@@ -35,7 +36,7 @@ import { formatClock } from "@/src/lib/time";
 import { resolveRenderableMediaUrl } from "@/src/lib/workspace-links";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
-import type { ChatMessage, PhoneUiExecutionNode, PhoneUiTimelineNode, SkillReferenceSummary } from "@/src/types/admin";
+import type { ChatMessage, ComposerPresentation, PhoneUiExecutionNode, PhoneUiTimelineNode, SkillReferenceSummary } from "@/src/types/admin";
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
 import {
     CollaborationMicroStageScene,
@@ -639,6 +640,45 @@ function extractSkillReferences(message: ChatMessage): SkillReferenceSummary[] {
         .filter((item) => item.name || item.path);
 }
 
+type UserMentionReference = {
+    key: string;
+    kind: "subagent_family" | "plugin";
+    label: string;
+};
+
+function extractUserMentionReferences(message: ChatMessage): UserMentionReference[] {
+    const normalized: UserMentionReference[] = [];
+    const seen = new Set<string>();
+    const contextMentions = message.metadata?.contextMentions;
+    if (Array.isArray(contextMentions)) {
+        for (const item of contextMentions) {
+            if (!item || item.kind !== "subagent_family") continue;
+            const id = String(item.familyId || item.id || "").trim();
+            const label = String(item.label || item.name || id).trim();
+            if (!label) continue;
+            const key = `subagent_family:${id || label.toLowerCase()}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            normalized.push({ key, kind: "subagent_family", label });
+        }
+    }
+    const pluginReferences = message.metadata?.pluginReferences;
+    if (Array.isArray(pluginReferences)) {
+        for (const item of pluginReferences) {
+            if (!item || typeof item !== "object") continue;
+            const record = item as unknown as Record<string, unknown>;
+            const id = String(record.pluginId || "").trim();
+            const label = String(record.displayName || record.name || id).trim();
+            if (!label) continue;
+            const key = `plugin:${id || label.toLowerCase()}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            normalized.push({ key, kind: "plugin", label });
+        }
+    }
+    return normalized;
+}
+
 function extractContextSessionRefs(message: ChatMessage): string[] {
     const raw = message.metadata?.contextSessionRefs;
     if (!Array.isArray(raw)) return [];
@@ -648,6 +688,21 @@ function extractContextSessionRefs(message: ChatMessage): string[] {
             .map((item) => typeof item.sessionId === "string" ? item.sessionId.trim() : "")
             .filter(Boolean),
     )).slice(0, 3);
+}
+
+function extractComposerPresentation(message: ChatMessage): ComposerPresentation | null {
+    const raw = message.metadata?.composerPresentation;
+    if (!raw || typeof raw !== "object") return null;
+    const text = typeof raw.text === "string" ? raw.text : "";
+    const references = Array.isArray(raw.references)
+        ? raw.references.filter((reference) => Boolean(
+            reference
+            && typeof reference.id === "string"
+            && typeof reference.label === "string"
+            && ["command", "skill", "subagent_family", "plugin"].includes(reference.kind),
+        ))
+        : [];
+    return text && references.length > 0 ? { text, references } : null;
 }
 
 type UserAttachmentItem = {
@@ -868,7 +923,15 @@ export const MessageBubble = memo(function MessageBubble({
     );
     const commandPresetName = useMemo(() => extractCommandPresetName(message), [message]);
     const skillReferences = useMemo(() => extractSkillReferences(message), [message]);
+    const mentionReferences = useMemo(() => extractUserMentionReferences(message), [message]);
     const contextSessionRefs = useMemo(() => extractContextSessionRefs(message), [message]);
+    const composerPresentation = useMemo(() => extractComposerPresentation(message), [message]);
+    const composerPresentationSegments = useMemo(
+        () => composerPresentation
+            ? buildComposerInlineSegments(composerPresentation.text, composerPresentation.references)
+            : [],
+        [composerPresentation],
+    );
     const userAttachments = useMemo(
         () => extractUserAttachments(message, adminBaseUrl),
         [adminBaseUrl, message],
@@ -1192,7 +1255,9 @@ export const MessageBubble = memo(function MessageBubble({
         ? { maxWidth: assistantBubbleWidth, minWidth: assistantMinWidth }
         : { width: assistantBubbleWidth, maxWidth: assistantBubbleWidth, minWidth: assistantBubbleWidth };
     const copyValue = useMemo(() => {
-        const directContent = isUser ? userContentText : String(message.content || "").trim();
+        const directContent = isUser
+            ? (composerPresentation?.text || userContentText)
+            : String(message.content || "").trim();
         if (directContent) {
             return directContent;
         }
@@ -1220,6 +1285,7 @@ export const MessageBubble = memo(function MessageBubble({
         const metadataLines = [
             commandPresetName ? `/${commandPresetName}` : "",
             ...skillReferences.map((skill) => `@${skill.name || skill.path}`),
+            ...mentionReferences.map((reference) => `@${reference.label}`),
             ...contextSessionRefs.map((sessionId) => `${t("shared.conversation.context_session_ref")}: ${sessionId}`),
             composerSpecMode ? "Spec" : "",
             ...userAttachments.map((attachment) => attachment.name),
@@ -1228,7 +1294,7 @@ export const MessageBubble = memo(function MessageBubble({
             return metadataLines.join("\n");
         }
         return "";
-    }, [commandPresetName, composerSpecMode, contextSessionRefs, isUser, renderableNodes, skillReferences, t, userAttachments, userContentText]);
+    }, [commandPresetName, composerPresentation?.text, composerSpecMode, contextSessionRefs, isUser, mentionReferences, renderableNodes, skillReferences, t, userAttachments, userContentText]);
 
     useEffect(() => {
         if (!copied) {
@@ -1241,8 +1307,10 @@ export const MessageBubble = memo(function MessageBubble({
     const userColumnWidth = sharedTextBubbleWidth;
     const userBubbleWidth = sharedTextBubbleWidth;
     const hasUserVisualPayload = Boolean(
-        commandPresetName
+        composerPresentation
+        || commandPresetName
         || skillReferences.length > 0
+        || mentionReferences.length > 0
         || contextSessionRefs.length > 0
         || composerSpecMode
         || userAttachments.length > 0,
@@ -1263,37 +1331,6 @@ export const MessageBubble = memo(function MessageBubble({
                                 end={{ x: 1, y: 1 }}
                                 style={[styles.userBubble, { shadowColor: palette.primaryDeep }]}
                             >
-                                {(commandPresetName || skillReferences.length > 0 || contextSessionRefs.length > 0 || composerSpecMode) && (
-                                    <View style={styles.userMetaRow}>
-                                        {commandPresetName ? (
-                                            <View style={styles.userChip}>
-                                                <MaterialCommunityIcons name="text-short" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText}>{commandPresetName.replace(/^\/+/, "")}</Text>
-                                            </View>
-                                        ) : null}
-                                        {skillReferences.map((skill) => (
-                                            <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
-                                                <MaterialCommunityIcons name="at" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText}>{skill.name}</Text>
-                                            </View>
-                                        ))}
-                                        {contextSessionRefs.map((sessionId) => (
-                                            <View key={sessionId} style={styles.userChip}>
-                                                <MaterialCommunityIcons name="message-arrow-right-outline" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText} numberOfLines={1}>
-                                                    {t("shared.conversation.context_session_ref")} · {sessionId.slice(0, 10)}
-                                                </Text>
-                                            </View>
-                                        ))}
-                                        {composerSpecMode ? (
-                                            <View style={styles.userChip}>
-                                                <MaterialCommunityIcons name="file-document-edit-outline" size={12} color="#FFFFFF" />
-                                                <Text style={styles.userChipText}>Spec</Text>
-                                            </View>
-                                        ) : null}
-                                    </View>
-                                )}
-
                                 {userMediaAttachments.length > 0 ? (
                                     <View style={styles.imageRow}>
                                         {userMediaAttachments.map((attachment, index) => (
@@ -1345,10 +1382,68 @@ export const MessageBubble = memo(function MessageBubble({
                                     </View>
                                 ) : null}
 
-                                {userContentText ? (
-                                    <Text selectable style={styles.userText}>{userContentText}</Text>
-                                ) : !hasUserVisualPayload ? (
-                                    <Text selectable style={styles.userText}>{t("src.components.chat.messagebubble.empty_message")}</Text>
+                                {(composerPresentation
+                                    || commandPresetName
+                                    || skillReferences.length > 0
+                                    || mentionReferences.length > 0
+                                    || contextSessionRefs.length > 0
+                                    || composerSpecMode
+                                    || userContentText
+                                    || !hasUserVisualPayload) ? (
+                                    <View style={styles.userInlineContent}>
+                                        {!composerPresentation && commandPresetName ? (
+                                            <View style={styles.userChip}>
+                                                <Text style={[styles.userChipPrefix, styles.userCommandText]}>/</Text>
+                                                <Text style={[styles.userChipText, styles.userCommandText]}>{commandPresetName.replace(/^\/+/, "")}</Text>
+                                            </View>
+                                        ) : null}
+                                        {!composerPresentation && skillReferences.map((skill) => (
+                                            <View key={`${skill.name}:${skill.path || ""}`} style={styles.userChip}>
+                                                <MaterialCommunityIcons name="at" size={14} color="#FDBA74" />
+                                                <Text style={[styles.userChipText, styles.userMentionText]}>{skill.name}</Text>
+                                            </View>
+                                        ))}
+                                        {!composerPresentation && mentionReferences.map((reference) => (
+                                            <View key={reference.key} style={styles.userChip}>
+                                                <MaterialCommunityIcons name={reference.kind === "plugin" ? "puzzle-outline" : "at"} size={14} color="#FDBA74" />
+                                                <Text style={[styles.userChipText, styles.userMentionText]}>{reference.label}</Text>
+                                            </View>
+                                        ))}
+                                        {contextSessionRefs.map((sessionId) => (
+                                            <View key={sessionId} style={styles.userChip}>
+                                                <MaterialCommunityIcons name="message-arrow-right-outline" size={14} color="#FFFFFF" />
+                                                <Text style={styles.userChipText} numberOfLines={1}>
+                                                    {t("shared.conversation.context_session_ref")} · {sessionId.slice(0, 10)}
+                                                </Text>
+                                            </View>
+                                        ))}
+                                        {composerSpecMode ? (
+                                            <View style={styles.userChip}>
+                                                <MaterialCommunityIcons name="file-document-edit-outline" size={14} color="#FFFFFF" />
+                                                <Text style={styles.userChipText}>Spec</Text>
+                                            </View>
+                                        ) : null}
+                                        {composerPresentation ? (
+                                            <Text selectable style={styles.userPresentationText}>
+                                                {composerPresentationSegments.map((segment, index) => (
+                                                    <Text
+                                                        key={`${segment.start}:${segment.end}:${index}`}
+                                                        style={segment.type === "reference"
+                                                            ? segment.reference?.kind === "command"
+                                                                ? styles.userCommandText
+                                                                : styles.userMentionText
+                                                            : undefined}
+                                                    >
+                                                        {segment.text}
+                                                    </Text>
+                                                ))}
+                                            </Text>
+                                        ) : userContentText ? (
+                                            <Text selectable style={[styles.userText, styles.userTextInline]}>{userContentText}</Text>
+                                        ) : !hasUserVisualPayload ? (
+                                            <Text selectable style={[styles.userText, styles.userTextInline]}>{t("src.components.chat.messagebubble.empty_message")}</Text>
+                                        ) : null}
+                                    </View>
                                 ) : null}
                             </LinearGradient>
                         </View>
@@ -1647,28 +1742,49 @@ const styles = StyleSheet.create({
         maxWidth: "100%",
         width: "100%",
     },
-    userMetaRow: {
+    userInlineContent: {
         flexDirection: "row",
         flexWrap: "wrap",
+        alignItems: "center",
         gap: 8,
-        marginBottom: 10,
         maxWidth: "100%",
+        width: "100%",
     },
     userChip: {
         flexDirection: "row",
         alignItems: "center",
         gap: 4,
-        borderRadius: radii.pill,
-        backgroundColor: "rgba(255,255,255,0.18)",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.26)",
-        paddingHorizontal: 9,
-        paddingVertical: 4,
+        minHeight: 21,
+        maxWidth: "100%",
+    },
+    userChipPrefix: {
+        color: "#FFFFFF",
+        fontSize: 14,
+        fontWeight: "800",
+        lineHeight: 21,
+        includeFontPadding: false,
     },
     userChipText: {
         color: "#FFFFFF",
-        fontSize: 11,
+        fontSize: 14,
         fontWeight: "800",
+        lineHeight: 21,
+        includeFontPadding: false,
+    },
+    userCommandText: {
+        color: "#E9D5FF",
+        fontWeight: "800",
+    },
+    userMentionText: {
+        color: "#FDBA74",
+        fontWeight: "800",
+    },
+    userPresentationText: {
+        color: "#FFFFFF",
+        fontSize: 14,
+        lineHeight: 21,
+        width: "100%",
+        includeFontPadding: false,
     },
     userText: {
         color: "#FFFFFF",
@@ -1678,6 +1794,13 @@ const styles = StyleSheet.create({
         flexShrink: 1,
         minWidth: 0,
         maxWidth: "100%",
+    },
+    userTextInline: {
+        width: "auto",
+        flexGrow: 1,
+        flexShrink: 1,
+        flexBasis: 120,
+        minWidth: 80,
     },
     footerRow: {
         flexDirection: "row",

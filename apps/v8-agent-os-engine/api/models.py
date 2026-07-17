@@ -136,6 +136,21 @@ class PluginReferenceSelection(BaseModel):
     component_ids: Optional[List[str]] = Field(default=None, alias="componentIds")
 
 
+class ComposerInlineReferenceSelection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    kind: Literal["command", "skill", "subagent_family", "plugin"]
+    id: str = Field(min_length=1, max_length=240)
+    label: str = Field(min_length=1, max_length=240)
+
+
+class ComposerPresentationSelection(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    text: str = Field(default="", max_length=100_000)
+    references: List[ComposerInlineReferenceSelection] = Field(default_factory=list, max_length=64)
+
+
 class ContextSessionReference(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -180,6 +195,7 @@ class ChatRequestData(BaseModel):
     skill_references: Optional[List[SkillReferenceSelection]] = Field(default=None, alias="skillReferences")
     context_mentions: Optional[List[ContextMentionSelection]] = Field(default=None, alias="contextMentions")
     plugin_references: Optional[List[PluginReferenceSelection]] = Field(default=None, alias="pluginReferences")
+    composer_presentation: Optional[ComposerPresentationSelection] = Field(default=None, alias="composerPresentation")
     context_session_refs: Optional[List[ContextSessionReference]] = Field(
         default=None,
         alias="contextSessionRefs",

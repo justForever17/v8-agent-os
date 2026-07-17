@@ -99,6 +99,15 @@ function hasRenderableMessage(message: ChatMessage) {
     if (Array.isArray(metadata.skillReferences) && metadata.skillReferences.length > 0) {
         return true;
     }
+    if (metadata.composerPresentation && typeof metadata.composerPresentation === "object") {
+        return true;
+    }
+    if (Array.isArray(metadata.contextMentions) && metadata.contextMentions.length > 0) {
+        return true;
+    }
+    if (Array.isArray(metadata.pluginReferences) && metadata.pluginReferences.length > 0) {
+        return true;
+    }
     if (Array.isArray(metadata.attachments) && metadata.attachments.length > 0) {
         return true;
     }

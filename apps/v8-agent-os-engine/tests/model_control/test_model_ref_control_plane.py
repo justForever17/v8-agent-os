@@ -8,6 +8,7 @@ from core.llm_factory import llm_factory
 from core.model_capability_registry import model_capability_registry
 from core.model_control_plane import DEFAULT_ROLE_MAP, DEFAULT_ROUTING_POLICIES, MODULE_DEFINITIONS, ROLE_DEFINITIONS, model_control_plane
 from core.model_provider_catalog import ModelProviderCatalog, model_provider_catalog
+from core.security.credentials import CredentialRefStore, MemoryCredentialBackend
 from core.model_thinking_control import (
     reasoning_effort_request_patch,
     resolve_reasoning_effort_control_for_metadata,
@@ -19,6 +20,15 @@ try:
     from langchain_google_genai import ChatGoogleGenerativeAI
 except ImportError:  # pragma: no cover - optional in partial dev environments
     ChatGoogleGenerativeAI = None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_credentials(monkeypatch):
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "_credential_store",
+        CredentialRefStore(MemoryCredentialBackend()),
+    )
 
 
 def test_model_ref_roundtrip():
@@ -1142,7 +1152,85 @@ def test_connect_media_provider_does_not_seed_chat_budget_parameters(monkeypatch
     assert model["maxTokens"] is None
     assert model["logoAsset"] == "/model-assets/lobe/openai.svg"
     assert model["capabilities"]["image"] is True
+    assert model["endpointBinding"]["providerModelId"] == "gpt-image-2"
+    assert model["endpointBinding"]["provenance"] == {
+        "source": "quick_connect",
+        "confidence": "authoritative",
+    }
     assert "temperature" not in model
+
+
+def test_quick_connect_persists_the_visible_route_and_wire_model_binding(monkeypatch):
+    provider = {
+        "id": "openai_images",
+        "name": "OpenAI-compatible Images",
+        "baseUrl": "https://api.example.com/v1",
+        "apiStandard": "openai_images",
+        "providerKind": "media_generation",
+        "mediaModality": "image",
+        "auth": {"type": "api_key", "header": "Authorization", "scheme": "Bearer"},
+        "models": [],
+    }
+    monkeypatch.setattr(platform_routes.model_provider_catalog, "get_provider", lambda provider_id: provider if provider_id == "openai_images" else None)
+    monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: {"providers": {}})
+    monkeypatch.setattr(platform_routes.model_control_plane, "save_config", lambda config: config)
+
+    result = asyncio.run(
+        platform_routes.connect_model_provider(
+            {
+                "providerId": "openai_images",
+                "modelId": "images/generations/gpt-image-2",
+                "apiKey": "sk-test",
+                "modelType": "IMAGE",
+                "endpointPath": "images/generations",
+                "providerModelId": "gpt-image-2",
+                "operationKind": "image.generate",
+                "adapter": "openai_images",
+            }
+        )
+    )
+
+    binding = result["config"]["providers"]["openai_images"]["models"]["images/generations/gpt-image-2"]["endpointBinding"]
+    assert binding["route"] == "images/generations/gpt-image-2"
+    assert binding["endpointPath"] == "images/generations"
+    assert binding["providerModelId"] == "gpt-image-2"
+    assert binding["operationKind"] == "image.generate"
+    assert binding["adapter"] == "openai_images"
+    assert binding["provenance"] == {"source": "quick_connect", "confidence": "authoritative"}
+
+
+def test_legacy_models_write_preserves_credential_omitted_by_public_read(monkeypatch):
+    saved = {}
+    current = {
+        "providers": {
+            "demo": {
+                "provider": {"name": "Demo", "api_key": "sk-private"},
+                "models": {},
+            }
+        }
+    }
+    monkeypatch.setattr(platform_routes.model_control_plane, "get_config", lambda: current)
+    monkeypatch.setattr(
+        platform_routes.model_control_plane,
+        "save_config",
+        lambda config: saved.setdefault("config", config),
+    )
+
+    result = asyncio.run(
+        platform_routes.save_models_config(
+            {
+                "providers": {
+                    "demo": {
+                        "provider": {"name": "Demo", "credentialConfigured": True},
+                        "models": {},
+                    }
+                }
+            }
+        )
+    )
+
+    assert saved["config"]["providers"]["demo"]["provider"]["api_key"] == "sk-private"
+    assert "api_key" not in result["config"]["providers"]["demo"]["provider"]
 
 
 def test_connect_detected_voice_model_keeps_voice_type_when_chat_purpose_submits_text(monkeypatch):

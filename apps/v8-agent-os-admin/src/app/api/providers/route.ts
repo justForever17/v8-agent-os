@@ -11,20 +11,18 @@ export async function GET() {
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
-        const res = await fetch(`${ENGINE_URL}/models`);
+        const res = await fetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Python API returned ${res.status}`);
         const routesData = await res.json();
         const providersDict = routesData.providers || {};
         const providersList = Object.keys(providersDict).map((providerKey) =>
             mapEngineProvider(providerKey, providersDict[providerKey])
         );
-
         return NextResponse.json(providersList);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-        console.error("Failed to fetch providers via Python API:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error("Failed to fetch providers via Python API:", message);
+        return NextResponse.json({ error: message }, { status: 500 });
     }
 }
 
@@ -33,86 +31,54 @@ export async function POST(req: NextRequest) {
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data = await req.json() as any;
-        
-        // 1. Fetch existing routes payload
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let routesData: any = { providers: {} };
-        try {
-            const resGet = await fetch(`${ENGINE_URL}/models`);
-            if (resGet.ok) {
-                routesData = await resGet.json();
-            }
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        } catch(e) { /* ignore and use default */ }
-        
+        const data = await req.json() as Record<string, unknown>;
         const providerCode = String(data.code || data.name || "")
             .toLowerCase()
             .replace(/[^a-z0-9]/g, "-");
-        
-        // Ensure providers object exists
-        if (!routesData.providers) routesData.providers = {};
-        
-        // Preserve existing models if an update is occurring
-        const existingModels = routesData.providers[providerCode]?.models || {};
-        const existingProvider = routesData.providers[providerCode]?.provider || {};
-
-        // 2. Mutate provider data — preserve existing api_key if new value is masked or empty
-        const existingCredential = String(existingProvider.api_key || "");
-        let storedCredential = buildStoredCredential({
-            providerType: data.type,
-            credentialMode: data.credentialMode,
-            apiKey: data.apiKey,
-            oauthPath: data.oauthPath,
-            existingRawCredential: existingCredential,
-        });
-        let oauthRef = String(existingProvider.oauth_ref || "").trim();
-        if (storedCredential.startsWith("oauth:")) {
-            const canonicalized = (
-                await canonicalizeOauthCredentialReference({
-                    providerId: providerCode,
-                    rawReference: storedCredential,
-                    platformLoginPreset: data.platformLoginPreset,
-                })
-            );
-            storedCredential = canonicalized.storedCredential;
-            oauthRef = canonicalized.oauthRef;
+        if (!providerCode) {
+            return NextResponse.json({ error: "provider code is required" }, { status: 400 });
         }
 
-        routesData.providers[providerCode] = {
-            provider: {
-                ...existingProvider,
-                name: data.name || existingProvider.name || providerCode,
-                description: data.description ?? existingProvider.description ?? "",
-                icon: data.icon ?? existingProvider.icon ?? "",
-                base_url: data.baseUrl ?? existingProvider.base_url ?? "",
-                api_key: storedCredential,
-                api_standard: data.apiStandard || existingProvider.api_standard || "openai",
-                type: data.type || existingProvider.type || "API",
-                is_enabled: data.isEnabled !== undefined ? data.isEnabled : (existingProvider.is_enabled !== false),
-                credential_mode: data.credentialMode || existingProvider.credential_mode || "apiKey",
-                oauth_preset: data.platformLoginPreset || existingProvider.oauth_preset || "",
-                oauth_ref: oauthRef,
-                local_backend_preset: data.localBackendPreset || existingProvider.local_backend_preset || "",
-            },
-            models: existingModels
+        const providerPatch: Record<string, unknown> = {
+            name: data.name || providerCode,
+            description: data.description ?? "",
+            icon: data.icon ?? "",
+            base_url: data.baseUrl ?? "",
+            api_standard: data.apiStandard || "openai",
+            type: data.type || "API",
+            is_enabled: data.isEnabled !== undefined ? data.isEnabled : true,
+            credential_mode: data.credentialMode || "apiKey",
+            oauth_preset: data.platformLoginPreset || "",
+            local_backend_preset: data.localBackendPreset || "",
         };
-
-        // 3. Save it back
-        const resPost = await fetch(`${ENGINE_URL}/models`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(routesData),
+        let storedCredential = buildStoredCredential({
+            providerType: String(data.type || ""),
+            credentialMode: String(data.credentialMode || ""),
+            apiKey: String(data.apiKey || ""),
+            oauthPath: String(data.oauthPath || ""),
+            existingRawCredential: "",
         });
+        if (storedCredential.startsWith("oauth:")) {
+            const canonicalized = await canonicalizeOauthCredentialReference({
+                providerId: providerCode,
+                rawReference: storedCredential,
+                platformLoginPreset: (String(data.platformLoginPreset || "") || "codex") as "codex",
+            });
+            storedCredential = canonicalized.storedCredential;
+            providerPatch.oauth_ref = canonicalized.oauthRef;
+        }
+        if (storedCredential) providerPatch.api_key = storedCredential;
 
-        if (!resPost.ok) throw new Error(`Python API returned ${resPost.status}`);
-
-        const savedProvider = routesData.providers[providerCode];
-        return NextResponse.json(mapEngineProvider(providerCode, savedProvider));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (error: any) {
-         console.error("Failed to save provider via Python API:", error);
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        const response = await fetch(`${ENGINE_URL}/models/providers/${encodeURIComponent(providerCode)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(providerPatch),
+        });
+        const payload = await response.json().catch(() => ({}));
+        return NextResponse.json(payload, { status: response.status });
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error("Failed to save provider via Python API:", message);
+        return NextResponse.json({ error: message }, { status: 500 });
     }
 }

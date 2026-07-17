@@ -175,7 +175,7 @@ function flattenMiniMaxVoices(payload: unknown): VoiceOption[] {
 }
 
 async function readEngineModels(): Promise<Record<string, EngineProviderRecord>> {
-    const response = await fetch(`${ENGINE_URL}/models`, { cache: "no-store" });
+    const response = await fetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
     if (!response.ok) {
         throw new Error(`Engine models API returned ${response.status}`);
     }

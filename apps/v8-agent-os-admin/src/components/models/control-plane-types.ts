@@ -58,6 +58,14 @@ export type ControlPlaneModel = {
     driftWarnings?: Array<Record<string, unknown>>;
     parameterProfile?: string | null;
     mediaLimits?: Record<string, unknown>;
+    endpointBinding?: {
+        route?: string;
+        endpointPath?: string;
+        providerModelId?: string;
+        operationKind?: string;
+        requestUrlPreview?: string;
+        provenance?: Record<string, unknown>;
+    } | null;
     reasoningSurface?: {
         mode?: string;
         trust?: string;

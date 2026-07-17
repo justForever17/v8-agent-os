@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { buildModelMutationPayload, buildModelRef, parseModelRef } from "@/lib/models/model-admin";
+import { buildModelMutationPayload, parseModelRef } from "@/lib/models/model-admin";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -22,72 +22,26 @@ export async function PUT(
         const desiredProviderId = String(data?.providerId || "").trim() || providerId;
         const desiredModelId = String(data?.modelId || sourceModelId).trim();
 
-        const resGet = await fetch(`${ENGINE_URL}/models`);
-        if (!resGet.ok) throw new Error(`Python API returned ${resGet.status} on GET`);
-        const routesData = await resGet.json();
-
-        if (!routesData.providers) {
-            return NextResponse.json({ error: "Model not found" }, { status: 404 });
-        }
-
-        // Find the provider that owns this model (since we only have the model ID from the URL params)
-        let targetProviderId = providerId && routesData.providers[providerId]?.models?.[sourceModelId] ? providerId : null;
-        if (!targetProviderId) {
-            const matches: string[] = [];
-            for (const providerKey of Object.keys(routesData.providers)) {
-                if (routesData.providers[providerKey].models && routesData.providers[providerKey].models[sourceModelId]) {
-                    matches.push(providerKey);
-                }
-            }
-            if (matches.length > 1) {
-                return NextResponse.json({ error: "Ambiguous modelId; provider-qualified modelRef is required", matches }, { status: 409 });
-            }
-            targetProviderId = matches[0] || null;
-        }
-
-        if (!targetProviderId) {
-            return NextResponse.json({ error: "Model not found" }, { status: 404 });
-        }
-
         if (!desiredProviderId) {
             return NextResponse.json({ error: "providerId is required" }, { status: 400 });
         }
-
-        if (!routesData.providers[desiredProviderId]) {
-            return NextResponse.json({ error: "Target provider not found" }, { status: 404 });
-        }
-        if (!routesData.providers[desiredProviderId].models) {
-            routesData.providers[desiredProviderId].models = {};
-        }
-
         if (!desiredModelId) {
             return NextResponse.json({ error: "modelId is required" }, { status: 400 });
         }
-
-        const existingModel = {
-            ...(routesData.providers[targetProviderId].models[sourceModelId] || {}),
-            ...buildModelMutationPayload(data),
-        };
-        delete existingModel.name;
-        delete routesData.providers[targetProviderId].models[sourceModelId];
-        routesData.providers[desiredProviderId].models[desiredModelId] = existingModel;
-
-        const resPost = await fetch(`${ENGINE_URL}/models`, {
-            method: "POST",
+        const resPost = await fetch(`${ENGINE_URL}/models/bindings`, {
+            method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(routesData),
+            body: JSON.stringify({
+                providerId: desiredProviderId,
+                modelId: desiredModelId,
+                sourceProviderId: providerId,
+                sourceModelId,
+                source: "manual",
+                model: buildModelMutationPayload(data),
+            }),
         });
-
-        if (!resPost.ok) throw new Error(`Python API returned ${resPost.status} on POST`);
-
-        const modelRef = buildModelRef(desiredProviderId, desiredModelId);
-        return NextResponse.json({
-             id: modelRef,
-             modelRef,
-             providerId: desiredProviderId,
-             modelId: desiredModelId,
-             ...routesData.providers[desiredProviderId].models[desiredModelId]
-        });
+        const payload = await resPost.json().catch(() => ({}));
+        return NextResponse.json(payload, { status: resPost.status });
 
     } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : "An unknown error occurred";
@@ -110,44 +64,16 @@ export async function DELETE(
         const providerId = parsedRef?.providerId || req.nextUrl.searchParams.get("providerId")?.trim() || "";
         const sourceModelId = parsedRef?.modelId || id;
 
-        const resGet = await fetch(`${ENGINE_URL}/models`);
-        if (!resGet.ok) throw new Error(`Python API returned ${resGet.status} on GET`);
-        const routesData = await resGet.json();
-
-        if (routesData.providers) {
-            let modelFound = false;
-            if (providerId && routesData.providers[providerId]?.models?.[sourceModelId]) {
-                delete routesData.providers[providerId].models[sourceModelId];
-                modelFound = true;
-            } else {
-                const matches: string[] = [];
-                for (const providerKey of Object.keys(routesData.providers)) {
-                    if (routesData.providers[providerKey].models && routesData.providers[providerKey].models[sourceModelId]) {
-                        matches.push(providerKey);
-                    }
-                }
-                if (matches.length > 1) {
-                    return NextResponse.json({ error: "Ambiguous modelId; provider-qualified modelRef is required", matches }, { status: 409 });
-                }
-                if (matches[0]) {
-                    delete routesData.providers[matches[0]].models[sourceModelId];
-                    modelFound = true;
-                }
-            }
-
-            if (modelFound) {
-                const resPost = await fetch(`${ENGINE_URL}/models`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(routesData),
-                });
-                if (!resPost.ok) throw new Error(`Python API returned ${resPost.status} on POST`);
-            } else {
-                return NextResponse.json({ error: "Model not found" }, { status: 404 });
-            }
+        if (!providerId) {
+            return NextResponse.json({ error: "provider-qualified modelRef is required" }, { status: 400 });
         }
-
-        return NextResponse.json({ success: true });
+        const response = await fetch(`${ENGINE_URL}/models/bindings`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ providerId, modelId: sourceModelId }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        return NextResponse.json(payload, { status: response.status });
 
     } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : "An unknown error occurred";

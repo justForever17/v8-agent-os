@@ -24,6 +24,7 @@ export type AdminModelRecord = {
     rerankApiFlavor: string;
     thinkingControl?: Record<string, unknown> | null;
     mediaLimits?: Record<string, unknown> | null;
+    endpointBinding?: Record<string, unknown> | null;
     logoAsset?: string | null;
     isEnabled: boolean;
     provider: {
@@ -95,6 +96,9 @@ export function mapEngineModel(
         mediaLimits: modelMeta.mediaLimits && typeof modelMeta.mediaLimits === "object"
             ? modelMeta.mediaLimits as Record<string, unknown>
             : null,
+        endpointBinding: modelMeta.endpointBinding && typeof modelMeta.endpointBinding === "object"
+            ? modelMeta.endpointBinding as Record<string, unknown>
+            : null,
         logoAsset: String(modelMeta.logoAsset || "") || null,
         isEnabled: modelMeta.isEnabled !== false,
         provider: {
@@ -138,6 +142,20 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
     };
     if (data.thinkingControl && typeof data.thinkingControl === "object") {
         payload.thinkingControl = data.thinkingControl;
+    }
+    const endpointPath = String(data.endpointPath || "").trim().replace(/^\/+|\/+$/g, "");
+    const providerModelId = String(data.providerModelId || "").trim().replace(/^\/+|\/+$/g, "");
+    const operationKind = String(data.operationKind || "").trim();
+    const adapter = String(data.adapter || "").trim();
+    if (endpointPath || providerModelId || operationKind || adapter) {
+        payload.endpointBinding = {
+            ...(data.endpointBinding && typeof data.endpointBinding === "object" ? data.endpointBinding : {}),
+            endpointPath,
+            providerModelId,
+            operationKind,
+            adapter,
+            provenance: { source: "manual", confidence: "authoritative" },
+        };
     }
     return payload;
 }

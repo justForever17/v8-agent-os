@@ -8,8 +8,14 @@ from dataclasses import dataclass
 from typing import Any
 
 
-_REF_PREFIX = "cred:v8-plugin:"
-_TARGET_PREFIX = "V8AgentOS/plugin/"
+_REF_PREFIXES = {
+    "plugin": "cred:v8-plugin:",
+    "model": "cred:v8-model:",
+}
+_TARGET_PREFIXES = {
+    "plugin": "V8AgentOS/plugin/",
+    "model": "V8AgentOS/model/",
+}
 
 
 class CredentialStoreError(RuntimeError):
@@ -64,7 +70,7 @@ class WindowsCredentialBackend(CredentialBackend):
                     "CredentialBlob": value,
                     "Persist": self._win32cred.CRED_PERSIST_LOCAL_MACHINE,
                     "UserName": "V8 Agent OS",
-                    "Comment": "Managed plugin credential. Do not edit manually.",
+                    "Comment": "Managed V8 Agent OS credential. Do not edit manually.",
                 },
                 0,
             )
@@ -120,18 +126,26 @@ class CredentialRefStore:
     @staticmethod
     def _target(reference: str) -> str:
         normalized = str(reference or "").strip()
-        if not normalized.startswith(_REF_PREFIX):
+        namespace = next(
+            (key for key, prefix in _REF_PREFIXES.items() if normalized.startswith(prefix)),
+            "",
+        )
+        if not namespace:
             raise CredentialStoreError("invalid credential reference")
-        suffix = normalized[len(_REF_PREFIX):]
+        prefix = _REF_PREFIXES[namespace]
+        suffix = normalized[len(prefix):]
         if not suffix or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in suffix):
             raise CredentialStoreError("invalid credential reference")
-        return f"{_TARGET_PREFIX}{suffix}"
+        return f"{_TARGET_PREFIXES[namespace]}{suffix}"
 
-    def put(self, value: str, *, reference: str | None = None) -> str:
+    def put(self, value: str, *, reference: str | None = None, namespace: str = "plugin") -> str:
         secret_value = str(value or "")
         if not secret_value:
             raise CredentialStoreError("credential value is empty")
-        resolved_ref = str(reference or "").strip() or f"{_REF_PREFIX}{secrets.token_urlsafe(24)}"
+        normalized_namespace = str(namespace or "plugin").strip().lower()
+        if normalized_namespace not in _REF_PREFIXES:
+            raise CredentialStoreError("unsupported credential namespace")
+        resolved_ref = str(reference or "").strip() or f"{_REF_PREFIXES[normalized_namespace]}{secrets.token_urlsafe(24)}"
         self._backend.write(self._target(resolved_ref), secret_value)
         return resolved_ref
 

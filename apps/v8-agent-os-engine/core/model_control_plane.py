@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import threading
 from typing import Any, Dict, List, Optional
 
 from core.model_capability_matrix import normalize_capability_metadata
@@ -11,12 +12,14 @@ from core.model_thinking_control import resolve_thinking_control_for_metadata
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
+from core.model_endpoint_binding import persist_model_endpoint_binding, public_models_config
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.reasoning_surface_contract import (
     is_stale_auto_hidden_reasoning_surface,
     is_trusted_reasoning_surface,
     resolve_reasoning_surface_for_metadata,
 )
+from core.security.credentials import CredentialRefStore, CredentialStoreError, credential_ref_store
 from core.storage import storage
 
 
@@ -548,6 +551,72 @@ def _infer_capability_class(model_type: str, capabilities: Dict[str, bool]) -> s
 
 
 class ModelControlPlane:
+    def __init__(self, *, credential_store: CredentialRefStore | None = None) -> None:
+        self._mutation_lock = threading.RLock()
+        self._credential_store = credential_store or credential_ref_store
+
+    def _secure_provider_patch(
+        self,
+        provider_id: str,
+        existing_provider: Dict[str, Any],
+        provider_patch: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        patch = dict(provider_patch or {})
+        incoming_key = str(patch.pop("api_key", patch.pop("apiKey", "")) or "").strip()
+        if not incoming_key or incoming_key == "****":
+            return patch
+        if incoming_key.startswith("oauth:"):
+            patch["api_key"] = incoming_key
+            return patch
+        existing_ref = str(
+            patch.get("credentialRef")
+            or existing_provider.get("credentialRef")
+            or existing_provider.get("credential_ref")
+            or ""
+        ).strip()
+        if existing_ref and not existing_ref.startswith("cred:v8-model:"):
+            existing_ref = ""
+        reference = self._credential_store.put(
+            incoming_key,
+            reference=existing_ref or None,
+            namespace="model",
+        )
+        patch["credentialRef"] = reference
+        patch["credentialSource"] = "os_credential_store"
+        return patch
+
+    def _materialize_provider_credentials(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        materialized = deepcopy(config)
+        for provider_data in dict(materialized.get("providers") or {}).values():
+            if not isinstance(provider_data, dict):
+                continue
+            provider_meta = dict(provider_data.get("provider") or {})
+            reference = str(provider_meta.get("credentialRef") or provider_meta.get("credential_ref") or "").strip()
+            if reference:
+                try:
+                    provider_meta["api_key"] = self._credential_store.resolve(reference)
+                    provider_meta["credentialStatus"] = "configured"
+                except CredentialStoreError:
+                    provider_meta["api_key"] = ""
+                    provider_meta["credentialStatus"] = "missing"
+            provider_data["provider"] = provider_meta
+        return materialized
+
+    @staticmethod
+    def _storage_safe_config(config: Dict[str, Any]) -> Dict[str, Any]:
+        persisted = deepcopy(config)
+        for provider_data in dict(persisted.get("providers") or {}).values():
+            if not isinstance(provider_data, dict):
+                continue
+            provider_meta = dict(provider_data.get("provider") or {})
+            if provider_meta.get("credentialRef") or provider_meta.get("credential_ref"):
+                raw_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
+                if not raw_key.startswith("oauth:"):
+                    provider_meta.pop("api_key", None)
+                    provider_meta.pop("apiKey", None)
+            provider_data["provider"] = provider_meta
+        return persisted
+
     def _runtime_ready_for_provider(self, provider_meta: Dict[str, Any]) -> bool:
         runtime_ready, _reason = runtime_readiness_for_provider(
             provider_id=str(provider_meta.get("name") or provider_meta.get("provider_id") or ""),
@@ -733,6 +802,7 @@ class ModelControlPlane:
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or ("media_generation" if capability_class == "media_generation" else "chat"),
                     "mediaLimits": model_meta.get("mediaLimits") or {},
+                    "endpointBinding": model_meta.get("endpointBinding") or {},
                     "promptCachingProfileId": model_meta.get("promptCachingProfileId")
                     or meta.get("promptCachingProfileId")
                     or prompt_cache_profile_id_for_provider(str(provider_id)),
@@ -840,12 +910,190 @@ class ModelControlPlane:
         if records:
             storage.save_models_config(migrated)
             raw = migrated
-        return self.normalize_config(raw)
+        return self._materialize_provider_credentials(self.normalize_config(raw))
 
     def save_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self.normalize_config(data)
-        storage.save_models_config(normalized)
+        storage.save_models_config(self._storage_safe_config(normalized))
         return normalized
+
+    def get_public_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return public_models_config(config or self.get_config())
+
+    def upsert_provider_record(self, provider_id: str, provider_patch: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_provider_id = str(provider_id or "").strip()
+        if not normalized_provider_id:
+            raise ValueError("providerId is required")
+        with self._mutation_lock:
+            config = self.get_config()
+            providers = dict(config.get("providers") or {})
+            existing = dict(providers.get(normalized_provider_id) or {})
+            secured_patch = self._secure_provider_patch(
+                normalized_provider_id,
+                dict(existing.get("provider") or {}),
+                provider_patch,
+            )
+            provider_meta = {
+                **dict(existing.get("provider") or {}),
+                **secured_patch,
+            }
+            providers[normalized_provider_id] = {
+                "provider": provider_meta,
+                "models": dict(existing.get("models") or {}),
+            }
+            config["providers"] = providers
+            saved = self.save_config(config)
+            return dict((saved.get("providers") or {}).get(normalized_provider_id) or {})
+
+    def remove_provider_record(self, provider_id: str) -> bool:
+        normalized_provider_id = str(provider_id or "").strip()
+        if not normalized_provider_id:
+            raise ValueError("providerId is required")
+        with self._mutation_lock:
+            config = self.get_config()
+            providers = dict(config.get("providers") or {})
+            removed_provider = providers.pop(normalized_provider_id, None)
+            removed = removed_provider is not None
+            if removed:
+                config["providers"] = providers
+                self.save_config(config)
+                reference = str(((removed_provider or {}).get("provider") or {}).get("credentialRef") or "").strip()
+                if reference:
+                    try:
+                        self._credential_store.delete(reference)
+                    except CredentialStoreError:
+                        pass
+            return removed
+
+    def upsert_model_record(
+        self,
+        *,
+        provider_id: str,
+        model_id: str,
+        model_patch: Dict[str, Any],
+        source_provider_id: str = "",
+        source_model_id: str = "",
+        source: str = "manual",
+        replace_provider_models: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_provider_id = str(provider_id or "").strip()
+        normalized_model_id = str(model_id or "").strip().strip("/")
+        if not normalized_provider_id or not normalized_model_id:
+            raise ValueError("providerId and modelId are required")
+        with self._mutation_lock:
+            config = self.get_config()
+            providers = dict(config.get("providers") or {})
+            target = dict(providers.get(normalized_provider_id) or {})
+            if not target:
+                raise ValueError("provider not found")
+            target_provider = dict(target.get("provider") or {})
+            source_provider_key = str(source_provider_id or normalized_provider_id).strip()
+            source_model_key = str(source_model_id or normalized_model_id).strip()
+            source_container = dict(providers.get(source_provider_key) or {})
+            source_models = dict(source_container.get("models") or {})
+            existing_model = dict(source_models.get(source_model_key) or {})
+            next_model = persist_model_endpoint_binding(
+                normalized_provider_id,
+                normalized_model_id,
+                target_provider,
+                {**existing_model, **dict(model_patch or {})},
+                source=source,
+            )
+            target_models = {} if replace_provider_models else dict(target.get("models") or {})
+            if source_provider_key == normalized_provider_id:
+                target_models.pop(source_model_key, None)
+            elif source_model_key in source_models:
+                source_models.pop(source_model_key, None)
+                providers[source_provider_key] = {
+                    **source_container,
+                    "models": source_models,
+                }
+            target_models[normalized_model_id] = next_model
+            providers[normalized_provider_id] = {
+                **target,
+                "provider": target_provider,
+                "models": target_models,
+            }
+            config["providers"] = providers
+            saved = self.save_config(config)
+            saved_provider = dict((saved.get("providers") or {}).get(normalized_provider_id) or {})
+            return {
+                "config": saved,
+                "provider": dict(saved_provider.get("provider") or {}),
+                "model": dict((saved_provider.get("models") or {}).get(normalized_model_id) or {}),
+                "providerId": normalized_provider_id,
+                "modelId": normalized_model_id,
+                "modelRef": make_model_ref(normalized_provider_id, normalized_model_id),
+            }
+
+    def upsert_provider_model_records(
+        self,
+        *,
+        provider_id: str,
+        provider_patch: Dict[str, Any],
+        model_id: str,
+        model_patch: Dict[str, Any],
+        source: str,
+        replace_provider_models: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_provider_id = str(provider_id or "").strip()
+        normalized_model_id = str(model_id or "").strip().strip("/")
+        if not normalized_provider_id or not normalized_model_id:
+            raise ValueError("providerId and modelId are required")
+        with self._mutation_lock:
+            config = self.get_config()
+            providers = dict(config.get("providers") or {})
+            existing = dict(providers.get(normalized_provider_id) or {})
+            secured_patch = self._secure_provider_patch(
+                normalized_provider_id,
+                dict(existing.get("provider") or {}),
+                provider_patch,
+            )
+            provider_meta = {
+                **dict(existing.get("provider") or {}),
+                **secured_patch,
+            }
+            models = {} if replace_provider_models else dict(existing.get("models") or {})
+            next_model = persist_model_endpoint_binding(
+                normalized_provider_id,
+                normalized_model_id,
+                provider_meta,
+                {**dict(models.get(normalized_model_id) or {}), **dict(model_patch or {})},
+                source=source,
+            )
+            models[normalized_model_id] = next_model
+            providers[normalized_provider_id] = {
+                "provider": provider_meta,
+                "models": models,
+            }
+            config["providers"] = providers
+            saved = self.save_config(config)
+            saved_provider = dict((saved.get("providers") or {}).get(normalized_provider_id) or {})
+            return {
+                "config": saved,
+                "provider": dict(saved_provider.get("provider") or {}),
+                "model": dict((saved_provider.get("models") or {}).get(normalized_model_id) or {}),
+                "providerId": normalized_provider_id,
+                "modelId": normalized_model_id,
+                "modelRef": make_model_ref(normalized_provider_id, normalized_model_id),
+            }
+
+    def remove_model_record(self, *, provider_id: str, model_id: str) -> bool:
+        normalized_provider_id = str(provider_id or "").strip()
+        normalized_model_id = str(model_id or "").strip()
+        if not normalized_provider_id or not normalized_model_id:
+            raise ValueError("providerId and modelId are required")
+        with self._mutation_lock:
+            config = self.get_config()
+            providers = dict(config.get("providers") or {})
+            provider_data = dict(providers.get(normalized_provider_id) or {})
+            models = dict(provider_data.get("models") or {})
+            removed = models.pop(normalized_model_id, None) is not None
+            if removed:
+                providers[normalized_provider_id] = {**provider_data, "models": models}
+                config["providers"] = providers
+                self.save_config(config)
+            return removed
 
     def _migrate_reasoning_surfaces(self, data: Dict[str, Any] | None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
         payload = deepcopy(dict(data or {}))
@@ -1299,6 +1547,7 @@ class ModelControlPlane:
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or "chat",
                     "mediaLimits": model_meta.get("mediaLimits") or {},
+                    "endpointBinding": model_meta.get("endpointBinding") or {},
                     "reasoningSurface": model_meta.get("reasoningSurface") or {},
                     "thinkingControl": resolve_thinking_control_for_metadata(
                         {
@@ -1439,7 +1688,7 @@ class ModelControlPlane:
         budget_summary = model_budget_service.build_budget_summary(normalized)
 
         return {
-            "config": normalized,
+            "config": self.get_public_config(normalized),
             "summary": self.build_summary(normalized),
             "models": self.list_models(normalized),
             "roles": self.get_role_cards(normalized),

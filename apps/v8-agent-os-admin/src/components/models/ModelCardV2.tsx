@@ -46,6 +46,7 @@ interface ModelCardV2Props {
       missingFields?: string[];
     } | null;
     mediaLimits?: Record<string, unknown> | null;
+    endpointBinding?: Record<string, unknown> | null;
   };
   controlMeta?: ControlPlaneModel | null;
   isDefault?: boolean;
@@ -128,14 +129,18 @@ function resolveVisibleModelRoute(model: ModelCardV2Props["model"], controlMeta?
     ...(model.mediaLimits || {}),
     ...(controlMeta?.mediaLimits || {}),
   };
-  const displayModelId = stringRecordValue(mediaLimits, "displayModelId") || model.modelId;
-  const providerModelId = stringRecordValue(mediaLimits, "providerModelId");
+  const endpointBinding = {
+    ...(model.endpointBinding || {}),
+    ...(controlMeta?.endpointBinding || {}),
+  };
+  const displayModelId = stringRecordValue(endpointBinding, "route") || stringRecordValue(mediaLimits, "displayModelId") || model.modelId;
+  const providerModelId = stringRecordValue(endpointBinding, "providerModelId") || stringRecordValue(mediaLimits, "providerModelId");
   const hasExplicitRoute = Boolean(providerModelId && displayModelId !== providerModelId);
   return {
     displayModelId,
     providerModelId,
     requestSuffix: hasExplicitRoute ? displayModelId.replace(/^\/+/, "") : "",
-    submitPath: stringRecordValue(mediaLimits, "submitPath"),
+    submitPath: stringRecordValue(endpointBinding, "endpointPath") || stringRecordValue(mediaLimits, "submitPath"),
   };
 }
 function modelCategoryShape(modelType: string, controlMeta?: ControlPlaneModel | null) {

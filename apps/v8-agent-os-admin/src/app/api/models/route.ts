@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { buildModelMutationPayload, buildModelRef, listEngineModels } from "@/lib/models/model-admin";
+import { buildModelMutationPayload, listEngineModels } from "@/lib/models/model-admin";
 import { resolveEngineBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     const providerIdFilter = searchParams.get("providerId");
 
     try {
-        const res = await fetch(`${ENGINE_URL}/models`);
+        const res = await fetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Python API returned ${res.status}`);
         
         const routesData = await res.json();
@@ -32,59 +32,26 @@ export async function POST(req: NextRequest) {
     if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data = await req.json() as any;
-        
-        // 1. Fetch existing routes
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let routesData: any = { providers: {} };
-        try {
-            const resGet = await fetch(`${ENGINE_URL}/models`);
-            if (resGet.ok) {
-                routesData = await resGet.json();
-            }
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        } catch(e) { /* ignore */ }
-        
-        if (!routesData.providers) routesData.providers = {};
-        
-        const providerCode = data.providerId;
+        const data = await req.json() as Record<string, unknown>;
+        const providerCode = String(data.providerId || "").trim();
         if (!providerCode) throw new Error("providerId is required");
-        
-        // Ensure provider entity exists in the dict
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const providerData: any = routesData.providers[providerCode] || { provider: {}, models: {} };
-        if (!providerData.models) providerData.models = {};
-        
-        const modelCode = data.modelId;
+        const modelCode = String(data.modelId || "").trim();
         if (!modelCode) throw new Error("modelId is required");
-
-        // 2. Merge model configurations
-        providerData.models[modelCode] = {
-            ...(providerData.models[modelCode] || {}),
-            ...buildModelMutationPayload(data),
-        };
-        
-        // Remap to structure
-        routesData.providers[providerCode] = providerData;
-
-        // 3. Save
-        const resPost = await fetch(`${ENGINE_URL}/models`, {
-            method: "POST",
+        const resPost = await fetch(`${ENGINE_URL}/models/bindings`, {
+            method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(routesData),
+            body: JSON.stringify({
+                providerId: providerCode,
+                modelId: modelCode,
+                source: "manual",
+                model: buildModelMutationPayload(data),
+            }),
         });
-
-        if (!resPost.ok) throw new Error(`Python API returned ${resPost.status}`);
-
-        // Return a mock structure simulating the newly added model
-        const modelRef = buildModelRef(providerCode, modelCode);
-        return NextResponse.json({
-            id: modelRef,
-            modelRef,
-            providerId: providerCode,
-            modelId: modelCode,
-        });
+        const payload = await resPost.json().catch(() => ({}));
+        if (!resPost.ok) {
+            return NextResponse.json(payload, { status: resPost.status });
+        }
+        return NextResponse.json(payload);
 
     } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : "An unknown error occurred";

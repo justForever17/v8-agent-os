@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
 
     try {
         const [modelsResponse, hubResult, supervisorResult, catalogResponse, audioResponse] = await Promise.all([
-            fetch(`${engineBaseUrl}/models`, { cache: "no-store" }),
+            fetch(`${engineBaseUrl}/models/public`, { cache: "no-store" }),
             proxyEngineJson("/config-registry/models"),
             proxyEngineJson("/config-registry/supervisor"),
             fetch(`${engineBaseUrl}/models/catalog`, { next: { revalidate: 60 } }),

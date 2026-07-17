@@ -997,16 +997,38 @@ async def get_tool_registry_index():
 @router.get("/models")
 async def get_models_config():
     try:
-        return model_control_plane.get_config()
+        # Public-by-default: credentials and other runtime-only values never
+        # leave the Engine. Internal code uses the control-plane object directly.
+        return model_control_plane.get_public_config()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/models")
+@router.post("/models", deprecated=True)
 async def save_models_config(data: dict = Body(...)):
     try:
-        config = model_control_plane.save_config(data)
-        return {"status": "success", "config": config}
+        # Legacy whole-config writes are compatibility-only. Preserve credentials
+        # omitted by the public GET response so an old read/modify/write client
+        # cannot erase a Provider secret. New clients use the atomic routes.
+        current = model_control_plane.get_config()
+        incoming = dict(data or {})
+        incoming_providers = dict(incoming.get("providers") or {})
+        current_providers = dict(current.get("providers") or {})
+        for provider_id, provider_data in incoming_providers.items():
+            if not isinstance(provider_data, dict):
+                continue
+            provider_meta = dict(provider_data.get("provider") or {})
+            existing_meta = dict((current_providers.get(provider_id) or {}).get("provider") or {})
+            incoming_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+            if not incoming_key or incoming_key == "****":
+                existing_key = str(existing_meta.get("api_key") or existing_meta.get("apiKey") or "").strip()
+                if existing_key:
+                    provider_meta["api_key"] = existing_key
+            provider_data["provider"] = provider_meta
+            incoming_providers[provider_id] = provider_data
+        incoming["providers"] = incoming_providers
+        config = model_control_plane.save_config(incoming)
+        return {"status": "success", "config": model_control_plane.get_public_config(config)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1016,6 +1038,105 @@ async def get_model_control_plane():
     try:
         config = model_control_plane.get_config()
         return model_control_plane.build_payload(config)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/models/public")
+async def get_public_models_config():
+    """Return the human/admin-facing model contract without credentials."""
+    try:
+        return model_control_plane.get_public_config()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/models/providers/{provider_id}")
+async def upsert_model_provider(provider_id: str, data: dict = Body(...)):
+    try:
+        provider_patch = dict(data.get("provider") or data)
+        provider_patch.pop("providerId", None)
+        provider_patch.pop("provider_id", None)
+        result = model_control_plane.upsert_provider_record(provider_id, provider_patch)
+        return {
+            "ok": True,
+            "providerId": provider_id,
+            "provider": model_control_plane.get_public_config().get("providers", {}).get(provider_id, {}).get("provider", {}),
+            "models": result.get("models") or {},
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/models/providers/{provider_id}")
+async def remove_model_provider(provider_id: str):
+    try:
+        removed = model_control_plane.remove_provider_record(provider_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="provider not found")
+        return {"ok": True, "providerId": provider_id}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/models/bindings")
+async def upsert_model_binding(data: dict = Body(...)):
+    try:
+        provider_id = str(data.get("providerId") or data.get("provider_id") or "").strip()
+        model_id = str(data.get("modelId") or data.get("model_id") or "").strip()
+        model_patch = dict(data.get("model") or data.get("modelPatch") or {})
+        reserved = {
+            "providerId", "provider_id", "modelId", "model_id", "model", "modelPatch",
+            "sourceProviderId", "source_provider_id", "sourceModelId", "source_model_id",
+            "source", "replaceProviderModels", "replace_provider_models",
+        }
+        if not model_patch:
+            model_patch = {key: value for key, value in data.items() if key not in reserved}
+        result = model_control_plane.upsert_model_record(
+            provider_id=provider_id,
+            model_id=model_id,
+            model_patch=model_patch,
+            source_provider_id=str(data.get("sourceProviderId") or data.get("source_provider_id") or ""),
+            source_model_id=str(data.get("sourceModelId") or data.get("source_model_id") or ""),
+            source=str(data.get("source") or "manual"),
+            replace_provider_models=bool(data.get("replaceProviderModels", data.get("replace_provider_models", False))),
+        )
+        public_config = model_control_plane.get_public_config()
+        public_provider = dict((public_config.get("providers") or {}).get(provider_id) or {})
+        return {
+            "ok": True,
+            "providerId": provider_id,
+            "modelId": model_id,
+            "modelRef": make_model_ref(provider_id, model_id),
+            "provider": public_provider.get("provider") or {},
+            "model": dict((public_provider.get("models") or {}).get(model_id) or {}),
+        }
+    except ValueError as e:
+        status = 404 if str(e) == "provider not found" else 422
+        raise HTTPException(status_code=status, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/models/bindings")
+async def remove_model_binding(data: dict = Body(...)):
+    try:
+        provider_id = str(data.get("providerId") or data.get("provider_id") or "").strip()
+        model_id = str(data.get("modelId") or data.get("model_id") or "").strip()
+        removed = model_control_plane.remove_model_record(provider_id=provider_id, model_id=model_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="model not found")
+        return {"ok": True, "providerId": provider_id, "modelId": model_id}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1258,6 +1379,10 @@ async def connect_model_provider(data: dict = Body(...)):
         if not isinstance(declared_capabilities, list):
             declared_capabilities = []
         requested_model_type = str(data.get("modelType") or data.get("type") or "").strip().upper()
+        endpoint_path = str(data.get("endpointPath") or data.get("endpoint_path") or "").strip()
+        provider_model_id = str(data.get("providerModelId") or data.get("provider_model_id") or "").strip()
+        operation_kind = str(data.get("operationKind") or data.get("operation_kind") or "").strip()
+        adapter = str(data.get("adapter") or "").strip()
         provider = model_provider_catalog.get_provider(provider_id)
         if not provider and provider_id in {"__custom__", "custom"}:
             if not incoming_credential:
@@ -1342,18 +1467,29 @@ async def connect_model_provider(data: dict = Body(...)):
             or prompt_cache_profile_id_for_provider(provider_id),
             "isEnabled": True,
         }
-        current_models = dict(existing.get("models") or {})
-        if provider.get("singleActiveModel"):
-            current_models = {}
-        current_models[model_id] = next_model
-        providers[provider_id] = {"provider": next_provider, "models": current_models}
-        config["providers"] = providers
-        saved = model_control_plane.save_config(config)
+        if endpoint_path or provider_model_id or operation_kind or adapter:
+            next_model["endpointBinding"] = {
+                "route": model_id,
+                "endpointPath": endpoint_path,
+                "providerModelId": provider_model_id,
+                "operationKind": operation_kind,
+                "adapter": adapter,
+                "provenance": {"source": "quick_connect", "confidence": "authoritative"},
+            }
+        mutation = model_control_plane.upsert_provider_model_records(
+            provider_id=provider_id,
+            provider_patch=next_provider,
+            model_id=model_id,
+            model_patch=next_model,
+            source="quick_connect",
+            replace_provider_models=bool(provider.get("singleActiveModel")),
+        )
+        saved = model_control_plane.get_public_config(dict(mutation.get("config") or {}))
         return {
             "ok": True,
             "providerId": provider_id,
             "modelId": model_id,
-            "modelRef": model.get("modelRef"),
+            "modelRef": make_model_ref(provider_id, model_id),
             "config": saved,
         }
     except HTTPException:

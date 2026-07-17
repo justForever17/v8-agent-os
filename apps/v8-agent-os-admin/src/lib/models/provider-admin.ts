@@ -40,6 +40,9 @@ type EngineProviderMeta = {
   oauth_preset?: string;
   oauth_ref?: string;
   local_backend_preset?: string;
+  credentialConfigured?: boolean;
+  credentialMode?: string;
+  oauthPath?: string;
 };
 type EngineProviderContainer = {
   provider?: EngineProviderMeta;
@@ -192,8 +195,8 @@ export function getLocalBackendPresetConfig(preset: LocalBackendPreset): LocalBa
 export function mapEngineProvider(providerId: string, providerData: EngineProviderContainer) {
   const meta = providerData.provider || {};
   const rawCredential = String(meta.api_key || "");
-  const credentialMode = String(meta.credential_mode || "").trim() as ProviderCredentialMode || inferCredentialMode(rawCredential, meta.type);
-  const rawOauthPath = rawCredential.startsWith("oauth:") ? sanitizeOauthPath(rawCredential.slice(6)) : "";
+  const credentialMode = String(meta.credentialMode || meta.credential_mode || "").trim() as ProviderCredentialMode || inferCredentialMode(rawCredential, meta.type);
+  const rawOauthPath = sanitizeOauthPath(meta.oauthPath || (rawCredential.startsWith("oauth:") ? rawCredential.slice(6) : ""));
   const oauthRef = String(meta.oauth_ref || "").trim();
   const platformLoginPreset = inferPlatformLoginPreset({
     providerType: meta.type,
@@ -242,7 +245,7 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
     voiceResourceId: meta.voice_resource_id || "",
     isEnabled: meta.is_enabled !== false,
     credentialMode,
-    hasCredential: Boolean(rawCredential),
+    hasCredential: meta.credentialConfigured === true || Boolean(rawCredential),
     oauthPath,
     oauthRef,
     oauthPathMasked: oauthPath ? maskPath(oauthPath) : "",

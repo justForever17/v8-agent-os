@@ -64,6 +64,7 @@ type AIModel = {
     rerankApiFlavor?: string;
     thinkingControl?: Record<string, unknown> | null;
     mediaLimits?: Record<string, unknown> | null;
+    endpointBinding?: Record<string, unknown> | null;
     logoAsset?: string | null;
     isEnabled: boolean;
     provider?: {
@@ -1090,6 +1091,44 @@ export default function ModelHubPage() {
         setIsCatalogBusy(true);
         try {
             const provider = apiCatalogProviders.find((item) => item.id === providerId) || catalogProviders.find((item) => item.id === providerId);
+            const selectedModel = catalogProbeModels.find((item) => (item.modelId || item.id) === modelId);
+            const mediaLimits = selectedModel?.mediaLimits || {};
+            const sourceProvider = catalogProviders.find((item) => item.id === selectedModel?.sourceProviderId);
+            const operationKinds = Array.isArray(mediaLimits.operationKinds)
+                ? mediaLimits.operationKinds.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+                : selectedModel?.operationKinds || [];
+            const defaultOpenAiEndpointPath: Record<CatalogPurpose, string> = {
+                chat: "",
+                image: "images/generations",
+                video: "videos/generations",
+                voice: "audio/speech",
+                music: "",
+                workflow: "",
+                model3d: "",
+            };
+            const defaultOperationKind: Record<CatalogPurpose, string> = {
+                chat: "",
+                image: "image.generate",
+                video: "video.text_to_video",
+                voice: "voice.tts",
+                music: "music.generate",
+                workflow: "workflow.generate",
+                model3d: "model3d.generate",
+            };
+            const catalogEndpointPath = String(mediaLimits.endpointPath || mediaLimits.requestPath || "").replace(/^\/+|\/+$/g, "");
+            const openAiCompatibleEndpointPath = String(selectedCatalogRuntime.apiStandard || "").toLowerCase().includes("openai")
+                ? defaultOpenAiEndpointPath[catalogPurpose]
+                : "";
+            const endpointPath = catalogEndpointPath || openAiCompatibleEndpointPath;
+            const explicitProviderModelId = String(mediaLimits.providerModelId || "").replace(/^\/+|\/+$/g, "");
+            const providerModelId = explicitProviderModelId || (
+                endpointPath && modelId.startsWith(`${endpointPath}/`)
+                    ? modelId.slice(endpointPath.length + 1)
+                    : modelId
+            );
+            const visibleRouteModelId = endpointPath && providerModelId
+                ? `${endpointPath}/${providerModelId}`
+                : modelId;
             const isCustomProvider = providerId === "__custom__" || selectedCatalogProviderId === "__custom__";
             const baseUrl = isCustomProvider ? customProviderBaseUrl.trim() : selectedCatalogRuntime.baseUrl || provider?.baseUrl || "";
             const isMediaPurpose = catalogPurpose !== "chat";
@@ -1099,7 +1138,7 @@ export default function ModelHubPage() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     providerId,
-                    modelId,
+                    modelId: visibleRouteModelId,
                     apiKey,
                     baseUrl,
                     customProviderName: isCustomProvider ? customProviderName : "",
@@ -1112,6 +1151,10 @@ export default function ModelHubPage() {
                     voiceAppId: requiresVolcengineVoiceConfig ? catalogVoiceAppId.trim() : "",
                     voiceResourceId: requiresVolcengineVoiceConfig ? catalogVoiceResourceId.trim() : "",
                     declaredCapabilities: isCustomProvider ? customProviderCapabilities : [],
+                    endpointPath,
+                    providerModelId,
+                    operationKind: operationKinds[0] || defaultOperationKind[catalogPurpose],
+                    adapter: String(mediaLimits.adapter || sourceProvider?.adapter || provider?.adapter || ""),
                 }),
             });
             const data = await response.json().catch(() => ({}));
@@ -2282,7 +2325,7 @@ export default function ModelHubPage() {
                                 </p>
                             </div>
                         ) : MEDIA_MODEL_TYPES.has(modelType) ? (
-                            <div>
+                            <div className="space-y-4">
                                 <AdminHoverInfo
                                     content={t("app.admin.dashboard.model.hub.catalog.mediaModelNotice")}
                                     panelClassName="text-xs leading-5"
@@ -2291,6 +2334,38 @@ export default function ModelHubPage() {
                                         {t("app.admin.dashboard.model.hub.catalog.mediaModelNoticeTitle")}
                                     </Badge>
                                 </AdminHoverInfo>
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="model-endpoint-path">{t("app.admin.dashboard.model.hub.page.manualEndpointPath")}</Label>
+                                        <Input
+                                            id="model-endpoint-path"
+                                            name="endpointPath"
+                                            defaultValue={String(editingModel?.endpointBinding?.endpointPath || editingModel?.mediaLimits?.endpointPath || "")}
+                                            placeholder="images/generations"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="model-provider-model-id">{t("app.admin.dashboard.model.hub.page.manualProviderModelId")}</Label>
+                                        <Input
+                                            id="model-provider-model-id"
+                                            name="providerModelId"
+                                            defaultValue={String(editingModel?.endpointBinding?.providerModelId || editingModel?.mediaLimits?.providerModelId || "")}
+                                            placeholder="gpt-image-2"
+                                        />
+                                    </div>
+                                    <div className="space-y-2 md:col-span-2">
+                                        <Label htmlFor="model-operation-kind">{t("app.admin.dashboard.model.hub.page.manualOperationKind")}</Label>
+                                        <Input
+                                            id="model-operation-kind"
+                                            name="operationKind"
+                                            defaultValue={String(editingModel?.endpointBinding?.operationKind || "")}
+                                            placeholder="image.generate"
+                                        />
+                                    </div>
+                                </div>
+                                <p className="text-xs leading-5 text-muted-foreground">
+                                    {t("app.admin.dashboard.model.hub.page.manualBindingHelp")}
+                                </p>
                             </div>
                         ) : null}
                         <Button type="submit" className="w-full">{t("app.admin.dashboard.model.hub.page.kb7dfaded")}</Button>

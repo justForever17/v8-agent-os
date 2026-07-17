@@ -2139,11 +2139,16 @@ export default function ChatScreen() {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+    const [supervisorWorkModeDrafts, setSupervisorWorkModeDrafts] = useState<Record<string, "daily" | "engineering">>({});
     const activeConversationSummary = useMemo(
         () => conversations.find((item) => (item.sessionId || item.id) === activeConversationId) || null,
         [activeConversationId, conversations],
     );
-    const supervisorWorkMode = activeConversationSummary?.supervisorWorkMode === "engineering" ? "engineering" : "daily";
+    const activeSupervisorWorkModeSessionId = String(activeConversationId || "").trim();
+    const persistedSupervisorWorkMode = activeConversationSummary?.supervisorWorkMode === "engineering" ? "engineering" : "daily";
+    const supervisorWorkMode = activeSupervisorWorkModeSessionId
+        ? supervisorWorkModeDrafts[activeSupervisorWorkModeSessionId] || persistedSupervisorWorkMode
+        : persistedSupervisorWorkMode;
     const [projects, setProjects] = useState<ProjectSummary[]>([]);
     const [mainWorkspacePath, setMainWorkspacePath] = useState("");
     const [workspaceChooserVisible, setWorkspaceChooserVisible] = useState(false);
@@ -5230,6 +5235,7 @@ export default function ChatScreen() {
     const handleChangeSupervisorWorkMode = useCallback(async (nextMode: "daily" | "engineering") => {
         const sessionId = String(activeConversationIdRef.current || activeConversationId || "").trim();
         if (!sessionId || nextMode === supervisorWorkMode) return;
+        setSupervisorWorkModeDrafts((current) => ({ ...current, [sessionId]: nextMode }));
         setConversations((current) => current.map((conversation) =>
             (conversation.sessionId || conversation.id) === sessionId
                 ? { ...conversation, supervisorWorkMode: nextMode }
@@ -5241,15 +5247,18 @@ export default function ChatScreen() {
                 updated,
                 ...current.filter((conversation) => (conversation.sessionId || conversation.id) !== sessionId),
             ]));
-        } catch (error) {
-            setConversations((current) => current.map((conversation) =>
-                (conversation.sessionId || conversation.id) === sessionId
-                    ? { ...conversation, supervisorWorkMode }
-                    : conversation
-            ));
+            if (updated.supervisorWorkMode === nextMode) {
+                setSupervisorWorkModeDrafts((current) => {
+                    if (current[sessionId] !== nextMode) return current;
+                    const next = { ...current };
+                    delete next[sessionId];
+                    return next;
+                });
+            }
+        } catch {
             Alert.alert(
                 t("shared.conversation.update_failed"),
-                error instanceof Error ? error.message : t("shared.conversation.update_failed_detail"),
+                t("shared.conversation.work_mode_sync_failed_detail"),
             );
         }
     }, [activeConversationId, authorizedFetch, supervisorWorkMode, t]);

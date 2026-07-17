@@ -905,6 +905,7 @@ export default function ChatClient() {
 
     const [input, setInput] = useState("");
     const { conversations, refreshConversations, createConversation, patchConversationSummary, updateConversationPresentation } = useConversationContext();
+    const [supervisorWorkModeDrafts, setSupervisorWorkModeDrafts] = useState<Record<string, "daily" | "engineering">>({});
     const [askUserModalOpen, setAskUserModalOpen] = useState(false);
     const [askUserQuestion, setAskUserQuestion] = useState("");
     const [askUserToolCallId, setAskUserToolCallId] = useState("");
@@ -1346,14 +1347,24 @@ export default function ChatClient() {
         () => conversations.find((item) => (item.sessionId || item.id) === activeConversationId) || null,
         [activeConversationId, conversations],
     );
-    const supervisorWorkMode = activeConversationSummary?.supervisorWorkMode === "engineering" ? "engineering" : "daily";
+    const activeSupervisorWorkModeSessionId = String(activeConversationId || "").trim();
+    const persistedSupervisorWorkMode = activeConversationSummary?.supervisorWorkMode === "engineering" ? "engineering" : "daily";
+    const supervisorWorkMode = activeSupervisorWorkModeSessionId
+        ? supervisorWorkModeDrafts[activeSupervisorWorkModeSessionId] || persistedSupervisorWorkMode
+        : persistedSupervisorWorkMode;
     const handleSupervisorWorkModeChange = useCallback(async (nextMode: "daily" | "engineering") => {
         const sessionId = activeConversationIdRef.current;
         if (!sessionId || nextMode === supervisorWorkMode) return;
+        setSupervisorWorkModeDrafts((current) => ({ ...current, [sessionId]: nextMode }));
         patchConversationSummary(sessionId, { supervisorWorkMode: nextMode });
         const updated = await updateConversationPresentation(sessionId, { supervisorWorkMode: nextMode });
-        if (!updated) {
-            patchConversationSummary(sessionId, { supervisorWorkMode });
+        if (updated?.supervisorWorkMode === nextMode) {
+            setSupervisorWorkModeDrafts((current) => {
+                if (current[sessionId] !== nextMode) return current;
+                const next = { ...current };
+                delete next[sessionId];
+                return next;
+            });
         }
     }, [patchConversationSummary, supervisorWorkMode, updateConversationPresentation]);
     const activeConversationRunning = useMemo(() => {

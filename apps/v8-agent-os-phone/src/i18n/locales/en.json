@@ -31,6 +31,7 @@
   "shared.conversation.unpin_task": "Unpin task",
   "shared.conversation.update_failed": "Task settings were not saved",
   "shared.conversation.update_failed_detail": "Check the connection and try again.",
+  "shared.conversation.work_mode_sync_failed_detail": "The current composer changed mode, but the task setting has not synced yet. The next message will still use the selected mode.",
   "shared.workspace.project_actions": "Project actions",
   "shared.workspace.rename_project": "Rename project",
   "shared.workspace.pin_project": "Pin project",

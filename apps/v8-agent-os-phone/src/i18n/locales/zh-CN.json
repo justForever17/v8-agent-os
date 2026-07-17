@@ -31,6 +31,7 @@
   "shared.conversation.unpin_task": "取消置顶任务",
   "shared.conversation.update_failed": "任务设置未保存",
   "shared.conversation.update_failed_detail": "请检查连接后重试。",
+  "shared.conversation.work_mode_sync_failed_detail": "当前输入已切换模式，但历史任务设置暂未同步；发送时仍会使用当前模式。",
   "shared.workspace.project_actions": "项目操作",
   "shared.workspace.rename_project": "重命名项目",
   "shared.workspace.pin_project": "置顶项目",

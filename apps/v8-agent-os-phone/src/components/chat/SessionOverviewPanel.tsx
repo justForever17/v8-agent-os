@@ -20,9 +20,10 @@ import {
     type SessionSourceRef,
     type SubagentReturnProjection,
 } from "@v8/session-realtime";
-import Animated, { SlideInRight } from "react-native-reanimated";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
 
 import { ContentDispatcher } from "@/src/components/chat/ContentDispatcher";
+import { useDeferredModalMotion } from "@/src/hooks/use-deferred-modal-motion";
 import { listSessionArtifacts, listSessionSources, readSessionWorkbenchFile } from "@/src/lib/phone-api";
 import type { PhoneRuntimeStageActivity } from "@/src/lib/runtime-stage";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -329,6 +330,12 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
 }) {
     const { width } = useWindowDimensions();
     const { colors, t } = useUiPrefs();
+    const panelWidth = Math.min(440, Math.max(300, width * 0.9));
+    const { progress, reduceMotion, rendered } = useDeferredModalMotion(visible, { enterDuration: 220, exitDuration: 180 });
+    const overlayMotionStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+    const panelMotionStyle = useAnimatedStyle(() => ({
+        transform: [{ translateX: reduceMotion ? 0 : panelWidth * (1 - progress.value) }],
+    }));
     const [sessionArtifacts, setSessionArtifacts] = useState<ArtifactDetail[]>([]);
     const [sessionSources, setSessionSources] = useState<SessionSourceRef[]>([]);
     const [loading, setLoading] = useState(false);
@@ -399,12 +406,11 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
                 : colors.textMuted;
 
     return (
-        <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-            <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
+        <Modal visible={rendered} transparent animationType="none" onRequestClose={onClose}>
+            <Animated.View style={[styles.overlay, { backgroundColor: colors.overlay }, overlayMotionStyle]}>
                 <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
                 <Animated.View
-                    entering={SlideInRight.duration(220)}
-                    style={[styles.panel, { width: Math.min(440, Math.max(300, width * 0.9)), backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}
+                    style={[styles.panel, { width: panelWidth, backgroundColor: colors.surfaceStrong, borderColor: colors.border }, panelMotionStyle]}
                 >
                     <View style={[styles.header, { borderBottomColor: colors.border }]}>
                         <View style={styles.headerTitleWrap}>
@@ -437,7 +443,7 @@ export const SessionOverviewPanel = memo(function SessionOverviewPanel({
                         ))}
                     </ScrollView>
                 </Animated.View>
-            </View>
+            </Animated.View>
         </Modal>
     );
 });

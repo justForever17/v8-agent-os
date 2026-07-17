@@ -4,9 +4,11 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
 
 import { formatRelativeTime } from "@/src/lib/time";
 import { getConversationActivityState, groupConversationsByWorkspace, type ConversationWorkspaceGroup } from "@/src/lib/conversation-groups";
+import { useDeferredModalMotion } from "@/src/hooks/use-deferred-modal-motion";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { spacing } from "@/src/theme/tokens";
@@ -48,6 +50,11 @@ export function HistoryDrawer({
     const { colors, t, locale } = useUiPrefs();
     const { getEngineNowMs } = useAppSession();
     const panelWidth = Math.min(width * 0.86, 352);
+    const { progress, reduceMotion, rendered } = useDeferredModalMotion(visible, { enterDuration: 220, exitDuration: 180 });
+    const overlayMotionStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+    const panelMotionStyle = useAnimatedStyle(() => ({
+        transform: [{ translateX: reduceMotion ? 0 : -18 * (1 - progress.value) }],
+    }));
     const groups = useMemo(() => groupedItems || groupConversationsByWorkspace(items, locale), [groupedItems, items, locale]);
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
     const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -187,16 +194,16 @@ export function HistoryDrawer({
     };
 
     return (
-        <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-            <View style={[styles.overlay, { backgroundColor: colors.overlay }]}>
+        <Modal visible={rendered} transparent animationType="none" onRequestClose={onClose}>
+            <Animated.View style={[styles.overlay, { backgroundColor: colors.overlay }, overlayMotionStyle]}>
                 <View style={styles.frame}>
-                    <View style={[styles.panel, {
+                    <Animated.View style={[styles.panel, {
                         width: panelWidth,
                         backgroundColor: colors.surface,
                         borderRightColor: colors.border,
                         paddingTop: Math.max(insets.top + 6, 16),
                         paddingBottom: Math.max(insets.bottom + 14, 18),
-                    }]}>
+                    }, panelMotionStyle]}>
                         <View style={styles.header}>
                             <Pressable onPress={onNewConversation} style={styles.newChatButtonWrap}>
                                 <LinearGradient
@@ -345,10 +352,10 @@ export function HistoryDrawer({
                             )}
                         </ScrollView>
 
-                    </View>
+                    </Animated.View>
                     <Pressable style={styles.backdrop} onPress={onClose} />
                 </View>
-            </View>
+            </Animated.View>
         </Modal>
     );
 }

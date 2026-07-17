@@ -41,7 +41,8 @@ test("Phone opens the existing overview drawer from the settled collaboration li
   assert.match(message, /onOpenOverview=\{onOpenOverview\}/);
   assert.match(window, /onOpenOverview=\{onOpenOverview\}/);
   assert.match(screen, /onOpenOverview=\{openOverviewPanel\}/);
-  assert.match(panel, /SlideInRight\.duration\(220\)/);
+  assert.match(panel, /useDeferredModalMotion\(visible, \{ enterDuration: 220, exitDuration: 180 \}\)/);
+  assert.match(panel, /animationType="none"/);
 });
 
 test("Web and Phone overview surfaces reuse the shared nested subagent return projection", () => {

@@ -44,7 +44,7 @@ export function Sidebar() {
     return (
         <aside 
             className={cn(
-                "relative hidden h-full min-h-0 shrink-0 overflow-visible bg-[#f7fafc] transition-[width] duration-300 ease-in-out dark:bg-zinc-950 lg:flex lg:flex-col",
+                "relative hidden h-full min-h-0 shrink-0 overflow-visible bg-[#f7fafc] transition-[width] [transition-duration:220ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:[transition-duration:150ms] dark:bg-zinc-950 lg:flex lg:flex-col",
                 isCollapsed ? "w-0" : "w-80 border-r border-border dark:border-white/10"
             )}
         >
@@ -61,7 +61,11 @@ export function Sidebar() {
                 {isCollapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
             </button>
 
-            {!isCollapsed ? <div className={cn(
+            <div className={cn(
+                "flex h-full w-80 min-w-0 flex-col transition-[opacity,transform] [transition-duration:180ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:transform-none motion-reduce:[transition-duration:150ms]",
+                isCollapsed ? "pointer-events-none -translate-x-1.5 opacity-0" : "translate-x-0 opacity-100",
+            )} aria-hidden={isCollapsed} inert={isCollapsed}>
+            <div className={cn(
                 "flex h-9 shrink-0 items-center border-b border-border dark:border-white/10",
                 "px-3"
             )}>
@@ -74,10 +78,10 @@ export function Sidebar() {
                 >
                     <ArrowLeft className="h-4 w-4" />
                 </a>
-            </div> : null}
+            </div>
 
             {/* 导航菜单区域 */}
-            {!isCollapsed ? <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain">
+            <div className="min-w-0 flex-1 overflow-y-auto overscroll-contain">
                 <div className="w-full min-w-0 space-y-6 px-4 py-5 pr-5">
                     {ADMIN_NAV_GROUPS.map((group) => {
                         return (
@@ -146,10 +150,10 @@ export function Sidebar() {
                         );
                     })}
                 </div>
-            </div> : <div className="min-h-0 flex-1" />}
+            </div>
 
             {/* 底部控制面板 */}
-            {!isCollapsed ? <div className="shrink-0 border-t border-border p-4 dark:border-white/10">
+            <div className="shrink-0 border-t border-border p-4 dark:border-white/10">
                     <div className="flex items-center">
                         <Button
                             variant="outline"
@@ -160,7 +164,8 @@ export function Sidebar() {
                             {t("components.layout.Sidebar.k2ed944b1")}
                         </Button>
                     </div>
-            </div> : null}
+            </div>
+            </div>
         </aside>
     );
 }

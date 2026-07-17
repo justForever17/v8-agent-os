@@ -337,7 +337,12 @@ export default function CyberPet({
   
   // Right-click Context Menu HUD Overlay State
   const [showMenu, setShowMenu] = useState(false);
+  const [menuMounted, setMenuMounted] = useState(false);
+  const [menuMotionVisible, setMenuMotionVisible] = useState(false);
   const showMenuRef = useRef(false);
+  const menuMountedRef = useRef(false);
+  const menuEntryFrameRef = useRef<number | null>(null);
+  const menuExitTimeoutRef = useRef<number | null>(null);
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<Set<string>>(() => new Set());
   const isHoveredRef = useRef(false);
   const canPopOutRef = useRef(true);
@@ -601,6 +606,39 @@ export default function CyberPet({
     if (showMenu) {
       setReusableAudioPhrases(readReusableAudioPhrases());
     }
+  }, [showMenu]);
+
+  useEffect(() => {
+    if (menuEntryFrameRef.current !== null) cancelAnimationFrame(menuEntryFrameRef.current);
+    if (menuExitTimeoutRef.current !== null) window.clearTimeout(menuExitTimeoutRef.current);
+
+    if (showMenu) {
+      menuMountedRef.current = true;
+      setMenuMounted(true);
+      menuEntryFrameRef.current = requestAnimationFrame(() => {
+        menuEntryFrameRef.current = requestAnimationFrame(() => {
+          setMenuMotionVisible(true);
+          menuEntryFrameRef.current = null;
+        });
+      });
+    } else if (menuMountedRef.current) {
+      setMenuMotionVisible(false);
+      menuExitTimeoutRef.current = window.setTimeout(() => {
+        menuMountedRef.current = false;
+        setMenuMounted(false);
+        menuExitTimeoutRef.current = null;
+        if (window.v8CyberCore?.setPanelOpen) {
+          void window.v8CyberCore.setPanelOpen(false).then(() => {
+            window.v8CyberCore?.setClickThrough?.(!isHoveredRef.current);
+          });
+        }
+      }, 180);
+    }
+
+    return () => {
+      if (menuEntryFrameRef.current !== null) cancelAnimationFrame(menuEntryFrameRef.current);
+      if (menuExitTimeoutRef.current !== null) window.clearTimeout(menuExitTimeoutRef.current);
+    };
   }, [showMenu]);
 
   // Floating wave physical loops
@@ -867,12 +905,6 @@ export default function CyberPet({
   const handleCloseMenu = async () => {
     showMenuRef.current = false;
     setShowMenu(false);
-
-    if (window.v8CyberCore?.setPanelOpen) {
-      await window.v8CyberCore.setPanelOpen(false);
-      const shouldClickThrough = !isHoveredRef.current;
-      window.v8CyberCore.setClickThrough?.(shouldClickThrough);
-    }
   };
 
   // Trigger Right-Click menu HUD panel centered on current pointer position
@@ -1322,7 +1354,7 @@ Always output your response as valid JSON matching the following schema structur
       </div>
 
       {/* Lightweight right-click menu. Keep the desktop pet body untouched. */}
-      {showMenu && createPortal(
+      {menuMounted && createPortal(
         <div
           className="fixed inset-0 z-[99999] cursor-default bg-black/0 pointer-events-none"
           onContextMenu={(e) => {
@@ -1332,7 +1364,9 @@ Always output your response as valid JSON matching the following schema structur
         >
           <div
             data-menu-panel="true"
-            className="absolute pointer-events-auto flex w-[320px] max-h-[calc(100vh-24px)] flex-col overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-950/90 p-2 text-slate-100 shadow-[0_18px_42px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+            data-motion-state={menuMotionVisible ? 'open' : 'closed'}
+            data-motion-side={position.x < 0 ? 'right' : 'left'}
+            className={`cyber-pet-menu-motion absolute flex w-[320px] max-h-[calc(100vh-24px)] flex-col overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-950/90 p-2 text-slate-100 shadow-[0_18px_42px_rgba(0,0,0,0.55)] backdrop-blur-2xl ${menuMotionVisible ? 'pointer-events-auto' : 'pointer-events-none'}`}
             style={(() => {
               const panelW = 320;
               const panelH = Math.min(640, window.innerHeight - 24);

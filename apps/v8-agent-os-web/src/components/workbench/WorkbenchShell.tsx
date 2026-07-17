@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, ChevronLeft, ChevronRight, FileCode2, LayoutPanelTop, Maximize2, Minimize2, X } from "lucide-react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 
 import { cn } from "@/lib/utils";
 import type { RuntimeStageModel } from "@/lib/runtime-stage";
@@ -182,24 +183,33 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
     const closeDocument = useWorkbenchStore((state) => state.closeDocument);
     const setMode = useWorkbenchStore((state) => state.setMode);
     const setWidth = useWorkbenchStore((state) => state.setWidth);
+    const shouldReduceMotion = useReducedMotion();
     const panelRef = useRef<HTMLElement | null>(null);
     const [containerWidth, setContainerWidth] = useState(() => typeof window === "undefined" ? 1200 : window.innerWidth);
+    const [isResizing, setIsResizing] = useState(false);
 
     useEffect(() => {
-        const parent = panelRef.current?.parentElement;
+        const immediateParent = panelRef.current?.parentElement;
+        const parent = immediateParent?.hasAttribute("data-workbench-motion-shell")
+            ? immediateParent.parentElement
+            : immediateParent;
         if (!parent || typeof ResizeObserver === "undefined") return;
         const observer = new ResizeObserver(([entry]) => setContainerWidth(entry.contentRect.width));
         observer.observe(parent);
-        setContainerWidth(parent.getBoundingClientRect().width);
-        return () => observer.disconnect();
+        const frame = window.requestAnimationFrame(() => setContainerWidth(parent.getBoundingClientRect().width));
+        return () => {
+            window.cancelAnimationFrame(frame);
+            observer.disconnect();
+        };
     }, [mode]);
 
     const activeTab = useMemo(
         () => tabs.find((tab) => tab.document.documentId === activeDocumentId) || tabs.at(-1) || null,
         [activeDocumentId, tabs],
     );
-    if (mode === "closed" || !activeTab || boundSessionId !== props.sessionId) return null;
+    if (!activeTab || boundSessionId !== props.sessionId) return null;
 
+    const shouldShow = mode !== "closed";
     const effectiveMode = mode === "focus" ? "focus" : "split";
     const desiredPanelWidth = width > 0 ? width : containerWidth / 3;
     const minimumPanelWidth = Math.min(280, Math.max(200, containerWidth * 0.28));
@@ -249,32 +259,63 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         </aside>
     );
 
-    if (effectiveMode === "focus") return panel;
     return (
-        <>
-            <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="调整工作台宽度"
-                className="relative z-[71] w-1.5 shrink-0 cursor-col-resize bg-transparent before:absolute before:inset-y-0 before:left-1/2 before:w-px before:bg-border/80 hover:bg-primary/[0.025] hover:before:bg-primary/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-                tabIndex={0}
-                onKeyDown={(event) => {
-                    if (event.key === "ArrowLeft") setWidth(panelWidth + 20);
-                    if (event.key === "ArrowRight") setWidth(panelWidth - 20);
-                }}
-                onPointerDown={(event) => {
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                    const parentRight = event.currentTarget.parentElement?.getBoundingClientRect().right || window.innerWidth;
-                    const handleMove = (moveEvent: PointerEvent) => setWidth(parentRight - moveEvent.clientX);
-                    const handleUp = () => {
-                        window.removeEventListener("pointermove", handleMove);
-                        window.removeEventListener("pointerup", handleUp);
-                    };
-                    window.addEventListener("pointermove", handleMove);
-                    window.addEventListener("pointerup", handleUp, { once: true });
-                }}
-            />
-            {panel}
-        </>
+        <AnimatePresence initial={false} mode="sync">
+            {shouldShow ? effectiveMode === "focus" ? (
+                <motion.div
+                    key="workbench-focus"
+                    data-workbench-motion-shell
+                    className="absolute inset-0 z-[70]"
+                    initial={{ opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(16px)" }}
+                    animate={{ opacity: 1, transform: "translateX(0)" }}
+                    exit={{ opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(12px)" }}
+                    transition={{ duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] }}
+                >
+                    {panel}
+                </motion.div>
+            ) : (
+                <motion.div
+                    key="workbench-split"
+                    data-workbench-motion-shell
+                    className="relative flex h-full shrink-0 overflow-hidden"
+                    initial={{ width: shouldReduceMotion ? panelWidth + 6 : 0, opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(16px)" }}
+                    animate={{ width: panelWidth + 6, opacity: 1, transform: "translateX(0)" }}
+                    exit={{ width: shouldReduceMotion ? panelWidth + 6 : 0, opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(12px)" }}
+                    transition={{
+                        width: { duration: isResizing ? 0 : shouldReduceMotion ? 0.12 : 0.22, ease: [0.32, 0.72, 0, 1] },
+                        opacity: { duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] },
+                        transform: { duration: shouldReduceMotion ? 0.12 : 0.2, ease: [0.32, 0.72, 0, 1] },
+                    }}
+                >
+                    <div
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="调整工作台宽度"
+                        className="relative z-[71] w-1.5 shrink-0 cursor-col-resize bg-transparent before:absolute before:inset-y-0 before:left-1/2 before:w-px before:bg-border/80 hover:bg-primary/[0.025] hover:before:bg-primary/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                            if (event.key === "ArrowLeft") setWidth(panelWidth + 20);
+                            if (event.key === "ArrowRight") setWidth(panelWidth - 20);
+                        }}
+                        onPointerDown={(event) => {
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                            setIsResizing(true);
+                            const parentRight = event.currentTarget.parentElement?.getBoundingClientRect().right || window.innerWidth;
+                            const handleMove = (moveEvent: PointerEvent) => setWidth(parentRight - moveEvent.clientX);
+                            const handleUp = () => {
+                                setIsResizing(false);
+                                window.removeEventListener("pointermove", handleMove);
+                                window.removeEventListener("pointerup", handleUp);
+                                window.removeEventListener("pointercancel", handleUp);
+                            };
+                            window.addEventListener("pointermove", handleMove);
+                            window.addEventListener("pointerup", handleUp, { once: true });
+                            window.addEventListener("pointercancel", handleUp, { once: true });
+                        }}
+                    />
+                    {panel}
+                </motion.div>
+            ) : null}
+        </AnimatePresence>
     );
 }

@@ -100,13 +100,14 @@ test("Workbench file reading reuses Markdown rendering, locates search matches, 
   assert.match(chat, /delete optionData\.messageOverride/);
 });
 
-test("Collapsed Web task sidebar removes its rail and workspace controls are not duplicated", () => {
+test("Collapsed Web task sidebar removes its rail, keeps hidden controls inert, and avoids duplicate workspace controls", () => {
   const sidebar = readText("apps/v8-agent-os-web/src/components/layout/Sidebar.tsx");
   const chat = readText("apps/v8-agent-os-web/src/app/chat/ChatClient.tsx");
   const shell = readText("apps/v8-agent-os-shell/electron/main.cjs");
   const preload = readText("apps/v8-agent-os-shell/electron/preload.cjs");
   assert.match(sidebar, /isCollapsed \? "w-0 overflow-visible" : "w-\[280px\] glass-panel"/);
-  assert.match(sidebar, /!isCollapsed \? renderSidebarBody\(false\) : null/);
+  assert.match(sidebar, /inert=\{isCollapsed\}/);
+  assert.match(sidebar, /isCollapsed \? "pointer-events-none -translate-x-2 opacity-0"/);
   assert.match(sidebar, /openWorkspaceFolder/);
   assert.match(sidebar, /openProjectFolder/);
   assert.doesNotMatch(chat, /FolderTree/);

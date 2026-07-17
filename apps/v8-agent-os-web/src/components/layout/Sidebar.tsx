@@ -20,6 +20,7 @@ import {
     FolderOpen,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import {
     Dialog,
@@ -48,6 +49,7 @@ export function Sidebar() {
     const searchParams = useSearchParams();
     const currentId = searchParams.get("id");
     const t = useT();
+    const shouldReduceMotion = useReducedMotion();
 
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [isMobileOpen, setIsMobileOpen] = useState(false);
@@ -580,7 +582,7 @@ export function Sidebar() {
         <>
             <div
                 className={cn(
-                    "group/sidebar relative hidden h-[calc(100vh-3.5rem)] flex-shrink-0 flex-col transition-[width] duration-300 z-20 md:flex",
+                    "group/sidebar relative z-20 hidden h-[calc(100vh-3.5rem)] flex-shrink-0 flex-col transition-[width] [transition-duration:220ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:[transition-duration:150ms] md:flex",
                     isCollapsed ? "w-0 overflow-visible" : "w-[280px] glass-panel",
                 )}
             >
@@ -596,7 +598,16 @@ export function Sidebar() {
                     </Button>
                 </div>
 
-                {!isCollapsed ? renderSidebarBody(false) : null}
+                <div
+                    className={cn(
+                        "h-full w-[280px] shrink-0 transition-[opacity,transform] [transition-duration:180ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:transform-none motion-reduce:[transition-duration:150ms]",
+                        isCollapsed ? "pointer-events-none -translate-x-2 opacity-0" : "translate-x-0 opacity-100",
+                    )}
+                    aria-hidden={isCollapsed}
+                    inert={isCollapsed}
+                >
+                    {renderSidebarBody(false)}
+                </div>
             </div>
 
             <Button
@@ -610,26 +621,47 @@ export function Sidebar() {
                 <PanelLeftOpen className="h-4 w-4" />
             </Button>
 
-            {isMobileOpen && (
-                <>
-                    <button
+            <AnimatePresence initial={false}>
+                {isMobileOpen ? (
+                    <motion.button
+                        key="mobile-sidebar-backdrop"
                         type="button"
                         className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[2px] md:hidden"
                         onClick={() => setIsMobileOpen(false)}
                         aria-label={t("web.generated.8dcb42e508")}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: shouldReduceMotion ? 0.1 : 0.15, ease: [0.32, 0.72, 0, 1] }}
                     />
-
-                    <div className="fixed inset-y-14 left-0 z-50 w-[min(22rem,86vw)] border-r border-border/40 bg-zinc-50/95 shadow-2xl backdrop-blur-2xl dark:bg-zinc-950/95 md:hidden">
+                ) : null}
+            </AnimatePresence>
+            <AnimatePresence initial={false}>
+                {isMobileOpen ? (
+                    <motion.div
+                        key="mobile-sidebar-panel"
+                        className="fixed inset-y-14 left-0 z-50 w-[min(22rem,86vw)] border-r border-border/40 bg-zinc-50/95 shadow-2xl backdrop-blur-2xl dark:bg-zinc-950/95 md:hidden"
+                        initial={{ opacity: 0.94, transform: shouldReduceMotion ? "translateX(0)" : "translateX(-18px)" }}
+                        animate={{ opacity: 1, transform: "translateX(0)" }}
+                        exit={{ opacity: 0, transform: shouldReduceMotion ? "translateX(0)" : "translateX(-18px)" }}
+                        transition={{ duration: shouldReduceMotion ? 0.12 : 0.22, ease: [0.32, 0.72, 0, 1] }}
+                    >
                         {renderSidebarBody(false, true)}
-                    </div>
-                </>
-            )}
+                    </motion.div>
+                ) : null}
+            </AnimatePresence>
 
-            {contextMenu && (
-                <div
+            <AnimatePresence initial={false}>
+                {contextMenu && (
+                <motion.div
+                    key={`conversation-menu:${contextMenu.sessionId}`}
                     className="fixed z-[80] w-[184px] overflow-hidden rounded-xl border border-border/70 bg-background/95 p-1 text-sm shadow-2xl backdrop-blur-xl"
-                    style={{ left: contextMenu.x, top: contextMenu.y }}
+                    style={{ left: contextMenu.x, top: contextMenu.y, transformOrigin: "top left" }}
                     onClick={(event) => event.stopPropagation()}
+                    initial={{ opacity: 0, transform: shouldReduceMotion ? "none" : "translateY(-2px) scale(0.98)" }}
+                    animate={{ opacity: 1, transform: "translateY(0) scale(1)" }}
+                    exit={{ opacity: 0, transform: shouldReduceMotion ? "none" : "translateY(-1px) scale(0.985)", pointerEvents: "none" }}
+                    transition={{ duration: shouldReduceMotion ? 0.1 : 0.14, ease: [0.23, 1, 0.32, 1] }}
                 >
                     <button
                         type="button"
@@ -674,14 +706,21 @@ export function Sidebar() {
                         <Trash2 className="h-4 w-4" />
                         <span>{t("web.sidebar.deleteConversation")}</span>
                     </button>
-                </div>
-            )}
+                </motion.div>
+                )}
+            </AnimatePresence>
 
-            {groupContextMenu && contextGroup && (
-                <div
+            <AnimatePresence initial={false}>
+                {groupContextMenu && contextGroup && (
+                <motion.div
+                    key={`group-menu:${groupContextMenu.groupKey}`}
                     className="fixed z-[80] w-[192px] overflow-hidden rounded-xl border border-border/70 bg-background/95 p-1 text-sm shadow-2xl backdrop-blur-xl"
-                    style={{ left: groupContextMenu.x, top: groupContextMenu.y }}
+                    style={{ left: groupContextMenu.x, top: groupContextMenu.y, transformOrigin: "top left" }}
                     onClick={(event) => event.stopPropagation()}
+                    initial={{ opacity: 0, transform: shouldReduceMotion ? "none" : "translateY(-2px) scale(0.98)" }}
+                    animate={{ opacity: 1, transform: "translateY(0) scale(1)" }}
+                    exit={{ opacity: 0, transform: shouldReduceMotion ? "none" : "translateY(-1px) scale(0.985)", pointerEvents: "none" }}
+                    transition={{ duration: shouldReduceMotion ? 0.1 : 0.14, ease: [0.23, 1, 0.32, 1] }}
                 >
                     <button
                         type="button"
@@ -707,8 +746,9 @@ export function Sidebar() {
                         <FolderOpen className="h-4 w-4 text-muted-foreground" />
                         <span>{t("web.sidebar.openProjectFolder")}</span>
                     </button>
-                </div>
-            )}
+                </motion.div>
+                )}
+            </AnimatePresence>
 
             <Dialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
                 <DialogContent className="glass-card border-none sm:max-w-[425px]">

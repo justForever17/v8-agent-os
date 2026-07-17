@@ -919,6 +919,159 @@ def test_provider_model_id_separates_known_media_route_from_wire_model_id():
     ) == "organization/custom-image-model"
 
 
+def test_configured_endpoint_binding_is_the_single_route_and_wire_model_truth(monkeypatch):
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "cpm": {
+                    "provider": {
+                        "name": "CPM",
+                        "base_url": "https://example.test/v1",
+                        "api_key": "sk-test",
+                        "api_standard": "openai_images",
+                    },
+                    "models": {
+                        "images/edits/gpt-image-2": {
+                            "type": "IMAGE",
+                            "endpointBinding": {
+                                "version": 1,
+                                "route": "images/edits/gpt-image-2",
+                                "endpointPath": "images/edits",
+                                "providerModelId": "gpt-image-2",
+                                "operationKind": "image.edit",
+                                "adapter": "openai_images",
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    binding = creative_media_runtime._configured_endpoint_binding(
+        {"modelRef": "cpm::images/edits/gpt-image-2"},
+        default_model="gpt-image-2",
+    )
+
+    assert binding["route"] == "images/edits/gpt-image-2"
+    assert binding["endpointPath"] == "images/edits"
+    assert binding["providerModelId"] == "gpt-image-2"
+    assert binding["requestUrlPreview"] == "https://example.test/v1/images/edits"
+
+
+def test_openai_image_generation_uses_configured_binding_endpoint_and_wire_model(monkeypatch):
+    requested = {}
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "cpm": {
+                    "provider": {"name": "CPM", "base_url": "https://example.test/v1", "api_key": "sk-test"},
+                    "models": {
+                        "images/generations/gpt-image-2": {
+                            "type": "IMAGE",
+                            "endpointBinding": {
+                                "route": "images/generations/gpt-image-2",
+                                "endpointPath": "images/generations",
+                                "providerModelId": "gpt-image-2",
+                                "operationKind": "image.generate",
+                                "adapter": "openai_images",
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+
+    async def fake_request(method, url, **kwargs):
+        requested.update({"method": method, "url": url, "json": kwargs.get("json")})
+        return {"data": [{"b64_json": "aGVsbG8="}]}
+
+    async def fake_artifact(*args, **kwargs):
+        return {"artifactId": "artifact-test"}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_image_response", fake_artifact)
+    monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
+    job = creative_media_runtime._new_job(
+        modality="image",
+        adapter="openai_images",
+        request={"providerId": "cpm", "modelId": "images/generations/gpt-image-2", "prompt": "hello"},
+    )
+
+    result = asyncio.run(
+        creative_media_runtime._run_openai_image_job(
+            job,
+            {"providerId": "cpm", "modelId": "images/generations/gpt-image-2", "prompt": "hello"},
+        )
+    )
+
+    assert requested["url"] == "https://example.test/v1/images/generations"
+    assert requested["json"]["model"] == "gpt-image-2"
+    assert result["status"] == "succeeded"
+
+
+def test_dashscope_image_generation_uses_configured_binding_instead_of_env_credentials(monkeypatch):
+    requested = {}
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.model_control_plane.get_config",
+        lambda: {
+            "providers": {
+                "dashscope": {
+                    "provider": {
+                        "name": "DashScope",
+                        "base_url": "https://dashscope.example.test/api/v1",
+                        "api_key": "stored-key",
+                    },
+                    "models": {
+                        "services/aigc/multimodal-generation/generation/qwen-image-2.0-pro": {
+                            "type": "IMAGE",
+                            "endpointBinding": {
+                                "route": "services/aigc/multimodal-generation/generation/qwen-image-2.0-pro",
+                                "endpointPath": "services/aigc/multimodal-generation/generation",
+                                "providerModelId": "qwen-image-2.0-pro",
+                                "operationKind": "image.generate",
+                                "adapter": "dashscope",
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        creative_media_runtime,
+        "_dashscope_credentials",
+        lambda: (_ for _ in ()).throw(AssertionError("legacy credential path must not run")),
+    )
+
+    async def fake_request(method, url, **kwargs):
+        requested.update({"method": method, "url": url, "json": kwargs.get("json"), "headers": kwargs.get("headers")})
+        return {"output": {"choices": [{"message": {"content": [{"image": "https://example.test/image.png"}]}}]}}
+
+    async def fake_artifact(*args, **kwargs):
+        return {"artifactId": "artifact-dashscope"}
+
+    monkeypatch.setattr(creative_media_runtime, "_request_json", fake_request)
+    monkeypatch.setattr(creative_media_runtime, "_artifact_from_url", fake_artifact)
+    monkeypatch.setattr(creative_media_runtime, "_save_job", lambda job: job)
+    request = {
+        "providerId": "dashscope",
+        "modelId": "services/aigc/multimodal-generation/generation/qwen-image-2.0-pro",
+        "prompt": "hello",
+    }
+    job = creative_media_runtime._new_job(modality="image", adapter="dashscope", request=request)
+
+    result = asyncio.run(creative_media_runtime._run_dashscope_image_job(job, request))
+
+    assert requested["url"] == "https://dashscope.example.test/api/v1/services/aigc/multimodal-generation/generation"
+    assert requested["json"]["model"] == "qwen-image-2.0-pro"
+    assert requested["headers"]["Authorization"] == "Bearer stored-key"
+    assert result["status"] == "succeeded"
+
+
 def test_implicit_provider_still_rejects_unregistered_media_model(monkeypatch):
     monkeypatch.setattr(
         "runtimes.creative_media.runtime.model_control_plane.get_config",

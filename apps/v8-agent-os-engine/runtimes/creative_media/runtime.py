@@ -24,6 +24,8 @@ from core.artifact_store import artifact_store
 from core.audio.tts_provider import TTSManager
 from core.database import db
 from core.model_control_plane import model_control_plane
+from core.model_endpoint_binding import build_model_endpoint_binding
+from core.model_ref import parse_model_ref
 from core.storage import storage
 from core.tools.tool_execution_envelope import ToolExecutionEnvelope
 from erc.runtime_registry import runtime_registry
@@ -488,10 +490,14 @@ class CreativeMediaRuntime:
         model_data: dict[str, Any],
     ) -> str:
         media_limits = dict(model_data.get("mediaLimits") or {})
+        endpoint_binding = dict(model_data.get("endpointBinding") or {})
+        media_adapter = str(media_limits.get("adapter") or "").strip()
         explicit_adapter = str(
-            model_data.get("adapter")
+            endpoint_binding.get("adapter")
+            or model_data.get("adapter")
+            or (media_adapter if media_adapter and media_adapter != "catalog_only" else "")
             or media_limits.get("adapterProviderId")
-            or media_limits.get("adapter")
+            or media_adapter
             or ""
         ).strip()
         if explicit_adapter:
@@ -663,6 +669,12 @@ class CreativeMediaRuntime:
             provider_logo_asset = str(provider_meta.get("logoAsset") or provider_meta.get("logo_asset") or provider_meta.get("icon") or "").strip()
             for model_id, model_data_raw in dict((provider_data or {}).get("models") or {}).items():
                 model_data = dict(model_data_raw or {})
+                endpoint_binding = build_model_endpoint_binding(
+                    str(provider_id),
+                    str(model_id),
+                    provider_meta,
+                    model_data,
+                )
                 media_limits = dict(model_data.get("mediaLimits") or {})
                 model_type = str(model_data.get("type") or "").strip().upper()
                 modality = MEDIA_MODEL_TYPE_TO_MODALITY.get(model_type)
@@ -726,6 +738,7 @@ class CreativeMediaRuntime:
                             "providerLogoAsset": provider_logo_asset,
                             "modelLogoAsset": str(model_data.get("logoAsset") or model_data.get("logo_asset") or "").strip(),
                             "adapter": adapter,
+                            "endpointBinding": endpoint_binding,
                             "capabilityProfile": capability_profile,
                             "nativeAudio": bool(capability_profile.get("nativeAudio")),
                             "source": "model_control_plane",
@@ -1114,7 +1127,7 @@ class CreativeMediaRuntime:
     def _has_explicit_model_selection(self, request: dict[str, Any]) -> bool:
         return any(
             key in request and str(request.get(key) or "").strip()
-            for key in ("adapter", "provider", "providerId", "provider_id", "model", "modelId", "model_id")
+            for key in ("adapter", "provider", "providerId", "provider_id", "model", "modelId", "model_id", "modelRef", "model_ref")
         )
 
     def _preferred_model_candidates(self, operation_kind: str) -> list[dict[str, Any]]:
@@ -1140,6 +1153,7 @@ class CreativeMediaRuntime:
         next_request["providerId"] = candidate.get("providerId")
         next_request["model"] = candidate.get("modelId")
         next_request.setdefault("modelId", candidate.get("modelId"))
+        next_request["modelRef"] = candidate.get("modelRef")
         next_request["operationKind"] = candidate.get("operationKind")
         return next_request
 
@@ -1153,6 +1167,7 @@ class CreativeMediaRuntime:
             "modelId": candidate.get("modelId"),
             "modelRef": candidate.get("modelRef"),
             "adapter": candidate.get("adapter"),
+            "endpointBinding": candidate.get("endpointBinding") or {},
             "operationKind": candidate.get("operationKind"),
             "modality": candidate.get("modality"),
             "source": candidate.get("source"),
@@ -2633,10 +2648,27 @@ class CreativeMediaRuntime:
             job["error"] = f"Creative Media P4 has not implemented executable image operationKind={operation_kind}; compile an editIntent recipe first."
             job["completedAt"] = utc_now_iso()
             return self._save_job(job)
-        adapter = str(request.get("adapter") or "").strip().lower()
+        endpoint_binding: dict[str, Any] = {}
+        binding_error = ""
+        if any(str(request.get(key) or "").strip() for key in ("providerId", "provider_id", "model", "modelId", "model_id", "modelRef", "model_ref")):
+            try:
+                endpoint_binding = self._configured_endpoint_binding(request, default_model="gpt-image-2")
+            except ValueError as exc:
+                if not str(request.get("adapter") or "").strip():
+                    binding_error = str(exc)
+        if endpoint_binding.get("operationKind") and not str(request.get("operationKind") or request.get("operation_kind") or "").strip():
+            operation_kind = str(endpoint_binding["operationKind"])
+        adapter = str(request.get("adapter") or endpoint_binding.get("adapter") or "").strip().lower()
         provider_id = str(request.get("providerId") or request.get("provider_id") or "").strip()
         if not adapter:
-            if "agnes" in provider_id.lower():
+            if endpoint_binding:
+                adapter = self._adapter_for_model_candidate(
+                    modality="image",
+                    provider_id=str(endpoint_binding.get("providerId") or provider_id),
+                    provider_meta=dict(endpoint_binding.get("providerMeta") or {}),
+                    model_data=dict(endpoint_binding.get("modelData") or {}),
+                )
+            elif "agnes" in provider_id.lower():
                 adapter = "agnes_images"
             elif any(token in provider_id.lower() for token in ("dashscope", "aliyun", "bailian")):
                 adapter = "dashscope"
@@ -2644,12 +2676,21 @@ class CreativeMediaRuntime:
                 adapter = "volcengine_ark" if "volc" in provider_id.lower() or str(request.get("provider") or "").lower() in {"volcengine", "seedream"} else "openai_images"
         provider_prompt, prompt_policy = self._prepare_prompt_for_provider(request, modality="image")
         prepared_request = {**request, "prompt": provider_prompt, "operationKind": operation_kind}
+        if endpoint_binding:
+            prepared_request["endpointBinding"] = {
+                key: value
+                for key, value in endpoint_binding.items()
+                if key not in {"providerMeta", "modelData"}
+            }
+            prepared_request["providerId"] = endpoint_binding.get("providerId") or prepared_request.get("providerId")
         if prompt_policy:
             prepared_request["promptPolicy"] = prompt_policy
         job = self._new_job(modality="image", adapter=adapter, request=prepared_request)
         self._record_safety_event(source="job_create", job=job, transform=dict(prompt_policy.get("safetyTransform") or {}) if prompt_policy else {})
         self._save_job(job)
         try:
+            if binding_error:
+                raise ValueError(binding_error)
             if adapter == "volcengine_ark":
                 return await self._run_volcengine_image_job(job, prepared_request)
             if adapter == "dashscope":
@@ -3395,11 +3436,21 @@ class CreativeMediaRuntime:
                         return str(item.get("image") or item.get("video"))
         return ""
 
-    def _configured_provider_for_model(self, request: dict[str, Any], *, default_model: str) -> tuple[str, dict[str, Any], str]:
+    def _configured_model_context(
+        self,
+        request: dict[str, Any],
+        *,
+        default_model: str,
+    ) -> tuple[str, dict[str, Any], str, dict[str, Any], dict[str, Any]]:
         config = model_control_plane.get_config()
         providers = dict(config.get("providers") or {})
+        model_ref = parse_model_ref(str(request.get("modelRef") or request.get("model_ref") or ""))
         requested_provider = str(request.get("providerId") or request.get("provider_id") or "").strip()
         requested_model = str(request.get("model") or request.get("modelId") or request.get("model_id") or default_model).strip()
+        if model_ref:
+            requested_provider = requested_provider or model_ref[0]
+            if not any(str(request.get(key) or "").strip() for key in ("model", "modelId", "model_id")):
+                requested_model = model_ref[1]
         candidates: Iterable[tuple[str, dict[str, Any]]] = providers.items()
         if requested_provider:
             provider = providers.get(requested_provider)
@@ -3427,19 +3478,44 @@ class CreativeMediaRuntime:
         if not selected:
             if requested_provider:
                 provider_data = dict(providers[requested_provider] or {})
-                return (
-                    requested_provider,
-                    dict(provider_data.get("provider") or {}),
-                    requested_model,
-                )
+                provider_meta = dict(provider_data.get("provider") or {})
+                model_data = dict((provider_data.get("models") or {}).get(requested_model) or {})
+                binding = build_model_endpoint_binding(requested_provider, requested_model, provider_meta, model_data)
+                return requested_provider, provider_meta, binding.get("providerModelId") or requested_model, model_data, binding
             raise ValueError(f"No configured provider exposes model: {requested_model}")
         provider_id, provider_data = selected[0]
         selected_model_key = str(provider_data.get("_selectedModelKey") or requested_model)
         model_data = dict(((provider_data or {}).get("models") or {}).get(selected_model_key) or {})
-        return provider_id, dict((provider_data or {}).get("provider") or {}), self._provider_model_id(requested_model, model_data)
+        provider_meta = dict((provider_data or {}).get("provider") or {})
+        binding = build_model_endpoint_binding(provider_id, selected_model_key, provider_meta, model_data)
+        return provider_id, provider_meta, binding.get("providerModelId") or requested_model, model_data, binding
+
+    def _configured_provider_for_model(self, request: dict[str, Any], *, default_model: str) -> tuple[str, dict[str, Any], str]:
+        provider_id, provider_meta, model, _model_data, _binding = self._configured_model_context(
+            request,
+            default_model=default_model,
+        )
+        return provider_id, provider_meta, model
+
+    def _configured_endpoint_binding(self, request: dict[str, Any], *, default_model: str) -> dict[str, Any]:
+        provider_id, provider_meta, provider_model_id, model_data, binding = self._configured_model_context(
+            request,
+            default_model=default_model,
+        )
+        return {
+            **binding,
+            "providerId": provider_id,
+            "providerMeta": provider_meta,
+            "providerModelId": provider_model_id,
+            "modelData": model_data,
+        }
 
     @staticmethod
     def _provider_model_id(model_id: str, model_data: dict[str, Any] | None = None) -> str:
+        endpoint_binding = dict((model_data or {}).get("endpointBinding") or {})
+        binding_model_id = str(endpoint_binding.get("providerModelId") or "").strip()
+        if binding_model_id:
+            return binding_model_id
         media_limits = dict((model_data or {}).get("mediaLimits") or {})
         provider_model_id = str(media_limits.get("providerModelId") or "").strip()
         if provider_model_id:
@@ -3475,11 +3551,11 @@ class CreativeMediaRuntime:
             suffix = suffix[3:]
         return f"{base}{suffix}"
 
-    def _openai_image_provider(self, request: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
-        return self._configured_provider_for_model(request, default_model="gpt-image-2")
-
     async def _run_openai_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        provider_id, provider_meta, model = self._openai_image_provider(request)
+        binding = self._configured_endpoint_binding(request, default_model="gpt-image-2")
+        provider_id = str(binding.get("providerId") or "")
+        provider_meta = dict(binding.get("providerMeta") or {})
+        model = str(binding.get("providerModelId") or "gpt-image-2")
         base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
         api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
         if not base_url:
@@ -3498,7 +3574,7 @@ class CreativeMediaRuntime:
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
-            f"{base_url}/images/generations",
+            self._join_api_path(base_url, str(binding.get("endpointPath") or "images/generations")),
             headers=self._bearer_headers(api_key),
             json=payload,
             timeout=180,
@@ -3508,10 +3584,10 @@ class CreativeMediaRuntime:
         return self._save_job(job)
 
     async def _run_agnes_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        provider_id, provider_meta, model = self._configured_provider_for_model(
-            request,
-            default_model="agnes-image-2.1-flash",
-        )
+        binding = self._configured_endpoint_binding(request, default_model="agnes-image-2.1-flash")
+        provider_id = str(binding.get("providerId") or "")
+        provider_meta = dict(binding.get("providerMeta") or {})
+        model = str(binding.get("providerModelId") or "agnes-image-2.1-flash")
         base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
         api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
         if not base_url:
@@ -3538,7 +3614,7 @@ class CreativeMediaRuntime:
             image_urls=image_urls or None,
         )
         job["providerRequestHash"] = self._provider_request_hash(payload)
-        endpoint = f"{base_url}/images/generations" if base_url.endswith("/v1") else f"{base_url}/v1/images/generations"
+        endpoint = self._join_api_path(base_url, str(binding.get("endpointPath") or "images/generations"))
         response = await self._request_json(
             "POST",
             endpoint,
@@ -3569,7 +3645,10 @@ class CreativeMediaRuntime:
         return self._save_job(job)
 
     async def _run_openai_image_edit_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        provider_id, provider_meta, model = self._openai_image_provider(request)
+        binding = self._configured_endpoint_binding(request, default_model="gpt-image-2")
+        provider_id = str(binding.get("providerId") or "")
+        provider_meta = dict(binding.get("providerMeta") or {})
+        model = str(binding.get("providerModelId") or "gpt-image-2")
         base_url = str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/")
         api_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "")
         if not base_url:
@@ -3594,7 +3673,7 @@ class CreativeMediaRuntime:
             files = {"image": (Path(image_path).name, image_file, mimetypes.guess_type(image_path)[0] or "image/png")}
             response = await self._request_multipart_json(
                 "POST",
-                f"{base_url}/images/edits",
+                self._join_api_path(base_url, str(binding.get("endpointPath") or "images/edits")),
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 data=data,
                 files=files,
@@ -3605,11 +3684,29 @@ class CreativeMediaRuntime:
         return self._save_job(job)
 
     async def _run_dashscope_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        creds = self._dashscope_credentials()
+        try:
+            binding = self._configured_endpoint_binding(request, default_model="qwen-image-2.0-pro")
+            provider_id = str(binding.get("providerId") or "aliyun_bailian_dashscope")
+            provider_meta = dict(binding.get("providerMeta") or {})
+            creds = {
+                "apiKey": str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip(),
+                "baseUrl": str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/"),
+            }
+            model = str(binding.get("providerModelId") or "qwen-image-2.0-pro")
+            endpoint_path = str(binding.get("endpointPath") or "services/aigc/multimodal-generation/generation")
+        except ValueError:
+            if self._has_explicit_model_selection(request):
+                raise
+            binding = {}
+            provider_id = "aliyun_bailian_dashscope"
+            creds = self._dashscope_credentials()
+            model = str(request.get("model") or request.get("modelId") or "qwen-image-2.0-pro")
+            endpoint_path = "services/aigc/multimodal-generation/generation"
         if not creds["apiKey"]:
-            raise ValueError("DASHSCOPE_API_KEY is required for Alibaba Cloud Bailian / DashScope image jobs")
+            raise ValueError("DashScope Provider credential is not configured")
+        if not creds["baseUrl"]:
+            raise ValueError("DashScope Provider base URL is not configured")
         operation_kind = str(job.get("operationKind") or self._operation_kind_for_request("image", request))
-        model = str(request.get("model") or request.get("modelId") or ("qwen-image-2.0-pro" if operation_kind == "image.edit" else "qwen-image-2.0-pro"))
         prompt = str(request.get("prompt") or "").strip()
         if not prompt:
             raise ValueError("DashScope image job requires prompt")
@@ -3628,31 +3725,51 @@ class CreativeMediaRuntime:
                 "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
                 "parameters": {"size": size, "n": int(request.get("n") or 1), "watermark": bool(request.get("watermark", False))},
             }
-        path = "/services/aigc/multimodal-generation/generation"
         job["providerRequestHash"] = self._provider_request_hash(payload)
-        response = await self._request_json("POST", f"{creds['baseUrl']}{path}", headers=self._dashscope_headers(creds["apiKey"]), json=payload, timeout=300)
+        response = await self._request_json(
+            "POST",
+            self._join_api_path(creds["baseUrl"], endpoint_path),
+            headers=self._dashscope_headers(creds["apiKey"]),
+            json=payload,
+            timeout=300,
+        )
         result_url = self._dashscope_result_url(response)
         if not result_url:
             raise RuntimeError(f"DashScope image response did not include an image URL: {response}")
-        artifact = await self._artifact_from_url(result_url, job=job, kind="image", provider="aliyun_bailian_dashscope", mime_hint="image/png", metadata={"model": model})
+        artifact = await self._artifact_from_url(result_url, job=job, kind="image", provider=provider_id, mime_hint="image/png", metadata={"model": model})
         job.update(
             {
                 "status": "succeeded",
                 "artifacts": [artifact],
-                "providerResponse": {"providerId": "aliyun_bailian_dashscope", "model": model, "usage": response.get("usage") or {}, "requestId": response.get("request_id")},
+                "providerResponse": {"providerId": provider_id, "model": model, "usage": response.get("usage") or {}, "requestId": response.get("request_id")},
                 "completedAt": utc_now_iso(),
             }
         )
         return self._save_job(job)
 
     async def _run_volcengine_image_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-        creds = self._volc_credentials()
+        try:
+            binding = self._configured_endpoint_binding(request, default_model="doubao-seedream-4-0-250828")
+            provider_id = str(binding.get("providerId") or "volcengine_seedream")
+            provider_meta = dict(binding.get("providerMeta") or {})
+            creds = {
+                "apiKey": str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip(),
+                "baseUrl": str(provider_meta.get("base_url") or provider_meta.get("baseUrl") or "").rstrip("/"),
+                "imageModel": str(binding.get("providerModelId") or "doubao-seedream-4-0-250828"),
+            }
+            endpoint_path = str(binding.get("endpointPath") or "images/generations")
+        except ValueError:
+            creds = self._volc_credentials()
+            provider_id = "volcengine_seedream"
+            endpoint_path = "images/generations"
         if not creds["apiKey"]:
-            raise ValueError("Volcengine API key not found in jimeng_visual_generation MCP env or VOLC_API_KEY")
+            raise ValueError("Volcengine Provider credential is not configured")
+        if not creds["baseUrl"]:
+            raise ValueError("Volcengine Provider base URL is not configured")
         prompt = str(request.get("prompt") or "").strip()
         if not prompt:
             raise ValueError("image job requires prompt")
-        model = str(request.get("model") or creds["imageModel"])
+        model = str(creds["imageModel"])
         size = resolve_image_size(
             ratio=str(request.get("ratio") or request.get("aspectRatio") or request.get("aspect_ratio") or "1:1"),
             preset=str(request.get("preset") or "2K"),
@@ -3670,13 +3787,13 @@ class CreativeMediaRuntime:
         job["providerRequestHash"] = self._provider_request_hash(payload)
         response = await self._request_json(
             "POST",
-            f"{creds['baseUrl']}/images/generations",
+            self._join_api_path(creds["baseUrl"], endpoint_path),
             headers=self._bearer_headers(creds["apiKey"]),
             json=payload,
             timeout=180,
         )
-        artifact = await self._artifact_from_image_response(response, job=job, provider="volcengine_seedream", model=model, mime_hint="image/png")
-        job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": "volcengine_seedream", "model": model, "size": size, "usage": response.get("usage") or {}}, "completedAt": utc_now_iso()})
+        artifact = await self._artifact_from_image_response(response, job=job, provider=provider_id, model=model, mime_hint="image/png")
+        job.update({"status": "succeeded", "artifacts": [artifact], "providerResponse": {"providerId": provider_id, "model": model, "size": size, "usage": response.get("usage") or {}}, "completedAt": utc_now_iso()})
         return self._save_job(job)
 
     async def _submit_agnes_video_job(self, job: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:

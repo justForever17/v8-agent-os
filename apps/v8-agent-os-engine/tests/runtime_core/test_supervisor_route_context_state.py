@@ -16,6 +16,13 @@ def test_current_route_context_uses_merge_reducer_for_parallel_updates():
     assert args[1] is merge_route_context
 
 
+def test_supervisor_runtime_metadata_reports_strict_checkpoint_contract():
+    metadata = SupervisorAgentRunner().runtime_metadata()
+
+    assert metadata["checkpoint_deserialization"] == "msgpack_strict"
+    assert metadata["checkpoint_write_contract"] is True
+
+
 def test_supervisor_initial_state_promotes_identity_to_top_level_fields():
     runner = SupervisorAgentRunner()
     state = runner.create_state(

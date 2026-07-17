@@ -6,6 +6,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 
+# LangGraph reads this switch at module import time. Keep it ahead of all local
+# imports so graph compilation can derive and apply the state-schema allowlist.
+os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
+
+
 def _configure_pycache_behavior() -> None:
     if os.environ.get("V8_AGENT_OS_DISABLE_BYTECODE", "").strip().lower() in {"1", "true", "yes", "on"}:
         sys.dont_write_bytecode = True
@@ -280,6 +285,17 @@ async def _reconcile_session_lanes():
 async def lifespan(app: FastAPI):
     # Startup logic: Load all SKILL.md files into the registry
     print("[Engine] Bootstrapping V8 Agent OS Engine...")
+    checkpoint_preflight = await checkpoint_store.ensure_preflight()
+    print(
+        "[Engine] Checkpoint security preflight completed:",
+        {
+            "policyVersion": checkpoint_preflight.get("policyVersion"),
+            "mode": checkpoint_preflight.get("mode"),
+            "checkpointRows": checkpoint_preflight.get("checkpointRows"),
+            "writeRows": checkpoint_preflight.get("writeRows"),
+            "durationMs": checkpoint_preflight.get("durationMs"),
+        },
+    )
     applied_memory_defaults = storage.ensure_memory_runtime_defaults()
     if applied_memory_defaults:
         print("[Engine] Applied memory runtime defaults:", applied_memory_defaults)

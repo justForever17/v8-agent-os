@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from core.llm_chat_adapter import V8ChatModelAdapter
-from erc.checkpoint_store import CheckpointStore
+from erc.checkpoint_store import CheckpointStore, V8AsyncSqliteSaver
 
 
 class _NativeModel:
@@ -166,11 +166,23 @@ def test_checkpoint_store_isolates_savers_by_event_loop(tmp_path):
 
 
 def test_checkpoint_store_retries_transient_sqlite_write_locks():
-    saver = CheckpointStore._install_write_lock(_FlakySaver())  # type: ignore[arg-type]
+    saver = _FlakySaver()
 
     async def _run():
-        assert await saver.aput("config", "checkpoint", "metadata", "versions") == {"ok": True, "operation": "aput"}
-        assert await saver.aput_writes("config", "writes", "task-id", "task-path") == {
+        assert await V8AsyncSqliteSaver._call_with_lock_retry(
+            saver.aput,
+            "config",
+            "checkpoint",
+            "metadata",
+            "versions",
+        ) == {"ok": True, "operation": "aput"}
+        assert await V8AsyncSqliteSaver._call_with_lock_retry(
+            saver.aput_writes,
+            "config",
+            "writes",
+            "task-id",
+            "task-path",
+        ) == {
             "ok": True,
             "operation": "aput_writes",
         }
@@ -181,10 +193,16 @@ def test_checkpoint_store_retries_transient_sqlite_write_locks():
 
 
 def test_checkpoint_store_does_not_retry_non_lock_sqlite_errors():
-    saver = CheckpointStore._install_write_lock(_BrokenSaver())  # type: ignore[arg-type]
+    saver = _BrokenSaver()
 
     async def _run():
         with pytest.raises(sqlite3.OperationalError, match="no such table"):
-            await saver.aput("config", "checkpoint", "metadata", "versions")
+            await V8AsyncSqliteSaver._call_with_lock_retry(
+                saver.aput,
+                "config",
+                "checkpoint",
+                "metadata",
+                "versions",
+            )
 
     asyncio.run(_run())

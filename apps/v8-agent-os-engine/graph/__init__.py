@@ -1,1 +1,4 @@
-# Make module importable
+from core.langgraph_checkpoint_bootstrap import enforce_strict_langgraph_msgpack
+
+
+enforce_strict_langgraph_msgpack()

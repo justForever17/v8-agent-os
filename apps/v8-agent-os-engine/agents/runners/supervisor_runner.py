@@ -61,6 +61,8 @@ class SupervisorAgentRunner:
         return {
             "runner": "SupervisorAgentRunner",
             "checkpoint_backend": "sqlite_async",
+            "checkpoint_deserialization": "msgpack_strict",
+            "checkpoint_write_contract": True,
             "supports_checkpoint_resume": True,
             "supports_graph_interrupt": True,
         }

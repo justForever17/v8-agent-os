@@ -223,8 +223,8 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         <aside
             ref={panelRef}
             className={cn(
-                "z-[70] flex min-h-0 flex-col overflow-hidden border-l border-border/70 bg-background",
-                effectiveMode === "focus" ? "absolute inset-0 border-l-0" : "relative h-full shrink-0",
+                "z-[70] flex min-h-0 flex-col overflow-hidden bg-background",
+                effectiveMode === "focus" ? "absolute inset-0" : "relative h-full shrink-0",
             )}
             style={effectiveMode === "split" ? { width: panelWidth } : undefined}
             aria-label="工作台"
@@ -256,7 +256,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="调整工作台宽度"
-                className="relative z-[71] w-1.5 shrink-0 cursor-col-resize bg-border/15 before:absolute before:inset-y-0 before:left-1/2 before:w-px before:bg-border hover:bg-primary/5 hover:before:bg-primary/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                className="relative z-[71] w-1.5 shrink-0 cursor-col-resize bg-transparent before:absolute before:inset-y-0 before:left-1/2 before:w-px before:bg-border/80 hover:bg-primary/[0.025] hover:before:bg-primary/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
                 tabIndex={0}
                 onKeyDown={(event) => {
                     if (event.key === "ArrowLeft") setWidth(panelWidth + 20);

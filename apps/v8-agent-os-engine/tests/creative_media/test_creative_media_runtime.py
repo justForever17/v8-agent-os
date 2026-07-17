@@ -896,6 +896,29 @@ def test_explicit_provider_accepts_unregistered_media_model(monkeypatch):
     assert model_id == "agnes-image-2.1-flash"
 
 
+def test_provider_model_id_separates_known_media_route_from_wire_model_id():
+    assert creative_media_runtime._provider_model_id(
+        "images/generations/gpt-image-2",
+        {"type": "IMAGE"},
+    ) == "gpt-image-2"
+    assert creative_media_runtime._provider_model_id(
+        "images/edits/gpt-image-2",
+        {"type": "IMAGE"},
+    ) == "gpt-image-2"
+    assert creative_media_runtime._provider_model_id(
+        "image_generation/image-01-live",
+        {"type": "IMAGE"},
+    ) == "image-01-live"
+    assert creative_media_runtime._provider_model_id(
+        "Qwen/Qwen3-Embedding-8B",
+        {"type": "EMBEDDING"},
+    ) == "Qwen/Qwen3-Embedding-8B"
+    assert creative_media_runtime._provider_model_id(
+        "organization/custom-image-model",
+        {"type": "IMAGE"},
+    ) == "organization/custom-image-model"
+
+
 def test_implicit_provider_still_rejects_unregistered_media_model(monkeypatch):
     monkeypatch.setattr(
         "runtimes.creative_media.runtime.model_control_plane.get_config",

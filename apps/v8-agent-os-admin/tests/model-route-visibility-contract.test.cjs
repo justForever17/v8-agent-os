@@ -20,9 +20,10 @@ test("Model Hub exposes provider base URL and catalog-declared media route witho
   assert.match(modelCard, /Request suffix:/);
   assert.match(modelCard, /components\.models\.ModelCardV2\.providerModelId/);
   assert.match(modelCard, /components\.models\.ModelCardV2\.routeFromCatalog/);
-  assert.match(hub, /requestPath: relativePath \? `\/\$\{relativePath\}` : ""/);
+  assert.match(hub, /requestPath: relativePath/);
   assert.match(hub, /routeSource: "provider_catalog"/);
   assert.match(hub, /const visibleModelPath = hasExplicitRoute/);
+  assert.doesNotMatch(hub, /const visibleModelPath = hasExplicitRoute \? `\/\$\{modelId/);
   assert.match(hub, /handleConnectCatalogModel\(probedCatalogProviderId \|\| selectedCatalogProviderId, selectedCatalogModelId/);
 });
 

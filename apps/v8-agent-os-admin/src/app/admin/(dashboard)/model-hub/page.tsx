@@ -448,7 +448,7 @@ function endpointMediaCatalogModel(model: CatalogModel, sourceProvider: CatalogP
             adapterProviderId: sourceProvider.id,
             providerModelId,
             displayModelId,
-            requestPath: relativePath ? `/${relativePath}` : "",
+            requestPath: relativePath,
             routeSource: "provider_catalog",
         },
         sourceProviderId: sourceProvider.id,
@@ -1910,7 +1910,7 @@ export default function ModelHubPage() {
                                             const modelId = model.modelId || model.id;
                                             const providerModelId = typeof model.mediaLimits?.providerModelId === "string" ? model.mediaLimits.providerModelId : "";
                                             const hasExplicitRoute = Boolean(providerModelId && providerModelId !== modelId);
-                                            const visibleModelPath = hasExplicitRoute ? `/${modelId.replace(/^\/+/, "")}` : modelId;
+                                            const visibleModelPath = hasExplicitRoute ? modelId.replace(/^\/+/, "") : modelId;
                                             const modelIcon = resolveModelIcon({
                                                 modelId,
                                                 providerId: probedCatalogProviderId || selectedCatalogProvider?.id || selectedCatalogProviderId,

@@ -3444,7 +3444,21 @@ class CreativeMediaRuntime:
         provider_model_id = str(media_limits.get("providerModelId") or "").strip()
         if provider_model_id:
             return provider_model_id
-        return str(model_id or "")
+        raw_model_id = str(model_id or "").strip().lstrip("/")
+        model_type = str((model_data or {}).get("type") or "").strip().upper()
+        if model_type in {"IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D", "MEDIA"}:
+            for route_prefix in (
+                "images/generations/",
+                "images/edits/",
+                "image_generation/",
+                "video_generation/",
+                "music_generation/",
+                "audio/speech/",
+                "t2a_v2/",
+            ):
+                if raw_model_id.startswith(route_prefix):
+                    return raw_model_id[len(route_prefix) :]
+        return raw_model_id
 
     @staticmethod
     def _strip_provider_model_prefix(model_id: str) -> str:

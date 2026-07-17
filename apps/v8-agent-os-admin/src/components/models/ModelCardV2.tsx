@@ -134,7 +134,7 @@ function resolveVisibleModelRoute(model: ModelCardV2Props["model"], controlMeta?
   return {
     displayModelId,
     providerModelId,
-    requestSuffix: hasExplicitRoute ? `/${displayModelId.replace(/^\/+/, "")}` : "",
+    requestSuffix: hasExplicitRoute ? displayModelId.replace(/^\/+/, "") : "",
     submitPath: stringRecordValue(mediaLimits, "submitPath"),
   };
 }

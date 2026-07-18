@@ -34,7 +34,9 @@ from core.runtime_projection import (
 from core.time_truth import latest_utc_iso
 from erc.capability_registry import capability_registry
 from erc.chat_canonical_transcript import (
+    CanonicalTurnNotFoundError,
     build_canonical_chat_messages,
+    build_canonical_chat_turn_index,
     build_canonical_chat_turn_window,
     format_canonical_chat_rows,
 )
@@ -1261,14 +1263,55 @@ async def get_session_history(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/sessions/{session_id}/turns")
-async def get_session_turns(
+@router.get("/sessions/{session_id}/turn-index")
+async def get_session_turn_index(
     session_id: str,
-    before: Optional[int] = Query(default=None),
-    limit: int = Query(default=1),
+    before: Optional[int] = Query(default=None, ge=1),
+    limit: int = Query(default=200, ge=1, le=500),
 ):
     started_at_ms = _now_perf_ms()
     try:
+        session_row = db.get_session(session_id)
+        if session_row is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        payload = build_canonical_chat_turn_index(
+            session_id,
+            before_position=before,
+            limit_turns=max(1, min(int(limit or 200), 500)),
+        )
+        return _attach_profile(
+            {
+                "sessionId": session_id,
+                **payload,
+            },
+            route="engine.sessions.turn-index",
+            started_at_ms=started_at_ms,
+            extra={
+                "loadedTurnCount": len(payload.get("turns") or []),
+                "totalTurnCount": int((payload.get("pageInfo") or {}).get("totalTurnCount") or 0),
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/{session_id}/turns")
+async def get_session_turns(
+    session_id: str,
+    before: Optional[int] = Query(default=None, ge=1),
+    limit: int = Query(default=1, ge=1, le=10),
+    around: Optional[str] = Query(default=None),
+    radius: int = Query(default=0, ge=0, le=5),
+):
+    started_at_ms = _now_perf_ms()
+    try:
+        normalized_around = str(around or "").strip()
+        if normalized_around and before is not None:
+            raise HTTPException(status_code=400, detail="around and before cannot be combined")
+        if not normalized_around and int(radius or 0) > 0:
+            raise HTTPException(status_code=400, detail="radius requires around")
         session_row = db.get_session(session_id)
         if session_row is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -1276,6 +1319,8 @@ async def get_session_turns(
             session_id,
             before_ordinal=before,
             limit_turns=max(1, min(int(limit or 1), 10)),
+            around_turn_id=normalized_around or None,
+            neighbor_turns=max(0, min(int(radius or 0), 5)),
         )
         return _attach_profile(
             {
@@ -1289,6 +1334,8 @@ async def get_session_turns(
                 "loadedTurnCount": int((payload.get("pageInfo") or {}).get("loadedTurnCount") or 0),
             },
         )
+    except CanonicalTurnNotFoundError:
+        raise HTTPException(status_code=404, detail="Turn not found")
     except HTTPException:
         raise
     except Exception as e:

@@ -2614,6 +2614,82 @@ class DatabaseManager:
             )
             return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
 
+    def get_chat_canonical_turn_index_rows(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return only the columns required to derive stable conversation turns.
+
+        The turn index is a Human Surface navigation aid.  It intentionally does
+        not hydrate canonical nodes, reasoning, tool payloads, metadata, or
+        artifacts.  A bounded content prefix is included solely for the tick
+        preview shown by clients.
+        """
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT id,
+                       session_id,
+                       run_id,
+                       ordinal,
+                       role,
+                       state,
+                       SUBSTR(COALESCE(content_text, ''), 1, 241) AS content_preview,
+                       created_at,
+                       updated_at
+                FROM chat_canonical_messages
+                WHERE session_id = ?
+                  AND id NOT IN (
+                    SELECT message_id
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                  AND id NOT IN (
+                    SELECT COALESCE(canonical_message_id, '')
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                ORDER BY ordinal ASC, created_at ASC
+                ''',
+                (session_id, session_id, session_id),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_chat_canonical_messages_in_ordinal_range(
+        self,
+        session_id: str,
+        *,
+        first_ordinal: int,
+        last_ordinal: int,
+    ) -> List[Dict[str, Any]]:
+        """Hydrate canonical messages only for one contiguous turn window."""
+
+        lower_bound = min(int(first_ordinal), int(last_ordinal))
+        upper_bound = max(int(first_ordinal), int(last_ordinal))
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT *
+                FROM chat_canonical_messages
+                WHERE session_id = ?
+                  AND ordinal >= ?
+                  AND ordinal <= ?
+                  AND id NOT IN (
+                    SELECT message_id
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                  AND id NOT IN (
+                    SELECT COALESCE(canonical_message_id, '')
+                    FROM chat_message_deletions
+                    WHERE session_id = ?
+                  )
+                ORDER BY ordinal ASC, created_at ASC
+                ''',
+                (session_id, lower_bound, upper_bound, session_id, session_id),
+            )
+            return [self._hydrate_chat_canonical_row(dict(row)) for row in cursor.fetchall()]
+
     def has_chat_canonical_message_before_ordinal(self, session_id: str, before_ordinal: int) -> bool:
         with self.get_connection() as conn:
             cursor = conn.cursor()

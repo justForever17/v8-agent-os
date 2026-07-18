@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import re
 from typing import Any, Callable, Optional
 
@@ -282,6 +283,7 @@ def format_canonical_message(row: CanonicalMessage, runtime_artifacts: list[dict
         "id": row.get("id"),
         "role": row.get("role"),
         "runId": row.get("run_id"),
+        "ordinal": _row_ordinal(row),
         "state": row.get("state"),
         "version": int(row.get("version") or 1),
         "content": content_text,
@@ -337,6 +339,101 @@ def _row_ordinal(row: CanonicalMessage) -> int:
         return 0
 
 
+class CanonicalTurnNotFoundError(LookupError):
+    """Raised when a stable turn id does not belong to the requested session."""
+
+
+def _stable_turn_id(session_id: str, rows: list[CanonicalMessage]) -> str:
+    first_row = rows[0] if rows else {}
+    # Canonical message ids are immutable for the lifetime of a visible row.
+    # Do not anchor the public turn id to run_id: retention may legally clear a
+    # run foreign key while the conversation message remains readable.
+    anchor = str(first_row.get("id") or "").strip() or str(_row_ordinal(first_row))
+    digest = hashlib.sha256(
+        f"canonical-turn-v1\0{session_id}\0message\0{anchor}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"turn_{digest}"
+
+
+def _turn_preview(rows: list[CanonicalMessage], *, max_length: int = 160) -> str:
+    candidates = [row for row in rows if str(row.get("role") or "").strip().lower() == "user"]
+    candidates.extend(
+        row for row in rows if str(row.get("role") or "").strip().lower() == "assistant"
+    )
+    for row in candidates:
+        raw = row.get("content_preview")
+        if raw is None:
+            raw = row.get("content_text")
+        visible, _reasoning = _split_inline_reasoning(raw)
+        preview = re.sub(r"\s+", " ", visible).strip()
+        if not preview:
+            continue
+        if len(preview) <= max_length:
+            return preview
+        return f"{preview[: max(1, max_length - 1)].rstrip()}…"
+    return ""
+
+
+def build_canonical_turn_index_entries(
+    session_id: str,
+    rows_asc: list[CanonicalMessage],
+) -> list[dict[str, Any]]:
+    """Build deterministic Human Surface turn entries from lightweight rows."""
+
+    entries: list[dict[str, Any]] = []
+    for position, group in enumerate(group_canonical_turn_rows(rows_asc), start=1):
+        if not group:
+            continue
+        first_ordinal = min(_row_ordinal(row) for row in group)
+        last_ordinal = max(_row_ordinal(row) for row in group)
+        updated_values = [str(row.get("updated_at") or "") for row in group if row.get("updated_at")]
+        entries.append(
+            {
+                "turnId": _stable_turn_id(session_id, group),
+                "position": position,
+                "firstOrdinal": first_ordinal,
+                "lastOrdinal": last_ordinal,
+                "messageCount": len(group),
+                "preview": _turn_preview(group),
+                "state": str(group[-1].get("state") or "unknown"),
+                "createdAt": group[0].get("created_at"),
+                "updatedAt": max(updated_values) if updated_values else group[-1].get("updated_at"),
+            }
+        )
+    return entries
+
+
+def build_canonical_chat_turn_index(
+    session_id: str,
+    *,
+    before_position: int | None = None,
+    limit_turns: int = 200,
+) -> dict[str, Any]:
+    rows = db.get_chat_canonical_turn_index_rows(session_id)
+    entries = build_canonical_turn_index_entries(session_id, rows)
+    safe_limit = max(1, min(int(limit_turns or 200), 500))
+    end_index = len(entries)
+    if before_position is not None:
+        end_index = max(0, min(len(entries), int(before_position) - 1))
+    start_index = max(0, end_index - safe_limit)
+    selected = entries[start_index:end_index]
+    has_older = start_index > 0
+    has_newer = end_index < len(entries)
+    return {
+        "turns": selected,
+        "pageInfo": {
+            "hasMore": has_older,
+            "hasOlder": has_older,
+            "hasNewer": has_newer,
+            "beforeCursor": str(selected[0]["position"]) if selected and has_older else None,
+            "loadedTurnCount": len(selected),
+            "totalTurnCount": len(entries),
+            "firstPosition": selected[0]["position"] if selected else None,
+            "lastPosition": selected[-1]["position"] if selected else None,
+        },
+    }
+
+
 def group_canonical_turn_rows(rows_asc: list[CanonicalMessage]) -> list[list[CanonicalMessage]]:
     groups: list[list[CanonicalMessage]] = []
     current: list[CanonicalMessage] = []
@@ -386,34 +483,169 @@ def build_canonical_chat_turn_window(
     before_ordinal: int | None = None,
     limit_turns: int = 1,
     scan_limit: int = 500,
+    around_turn_id: str | None = None,
+    neighbor_turns: int = 0,
 ) -> dict[str, Any]:
-    safe_scan_limit = max(50, min(int(scan_limit or 500), 2000))
-    rows_desc = db.get_chat_canonical_messages_before_ordinal(
-        session_id,
-        before_ordinal=before_ordinal,
-        limit=safe_scan_limit,
+    safe_limit = max(1, min(int(limit_turns or 1), 20))
+    normalized_around = str(around_turn_id or "").strip()
+    if not normalized_around:
+        chunk_limit = max(50, min(int(scan_limit or 500), 2000))
+        rows_desc: list[CanonicalMessage] = []
+        scan_before = before_ordinal
+        while True:
+            chunk = db.get_chat_canonical_messages_before_ordinal(
+                session_id,
+                before_ordinal=scan_before,
+                limit=chunk_limit,
+            )
+            if not chunk:
+                break
+            rows_desc.extend(chunk)
+            rows_asc = sorted(
+                rows_desc,
+                key=lambda row: (_row_ordinal(row), str(row.get("created_at") or "")),
+            )
+            groups = group_canonical_turn_rows(rows_asc)
+            earliest_ordinal = min(_row_ordinal(row) for row in rows_desc)
+            has_earlier_rows = db.has_chat_canonical_message_before_ordinal(
+                session_id,
+                earliest_ordinal,
+            )
+            # One group before the requested window proves that every selected
+            # turn has a complete left boundary.  Otherwise keep scanning so a
+            # turn larger than the old fixed row cap cannot be split.
+            if len(groups) > safe_limit or not has_earlier_rows:
+                break
+            scan_before = earliest_ordinal
+
+        selected_rows, loaded_turn_count = select_canonical_turn_window_rows(
+            rows_desc,
+            limit_turns=safe_limit,
+        )
+        if not selected_rows:
+            return {
+                "messages": [],
+                "pageInfo": {
+                    "hasMore": False,
+                    "hasOlder": False,
+                    "hasNewer": bool(before_ordinal is not None),
+                    "beforeCursor": None,
+                    "afterCursor": None,
+                    "loadedTurnCount": 0,
+                    "firstTurnId": None,
+                    "lastTurnId": None,
+                    "anchorTurnId": None,
+                    "anchorPosition": None,
+                },
+            }
+
+        selected_groups = group_canonical_turn_rows(selected_rows)
+        turn_by_ordinal: dict[int, str] = {}
+        turn_ids: list[str] = []
+        for group in selected_groups:
+            turn_id = _stable_turn_id(session_id, group)
+            turn_ids.append(turn_id)
+            for row in group:
+                turn_by_ordinal[_row_ordinal(row)] = turn_id
+        formatted_messages = format_canonical_chat_rows(session_id, selected_rows)
+        for message in formatted_messages:
+            turn_id = turn_by_ordinal.get(int(message.get("ordinal") or 0))
+            if turn_id:
+                message["turnId"] = turn_id
+
+        first_ordinal = min(_row_ordinal(row) for row in selected_rows)
+        last_ordinal = max(_row_ordinal(row) for row in selected_rows)
+        has_older = db.has_chat_canonical_message_before_ordinal(session_id, first_ordinal)
+        return {
+            "messages": formatted_messages,
+            "pageInfo": {
+                "hasMore": has_older,
+                "hasOlder": has_older,
+                "hasNewer": bool(before_ordinal is not None),
+                "beforeCursor": str(first_ordinal),
+                "afterCursor": str(last_ordinal),
+                "loadedTurnCount": loaded_turn_count,
+                "firstTurnId": turn_ids[0] if turn_ids else None,
+                "lastTurnId": turn_ids[-1] if turn_ids else None,
+                "anchorTurnId": None,
+                "anchorPosition": None,
+            },
+        }
+
+    index_rows = db.get_chat_canonical_turn_index_rows(session_id)
+    entries = build_canonical_turn_index_entries(session_id, index_rows)
+    selected_entries: list[dict[str, Any]] = []
+    window_start = 0
+    window_end = 0
+    anchor_entry: dict[str, Any] | None = None
+
+    anchor_index = next(
+        (index for index, entry in enumerate(entries) if entry.get("turnId") == normalized_around),
+        None,
     )
-    selected_rows, loaded_turn_count = select_canonical_turn_window_rows(
-        rows_desc,
-        limit_turns=limit_turns,
-    )
-    if not selected_rows:
+    if anchor_index is None:
+        raise CanonicalTurnNotFoundError(normalized_around)
+    safe_neighbors = max(0, min(int(neighbor_turns or 0), 5))
+    window_start = max(0, anchor_index - safe_neighbors)
+    window_end = min(len(entries), anchor_index + safe_neighbors + 1)
+    selected_entries = entries[window_start:window_end]
+    anchor_entry = entries[anchor_index]
+
+    if not selected_entries:
         return {
             "messages": [],
             "pageInfo": {
                 "hasMore": False,
+                "hasOlder": False,
+                "hasNewer": bool(entries),
                 "beforeCursor": None,
+                "afterCursor": None,
                 "loadedTurnCount": 0,
+                "totalTurnCount": len(entries),
+                "firstTurnId": None,
+                "lastTurnId": None,
+                "anchorTurnId": None,
+                "anchorPosition": None,
             },
         }
 
-    min_ordinal = min(_row_ordinal(row) for row in selected_rows)
+    first_ordinal = int(selected_entries[0]["firstOrdinal"])
+    last_ordinal = int(selected_entries[-1]["lastOrdinal"])
+    selected_rows = db.get_chat_canonical_messages_in_ordinal_range(
+        session_id,
+        first_ordinal=first_ordinal,
+        last_ordinal=last_ordinal,
+    )
+    turn_by_ordinal: dict[int, dict[str, Any]] = {}
+    for entry in selected_entries:
+        for ordinal in range(int(entry["firstOrdinal"]), int(entry["lastOrdinal"]) + 1):
+            turn_by_ordinal[ordinal] = entry
+    formatted_messages = format_canonical_chat_rows(session_id, selected_rows)
+    for message in formatted_messages:
+        entry = turn_by_ordinal.get(int(message.get("ordinal") or 0))
+        if not entry:
+            continue
+        message["turnId"] = entry["turnId"]
+        message["turnPosition"] = entry["position"]
+
+    has_older = window_start > 0
+    has_newer = window_end < len(entries)
     return {
-        "messages": format_canonical_chat_rows(session_id, selected_rows),
+        "messages": formatted_messages,
         "pageInfo": {
-            "hasMore": db.has_chat_canonical_message_before_ordinal(session_id, min_ordinal),
-            "beforeCursor": str(min_ordinal),
-            "loadedTurnCount": loaded_turn_count,
+            "hasMore": has_older,
+            "hasOlder": has_older,
+            "hasNewer": has_newer,
+            "beforeCursor": str(first_ordinal),
+            "afterCursor": str(last_ordinal),
+            "loadedTurnCount": len(selected_entries),
+            "totalTurnCount": len(entries),
+            "firstTurnId": selected_entries[0]["turnId"],
+            "lastTurnId": selected_entries[-1]["turnId"],
+            "anchorTurnId": anchor_entry.get("turnId") if anchor_entry else None,
+            "anchorPosition": anchor_entry.get("position") if anchor_entry else None,
+            "windowStartPosition": selected_entries[0]["position"],
+            "windowEndPosition": selected_entries[-1]["position"],
         },
     }
 

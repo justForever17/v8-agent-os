@@ -640,6 +640,39 @@ def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bo
     )
 
 
+def _authoritative_runtime_route_kinds(state) -> list[str]:
+    if not isinstance(state, dict):
+        return []
+    route_context = dict(state.get("current_route_context") or {})
+    task_shape = _task_shape_from_state(state)
+    continuation = route_context.get("engineeringContinuation")
+    if not isinstance(continuation, dict):
+        continuation = task_shape.get("engineeringContinuation") if isinstance(task_shape.get("engineeringContinuation"), dict) else {}
+    if bool(continuation.get("active")) and bool(route_context.get("engineeringRequired", True)):
+        return ["engineering"]
+    return []
+
+
+def _authoritative_runtime_route_guidance(kinds: list[str], *, correction: bool = False) -> SystemMessage:
+    required_kind = kinds[0] if kinds else "engineering"
+    prefix = "[Required Runtime Route Correction]" if correction else "[Required Runtime Route]"
+    correction_line = (
+        "Your previous response did not create the required runtime episode. This is the single correction attempt. "
+        if correction
+        else ""
+    )
+    return SystemMessage(
+        content=(
+            f"{prefix}\n"
+            f"The current turn is an authoritative continuation of a prior {required_kind} episode in the same session and workspace. "
+            f"{correction_line}Do not repair it with Supervisor-local file or shell tools and do not answer with a prose-only diagnosis. "
+            f"Your first durable action MUST call runtime_broker(mode='route', need={{'kind':'{required_kind}', ...}}). "
+            "Carry the new symptom, the prior episode/proof refs from engineeringContinuation, the current workspace binding, "
+            "a bounded write set when known, and explicit verification expectations. After the typed handoff returns, review its proof and deliver or repair it once."
+        )
+    )
+
+
 def _response_runtime_route_kinds(response) -> list[str]:
     calls = list(getattr(response, "tool_calls", None) or [])
     if not calls:
@@ -1738,12 +1771,15 @@ def execute_supervisor_turn(
     scope_chain = context_info["scope_chain"]
     session_id = context_info["session_id"]
     explicit_runtime_kinds = _explicit_runtime_orchestration_kinds(state, user_query)
+    authoritative_runtime_kinds = _authoritative_runtime_route_kinds(state)
     observed_runtime_kinds = _observed_runtime_episode_kinds(state)
-    pending_explicit_runtime_kinds = [
-        kind for kind in explicit_runtime_kinds if kind not in observed_runtime_kinds
+    pending_required_runtime_kinds = [
+        kind
+        for kind in dict.fromkeys([*authoritative_runtime_kinds, *explicit_runtime_kinds])
+        if kind not in observed_runtime_kinds
     ]
     required_orchestration_kind = (
-        pending_explicit_runtime_kinds[0] if pending_explicit_runtime_kinds else ""
+        pending_required_runtime_kinds[0] if pending_required_runtime_kinds else ""
     )
     required_orchestration_tool = (
         _required_orchestration_tool_name(required_orchestration_kind)
@@ -1782,9 +1818,13 @@ def execute_supervisor_turn(
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
             route_bundle.candidate_summary["reason"] = "spec_mode_stage_uses_narrow_tool_surface"
             route_duration_ms = 0.0
-        elif pending_explicit_runtime_kinds:
+        elif pending_required_runtime_kinds:
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
-            route_bundle.candidate_summary["reason"] = "explicit_runtime_orchestration_uses_narrow_tool_surface"
+            route_bundle.candidate_summary["reason"] = (
+                "authoritative_runtime_route_uses_narrow_tool_surface"
+                if authoritative_runtime_kinds
+                else "explicit_runtime_orchestration_uses_narrow_tool_surface"
+            )
             route_duration_ms = 0.0
         elif _is_network_supervisor_compat_transport(state) and _compat_suppress_extensions_prefilter(state):
             route_bundle = _build_neutral_extensions_route(visible_supervisor_tools)
@@ -1796,7 +1836,7 @@ def execute_supervisor_turn(
                 loaded_agents=loaded_agents,
             )
             route_duration_ms = round((time.perf_counter() - route_started_at) * 1000, 2)
-        include_extensions_prefilter_prompt = False if pending_explicit_runtime_kinds else _should_include_extensions_prefilter_prompt(
+        include_extensions_prefilter_prompt = False if pending_required_runtime_kinds else _should_include_extensions_prefilter_prompt(
             state=state,
             messages=messages,
             user_query=user_query,
@@ -1820,7 +1860,7 @@ def execute_supervisor_turn(
             )
         if _memory_no_match_since_latest_human(state):
             filtered_supervisor_tools = _filter_tool_names(filtered_supervisor_tools, {"memory_broker"})
-        if pending_explicit_runtime_kinds:
+        if pending_required_runtime_kinds:
             filtered_supervisor_tools = [
                 tool_ref
                 for tool_ref in list(filtered_supervisor_tools or [])
@@ -2002,8 +2042,11 @@ def execute_supervisor_turn(
         spec_revision_contract = _latest_spec_revision_contract(prepared_messages)
         if spec_revision_contract:
             prepared_messages.append(_spec_revision_discipline_message(spec_revision_contract))
-        if pending_explicit_runtime_kinds:
-            prepared_messages.append(_explicit_runtime_orchestration_guidance(pending_explicit_runtime_kinds))
+        if pending_required_runtime_kinds:
+            if authoritative_runtime_kinds:
+                prepared_messages.append(_authoritative_runtime_route_guidance(pending_required_runtime_kinds))
+            else:
+                prepared_messages.append(_explicit_runtime_orchestration_guidance(pending_required_runtime_kinds))
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],
@@ -2117,7 +2160,7 @@ def execute_supervisor_turn(
             ),
             sanitize_response_tool_calls=sanitize_response_tool_calls,
         )
-        if pending_explicit_runtime_kinds:
+        if pending_required_runtime_kinds:
             required_kind = required_orchestration_kind
             if (
                 required_kind not in _response_runtime_route_kinds(response)
@@ -2129,9 +2172,10 @@ def execute_supervisor_turn(
                 correction_messages = [
                     *prepared_messages,
                     response,
-                    _explicit_runtime_orchestration_guidance(
-                        pending_explicit_runtime_kinds,
-                        correction=True,
+                    (
+                        _authoritative_runtime_route_guidance(pending_required_runtime_kinds, correction=True)
+                        if authoritative_runtime_kinds
+                        else _explicit_runtime_orchestration_guidance(pending_required_runtime_kinds, correction=True)
                     ),
                 ]
                 response = robust_invoke(

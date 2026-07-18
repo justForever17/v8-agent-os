@@ -2738,8 +2738,11 @@ class ChatRuntime:
                 if str(item or "").strip()
             }
             engineering_required = (
-                primary_shape == "project_coding"
-                and ("research" in secondary_shapes or shape_reason == "research_plus_project_build_intent")
+                bool(continuation_context.get("active"))
+                or (
+                    primary_shape == "project_coding"
+                    and ("research" in secondary_shapes or shape_reason == "research_plus_project_build_intent")
+                )
             )
             writing_route_current = (
                 prepared.task_shape_hint.get("writingRoute")
@@ -3533,8 +3536,14 @@ class ChatRuntime:
                 "externalToolsPrimary": compat_diagnostics.get("externalToolsPrimary"),
             }
         task_shape_hint = dict(getattr(chat_run.prepared, "task_shape_hint", None) or {})
+        engineering_continuation = (
+            task_shape_hint.get("engineeringContinuation")
+            if isinstance(task_shape_hint.get("engineeringContinuation"), dict)
+            else {}
+        )
         engineering_required = bool(
             getattr(chat_run.prepared, "explicit_engineering_requested", False)
+            or engineering_continuation.get("active")
         )
         if (
             getattr(chat_run.prepared, "explicit_engineering_requested", False)
@@ -3542,7 +3551,6 @@ class ChatRuntime:
             or task_shape_hint
             or engineering_required
         ):
-            engineering_continuation = task_shape_hint.get("engineeringContinuation") if isinstance(task_shape_hint, dict) else None
             current_route_context = {
                 **current_route_context,
                 "explicitEngineeringRequested": bool(getattr(chat_run.prepared, "explicit_engineering_requested", False)),
@@ -3550,7 +3558,7 @@ class ChatRuntime:
                 "engineeringRequired": engineering_required,
                 "taskShapeHint": task_shape_hint,
                 "engineeringTriggerDecision": dict(chat_run.prepared.engineering_trigger_decision or {}),
-                **({"engineeringContinuation": engineering_continuation} if isinstance(engineering_continuation, dict) else {}),
+                **({"engineeringContinuation": engineering_continuation} if engineering_continuation else {}),
             }
         runner_bundle = await supervisor_runner.create_execution_bundle(
             config=chat_run.request.config,

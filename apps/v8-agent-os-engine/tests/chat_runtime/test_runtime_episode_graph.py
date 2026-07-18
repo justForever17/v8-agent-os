@@ -13,10 +13,13 @@ from graph import parallel_support
 from graph.parallel_support import build_parallel_delegate_join_node
 from graph.supervisor_context import resolve_supervisor_request_context
 from graph.supervisor_turn import (
+    _authoritative_runtime_route_guidance,
+    _authoritative_runtime_route_kinds,
     _delegation_dispatch_contract_error,
     _explicit_runtime_orchestration_guidance,
     _explicit_runtime_orchestration_kinds,
     _normalize_runtime_broker_response_arguments,
+    _observed_runtime_episode_kinds,
     _pending_runtime_continuation_kinds,
     _required_orchestration_tool_name,
     _response_has_required_broker_attempt,
@@ -134,6 +137,38 @@ def test_explicit_runtime_orchestration_honors_user_runtime_broker_denial() -> N
             "targetAgentName='Implementation Engineer'，familyHint='engineering'。"
         ),
     ) == []
+
+
+def test_engineering_continuation_requires_fresh_engineering_route_until_episode_exists() -> None:
+    state = {
+        "task_shape_hint": {
+            "primaryTaskShape": "project_coding",
+            "engineeringContinuation": {
+                "active": True,
+                "previousEpisodeId": "episode-previous",
+                "previousRunId": "run-previous",
+            },
+        },
+        "current_route_context": {
+            "engineeringRequired": True,
+            "engineeringContinuation": {
+                "active": True,
+                "previousEpisodeId": "episode-previous",
+            },
+            "capabilityEpisodes": [],
+        },
+    }
+
+    assert _authoritative_runtime_route_kinds(state) == ["engineering"]
+    guidance = _authoritative_runtime_route_guidance(["engineering"])
+    assert "authoritative continuation" in guidance.content
+    assert "runtime_broker(mode='route'" in guidance.content
+
+    state["current_route_context"]["capabilityEpisodes"] = [
+        {"episodeId": "episode-current", "kind": "engineering", "state": "completed"}
+    ]
+    observed = _observed_runtime_episode_kinds(state)
+    assert [kind for kind in _authoritative_runtime_route_kinds(state) if kind not in observed] == []
 
 
 def test_response_runtime_route_kinds_reads_runtime_and_delegation_calls() -> None:

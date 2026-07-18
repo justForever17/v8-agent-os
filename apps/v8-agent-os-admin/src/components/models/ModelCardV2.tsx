@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useEffect, useState } from "react";
 import { AlertCircle, Brain, CheckCircle2, Copy, Database, Edit2, Eye, Globe2, Image as ImageIcon, ListOrdered, LoaderCircle, MessageCircle, Mic2, Music, PlugZap, Radio, Star, Trash2, Video, Volume2, Wrench, type LucideIcon } from "lucide-react";
 import type { ControlPlaneModel, ModelDefaultCategory } from "@/components/models/control-plane-types";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -54,6 +55,7 @@ interface ModelCardV2Props {
   onTestConnection?: (modelRef: string) => Promise<void> | void;
   onRepairReasoning?: (modelRef: string) => Promise<void> | void;
   onToggleNoThink?: (disabled: boolean) => Promise<void> | void;
+  onSetReasoningLevel?: (level: string) => Promise<void> | void;
   onToggleProviderHostedTools?: (enabled: boolean) => Promise<void> | void;
   connectionStatus?: {
     status: "idle" | "testing" | "success" | "warning" | "error";
@@ -278,6 +280,7 @@ export function ModelCardV2({
   onTestConnection,
   onRepairReasoning,
   onToggleNoThink,
+  onSetReasoningLevel,
   onToggleProviderHostedTools,
   connectionStatus,
   reasoningRepairStatus,
@@ -301,8 +304,41 @@ export function ModelCardV2({
   const registry = controlMeta?.capabilityRegistry || model.capabilityRegistry || null;
   const reasoningSurface = controlMeta?.reasoningSurface || null;
   const thinkingControl = controlMeta?.thinkingControl || null;
+  const reasoningEffortControl = controlMeta?.reasoningEffortControl || null;
   const supportsNoThink = Boolean(thinkingControl?.supportsNoThink);
   const noThinkDisabled = Boolean(thinkingControl?.disabled);
+  const declaredEffortLevels = Array.isArray(reasoningEffortControl?.levels)
+    ? reasoningEffortControl.levels.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
+  const thinkingLevels = declaredEffortLevels.length
+    ? [
+        ...declaredEffortLevels.slice(0, 1),
+        ...(supportsNoThink && !declaredEffortLevels.includes("none") ? ["none"] : []),
+        ...declaredEffortLevels.slice(1),
+      ]
+    : supportsNoThink
+      ? ["auto", "none"]
+      : [];
+  const configuredThinkingLevel = noThinkDisabled
+    ? "none"
+    : String(reasoningEffortControl?.selectedLevel || "auto");
+  const configuredThinkingIndex = Math.max(0, thinkingLevels.indexOf(configuredThinkingLevel));
+  const [thinkingIndex, setThinkingIndex] = useState(configuredThinkingIndex);
+  const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  useEffect(() => {
+    setThinkingIndex(configuredThinkingIndex);
+  }, [configuredThinkingIndex]);
+  const commitThinkingLevel = async () => {
+    if (!onSetReasoningLevel || savingThinkingLevel) return;
+    const nextLevel = thinkingLevels[thinkingIndex] || "auto";
+    if (nextLevel === configuredThinkingLevel) return;
+    setSavingThinkingLevel(true);
+    try {
+      await onSetReasoningLevel(nextLevel);
+    } finally {
+      setSavingThinkingLevel(false);
+    }
+  };
   const visibleRoute = resolveVisibleModelRoute(model, controlMeta);
   const missingFields = registry?.missingFields || [];
   const roleDoctor = (controlMeta as ControlPlaneModelWithDoctor | null | undefined)?.roleDoctor || (model as ModelWithDoctor).roleDoctor || null;
@@ -389,7 +425,35 @@ export function ModelCardV2({
                                     <span className="truncate">
                                         {repairActive ? repairStatus === "success" ? t("components.models.ModelCardV2.reasoningRepairSuccess") : repairStatus === "warning" ? t("components.models.ModelCardV2.reasoningRepairNoField") : repairStatus === "error" ? t("components.models.ModelCardV2.reasoningRepairFailed") : t("components.models.ModelCardV2.reasoningRepairing") : displayStatus === "success" ? t("components.models.ModelCardV2.k40bd808e") : displayStatus === "warning" ? t("components.models.ModelCardV2.connectionWarning") : displayStatus === "error" ? t("components.models.ModelCardV2.k7f8e6bd9") : t("components.models.ModelCardV2.kc9e37984")}
                                     </span>
-                                </div> : null}
+                                </div> : thinkingLevels.length > 1 && onSetReasoningLevel ? (
+                                  <div
+                                    className="flex h-5 max-w-[220px] items-center gap-1.5 rounded-full bg-slate-100/80 px-2 text-[10px] text-slate-600 dark:bg-muted/80 dark:text-muted-foreground"
+                                    title={t("components.models.ModelCardV2.thinkingEffortLabel", { level: thinkingLevels[thinkingIndex] || "auto" })}
+                                  >
+                                    <Brain className={`h-3 w-3 shrink-0 ${savingThinkingLevel ? "animate-pulse" : ""}`} aria-hidden="true" />
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={thinkingLevels.length - 1}
+                                      step={1}
+                                      value={thinkingIndex}
+                                      disabled={savingThinkingLevel}
+                                      className="h-1 min-w-0 flex-1 cursor-pointer accent-violet-600 disabled:cursor-wait"
+                                      aria-label={t("components.models.ModelCardV2.thinkingEffort")}
+                                      aria-valuetext={thinkingLevels[thinkingIndex] || "auto"}
+                                      onChange={(event) => setThinkingIndex(Number(event.currentTarget.value))}
+                                      onPointerUp={() => void commitThinkingLevel()}
+                                      onKeyUp={(event) => {
+                                        if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+                                          void commitThinkingLevel();
+                                        }
+                                      }}
+                                    />
+                                    <span className="w-10 shrink-0 truncate text-right font-mono" aria-hidden="true">
+                                      {thinkingLevels[thinkingIndex] || "auto"}
+                                    </span>
+                                  </div>
+                                ) : null}
                         </div>
                     </div>
                 </div>
@@ -410,7 +474,7 @@ export function ModelCardV2({
 
                                 <Wrench className={`h-3.5 w-3.5 ${repairing ? "animate-pulse" : ""}`} />
                             </Button>}
-                        {supportsNoThink && onToggleNoThink && <Button variant="ghost" size="icon" className={`h-7 w-7 ${noThinkDisabled ? "bg-sky-50 text-sky-700 hover:bg-sky-100 hover:text-sky-800" : "text-muted-foreground hover:text-primary"}`} onClick={async () => {
+                        {supportsNoThink && onToggleNoThink && !onSetReasoningLevel && <Button variant="ghost" size="icon" className={`h-7 w-7 ${noThinkDisabled ? "bg-sky-50 text-sky-700 hover:bg-sky-100 hover:text-sky-800" : "text-muted-foreground hover:text-primary"}`} onClick={async () => {
             await onToggleNoThink(!noThinkDisabled);
           }} title={noThinkDisabled ? t("components.models.ModelCardV2.thinkingDefaultRestoreTitle") : t("components.models.ModelCardV2.thinkingDisableTitle")}>
                                 <Brain className="h-3.5 w-3.5" />

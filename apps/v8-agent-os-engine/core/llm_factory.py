@@ -1063,6 +1063,21 @@ class LLMFactory:
             "model": model_id,
             "google_api_key": meta.get("api_key") or "",
         }
+        if meta.get("base_url"):
+            # langchain-google-genai forwards client_options to google-genai's
+            # HttpOptions.base_url. Without it, a custom Gemini-compatible
+            # Provider silently falls back to Google's public endpoint.
+            gemini_base_url = str(meta["base_url"]).rstrip("/")
+            if re.search(r"/v1$", gemini_base_url, flags=re.IGNORECASE):
+                gemini_base_url = re.sub(r"/v1$", "/v1beta", gemini_base_url, flags=re.IGNORECASE)
+            final_kwargs["client_options"] = gemini_base_url
+            if re.search(r"/v1(?:beta)?$", gemini_base_url, flags=re.IGNORECASE):
+                # google-genai normally appends its api_version. A Provider
+                # base URL that already owns /v1 or /v1beta must not become
+                # /v1/v1beta/models/...
+                final_kwargs["api_version"] = ""
+            elif meta.get("api_version"):
+                final_kwargs["api_version"] = str(meta["api_version"]).strip()
         timeout = cls._extract_timeout(meta, **kwargs)
         if timeout is not None:
             final_kwargs["timeout"] = timeout
@@ -1100,13 +1115,19 @@ class LLMFactory:
         capability_class_override: str = "",
     ) -> Dict[str, Any]:
         callbacks = list(kwargs.get("callbacks") or [])
-        provider_adapter = str(meta.get("provider_adapter") or "").strip() or (
-            "gemini"
-            if str(meta.get("api_standard") or "openai").lower() in {"google", "gemini"}
-            else "anthropic"
-            if str(meta.get("api_standard") or "openai").lower() == "anthropic"
-            else "openai-compatible"
-        )
+        wire_protocol = str(meta.get("wire_protocol") or meta.get("wireProtocol") or "").strip().lower()
+        if wire_protocol == "gemini.generate_content":
+            provider_adapter = "gemini"
+        elif wire_protocol == "anthropic.messages":
+            provider_adapter = "anthropic"
+        else:
+            provider_adapter = str(meta.get("provider_adapter") or "").strip() or (
+                "gemini"
+                if str(meta.get("api_standard") or "openai").lower() in {"google", "gemini"}
+                else "anthropic"
+                if str(meta.get("api_standard") or "openai").lower() == "anthropic"
+                else "openai-compatible"
+            )
         effective_capability_matrix = dict(meta.get("effective_capability_matrix") or {})
         tool_calling_mode = "native" if bool(
             effective_capability_matrix.get("supports_native_tools") or meta.get("supports_native_tools", meta.get("supportsTools", True))
@@ -1200,6 +1221,13 @@ class LLMFactory:
         api_standard = str(meta.get("api_standard", "openai")).lower()
         if requested_reasoning_effort:
             meta = {**meta, "request_reasoning_effort": requested_reasoning_effort}
+        else:
+            reasoning_control = meta.get("reasoning_effort_control")
+            configured_reasoning_effort = str(
+                (reasoning_control.get("selectedLevel") if isinstance(reasoning_control, dict) else "") or ""
+            ).strip()
+            if configured_reasoning_effort and configured_reasoning_effort != "auto":
+                meta = {**meta, "request_reasoning_effort": configured_reasoning_effort}
         wire_model_id = str(
             (meta.get("endpoint_binding") or {}).get("providerModelId")
             or meta.get("model_id")

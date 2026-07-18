@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "levelOrder": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  "profiles": [
+    {
+      "id": "openai-o-series",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?o(?:1|3|3-mini|4-mini)(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["low", "medium", "high"],
+        "defaultLevel": "medium",
+        "mandatory": true
+      },
+      "sourceRefs": ["https://developers.openai.com/api/docs/guides/reasoning"]
+    },
+    {
+      "id": "openrouter-deepseek-r1",
+      "nativeFamily": "openai_compatible",
+      "modelPatterns": ["^(?:deepseek/)?deepseek-r1(?:$|-)"],
+      "effort": {
+        "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "medium",
+        "mandatory": false
+      },
+      "noThink": {"supported": true},
+      "sourceRefs": ["https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"]
+    },
+    {
+      "id": "openai-gpt-5.6",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5\\.6(?:-(?:sol|terra|luna))?(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "none",
+        "mandatory": false
+      },
+      "noThink": {"supported": true},
+      "sourceRefs": ["https://developers.openai.com/api/docs/models"]
+    },
+    {
+      "id": "openai-gpt-5.5-pro",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5\\.5-pro(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["medium", "high", "xhigh"],
+        "defaultLevel": "high",
+        "mandatory": true
+      },
+      "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-5.5-pro"]
+    },
+    {
+      "id": "openai-gpt-5.5",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5\\.5(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "defaultLevel": "medium",
+        "mandatory": false
+      },
+      "noThink": {"supported": true},
+      "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-5.5"]
+    },
+    {
+      "id": "openai-gpt-5.4-pro",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5\\.4-pro(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["medium", "high", "xhigh"],
+        "defaultLevel": "medium",
+        "mandatory": true
+      },
+      "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-5.4-pro"]
+    },
+    {
+      "id": "openai-gpt-5.4",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5\\.4(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "defaultLevel": "none",
+        "mandatory": false
+      },
+      "noThink": {"supported": true},
+      "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-5.4"]
+    },
+    {
+      "id": "openai-gpt-5.2",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5\\.2(?!-pro)(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["none", "low", "medium", "high", "xhigh"],
+        "defaultLevel": "none",
+        "mandatory": false
+      },
+      "noThink": {"supported": true},
+      "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-5.2"]
+    },
+    {
+      "id": "openai-gpt-5.1",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5\\.1(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["none", "low", "medium", "high"],
+        "defaultLevel": "none",
+        "mandatory": false
+      },
+      "noThink": {"supported": true},
+      "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-5.1"]
+    },
+    {
+      "id": "openai-gpt-5",
+      "nativeFamily": "openai",
+      "modelPatterns": ["^(?:openai/)?gpt-5(?:$|-20\\d{2})"],
+      "effort": {
+        "levels": ["minimal", "low", "medium", "high"],
+        "defaultLevel": "medium",
+        "mandatory": true
+      },
+      "sourceRefs": ["https://developers.openai.com/api/docs/models/gpt-5"]
+    },
+    {
+      "id": "anthropic-fable-5",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?(?:claude-)?fable-5(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "high",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-mythos-5",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?(?:claude-)?mythos-5(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "high",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-mythos-preview",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?(?:claude-)?mythos-preview(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "max"],
+        "defaultLevel": "high",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-opus-4.8",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-opus-4[.-]8(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "high",
+        "mandatory": false
+      },
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-opus-4.7",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-opus-4[.-]7(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "high",
+        "mandatory": false
+      },
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-opus-4.6",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-opus-4[.-]6(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "max"],
+        "defaultLevel": "high",
+        "mandatory": false
+      },
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-opus-4.5",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-opus-4[.-]5(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high"],
+        "defaultLevel": "high",
+        "mandatory": false
+      },
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-legacy-manual-thinking",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-(?:sonnet-4[.-]5|3[.-]7-sonnet|3[.-]5-(?:sonnet|haiku))(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high"],
+        "defaultLevel": "medium",
+        "mandatory": false,
+        "nativeRequestStyle": "anthropic_thinking_budget",
+        "budgetByLevel": {"low": 4096, "medium": 8192, "high": 16000}
+      },
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/extended-thinking"]
+    },
+    {
+      "id": "anthropic-sonnet-5",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-sonnet-5(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "defaultLevel": "high",
+        "mandatory": false
+      },
+      "noThink": {"supported": true, "nativeRequestStyle": "anthropic_thinking_disabled"},
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "anthropic-sonnet-4.6",
+      "nativeFamily": "anthropic",
+      "modelPatterns": ["^(?:anthropic/)?claude-sonnet-4[.-]6(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high", "max"],
+        "defaultLevel": "high",
+        "mandatory": false
+      },
+      "sourceRefs": ["https://platform.claude.com/docs/en/build-with-claude/effort"]
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-3[.-]5-flash(?:$|-)"],
+      "effort": {
+        "levels": ["minimal", "low", "medium", "high"],
+        "defaultLevel": "medium",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "gemini-3.1-pro",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-3[.-]1-pro(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high"],
+        "defaultLevel": "high",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "gemini-3.1-flash-lite-image",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-3[.-]1-flash-lite-image(?:$|-)"],
+      "effort": {
+        "levels": ["minimal", "high"],
+        "defaultLevel": "minimal",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "gemini-3.1-flash-lite",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-3[.-]1-flash-lite(?:$|-)"],
+      "effort": {
+        "levels": ["minimal", "low", "medium", "high"],
+        "defaultLevel": "minimal",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "gemini-3-flash",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-3-flash(?:$|-)"],
+      "effort": {
+        "levels": ["minimal", "low", "medium", "high"],
+        "defaultLevel": "high",
+        "mandatory": true
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-2[.-]5-pro(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high"],
+        "defaultLevel": "high",
+        "mandatory": true,
+        "budgetByLevel": {"low": 1024, "medium": 8192, "high": 32768}
+      },
+      "noThink": {"supported": false},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "nativeFamily": "gemini",
+      "modelPatterns": ["^(?:google/)?gemini-2[.-]5-flash(?:$|-)"],
+      "effort": {
+        "levels": ["low", "medium", "high"],
+        "defaultLevel": "medium",
+        "mandatory": false,
+        "budgetByLevel": {"low": 1024, "medium": 8192, "high": 24576}
+      },
+      "noThink": {"supported": true, "nativeRequestStyle": "gemini_thinking_budget_zero"},
+      "sourceRefs": ["https://ai.google.dev/gemini-api/docs/generate-content/thinking"]
+    },
+    {
+      "id": "dashscope-qwen-no-think",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^(?:dashscope|qwen)$"],
+      "modelPatterns": ["^(?:qwen|qwq)"],
+      "noThink": {"supported": true, "nativeRequestStyle": "dashscope_enable_thinking_false"},
+      "sourceRefs": ["https://help.aliyun.com/en/model-studio/deep-thinking"]
+    },
+    {
+      "id": "zai-glm-no-think",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^(?:zhipu|zai-coding|bigmodel)$"],
+      "modelPatterns": ["^glm-"],
+      "noThink": {"supported": true, "nativeRequestStyle": "openai_thinking_disabled"},
+      "sourceRefs": ["https://docs.z.ai/guides/capabilities/thinking-mode"]
+    },
+    {
+      "id": "deepseek-v4-no-think",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^deepseek$"],
+      "modelPatterns": ["^deepseek-v4-(?:flash|pro)(?:$|-)"],
+      "noThink": {"supported": true, "nativeRequestStyle": "openai_thinking_disabled"},
+      "sourceRefs": ["https://api-docs.deepseek.com/guides/thinking_mode"]
+    },
+    {
+      "id": "minimax-m3-no-think",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^(?:minimax|minimax-cn)$"],
+      "modelPatterns": ["^minimax-m3(?:$|-)"],
+      "noThink": {"supported": true, "nativeRequestStyle": "openai_thinking_disabled"},
+      "sourceRefs": []
+    },
+    {
+      "id": "xiaomi-mimo-2.5-no-think",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^(?:xiaomi-mimo|xiaomi-mimo-tokenplan)$"],
+      "modelPatterns": ["^mimo-v2\\.5(?:-(?:flash|pro))?$"],
+      "noThink": {"supported": true, "nativeRequestStyle": "openai_thinking_disabled"},
+      "sourceRefs": []
+    },
+    {
+      "id": "volcengine-no-think",
+      "nativeFamily": "openai_compatible",
+      "providerPatterns": ["^(?:volcengine-ark|volcengine-coding)$"],
+      "modelPatterns": ["^(?:doubao-seed-|deepseek-v4-|deepseek-v3-2|glm-4-7)"],
+      "noThink": {"supported": true, "nativeRequestStyle": "openai_thinking_disabled"},
+      "sourceRefs": []
+    }
+  ]
+}

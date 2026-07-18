@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-import re
+import json
 from copy import deepcopy
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, Mapping
 
 
-_OPENAI_REASONING_PROVIDERS = {"openai"}
-_OPENROUTER_PROVIDERS = {"openrouter"}
-_ANTHROPIC_PROVIDERS = {"anthropic"}
-_GEMINI_PROVIDERS = {"gemini", "gemini-api", "google"}
-_DEEPSEEK_PROVIDERS = {"deepseek"}
-_DASHSCOPE_PROVIDERS = {"dashscope", "qwen"}
-_GLM_PROVIDERS = {"zhipu", "zai-coding", "bigmodel"}
-_MINIMAX_PROVIDERS = {"minimax", "minimax-cn"}
-_XIAOMI_MIMO_PROVIDERS = {"xiaomi-mimo", "xiaomi-mimo-tokenplan"}
-_VOLCENGINE_ARK_PROVIDERS = {"volcengine-ark", "volcengine-coding"}
-
-_DEEPSEEK_NO_THINK_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro"}
-_MINIMAX_NO_THINK_MODELS = {"minimax-m3"}
-_XIAOMI_MIMO_NO_THINK_MODELS = {"mimo-v2.5", "mimo-v2.5-flash", "mimo-v2.5-pro"}
-_REASONING_EFFORT_LEVELS = ("auto", "low", "medium", "high")
-_REASONING_EFFORT_PROVIDER_STYLES = {
-    "openai": "openai_reasoning_effort",
-    "openrouter": "openrouter_reasoning_effort",
-}
+_THINKING_PROFILE_PATH = Path(__file__).resolve().parent / "model_catalog" / "model_thinking_profiles.json"
+_KNOWN_REASONING_LEVELS = ("auto", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 _REASONING_EFFORT_EXCLUDED_CLASSES = {"embedding", "reranker", "rerank", "media_generation"}
 _ANTHROPIC_THINKING_BUDGET_BY_LEVEL = {
     "low": 4096,
@@ -71,18 +56,16 @@ def normalize_reasoning_effort(value: Any) -> str:
     aliases = {
         "": "auto",
         "default": "auto",
-        "none": "auto",
-        "off": "auto",
+        "off": "none",
         "balanced": "medium",
         "mid": "medium",
         "normal": "medium",
         "deep": "high",
         "strong": "high",
-        "max": "high",
-        "maximum": "high",
+        "maximum": "max",
     }
     normalized = aliases.get(normalized, normalized)
-    return normalized if normalized in _REASONING_EFFORT_LEVELS else "auto"
+    return normalized if normalized in _KNOWN_REASONING_LEVELS else "auto"
 
 
 def _excluded_from_reasoning_effort(model_record: Mapping[str, Any] | None) -> bool:
@@ -101,69 +84,95 @@ def _excluded_from_reasoning_effort(model_record: Mapping[str, Any] | None) -> b
     )
 
 
-def _is_volcengine_ark_no_think_model(model_id: str) -> bool:
-    return (
-        model_id.startswith("doubao-seed-")
-        or model_id.startswith("deepseek-v4-")
-        or model_id.startswith("deepseek-v3-2")
-        or model_id.startswith("glm-4-7")
-    )
+@lru_cache(maxsize=1)
+def _thinking_profiles() -> tuple[Dict[str, Any], ...]:
+    try:
+        payload = json.loads(_THINKING_PROFILE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    profiles = payload.get("profiles") if isinstance(payload, Mapping) else []
+    return tuple(dict(item) for item in profiles or [] if isinstance(item, Mapping))
 
 
-def _is_anthropic_effort_model(model_id: str) -> bool:
-    model = _normalize_model_id(model_id).strip().lower().replace("_", "-")
-    if any(name in model for name in {"fable-5", "mythos-5", "mythos-preview", "sonnet-5"}):
+def _matches_any_pattern(value: str, patterns: Any) -> bool:
+    import re
+
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    candidates = [str(item).strip() for item in patterns or [] if str(item).strip()]
+    if not candidates:
         return True
-    if re.search(r"claude-(?:opus|sonnet)-4[.-]6\b", model):
-        return True
-    if re.search(r"claude-opus-4[.-](?:5|7|8)\b", model):
-        return True
-    return False
+    return any(re.search(pattern, normalized, flags=re.IGNORECASE) is not None for pattern in candidates)
 
 
-def _anthropic_reasoning_effort_request_style(model_id: str, model_record: Mapping[str, Any] | None) -> str:
-    if _is_anthropic_effort_model(model_id):
-        return "anthropic_effort"
-    surface = _as_dict(_as_dict(model_record).get("reasoningSurface") or _as_dict(model_record).get("reasoning_surface"))
-    if str(surface.get("requestStyle") or surface.get("request_style") or "").strip() == "anthropic_thinking":
-        return "anthropic_thinking_budget"
-    return ""
+def _matching_profiles(*, provider_id: str, model_id: str) -> list[Dict[str, Any]]:
+    return [
+        profile
+        for profile in _thinking_profiles()
+        if _matches_any_pattern(model_id, profile.get("modelPatterns"))
+        and _matches_any_pattern(provider_id, profile.get("providerPatterns"))
+    ]
 
 
-def _gemini_reasoning_effort_request_style(model_id: str) -> str:
-    model = _normalize_model_id(model_id).strip().lower().replace("_", "-")
-    if model.startswith("gemini-2.5-") or model.startswith("gemini-2-5-"):
-        return "gemini_thinking_budget"
-    return "gemini_thinking_level"
+def _model_wire_protocol(meta: Mapping[str, Any], model_record: Mapping[str, Any]) -> str:
+    endpoint_binding = _as_dict(model_record.get("endpointBinding") or model_record.get("endpoint_binding"))
+    return str(
+        meta.get("wire_protocol")
+        or meta.get("wireProtocol")
+        or endpoint_binding.get("wireProtocol")
+        or endpoint_binding.get("wire_protocol")
+        or ""
+    ).strip().lower()
 
 
-def _request_style_for_model(
+def _transport_kind(
     *,
-    provider_id: str,
-    model_id: str,
-    model_record: Mapping[str, Any] | None = None,
+    meta: Mapping[str, Any],
+    model_record: Mapping[str, Any],
+    native_family: str,
 ) -> str:
-    provider = _normalize_provider_id(provider_id)
-    model = _normalize_model_id(model_id)
-    model_lower = model.lower()
+    provider_id = _normalize_provider_id(meta.get("provider_id") or meta.get("providerId"))
+    api_standard = _normalize_provider_id(meta.get("api_standard") or meta.get("apiStandard"))
+    wire_protocol = _model_wire_protocol(meta, model_record)
+    if provider_id == "openrouter":
+        return "openrouter"
+    if wire_protocol == "gemini.generate_content":
+        return "gemini"
+    if wire_protocol == "anthropic.messages":
+        return "anthropic"
+    if wire_protocol.startswith("openai."):
+        return "openai"
+    if api_standard in {"gemini", "google"}:
+        return "gemini"
+    if api_standard == "anthropic":
+        return "anthropic"
+    return native_family or "openai"
 
-    if provider in _DASHSCOPE_PROVIDERS and model_lower.startswith(("qwen", "qwq")):
-        return "dashscope_enable_thinking_false"
-    if provider in _GLM_PROVIDERS and model_lower.startswith("glm-"):
-        return "openai_thinking_disabled"
-    if provider in _DEEPSEEK_PROVIDERS and model_lower in _DEEPSEEK_NO_THINK_MODELS:
-        return "openai_thinking_disabled"
-    if provider in _MINIMAX_PROVIDERS and model_lower in _MINIMAX_NO_THINK_MODELS:
-        return "openai_thinking_disabled"
-    if provider in _XIAOMI_MIMO_PROVIDERS and model_lower in _XIAOMI_MIMO_NO_THINK_MODELS:
-        return "openai_thinking_disabled"
-    if provider in _VOLCENGINE_ARK_PROVIDERS and _is_volcengine_ark_no_think_model(model_lower):
-        return "openai_thinking_disabled"
-    if provider in _OPENAI_REASONING_PROVIDERS and _model_supports_reasoning(model_record):
-        return "openai_reasoning_effort_none"
-    if provider in _OPENROUTER_PROVIDERS and _model_supports_reasoning(model_record):
+
+def _effort_request_style(*, transport: str, effort: Mapping[str, Any]) -> str:
+    if transport == "openrouter":
+        return "openrouter_reasoning_effort"
+    configured = str(effort.get("nativeRequestStyle") or "").strip()
+    if configured:
+        return configured
+    if transport == "anthropic":
+        return "anthropic_effort"
+    if transport == "gemini":
+        return "gemini_thinking_budget" if _as_dict(effort.get("budgetByLevel")) else "gemini_thinking_level"
+    return "openai_reasoning_effort"
+
+
+def _no_think_request_style(*, transport: str, profile: Mapping[str, Any]) -> str:
+    no_think = _as_dict(profile.get("noThink"))
+    if transport == "openrouter":
         return "openrouter_reasoning_effort_none"
-    return ""
+    configured = str(no_think.get("nativeRequestStyle") or "").strip()
+    if configured:
+        return configured
+    if transport == "gemini":
+        return "gemini_thinking_budget_zero"
+    if transport == "anthropic":
+        return "anthropic_thinking_disabled"
+    return "openai_reasoning_effort_none"
 
 
 def resolve_thinking_control_for_metadata(
@@ -175,13 +184,23 @@ def resolve_thinking_control_for_metadata(
     provider_record = _as_dict(meta.get("provider_record") or meta.get("providerRecord"))
     model_record = _as_dict(meta.get("model_record") or meta.get("modelRecord"))
     explicit = _as_dict(model_record.get("thinkingControl") or model_record.get("thinking_control"))
-    request_style = str(explicit.get("requestStyle") or "").strip() or _request_style_for_model(
-        provider_id=provider_id,
-        model_id=model_id,
-        model_record=model_record,
+    matched_profile = next(
+        (
+            profile
+            for profile in _matching_profiles(provider_id=provider_id, model_id=model_id)
+            if "noThink" in profile
+        ),
+        {},
     )
+    no_think_profile = _as_dict(matched_profile.get("noThink"))
+    native_family = str(matched_profile.get("nativeFamily") or "").strip()
+    transport = _transport_kind(meta=meta, model_record=model_record, native_family=native_family)
+    profile_supports = no_think_profile.get("supported") is True
+    request_style = str(explicit.get("requestStyle") or "").strip()
+    if not request_style and profile_supports:
+        request_style = _no_think_request_style(transport=transport, profile=matched_profile)
 
-    supports = bool(explicit.get("supportsNoThink")) or bool(request_style)
+    supports = bool(explicit.get("supportsNoThink")) or profile_supports
     disabled = bool(explicit.get("disabled") or explicit.get("noThinkDisabled") or explicit.get("thinkingDisabled"))
     if not supports:
         return {}
@@ -190,8 +209,11 @@ def resolve_thinking_control_for_metadata(
         "supportsNoThink": True,
         "disabled": disabled,
         "requestStyle": request_style,
-        "source": explicit.get("source") or "provider_model_match",
+        "source": explicit.get("source") or "model_thinking_profile",
         "defaultDisabled": bool(explicit.get("defaultDisabled", False)),
+        "profileId": str(matched_profile.get("id") or ""),
+        "sourceRefs": list(matched_profile.get("sourceRefs") or []),
+        "wireProtocol": _model_wire_protocol(meta, model_record),
     }
 
 
@@ -200,7 +222,6 @@ def resolve_reasoning_effort_control_for_metadata(
 ) -> Dict[str, Any]:
     meta = _as_dict(metadata)
     provider_id = _normalize_provider_id(meta.get("provider_id") or meta.get("providerId"))
-    api_standard = _normalize_provider_id(meta.get("api_standard") or meta.get("apiStandard"))
     model_id = _normalize_model_id(meta.get("model_id") or meta.get("modelId"))
     model_record = _as_dict(meta.get("model_record") or meta.get("modelRecord"))
     if meta.get("capabilities") and not model_record.get("capabilities"):
@@ -209,26 +230,58 @@ def resolve_reasoning_effort_control_for_metadata(
         model_record["capabilityClass"] = meta.get("capability_class")
     if meta.get("reasoning_surface") and not model_record.get("reasoningSurface"):
         model_record["reasoningSurface"] = meta.get("reasoning_surface")
-
-    if provider_id in _ANTHROPIC_PROVIDERS or api_standard == "anthropic":
-        request_style = _anthropic_reasoning_effort_request_style(model_id, model_record)
-    elif provider_id in _GEMINI_PROVIDERS or api_standard in {"gemini", "google"}:
-        request_style = _gemini_reasoning_effort_request_style(model_id)
-    else:
-        request_style = _REASONING_EFFORT_PROVIDER_STYLES.get(provider_id, "")
-    if not request_style:
-        return {}
+    explicit = _as_dict(model_record.get("reasoningEffortControl") or model_record.get("reasoning_effort_control"))
+    matched_profile = next(
+        (
+            profile
+            for profile in _matching_profiles(provider_id=provider_id, model_id=model_id)
+            if _as_dict(profile.get("effort"))
+        ),
+        {},
+    )
+    effort_profile = _as_dict(matched_profile.get("effort"))
     if _excluded_from_reasoning_effort(model_record):
         return {}
-    if not _model_supports_reasoning(model_record):
+    supports = bool(explicit.get("supportsReasoningEffort")) or bool(effort_profile)
+    if not supports:
         return {}
+    if not effort_profile and not _model_supports_reasoning(model_record):
+        return {}
+
+    native_family = str(matched_profile.get("nativeFamily") or "").strip()
+    transport = _transport_kind(meta=meta, model_record=model_record, native_family=native_family)
+    request_style = str(explicit.get("requestStyle") or "").strip() or _effort_request_style(
+        transport=transport,
+        effort=effort_profile,
+    )
+    declared_levels = explicit.get("levels") if isinstance(explicit.get("levels"), list) else effort_profile.get("levels")
+    levels = [
+        level
+        for level in (normalize_reasoning_effort(item) for item in declared_levels or [])
+        if level != "auto"
+    ]
+    levels = list(dict.fromkeys(levels))
+    if not levels:
+        return {}
+    selected_level = normalize_reasoning_effort(explicit.get("selectedLevel") or explicit.get("level") or "auto")
+    if selected_level != "auto" and selected_level not in levels:
+        selected_level = "auto"
+    default_level = normalize_reasoning_effort(explicit.get("defaultLevel") or effort_profile.get("defaultLevel") or "auto")
+    if default_level != "auto" and default_level not in levels:
+        default_level = "auto"
 
     return {
         "supportsReasoningEffort": True,
         "requestStyle": request_style,
-        "levels": list(_REASONING_EFFORT_LEVELS),
-        "defaultLevel": "auto",
-        "source": "provider_model_match",
+        "levels": ["auto", *levels],
+        "defaultLevel": default_level,
+        "selectedLevel": selected_level,
+        "mandatory": bool(explicit.get("mandatory", effort_profile.get("mandatory", False))),
+        "budgetByLevel": _as_dict(explicit.get("budgetByLevel") or effort_profile.get("budgetByLevel")),
+        "source": explicit.get("source") or "model_thinking_profile",
+        "profileId": str(matched_profile.get("id") or ""),
+        "sourceRefs": list(matched_profile.get("sourceRefs") or []),
+        "wireProtocol": _model_wire_protocol(meta, model_record),
         "providerId": provider_id,
         "modelId": model_id,
     }
@@ -244,7 +297,15 @@ def no_think_request_patch(thinking_control: Mapping[str, Any] | None) -> Dict[s
         return {"extra_body": {"enable_thinking": False}}
     if style == "openai_thinking_disabled":
         return {"extra_body": {"thinking": {"type": "disabled"}}}
-    if style in {"openai_reasoning_effort_none", "openrouter_reasoning_effort_none"}:
+    if style == "anthropic_thinking_disabled":
+        return {"thinking": {"type": "disabled"}}
+    if style == "gemini_thinking_budget_zero":
+        return {"thinking_budget": 0}
+    if style == "openai_reasoning_effort_none":
+        if str(control.get("wireProtocol") or "").strip() == "openai.chat_completions":
+            return {"reasoning_effort": "none"}
+        return {"reasoning": {"effort": "none"}}
+    if style == "openrouter_reasoning_effort_none":
         return {"reasoning": {"effort": "none"}}
     return {}
 
@@ -259,18 +320,32 @@ def reasoning_effort_request_patch(
     level = normalize_reasoning_effort(requested_effort)
     if level == "auto":
         return {}
+    declared_levels = control.get("levels") or ("low", "medium", "high")
+    supported_levels = {
+        normalize_reasoning_effort(item)
+        for item in declared_levels
+        if normalize_reasoning_effort(item) != "auto"
+    }
+    if level not in supported_levels:
+        return {}
 
     style = str(control.get("requestStyle") or "").strip()
-    if style in {"openai_reasoning_effort", "openrouter_reasoning_effort"}:
+    if style == "openai_reasoning_effort":
+        if str(control.get("wireProtocol") or "").strip() == "openai.chat_completions":
+            return {"reasoning_effort": level}
+        return {"reasoning": {"effort": level}}
+    if style == "openrouter_reasoning_effort":
         return {"reasoning": {"effort": level}}
     if style == "anthropic_effort":
         return {"effort": level}
     if style == "anthropic_thinking_budget":
-        return {"thinking": {"type": "enabled", "budget_tokens": _ANTHROPIC_THINKING_BUDGET_BY_LEVEL[level]}}
+        budget = _as_dict(control.get("budgetByLevel")).get(level) or _ANTHROPIC_THINKING_BUDGET_BY_LEVEL.get(level)
+        return {"thinking": {"type": "enabled", "budget_tokens": int(budget)}} if budget else {}
     if style == "gemini_thinking_level":
         return {"thinking_level": level}
     if style == "gemini_thinking_budget":
-        return {"thinking_budget": _GEMINI_THINKING_BUDGET_BY_LEVEL[level]}
+        budget = _as_dict(control.get("budgetByLevel")).get(level) or _GEMINI_THINKING_BUDGET_BY_LEVEL.get(level)
+        return {"thinking_budget": int(budget)} if budget is not None else {}
     return {}
 
 

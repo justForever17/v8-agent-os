@@ -92,6 +92,17 @@ export type ControlPlaneModel = {
         source?: string;
         defaultDisabled?: boolean;
     } | null;
+    reasoningEffortControl?: {
+        supportsReasoningEffort?: boolean;
+        requestStyle?: string;
+        levels?: string[];
+        defaultLevel?: string;
+        selectedLevel?: string;
+        mandatory?: boolean;
+        source?: string;
+        profileId?: string;
+        sourceRefs?: string[];
+    } | null;
     isEnabled: boolean;
     capabilities: ModelCapabilities;
     capabilityTags: string[];

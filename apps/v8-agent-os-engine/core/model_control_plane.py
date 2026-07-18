@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from core.model_capability_matrix import normalize_capability_metadata
 from core.model_budget_service import model_budget_service
 from core.model_role_doctor import diagnose_model_role
-from core.model_thinking_control import resolve_thinking_control_for_metadata
+from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata, resolve_thinking_control_for_metadata
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
@@ -798,6 +798,17 @@ class ModelControlPlane:
                             "model_record": model_meta,
                         }
                     ),
+                    "reasoningEffortControl": resolve_reasoning_effort_control_for_metadata(
+                        {
+                            "provider_id": provider_id,
+                            "model_id": model_id,
+                            "provider_record": meta,
+                            "model_record": model_meta,
+                            "api_standard": provider_api_standard,
+                            "capabilities": capabilities,
+                            "capability_class": capability_class,
+                        }
+                    ),
                     "capabilityClass": capability_class,
                     "capabilitySource": model_meta.get("capabilitySource") or "manual",
                     "parameterProfile": model_meta.get("parameterProfile") or ("media_generation" if capability_class == "media_generation" else "chat"),
@@ -1555,6 +1566,17 @@ class ModelControlPlane:
                             "model_id": model_id,
                             "provider_record": provider_meta,
                             "model_record": model_meta,
+                        }
+                    ),
+                    "reasoningEffortControl": resolve_reasoning_effort_control_for_metadata(
+                        {
+                            "provider_id": provider_id,
+                            "model_id": model_id,
+                            "provider_record": provider_meta,
+                            "model_record": model_meta,
+                            "api_standard": provider_meta.get("api_standard") or provider_meta.get("apiStandard") or "openai",
+                            "capabilities": capabilities,
+                            "capability_class": model_meta.get("capabilityClass") or "chat_general",
                         }
                     ),
                     "promptCachingProfileId": model_meta.get("promptCachingProfileId")

@@ -64,6 +64,7 @@ type AIModel = {
     maxTokens?: number | null;
     rerankApiFlavor?: string;
     thinkingControl?: Record<string, unknown> | null;
+    reasoningEffortControl?: Record<string, unknown> | null;
     operationKinds?: string[];
     mediaLimits?: Record<string, unknown> | null;
     endpointBinding?: Record<string, unknown> | null;
@@ -864,6 +865,50 @@ export default function ModelHubPage() {
         toast({
             title: disabled ? t("app.admin.dashboard.model.hub.page.thinkingDisabled") : t("app.admin.dashboard.model.hub.page.thinkingDefaultRestored"),
             description: model.modelId,
+        });
+        await fetchData(true);
+    };
+    const handleSetReasoningLevel = async (model: AIModel, controlMeta: ControlPlaneModel | null, level: string) => {
+        const supportsNoThink = Boolean(controlMeta?.thinkingControl?.supportsNoThink);
+        const disabled = supportsNoThink && level === "none";
+        const reasoningEffortControl = {
+            ...(model.reasoningEffortControl || {}),
+            ...(controlMeta?.reasoningEffortControl || {}),
+            supportsReasoningEffort: Boolean(controlMeta?.reasoningEffortControl?.supportsReasoningEffort),
+            selectedLevel: disabled ? "auto" : level,
+            source: "manual",
+        };
+        const thinkingControl = supportsNoThink
+            ? {
+                ...(model.thinkingControl || {}),
+                ...(controlMeta?.thinkingControl || {}),
+                supportsNoThink: true,
+                disabled,
+                source: "manual",
+            }
+            : model.thinkingControl || undefined;
+        const response = await fetch(`/api/models/${encodeURIComponent(model.id)}?providerId=${encodeURIComponent(model.providerId)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                providerId: model.providerId,
+                modelId: model.modelId,
+                type: model.type || controlMeta?.type || "TEXT",
+                contextWindow: model.contextWindow ?? controlMeta?.contextWindow ?? "",
+                maxTokens: model.maxTokens ?? controlMeta?.maxTokens ?? "",
+                rerankApiFlavor: model.rerankApiFlavor || "",
+                reasoningEffortControl,
+                thinkingControl,
+            }),
+        });
+        if (!response.ok) {
+            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.thinkingSaveFailed"));
+            toast({ variant: "destructive", title: t("app.admin.dashboard.model.hub.page.thinkingSaveFailed"), description: errorMessage });
+            return;
+        }
+        toast({
+            title: t("app.admin.dashboard.model.hub.page.reasoningEffortSaved"),
+            description: `${model.modelId} · ${level}`,
         });
         await fetchData(true);
     };
@@ -2168,7 +2213,7 @@ export default function ModelHubPage() {
                     setModelProviderId(model.providerId);
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
                     setIsModelDialogOpen(true);
-                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
+                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onSetReasoningLevel={(level) => handleSetReasoningLevel(model, controlMeta, level)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
                         })}
                     </div>)}
             </ConfigCard>

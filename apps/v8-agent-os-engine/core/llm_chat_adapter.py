@@ -143,30 +143,6 @@ class AnthropicSurface(BaseProviderSurface):
 class GeminiSurface(BaseProviderSurface):
     provider_standard = "gemini"
 
-    def normalize_messages(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
-        normalized = super().normalize_messages(messages)
-        system_instructions: list[str] = []
-        out: list[BaseMessage] = []
-        for message in normalized:
-            if isinstance(message, SystemMessage):
-                rendered = _stringify_content(message.content)
-                if rendered:
-                    system_instructions.append(rendered)
-                continue
-            if system_instructions:
-                instruction_block = "[System Instructions]\n" + "\n\n".join(system_instructions)
-                if isinstance(message, HumanMessage):
-                    out.append(HumanMessage(content=f"{instruction_block}\n\n{_stringify_content(message.content)}"))
-                else:
-                    out.append(HumanMessage(content=instruction_block))
-                    out.append(message)
-                system_instructions = []
-                continue
-            out.append(message)
-        if system_instructions:
-            out.insert(0, HumanMessage(content="[System Instructions]\n" + "\n\n".join(system_instructions)))
-        return out
-
 
 def create_provider_surface(provider_standard: str, meta: Mapping[str, Any] | None = None) -> BaseProviderSurface:
     normalized = str(provider_standard or "openai").strip().lower()
@@ -301,13 +277,13 @@ class V8ChatModelAdapter(BaseChatModel):
         }
 
     def provider_adapter(self) -> str:
-        adapter = str(self._meta.get("provider_adapter") or self._meta.get("providerAdapter") or "").strip()
-        if adapter:
-            return adapter
         if self.provider_standard in {"google", "gemini"}:
             return "gemini"
         if self.provider_standard == "anthropic":
             return "anthropic"
+        adapter = str(self._meta.get("provider_adapter") or self._meta.get("providerAdapter") or "").strip()
+        if adapter:
+            return adapter
         return "openai-compatible"
 
     def effective_capability_matrix(self) -> dict[str, Any]:
@@ -363,11 +339,12 @@ class V8ChatModelAdapter(BaseChatModel):
     def _decorate_message(self, message: Any, *, tool_mode: str | None = None, structured_mode: str | None = None) -> Any:
         normalized = sanitize_model_tool_calls(message, provider_standard=self.provider_standard)
         response_metadata = dict(getattr(normalized, "response_metadata", {}) or {})
-        response_metadata.setdefault("v8_provider_adapter", self.provider_adapter())
-        response_metadata.setdefault("v8_model_id", self.model_id)
-        response_metadata.setdefault(
-            "v8_provider_adapter_label",
-            str(self._meta.get("provider_adapter_label") or self.provider_adapter()),
+        response_metadata["v8_provider_adapter"] = self.provider_adapter()
+        response_metadata["v8_model_id"] = self.model_id
+        response_metadata["v8_provider_adapter_label"] = (
+            "Gemini GenerateContent"
+            if self.provider_standard in {"google", "gemini"}
+            else str(self._meta.get("provider_adapter_label") or self.provider_adapter())
         )
         response_metadata.setdefault("v8_tool_calling_mode", tool_mode or self._provider_surface.tool_calling_mode())
         response_metadata.setdefault("v8_structured_output_mode", structured_mode or self._provider_surface.structured_output_mode())

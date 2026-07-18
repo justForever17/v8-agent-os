@@ -1470,6 +1470,7 @@ def test_reasoning_effort_control_is_limited_to_openai_reasoning_families():
     )
 
     assert openai_control["requestStyle"] == "openai_reasoning_effort"
+    assert openai_control["levels"] == ["auto", "none", "low", "medium", "high", "xhigh"]
     assert openrouter_control["requestStyle"] == "openrouter_reasoning_effort"
     assert minimax_control == {}
     assert embedding_control == {}
@@ -1521,6 +1522,7 @@ def test_reasoning_effort_control_supports_official_anthropic_and_gemini_styles(
 
     assert anthropic_budget_control["requestStyle"] == "anthropic_thinking_budget"
     assert anthropic_effort_control["requestStyle"] == "anthropic_effort"
+    assert anthropic_effort_control["levels"] == ["auto", "low", "medium", "high", "xhigh", "max"]
     assert gemini_level_control["requestStyle"] == "gemini_thinking_level"
     assert gemini_budget_control["requestStyle"] == "gemini_thinking_budget"
     assert custom_gemini_control["requestStyle"] == "gemini_thinking_level"
@@ -1540,7 +1542,7 @@ def test_reasoning_effort_request_patch_uses_normalized_levels():
 
     assert reasoning_effort_request_patch(control, "auto") == {}
     assert reasoning_effort_request_patch(control, "medium") == {"reasoning": {"effort": "medium"}}
-    assert reasoning_effort_request_patch(control, "max") == {"reasoning": {"effort": "high"}}
+    assert reasoning_effort_request_patch(control, "max") == {}
 
 
 def test_reasoning_effort_request_patch_maps_vendor_specific_official_controls():
@@ -1691,7 +1693,7 @@ def test_gemini_kwargs_apply_reasoning_effort_controls_without_instantiating_opt
     )
 
     assert level_kwargs["thinking_level"] == "medium"
-    assert budget_kwargs["thinking_budget"] == 8192
+    assert budget_kwargs["thinking_budget"] == 32768
 
 
 @pytest.mark.skipif(ChatGoogleGenerativeAI is None, reason="langchain-google-genai is not installed")
@@ -1748,4 +1750,38 @@ def test_gemini_reasoning_effort_kwargs_are_accepted_by_langchain_google_genai()
     assert level_client.max_output_tokens == 1234
     assert level_client.timeout == 12
     assert budget_client.thinking_level is None
-    assert budget_client.thinking_budget == 8192
+    assert budget_client.thinking_budget == 32768
+
+
+def test_reasoning_profiles_expose_exact_current_provider_levels_and_disable_rules():
+    gpt_56 = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "openai",
+            "model_id": "gpt-5.6-sol",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+    gemini_35 = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": "custom-cpm",
+            "model_id": "gemini-3.5-flash-low",
+            "model_record": {
+                "capabilities": {"chat": True, "reasoning": True},
+                "endpointBinding": {"wireProtocol": "gemini.generate_content"},
+            },
+        }
+    )
+    fable_5_thinking = resolve_thinking_control_for_metadata(
+        {
+            "provider_id": "anthropic",
+            "model_id": "claude-fable-5",
+            "model_record": {"capabilities": {"chat": True, "reasoning": True}},
+        }
+    )
+
+    assert gpt_56["levels"] == ["auto", "none", "low", "medium", "high", "xhigh", "max"]
+    assert gpt_56["profileId"] == "openai-gpt-5.6"
+    assert gemini_35["requestStyle"] == "gemini_thinking_level"
+    assert gemini_35["levels"] == ["auto", "minimal", "low", "medium", "high"]
+    assert gemini_35["mandatory"] is True
+    assert fable_5_thinking == {}

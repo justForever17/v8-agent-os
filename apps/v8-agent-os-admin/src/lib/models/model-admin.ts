@@ -25,6 +25,7 @@ export type AdminModelRecord = {
     maxTokens: number | null;
     rerankApiFlavor: string;
     thinkingControl?: Record<string, unknown> | null;
+    reasoningEffortControl?: Record<string, unknown> | null;
     operationKinds?: string[];
     mediaLimits?: Record<string, unknown> | null;
     endpointBinding?: Record<string, unknown> | null;
@@ -96,6 +97,9 @@ export function mapEngineModel(
         thinkingControl: modelMeta.thinkingControl && typeof modelMeta.thinkingControl === "object"
             ? modelMeta.thinkingControl as Record<string, unknown>
             : null,
+        reasoningEffortControl: modelMeta.reasoningEffortControl && typeof modelMeta.reasoningEffortControl === "object"
+            ? modelMeta.reasoningEffortControl as Record<string, unknown>
+            : null,
         operationKinds: Array.isArray(modelMeta.operationKinds)
             ? modelMeta.operationKinds.filter((item): item is string => typeof item === "string")
             : undefined,
@@ -158,6 +162,9 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
     };
     if (data.thinkingControl && typeof data.thinkingControl === "object") {
         payload.thinkingControl = data.thinkingControl;
+    }
+    if (data.reasoningEffortControl && typeof data.reasoningEffortControl === "object") {
+        payload.reasoningEffortControl = data.reasoningEffortControl;
     }
     if (capabilityModesProvided) {
         payload.operationKinds = derivedOperationKinds;

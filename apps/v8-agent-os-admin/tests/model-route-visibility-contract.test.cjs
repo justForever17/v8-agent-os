@@ -79,3 +79,18 @@ test("Manual and quick model setup share the canonical binding write surface", (
   assert.match(form, /providerModelId,/);
   assert.match(form, /operationKind: operationKinds\[0\]/);
 });
+
+test("Reasoning effort is persisted per model without growing the fixed model card", () => {
+  const modelCard = readText("src/components/models/ModelCardV2.tsx");
+  const projection = readText("src/lib/models/model-admin.ts");
+  const form = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+
+  assert.match(modelCard, /h-\[128px\]/);
+  assert.match(modelCard, /reasoningEffortControl/);
+  assert.match(modelCard, /type="range"/);
+  assert.match(modelCard, /aria-valuetext=/);
+  assert.match(modelCard, /onSetReasoningLevel/);
+  assert.match(projection, /payload\.reasoningEffortControl = data\.reasoningEffortControl/);
+  assert.match(form, /handleSetReasoningLevel/);
+  assert.match(form, /selectedLevel: disabled \? "auto" : level/);
+});

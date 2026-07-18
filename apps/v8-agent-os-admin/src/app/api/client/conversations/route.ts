@@ -19,11 +19,20 @@ export async function GET(req: NextRequest) {
     }
 
     try {
-        const response = await fetch(`${ENGINE_URL}/sessions`, {
+        let response = await fetch(`${ENGINE_URL}/sessions/quick-index`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
         });
+
+        if (!response.ok) {
+            console.warn("[Client Conversations] Quick index unavailable, falling back to live sessions:", response.status);
+            response = await fetch(`${ENGINE_URL}/sessions`, {
+                method: "GET",
+                headers: { "Content-Type": "application/json" },
+                cache: "no-store",
+            });
+        }
 
         if (!response.ok) {
             console.error("[Client Conversations] Failed to fetch sessions:", await response.text());

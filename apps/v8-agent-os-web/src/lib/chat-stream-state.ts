@@ -36,6 +36,9 @@ type ProjectedMessageRecord = {
     id?: unknown;
     role?: unknown;
     runId?: unknown;
+    ordinal?: unknown;
+    turnId?: unknown;
+    turnPosition?: unknown;
     content?: unknown;
     parts?: unknown;
     timestamp?: unknown;
@@ -390,6 +393,9 @@ export function normalizeProjectedMessages(input: unknown[]): Message[] {
             id: typeof msg.id === 'string' ? msg.id : createClientId('message'),
             role,
             runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+            ordinal: Number.isFinite(Number(msg.ordinal)) ? Number(msg.ordinal) : undefined,
+            turnId: typeof msg.turnId === 'string' ? msg.turnId : undefined,
+            turnPosition: Number.isFinite(Number(msg.turnPosition)) ? Number(msg.turnPosition) : undefined,
             content: typeof msg.content === 'string' ? msg.content : '',
             nodes: normalizeMessageNodes(projectedNodes),
             timestamp,

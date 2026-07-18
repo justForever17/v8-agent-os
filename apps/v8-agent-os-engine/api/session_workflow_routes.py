@@ -1315,6 +1315,9 @@ async def get_session_turns(
         session_row = db.get_session(session_id)
         if session_row is None:
             raise HTTPException(status_code=404, detail="Session not found")
+        # Capture the cursor before reading the window.  A write that races the
+        # read may be returned again on the next sync, but cannot be skipped.
+        sync_cursor = datetime.now(timezone.utc).isoformat()
         payload = build_canonical_chat_turn_window(
             session_id,
             before_ordinal=before,
@@ -1325,6 +1328,7 @@ async def get_session_turns(
         return _attach_profile(
             {
                 "sessionId": session_id,
+                "syncCursor": sync_cursor,
                 **payload,
             },
             route="engine.sessions.turns",

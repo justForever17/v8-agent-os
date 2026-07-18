@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Message } from "@/store/chat-types";
 import { ChatMessage } from "./ChatMessage";
+import { ChatTurnIndexEntry, TurnNavigator } from "./TurnNavigator";
 import { ContextReferencesHUD } from "./ContextReferencesHUD";
 import { useT } from "@/components/providers/LocaleProvider";
 import { cn } from "@/lib/utils";
@@ -38,6 +39,11 @@ interface ChatWindowProps {
     hasOlderTurns?: boolean;
     isLoadingOlderTurns?: boolean;
     onReachTop?: () => void;
+    turnIndex?: ChatTurnIndexEntry[];
+    totalTurnCount?: number;
+    focusedTurnId?: string | null;
+    onSelectTurnPosition?: (position: number) => void;
+    onActiveTurnChange?: (turnId: string) => void;
 }
 
 export function ChatWindow({
@@ -55,6 +61,11 @@ export function ChatWindow({
     hasOlderTurns = false,
     isLoadingOlderTurns = false,
     onReachTop,
+    turnIndex = [],
+    totalTurnCount = 0,
+    focusedTurnId,
+    onSelectTurnPosition,
+    onActiveTurnChange,
 }: ChatWindowProps) {
     const t = useT();
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -63,6 +74,7 @@ export function ChatWindow({
     const scrollCommitRef = useRef<number | null>(null);
     const olderLoadAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
     const lastLoadTriggerAtRef = useRef(0);
+    const visibleTurnIdRef = useRef("");
     const scrollStateRef = useRef<{
         messageCount: number;
         lastMessageId: string;
@@ -76,6 +88,7 @@ export function ChatWindow({
     // Scroll state
     const [isAtBottom, setIsAtBottom] = useState(true);
     const [showScrollButton, setShowScrollButton] = useState(false);
+    const [activeVisibleTurnId, setActiveVisibleTurnId] = useState("");
 
     // Delete state
     const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -143,6 +156,20 @@ export function ChatWindow({
     }, [isAtBottom, isLoading, lastMessageId, messages.length, scrollToBottom]);
 
     useEffect(() => {
+        if (!focusedTurnId || typeof window === "undefined") {
+            return;
+        }
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        const target = Array.from(container.querySelectorAll<HTMLElement>("[data-turn-id]"))
+            .find((element) => element.dataset.turnId === focusedTurnId);
+        if (!target) return;
+        visibleTurnIdRef.current = focusedTurnId;
+        setActiveVisibleTurnId(focusedTurnId);
+        window.requestAnimationFrame(() => target.scrollIntoView({ block: "center", behavior: "smooth" }));
+    }, [focusedTurnId]);
+
+    useEffect(() => {
         if (isLoadingOlderTurns) {
             return;
         }
@@ -200,6 +227,18 @@ export function ChatWindow({
         setIsAtBottom(isBottom);
         setShowScrollButton(!isBottom);
 
+        if (turnIndex.length > 0) {
+            const containerRect = e.currentTarget.getBoundingClientRect();
+            const turnElements = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("[data-turn-id]"));
+            const visible = turnElements.find((element) => element.getBoundingClientRect().bottom >= containerRect.top + 48);
+            const nextTurnId = String(visible?.dataset.turnId || "").trim();
+            if (nextTurnId && nextTurnId !== visibleTurnIdRef.current) {
+                visibleTurnIdRef.current = nextTurnId;
+                setActiveVisibleTurnId(nextTurnId);
+                onActiveTurnChange?.(nextTurnId);
+            }
+        }
+
         if (scrollTop < 96 && hasOlderTurns && !isLoadingOlderTurns && onReachTop) {
             const now = Date.now();
             if (now - lastLoadTriggerAtRef.current < 500) {
@@ -209,7 +248,7 @@ export function ChatWindow({
             olderLoadAnchorRef.current = { scrollHeight, scrollTop };
             onReachTop();
         }
-    }, [hasOlderTurns, isLoadingOlderTurns, onReachTop]);
+    }, [hasOlderTurns, isLoadingOlderTurns, onActiveTurnChange, onReachTop, turnIndex.length]);
 
     const confirmDelete = async () => {
         if (!deleteId) return;
@@ -234,6 +273,14 @@ export function ChatWindow({
 
     return (
         <div className="relative flex h-full min-h-0">
+            {onSelectTurnPosition ? (
+                <TurnNavigator
+                    turns={turnIndex}
+                    totalTurnCount={totalTurnCount}
+                    activeTurnId={activeVisibleTurnId || focusedTurnId}
+                    onSelectPosition={onSelectTurnPosition}
+                />
+            ) : null}
             <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden pt-1 sm:pt-1.5">
                     <div className="shrink-0">
@@ -241,7 +288,7 @@ export function ChatWindow({
                     </div>
                     <div
                         className={cn(
-                            "custom-scrollbar relative min-h-0 w-full flex-1 overflow-y-auto overscroll-contain bg-transparent px-3 pb-6 sm:px-4 sm:pb-8 lg:px-5 lg:pb-10 md:rounded-[30px] md:border md:border-border/50 md:bg-slate-50/65 md:shadow-sm md:backdrop-blur-sm md:dark:bg-zinc-900/50",
+                            "custom-scrollbar relative min-h-0 w-full flex-1 overflow-y-auto overscroll-contain bg-transparent px-3 pb-6 sm:px-4 sm:pb-8 lg:px-5 lg:pb-10 md:rounded-[30px] md:border md:border-border/50 md:bg-slate-50/65 md:pl-8 md:shadow-sm md:backdrop-blur-sm md:dark:bg-zinc-900/50",
                             shellClassName ?? "max-w-4xl"
                         )}
                         ref={scrollContainerRef}
@@ -261,18 +308,22 @@ export function ChatWindow({
                                 </div>
                             ) : (
                                 messages.map((m, index) => (
-                                    <ChatMessage
+                                    <div
                                         key={m.role === "assistant" && m.runId ? `assistant:${m.runId}` : m.id}
-                                        message={m}
-                                        processes={processes}
-                                        isLoading={(isLoading || false) && index === messages.length - 1}
-                                        onDelete={setDeleteId}
-                                        isLast={index === messages.length - 1}
-                                        userAvatar={userAvatar}
-                                        userName={userName}
-                                        runtimeActivities={index === liveRuntimeMessageIndex ? runtimeActivities : EMPTY_RUNTIME_ACTIVITIES}
-                                        executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
-                                    />
+                                        data-turn-id={m.turnId || undefined}
+                                    >
+                                        <ChatMessage
+                                            message={m}
+                                            processes={processes}
+                                            isLoading={(isLoading || false) && index === messages.length - 1}
+                                            onDelete={setDeleteId}
+                                            isLast={index === messages.length - 1}
+                                            userAvatar={userAvatar}
+                                            userName={userName}
+                                            runtimeActivities={index === liveRuntimeMessageIndex ? runtimeActivities : EMPTY_RUNTIME_ACTIVITIES}
+                                            executionActive={index === liveRuntimeMessageIndex && (sessionRunning ?? Boolean(isLoading))}
+                                        />
+                                    </div>
                                 ))
                             )}
                             <div ref={messagesEndRef} />

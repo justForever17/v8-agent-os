@@ -9,6 +9,11 @@ import {
     normalizeSessionHistoryList,
     sortSessionHistory,
 } from "@/lib/session-history";
+import {
+    clearWebSessionIndexCache,
+    readWebSessionIndexCache,
+    writeWebSessionIndexCache,
+} from "@/lib/web-conversation-cache";
 
 export type Conversation = SessionHistoryItem;
 
@@ -54,12 +59,15 @@ function getConversationSessionId(item: Pick<Conversation, "id" | "sessionId">):
 }
 
 export function ConversationProvider({ children }: { children: ReactNode }) {
-    const { status } = useSession();
+    const { data: session, status } = useSession();
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const authenticatedRef = useRef(false);
     const hasLoadedRef = useRef(false);
     const refreshInFlightRef = useRef<Promise<void> | null>(null);
+    const sessionIndexHydratedRef = useRef(false);
+    const lastOwnerKeyRef = useRef("");
+    const ownerKey = String(session?.user?.id || session?.user?.email || "").trim().toLowerCase();
 
     const fetchConversations = useCallback((): Promise<void> => {
         if (refreshInFlightRef.current) {
@@ -196,11 +204,34 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         authenticatedRef.current = status === "authenticated";
         if (status === "unauthenticated") {
+            if (lastOwnerKeyRef.current) {
+                clearWebSessionIndexCache(lastOwnerKeyRef.current);
+            }
+            lastOwnerKeyRef.current = "";
+            sessionIndexHydratedRef.current = false;
             hasLoadedRef.current = false;
             setConversations([]);
             setIsLoading(false);
+            return;
         }
-    }, [status]);
+        if (status === "authenticated" && ownerKey && lastOwnerKeyRef.current !== ownerKey) {
+            const cached = normalizeSessionHistoryList(readWebSessionIndexCache<Conversation>(ownerKey));
+            lastOwnerKeyRef.current = ownerKey;
+            sessionIndexHydratedRef.current = true;
+            if (cached.length > 0) {
+                hasLoadedRef.current = true;
+                setConversations(cached);
+                setIsLoading(false);
+            }
+        }
+    }, [ownerKey, status]);
+
+    useEffect(() => {
+        if (status !== "authenticated" || !ownerKey || !sessionIndexHydratedRef.current) {
+            return;
+        }
+        writeWebSessionIndexCache(ownerKey, conversations);
+    }, [conversations, ownerKey, status]);
 
     useEffect(() => {
         if (status !== "authenticated") {

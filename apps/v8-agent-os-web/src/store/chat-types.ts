@@ -118,6 +118,9 @@ export interface Message {
     id: string;
     role: 'user' | 'assistant' | 'system' | 'tool';
     runId?: string;
+    ordinal?: number;
+    turnId?: string;
+    turnPosition?: number;
     
     // The textual content for primary narrative
     content: string;

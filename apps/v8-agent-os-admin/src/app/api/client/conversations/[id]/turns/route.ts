@@ -26,13 +26,21 @@ export async function GET(
     if (before) {
         searchParams.set("before", before);
     }
+    const around = req.nextUrl.searchParams.get("around");
+    if (around) {
+        searchParams.set("around", around);
+    }
+    const radius = req.nextUrl.searchParams.get("radius");
+    if (radius) {
+        searchParams.set("radius", radius);
+    }
     const publicBaseUrl = resolveClientSurfaceOriginFromRequest(req, { allowTrustedHeader: false });
     const compactSurface = req.nextUrl.searchParams.get("compact") === "1"
         || req.nextUrl.searchParams.get("surface") === "phone"
         || req.nextUrl.searchParams.get("surface") === "web";
 
     try {
-        const turnsResponse = await fetch(`${ENGINE_URL}/sessions/${id}/turns?${searchParams.toString()}`, {
+        const turnsResponse = await fetch(`${ENGINE_URL}/sessions/${encodeURIComponent(id)}/turns?${searchParams.toString()}`, {
             method: "GET",
             headers: { "Content-Type": "application/json" },
             cache: "no-store",
@@ -49,6 +57,7 @@ export async function GET(
 
         return NextResponse.json({
             sessionId: id,
+            syncCursor: typeof data.syncCursor === "string" ? data.syncCursor : null,
             messages,
             pageInfo: asRecord(data.pageInfo),
         });

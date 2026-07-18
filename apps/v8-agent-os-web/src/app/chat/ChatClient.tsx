@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { ChatWindow } from "@/components/chat/ChatWindow";
+import type { ChatTurnIndexEntry } from "@/components/chat/TurnNavigator";
 import { InputArea } from "@/components/chat/InputArea";
 import { useLangGraphStream } from "@/hooks/use-langgraph-stream";
 import {
@@ -941,6 +942,10 @@ export default function ChatClient() {
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [hasOlderTurns, setHasOlderTurns] = useState(false);
     const [isLoadingOlderTurns, setIsLoadingOlderTurns] = useState(false);
+    const [turnIndex, setTurnIndex] = useState<ChatTurnIndexEntry[]>([]);
+    const turnIndexRef = useRef<ChatTurnIndexEntry[]>([]);
+    const [totalTurnCount, setTotalTurnCount] = useState(0);
+    const [focusedTurnId, setFocusedTurnId] = useState<string | null>(null);
     const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
     const [queuedMessagesCollapsed, setQueuedMessagesCollapsed] = useState(false);
     const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string | null>(null);
@@ -1353,6 +1358,8 @@ export default function ChatClient() {
     const runtimeFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const turnBeforeCursorRef = useRef<string | null>(null);
     const isLoadingOlderTurnsRef = useRef(false);
+    const isJumpingTurnRef = useRef(false);
+    const previousStreamLoadingRef = useRef(false);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const pendingStreamDiagnosticRef = useRef<PendingStreamDiagnostic | null>(null);
     const currentRun = sessionProjection?.currentRun || runEntries[0] || null;
@@ -1833,7 +1840,7 @@ export default function ChatClient() {
 
     const loadConversationTurnPage = useCallback(async (
         conversationId: string,
-        options?: { before?: string | null },
+        options?: { before?: string | null; around?: string | null; radius?: number },
     ) => {
         const params = new URLSearchParams({ limit: "1" });
         params.set("surface", "web");
@@ -1842,7 +1849,14 @@ export default function ChatClient() {
         if (before) {
             params.set("before", before);
         }
-        const turnsRes = await fetch(`/api/conversations/${conversationId}/turns?${params.toString()}`, {
+        const around = String(options?.around || "").trim();
+        if (around) {
+            params.set("around", around);
+        }
+        if (Number(options?.radius || 0) > 0) {
+            params.set("radius", String(Math.max(0, Math.min(5, Number(options?.radius || 0)))));
+        }
+        const turnsRes = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/turns?${params.toString()}`, {
             cache: "no-store",
         });
         if (!turnsRes.ok) {
@@ -1855,11 +1869,89 @@ export default function ChatClient() {
             messages: normalizeTurnPageMessages(items),
             pageInfo: {
                 hasMore: Boolean(pageInfo.hasMore),
+                hasOlder: Boolean(pageInfo.hasOlder ?? pageInfo.hasMore),
+                hasNewer: Boolean(pageInfo.hasNewer),
                 beforeCursor: pageInfo.beforeCursor == null ? null : String(pageInfo.beforeCursor),
+                afterCursor: pageInfo.afterCursor == null ? null : String(pageInfo.afterCursor),
                 loadedTurnCount: Number(pageInfo.loadedTurnCount || 0),
+                totalTurnCount: Number(pageInfo.totalTurnCount || 0),
+                firstTurnId: String(pageInfo.firstTurnId || "") || null,
+                lastTurnId: String(pageInfo.lastTurnId || "") || null,
+                anchorTurnId: String(pageInfo.anchorTurnId || "") || null,
+                anchorPosition: Number(pageInfo.anchorPosition || 0) || null,
+                windowStartPosition: Number(pageInfo.windowStartPosition || 0) || null,
+                windowEndPosition: Number(pageInfo.windowEndPosition || 0) || null,
+                firstPosition: Number(pageInfo.firstPosition || 0) || null,
+                lastPosition: Number(pageInfo.lastPosition || 0) || null,
             },
+            syncCursor: typeof turnsPayload?.syncCursor === "string" ? turnsPayload.syncCursor : null,
         };
     }, [normalizeTurnPageMessages]);
+
+    const mergeTurnIndexEntries = useCallback((incoming: ChatTurnIndexEntry[]) => {
+        if (incoming.length === 0) {
+            return turnIndexRef.current;
+        }
+        const byId = new Map(turnIndexRef.current.map((entry) => [entry.turnId, entry]));
+        for (const entry of incoming) {
+            const turnId = String(entry.turnId || "").trim();
+            const position = Number(entry.position || 0);
+            if (!turnId || !Number.isFinite(position) || position < 1) continue;
+            byId.set(turnId, {
+                turnId,
+                position,
+                preview: typeof entry.preview === "string" ? entry.preview : undefined,
+                state: typeof entry.state === "string" ? entry.state : undefined,
+            });
+        }
+        const merged = Array.from(byId.values()).sort((left, right) => left.position - right.position);
+        turnIndexRef.current = merged;
+        setTurnIndex(merged);
+        return merged;
+    }, []);
+
+    const loadConversationTurnIndexPage = useCallback(async (
+        conversationId: string,
+        options?: { before?: number; limit?: number; commit?: boolean },
+    ) => {
+        const params = new URLSearchParams({
+            limit: String(Math.max(1, Math.min(500, Number(options?.limit || 200)))),
+        });
+        if (Number(options?.before || 0) > 0) {
+            params.set("before", String(Math.max(1, Math.floor(Number(options?.before)))));
+        }
+        const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/turn-index?${params.toString()}`, {
+            cache: "no-store",
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to load conversation turn index: ${response.status}`);
+        }
+        const payload = await response.json().catch(() => ({}));
+        const entries: ChatTurnIndexEntry[] = Array.isArray(payload?.turns)
+            ? payload.turns.map((entry: unknown) => {
+                const record = asPlainRecord(entry);
+                return {
+                    turnId: String(record.turnId || "").trim(),
+                    position: Number(record.position || 0),
+                    preview: typeof record.preview === "string" ? record.preview : undefined,
+                    state: typeof record.state === "string" ? record.state : undefined,
+                };
+            }).filter((entry: ChatTurnIndexEntry) => entry.turnId && entry.position > 0)
+            : [];
+        const pageInfo = asPlainRecord(payload?.pageInfo);
+        const total = Number(pageInfo.totalTurnCount || 0);
+        if (options?.commit !== false) {
+            mergeTurnIndexEntries(entries);
+            if (total > 0) {
+                setTotalTurnCount(total);
+            }
+        }
+        return {
+            entries,
+            totalTurnCount: total,
+            pageInfo,
+        };
+    }, [mergeTurnIndexEntries]);
 
     const applyProjectedSnapshot = useCallback((projectedMessages: unknown[], latestSeq = 0) => {
         if (runtimeFlushFrameRef.current !== null && typeof window !== "undefined") {
@@ -1904,7 +1996,19 @@ export default function ChatClient() {
     }, []);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
-        const detailRes = await fetch(`/api/conversations/${conversationId}/detail?omitMessages=1`, { cache: "no-store" });
+        turnIndexRef.current = [];
+        setTurnIndex([]);
+        setTotalTurnCount(0);
+        setFocusedTurnId(null);
+        const indexPagePromise = loadConversationTurnIndexPage(conversationId, { commit: false })
+            .catch(() => ({ entries: [], totalTurnCount: 0, pageInfo: {} }));
+        const [detailRes, turnPage] = await Promise.all([
+            fetch(`/api/conversations/${encodeURIComponent(conversationId)}/detail?omitMessages=1`, { cache: "no-store" }),
+            loadConversationTurnPage(conversationId),
+        ]);
+        if (activeConversationIdRef.current !== conversationId) {
+            return;
+        }
         if (!detailRes.ok) {
             if (detailRes.status === 404) {
                 router.replace("/chat");
@@ -1931,8 +2035,13 @@ export default function ChatClient() {
         }
 
         const latestSeq = Number(projectionPayload?.latestSeq || projectionPayload?.snapshot?.latest_seq || 0);
-        const turnPage = await loadConversationTurnPage(conversationId);
         const normalized = normalizeMessagesForState(turnPage.messages);
+        const messageTurnEntries = normalized.flatMap<ChatTurnIndexEntry>((message) => (
+            message.turnId && Number(message.turnPosition || 0) > 0
+                ? [{ turnId: message.turnId, position: Number(message.turnPosition), preview: String(message.content || "").slice(0, 120) }]
+                : []
+        ));
+        mergeTurnIndexEntries(messageTurnEntries);
         turnBeforeCursorRef.current = turnPage.pageInfo.beforeCursor;
         isLoadingOlderTurnsRef.current = false;
         setIsLoadingOlderTurns(false);
@@ -1950,7 +2059,15 @@ export default function ChatClient() {
         if (detailProcesses.length > 0) {
             applySessionProcessSurface(detailProcesses);
         }
-    }, [applyAskUserPendingApproval, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnPage, router, setMessages]);
+        const indexPage = await indexPagePromise;
+        if (activeConversationIdRef.current === conversationId) {
+            mergeTurnIndexEntries(indexPage.entries);
+            const resolvedTotal = Number(indexPage.totalTurnCount || turnPage.pageInfo.totalTurnCount || 0);
+            if (resolvedTotal > 0) {
+                setTotalTurnCount(resolvedTotal);
+            }
+        }
+    }, [applyAskUserPendingApproval, applyQueuedMessagesSnapshot, applySessionProcessSurface, askUserApprovalId, loadConversationTurnIndexPage, loadConversationTurnPage, mergeTurnIndexEntries, router, setMessages]);
 
     const loadOlderConversationTurn = useCallback(async () => {
         const conversationId = activeConversationIdRef.current;
@@ -1983,6 +2100,72 @@ export default function ChatClient() {
             setIsLoadingOlderTurns(false);
         }
     }, [hasOlderTurns, loadConversationTurnPage, setMessages]);
+
+    const resolveTurnIndexEntryAtPosition = useCallback(async (
+        conversationId: string,
+        position: number,
+    ) => {
+        const normalizedPosition = Math.max(1, Math.min(Math.max(1, totalTurnCount), Math.floor(position)));
+        const cached = turnIndexRef.current.find((entry) => entry.position === normalizedPosition);
+        if (cached) {
+            return cached;
+        }
+        const page = await loadConversationTurnIndexPage(conversationId, {
+            before: normalizedPosition + 1,
+            limit: 1,
+        });
+        return page.entries.find((entry) => entry.position === normalizedPosition) || null;
+    }, [loadConversationTurnIndexPage, totalTurnCount]);
+
+    const jumpToTurnPosition = useCallback(async (position: number) => {
+        const conversationId = activeConversationIdRef.current;
+        if (!conversationId || isJumpingTurnRef.current) {
+            return;
+        }
+        isJumpingTurnRef.current = true;
+        try {
+            const target = await resolveTurnIndexEntryAtPosition(conversationId, position);
+            if (!target || activeConversationIdRef.current !== conversationId) {
+                return;
+            }
+            const turnPage = await loadConversationTurnPage(conversationId, {
+                around: target.turnId,
+                radius: 0,
+            });
+            if (activeConversationIdRef.current !== conversationId) {
+                return;
+            }
+            const nextMessages = normalizeMessagesForState(turnPage.messages);
+            turnBeforeCursorRef.current = turnPage.pageInfo.beforeCursor;
+            setHasOlderTurns(Boolean(turnPage.pageInfo.hasOlder));
+            messagesRef.current = nextMessages;
+            realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                nextMessages,
+                WEB_STREAM_LIFECYCLE_OPTIONS,
+            );
+            setFocusedTurnId(target.turnId);
+            setMessages(nextMessages);
+            window.setTimeout(() => {
+                setFocusedTurnId((current) => current === target.turnId ? null : current);
+            }, 900);
+        } catch (error) {
+            console.warn("[ChatClient] Failed to jump to conversation turn:", error);
+        } finally {
+            isJumpingTurnRef.current = false;
+        }
+    }, [loadConversationTurnPage, resolveTurnIndexEntryAtPosition, setMessages]);
+
+    useEffect(() => {
+        const wasLoading = previousStreamLoadingRef.current;
+        previousStreamLoadingRef.current = Boolean(isLoading);
+        const conversationId = activeConversationIdRef.current;
+        if (!wasLoading || isLoading || !conversationId) {
+            return;
+        }
+        void loadConversationTurnIndexPage(conversationId).catch((error) => {
+            console.warn("[ChatClient] Failed to refresh turn index after run completion:", error);
+        });
+    }, [isLoading, loadConversationTurnIndexPage]);
 
     const loadProjects = useCallback(async () => {
         setProjectsLoading(true);
@@ -2928,6 +3111,11 @@ export default function ChatClient() {
             setQueuedMessageError("");
             turnBeforeCursorRef.current = null;
             isLoadingOlderTurnsRef.current = false;
+            isJumpingTurnRef.current = false;
+            turnIndexRef.current = [];
+            setTurnIndex([]);
+            setTotalTurnCount(0);
+            setFocusedTurnId(null);
             setHasOlderTurns(false);
             setIsLoadingOlderTurns(false);
             messagesRef.current = [];
@@ -3254,6 +3442,10 @@ export default function ChatClient() {
                             hasOlderTurns={hasOlderTurns}
                             isLoadingOlderTurns={isLoadingOlderTurns}
                             onReachTop={loadOlderConversationTurn}
+                            turnIndex={turnIndex}
+                            totalTurnCount={totalTurnCount}
+                            focusedTurnId={focusedTurnId}
+                            onSelectTurnPosition={jumpToTurnPosition}
                             onDeleteMessage={(messageId) => {
                                 setMessages((prev) => prev.filter((message) => message.id !== messageId));
                                 const conversationId = activeConversationIdRef.current;

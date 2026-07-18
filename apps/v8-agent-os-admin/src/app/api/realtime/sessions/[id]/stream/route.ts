@@ -110,11 +110,14 @@ export async function GET(
 
                 try {
                     const snapshotStartedAt = Date.now();
-                    const snapshotRes = await fetch(`${ENGINE_URL}/sessions/${id}/snapshot`, {
-                        method: "GET",
-                        headers: { "Content-Type": "application/json" },
-                        cache: "no-store",
-                    });
+                    const snapshotRes = await fetch(
+                        `${ENGINE_URL}/sessions/${encodeURIComponent(id)}/snapshot${compactPhone ? "?compact=1" : ""}`,
+                        {
+                            method: "GET",
+                            headers: { "Content-Type": "application/json" },
+                            cache: "no-store",
+                        },
+                    );
                     if (!snapshotRes.ok) {
                         throw new Error(`snapshot request failed: ${snapshotRes.status}`);
                     }

@@ -137,6 +137,49 @@ export type SessionHistoryMaterializedView = {
   updatedAt?: string;
 };
 
+export type CanonicalTurnIndexEntry = {
+  turnId: string;
+  position: number;
+  firstOrdinal: number;
+  lastOrdinal: number;
+  messageCount: number;
+  preview: string;
+  state: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type CanonicalTurnPageInfo = {
+  hasMore: boolean;
+  hasOlder: boolean;
+  hasNewer: boolean;
+  beforeCursor?: string | null;
+  afterCursor?: string | null;
+  loadedTurnCount: number;
+  totalTurnCount?: number | null;
+  firstTurnId?: string | null;
+  lastTurnId?: string | null;
+  anchorTurnId?: string | null;
+  anchorPosition?: number | null;
+  windowStartPosition?: number | null;
+  windowEndPosition?: number | null;
+  firstPosition?: number | null;
+  lastPosition?: number | null;
+};
+
+export type CanonicalTurnIndexPayload = {
+  sessionId: string;
+  turns: CanonicalTurnIndexEntry[];
+  pageInfo: CanonicalTurnPageInfo;
+};
+
+export type CanonicalTurnWindowPayload<TMessage = Record<string, unknown>> = {
+  sessionId: string;
+  syncCursor?: string | null;
+  messages: TMessage[];
+  pageInfo: CanonicalTurnPageInfo;
+};
+
 function parseMetadata(metadata: AuthoritativeSessionHistoryRecord["metadata"]): Record<string, unknown> {
   if (!metadata) return {};
   if (typeof metadata === "string") {

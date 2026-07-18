@@ -15,16 +15,18 @@ test("Web keeps session detail reads behind the authenticated local proxy", () =
   const askUser = readText("apps/v8-agent-os-web/src/components/chat/AskUserModal.tsx");
   const detail = readText("apps/v8-agent-os-web/src/app/api/conversations/[id]/detail/route.ts");
   const turns = readText("apps/v8-agent-os-web/src/app/api/conversations/[id]/turns/route.ts");
+  const turnIndex = readText("apps/v8-agent-os-web/src/app/api/conversations/[id]/turn-index/route.ts");
   const processes = readText("apps/v8-agent-os-web/src/app/api/sessions/[id]/processes/route.ts");
   const clientAuth = readText("apps/v8-agent-os-admin/src/lib/server/client-request-auth.ts");
 
-  for (const proxy of [detail, turns, processes]) {
+  for (const proxy of [detail, turns, turnIndex, processes]) {
     assert.match(proxy, /requireAdminProxyContext/);
     assert.match(proxy, /safeAdminProxyFetch/);
     assert.doesNotMatch(proxy, /export async function POST/);
   }
-  assert.match(client, /\/api\/conversations\/\$\{conversationId\}\/detail/);
-  assert.match(client, /\/api\/conversations\/\$\{conversationId\}\/turns/);
+  assert.match(client, /\/api\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/detail/);
+  assert.match(client, /\/api\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/turns/);
+  assert.match(client, /\/api\/conversations\/\$\{encodeURIComponent\(conversationId\)\}\/turn-index/);
   assert.match(client, /\/api\/sessions\/\$\{encodeURIComponent\(conversationId\)\}\/processes/);
   assert.match(askUser, /\/api\/artifacts\/\$\{encodeURIComponent\(artifactId\)\}\/content/);
   assert.doesNotMatch(`${client}\n${askUser}`, /\/api\/client\/(?:conversations|sessions|artifacts)/);

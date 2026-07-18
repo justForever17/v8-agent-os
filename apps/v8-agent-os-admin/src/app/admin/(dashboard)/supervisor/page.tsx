@@ -338,8 +338,8 @@ export default function SupervisorPage() {
                             <CardTitle>{t("app.admin.dashboard.supervisor.page.k74e8cae6")}</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-6">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-6 border-b">
-                                <div className="space-y-4">
+                            <div className="space-y-5 border-b pb-6">
+                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                                     <div className="space-y-2">
                                         <Label>{t("app.admin.dashboard.supervisor.page.kb6f6dc96")}</Label>
                                         <Input value={name} onChange={e => setName(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k1fa30a0f")} />
@@ -349,9 +349,10 @@ export default function SupervisorPage() {
                                         <Input value={roleLabel} onChange={e => setRoleLabel(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.kc76b7a64")} />
                                     </div>
                                 </div>
-                                <div className="space-y-3">
+
+                                <div className="space-y-2.5">
                                     <Label>{t("app.admin.dashboard.supervisor.page.k19d90be6")}</Label>
-                                    <div className="flex items-center gap-4">
+                                    <div className="grid grid-cols-[6rem_minmax(0,1fr)] items-start gap-4 rounded-2xl border border-border/60 bg-muted/25 p-4">
                                         <div className="relative flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl border bg-muted">
                                             {avatar ? <>
                                                     <img src={avatar} alt="Avatar Preview" className="h-full w-full object-cover" />
@@ -360,7 +361,7 @@ export default function SupervisorPage() {
                                                     </button>
                                                 </> : <Crown className="h-10 w-10 text-muted-foreground/80" />}
                                         </div>
-                                        <div className="flex-1 space-y-3">
+                                        <div className="min-w-0 space-y-3">
                                             <div className="flex flex-wrap gap-2">
                                                 <Input id="supervisor-avatar-upload" type="file" accept="image/*" className="hidden" onChange={async event => {
                                                     const file = event.target.files?.[0];
@@ -406,8 +407,8 @@ export default function SupervisorPage() {
                                                     </Button> : null}
                                             </div>
                                             <div className="space-y-2">
-                                                <Label>{t("app.admin.dashboard.supervisor.page.kc933bd04")}</Label>
-                                                <Input value={avatar} onChange={e => setAvatar(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k19e35ac4")} />
+                                                <Label htmlFor="supervisor-avatar-url">{t("app.admin.dashboard.supervisor.page.kc933bd04")}</Label>
+                                                <Input id="supervisor-avatar-url" value={avatar} onChange={e => setAvatar(e.target.value)} placeholder={t("app.admin.dashboard.supervisor.page.k19e35ac4")} />
                                             </div>
                                         </div>
                                     </div>

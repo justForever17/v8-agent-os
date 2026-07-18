@@ -46,6 +46,12 @@ import {
 } from "lucide-react";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
 import { Button } from "@/components/ui/button";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { WorkbenchShell } from "@/components/workbench/WorkbenchShell";
 import { createSessionOverviewDocument } from "@/lib/workbench";
 import { ingestWorkbenchRuntimeEvent, useWorkbenchStore } from "@/store/workbench-store";
@@ -483,38 +489,44 @@ function QueuedMessagesStrip({
                                 >
                                     {itemBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                                 </button>
-                                <div className="relative">
-                                    <button
-                                        type="button"
-                                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                                        onClick={() => onOpenMenu(menuOpenId === item.id ? null : item.id)}
-                                        aria-label={labels.edit}
-                                        title={labels.edit}
+                                <DropdownMenu
+                                    open={menuOpenId === item.id}
+                                    onOpenChange={(open) => onOpenMenu(open ? item.id : null)}
+                                >
+                                    <DropdownMenuTrigger asChild>
+                                        <button
+                                            type="button"
+                                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+                                            aria-label={labels.edit}
+                                            title={labels.edit}
+                                        >
+                                            <MoreHorizontal className="h-3.5 w-3.5" />
+                                        </button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent
+                                        align="end"
+                                        side="top"
+                                        sideOffset={4}
+                                        collisionPadding={12}
+                                        className="z-[120] w-36"
                                     >
-                                        <MoreHorizontal className="h-3.5 w-3.5" />
-                                    </button>
-                                    {menuOpenId === item.id ? (
-                                        <div className="absolute bottom-full right-0 z-[90] mb-1 w-36 overflow-hidden rounded-xl border border-border/65 bg-popover/98 p-1 text-popover-foreground shadow-[0_18px_48px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:shadow-[0_18px_48px_rgba(0,0,0,0.34)]">
-                                            <button
-                                                type="button"
-                                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition hover:bg-muted"
-                                                onClick={() => onEdit(item)}
-                                                disabled={promoted}
-                                            >
-                                                <Edit3 className="h-3.5 w-3.5" />
-                                                <span>{labels.edit}</span>
-                                            </button>
-                                            <button
-                                                type="button"
-                                                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-destructive transition hover:bg-destructive/10"
-                                                onClick={() => onCancel(item)}
-                                            >
-                                                <Trash2 className="h-3.5 w-3.5" />
-                                                <span>{labels.closeQueue}</span>
-                                            </button>
-                                        </div>
-                                    ) : null}
-                                </div>
+                                        <DropdownMenuItem
+                                            className="gap-2 text-xs"
+                                            onSelect={() => onEdit(item)}
+                                            disabled={promoted}
+                                        >
+                                            <Edit3 className="h-3.5 w-3.5" />
+                                            <span>{labels.edit}</span>
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem
+                                            className="gap-2 text-xs text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                            onSelect={() => onCancel(item)}
+                                        >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                            <span>{labels.closeQueue}</span>
+                                        </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                </DropdownMenu>
                             </div>
                         );
                     })}

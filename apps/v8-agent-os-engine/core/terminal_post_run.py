@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from core.database import db
 from core.hooks_manager import hooks_manager
+from core.memory_extraction_policy import MEMORY_EXTRACTION_MODE_AUTO, resolve_memory_extraction_mode
 from core.storage import storage
 from erc.run_service import run_service
 
@@ -141,8 +142,8 @@ class TerminalPostRunService:
         from agents.runners.maintenance_runner import memory_agent_runner
 
         memory_config = storage.get_memory_config() or {}
-        if not bool(memory_config.get("extraction_enabled", True)):
-            logger.info("Memory extraction disabled; terminal scheduler skipped for session %s", session_id)
+        if resolve_memory_extraction_mode(memory_config) != MEMORY_EXTRACTION_MODE_AUTO:
+            logger.info("Memory extraction is in manual mode; terminal scheduler skipped for session %s", session_id)
             return
 
         def _worker():

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Union
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
@@ -24,8 +24,11 @@ from .models import (
     WorkspaceBindingPayload,
     WorkflowBindingPayload,
 )
+from core.database import db
 from core.model_control_plane import model_control_plane
 from core.memory_store import MEMORY_ROOT
+from core.memory_extraction_policy import normalize_memory_extraction_config
+from core.memory_extraction_service import memory_extraction_service
 from core.realtime_protocol import format_ndjson
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls
 from core.storage import MEMORY_DURABLE_POLICY_DEFAULTS, storage
@@ -233,7 +236,7 @@ async def update_context_config(config: dict = Body(...)):
 @router.get("/memory/config")
 async def get_memory_config():
     try:
-        config = storage.get_memory_config() or {}
+        config = normalize_memory_extraction_config(storage.get_memory_config() or {})
         metadata = storage.get_memory_config_metadata()
         config.setdefault("recall_strategy", "balanced")
         config.setdefault("recall_top_k", 3)
@@ -247,7 +250,6 @@ async def get_memory_config():
         config.setdefault("passive_memory_map_node_limit", 4)
         config.setdefault("max_recent_days", 1)
         config.setdefault("max_context_tokens", 2000)
-        config.setdefault("extraction_enabled", True)
         for key, value in MEMORY_DURABLE_POLICY_DEFAULTS.items():
             config.setdefault(key, value)
         workflow_memory = config.get("workflowMemory")
@@ -273,7 +275,8 @@ async def get_memory_config():
 @router.post("/memory/config")
 async def update_memory_config(config: dict = Body(...)):
     try:
-        next_config = dict(config or {})
+        existing_config = storage.get_memory_config() or {}
+        next_config = normalize_memory_extraction_config({**existing_config, **(config or {})})
         for ui_only_key in (
             "recommended_retrieval_threshold",
             "retrieval_threshold_source",
@@ -369,6 +372,43 @@ async def update_memory_config(config: dict = Body(...)):
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/memory/session-extraction")
+async def run_manual_memory_extraction(request: Request, payload: dict = Body(...)):
+    session_id = str(payload.get("sessionId") or payload.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="sessionId is required.")
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
+    caller_user_id = str(
+        request.headers.get("x-v8-agent-os-user-email")
+        or payload.get("userId")
+        or payload.get("user_id")
+        or ""
+    ).strip()
+    session_user_id = str(session.get("user_id") or session.get("userId") or "").strip()
+    if (
+        caller_user_id
+        and session_user_id
+        and session_user_id not in {"anonymous", "system"}
+        and caller_user_id != session_user_id
+    ):
+        raise HTTPException(status_code=403, detail="session_owner_mismatch")
+
+    result = memory_extraction_service.schedule_manual(
+        session_id=session_id,
+        user_id=caller_user_id or session_user_id or "system",
+        trigger_source="manual:composer",
+    )
+    if not result.get("accepted") and result.get("reason") in {
+        "chat_run_active",
+        "memory_extraction_active",
+    }:
+        raise HTTPException(status_code=409, detail=result)
+    return result
 
 
 @router.get("/memory/preferences")

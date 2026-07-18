@@ -62,6 +62,7 @@ interface MemoryConfig {
   max_recent_days?: number;
   max_context_tokens?: number;
   extraction_enabled?: boolean;
+  extraction_mode?: "auto" | "manual";
   graph_enabled?: boolean;
   fts_enabled?: boolean;
   workflowMemory?: {
@@ -509,12 +510,13 @@ export default function MemoryConfigPanel() {
                             className="rounded-lg border p-3 bg-white"
                         />
                         <SettingToggleCard
-                            title={t("components.memory.MemoryConfigPanel.k70809028")}
-                            description={t("components.memory.MemoryConfigPanel.k60bfdf7d")}
-                            checked={config.extraction_enabled ?? true}
+                            title={t("components.memory.MemoryConfigPanel.manualExtraction.title")}
+                            description={t("components.memory.MemoryConfigPanel.manualExtraction.description")}
+                            checked={config.extraction_mode === "manual" || (config.extraction_mode == null && config.extraction_enabled === false)}
                             onCheckedChange={checked => setConfig(prev => ({
                                 ...prev,
-                                extraction_enabled: checked
+                                extraction_mode: checked ? "manual" : "auto",
+                                extraction_enabled: !checked
                             }))}
                             className="rounded-lg border p-3 bg-white"
                         />

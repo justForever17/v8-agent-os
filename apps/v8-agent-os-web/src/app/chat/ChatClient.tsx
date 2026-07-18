@@ -2788,6 +2788,42 @@ export default function ChatClient() {
         }
     };
 
+    const handleManualMemory = useCallback(async (): Promise<{ accepted: boolean; message: string }> => {
+        const sessionId = String(activeConversationIdRef.current || "").trim();
+        if (!sessionId) {
+            setWorkspaceChooserVisible(true);
+            return { accepted: false, message: t("web.composer.memory.noSession") };
+        }
+        if (activeConversationRunning) {
+            return { accepted: false, message: t("web.composer.memory.busy") };
+        }
+        try {
+            const response = await fetch("/api/memory/session-extraction", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sessionId }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload?.accepted === false) {
+                const detail = payload?.detail;
+                const message = typeof detail === "string"
+                    ? detail
+                    : typeof detail?.summary === "string"
+                        ? detail.summary
+                        : typeof payload?.summary === "string"
+                            ? payload.summary
+                            : t("web.composer.memory.failed");
+                return { accepted: false, message };
+            }
+            return {
+                accepted: true,
+                message: typeof payload?.summary === "string" ? payload.summary : t("web.composer.memory.started"),
+            };
+        } catch {
+            return { accepted: false, message: t("web.composer.memory.failed") };
+        }
+    }, [activeConversationRunning, t]);
+
     const handleFileLineComment = async (reference: { path: string; line: number; lineText: string; comment: string }) => {
         const quotedLine = String(reference.lineText || "").replace(/\r?\n/g, " ").trim() || t("web.workbench.file.emptyLine");
         const message = [
@@ -3294,6 +3330,7 @@ export default function ChatClient() {
                                     contextUsagePercent={projectionContextUsagePercent}
                                     supervisorWorkMode={supervisorWorkMode}
                                     onSupervisorWorkModeChange={handleSupervisorWorkModeChange}
+                                    onManualMemory={handleManualMemory}
                                     uploadScope={{
                                         sessionId: activeConversationId,
                                         workspaceId: scopeBinding?.workspaceId,

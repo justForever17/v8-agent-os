@@ -3066,6 +3066,8 @@
   "components.memory.MemoryConfigPanel.k6c54d9f2": "Keeps summary + memory map by default and minimizes recent teaser injection.",
   "components.memory.MemoryConfigPanel.k6cccddd7": "Enabled",
   "components.memory.MemoryConfigPanel.k70809028": "Extract after session",
+  "components.memory.MemoryConfigPanel.manualExtraction.description": "When enabled, extraction no longer runs after every session. Users can run Memory Agent on demand with /memory in Web or Phone.",
+  "components.memory.MemoryConfigPanel.manualExtraction.title": "Manual memory mode",
   "components.memory.MemoryConfigPanel.k7282aa62": "No recall results passed the threshold for this query.",
   "components.memory.MemoryConfigPanel.k77cf7080": "Append one-hop graph context during recall for relation-heavy questions.",
   "components.memory.MemoryConfigPanel.k81935040": "RAG retrieval",

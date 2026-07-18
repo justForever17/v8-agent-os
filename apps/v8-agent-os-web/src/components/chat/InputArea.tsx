@@ -185,6 +185,7 @@ interface InputAreaProps {
     contextUsagePercent?: number | null;
     supervisorWorkMode?: "daily" | "engineering";
     onSupervisorWorkModeChange?: (mode: "daily" | "engineering") => void | Promise<void>;
+    onManualMemory?: () => Promise<{ accepted: boolean; message: string }>;
     uploadScope?: {
         sessionId?: string | null;
         workspaceId?: string | null;
@@ -272,6 +273,7 @@ interface CommandPresetSummary {
     path?: string;
     contentHash?: string;
     specCommandAction?: SpecCommandAction;
+    memoryAction?: "session_extraction";
     readOnlyKind?: "context_usage";
     usagePercent?: number;
 }
@@ -337,6 +339,7 @@ export function InputArea({
     contextUsagePercent = null,
     supervisorWorkMode = "daily",
     onSupervisorWorkModeChange,
+    onManualMemory,
     uploadScope,
 }: InputAreaProps) {
     const t = useT();
@@ -471,6 +474,11 @@ export function InputArea({
         { name: "spec analyze", summary: t("web.composer.spec.analyze"), specCommandAction: "analyze" },
         { name: "spec annex", summary: t("web.composer.spec.annex"), specCommandAction: "annex" },
     ]), [t]);
+    const memoryCommand = React.useMemo<CommandPresetSummary>(() => ({
+        name: "memory",
+        summary: t("web.composer.memory.summary"),
+        memoryAction: "session_extraction",
+    }), [t]);
     const contextUsageCommand = React.useMemo<CommandPresetSummary | null>(() => (
         typeof contextUsagePercent === "number" && Number.isFinite(contextUsagePercent)
             ? {
@@ -491,7 +499,7 @@ export function InputArea({
     const isCommandPickerOpen = inlineQuery?.kind === "command";
     const isSkillPickerOpen = inlineQuery?.kind === "mention";
     const filteredCommandPresets = React.useMemo(() => {
-        const allCommands = [...(contextUsageCommand ? [contextUsageCommand] : []), ...specCommandPresets, ...commandPresets];
+        const allCommands = [memoryCommand, ...(contextUsageCommand ? [contextUsageCommand] : []), ...specCommandPresets, ...commandPresets];
         if (!slashQuery) {
             return allCommands;
         }
@@ -501,7 +509,7 @@ export function InputArea({
             || String(preset.summary || "").toLowerCase().includes(keyword)
             || String(preset.filename || "").toLowerCase().includes(keyword)
         );
-    }, [commandPresets, contextUsageCommand, slashQuery, specCommandPresets]);
+    }, [commandPresets, contextUsageCommand, memoryCommand, slashQuery, specCommandPresets]);
     const filteredMentionItems = React.useMemo<MentionPickerItem[]>(() => {
         const selectedKeys = new Set(selectedSkills.map((skill) => `${skill.name}::${skill.path || ""}`));
         const selectedFamilyIds = new Set(selectedSubagentFamilies.map((family) => family.familyId));
@@ -1152,6 +1160,20 @@ export function InputArea({
     return (
         <form
             onSubmit={async (e) => {
+                if (selectedCommandPreset?.memoryAction === "session_extraction") {
+                    e.preventDefault();
+                    if (!onManualMemory) {
+                        showInlineNotice("error", t("web.composer.memory.failed"));
+                        return;
+                    }
+                    const result = await onManualMemory();
+                    showInlineNotice(result.accepted ? "success" : "error", result.message);
+                    if (!result.accepted) return;
+                    updateInputValue("");
+                    setSelectionRange({ start: 0, end: 0 });
+                    setSelectedCommandPreset(null);
+                    return;
+                }
                 const nextData: Record<string, unknown> = {};
                 const pendingSpecMode = specModeEnabled;
                 nextData.safetyApprovalMode = safetyApprovalMode;

@@ -1907,9 +1907,10 @@ def analyze_session_memory(
     *,
     run_handle: Any | None = None,
     parent_run_id: str | None = None,
+    manual: bool = False,
 ):
     """
-    [系统指令] 会话结束后由系统自动触发后台提取任务。
+    会话结束后可由系统自动触发，也可由用户通过手动整理入口显式触发。
     
     工作流：
     1. 获取原始日志
@@ -1920,23 +1921,29 @@ def analyze_session_memory(
     """
     source_type = _get_log_source(trigger_source)
     policy = _load_memory_policy()
-    if not policy["extraction_enabled"]:
+    # Automatic extraction obeys the configured mode.  An explicit `/memory`
+    # request is a deliberate user action and must still run when the admin
+    # switch is set to manual; it does not silently re-enable the on_chat_end
+    # hook for later turns.
+    if not policy["extraction_enabled"] and not manual:
         logger.info(f"[MemoryAgent] Extraction disabled by config, skipping session {session_id}.")
         _emit_memory_event(
             run_handle,
             "memory.session_extraction.skipped",
             {
                 "session_id": session_id,
-                "reason": "extraction_disabled",
+                "reason": "manual_mode",
                 "parent_run_id": parent_run_id,
+                "manual": manual,
             },
         )
         return {
             "status": "skipped",
             "task_kind": "session_extraction",
             "session_id": session_id,
-            "reason": "extraction_disabled",
+            "reason": "manual_mode",
             "parent_run_id": parent_run_id,
+            "manual": manual,
         }
 
     # 1. 获取 canonical transcript：优先 runtime projection，其次 durable messages。

@@ -181,6 +181,7 @@ export type CommandPresetSummary = {
     summary?: string;
     filename?: string;
     specCommandAction?: "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex";
+    memoryAction?: "session_extraction";
     readOnlyKind?: "context_usage";
     usagePercent?: number;
 };

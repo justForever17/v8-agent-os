@@ -3068,6 +3068,8 @@
   "components.memory.MemoryConfigPanel.k6c54d9f2": "默认保留摘要主层与记忆地图，尽量减少近期日志 teaser。",
   "components.memory.MemoryConfigPanel.k6cccddd7": "已启用",
   "components.memory.MemoryConfigPanel.k70809028": "会话后自动提取",
+  "components.memory.MemoryConfigPanel.manualExtraction.description": "开启后不再在每轮会话结束时自动提取；用户可在 Web 或 Phone 输入 /memory，按需让 Memory Agent 整理当前任务。",
+  "components.memory.MemoryConfigPanel.manualExtraction.title": "手动整理模式",
   "components.memory.MemoryConfigPanel.k7282aa62": "当前查询没有通过阈值的 recall 结果。",
   "components.memory.MemoryConfigPanel.k77cf7080": "在 recall 里追加知识图谱的一跳上下文，适合关系型问题。",
   "components.memory.MemoryConfigPanel.k81935040": "RAG 检索协同",

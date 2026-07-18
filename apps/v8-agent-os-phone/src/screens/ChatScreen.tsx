@@ -108,6 +108,7 @@ import {
     listConversations,
     listPlugins,
     listSkillsAndSubagentFamilies,
+    runManualMemoryExtraction,
     requestTextToSpeech,
     respondAskUser,
     releaseDesktopLiveSession,
@@ -2309,6 +2310,11 @@ export default function ChatScreen() {
     const contextUsage = useMemo(() => resolveContextUsagePercent(contextGovernance), [contextGovernance]);
     const specCommands = useMemo<CommandPresetSummary[]>(
         () => [
+            {
+                name: "memory",
+                summary: t("src.screens.chatscreen.memory_command_summary"),
+                memoryAction: "session_extraction",
+            },
             ...(typeof contextUsage === "number" ? [{
                 name: "context",
                 summary: `Current usage ${contextUsage}%`,
@@ -6108,6 +6114,32 @@ export default function ChatScreen() {
         }
 
         const pendingCommand = selectedCommand;
+        if (pendingCommand?.memoryAction === "session_extraction") {
+            if (isQueueEligibleRunStatus(projection.runControlState.status)) {
+                Alert.alert(t("src.screens.chatscreen.memory_title"), t("src.screens.chatscreen.memory_busy"));
+                return;
+            }
+            setSending(true);
+            try {
+                const result = await runManualMemoryExtraction(authorizedFetch, currentConversationId);
+                if (result.accepted === false) {
+                    throw new Error(result.summary || t("src.screens.chatscreen.memory_failed"));
+                }
+                if (!preserveComposer) {
+                    setInput("");
+                    setActiveQueryMode(null);
+                    setActiveQueryText("");
+                    setSelectedCommand(null);
+                    setComposerSelection({ start: 0, end: 0 });
+                }
+                Alert.alert(t("src.screens.chatscreen.memory_title"), result.summary || t("src.screens.chatscreen.memory_started"));
+            } catch (error) {
+                Alert.alert(t("src.screens.chatscreen.memory_title"), error instanceof Error ? error.message : t("src.screens.chatscreen.memory_failed"));
+            } finally {
+                setSending(false);
+            }
+            return;
+        }
         const pendingSpecCommand = pendingCommand?.specCommandAction
             ? { action: pendingCommand.specCommandAction }
             : undefined;

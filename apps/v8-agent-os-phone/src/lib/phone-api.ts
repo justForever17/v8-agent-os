@@ -824,6 +824,19 @@ export async function listSpecs(authorizedFetch: AuthorizedFetch, workspacePath:
     return normalizeArray<SpecSummary>(payload.specs);
 }
 
+export async function runManualMemoryExtraction(authorizedFetch: AuthorizedFetch, sessionId: string) {
+    return authorizedJson<{ accepted?: boolean; status?: string; summary?: string }>(
+        authorizedFetch,
+        "/api/client/memory/session-extraction",
+        translateCurrent("src.lib.phone_api.manual_memory_failed"),
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId }),
+        },
+    );
+}
+
 export async function listSessionArtifacts(authorizedFetch: AuthorizedFetch, sessionId: string, limit = 100) {
     const query = new URLSearchParams({
         sessionId,

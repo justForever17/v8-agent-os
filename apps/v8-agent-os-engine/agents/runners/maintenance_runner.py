@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -8,6 +7,11 @@ from agents import memory_agent
 from core import memory_store as memory_store_module
 from core.knowledge_db import knowledge_db
 from core.memory_observability import log_memory_observation
+from core.memory_extraction_policy import (
+    MEMORY_EXTRACTION_MODE_MANUAL,
+    memory_extraction_runtime_session_id,
+    resolve_memory_extraction_mode,
+)
 from erc.run_service import run_service
 from erc.runtime_context import bind_runtime_context
 from erc.runtime_stability import runtime_stability_service
@@ -79,8 +83,7 @@ class MemoryAgentRunner:
         }
 
     def _session_extraction_runtime_session_id(self, source_session_id: str) -> str:
-        digest = hashlib.md5(str(source_session_id).encode("utf-8")).hexdigest()[:10]
-        return f"hook:on_chat_end:memory:{digest}"
+        return memory_extraction_runtime_session_id(source_session_id)
 
     def _emit_run_created(self, run_handle, *, task_kind: str, trigger_source: Optional[str], extra: Optional[Dict[str, Any]] = None) -> None:
         run_handle.emit(
@@ -145,9 +148,11 @@ class MemoryAgentRunner:
         run_id: Optional[str] = None,
         user_id: str = "system",
         parent_run_id: Optional[str] = None,
+        manual: bool = False,
     ) -> Dict[str, Any]:
         memory_config = storage.get_memory_config() or {}
-        if not bool(memory_config.get("extraction_enabled", True)):
+        extraction_mode = resolve_memory_extraction_mode(memory_config)
+        if extraction_mode == MEMORY_EXTRACTION_MODE_MANUAL and not manual:
             log_memory_observation(
                 "session_extraction",
                 "SKIPPED",
@@ -155,7 +160,7 @@ class MemoryAgentRunner:
                 sessionId=session_id,
                 parentRunId=parent_run_id,
                 callsLlm=False,
-                skipReason="extraction_disabled",
+                skipReason="manual_mode",
             )
             return {
                 "run_id": None,
@@ -164,7 +169,7 @@ class MemoryAgentRunner:
                     "status": "skipped",
                     "task_kind": "session_extraction",
                     "session_id": session_id,
-                    "reason": "extraction_disabled",
+                    "reason": "manual_mode",
                     "parent_run_id": parent_run_id,
                 },
             }
@@ -180,7 +185,9 @@ class MemoryAgentRunner:
                 "parent_run_id": parent_run_id,
                 "parent_session_id": session_id,
                 "source_session_id": session_id,
-                "source": "hook:on_chat_end",
+                "source": trigger_source if manual else "hook:on_chat_end",
+                "extractionMode": extraction_mode,
+                "manual": manual,
                 "hiddenFromHistory": True,
             },
         )
@@ -206,6 +213,7 @@ class MemoryAgentRunner:
                 "sourceSessionId": session_id,
                 "parentRunId": parent_run_id,
                 "hiddenFromHistory": True,
+                "manual": manual,
             },
         )
         if not lane_decision.acquired:
@@ -306,6 +314,7 @@ class MemoryAgentRunner:
                     trigger_source=trigger_source,
                     run_handle=run_handle,
                     parent_run_id=parent_run_id,
+                    manual=manual,
                 )
         except Exception as exc:
             run_handle.fail(str(exc), node="maintenance_runner")

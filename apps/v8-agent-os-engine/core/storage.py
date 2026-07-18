@@ -449,6 +449,7 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
         "max_recent_days": 1,
         "max_context_tokens": 2000,
         "extraction_enabled": True,
+        "extraction_mode": "auto",
         **MEMORY_DURABLE_POLICY_DEFAULTS,
         "workflowMemory": {
             "enabled": True,

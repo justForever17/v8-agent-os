@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
 import { parseModelRef } from "@/lib/models/model-admin";
-import { resolveEngineBaseUrl, resolveReachableAdminPublicBaseUrl } from "@/lib/server/runtime-config";
+import { resolveEngineBaseUrl, resolveInternalSecret, resolveReachableAdminPublicBaseUrl } from "@/lib/server/runtime-config";
 
 const ENGINE_URL = resolveEngineBaseUrl();
 const VOICE_LEDGER_PATH = path.join(os.homedir(), ".v8-agent-os", "audio_voice_ledger.json");
@@ -146,34 +146,6 @@ function dedupeVoices(voices: VoiceOption[]): VoiceOption[] {
     return result;
 }
 
-function flattenMiniMaxVoices(payload: unknown): VoiceOption[] {
-    const root = asObject(payload);
-    const source = asObject(root.data);
-    const candidates = Object.keys(source).length > 0 ? source : root;
-    const groups: Array<{ key: string; label: string; deletable: boolean }> = [
-        { key: "system_voice", label: "system", deletable: false },
-        { key: "voice_cloning", label: "cloned", deletable: true },
-        { key: "voice_generation", label: "generated", deletable: true },
-    ];
-    const voices: VoiceOption[] = [];
-    for (const group of groups) {
-        const items = Array.isArray(candidates[group.key]) ? candidates[group.key] as Record<string, unknown>[] : [];
-        for (const item of items) {
-            const voiceId = getString(item.voice_id || item.voiceId || item.id);
-            if (!voiceId) continue;
-            const name = getString(item.voice_name || item.voiceName || item.name) || voiceId;
-            voices.push({
-                value: voiceId,
-                label: `${name} · ${voiceId}`,
-                group: group.label,
-                deletable: group.deletable,
-                source: "remote",
-            });
-        }
-    }
-    return voices;
-}
-
 async function readEngineModels(): Promise<Record<string, EngineProviderRecord>> {
     const response = await fetch(`${ENGINE_URL}/models/public`, { cache: "no-store" });
     if (!response.ok) {
@@ -253,114 +225,68 @@ async function resolveContext(modelRef: string): Promise<VoiceAdapterContext> {
     };
 }
 
-function miniMaxBaseUrl(context: VoiceAdapterContext) {
-    const trimmed = normalizeBaseUrl(context.baseUrl, "https://api.minimaxi.com/v1");
-    const versionMatch = trimmed.match(/^(.*?\/v1)(?:\/.*)?$/i);
-    if (versionMatch?.[1]) return versionMatch[1].replace(/\/+$/, "");
-    return `${trimmed}/v1`;
-}
-
-function miniMaxEndpoint(context: VoiceAdapterContext, endpointPath: string) {
-    return `${miniMaxBaseUrl(context)}/${endpointPath.replace(/^\/+/, "")}`;
-}
-
-function miniMaxTtsModelName(modelId: string): string {
-    const leaf = getString(modelId).split("/").filter(Boolean).pop() || "";
-    return leaf.startsWith("speech-") ? leaf : "speech-2.8-hd";
-}
-
 function assertApiKey(context: VoiceAdapterContext) {
     if (!context.apiKey || context.apiKey.includes("***") || context.apiKey.startsWith("oauth:")) {
         throw new Error(`${context.provider} API key is missing or not available to the server proxy.`);
     }
 }
 
-async function listMiniMaxVoices(context: VoiceAdapterContext) {
-    assertApiKey(context);
-    const response = await fetch(miniMaxEndpoint(context, "get_voice"), {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${context.apiKey}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ voice_type: "all" }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        return errorResponse(extractError(payload, `HTTP ${response.status}`), response.status, context);
+function engineVoiceManagerHeaders(json = false): HeadersInit {
+    const internalSecret = resolveInternalSecret();
+    if (!internalSecret) {
+        throw new Error("V8OS internal service credential is unavailable.");
     }
-    return voiceResponse(context, { ok: true, voices: flattenMiniMaxVoices(payload) });
+    return {
+        "x-v8-agent-os-secret": internalSecret,
+        ...(json ? { "Content-Type": "application/json" } : {}),
+    };
+}
+
+async function engineVoiceManagerResponse(response: Response, context: VoiceAdapterContext) {
+    const payload = asObject(await response.json().catch(() => ({})));
+    if (!response.ok || payload.ok === false) {
+        return errorResponse(
+            getString(payload.error || payload.detail) || `Engine voice manager returned HTTP ${response.status}.`,
+            response.status || 502,
+            context,
+        );
+    }
+    return NextResponse.json(payload, { status: response.status });
+}
+
+async function listMiniMaxVoices(context: VoiceAdapterContext) {
+    const response = await fetch(`${ENGINE_URL}/audio/model-ref-voices`, {
+        method: "POST",
+        headers: engineVoiceManagerHeaders(true),
+        body: JSON.stringify({ action: "list", modelRef: context.modelRef }),
+        cache: "no-store",
+    });
+    return engineVoiceManagerResponse(response, context);
 }
 
 async function deleteMiniMaxVoice(context: VoiceAdapterContext, voiceId: string, voiceType: string) {
-    assertApiKey(context);
-    const response = await fetch(miniMaxEndpoint(context, "delete_voice"), {
+    const response = await fetch(`${ENGINE_URL}/audio/model-ref-voices`, {
         method: "POST",
-        headers: {
-            Authorization: `Bearer ${context.apiKey}`,
-            "Content-Type": "application/json",
-        },
+        headers: engineVoiceManagerHeaders(true),
         body: JSON.stringify({
-            voice_id: voiceId,
-            voice_type: voiceType || "voice_cloning",
+            action: "delete",
+            modelRef: context.modelRef,
+            voiceId,
+            voiceType: voiceType || "voice_cloning",
         }),
+        cache: "no-store",
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-        return errorResponse(extractError(payload, `HTTP ${response.status}`), response.status, context);
-    }
-    return voiceResponse(context, { ok: true, voiceId });
+    return engineVoiceManagerResponse(response, context);
 }
 
 async function cloneMiniMaxVoice(context: VoiceAdapterContext, formData: FormData) {
-    assertApiKey(context);
-    const voiceId = getString(formData.get("voiceId"));
-    const previewText = getString(formData.get("previewText"));
-    const file = formData.get("file");
-    if (!voiceId) return errorResponse("voiceId is required.", 400, context);
-    if (!(file instanceof File)) return errorResponse("Sample audio file is required.", 400, context);
-
-    const uploadForm = new FormData();
-    uploadForm.append("purpose", "voice_clone");
-    uploadForm.append("file", file, file.name || "sample-audio");
-    const uploadResponse = await fetch(miniMaxEndpoint(context, "files/upload"), {
+    const response = await fetch(`${ENGINE_URL}/audio/model-ref-voices`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${context.apiKey}` },
-        body: uploadForm,
+        headers: engineVoiceManagerHeaders(false),
+        body: formData,
+        cache: "no-store",
     });
-    const uploadPayload = await uploadResponse.json().catch(() => ({}));
-    if (!uploadResponse.ok) {
-        return errorResponse(extractError(uploadPayload, `HTTP ${uploadResponse.status}`), uploadResponse.status, context);
-    }
-    const fileId = nestedString(asObject(uploadPayload), [
-        ["file", "file_id"],
-        ["file", "id"],
-        ["data", "file_id"],
-        ["data", "file", "file_id"],
-        ["file_id"],
-    ]);
-    if (!fileId) {
-        return errorResponse("MiniMax upload succeeded but no file_id was returned.", 502, context);
-    }
-
-    const cloneBody: Record<string, unknown> = { file_id: fileId, voice_id: voiceId };
-    if (previewText) {
-        cloneBody.text = previewText;
-        cloneBody.model = miniMaxTtsModelName(context.modelId);
-    }
-    const cloneResponse = await fetch(miniMaxEndpoint(context, "voice_clone"), {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${context.apiKey}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify(cloneBody),
-    });
-    const clonePayload = await cloneResponse.json().catch(() => ({}));
-    if (!cloneResponse.ok) {
-        return errorResponse(extractError(clonePayload, `HTTP ${cloneResponse.status}`), cloneResponse.status, context);
-    }
-    return voiceResponse(context, { ok: true, fileId, voiceId, clone: clonePayload });
+    return engineVoiceManagerResponse(response, context);
 }
 
 async function readLedger(): Promise<VoiceLedgerEntry[]> {

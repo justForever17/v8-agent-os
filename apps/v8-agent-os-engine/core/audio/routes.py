@@ -1,22 +1,38 @@
 import re
+import hmac
 from typing import Any
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import io
 
 from core.model_capability_registry import model_capability_registry, normalize_model_capability_key
 from core.model_control_plane import model_control_plane
+from core.system_base import get_internal_secret
 
 from .audio_config import AudioConfigManager
 from .stt_provider import STTManager
 from .tts_provider import TTSManager
+from .voice_manager import MAX_VOICE_SAMPLE_BYTES, VoiceManagerError, minimax_voice_manager
 
 router = APIRouter(prefix="/v1/audio", tags=["Audio"])
 
 class TTSRequest(BaseModel):
     text: str
+
+
+def _require_voice_manager_secret(provided: str | None) -> None:
+    expected = get_internal_secret()
+    if not expected or not provided or not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="Invalid V8OS service credential")
+
+
+def _voice_manager_error(error: VoiceManagerError) -> JSONResponse:
+    return JSONResponse(
+        status_code=error.status_code,
+        content={"ok": False, "error": str(error), "errorCode": error.code},
+    )
 
 
 def _compact_model_key(value: Any) -> str:
@@ -238,6 +254,62 @@ async def set_audio_config(config: dict):
     """更新 Audio 配置"""
     AudioConfigManager.save_config(config)
     return {"status": "success", "message": "Audio config saved successfully"}
+
+
+@router.post("/model-ref-voices")
+async def manage_model_ref_voices(
+    request: Request,
+    x_v8_agent_os_secret: str | None = Header(default=None),
+):
+    """Run fixed MiniMax voice-management operations without exposing Provider credentials."""
+    _require_voice_manager_secret(x_v8_agent_os_secret)
+    try:
+        content_type = str(request.headers.get("content-type") or "").lower()
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            action = str(form.get("action") or "clone_from_upload").strip()
+            if action != "clone_from_upload":
+                raise VoiceManagerError("Unsupported multipart voice action.", code="unsupported_action")
+            file = form.get("file")
+            if file is None or not hasattr(file, "read"):
+                raise VoiceManagerError("Sample audio file is required.", code="sample_required")
+            audio_bytes = await file.read(MAX_VOICE_SAMPLE_BYTES + 1)
+            return await minimax_voice_manager.clone_voice(
+                str(form.get("modelRef") or ""),
+                voice_id=str(form.get("voiceId") or ""),
+                preview_text=str(form.get("previewText") or ""),
+                filename=str(getattr(file, "filename", "") or "sample-audio"),
+                content_type=str(getattr(file, "content_type", "") or ""),
+                audio_bytes=audio_bytes,
+            )
+
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise VoiceManagerError("A JSON request body is required.", code="invalid_request_body") from exc
+        if not isinstance(body, dict):
+            raise VoiceManagerError("A JSON object is required.", code="invalid_request_body")
+        action = str(body.get("action") or "list").strip()
+        model_ref = str(body.get("modelRef") or "")
+        if action == "capabilities":
+            minimax_voice_manager.resolve_context(model_ref)
+            return {
+                "ok": True,
+                "provider": "minimax_tts",
+                "capabilities": minimax_voice_manager.capabilities(),
+                "voices": [],
+            }
+        if action == "list":
+            return await minimax_voice_manager.list_voices(model_ref)
+        if action == "delete":
+            return await minimax_voice_manager.delete_voice(
+                model_ref,
+                str(body.get("voiceId") or ""),
+                str(body.get("voiceType") or ""),
+            )
+        raise VoiceManagerError("Unsupported voice action.", code="unsupported_action")
+    except VoiceManagerError as error:
+        return _voice_manager_error(error)
 
 @router.post("/tts/stream")
 async def tts_stream(request: TTSRequest):

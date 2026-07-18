@@ -4354,6 +4354,8 @@
   "app.admin.dashboard.model.hub.audio.voiceCloneSuccess": "Voice cloned",
   "app.admin.dashboard.model.hub.audio.voiceCloneTitle": "Clone custom voice",
   "app.admin.dashboard.model.hub.audio.voiceCloneUpload": "Upload sample and clone",
+  "app.admin.dashboard.model.hub.audio.uploadVoice": "Upload voice",
+  "app.admin.dashboard.model.hub.audio.deleteSelectedVoice": "Delete selected voice",
   "app.admin.dashboard.model.hub.audio.voiceCloning": "Cloning...",
   "app.admin.dashboard.model.hub.audio.voiceDeleteFailed": "Failed to delete voice",
   "app.admin.dashboard.model.hub.audio.voiceDeleted": "Voice deleted",

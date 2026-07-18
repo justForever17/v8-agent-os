@@ -644,6 +644,7 @@ export default function ModelHubPage() {
     const [ttsCloneVoiceId, setTtsCloneVoiceId] = useState("");
     const [ttsClonePreviewText, setTtsClonePreviewText] = useState("");
     const [isTtsCloning, setIsTtsCloning] = useState(false);
+    const [isTtsClonePanelOpen, setIsTtsClonePanelOpen] = useState(false);
     const fetchData = async (force = false) => {
         setIsLoading(true);
         try {
@@ -738,6 +739,14 @@ export default function ModelHubPage() {
     );
     const isManagedModelRefTtsVoice = audioConfig.tts.active_provider === "model_ref" && isManagedModelRefTtsVoiceModel(selectedTtsModel, selectedTtsModelRef);
     const modelRefTtsVoiceCapabilities = modelRefTtsVoiceInfo?.capabilities || {};
+    const selectableModelRefTtsVoices = useMemo(() => {
+        const currentVoice = audioConfig.tts.model_ref?.voice || "";
+        if (!currentVoice || modelRefTtsVoices.some((voice) => voice.value === currentVoice)) {
+            return modelRefTtsVoices;
+        }
+        return [{ value: currentVoice, label: currentVoice, group: "configured", deletable: false }, ...modelRefTtsVoices];
+    }, [audioConfig.tts.model_ref?.voice, modelRefTtsVoices]);
+    const selectedModelRefTtsVoice = selectableModelRefTtsVoices.find((voice) => voice.value === audioConfig.tts.model_ref?.voice);
     const customSttProtocol = audioConfig.stt.providers.custom.protocol || "multipart";
     const customTtsProtocol = audioConfig.tts.custom.protocol || "json_audio_stream";
     const ttsVoicePresets = useMemo(() => {
@@ -764,6 +773,7 @@ export default function ModelHubPage() {
         setTtsCloneFile(null);
         setTtsCloneVoiceId("");
         setTtsClonePreviewText("");
+        setIsTtsClonePanelOpen(false);
     }, [selectedTtsModelRef]);
     const filteredModels = models.filter((model) => modelMatchesTab(model, activeTab));
     const handleSaveProvider = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -846,6 +856,46 @@ export default function ModelHubPage() {
         }
         toast({
             title: disabled ? t("app.admin.dashboard.model.hub.page.thinkingDisabled") : t("app.admin.dashboard.model.hub.page.thinkingDefaultRestored"),
+            description: model.modelId,
+        });
+        await fetchData(true);
+    };
+    const handleToggleProviderHostedTools = async (model: AIModel, controlMeta: ControlPlaneModel | null, enabled: boolean) => {
+        const endpointBinding = {
+            ...(model.endpointBinding || {}),
+            ...(controlMeta?.endpointBinding || {}),
+            providerHostedTools: {
+                enabled,
+                tools: ["web_search"],
+                source: "manual",
+            },
+        };
+        const response = await fetch(`/api/models/${encodeURIComponent(model.id)}?providerId=${encodeURIComponent(model.providerId)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                providerId: model.providerId,
+                modelId: model.modelId,
+                type: model.type || controlMeta?.type || "TEXT",
+                contextWindow: model.contextWindow ?? controlMeta?.contextWindow ?? "",
+                maxTokens: model.maxTokens ?? controlMeta?.maxTokens ?? "",
+                rerankApiFlavor: model.rerankApiFlavor || "",
+                endpointBinding,
+            }),
+        });
+        if (!response.ok) {
+            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.providerHostedToolsSaveFailed"));
+            toast({
+                variant: "destructive",
+                title: t("app.admin.dashboard.model.hub.page.providerHostedToolsSaveFailed"),
+                description: errorMessage,
+            });
+            return;
+        }
+        toast({
+            title: enabled
+                ? t("app.admin.dashboard.model.hub.page.providerHostedToolsEnabled")
+                : t("app.admin.dashboard.model.hub.page.providerHostedToolsDisabled"),
             description: model.modelId,
         });
         await fetchData(true);
@@ -1353,6 +1403,7 @@ export default function ModelHubPage() {
             setTtsCloneFile(null);
             setTtsCloneVoiceId("");
             setTtsClonePreviewText("");
+            setIsTtsClonePanelOpen(false);
             toast({ title: t("app.admin.dashboard.model.hub.audio.voiceCloneSuccess"), description: clonedVoiceId });
             await handleFetchModelRefTtsVoices();
         } finally {
@@ -1675,44 +1726,54 @@ export default function ModelHubPage() {
                                 </Select>
                                 {isManagedModelRefTtsVoice ? (
                                     <div className="grid gap-3 rounded-xl border bg-muted/20 p-3">
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <Label>{t("app.admin.dashboard.model.hub.audio.modelRefVoiceManager")}</Label>
+                                        <Label>{t("app.admin.dashboard.model.hub.audio.modelRefVoiceManager")}</Label>
+                                        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+                                            <Select
+                                                value={audioConfig.tts.model_ref?.voice || undefined}
+                                                onValueChange={(value) => setTtsModelRefValue("voice", value)}
+                                                disabled={selectableModelRefTtsVoices.length === 0}
+                                            >
+                                                <SelectTrigger>
+                                                    <SelectValue placeholder={t("app.admin.dashboard.model.hub.audio.selectVoice")} />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {selectableModelRefTtsVoices.map((voice) => (
+                                                        <SelectItem key={voice.value} value={voice.value}>{voice.label}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
                                             <Button type="button" variant="outline" size="sm" onClick={() => void handleFetchModelRefTtsVoices()} disabled={isModelRefTtsVoiceLoading || !selectedTtsModelRef}>
                                                 <RefreshCw className={`mr-2 h-4 w-4 ${isModelRefTtsVoiceLoading ? "animate-spin" : ""}`} />
                                                 {t("app.admin.dashboard.model.hub.audio.fetchVoices")}
                                             </Button>
+                                            {modelRefTtsVoiceCapabilities.supportsCloneUpload !== false ? (
+                                                <Button type="button" variant="outline" size="sm" onClick={() => setIsTtsClonePanelOpen((current) => !current)}>
+                                                    <Plus className="mr-2 h-4 w-4" />
+                                                    {t("app.admin.dashboard.model.hub.audio.uploadVoice")}
+                                                </Button>
+                                            ) : null}
                                         </div>
-                                        {modelRefTtsVoices.length > 0 ? (
-                                            <div className="grid max-h-48 gap-2 overflow-y-auto rounded-lg border bg-background p-2">
-                                                {modelRefTtsVoices.map((voice) => (
-                                                    <div key={voice.value} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 hover:bg-muted">
-                                                        <button
-                                                            type="button"
-                                                            className="min-w-0 flex-1 truncate text-left text-sm"
-                                                            onClick={() => setTtsModelRefValue("voice", voice.value)}
-                                                            title={voice.label}
-                                                        >
-                                                            {voice.label}
-                                                        </button>
-                                                        {voice.deletable && modelRefTtsVoiceCapabilities.supportsDelete !== false ? (
-                                                            <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => void handleDeleteModelRefTtsVoice(voice)} disabled={deletingModelRefTtsVoiceId === voice.value}>
-                                                                <Trash2 className="h-3.5 w-3.5 text-rose-500" />
-                                                            </Button>
-                                                        ) : null}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        ) : null}
-                                        <div className="grid gap-3 md:grid-cols-2">
-                                            <Input value={audioConfig.tts.model_ref?.voice || ""} onChange={(event) => setTtsModelRefValue("voice", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.customVoicePlaceholder")} />
+                                        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                                             <Input value={audioConfig.tts.model_ref?.format || ""} onChange={(event) => setTtsModelRefValue("format", event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.formatPlaceholder")} />
+                                            {selectedModelRefTtsVoice?.deletable && modelRefTtsVoiceCapabilities.supportsDelete !== false ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => void handleDeleteModelRefTtsVoice(selectedModelRefTtsVoice)}
+                                                    disabled={deletingModelRefTtsVoiceId === selectedModelRefTtsVoice.value}
+                                                >
+                                                    <Trash2 className="mr-2 h-4 w-4 text-rose-500" />
+                                                    {t("app.admin.dashboard.model.hub.audio.deleteSelectedVoice")}
+                                                </Button>
+                                            ) : null}
                                         </div>
-                                        {modelRefTtsVoiceCapabilities.supportsCloneUpload !== false ? (
+                                        {modelRefTtsVoiceCapabilities.supportsCloneUpload !== false && isTtsClonePanelOpen ? (
                                         <div className="grid gap-2 rounded-lg border border-dashed bg-background p-3">
                                             <Label>{t("app.admin.dashboard.model.hub.audio.voiceCloneTitle")}</Label>
                                             <Input value={ttsCloneVoiceId} onChange={(event) => setTtsCloneVoiceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceCloneIdPlaceholder")} />
                                             <Input value={ttsClonePreviewText} onChange={(event) => setTtsClonePreviewText(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.audio.voiceClonePreviewPlaceholder")} />
-                                            <Input type="file" accept="audio/*" onChange={(event) => setTtsCloneFile(event.target.files?.[0] || null)} />
+                                            <Input type="file" accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/wav" onChange={(event) => setTtsCloneFile(event.target.files?.[0] || null)} />
                                             <Button type="button" variant="outline" size="sm" onClick={() => void handleCloneModelRefTtsVoice()} disabled={isTtsCloning || !ttsCloneFile || !ttsCloneVoiceId.trim()}>
                                                 <Upload className="mr-2 h-4 w-4" />
                                                 {isTtsCloning ? t("app.admin.dashboard.model.hub.audio.voiceCloning") : t("app.admin.dashboard.model.hub.audio.voiceCloneUpload")}
@@ -2093,7 +2154,7 @@ export default function ModelHubPage() {
                     setModelProviderId(model.providerId);
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
                     setIsModelDialogOpen(true);
-                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onSetDefault={handleSetDefaultModel}/>);
+                }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
                         })}
                     </div>)}
             </ConfigCard>

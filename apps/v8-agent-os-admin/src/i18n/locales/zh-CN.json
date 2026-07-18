@@ -4357,6 +4357,8 @@
   "app.admin.dashboard.model.hub.audio.voiceCloneSuccess": "音色已克隆",
   "app.admin.dashboard.model.hub.audio.voiceCloneTitle": "克隆个性音色",
   "app.admin.dashboard.model.hub.audio.voiceCloneUpload": "上传样音并克隆",
+  "app.admin.dashboard.model.hub.audio.uploadVoice": "上传音色",
+  "app.admin.dashboard.model.hub.audio.deleteSelectedVoice": "删除所选音色",
   "app.admin.dashboard.model.hub.audio.voiceCloning": "克隆中...",
   "app.admin.dashboard.model.hub.audio.voiceDeleteFailed": "音色删除失败",
   "app.admin.dashboard.model.hub.audio.voiceDeleted": "音色已删除",

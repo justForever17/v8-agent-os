@@ -77,7 +77,7 @@ def test_runtime_handoff_continues_unfinished_runtime_todos_without_polling() ->
     message = _runtime_handoff_continuation_message(state)
     assert "engineering, delegation" in message.content
     assert "do not inspect" in message.content
-    assert "runtime_broker(mode='route'" in message.content
+    assert "canonical typed need contract" in message.content
 
 
 def test_explicit_runtime_orchestration_uses_user_order_without_clarification() -> None:
@@ -100,6 +100,11 @@ def test_explicit_runtime_orchestration_uses_user_order_without_clarification() 
     assert "askUserNeeded=false" in guidance.content
     assert "Do not invent clarification questions" in guidance.content
     assert "research -> engineering -> delegation" in guidance.content
+    assert '"taskBriefs": [' in guidance.content
+    assert '"dependency":' not in guidance.content
+    assert "dependencies is plural" in guidance.content
+    assert "never send need={}" in guidance.content
+    assert "..." not in guidance.content
 
 
 def test_explicit_runtime_orchestration_recognizes_engineering_execution_plan_wording() -> None:
@@ -162,7 +167,12 @@ def test_engineering_continuation_requires_fresh_engineering_route_until_episode
     assert _authoritative_runtime_route_kinds(state) == ["engineering"]
     guidance = _authoritative_runtime_route_guidance(["engineering"])
     assert "authoritative continuation" in guidance.content
-    assert "runtime_broker(mode='route'" in guidance.content
+    assert "runtime_broker route call" in guidance.content
+    assert '"taskBriefs": [' in guidance.content
+    assert '"dependency":' not in guidance.content
+    assert "dependencies is plural" in guidance.content
+    assert "never send need={}" in guidance.content
+    assert "..." not in guidance.content
 
     state["current_route_context"]["capabilityEpisodes"] = [
         {"episodeId": "episode-current", "kind": "engineering", "state": "completed"}

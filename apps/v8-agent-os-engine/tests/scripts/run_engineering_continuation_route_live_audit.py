@@ -81,6 +81,82 @@ def _cancel_run(engine_url: str, run_id: str) -> None:
         pass
 
 
+def _runtime_route_attempt_metrics(*, run_id: str, session_id: str) -> dict[str, Any]:
+    events = db.get_runtime_events_for_run(run_id, session_id=session_id, limit=1000) if run_id else []
+    starts: list[dict[str, Any]] = []
+    finishes: dict[str, dict[str, Any]] = {}
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        tool = payload.get("tool") if isinstance(payload.get("tool"), dict) else {}
+        if str(tool.get("toolName") or "").strip() != "runtime_broker":
+            continue
+        call_id = str(tool.get("toolCallId") or tool.get("toolInvocationId") or "").strip()
+        topic = str(event.get("topic") or "").strip()
+        if topic == "tool.started":
+            args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
+            if str(args.get("mode") or "").strip().lower() == "route":
+                starts.append({"callId": call_id, "args": args, "seq": event.get("seq")})
+        elif topic == "tool.finished" and call_id:
+            finishes[call_id] = tool
+
+    accepted_call_ids: set[str] = set()
+    parameter_repair_call_ids: set[str] = set()
+    for call_id, tool in finishes.items():
+        result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
+        summary = result.get("summary")
+        decoded: dict[str, Any] = {}
+        if isinstance(summary, dict):
+            decoded = summary
+        elif isinstance(summary, str):
+            try:
+                parsed = json.loads(summary)
+                decoded = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                decoded = {}
+        visible = str(tool.get("agentVisibleResult") or "")
+        if decoded.get("ok") is True:
+            accepted_call_ids.add(call_id)
+        if (
+            str(decoded.get("error") or "").strip() in {"typed_need_required", "typed_need_invalid"}
+            or "parameter-shape error" in visible
+            or "runtime_route_parameter_repair" in visible
+        ):
+            parameter_repair_call_ids.add(call_id)
+
+    first = starts[0] if starts else {}
+    first_args = first.get("args") if isinstance(first.get("args"), dict) else {}
+    first_need = first_args.get("need") if isinstance(first_args.get("need"), dict) else {}
+    first_inputs = first_need.get("inputs") if isinstance(first_need.get("inputs"), dict) else {}
+    first_tasks = first_inputs.get("taskBriefs") if isinstance(first_inputs.get("taskBriefs"), list) else []
+    canonical_array = bool(first_tasks) and not any(alias in first_inputs for alias in ("workerBriefs", "tasks"))
+    typed_arrays = bool(first_tasks)
+    for brief in first_tasks:
+        if not isinstance(brief, dict):
+            typed_arrays = False
+            break
+        for key in ("writeSet", "expectedOutputs", "constraints", "detailRefs", "dependencies"):
+            if key in brief and not isinstance(brief.get(key), list):
+                typed_arrays = False
+        if "dependency" in brief:
+            typed_arrays = False
+        if not str(brief.get("taskBriefId") or "").strip() or not str(brief.get("goal") or "").strip():
+            typed_arrays = False
+    if "proofExpectations" in first_inputs and not isinstance(first_inputs.get("proofExpectations"), list):
+        typed_arrays = False
+    first_call_id = str(first.get("callId") or "")
+    accepted_count = len([item for item in starts if str(item.get("callId") or "") in accepted_call_ids])
+    return {
+        "runtimeBrokerRouteAttemptCount": len(starts),
+        "runtimeBrokerRouteAcceptedCount": accepted_count,
+        "runtimeBrokerRouteRejectedCount": max(0, len(starts) - accepted_count),
+        "runtimeBrokerParameterRepairCount": len(parameter_repair_call_ids),
+        "firstRuntimeRouteAccepted": bool(first_call_id and first_call_id in accepted_call_ids),
+        "firstRuntimeRouteCanonicalTaskArray": canonical_array,
+        "firstRuntimeRouteArrayTypesValid": typed_arrays,
+        "firstRuntimeRouteToolCallId": first_call_id,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify that a same-session Engineering continuation creates a fresh runtime episode."
@@ -259,6 +335,7 @@ def main() -> int:
     )
     run_status = str((run or {}).get("status") or "").strip().lower()
     fresh_episode_state = str((fresh_episode or {}).get("state") or "").strip().lower()
+    route_metrics = _runtime_route_attempt_metrics(run_id=run_id, session_id=session_id)
     passed = bool(
         fresh_episode
         and continuation.get("active")
@@ -270,6 +347,12 @@ def main() -> int:
         and not depth_terminal_observed
         and execution.returncode == 0
         and target_output == "continuation-ok"
+        and route_metrics["runtimeBrokerRouteAttemptCount"] == 1
+        and route_metrics["runtimeBrokerRouteRejectedCount"] == 0
+        and route_metrics["runtimeBrokerParameterRepairCount"] == 0
+        and route_metrics["firstRuntimeRouteAccepted"]
+        and route_metrics["firstRuntimeRouteCanonicalTaskArray"]
+        and route_metrics["firstRuntimeRouteArrayTypesValid"]
     )
     result = {
         "status": "ok" if passed else "failed",
@@ -303,6 +386,7 @@ def main() -> int:
         "targetStderr": str(execution.stderr or "").strip(),
         "targetRelativePath": target_relative,
         "workspace": str(workspace),
+        **route_metrics,
     }
     if args.output:
         output = Path(args.output).resolve()

@@ -572,7 +572,14 @@ def _source_line(item: dict[str, Any], *, title_limit: int = 120, url_limit: int
 
 def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
     mode = _short_text(payload.get("mode") or "status", 40)
-    lines = [f"Runtime route menu ({mode})"]
+    failed = payload.get("ok") is False
+    lines = [f"Runtime route {'repair' if failed else 'menu'} ({mode})"]
+    summary = payload.get("summary")
+    if summary:
+        lines.append(f"Summary: {_short_text(summary, 280)}")
+    error = payload.get("error")
+    if error:
+        lines.append(f"Problem: {_short_text(error, 120)}")
     state = payload.get("state") or payload.get("status")
     if state:
         lines.append(f"Status: {_short_text(state, 80)}")
@@ -614,6 +621,35 @@ def _render_runtime_broker_surface(payload: dict[str, Any], raw_ref: str) -> str
     changed = payload.get("changed") or payload.get("grant") or payload.get("revoked")
     if changed:
         lines.append(f"Change: {_short_text(changed, 160)}")
+    quality = payload.get("routeBriefQuality")
+    if isinstance(quality, dict):
+        validation_errors = quality.get("validationErrors")
+        if isinstance(validation_errors, list) and validation_errors:
+            invalid_fields = [
+                str(item.get("field") or "").strip()
+                for item in validation_errors[:8]
+                if isinstance(item, dict) and str(item.get("field") or "").strip()
+            ]
+            if invalid_fields:
+                lines.append("Invalid fields: " + ", ".join(invalid_fields))
+        missing = quality.get("missingFields") or quality.get("requiredFields")
+        if isinstance(missing, list) and missing:
+            lines.append("Missing contract fields: " + ", ".join(str(item) for item in missing[:10]))
+    guidance = payload.get("parameterGuidance")
+    if failed and isinstance(guidance, dict):
+        canonical = str(guidance.get("canonicalTaskArray") or "").strip()
+        if canonical:
+            lines.append(f"Canonical task array: {canonical}")
+        discipline = guidance.get("discipline")
+        if isinstance(discipline, list):
+            for item in discipline[:4]:
+                rendered = str(item or "").strip()
+                if rendered:
+                    lines.append(f"- {_short_text(rendered, 260)}")
+        example = guidance.get("example")
+        if isinstance(example, dict):
+            lines.append("Copyable parameter shape:")
+            lines.append(_short_text(json.dumps(example, ensure_ascii=False, separators=(",", ":")), 2200))
     next_action = payload.get("recommendedNextAction") or payload.get("nextAction")
     if next_action:
         lines.append(f"Next: {_short_text(next_action, 180)}")

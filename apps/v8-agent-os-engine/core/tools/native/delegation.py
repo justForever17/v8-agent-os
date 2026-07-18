@@ -1095,8 +1095,9 @@ def _delegation_missing_spec_tasks_command(*, tool_call_id: str, source: str) ->
                             "请先由 runtime_broker/Spec 执行分发层提供具体 taskBriefs/workerBriefs。"
                         ),
                         recommended_next_action=(
-                            "Call runtime_broker(mode='route', need={'kind':'engineering','specId':'<current specId>'}) "
-                            "or dispatch with explicit tasks copied from the approved tasks.md."
+                            "Route through runtime_broker using its canonical engineering need contract, placing the current "
+                            "specId and approved task refs in need.inputs.taskBriefs[].context; or dispatch explicit tasks "
+                            "copied from the approved tasks.md."
                         ),
                         error="spec_delegation_missing_tasks",
                         dispatchStatus="missing_tasks",
@@ -1122,8 +1123,8 @@ def delegation_broker(
     ] = None,
     target_count: int | None = None,
     worker_briefs: Annotated[
-        list[DelegationTaskInput] | dict[str, Any] | str | None,
-        "Alias for a flat task-brief list; each item uses the same fields as tasks.",
+        Any,
+        "Read-compatible legacy alias for tasks. New calls must use the typed tasks array; do not send both fields.",
     ] = None,
     allow_child_delegation: bool = False,
     child_delegation_budget: Any = None,
@@ -1136,7 +1137,7 @@ def delegation_broker(
     """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
-    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Example: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"...","expectedOutput":"...","acceptanceContract":"...","constraints":["..."],"toolPolicy":{"mode":"none"}}]`. Never wrap a task inside `{taskBrief:{...}}`. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
+    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"allowlist","allowedTools":["read_native_file","write_native_file"]}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     Subagents may request child work only through their brokered path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
     Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.

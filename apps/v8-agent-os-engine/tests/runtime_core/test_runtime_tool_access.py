@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 import core.tools.native.delegation as native_delegation
 from core.actor_identity import (
@@ -433,6 +434,7 @@ def test_runtime_broker_accepts_explicit_empty_string_write_set_for_read_only_ep
                         "readOnly": True,
                         "writeRequired": False,
                         "writeSet": "",
+                        "dependency": "",
                         "expectedOutputs": ["engineering plan handoff"],
                         "acceptance": {"must": ["No workspace files are written."]},
                     }
@@ -448,6 +450,44 @@ def test_runtime_broker_accepts_explicit_empty_string_write_set_for_read_only_ep
     assert payload["episodeKind"] == "engineering"
     episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
     assert episode["inputs"]["taskBriefs"][0]["writeSet"] == []
+    assert episode["inputs"]["taskBriefs"][0]["dependency"] == []
+
+
+def test_runtime_broker_accepts_canonical_plural_dependencies_and_keeps_internal_lineage_key():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "engineering",
+            "source": "supervisor",
+            "reason": "run an ordered two-step verification",
+            "inputs": {
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "step-1",
+                        "goal": "Prepare the evidence.",
+                        "readOnly": True,
+                        "expectedOutputs": ["evidence"],
+                        "acceptanceContract": ["evidence is present"],
+                    },
+                    {
+                        "taskBriefId": "step-2",
+                        "goal": "Review the evidence.",
+                        "readOnly": True,
+                        "dependencies": ["step-1"],
+                        "expectedOutputs": ["review"],
+                        "acceptanceContract": ["review is complete"],
+                    },
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-canonical-dependencies",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    task_briefs = command.update["current_route_context"]["capabilityEpisodes"][-1]["inputs"]["taskBriefs"]
+    assert task_briefs[1]["dependency"] == ["step-1"]
 
 
 def test_runtime_broker_rejects_nonempty_string_write_set_as_invalid_typed_need():
@@ -478,6 +518,48 @@ def test_runtime_broker_rejects_nonempty_string_write_set_as_invalid_typed_need(
     assert payload["ok"] is False
     assert payload["error"] == "typed_need_invalid"
     assert payload["routeBriefQuality"]["validationErrors"][0]["field"].endswith("writeSet")
+    assert payload["parameterGuidance"]["canonicalTaskArray"] == "need.inputs.taskBriefs"
+
+
+def test_runtime_broker_advertises_one_canonical_task_array_with_typed_descriptions():
+    schema = convert_to_openai_tool(runtime_broker)["function"]["parameters"]
+    need = schema["properties"]["need"]["anyOf"][0]
+    inputs = need["properties"]["inputs"]
+
+    assert set(inputs["properties"]) == {"workspacePath", "taskBriefs", "proofExpectations"}
+    task_properties = inputs["properties"]["taskBriefs"]["items"]["properties"]
+    assert all(str(item.get("description") or "").strip() for item in task_properties.values())
+    assert "dependency" not in task_properties
+    assert task_properties["dependencies"]["type"] == "array"
+    assert "never pass an empty string" in task_properties["dependencies"]["description"]
+
+
+def test_runtime_broker_keeps_legacy_worker_briefs_read_compatible_without_advertising_alias():
+    command = runtime_broker.func(
+        mode="route",
+        need={
+            "kind": "research",
+            "reason": "verify legacy route compatibility",
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "legacy-research-task",
+                        "goal": "Collect one bounded evidence result.",
+                        "readOnly": True,
+                        "expectedOutputs": ["evidence summary"],
+                        "acceptanceContract": ["one evidence result is returned"],
+                    }
+                ]
+            },
+        },
+        state={"current_route_context": {}},
+        tool_call_id="call-runtime-legacy-worker-briefs",
+    )
+
+    payload = _tool_message_payload(command)
+    assert payload["ok"] is True
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert episode["inputs"]["workerBriefs"][0]["taskBriefId"] == "legacy-research-task"
 
 
 def test_delegation_broker_rejects_manual_local_observation_polling():

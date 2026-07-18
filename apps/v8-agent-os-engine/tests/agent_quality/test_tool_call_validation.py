@@ -81,6 +81,71 @@ class AgentQualityToolCallValidationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("[route required]", str(result.content))
         enqueue_episode.assert_not_called()
 
+    async def test_runtime_route_validation_error_teaches_a_copyable_repair_contract(self) -> None:
+        request = _DummyRequest(
+            "runtime_broker",
+            "tool_call_runtime_invalid",
+            args={
+                "mode": "route",
+                "need": {
+                    "kind": "engineering",
+                    "reason": "continue the current fix",
+                    "inputs": {
+                        "taskBriefs": [
+                            {
+                                "taskBriefId": "fix-1",
+                                "goal": "Fix and verify the failure.",
+                                "dependency": "",
+                            }
+                        ]
+                    },
+                },
+            },
+        )
+
+        async def execute(_request):
+            raise ValueError(
+                "Error invoking tool 'runtime_broker' with kwargs <redacted> with error:\n"
+                "need.inputs.taskBriefs.0.dependencies: Input should be a valid list"
+            )
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.additional_kwargs["riskCode"], "runtime_route_parameter_repair")
+        self.assertEqual(result.additional_kwargs["invalidFields"], ["need.inputs.taskBriefs.0.dependencies"])
+        self.assertIn("repairable parameter-shape error", str(result.content))
+        self.assertIn('"taskBriefs": [', str(result.content))
+        self.assertNotIn('"dependency":', str(result.content))
+        self.assertIn("dependencies", str(result.content))
+        self.assertIn("Omit optional arrays when empty", str(result.content))
+        self.assertNotIn("Do not attempt this tool call again", str(result.content))
+        self.assertNotIn("kwargs", str(result.content))
+
+    async def test_generic_tool_validation_error_uses_schema_derived_repair_feedback(self) -> None:
+        request = _DummyRequest(
+            "delegation_broker",
+            "tool_call_delegation_invalid",
+            args={"mode": "dispatch", "tasks": {}},
+        )
+        request.tool = delegation_broker
+
+        async def execute(_request):
+            raise ValueError(
+                "Error invoking tool 'delegation_broker' with kwargs <redacted> with error:\n"
+                "tasks.DelegationTaskInput.taskBriefId: Field required\n"
+                "tasks.DelegationTaskInput.expectedOutputs: Field required"
+            )
+
+        result = await async_tool_call_wrapper(request, execute, tool_node_name="supervisor_tools")
+
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.additional_kwargs["riskCode"], "tool_parameter_repair")
+        self.assertIn("tasks.DelegationTaskInput.taskBriefId", result.additional_kwargs["invalidFields"])
+        self.assertIn("tasks", result.additional_kwargs["expectedTopLevelFields"])
+        self.assertIn("retry the same tool once", str(result.content))
+        self.assertNotIn("kwargs", str(result.content))
+
 def test_runtime_broker_route_accepts_typed_need_and_marks_runtime_episode_next_action() -> None:
     command = runtime_broker.func(
         mode="route",

@@ -318,9 +318,9 @@ def _spec_transition_hint(*, spec_id: str, stage: str = "", pipeline: dict[str, 
             "nextStage": _SPEC_RUNTIME_EXECUTION,
             "requiredNextTool": "runtime_broker",
             "whenReady": (
-                "Call runtime_broker(mode='route', runtime_kind='engineering', "
-                "need={'kind':'engineering','reason':'approved_spec_runtime_execution','specId':'<current specId>'}) "
-                "and wait for the runtime episode handoff."
+                "Call runtime_broker in route mode with the canonical engineering need contract. "
+                "Put the current specId, approved task refs, and workspace binding inside "
+                "need.inputs.taskBriefs[].context, then wait for the runtime episode handoff."
             ),
             "doNot": [
                 "Do not rewrite requirements/design/tasks.",
@@ -675,9 +675,9 @@ def _spec_runtime_execution_not_stage_payload(*, spec_id: str = "", attempted_mo
         state="runtime_execution_ready",
         requiredNextTool="runtime_broker",
         recommendedNextAction=(
-            "Call runtime_broker(mode='route', runtime_kind='engineering', "
-            "need={'kind':'engineering','reason':'approved_spec_runtime_execution','specId':'<current specId>'}) "
-            "and wait for the runtime episode handoff."
+            "Call runtime_broker in route mode with the canonical engineering need contract. "
+            "Put the current specId, approved task refs, and workspace binding inside "
+            "need.inputs.taskBriefs[].context, then wait for the runtime episode handoff."
         ),
         doNot=[
             "Do not call spec_broker(stage='runtime_execution').",
@@ -979,8 +979,9 @@ def _spec_runtime_execution_active_payload(*, active_spec: dict[str, Any]) -> st
         featureName=active_spec.get("featureName"),
         pipelineControl=active_spec.get("pipelineControl"),
         recommendedNextAction=(
-            "继续使用当前 specId，通过 runtime_broker(mode='route', need={'kind':'engineering','specId':'<current specId>'}) "
-            "执行或修复；需要查看内容时用 spec_broker(mode='read_section'/'brief')。"
+            "继续使用当前 specId，按 runtime_broker 的 canonical engineering need 合同执行或修复；"
+            "把 specId 和已审批任务引用放入 need.inputs.taskBriefs[].context。"
+            "需要查看内容时用 spec_broker(mode='read_section'/'brief')。"
         ),
     )
 

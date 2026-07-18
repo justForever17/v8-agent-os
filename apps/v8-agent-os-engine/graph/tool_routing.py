@@ -17,9 +17,17 @@ from core.tool_surface import (
     apply_tool_surface_budget,
     tool_output_budget_for_request,
 )
+from core.runtime_route_contract import render_runtime_route_repair_hint
 
 DEFAULT_TOOL_OUTPUT_HARD_MAX_CHARS = 60000
 DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = float(os.environ.get("V8_AGENT_OS_TOOL_CALL_TIMEOUT_SECONDS", "240").strip() or "240")
+_PARAMETER_VALIDATION_MARKERS = (
+    "Field required",
+    "Input should be",
+    "String should",
+    "validation error",
+    "validation errors",
+)
 
 
 def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
@@ -999,8 +1007,8 @@ def _supervisor_direct_scope_hard_block_message(
         "Next step: wait for the active Runtime episode handoff before continuing. Do not call direct mutating tools."
         if has_active_episode
         else (
-            "Next step: call runtime_broker(mode='route', need=<routeIntent>) to create a Runtime episode, then wait "
-            "for the episode handoff before continuing."
+            "Next step: call runtime_broker(mode='route') with the canonical typed need contract from routeIntent "
+            "(need.kind, need.reason, need.inputs.taskBriefs), then wait for the episode handoff before continuing."
         )
     )
     content = (
@@ -1057,6 +1065,121 @@ def _truncate_command_tool_messages(command: Command, budget_meta: dict[str, Any
 
 def _truncate_agent_visible_result(result, budget_meta: dict[str, Any] | None = None):
     return apply_agent_visible_budget(result, budget_meta)
+
+
+def _validation_error_fields(error_text: str) -> list[str]:
+    """Extract field paths without echoing provider arguments or input values."""
+
+    fields: list[str] = []
+    lines = str(error_text or "").splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(
+            r"\s*([A-Za-z_][A-Za-z0-9_.\[\]-]*)\s*:\s*(?:Field required|Input should|String should|.*invalid)",
+            line,
+        )
+        field = match.group(1).strip() if match else ""
+        if not field:
+            candidate = str(line or "").strip()
+            next_line = str(lines[index + 1] or "") if index + 1 < len(lines) else ""
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.\[\]-]*", candidate) and any(
+                marker in next_line for marker in ("Field required", "Input should", "String should", "invalid")
+            ):
+                field = candidate
+        if field and field not in fields:
+            fields.append(field)
+    return fields[:8]
+
+
+def _runtime_parameter_repair_message(request: Any, error_text: str) -> ToolMessage | None:
+    """Turn broker schema failures into model-teachable feedback.
+
+    LangGraph validates a tool's args schema before entering the function body,
+    so runtime_broker cannot return its own repair payload for ``need={}`` or a
+    wrong nested type. This closes that gap without changing permissions or
+    silently coercing arbitrary values.
+    """
+
+    tool_call = dict(getattr(request, "tool_call", {}) or {})
+    tool_name = str(tool_call.get("name") or "").strip()
+    if tool_name != "runtime_broker":
+        return None
+    text = str(error_text or "")
+    if not any(marker in text for marker in _PARAMETER_VALIDATION_MARKERS):
+        return None
+    args = dict(tool_call.get("args") or {})
+    need = args.get("need") if isinstance(args.get("need"), dict) else {}
+    kind = str(need.get("kind") or args.get("runtime_kind") or "engineering").strip().lower() or "engineering"
+    fields = _validation_error_fields(text)
+    return ToolMessage(
+        content=render_runtime_route_repair_hint(kind, invalid_fields=fields),
+        name=tool_name,
+        tool_call_id=str(tool_call.get("id") or ""),
+        status="error",
+        additional_kwargs={
+            "riskCode": "runtime_route_parameter_repair",
+            "invalidFields": fields,
+            "recommendedNextAction": "repair_same_runtime_broker_call",
+        },
+    )
+
+
+def _tool_schema_top_level_fields(request: Any) -> tuple[list[str], list[str]]:
+    tool_ref = getattr(request, "tool", None)
+    candidates = [getattr(tool_ref, "tool_call_schema", None), getattr(tool_ref, "args_schema", None)]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            schema = candidate.model_json_schema() if hasattr(candidate, "model_json_schema") else dict(candidate)
+        except Exception:
+            continue
+        properties = schema.get("properties") if isinstance(schema, dict) else None
+        if not isinstance(properties, dict):
+            continue
+        required = schema.get("required") if isinstance(schema.get("required"), list) else []
+        return list(properties)[:24], [str(item) for item in required[:12]]
+    return [], []
+
+
+def _generic_parameter_repair_message(request: Any, error_text: str) -> ToolMessage | None:
+    """Give every typed tool a bounded, schema-derived correction path."""
+
+    text = str(error_text or "")
+    if not any(marker in text for marker in _PARAMETER_VALIDATION_MARKERS):
+        return None
+    tool_call = dict(getattr(request, "tool_call", {}) or {})
+    tool_name = str(tool_call.get("name") or "unknown").strip() or "unknown"
+    fields = _validation_error_fields(text)
+    properties, required = _tool_schema_top_level_fields(request)
+    lines = [
+        f"Tool '{tool_name}' has a repairable parameter-shape error; this is not a permission denial or task failure.",
+    ]
+    if fields:
+        lines.append("Invalid fields: " + ", ".join(fields))
+    if properties:
+        lines.append("Expected top-level fields: " + ", ".join(properties))
+    if required:
+        lines.append("Required top-level fields: " + ", ".join(required))
+    lines.extend(
+        [
+            "Correct the reported field paths against the tool schema and retry the same tool once.",
+            "Preserve JSON types: arrays stay arrays, objects stay objects, and optional values should be omitted instead of filled with empty strings or null.",
+            "Use one canonical field family and do not send both a canonical field and its legacy alias.",
+        ]
+    )
+    return ToolMessage(
+        content="\n".join(lines),
+        name=tool_name,
+        tool_call_id=str(tool_call.get("id") or ""),
+        status="error",
+        additional_kwargs={
+            "riskCode": "tool_parameter_repair",
+            "invalidFields": fields,
+            "expectedTopLevelFields": properties,
+            "requiredTopLevelFields": required,
+            "recommendedNextAction": "repair_same_tool_call",
+        },
+    )
 
 
 async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = ""):
@@ -1122,7 +1245,14 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
         except ImportError:
             pass
         error_msg = str(execution_err)
-        print(f"[ToolWrapper] Tool {tool_name} failed: {error_msg}")
+        if any(marker in error_msg for marker in _PARAMETER_VALIDATION_MARKERS):
+            invalid_fields = _validation_error_fields(error_msg)
+            print(
+                f"[ToolWrapper] Tool {tool_name} parameter validation failed: "
+                f"fields={','.join(invalid_fields) if invalid_fields else 'unknown'}"
+            )
+        else:
+            print(f"[ToolWrapper] Tool {tool_name} failed: {error_msg}")
         if str(tool_name or "").startswith("network_") and "__pregel_scratchpad" in error_msg:
             from runtimes.network_supervisor.compat_errors import CompatBridgeHardStop
 
@@ -1130,6 +1260,15 @@ async def async_tool_call_wrapper(request, execute, *, tool_node_name: str = "")
                 f"External client tool bridge hard stop for '{tool_name}': missing LangGraph interrupt context "
                 "(__pregel_scratchpad). The model must not retry this network_* tool in the same run."
             ) from execution_err
+        parameter_repair = _runtime_parameter_repair_message(request, error_msg)
+        if parameter_repair is None:
+            parameter_repair = _generic_parameter_repair_message(request, error_msg)
+        if parameter_repair is not None:
+            return apply_tool_surface_budget(
+                parameter_repair,
+                budget_meta,
+                tool_name=tool_name,
+            )
         return apply_tool_surface_budget(
             ToolMessage(
                 content=(

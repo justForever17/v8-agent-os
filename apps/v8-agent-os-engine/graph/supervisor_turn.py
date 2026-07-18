@@ -17,6 +17,7 @@ from core.context.delegation import build_delegation_context
 from core.memory_observability import log_memory_observation
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.runtime_tool_access import filter_visible_tools_for_actor
+from core.runtime_route_contract import render_runtime_route_contract
 from core.runtime.reflex_gate import (
     render_gate_prompt_addition,
     render_reflex_prompt_addition,
@@ -620,6 +621,8 @@ def _explicit_runtime_orchestration_kinds(state, user_query: str) -> list[str]:
 
 def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bool = False) -> SystemMessage:
     prefix = "[Explicit Runtime Orchestration Correction]" if correction else "[Explicit Runtime Orchestration]"
+    first_kind = kinds[0] if kinds else "engineering"
+    contract_example = render_runtime_route_contract(first_kind)
     correction_line = (
         "Your previous response replaced execution with planning or clarification. This is the single correction attempt. "
         if correction
@@ -631,8 +634,11 @@ def _explicit_runtime_orchestration_guidance(kinds: list[str], *, correction: bo
             f"The user already supplied a sufficient ordered execution chain: {' -> '.join(kinds)}. "
             "The task boundary says askUserNeeded=false. "
             f"{correction_line}Do not invent clarification questions, emit a prose-only plan, print pseudo tool calls, or stop at Todo scaffolding. "
-            "Use the user's explicit read-only/no-side-effect boundary as the contract. Your first durable action MUST call "
-            "runtime_broker(mode='route', need=<typed contract>) for the first runtime in the chain. "
+            "Use the user's explicit read-only/no-side-effect boundary as the contract. Your first durable action MUST be one "
+            "runtime_broker route call for the first runtime in the chain. Copy the complete JSON shape below, replace placeholder "
+            "values, and preserve every object/array type; never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
+            f"{contract_example}\n"
+            "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
             "For a read-only task brief, use readOnly=true, writeRequired=false, writeSet=[], "
             "expectedOutputs=[\"<human-readable output>\"], and a non-empty acceptance or acceptanceContract. "
             "After each graph-injected handoff, route the next unfinished runtime; dispatch the requested subagent through the governed delegation path."
@@ -655,6 +661,7 @@ def _authoritative_runtime_route_kinds(state) -> list[str]:
 
 def _authoritative_runtime_route_guidance(kinds: list[str], *, correction: bool = False) -> SystemMessage:
     required_kind = kinds[0] if kinds else "engineering"
+    contract_example = render_runtime_route_contract(required_kind)
     prefix = "[Required Runtime Route Correction]" if correction else "[Required Runtime Route]"
     correction_line = (
         "Your previous response did not create the required runtime episode. This is the single correction attempt. "
@@ -666,7 +673,10 @@ def _authoritative_runtime_route_guidance(kinds: list[str], *, correction: bool 
             f"{prefix}\n"
             f"The current turn is an authoritative continuation of a prior {required_kind} episode in the same session and workspace. "
             f"{correction_line}Do not repair it with Supervisor-local file or shell tools and do not answer with a prose-only diagnosis. "
-            f"Your first durable action MUST call runtime_broker(mode='route', need={{'kind':'{required_kind}', ...}}). "
+            "Your first durable action MUST be one runtime_broker route call. Copy the complete JSON shape below, replace placeholder "
+            "values with current evidence, and preserve every object/array type; never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
+            f"{contract_example}\n"
+            "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
             "Carry the new symptom, the prior episode/proof refs from engineeringContinuation, the current workspace binding, "
             "a bounded write set when known, and explicit verification expectations. After the typed handoff returns, review its proof and deliver or repair it once."
         )
@@ -1122,8 +1132,8 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
             content=(
                 "[Spec Runtime Execution Gate]\n"
                 f"Spec Mode is active for specId={spec_id}, and the user has approved requirements, design, and tasks. "
-                "The next durable action MUST route the approved Spec into execution with `runtime_broker(mode='route', need=...)` unless you must ask the user for a missing permission/scope. "
-                "The `need` payload should cite `specId`, task/detail refs, required runtime lanes, expected artifacts, and proof expectations from the approved tasks. "
+                "The next durable action MUST route the approved Spec into execution with runtime_broker route mode unless you must ask the user for a missing permission/scope. "
+                "Use the canonical typed need contract: put specId/task refs in need.inputs.taskBriefs[].context, and keep expected artifacts and proof expectations in their typed arrays. "
                 "Use Engineering/Research/Delegation/Creative runtimes as appropriate; if the Spec or selected skill calls for broad research or subagent swarms, express that as Research Runtime and/or top-level Delegation episodes, not hidden Supervisor-only work. "
                 "`runtime_execution` is not a Spec document stage; do not call `spec_broker(stage='runtime_execution')` or try to write another Spec stage. "
                 "Do not call memory_broker, fetch_skill_instructions, research_broker, web_broker, delegation_broker, or write_native_file directly in this stage; route those needs through runtime_broker. "
@@ -1150,7 +1160,7 @@ def _spec_mode_stage_guidance(*, state, user_query: str, selected_tools, message
                 "use `spec_broker(mode='write_stage'|'rewrite_stage'|'edit'|'write'|'update', stage='requirements|bugfix|design|tasks', content='<markdown>')` to write or revise it; "
                 "do not call `spec_broker(mode='approve')` yourself. Approval is a user/client governance event; wait for the resumed turn carrying the approved nextStage. "
                 "Keep the Spec Markdown user-facing: omit absolute workspace paths, internal IDs, literal tool-call syntax, approval mechanics, system instructions, and Agent progress narration; use relative project paths only when materially required by the contract. "
-                "Spec documents are not final project deliverables; after approved tasks, use `runtime_broker(mode='route', need=...)` so the approved tasks become runtime episodes with proof/artifact handoff. "
+                "Spec documents are not final project deliverables; after approval, use runtime_broker route mode with the canonical need.inputs.taskBriefs contract so approved tasks become runtime episodes with proof/artifact handoff. "
                 "If a selected skill asks for parallel subagents, Agent Swarm, or many research shards, translate that into Research Runtime evidence or explicit top-level delegation after the relevant Spec stage is approved; do not assume subagents can spawn grandchildren implicitly. "
                 "Do not route Engineering/Research/Delegation runtime work until the Spec brief says runtimeExecutionAllowed=true."
                 f"{tasks_guidance}"
@@ -1465,7 +1475,7 @@ def _runtime_handoff_continuation_message(state) -> HumanMessage:
             "do not inspect the successful route's raw observation, call wait/observe/status, or manually poll.\n"
             f"Pending runtime kinds: {', '.join(pending_kinds) if pending_kinds else 'current runtime continuation'}\n"
             f"Next action: {next_action}\n"
-            "Update the completed high-level milestone, then call runtime_broker(mode='route', need=<typed contract>) "
+            "Update the completed high-level milestone, then call runtime_broker route mode with the canonical typed need contract "
             "for the next required runtime. Do not replace execution with Todo updates or a prose-only plan."
         )
     )

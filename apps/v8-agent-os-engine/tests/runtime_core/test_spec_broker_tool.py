@@ -1063,7 +1063,8 @@ def test_spec_broker_runtime_execution_is_not_writable_stage(tmp_path):
     assert correction["kind"] == "spec_runtime_execution_not_stage"
     assert correction["state"] == "runtime_execution_ready"
     assert correction["requiredNextTool"] == "runtime_broker"
-    assert "runtime_broker(mode='route'" in correction["recommendedNextAction"]
+    assert "canonical engineering need contract" in correction["recommendedNextAction"]
+    assert "need.inputs.taskBriefs[].context" in correction["recommendedNextAction"]
     assert "stage='runtime_execution'" in "\n".join(correction["doNot"])
 
 

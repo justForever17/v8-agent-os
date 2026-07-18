@@ -9,7 +9,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from core.delegation_broker import normalize_task_brief, normalize_task_briefs
 from core.runtime_episodes import (
@@ -28,6 +28,7 @@ from core.runtime_tool_access import (
     runtime_kind_available,
     runtime_tool_groups_catalog,
 )
+from core.runtime_route_contract import runtime_route_parameter_guidance
 from core.spec_service import spec_service
 from erc.runtime_context import get_runtime_context
 
@@ -37,28 +38,67 @@ class RuntimeRouteTaskBrief(BaseModel):
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    taskBriefId: str = Field(min_length=1)
-    goal: str = Field(min_length=1)
-    context: dict[str, Any] | str = Field(default_factory=dict)
-    writeRequired: bool = False
-    readOnly: bool = False
-    writeSet: list[str] = Field(default_factory=list)
-    expectedOutputs: list[str] = Field(default_factory=list)
-    acceptance: dict[str, Any] | list[Any] | str | None = None
-    acceptanceContract: dict[str, Any] | list[Any] | str | None = None
-    constraints: list[str] = Field(default_factory=list)
-    detailRefs: list[str] = Field(default_factory=list)
-    dependency: list[str] = Field(default_factory=list)
+    taskBriefId: str = Field(
+        min_length=1,
+        description="Stable Supervisor-owned task ID, unique within this route call.",
+    )
+    goal: str = Field(min_length=1, description="Concrete runtime outcome stated as an executable goal.")
+    context: dict[str, Any] | str = Field(
+        default_factory=dict,
+        description="Current symptom/request plus relevant spec, episode, handoff, or proof references.",
+    )
+    writeRequired: bool = Field(
+        default=False,
+        description="True only when this brief must mutate the bound workspace.",
+    )
+    readOnly: bool = Field(
+        default=False,
+        description="True for evidence/review work that must not mutate the workspace.",
+    )
+    writeSet: list[str] = Field(
+        default_factory=list,
+        description="Array of bounded workspace-relative output paths. Use [] for read-only work; never pass a string.",
+    )
+    expectedOutputs: list[str] = Field(
+        default_factory=list,
+        description="Array of human-readable deliverables or result records expected from the runtime.",
+    )
+    acceptance: dict[str, Any] | list[Any] | str | None = Field(
+        default=None,
+        description="Legacy acceptance alias. New calls should use acceptanceContract.",
+    )
+    acceptanceContract: dict[str, Any] | list[Any] | str | None = Field(
+        default=None,
+        description="Explicit checks that prove the task is complete.",
+    )
+    constraints: list[str] = Field(
+        default_factory=list,
+        description="Array of scope, safety, or implementation boundaries. Use [] or omit when empty.",
+    )
+    detailRefs: list[str] = Field(
+        default_factory=list,
+        description="Array of durable detail/spec/evidence references. Use [] or omit when empty.",
+    )
+    dependency: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("dependencies", "dependency"),
+        serialization_alias="dependencies",
+        description=(
+            "Canonical public field: dependencies. It is always an array of prerequisite taskBriefId values. "
+            "Omit the field when there are no dependencies; never pass an empty string. "
+            "The singular dependency spelling is a read-only legacy alias."
+        ),
+    )
 
-    @field_validator("writeSet", mode="before")
+    @field_validator("writeSet", "constraints", "detailRefs", "dependency", mode="before")
     @classmethod
-    def _normalize_explicit_empty_write_set(cls, value: Any) -> Any:
-        """Accept only the model's common explicit-empty spelling for read-only work.
+    def _normalize_explicit_empty_list(cls, value: Any) -> Any:
+        """Accept only a provider's common explicit-empty spelling for list fields.
 
         Some providers serialize an intended ``[]`` as ``""``.  Treating that
-        as an empty set preserves the typed contract for read-only episodes while
-        still rejecting every non-empty string.  Write-capable tasks remain
-        blocked later because an empty write set never grants mutation authority.
+        as an empty list avoids a false-negative parameter failure while every
+        non-empty string remains invalid.  The public schema and prompt still
+        teach the canonical array type.
         """
         if isinstance(value, str) and not value.strip():
             return []
@@ -93,13 +133,29 @@ class RuntimeRouteTaskBrief(BaseModel):
 
 
 class RuntimeRouteInputs(BaseModel):
+    # extra="allow" intentionally keeps workerBriefs/tasks readable for old
+    # persisted calls while the public schema advertises only taskBriefs.
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    workspacePath: str | None = None
-    taskBriefs: list[RuntimeRouteTaskBrief] = Field(default_factory=list)
-    workerBriefs: list[RuntimeRouteTaskBrief] = Field(default_factory=list)
-    tasks: list[RuntimeRouteTaskBrief] = Field(default_factory=list)
-    proofExpectations: list[str] = Field(default_factory=list)
+    workspacePath: str | None = Field(
+        default=None,
+        description="Current bound workspace root. Do not borrow a workspace from another session.",
+    )
+    taskBriefs: list[RuntimeRouteTaskBrief] = Field(
+        default_factory=list,
+        description="Canonical array of Supervisor-owned task briefs. New calls must use this field.",
+    )
+    proofExpectations: list[str] = Field(
+        default_factory=list,
+        description="Array of evidence the handoff must return, such as artifact refs and verification outcomes.",
+    )
+
+    @field_validator("proofExpectations", mode="before")
+    @classmethod
+    def _normalize_explicit_proof_expectations(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        return value
 
 
 class RuntimeRouteNeed(BaseModel):
@@ -107,10 +163,18 @@ class RuntimeRouteNeed(BaseModel):
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    kind: Literal["research", "engineering", "creative_media", "computer_use", "rpa", "delegation"]
-    source: str = "supervisor"
-    reason: str = Field(min_length=1)
-    inputs: RuntimeRouteInputs = Field(default_factory=RuntimeRouteInputs)
+    kind: Literal["research", "engineering", "creative_media", "computer_use", "rpa", "delegation"] = Field(
+        description="Execution runtime family selected for this route."
+    )
+    source: str = Field(default="supervisor", description="Contract owner; normally supervisor.")
+    reason: str = Field(
+        min_length=1,
+        description="Why this runtime is the correct execution path for the current user task.",
+    )
+    inputs: RuntimeRouteInputs = Field(
+        default_factory=RuntimeRouteInputs,
+        description="Typed workspace, taskBriefs, and proof expectations for the runtime episode.",
+    )
 
 
 def _model_payload(value: Any) -> Any:
@@ -134,6 +198,7 @@ def _runtime_broker_payload(
     next_action: str | None = None,
     route_brief_quality: dict[str, Any] | None = None,
     detail_ref: str | None = None,
+    parameter_guidance: dict[str, Any] | None = None,
 ) -> str:
     normalized_detail = str(detail_level or "summary").strip().lower()
     group_items = list(groups or [])
@@ -183,6 +248,8 @@ def _runtime_broker_payload(
         payload["detailRef"] = detail_ref
     if route_brief_quality:
         payload["routeBriefQuality"] = dict(route_brief_quality)
+    if parameter_guidance:
+        payload["parameterGuidance"] = dict(parameter_guidance)
     if normalized_detail not in {"catalog", "detail", "full"} and groups:
         omitted_tools = sum(len(list(item.get("toolNames") or [])) for item in list(groups or []) if isinstance(item, dict))
         payload["omitted"] = {
@@ -2029,20 +2096,36 @@ def _emit_runtime_episode_event(topic: str, payload: dict[str, Any]) -> None:
 
 @tool
 def runtime_broker(
-    mode: str = "list",
-    runtime_kind: Optional[str] = None,
-    tool_group: Optional[str] = None,
-    tool_groups: Optional[list[str]] = None,
-    reason: Optional[str] = None,
-    detail_level: str = "summary",
-    need: RuntimeRouteNeed | None = None,
-    allow_direct_fallback: bool = False,
+    mode: Annotated[
+        str,
+        "Operation. Use route for execution, list for the compact catalog, and grant/revoke only for explicit run-scoped tool groups.",
+    ] = "list",
+    runtime_kind: Annotated[
+        Optional[str],
+        "Legacy/list/grant hint. For mode=route put the runtime family in need.kind.",
+    ] = None,
+    tool_group: Annotated[Optional[str], "Single run-scoped tool group for mode=grant/revoke."] = None,
+    tool_groups: Annotated[Optional[list[str]], "Array of run-scoped tool groups for mode=grant/revoke."] = None,
+    reason: Annotated[
+        Optional[str],
+        "Grant/revoke audit reason. For mode=route the required execution reason belongs in need.reason.",
+    ] = None,
+    detail_level: Annotated[str, "summary by default; catalog/detail/full only when diagnostics are needed."] = "summary",
+    need: Annotated[
+        RuntimeRouteNeed | None,
+        "Required for mode=route. Use need.kind, need.reason, and need.inputs.taskBriefs; preserve object/array JSON types.",
+    ] = None,
+    allow_direct_fallback: Annotated[
+        bool,
+        "Internal compatibility flag. Keep false for ordinary Supervisor routing.",
+    ] = False,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
     state: Annotated[dict[str, Any], InjectedState] = None,
 ) -> Command:
     """Supervisor route broker for V8OS active execution runtimes; waits for typed specialist handoff.
 
-    Use `mode='route'` with `need={'kind':'research'|'engineering'|'creative_media'|'computer_use'|'rpa'|'delegation', ...}` when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration.
+    Use `mode='route'` with the canonical `need.kind`, `need.reason`, and `need.inputs.taskBriefs` contract when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration. Minimal valid shape: `{"mode":"route","need":{"kind":"engineering","reason":"continue and verify","inputs":{"taskBriefs":[{"taskBriefId":"task-1","goal":"fix and verify","writeSet":[],"expectedOutputs":["verified result"],"acceptanceContract":["verification passes"]}]}}}`. Replace values without changing JSON types. Omit optional arrays when empty; for multi-task routes use `dependencies:["upstream-task-id"]`.
+    `taskBriefs` is the only field new calls should use. `workerBriefs` and `tasks` remain read-compatible legacy aliases but are intentionally omitted from the advertised schema.
     Product words for user-facing replies: `research`=深度调研, `engineering`=编程模式, `creative_media`=多媒体创作, `computer_use`=桌面操作, `rpa`=自动流程, `delegation`=子代理协作. Do not tell ordinary users "runtime_broker"; that is only the internal tool name.
     `need` is a typed Supervisor-owned contract. Every write-capable task must declare writeRequired, a bounded writeSet, expectedOutputs, and acceptance/acceptanceContract. Missing fields block dispatch; the workspace root and prose hints are never inferred as write grants.
     Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions、插件管理中心和 Network Supervisor 是 support/discovery surfaces。@插件是强提示；Supervisor 也可通过 `plugin_broker` 为当前 run 创建最小插件授权。
@@ -2078,7 +2161,10 @@ def runtime_broker(
                                 for group in runtime_access_from_route_context(route_context)
                             ],
                             detail_level=detail_level,
-                            next_action="Prefer runtime_broker(mode='route', need={'kind':'research'|'engineering'|...}); use grant only for explicit tool group access.",
+                            next_action=(
+                                "For execution, call runtime_broker(mode='route') with the canonical typed need contract: "
+                                "need.kind, need.reason, and need.inputs.taskBriefs. Use grant only for explicit tool-group access."
+                            ),
                         ),
                         tool_call_id=tool_call_id,
                     )
@@ -2125,6 +2211,7 @@ def runtime_broker(
                                     "Call route once with need={kind, reason, inputs}. Write-capable tasks must include "
                                     "taskBriefId, goal, writeSet, expectedOutputs, and acceptance."
                                 ),
+                                parameter_guidance=runtime_route_parameter_guidance(runtime_kind or "engineering"),
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -2171,6 +2258,9 @@ def runtime_broker(
                                     "blocking": True,
                                     "validationErrors": validation_errors,
                                 },
+                                parameter_guidance=runtime_route_parameter_guidance(
+                                    str(need_payload_for_intent.get("kind") or runtime_kind or "engineering")
+                                ),
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -2199,7 +2289,10 @@ def runtime_broker(
                                 ok=False,
                                 summary="runtime_broker(mode=route) requires need.kind or runtime_kind.",
                                 error="missing_capability_kind",
-                                next_action="Call runtime_broker(mode='route', need={'kind':'research'|'engineering'|...}).",
+                                next_action=(
+                                    "Call route with need.kind, need.reason, and need.inputs.taskBriefs using the canonical parameter contract."
+                                ),
+                                parameter_guidance=runtime_route_parameter_guidance(runtime_kind or "engineering"),
                             ),
                             tool_call_id=tool_call_id,
                         )
@@ -2280,6 +2373,7 @@ def runtime_broker(
                                     "expectedOutputs, and acceptance; read-only tasks must explicitly set readOnly=true."
                                 ),
                                 route_brief_quality=route_brief_quality,
+                                parameter_guidance=runtime_route_parameter_guidance(route_kind),
                             ),
                             tool_call_id=tool_call_id,
                         )

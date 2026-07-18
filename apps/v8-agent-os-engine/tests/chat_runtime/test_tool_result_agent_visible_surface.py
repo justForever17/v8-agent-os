@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from core.runtime_route_contract import runtime_route_parameter_guidance
 from runtimes.chat.runtime import ChatRuntime
 
 
@@ -78,3 +79,33 @@ def test_runtime_broker_event_agent_visible_result_is_text_surface():
     assert "episode_demo" in visible
     assert not visible.lstrip().startswith("{")
     assert "runtimeRegistry" not in visible
+
+
+def test_runtime_broker_invalid_contract_surface_teaches_parameter_shape():
+    payload = {
+        "ok": False,
+        "mode": "route",
+        "summary": "The route contract is invalid.",
+        "error": "typed_need_invalid",
+        "routeBriefQuality": {
+            "validationErrors": [
+                    {"field": "need.inputs.taskBriefs.0.dependencies", "type": "list_type"}
+            ]
+        },
+        "parameterGuidance": runtime_route_parameter_guidance("engineering"),
+        "recommendedNextAction": "Repair the same route call once.",
+    }
+
+    visible = ChatRuntime._agent_visible_tool_result_for_event(
+        "runtime_broker",
+        json.dumps(payload, ensure_ascii=False),
+        payload,
+    )
+
+    assert visible.startswith("Runtime route repair")
+    assert "need.inputs.taskBriefs.0.dependencies" in visible
+    assert "Canonical task array: need.inputs.taskBriefs" in visible
+    assert '"dependency":' not in visible
+    assert "dependencies" in visible
+    assert "Omit optional arrays when empty" in visible
+    assert "Repair the same route call once" in visible

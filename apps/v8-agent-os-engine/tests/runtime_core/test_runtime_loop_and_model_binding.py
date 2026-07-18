@@ -6,14 +6,19 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from core.llm_chat_adapter import V8ChatModelAdapter
+from core.prompt_cache_gateway import prompt_cache_gateway
 from erc.checkpoint_store import CheckpointStore, V8AsyncSqliteSaver
 
 
 class _NativeModel:
     def __init__(self) -> None:
         self.last_config = None
+        self.bound_tools = None
+        self.bound_kwargs = None
 
-    def bind_tools(self, _tools, **_kwargs):
+    def bind_tools(self, tools, **kwargs):
+        self.bound_tools = list(tools)
+        self.bound_kwargs = dict(kwargs)
         return self
 
     def invoke(self, _messages, *, config=None, **_kwargs):
@@ -105,6 +110,112 @@ def test_adapter_marks_nested_provider_events_runtime_internal():
         "metadata": {"v8_model_scope": "runtime_internal"},
         "tags": ["v8:provider-internal"],
     }
+
+
+def test_responses_hosted_web_search_binds_only_after_explicit_model_opt_in():
+    native = _NativeModel()
+    adapter = V8ChatModelAdapter(
+        model_id="gpt-5.6-sol",
+        provider_standard="openai",
+        role="supervisor",
+        meta={
+            "api_standard": "openai",
+            "wire_protocol": "openai.responses",
+            "provider_hosted_tools": {
+                "enabled": True,
+                "tools": ["web_search"],
+                "source": "manual",
+            },
+            "capabilityClass": "chat_tool_calling",
+            "capabilities": {"supportsTools": True},
+        },
+        model_kwargs={},
+        builder=lambda: native,
+    )
+
+    response = adapter.invoke([HumanMessage(content="latest release")])
+
+    assert native.bound_tools == [{"type": "web_search"}]
+    assert native.bound_kwargs == {}
+    assert response.response_metadata["v8_provider_hosted_tools"] == ["web_search"]
+
+
+def test_responses_hosted_tools_merge_with_v8_tools_without_changing_local_contract():
+    native = _NativeModel()
+    adapter = V8ChatModelAdapter(
+        model_id="gpt-5.6-sol",
+        provider_standard="openai",
+        role="supervisor",
+        meta={
+            "api_standard": "openai",
+            "wire_protocol": "openai.responses",
+            "provider_hosted_tools": {"enabled": True, "tools": ["web_search"]},
+            "capabilityClass": "chat_tool_calling",
+            "capabilities": {"supportsTools": True},
+        },
+        model_kwargs={},
+        builder=lambda: native,
+    )
+    local_tool = {
+        "type": "function",
+        "function": {
+            "name": "workspace_broker",
+            "description": "Inspect a workspace.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+    adapter.bind_tools([local_tool]).invoke([HumanMessage(content="inspect then search")])
+
+    assert native.bound_tools == [local_tool, {"type": "web_search"}]
+
+
+def test_provider_hosted_tool_outputs_remain_server_content_not_local_tool_calls():
+    adapter = V8ChatModelAdapter(
+        model_id="gpt-5.6-sol",
+        provider_standard="openai",
+        role="supervisor",
+        meta={
+            "api_standard": "openai",
+            "wire_protocol": "openai.responses",
+            "provider_hosted_tools": {"enabled": True, "tools": ["web_search"]},
+        },
+        model_kwargs={},
+        builder=lambda: _NativeModel(),
+    )
+    message = AIMessage(
+        content=[
+            {"type": "server_tool_call", "name": "web_search", "id": "ws_1", "args": {"query": "LangChain"}},
+            {"type": "server_tool_result", "tool_call_id": "ws_1", "status": "success", "output": []},
+            {"type": "text", "text": "Result with citations."},
+        ]
+    )
+
+    decorated = adapter._decorate_message(message)
+
+    assert decorated.tool_calls == []
+    assert decorated.content == message.content
+    assert decorated.response_metadata["v8_provider_hosted_tools"] == ["web_search"]
+
+
+def test_provider_hosted_tools_disable_response_cache_and_hash_exact_schema():
+    hosted = prompt_cache_gateway.dry_run(
+        messages=[HumanMessage(content="latest release")],
+        provider_id="openai",
+        model_id="gpt-5.6-sol",
+        model_ref="openai::gpt-5.6-sol",
+        bound_tools=[{"type": "web_search"}],
+    )["cacheDiagnostics"]
+    local = prompt_cache_gateway.dry_run(
+        messages=[HumanMessage(content="latest release")],
+        provider_id="openai",
+        model_id="gpt-5.6-sol",
+        model_ref="openai::gpt-5.6-sol",
+        bound_tools=[{"type": "function", "function": {"name": "workspace_broker", "parameters": {}}}],
+    )["cacheDiagnostics"]
+
+    assert hosted["skipReason"] == "tool_bound_request"
+    assert hosted["toolSchemaHash"] != local["toolSchemaHash"]
 
 
 def test_required_native_tool_call_falls_back_to_strict_prompt_emulation():

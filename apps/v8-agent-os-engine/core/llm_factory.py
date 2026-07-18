@@ -33,6 +33,7 @@ from core.provider_runtime_profiles import (
 )
 from core.model_budget_service import model_budget_service
 from core.model_control_plane import model_control_plane, normalize_config_temperature
+from core.provider_hosted_tools import normalize_provider_hosted_tools
 from core.model_telemetry import model_telemetry_service
 from core.model_thinking_control import (
     ensure_anthropic_thinking_budget_headroom,
@@ -857,6 +858,7 @@ class LLMFactory:
                 "model_record": meta,
                 "endpoint_binding": endpoint_binding,
                 "wire_protocol": str(endpoint_binding.get("wireProtocol") or endpoint_binding.get("wire_protocol") or "").strip(),
+                "provider_hosted_tools": normalize_provider_hosted_tools(endpoint_binding.get("providerHostedTools")),
                 "base_url": t_base_url,
                 "api_key": t_api_key,
                 "api_standard": api_standard,

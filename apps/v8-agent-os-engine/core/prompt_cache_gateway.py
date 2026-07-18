@@ -116,6 +116,9 @@ def _tool_schema_hash(bound_tools: Sequence[Any] | None) -> str:
         return _hash_json([])
     payload: list[dict[str, Any]] = []
     for tool in bound_tools:
+        if isinstance(tool, Mapping):
+            payload.append(dict(tool))
+            continue
         payload.append(
             {
                 "name": str(getattr(tool, "name", "") or getattr(tool, "__name__", "") or tool.__class__.__name__),

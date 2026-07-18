@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 
 from api import platform_routes
+from langchain_openai import ChatOpenAI
+
 from core.llm_factory import LLMFactory
 from core.model_endpoint_binding import build_model_endpoint_binding, persist_model_endpoint_binding
 from core.model_protocol_registry import suggest_model_protocol
+from core.provider_hosted_tools import provider_hosted_tool_schemas
 
 
 def test_first_party_openai_reasoning_model_suggests_responses_without_rewriting_legacy_binding():
@@ -74,6 +77,69 @@ def test_explicit_responses_binding_controls_endpoint_and_langchain_request_mode
     assert kwargs["use_responses_api"] is True
     assert kwargs["store"] is False
     assert kwargs["use_previous_response_id"] is False
+
+
+def test_responses_hosted_tools_are_default_off_and_reject_unmanaged_tool_types():
+    default_binding = build_model_endpoint_binding(
+        "openai",
+        "gpt-5.6-sol",
+        {"base_url": "https://api.openai.com/v1", "api_standard": "openai"},
+        {"type": "MULTIMODAL", "endpointBinding": {"wireProtocol": "openai.responses"}},
+    )
+    enabled_binding = build_model_endpoint_binding(
+        "openai",
+        "gpt-5.6-sol",
+        {"base_url": "https://api.openai.com/v1", "api_standard": "openai"},
+        {
+            "type": "MULTIMODAL",
+            "endpointBinding": {
+                "wireProtocol": "openai.responses",
+                "providerHostedTools": {
+                    "enabled": True,
+                    "tools": ["web_search", "computer_use_preview", "mcp"],
+                    "source": "manual",
+                },
+            },
+        },
+    )
+
+    assert default_binding["providerHostedTools"] == {
+        "enabled": False,
+        "tools": ["web_search"],
+        "source": "default_disabled",
+    }
+    assert provider_hosted_tool_schemas(
+        wire_protocol=default_binding["wireProtocol"],
+        config=default_binding["providerHostedTools"],
+    ) == []
+    assert enabled_binding["providerHostedTools"] == {
+        "enabled": True,
+        "tools": ["web_search"],
+        "source": "manual",
+    }
+    assert provider_hosted_tool_schemas(
+        wire_protocol=enabled_binding["wireProtocol"],
+        config=enabled_binding["providerHostedTools"],
+    ) == [{"type": "web_search"}]
+
+
+def test_hosted_tool_setting_is_inert_outside_responses_protocol():
+    assert provider_hosted_tool_schemas(
+        wire_protocol="openai.chat_completions",
+        config={"enabled": True, "tools": ["web_search"], "source": "manual"},
+    ) == []
+
+
+def test_installed_langchain_openai_adapter_accepts_responses_hosted_tool_schema():
+    model = ChatOpenAI(
+        model="gpt-5.6-sol",
+        api_key="test-key",
+        use_responses_api=True,
+    )
+
+    bound = model.bind_tools([{"type": "web_search"}])
+
+    assert bound.kwargs["tools"] == [{"type": "web_search"}]
 
 
 def test_media_models_do_not_receive_chat_protocol_advice():

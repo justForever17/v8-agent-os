@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from core.model_ref import make_model_ref
 from core.model_protocol_registry import endpoint_path_for_protocol, suggest_model_protocol
+from core.provider_hosted_tools import normalize_provider_hosted_tools
 
 
 _MEDIA_MODEL_TYPES = {
@@ -147,6 +148,7 @@ def build_model_endpoint_binding(
         or ""
     ).strip()
     wire_protocol = str(explicit.get("wireProtocol") or explicit.get("wire_protocol") or "").strip()
+    provider_hosted_tools = normalize_provider_hosted_tools(explicit.get("providerHostedTools"))
     protocol_advice = suggest_model_protocol(
         provider_id,
         api_standard,
@@ -185,6 +187,7 @@ def build_model_endpoint_binding(
         "apiStandard": api_standard,
         "adapter": adapter,
         "wireProtocol": wire_protocol,
+        "providerHostedTools": provider_hosted_tools,
         "protocolSuggestion": str(protocol_advice.get("wireProtocol") or ""),
         "protocolEndpointPath": str(protocol_advice.get("endpointPath") or ""),
         "protocolConfidence": str(protocol_advice.get("confidence") or ""),

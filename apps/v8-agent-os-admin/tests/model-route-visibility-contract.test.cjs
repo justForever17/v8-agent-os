@@ -23,6 +23,9 @@ test("Model Hub exposes the provider model as the title and keeps the complete r
   assert.match(modelCard, /modelId: providerModelLabel/);
   assert.match(modelCard, /components\.models\.ModelCardV2\.modelRoute/);
   assert.match(modelCard, /protocolVerificationWarning/);
+  assert.match(modelCard, /providerHostedToolsEnabled/);
+  assert.match(modelCard, /onToggleProviderHostedTools/);
+  assert.match(modelCard, /visibleRoute\.wireProtocol === "openai\.responses"/);
   assert.match(modelAssets, /knownEndpointPrefix/);
   assert.match(modelAssets, /modelIdentityCandidates/);
   assert.match(modelAssets, /isEndpointQualifiedModelId/);
@@ -62,6 +65,9 @@ test("Manual and quick model setup share the canonical binding write surface", (
   assert.match(form, /name="operationKind"/);
   assert.match(form, /name="wireProtocol"/);
   assert.match(form, /openai\.responses/);
+  assert.match(form, /handleToggleProviderHostedTools/);
+  assert.match(form, /tools: \["web_search"\]/);
+  assert.match(form, /source: "manual"/);
   const capabilityBlock = form.slice(
     form.indexOf("const CUSTOM_PROVIDER_CAPABILITIES"),
     form.indexOf("type AudioRuntimeConfig"),

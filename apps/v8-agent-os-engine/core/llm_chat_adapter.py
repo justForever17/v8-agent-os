@@ -13,6 +13,7 @@ from pydantic import BaseModel as PydanticModel, ConfigDict, PrivateAttr
 from core.model_capability_matrix import build_effective_capability_matrix
 from core.llm_exceptions import V8LLMStructuredOutputError, raise_as_v8_llm_error
 from core.prompt_cache_gateway import PreparedPromptCacheRequest, prompt_cache_gateway
+from core.provider_hosted_tools import provider_hosted_tool_schemas
 from core.provider_compatibility import normalize_provider_error
 from core.response_normalizer import extract_text_and_reasoning, normalize_tool_calls, sanitize_model_tool_calls
 
@@ -332,14 +333,24 @@ class V8ChatModelAdapter(BaseChatModel):
             self._base_model = self._builder()
         return self._base_model
 
+    def _provider_hosted_tools(self) -> list[dict[str, Any]]:
+        return provider_hosted_tool_schemas(
+            wire_protocol=self._meta.get("wire_protocol") or self._meta.get("wireProtocol"),
+            config=self._meta.get("provider_hosted_tools") or self._meta.get("providerHostedTools"),
+        )
+
+    def _runtime_bound_tools(self) -> list[Any]:
+        return [*(self._bound_tools or []), *self._provider_hosted_tools()]
+
     def _get_runtime_model(self) -> Any:
         model = self._get_base_model()
-        if not self._bound_tools:
+        runtime_tools = self._runtime_bound_tools()
+        if not runtime_tools:
             return model
         if self._bound_model is not None:
             return self._bound_model
         if self._provider_surface.supports_native_tools() and hasattr(model, "bind_tools"):
-            self._bound_model = model.bind_tools(self._bound_tools, **self._bound_tool_kwargs)
+            self._bound_model = model.bind_tools(runtime_tools, **self._bound_tool_kwargs)
             return self._bound_model
         return model
 
@@ -362,6 +373,10 @@ class V8ChatModelAdapter(BaseChatModel):
         response_metadata.setdefault("v8_structured_output_mode", structured_mode or self._provider_surface.structured_output_mode())
         response_metadata.setdefault("v8_stream_mode", self.adapter_modes().get("streamMode"))
         response_metadata.setdefault("v8_effective_capability_matrix", self.effective_capability_matrix())
+        response_metadata.setdefault(
+            "v8_provider_hosted_tools",
+            [str(item.get("type") or "") for item in self._provider_hosted_tools()],
+        )
         if hasattr(normalized, "response_metadata"):
             normalized.response_metadata = response_metadata
         return normalized
@@ -599,7 +614,7 @@ class V8ChatModelAdapter(BaseChatModel):
             role=self.role,
             model_kwargs=self._model_kwargs,
             meta=self._meta,
-            bound_tools=self._bound_tools,
+            bound_tools=self._runtime_bound_tools(),
             streaming=streaming,
         )
 

@@ -64,6 +64,11 @@ export type ControlPlaneModel = {
         providerModelId?: string;
         operationKind?: string;
         wireProtocol?: string;
+        providerHostedTools?: {
+            enabled?: boolean;
+            tools?: string[];
+            source?: string;
+        };
         protocolSuggestion?: string;
         protocolEndpointPath?: string;
         protocolConfidence?: string;

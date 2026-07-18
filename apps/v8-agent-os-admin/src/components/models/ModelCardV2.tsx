@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { AlertCircle, Brain, CheckCircle2, Copy, Database, Edit2, Eye, Image as ImageIcon, ListOrdered, LoaderCircle, MessageCircle, Mic2, Music, PlugZap, Radio, Star, Trash2, Video, Volume2, Wrench, type LucideIcon } from "lucide-react";
+import { AlertCircle, Brain, CheckCircle2, Copy, Database, Edit2, Eye, Globe2, Image as ImageIcon, ListOrdered, LoaderCircle, MessageCircle, Mic2, Music, PlugZap, Radio, Star, Trash2, Video, Volume2, Wrench, type LucideIcon } from "lucide-react";
 import type { ControlPlaneModel, ModelDefaultCategory } from "@/components/models/control-plane-types";
 import { useT } from "@/components/providers/LocaleProvider";
 import { resolveModelIcon } from "@/lib/models/model-assets";
@@ -54,6 +54,7 @@ interface ModelCardV2Props {
   onTestConnection?: (modelRef: string) => Promise<void> | void;
   onRepairReasoning?: (modelRef: string) => Promise<void> | void;
   onToggleNoThink?: (disabled: boolean) => Promise<void> | void;
+  onToggleProviderHostedTools?: (enabled: boolean) => Promise<void> | void;
   connectionStatus?: {
     status: "idle" | "testing" | "success" | "warning" | "error";
     message?: string;
@@ -146,12 +147,19 @@ function resolveVisibleModelRoute(model: ModelCardV2Props["model"], controlMeta?
       : `${submitPath.replace(/^\/+|\/+$/g, "")}/${providerModelId}`
     : storedRoute;
   const hasExplicitRoute = Boolean(providerModelId && displayModelId !== providerModelId);
+  const providerHostedTools = endpointBinding.providerHostedTools;
+  const providerHostedToolsEnabled = Boolean(
+    providerHostedTools &&
+    typeof providerHostedTools === "object" &&
+    (providerHostedTools as Record<string, unknown>).enabled
+  );
   return {
     displayModelId,
     providerModelId,
     requestSuffix: hasExplicitRoute ? displayModelId.replace(/^\/+/, "") : "",
     submitPath,
     wireProtocol: stringRecordValue(endpointBinding, "wireProtocol"),
+    providerHostedToolsEnabled,
     protocolSuggestion: stringRecordValue(endpointBinding, "protocolSuggestion"),
     protocolConfidence: stringRecordValue(endpointBinding, "protocolConfidence"),
     protocolWarning: stringRecordValue(endpointBinding, "protocolWarning"),
@@ -270,6 +278,7 @@ export function ModelCardV2({
   onTestConnection,
   onRepairReasoning,
   onToggleNoThink,
+  onToggleProviderHostedTools,
   connectionStatus,
   reasoningRepairStatus,
   onEdit,
@@ -321,6 +330,7 @@ export function ModelCardV2({
     : model.modelId;
   const providerModelLabel = visibleRoute.providerModelId || registry?.canonicalModelId || routeLeafFallback;
   const visibleProtocol = visibleRoute.wireProtocol || visibleRoute.protocolSuggestion;
+  const isResponsesModel = visibleRoute.wireProtocol === "openai.responses";
   const modelIcon = resolveModelIcon({
     modelId: providerModelLabel,
     providerId: model.provider?.id,
@@ -405,6 +415,28 @@ export function ModelCardV2({
           }} title={noThinkDisabled ? t("components.models.ModelCardV2.thinkingDefaultRestoreTitle") : t("components.models.ModelCardV2.thinkingDisableTitle")}>
                                 <Brain className="h-3.5 w-3.5" />
                             </Button>}
+                        {isResponsesModel && onToggleProviderHostedTools && <AdminHoverInfo
+                            content={visibleRoute.providerHostedToolsEnabled
+                              ? t("components.models.ModelCardV2.providerHostedToolsEnabledHelp")
+                              : t("components.models.ModelCardV2.providerHostedToolsDisabledHelp")}
+                            align="right"
+                            panelClassName="whitespace-normal text-xs leading-5"
+                          >
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className={`h-7 w-7 ${visibleRoute.providerHostedToolsEnabled ? "bg-violet-50 text-violet-700 hover:bg-violet-100 hover:text-violet-800 dark:bg-violet-500/15 dark:text-violet-200" : "text-muted-foreground hover:text-primary"}`}
+                              aria-pressed={visibleRoute.providerHostedToolsEnabled}
+                              aria-label={visibleRoute.providerHostedToolsEnabled
+                                ? t("components.models.ModelCardV2.providerHostedToolsDisable")
+                                : t("components.models.ModelCardV2.providerHostedToolsEnable")}
+                              onClick={async () => {
+                                await onToggleProviderHostedTools(!visibleRoute.providerHostedToolsEnabled);
+                              }}
+                            >
+                              <Globe2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </AdminHoverInfo>}
                         {defaultCategoryOptions.length > 0 && onSetDefault && <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                     <Button variant="ghost" size="icon" className="h-7 w-7 cursor-pointer text-muted-foreground hover:text-primary focus-visible:ring-2 focus-visible:ring-primary" title={defaultCategoryOptions.map((option) => t(option.labelKey)).join(" / ")}>

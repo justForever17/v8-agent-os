@@ -1,3 +1,5 @@
+import { deriveMediaOperationKinds, resolveMediaCapabilityModes } from "@/lib/models/media-capabilities";
+
 type EngineProviderMeta = {
     name?: string;
     icon?: string | null;
@@ -23,6 +25,7 @@ export type AdminModelRecord = {
     maxTokens: number | null;
     rerankApiFlavor: string;
     thinkingControl?: Record<string, unknown> | null;
+    operationKinds?: string[];
     mediaLimits?: Record<string, unknown> | null;
     endpointBinding?: Record<string, unknown> | null;
     logoAsset?: string | null;
@@ -93,6 +96,9 @@ export function mapEngineModel(
         thinkingControl: modelMeta.thinkingControl && typeof modelMeta.thinkingControl === "object"
             ? modelMeta.thinkingControl as Record<string, unknown>
             : null,
+        operationKinds: Array.isArray(modelMeta.operationKinds)
+            ? modelMeta.operationKinds.filter((item): item is string => typeof item === "string")
+            : undefined,
         mediaLimits: modelMeta.mediaLimits && typeof modelMeta.mediaLimits === "object"
             ? modelMeta.mediaLimits as Record<string, unknown>
             : null,
@@ -132,6 +138,16 @@ export function listEngineModels(
 }
 
 export function buildModelMutationPayload(data: Record<string, unknown>) {
+    const existingMediaLimits = data.mediaLimits && typeof data.mediaLimits === "object"
+        ? data.mediaLimits as Record<string, unknown>
+        : {};
+    const capabilityModesProvided = Object.prototype.hasOwnProperty.call(data, "capabilityModes");
+    const capabilityModes = capabilityModesProvided
+        ? resolveMediaCapabilityModes(String(data.type || ""), data.capabilityModes, [])
+        : undefined;
+    const derivedOperationKinds = capabilityModesProvided
+        ? deriveMediaOperationKinds(String(data.type || ""), capabilityModes)
+        : undefined;
     const payload: Record<string, unknown> = {
         type: data.type,
         contextWindow: parseOptionalInteger(data.contextWindow),
@@ -142,6 +158,14 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
     };
     if (data.thinkingControl && typeof data.thinkingControl === "object") {
         payload.thinkingControl = data.thinkingControl;
+    }
+    if (capabilityModesProvided) {
+        payload.operationKinds = derivedOperationKinds;
+        payload.mediaLimits = {
+            ...existingMediaLimits,
+            capabilityModes,
+            operationKinds: derivedOperationKinds,
+        };
     }
     const existingBinding = data.endpointBinding && typeof data.endpointBinding === "object"
         ? data.endpointBinding as Record<string, unknown>
@@ -165,13 +189,15 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
     const providerModelId = data.providerModelId === undefined
         ? String(existingBinding.providerModelId || "").trim().replace(/^\/+|\/+$/g, "")
         : String(data.providerModelId || "").trim().replace(/^\/+|\/+$/g, "");
-    const operationKind = data.operationKind === undefined
+    const operationKind = capabilityModesProvided
+        ? String(derivedOperationKinds?.[0] || "")
+        : data.operationKind === undefined
         ? String(existingBinding.operationKind || "").trim()
         : String(data.operationKind || "").trim();
     const adapter = data.adapter === undefined
         ? String(existingBinding.adapter || "").trim()
         : String(data.adapter || "").trim();
-    if (endpointPath || providerModelId || operationKind || adapter || wireProtocol || protocolFieldPresent) {
+    if (endpointPath || providerModelId || operationKind || adapter || wireProtocol || protocolFieldPresent || capabilityModesProvided) {
         payload.endpointBinding = {
             ...existingBinding,
             endpointPath,

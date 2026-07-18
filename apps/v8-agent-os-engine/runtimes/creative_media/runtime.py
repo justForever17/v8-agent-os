@@ -227,8 +227,6 @@ def _normalize_operation_kinds_for_modality(modality: str, operations: Iterable[
         item = str(operation or "").strip()
         if item and item not in PLUGIN_ONLY_OPERATION_KINDS and (item.startswith(f"{modality}.") or (modality == "voice" and item.startswith("voice."))):
             filtered.append(item)
-    if modality == "image":
-        filtered = [*filtered, "image.generate", "image.edit"]
     return list(dict.fromkeys(filtered))
 
 
@@ -550,17 +548,40 @@ class CreativeMediaRuntime:
             modality=modality,
         )
         media_limits = dict(model_data.get("mediaLimits") or {})
+        explicit_present = (
+            "operationKinds" in model_data
+            or "operations" in model_data
+            or "operationKinds" in media_limits
+            or "operationKinds" in provider_meta
+        )
+        endpoint_binding = dict(model_data.get("endpointBinding") or {})
+        binding_provenance = dict(endpoint_binding.get("provenance") or {})
+        manual_declaration = (
+            "capabilityModes" in media_limits
+            or str(binding_provenance.get("source") or "").strip().lower() == "manual"
+            or str(media_limits.get("capabilitySource") or "").strip().lower() == "manual"
+        )
         explicit = _list_of_strings(
             model_data.get("operationKinds")
-            or model_data.get("operations")
-            or media_limits.get("operationKinds")
-            or provider_meta.get("operationKinds")
+            if "operationKinds" in model_data
+            else model_data.get("operations")
+            if "operations" in model_data
+            else media_limits.get("operationKinds")
+            if "operationKinds" in media_limits
+            else provider_meta.get("operationKinds")
         )
         if modality == "voice" and adapter == "minimax_tts":
-            return list(dict.fromkeys([*registry_operations, *explicit, "voice.tts", "voice.design"]))
+            if explicit_present and manual_declaration:
+                return _normalize_operation_kinds_for_modality(modality, explicit)
+            return _normalize_operation_kinds_for_modality(
+                modality,
+                [*registry_operations, *explicit, "voice.tts", "voice.design"],
+            )
+        if explicit_present and manual_declaration:
+            return _normalize_operation_kinds_for_modality(modality, explicit)
         if registry_operations:
             return _normalize_operation_kinds_for_modality(modality, registry_operations)
-        if explicit:
+        if explicit_present:
             return _normalize_operation_kinds_for_modality(modality, explicit)
         haystack = " ".join([provider_id, str(provider_meta.get("name") or ""), str(model_data.get("id") or "")]).lower()
         if modality == "image":

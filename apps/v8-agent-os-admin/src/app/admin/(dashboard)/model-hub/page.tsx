@@ -29,6 +29,7 @@ import type { ConfigRegistryEnvelope } from "@/lib/config-registry";
 import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import audioVoicePresets from "@/lib/models/audio-voice-presets.json";
 import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
+import { deriveMediaOperationKinds, getMediaCapabilityOptions, resolveMediaCapabilityModes } from "@/lib/models/media-capabilities";
 import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
 type AIProvider = {
     id: string;
@@ -63,6 +64,7 @@ type AIModel = {
     maxTokens?: number | null;
     rerankApiFlavor?: string;
     thinkingControl?: Record<string, unknown> | null;
+    operationKinds?: string[];
     mediaLimits?: Record<string, unknown> | null;
     endpointBinding?: Record<string, unknown> | null;
     logoAsset?: string | null;
@@ -603,6 +605,7 @@ export default function ModelHubPage() {
     const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("codex");
     const [localBackendPreset, setLocalBackendPreset] = useState<LocalBackendPreset>("ollama");
     const [modelType, setModelType] = useState("TEXT");
+    const [mediaCapabilityModes, setMediaCapabilityModes] = useState<string[]>([]);
     const [modelProviderId, setModelProviderId] = useState("");
     const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
@@ -802,8 +805,12 @@ export default function ModelHubPage() {
         const formData = new FormData(event.currentTarget);
         const payload: Record<string, unknown> = {
             ...Object.fromEntries(formData.entries()),
+            mediaLimits: editingModel?.mediaLimits || undefined,
             endpointBinding: editingModel?.endpointBinding || undefined,
         };
+        if (getMediaCapabilityOptions(modelType).length > 0) {
+            payload.capabilityModes = mediaCapabilityModes;
+        }
         for (const key of ["contextWindow", "maxTokens"]) {
             if (payload[key] === "") payload[key] = null;
         }
@@ -1830,7 +1837,7 @@ export default function ModelHubPage() {
                             <Plus className="mr-2 h-4 w-4"/>
                             {t("app.admin.dashboard.model.hub.page.k9e31d9ed")}
                         </Button>
-                        <Button disabled={providers.length === 0} onClick={() => { setEditingModel(null); setModelType("TEXT"); setModelProviderId(providers[0]?.id || ""); setRerankApiFlavor("generic"); setIsModelDialogOpen(true); }}>
+                        <Button disabled={providers.length === 0} onClick={() => { setEditingModel(null); setModelType("TEXT"); setMediaCapabilityModes([]); setModelProviderId(providers[0]?.id || ""); setRerankApiFlavor("generic"); setIsModelDialogOpen(true); }}>
                             <Plus className="mr-2 h-4 w-4"/>
                             {t("app.admin.dashboard.model.hub.page.k82b1063c")}
                         </Button>
@@ -2151,6 +2158,13 @@ export default function ModelHubPage() {
                             return (<ModelCardV2 key={modelRef} model={model} controlMeta={controlMeta} isDefault={modelRef === defaultModelRef} connectionStatus={connectionStatusMap[modelRef] || null} reasoningRepairStatus={reasoningRepairStatusMap[modelRef] || null} onEdit={() => {
                     setEditingModel(model);
                     setModelType(model.type || "TEXT");
+                    setMediaCapabilityModes(resolveMediaCapabilityModes(
+                        model.type || "TEXT",
+                        model.mediaLimits?.capabilityModes,
+                        Array.isArray(model.mediaLimits?.operationKinds)
+                            ? model.mediaLimits?.operationKinds
+                            : model.operationKinds || [model.endpointBinding?.operationKind],
+                    ));
                     setModelProviderId(model.providerId);
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
                     setIsModelDialogOpen(true);
@@ -2349,10 +2363,13 @@ export default function ModelHubPage() {
                         <div className="space-y-2">
                             <Label htmlFor="model-type">{t("app.admin.dashboard.model.hub.page.k0bce4283")}</Label>
                             <input type="hidden" name="type" value={modelType}/>
-                            <Select value={modelType} onValueChange={setModelType}>
+                            <Select value={modelType} onValueChange={(value) => {
+                                setModelType(value);
+                                setMediaCapabilityModes(resolveMediaCapabilityModes(value, undefined, []));
+                            }}>
                                 <SelectTrigger id="model-type"><SelectValue>{resolveAdminLabel(t, "modelType", modelType)}</SelectValue></SelectTrigger>
                                 <SelectContent>
-                                    {["TEXT", "MULTIMODAL", "IMAGE", "VIDEO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D", "MEDIA", "EMBEDDING", "RERANK"].map((value) => <SelectItem key={value} value={value}>{resolveAdminLabel(t, "modelType", value)}</SelectItem>)}
+                                    {["TEXT", "MULTIMODAL", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D", "MEDIA", "EMBEDDING", "RERANK"].map((value) => <SelectItem key={value} value={value}>{resolveAdminLabel(t, "modelType", value)}</SelectItem>)}
                                 </SelectContent>
                             </Select>
                         </div>
@@ -2442,16 +2459,45 @@ export default function ModelHubPage() {
                                             placeholder="gpt-image-2"
                                         />
                                     </div>
-                                    <div className="space-y-2 md:col-span-2">
-                                        <Label htmlFor="model-operation-kind">{t("app.admin.dashboard.model.hub.page.manualOperationKind")}</Label>
-                                        <Input
-                                            id="model-operation-kind"
-                                            name="operationKind"
-                                            defaultValue={String(editingModel?.endpointBinding?.operationKind || "")}
-                                            placeholder="image.generate"
-                                        />
-                                    </div>
                                 </div>
+                                {getMediaCapabilityOptions(modelType).length > 0 ? (
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between gap-3">
+                                            <Label>{t("app.admin.dashboard.model.hub.capability.title")}</Label>
+                                            <span className="text-[11px] text-muted-foreground">
+                                                {t("app.admin.dashboard.model.hub.capability.selectedCount", { count: mediaCapabilityModes.length })}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-1.5 rounded-lg border border-border/70 bg-muted/20 p-2">
+                                            {getMediaCapabilityOptions(modelType).map((option) => {
+                                                const checked = mediaCapabilityModes.includes(option.id);
+                                                const isLastSelected = checked && mediaCapabilityModes.length === 1;
+                                                return (
+                                                    <label
+                                                        key={option.id}
+                                                        className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors ${checked ? "border-primary/40 bg-primary/10 text-foreground" : "border-border/70 bg-background text-muted-foreground hover:text-foreground"} ${isLastSelected ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+                                                    >
+                                                        <Checkbox
+                                                            checked={checked}
+                                                            disabled={isLastSelected}
+                                                            onCheckedChange={(nextChecked) => {
+                                                                setMediaCapabilityModes((current) => nextChecked === true
+                                                                    ? Array.from(new Set([...current, option.id]))
+                                                                    : current.filter((item) => item !== option.id));
+                                                            }}
+                                                            className="h-3.5 w-3.5 rounded-[3px]"
+                                                        />
+                                                        <span>{t(option.labelKey)}</span>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                        <input type="hidden" name="operationKind" value={deriveMediaOperationKinds(modelType, mediaCapabilityModes)[0] || ""} />
+                                        <p className="text-xs leading-5 text-muted-foreground">
+                                            {t("app.admin.dashboard.model.hub.capability.help")}
+                                        </p>
+                                    </div>
+                                ) : null}
                                 <p className="text-xs leading-5 text-muted-foreground">
                                     {t("app.admin.dashboard.model.hub.page.manualBindingHelp")}
                                 </p>

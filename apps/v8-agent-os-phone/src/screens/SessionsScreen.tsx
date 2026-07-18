@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     Pressable,
@@ -24,6 +24,7 @@ import { deleteConversation, listConversations } from "@/src/lib/phone-api";
 import { formatRelativeTime } from "@/src/lib/time";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
+import { buildLocalSessionIndexNamespace, localDatabase } from "@/src/services/LocalDatabaseService";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 import type { ConversationSummary } from "@/src/types/admin";
 
@@ -32,6 +33,10 @@ export default function SessionsScreen() {
     const { t, locale } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
+    const sessionIndexNamespace = useMemo(
+        () => buildLocalSessionIndexNamespace(adminBaseUrl, user?.id || user?.email || user?.login || "local"),
+        [adminBaseUrl, user?.email, user?.id, user?.login],
+    );
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -49,14 +54,24 @@ export default function SessionsScreen() {
 
     const load = useCallback(async () => {
         setRefreshing(true);
+        let hasCachedSessions = false;
         try {
-            setConversations(await listConversations(authorizedFetch));
+            const cached = await localDatabase.getSessionIndex<ConversationSummary>(sessionIndexNamespace);
+            if (cached.length > 0) {
+                hasCachedSessions = true;
+                setConversations(cached);
+            }
+            const next = await listConversations(authorizedFetch);
+            setConversations(next);
+            await localDatabase.setSessionIndex(sessionIndexNamespace, next);
         } catch (error) {
-            Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_load_the_conversation_list"));
+            if (!hasCachedSessions) {
+                Alert.alert(t("src.screens.approvalsscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_load_the_conversation_list"));
+            }
         } finally {
             setRefreshing(false);
         }
-    }, [authorizedFetch, t]);
+    }, [authorizedFetch, sessionIndexNamespace, t]);
 
     useEffect(() => {
         if (status === "authenticated") {
@@ -86,10 +101,13 @@ export default function SessionsScreen() {
                 onPress: async () => {
                     try {
                         await deleteConversation(authorizedFetch, canonicalSessionId);
+                        await localDatabase.deleteSessionData(canonicalSessionId);
                         if (activeConversationId === canonicalSessionId) {
                             await setActiveConversationId(null);
                         }
-                        await load();
+                        const next = conversations.filter((conversation) => (conversation.sessionId || conversation.id) !== canonicalSessionId);
+                        setConversations(next);
+                        await localDatabase.setSessionIndex(sessionIndexNamespace, next);
                     } catch (error) {
                         Alert.alert(t("src.screens.chatscreen.delete_failed"), error instanceof Error ? error.message : t("src.screens.sessionsscreen.unable_to_delete_the_conversation"));
                     }

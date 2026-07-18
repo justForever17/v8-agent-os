@@ -97,6 +97,7 @@ import {
     getDesktopLiveStreamUrl,
     getAudioInputStatus,
     getConversationDetail,
+    getConversationTurnPage,
     getConversationTimelineSync,
     getProjectsRegistry,
     getRealtimeSnapshot,
@@ -125,7 +126,7 @@ import {
     type SupervisorReasoningEffortControl,
 } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
-import { localDatabase } from "@/src/services/LocalDatabaseService";
+import { buildLocalSessionIndexNamespace, localDatabase } from "@/src/services/LocalDatabaseService";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii, spacing } from "@/src/theme/tokens";
 import type {
@@ -1751,7 +1752,7 @@ function extractSnapshotMessages(payload: Partial<ConversationDetail | RealtimeS
     const snapshot = asRecord(root.snapshot);
     const messageCandidates = [root.timeline, snapshot.timeline, root.messages, snapshot.messages];
     for (const candidate of messageCandidates) {
-        if (Array.isArray(candidate)) {
+        if (Array.isArray(candidate) && candidate.length > 0) {
             return candidate.filter((item): item is ChatMessage => Boolean(item) && typeof item === "object");
         }
     }
@@ -2043,6 +2044,10 @@ export default function ChatScreen() {
         colors: palette,
         t,
     } = useUiPrefs();
+    const sessionIndexNamespace = useMemo(
+        () => buildLocalSessionIndexNamespace(adminBaseUrl, user?.id || user?.email || user?.login || "local"),
+        [adminBaseUrl, user?.email, user?.id, user?.login],
+    );
 
     const realtimeAbortRef = useRef<AbortController | null>(null);
     const realtimeConversationIdRef = useRef<string | null>(null);
@@ -2077,6 +2082,8 @@ export default function ChatScreen() {
     const pendingRealtimeRenderDiagnosticRef = useRef<Record<string, unknown> | null>(null);
     const streamLatencyStatsRef = useRef(new Map<string, StreamLatencyStats>());
     const messagesRef = useRef<ChatMessage[]>([]);
+    const turnBeforeCursorRef = useRef<string | null>(null);
+    const isLoadingOlderTurnsRef = useRef(false);
     const messageConversationIdRef = useRef<string | null>(activeConversationId);
     const todosRef = useRef<SessionTodoItem[]>([]);
     const realtimeMessageStateRef = useRef(
@@ -2136,8 +2143,14 @@ export default function ChatScreen() {
             : []
     ));
     const [messages, setMessages] = useState<ChatMessage[]>([]);
+    const [hasOlderTurns, setHasOlderTurns] = useState(false);
+    const [isLoadingOlderTurns, setIsLoadingOlderTurns] = useState(false);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+    const sessionIndexReadyRef = useRef(false);
+    useEffect(() => {
+        sessionIndexReadyRef.current = false;
+    }, [sessionIndexNamespace]);
     const [supervisorWorkModeDrafts, setSupervisorWorkModeDrafts] = useState<Record<string, "daily" | "engineering">>({});
     const activeConversationSummary = useMemo(
         () => conversations.find((item) => (item.sessionId || item.id) === activeConversationId) || null,
@@ -2511,7 +2524,11 @@ export default function ChatScreen() {
         resetConversationStreamState();
         messagesRef.current = [];
         messageConversationIdRef.current = null;
+        turnBeforeCursorRef.current = null;
+        isLoadingOlderTurnsRef.current = false;
         setMessages([]);
+        setHasOlderTurns(false);
+        setIsLoadingOlderTurns(false);
         setLegacyChatUnsupported(false);
         setApprovals([]);
         setAskUserInteractions([]);
@@ -3459,6 +3476,11 @@ export default function ChatScreen() {
     }, [authorizedFetch, createProjectConversationAtPath, loadFolderRoots, newFolderName, selectedFolderPath, t, workspaceChooserBusy]);
 
     const loadSupportData = useCallback(async () => {
+        const cachedConversations = await localDatabase.getSessionIndex<ConversationSummary>(sessionIndexNamespace);
+        sessionIndexReadyRef.current = true;
+        if (cachedConversations.length > 0) {
+            setConversations(sortSessionHistory(cachedConversations));
+        }
         const skillScope = {
             sessionId: activeConversationIdRef.current || undefined,
             workspacePath: scopeBinding?.workspacePath || undefined,
@@ -3473,6 +3495,7 @@ export default function ChatScreen() {
         ]);
 
         setConversations(nextConversations);
+        await localDatabase.setSessionIndex(sessionIndexNamespace, nextConversations);
         setCommands(nextCommands);
         setSkills(nextReferences.skills);
         setSubagentFamilies(nextReferences.subagentFamilies);
@@ -3485,7 +3508,14 @@ export default function ChatScreen() {
         ) {
             await setActiveConversationId(null);
         }
-    }, [authorizedFetch, loadProjects, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, setActiveConversationId]);
+    }, [authorizedFetch, loadProjects, scopeBinding?.projectId, scopeBinding?.workspaceId, scopeBinding?.workspacePath, sessionIndexNamespace, setActiveConversationId]);
+
+    useEffect(() => {
+        if (!sessionIndexReadyRef.current || status !== "authenticated") {
+            return;
+        }
+        void localDatabase.setSessionIndex(sessionIndexNamespace, conversations);
+    }, [conversations, sessionIndexNamespace, status]);
 
     const applyConversationProjection = useCallback((payload: Partial<ConversationDetail | RealtimeSessionSnapshot | Record<string, unknown>> | null | undefined) => {
         const profileStartedAt = getPerfNowMs();
@@ -3759,9 +3789,12 @@ export default function ChatScreen() {
                 }
                 const fetchStartedAt = getPerfNowMs();
                 const syncCursor = await localDatabase.getSyncCursor(targetConversationId);
+                const syncPromise = syncCursor
+                    ? getConversationTimelineSync(authorizedFetch, targetConversationId, syncCursor)
+                    : Promise.resolve({ messages: [], deletions: [], syncCursor: "", sessionId: targetConversationId });
                 const [snapshot, syncData] = await Promise.all([
                     getRealtimeSnapshot(authorizedFetch, targetConversationId),
-                    getConversationTimelineSync(authorizedFetch, targetConversationId, syncCursor || ""),
+                    syncPromise,
                 ]);
                 
                 if (syncData.deletions && syncData.deletions.length > 0) {
@@ -4721,11 +4754,33 @@ export default function ChatScreen() {
         }
         loadingConversationIdRef.current = conversationId;
         setConversationBusy(true);
+        let hadCachedTurn = false;
         try {
             const syncCursor = await localDatabase.getSyncCursor(conversationId);
-            const [detail, syncData, processSurface] = await Promise.all([
+            const cachedLatestTurn = await localDatabase.getLatestTurnMessages(conversationId);
+            if (
+                cachedLatestTurn.length > 0
+                && activeConversationIdRef.current === conversationId
+                && conversationTransitionTokenRef.current === transitionToken
+            ) {
+                const cachedMessages = normalizeMessagesForState(cachedLatestTurn);
+                hadCachedTurn = cachedMessages.length > 0;
+                realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                    cachedMessages,
+                    PHONE_STREAM_LIFECYCLE_OPTIONS,
+                );
+                lastMessageFingerprintRef.current = buildMessagesFingerprint(cachedMessages);
+                messagesRef.current = cachedMessages;
+                messageConversationIdRef.current = conversationId;
+                setMessages(cachedMessages);
+            }
+            const syncPromise = syncCursor
+                ? getConversationTimelineSync(authorizedFetch, conversationId, syncCursor)
+                : Promise.resolve({ messages: [], deletions: [], syncCursor: "", sessionId: conversationId });
+            const [detail, turnPage, syncData, processSurface] = await Promise.all([
                 getConversationDetail(authorizedFetch, conversationId, true),
-                getConversationTimelineSync(authorizedFetch, conversationId, syncCursor || ""),
+                getConversationTurnPage(authorizedFetch, conversationId, { limit: 1 }),
+                syncPromise,
                 getSessionProcesses(authorizedFetch, conversationId).catch(() => ({ processes: [] as AdminProcessRef[], stale: true })),
             ]);
             if (
@@ -4742,8 +4797,19 @@ export default function ChatScreen() {
             }
             if (syncData.syncCursor) {
                 await localDatabase.setSyncCursor(conversationId, syncData.syncCursor);
+            } else if (turnPage.syncCursor) {
+                await localDatabase.setSyncCursor(conversationId, turnPage.syncCursor);
             }
-            const timelineMessages = await localDatabase.getMessages(conversationId);
+            if (turnPage.messages && turnPage.messages.length > 0) {
+                await localDatabase.upsertMessages(conversationId, turnPage.messages);
+            }
+            const timelineMessages = Array.isArray(turnPage.messages) && turnPage.messages.length > 0
+                ? turnPage.messages
+                : cachedLatestTurn;
+            turnBeforeCursorRef.current = turnPage.pageInfo?.beforeCursor || null;
+            isLoadingOlderTurnsRef.current = false;
+            setIsLoadingOlderTurns(false);
+            setHasOlderTurns(Boolean(turnPage.pageInfo?.hasOlder ?? turnPage.pageInfo?.hasMore));
             setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detail));
             const snapshotMessages = normalizeMessagesForState(timelineMessages);
             const preserveOptimisticLocalState = Boolean(
@@ -4783,9 +4849,11 @@ export default function ChatScreen() {
                 activeConversationIdRef.current === conversationId
                 && conversationTransitionTokenRef.current === transitionToken
             ) {
-                Alert.alert(t("src.screens.chatscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_load_the_conversation_detail"));
+                if (!hadCachedTurn) {
+                    Alert.alert(t("src.screens.chatscreen.load_failed"), error instanceof Error ? error.message : t("src.screens.chatscreen.unable_to_load_the_conversation_detail"));
+                }
             }
-            return false;
+            return hadCachedTurn;
         } finally {
             if (loadingConversationIdRef.current === conversationId) {
                 loadingConversationIdRef.current = null;
@@ -4797,7 +4865,45 @@ export default function ChatScreen() {
                 setConversationBusy(false);
             }
         }
-    }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState]);
+    }, [applyConversationProjection, applySessionProcessSurface, authorizedFetch, resetConversationStreamState, t]);
+
+    const loadOlderConversationTurn = useCallback(async () => {
+        const conversationId = activeConversationIdRef.current;
+        const before = turnBeforeCursorRef.current;
+        if (!conversationId || !before || !hasOlderTurns || isLoadingOlderTurnsRef.current) {
+            return;
+        }
+        isLoadingOlderTurnsRef.current = true;
+        setIsLoadingOlderTurns(true);
+        try {
+            const page = await getConversationTurnPage(authorizedFetch, conversationId, { before, limit: 1 });
+            if (activeConversationIdRef.current !== conversationId) {
+                return;
+            }
+            const incoming = normalizeMessagesForState(Array.isArray(page.messages) ? page.messages : []);
+            if (incoming.length > 0) {
+                await localDatabase.upsertMessages(conversationId, page.messages);
+            }
+            const incomingIds = new Set(incoming.map((message) => String(message.id || "")));
+            const nextMessages = normalizeMessagesForState([
+                ...incoming,
+                ...messagesRef.current.filter((message) => !incomingIds.has(String(message.id || ""))),
+            ]);
+            turnBeforeCursorRef.current = page.pageInfo?.beforeCursor || null;
+            setHasOlderTurns(Boolean(page.pageInfo?.hasOlder ?? page.pageInfo?.hasMore));
+            messagesRef.current = nextMessages;
+            realtimeMessageStateRef.current = syncSessionRealtimeMessageState(
+                nextMessages,
+                PHONE_STREAM_LIFECYCLE_OPTIONS,
+            );
+            setMessages(nextMessages);
+        } catch (error) {
+            console.warn("[phone/chat] older turn load failed", error instanceof Error ? error.message : error);
+        } finally {
+            isLoadingOlderTurnsRef.current = false;
+            setIsLoadingOlderTurns(false);
+        }
+    }, [authorizedFetch, hasOlderTurns]);
 
     loadSupportDataRef.current = loadSupportData;
     loadConversationRef.current = loadConversation;
@@ -5201,6 +5307,7 @@ export default function ChatScreen() {
                 onPress: () => {
                     void (async () => {
                         await deleteConversation(authorizedFetch, canonicalSessionId);
+                        await localDatabase.deleteSessionData(canonicalSessionId);
                         const nextConversations = conversations.filter((conversation) => (conversation.sessionId || conversation.id) !== canonicalSessionId);
                         setConversations(nextConversations);
                         if (activeConversationId === canonicalSessionId) {
@@ -7158,6 +7265,9 @@ export default function ChatScreen() {
                                     onResolveApproval={handleApprovalResolve}
                                     onOpenApprovalPanel={openApprovalPanel}
                                     onOpenOverview={openOverviewPanel}
+                                    hasOlderTurns={hasOlderTurns}
+                                    isLoadingOlderTurns={isLoadingOlderTurns}
+                                    onReachTop={loadOlderConversationTurn}
                                     isLandscape={isLandscape}
                                     bottomInset={chatBottomInset}
                                     emptyState={legacyChatEmptyState || greetingEmptyState}

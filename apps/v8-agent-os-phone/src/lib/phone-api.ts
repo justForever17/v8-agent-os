@@ -590,6 +590,52 @@ export async function getConversationDetail(authorizedFetch: AuthorizedFetch, id
     );
 }
 
+export type ConversationTurnPage = {
+    sessionId: string;
+    syncCursor?: string | null;
+    messages: any[];
+    pageInfo: {
+        hasMore?: boolean;
+        hasOlder?: boolean;
+        hasNewer?: boolean;
+        beforeCursor?: string | null;
+        afterCursor?: string | null;
+        loadedTurnCount?: number;
+        totalTurnCount?: number | null;
+        firstTurnId?: string | null;
+        lastTurnId?: string | null;
+        anchorTurnId?: string | null;
+        anchorPosition?: number | null;
+        windowStartPosition?: number | null;
+        windowEndPosition?: number | null;
+        firstPosition?: number | null;
+        lastPosition?: number | null;
+    };
+};
+
+export async function getConversationTurnPage(
+    authorizedFetch: AuthorizedFetch,
+    id: string,
+    options?: { before?: string | null; around?: string | null; radius?: number; limit?: number },
+) {
+    const params = new URLSearchParams({
+        limit: String(Math.max(1, Math.min(10, Number(options?.limit || 1)))),
+        surface: "phone",
+        compact: "1",
+    });
+    const before = String(options?.before || "").trim();
+    const around = String(options?.around || "").trim();
+    if (before) params.set("before", before);
+    if (around) params.set("around", around);
+    if (Number(options?.radius || 0) > 0) params.set("radius", String(Math.min(5, Math.max(0, Number(options?.radius || 0)))));
+    return authorizedJson<ConversationTurnPage>(
+        authorizedFetch,
+        `/api/client/conversations/${encodeURIComponent(id)}/turns?${params.toString()}`,
+        translateCurrent("src.lib.phone_api.text_16"),
+        { cache: "no-store" },
+    );
+}
+
 export async function getConversationTimelineSync(authorizedFetch: AuthorizedFetch, id: string, since: string) {
     return authorizedJson<{
         messages: any[];

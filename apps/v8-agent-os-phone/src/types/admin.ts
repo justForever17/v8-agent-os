@@ -387,6 +387,9 @@ export type ChatMessage = {
     content: string;
     timestamp?: number;
     runId?: string;
+    ordinal?: number;
+    turnId?: string;
+    turnPosition?: number;
     renderKey?: string;
     agentName?: string;
     agentAvatar?: string;

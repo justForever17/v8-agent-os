@@ -1,8 +1,10 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
+    ActivityIndicator,
     Pressable,
+    FlatList,
+    Platform,
     RefreshControl,
-    ScrollView,
     StyleSheet,
     Text,
     View,
@@ -45,6 +47,9 @@ type ChatWindowProps = {
     onResolveApproval?: (approval: ChatPendingInteraction, answer: string, approve: boolean) => void | Promise<void>;
     onOpenApprovalPanel?: () => void;
     onOpenOverview?: () => void;
+    hasOlderTurns?: boolean;
+    isLoadingOlderTurns?: boolean;
+    onReachTop?: () => void;
     isLandscape?: boolean;
     bottomInset?: number;
     emptyState?: {
@@ -138,13 +143,17 @@ export const ChatWindow = memo(function ChatWindow({
     onResolveApproval,
     onOpenApprovalPanel,
     onOpenOverview,
+    hasOlderTurns = false,
+    isLoadingOlderTurns = false,
+    onReachTop,
     isLandscape = false,
     bottomInset = 172,
     emptyState,
     onScroll,
 }: ChatWindowProps) {
     const { colors, t } = useUiPrefs();
-    const scrollRef = useRef<ScrollView | null>(null);
+    const scrollRef = useRef<FlatList<ChatMessage> | null>(null);
+    const lastLoadTriggerAtRef = useRef(0);
     const [isAtBottom, setIsAtBottom] = useState(true);
     const [askUserOpen, setAskUserOpen] = useState(Boolean(pendingApproval && isAskUserApproval(pendingApproval)));
     const visibleMessages = useMemo(
@@ -203,9 +212,11 @@ export const ChatWindow = memo(function ChatWindow({
             </View>
 
             <View style={[styles.messagesShell, { backgroundColor: colors.surfaceStrong, borderColor: colors.border }]}>
-                <ScrollView
+                <FlatList
                     ref={scrollRef}
                     style={styles.scroll}
+                    data={visibleMessages}
+                    keyExtractor={(message) => message.renderKey || message.id}
                     scrollEnabled={!scrollLocked}
                     nestedScrollEnabled
                     keyboardShouldPersistTaps="always"
@@ -217,17 +228,17 @@ export const ChatWindow = memo(function ChatWindow({
                         visibleMessages.length === 0 && styles.messagesContentEmpty,
                     ]}
                     refreshControl={onRefresh ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} /> : undefined}
-                    onScroll={(event) => {
-                        const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-                        const distanceToBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
-                        setIsAtBottom(distanceToBottom < 96);
-                        if (onScroll) {
-                            onScroll(event);
-                        }
-                    }}
-                    scrollEventThrottle={32}
-                >
-                    {visibleMessages.length === 0 ? (
+                    maintainVisibleContentPosition={{ minIndexForVisible: 1, autoscrollToTopThreshold: 20 }}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={8}
+                    windowSize={9}
+                    removeClippedSubviews={Platform.OS === "android"}
+                    ListHeaderComponent={isLoadingOlderTurns ? (
+                        <View style={styles.olderTurnsLoading}>
+                            <ActivityIndicator size="small" color={colors.textSoft} />
+                        </View>
+                    ) : null}
+                    ListEmptyComponent={(
                         <View style={styles.emptyState}>
                             {resolvedEmptyState.icon ? (
                                 <MaterialCommunityIcons
@@ -265,32 +276,50 @@ export const ChatWindow = memo(function ChatWindow({
                                 </Pressable>
                             ) : null}
                         </View>
-                    ) : (
-                        visibleMessages.map((message, index) => (
-                            <MessageBubble
-                                key={message.renderKey || message.id}
-                                adminBaseUrl={adminBaseUrl}
-                                message={message}
-                                isLast={index === visibleMessages.length - 1}
-                                isLoading={message.role === "assistant" && isActiveAssistantStreamPhase(message.uiStreamPhase)}
-                                streamPhase={message.uiStreamPhase}
-                                onDelete={onDeleteMessage}
-                                onSpeakVoice={onSpeakVoice}
-                                speakingKey={speakingKey}
-                                userImageUri={userImageUri}
-                                userDisplayName={userDisplayName}
-                                processes={processes}
-                                onOpenOverview={onOpenOverview}
-                                runtimeActivities={
-                                    index === liveRuntimeMessageIndex
-                                        ? runtimeActivities
-                                        : EMPTY_RUNTIME_ACTIVITIES
-                                }
-                                executionActive={index === liveRuntimeMessageIndex && Boolean(sessionRunning || isActiveAssistantStreamPhase(message.uiStreamPhase))}
-                            />
-                        ))
                     )}
-                </ScrollView>
+                    renderItem={({ item: message, index }) => (
+                        <MessageBubble
+                            key={message.renderKey || message.id}
+                            adminBaseUrl={adminBaseUrl}
+                            message={message}
+                            isLast={index === visibleMessages.length - 1}
+                            isLoading={message.role === "assistant" && isActiveAssistantStreamPhase(message.uiStreamPhase)}
+                            streamPhase={message.uiStreamPhase}
+                            onDelete={onDeleteMessage}
+                            onSpeakVoice={onSpeakVoice}
+                            speakingKey={speakingKey}
+                            userImageUri={userImageUri}
+                            userDisplayName={userDisplayName}
+                            processes={processes}
+                            onOpenOverview={onOpenOverview}
+                            runtimeActivities={
+                                index === liveRuntimeMessageIndex
+                                    ? runtimeActivities
+                                    : EMPTY_RUNTIME_ACTIVITIES
+                            }
+                            executionActive={index === liveRuntimeMessageIndex && Boolean(sessionRunning || isActiveAssistantStreamPhase(message.uiStreamPhase))}
+                        />
+                    )}
+                    onScroll={(event) => {
+                        const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+                        const distanceToBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+                        setIsAtBottom(distanceToBottom < 96);
+                        if (
+                            contentOffset.y < 88
+                            && hasOlderTurns
+                            && !isLoadingOlderTurns
+                            && onReachTop
+                            && Date.now() - lastLoadTriggerAtRef.current >= 500
+                        ) {
+                            lastLoadTriggerAtRef.current = Date.now();
+                            onReachTop();
+                        }
+                        if (onScroll) {
+                            onScroll(event);
+                        }
+                    }}
+                    scrollEventThrottle={32}
+                />
                 <LinearGradient
                     pointerEvents="none"
                     colors={["rgba(255,255,255,0)", colors.surfaceStrong]}
@@ -426,6 +455,11 @@ const styles = StyleSheet.create({
     },
     messagesContentEmpty: {
         flexGrow: 1,
+        justifyContent: "center",
+    },
+    olderTurnsLoading: {
+        minHeight: 28,
+        alignItems: "center",
         justifyContent: "center",
     },
     emptyState: {

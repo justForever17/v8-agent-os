@@ -1409,6 +1409,30 @@ def delegation_broker(
             dispatch_source = dispatch_task_source
         auto_dispatch_source = dispatch_source if dispatch_source.startswith("runtime_auto") else ""
         runtime_managed_dispatch = dispatch_source.startswith(("runtime_auto", "runtime_episode_runner"))
+        # A runtime episode may use the Supervisor identity to dispatch its
+        # implementation worker.  That is still a top-level delegation from
+        # the authority perspective, but the worker episode belongs beneath
+        # the owning capability episode for lifecycle, completion, and audit
+        # purposes.  Keep this separate from ``parent_delegation_id``: the
+        # latter is the recursive sub-agent depth boundary and must remain
+        # empty for a Supervisor-owned dispatch.
+        runtime_owner_episode_id = ""
+        if supervisor_dispatch and runtime_managed_dispatch:
+            route_context = inherited_context if isinstance(inherited_context, dict) else {}
+            active_id = str(route_context.get("activeCapabilityEpisodeId") or "").strip()
+            if active_id:
+                matching_episode = next(
+                    (
+                        item
+                        for item in list(route_context.get("capabilityEpisodes") or [])
+                        if isinstance(item, dict)
+                        and str(item.get("episodeId") or item.get("id") or "").strip() == active_id
+                    ),
+                    None,
+                )
+                matching_state = str((matching_episode or {}).get("state") or "").strip().lower()
+                if matching_episode and matching_state not in TERMINAL_EPISODE_STATES:
+                    runtime_owner_episode_id = active_id
         if supervisor_dispatch and not runtime_managed_dispatch:
             missing_named_targets = [
                 str(task.get("taskBriefId") or f"task-{index + 1}").strip()
@@ -1958,7 +1982,7 @@ def delegation_broker(
                     "needId": delegation_id_value,
                     "source": "delegation_broker",
                     "reason": str(item.get("taskGoal") or item.get("targetLabel") or "delegated task"),
-                    "parentEpisodeId": parent_delegation_id,
+                    "parentEpisodeId": parent_delegation_id or runtime_owner_episode_id,
                     "inputs": {
                         "targetCount": 1,
                         "workerBriefs": [task_brief_value],
@@ -1969,7 +1993,7 @@ def delegation_broker(
                 kind="delegation",
                 state=episode_state,
                 required_runtime_access=list(task_brief_value.get("runtimeAccess") or []),
-                parent_episode_id=parent_delegation_id,
+                parent_episode_id=parent_delegation_id or runtime_owner_episode_id,
                 continuation_target="parallel_delegate_join" if item.get("lane") == "subagent" else "delegation_broker.observe",
                 extra={
                     "invocationId": invocation_id,
@@ -1980,6 +2004,7 @@ def delegation_broker(
                     "branchIndex": item.get("branchIndex"),
                     "registryVersion": item.get("registryVersion") or registry_version,
                     "registryHash": item.get("registryHash") or registry_hash,
+                    "ownerEpisodeId": runtime_owner_episode_id or None,
                     "error": item.get("error"),
                 },
             )

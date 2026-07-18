@@ -229,6 +229,44 @@ def _subagent_result_text(messages: list[Any]) -> str:
     return ""
 
 
+def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | None:
+    """Recognize an explicit final blocker without guessing from ordinary prose."""
+
+    text = str(result_text or "").strip()
+    if not text:
+        return None
+    match = re.search(
+        r"(?im)^\s*(?:#{1,6}\s*)?(?:\*\*)?status(?:\*\*)?\s*[:：]\s*"
+        r"(?:\*\*)?(blocked|blocker|failed|error)\b",
+        text,
+    )
+    if not match:
+        match = re.search(
+            r"(?im)^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:执行)?状态(?:\*\*)?\s*[:：]\s*"
+            r"(?:\*\*)?(阻塞|失败)\b",
+            text,
+        )
+    if not match:
+        return None
+    normalized = str(match.group(1) or "").strip().lower()
+    status = "failed" if normalized in {"failed", "error", "失败"} else "blocked"
+    known_error = next(
+        (
+            code
+            for code in (
+                "workspace_not_trusted",
+                "workspace_fallback_to_main",
+                "workspace_boundary_violation",
+                "workspace_command_path_violation",
+                "global_skill_mutation_violation",
+            )
+            if code in text.lower()
+        ),
+        "subagent_reported_terminal_failure",
+    )
+    return status, known_error
+
+
 def _compact_transcript(messages: list[Any], *, limit: int = 1800) -> str:
     chunks: list[str] = []
     for message in messages:
@@ -985,7 +1023,8 @@ async def _run_parallel_agent_branch(
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
-    artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
+    initial_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
+    artifact_snapshot = initial_artifact_snapshot
     artifact_stall_rounds = 0
     artifact_stall_limit = 80
     last_progress_node = ""
@@ -1317,6 +1356,18 @@ async def _run_parallel_agent_branch(
             "toolsUsed": _extract_tool_names(delta_messages),
             **artifact_failure,
         }, []
+    result_text = _subagent_result_text(delta_messages)
+    reported_failure = _subagent_reported_terminal_failure(result_text)
+    final_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
+    initial_by_path = {item[0]: item for item in initial_artifact_snapshot}
+    final_by_path = {item[0]: item for item in final_artifact_snapshot}
+    existing_artifact_paths = [path for path in expected_artifact_paths if path.exists()]
+    changed_artifact_paths = [
+        path
+        for path in existing_artifact_paths
+        if final_by_path.get(str(path)) != initial_by_path.get(str(path))
+    ]
+    reported_status, reported_error = reported_failure or ("ok", "")
     summary = {
         "invocationId": branch.get("invocationId"),
         "taskBriefId": branch.get("taskBriefId"),
@@ -1329,7 +1380,8 @@ async def _run_parallel_agent_branch(
         "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
         "targetLabel": branch.get("agentName") or agent_id,
         "branchIndex": branch.get("branchIndex"),
-        "status": "ok",
+        "status": reported_status,
+        **({"error": reported_error} if reported_error else {}),
         "completedAt": _now_iso(),
         "messageCount": len(delta_messages),
         "todoDeltaCount": len(delta_todos),
@@ -1347,18 +1399,26 @@ async def _run_parallel_agent_branch(
         "acceptanceContract": (branch.get("taskBrief") or {}).get("acceptanceContract")
         if isinstance(branch.get("taskBrief"), dict)
         else None,
-        "resultText": _subagent_result_text(delta_messages),
+        "resultText": result_text,
         "summary": _subagent_result_summary(delta_messages),
         "compactTranscript": _compact_transcript(delta_messages),
-        "localSelfCheck": "Subagent branch completed; supervisor must still accept, retry, or ignore the result.",
+        "localSelfCheck": (
+            "Subagent explicitly reported a terminal blocker/failure; parent must repair or retry before acceptance."
+            if reported_failure
+            else "Subagent branch completed; supervisor must still accept, retry, or ignore the result."
+        ),
         "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
         "parentDelegationId": branch.get("parentDelegationId"),
         "parentInvocationId": branch.get("parentInvocationId"),
         "delegationDepth": branch.get("delegationDepth"),
         "artifactRefs": [
             {"path": str(path), "kind": "workspace_artifact"}
-            for path in expected_artifact_paths
-            if path.exists()
+            for path in (changed_artifact_paths if reported_failure else existing_artifact_paths)
+        ],
+        "observedArtifactRefs": [
+            {"path": str(path), "kind": "workspace_artifact"}
+            for path in existing_artifact_paths
+            if path not in changed_artifact_paths
         ],
         "missingExpectedArtifacts": [str(path) for path in expected_artifact_paths if not path.exists()],
         "supervisorAcceptance": {"status": "pending", "requiredAction": ["accept", "retry", "ignore"]},
@@ -1366,9 +1426,13 @@ async def _run_parallel_agent_branch(
     }
     _publish_parallel_progress(
         progress_callback,
-        stage="handoff_ready",
-        status="completed",
-        summary=f"{branch.get('agentName') or agent_id} 已回传可验收结果。",
+        stage="handoff_blocked" if reported_failure else "handoff_ready",
+        status=reported_status if reported_failure else "completed",
+        summary=(
+            f"{branch.get('agentName') or agent_id} 已回传阻塞信息，需修复后重试。"
+            if reported_failure
+            else f"{branch.get('agentName') or agent_id} 已回传可验收结果。"
+        ),
     )
     return delta_messages, delta_todos, summary, []
 

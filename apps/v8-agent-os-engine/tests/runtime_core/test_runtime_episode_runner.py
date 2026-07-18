@@ -3244,6 +3244,63 @@ def test_parallel_branch_does_not_report_artifact_stall_after_expected_file_exis
     assert summary["missingExpectedArtifacts"] == []
 
 
+def test_parallel_branch_preserves_explicit_workspace_blocker_as_failure(tmp_path):
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage
+    from langgraph.types import Command
+
+    expected_path = tmp_path / "result.py"
+    expected_path.write_text("print(missing_value)\n", encoding="utf-8")
+    state = {
+        "messages": [],
+        "todos": [],
+        "workspace_path": str(tmp_path),
+        "parallel_branch": {
+            "agentId": "implementation_worker",
+            "agentName": "Implementation Worker",
+            "delegationId": "delegation-workspace-blocked",
+            "invocationId": "invoke-workspace-blocked",
+            "taskBriefId": "TASK-WORKSPACE-BLOCKED",
+            "reason": "Fix result.py.",
+            "taskBrief": {
+                "goal": "Fix result.py.",
+                "writeRequired": True,
+                "engineeringTaskCapsule": {
+                    "writeRequired": True,
+                    "expectedArtifacts": ["result.py"],
+                },
+            },
+        },
+    }
+
+    def _node_func(_state):
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "## Handoff\n\n"
+                            "**Status: BLOCKED — workspace_not_trusted**\n\n"
+                            "The write was rejected and the file remains unchanged."
+                        )
+                    )
+                ]
+            },
+        )
+
+    _messages, _todos, summary, _children = asyncio.run(
+        _run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert summary["status"] == "blocked"
+    assert summary["error"] == "workspace_not_trusted"
+    assert summary["artifactRefs"] == []
+    assert summary["observedArtifactRefs"] == [
+        {"path": str(expected_path.resolve()), "kind": "workspace_artifact"}
+    ]
+
+
 def test_parallel_branch_fails_skill_artifact_acceptance_when_skill_md_missing(tmp_path):
     from graph.parallel_support import _run_parallel_agent_branch
     from langgraph.types import Command

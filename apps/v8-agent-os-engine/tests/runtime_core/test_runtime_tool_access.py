@@ -61,6 +61,22 @@ def _tool(name: str):
 def test_collaboration_actor_identity_separates_user_facing_tree_from_internal_models():
     assert resolve_collaboration_actor(actor="supervisor").role == SUPERVISOR_ACTOR
     assert resolve_collaboration_actor(
+        runtime_context={
+            "runtime_kind": "delegation",
+            "actor_role": "supervisor",
+            "agent_id": "supervisor",
+            "delegation_depth": 0,
+        }
+    ).role == SUPERVISOR_ACTOR
+    assert resolve_collaboration_actor(
+        runtime_context={
+            "runtime_kind": "delegation",
+            "actor_role": "direct_subagent",
+            "agent_id": "implementation-engineer",
+            "delegation_depth": 1,
+        }
+    ).role == DIRECT_SUBAGENT_ACTOR
+    assert resolve_collaboration_actor(
         actor="subagent",
         route_context={"delegationDepth": 1},
     ).role == DIRECT_SUBAGENT_ACTOR
@@ -1552,6 +1568,63 @@ def test_supervisor_delegation_starts_new_top_level_tree_and_routes_risk_review(
     assert branch["delegationDepth"] == 1
     assert branch["taskBrief"]["targetDefaultReason"] == "verification_task_signal"
     assert episode["parentEpisodeId"] == ""
+
+
+def test_runtime_episode_supervisor_can_dispatch_top_level_delegation(monkeypatch):
+    monkeypatch.setattr(native_delegation, "persist_runtime_episode", lambda episode, **_kwargs: dict(episode))
+    monkeypatch.setattr(native_delegation, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    state = {
+        "session_id": "session-engineering-runtime-dispatch",
+        "run_id": "run-engineering-runtime-dispatch",
+        "workspace_path": "E:/Projects/runtime-dispatch",
+        "delegationDispatchSource": "runtime_episode_runner",
+        "current_route_context": {
+            "activeCapabilityEpisodeId": "episode-engineering-runtime-dispatch",
+            "capabilityEpisodes": [
+                {
+                    "episodeId": "episode-engineering-runtime-dispatch",
+                    "kind": "engineering",
+                    "state": "active",
+                }
+            ],
+        },
+    }
+
+    with bind_runtime_context(
+        runtime_kind="delegation",
+        actor_role="supervisor",
+        agent_id="supervisor",
+        delegation_depth=0,
+        session_id=state["session_id"],
+        run_id=state["run_id"],
+        workspace_path=state["workspace_path"],
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "engineering-worker",
+                    "goal": "Inspect the assigned Engineering work package and return evidence.",
+                    "expectedOutputs": ["A concise result with evidence."],
+                    "acceptanceContract": "Return the result and evidence used.",
+                    "preferredAgentId": "implementation-engineer",
+                    "readOnly": True,
+                    "writeSet": [],
+                    "toolPolicy": {"mode": "none"},
+                }
+            ],
+            state=state,
+            tool_call_id="call-engineering-runtime-dispatch",
+        )
+
+    send = list(command.goto)[0]
+    branch = send.arg["parallel_branch"]
+    episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert branch["delegationDepth"] == 1
+    assert branch["parentDelegationId"] is None
+    assert branch["agentId"] == "implementation-engineer"
+    assert episode["parentEpisodeId"] == "episode-engineering-runtime-dispatch"
+    assert episode["ownerEpisodeId"] == "episode-engineering-runtime-dispatch"
 
 
 def test_supervisor_dispatch_persists_recursive_policy_on_durable_task_brief(monkeypatch):

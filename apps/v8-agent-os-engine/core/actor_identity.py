@@ -72,7 +72,19 @@ def resolve_collaboration_actor(
     """
 
     context = _merged_context(runtime_context, route_context)
-    explicit = str(actor or "").strip().lower().replace("-", "_")
+    # Runtime callers bind ``actor_role`` as the authoritative identity when a
+    # tool is invoked from an episode runner. Previously only the optional
+    # function argument was considered here, so a valid top-level runtime
+    # delegation with ``actor_role=supervisor`` was downgraded to
+    # ``runtime_internal`` merely because its ``runtime_kind`` was
+    # ``delegation``. The broker then returned ``delegation_depth_terminal``
+    # before it ever inspected the task contract.
+    explicit = str(
+        actor
+        or context.get("actor_role")
+        or context.get("actorRole")
+        or ""
+    ).strip().lower().replace("-", "_")
     runtime_kind = str(context.get("runtime_kind") or context.get("runtimeKind") or "").strip().lower()
     agent_id = str(
         context.get("agent_id")

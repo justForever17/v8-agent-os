@@ -13,6 +13,7 @@ from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
 from core.model_ref import make_model_ref, parse_model_ref
 from core.model_endpoint_binding import persist_model_endpoint_binding, public_models_config
+from core.model_provider_channels import validate_provider_channels
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.reasoning_surface_contract import (
     is_stale_auto_hidden_reasoning_surface,
@@ -948,6 +949,7 @@ class ModelControlPlane:
                 **dict(existing.get("provider") or {}),
                 **secured_patch,
             }
+            validate_provider_channels(provider_meta)
             providers[normalized_provider_id] = {
                 "provider": provider_meta,
                 "models": dict(existing.get("models") or {}),
@@ -998,6 +1000,7 @@ class ModelControlPlane:
             if not target:
                 raise ValueError("provider not found")
             target_provider = dict(target.get("provider") or {})
+            validate_provider_channels(target_provider)
             source_provider_key = str(source_provider_id or normalized_provider_id).strip()
             source_model_key = str(source_model_id or normalized_model_id).strip()
             source_container = dict(providers.get(source_provider_key) or {})
@@ -1064,6 +1067,7 @@ class ModelControlPlane:
                 **dict(existing.get("provider") or {}),
                 **secured_patch,
             }
+            validate_provider_channels(provider_meta)
             models = {} if replace_provider_models else dict(existing.get("models") or {})
             next_model = persist_model_endpoint_binding(
                 normalized_provider_id,

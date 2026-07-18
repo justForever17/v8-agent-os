@@ -5,6 +5,7 @@ from typing import Any, Dict
 from urllib.parse import urlparse
 
 from core.model_ref import make_model_ref
+from core.model_provider_channels import public_provider_channels, resolve_provider_channel
 from core.model_protocol_registry import endpoint_path_for_protocol, suggest_model_protocol
 from core.provider_hosted_tools import normalize_provider_hosted_tools
 
@@ -92,6 +93,12 @@ def build_model_endpoint_binding(
     model = dict(model_meta or {})
     explicit = dict(model.get("endpointBinding") or {})
     media_limits = dict(model.get("mediaLimits") or {})
+    requested_wire_protocol = str(explicit.get("wireProtocol") or explicit.get("wire_protocol") or "").strip()
+    channel = resolve_provider_channel(
+        provider,
+        channel_id=explicit.get("channelId") or explicit.get("channel_id") or "",
+        wire_protocol=requested_wire_protocol,
+    )
     route = _clean_relative_path(explicit.get("route") or model_id)
     provider_model_id = str(
         explicit.get("providerModelId")
@@ -134,9 +141,13 @@ def build_model_endpoint_binding(
     else:
         provider_model_id = provider_model_id or route
 
+    channel_api_standard = str(channel.get("apiStandard") or "").strip()
     api_standard = str(
-        explicit.get("apiStandard")
+        channel_api_standard
+        if channel.get("source") == "configured" or channel.get("selectionSource") == "legacy_default_alias"
+        else explicit.get("apiStandard")
         or media_limits.get("apiStandard")
+        or channel_api_standard
         or provider.get("api_standard")
         or provider.get("apiStandard")
         or "openai"
@@ -147,7 +158,9 @@ def build_model_endpoint_binding(
         or model.get("adapter")
         or ""
     ).strip()
-    wire_protocol = str(explicit.get("wireProtocol") or explicit.get("wire_protocol") or "").strip()
+    wire_protocol = requested_wire_protocol
+    if not wire_protocol and channel.get("source") == "configured":
+        wire_protocol = str(channel.get("defaultWireProtocol") or "").strip()
     provider_hosted_tools = normalize_provider_hosted_tools(explicit.get("providerHostedTools"))
     protocol_advice = suggest_model_protocol(
         provider_id,
@@ -168,15 +181,26 @@ def build_model_endpoint_binding(
         }
     if wire_protocol and not endpoint_path and not _is_media_model(model):
         endpoint_path = endpoint_path_for_protocol(wire_protocol)
-    base_url = str(provider.get("base_url") or provider.get("baseUrl") or "").strip().rstrip("/")
-    request_url = f"{base_url}/{endpoint_path}" if base_url and endpoint_path else base_url
+    base_url = str(
+        channel.get("baseUrl")
+        or provider.get("base_url")
+        or provider.get("baseUrl")
+        or ""
+    ).strip().rstrip("/")
+    api_version = str(channel.get("apiVersion") or "").strip().strip("/")
+    request_base_url = (
+        f"{base_url}/{api_version}"
+        if base_url and api_version and not base_url.lower().endswith(f"/{api_version.lower()}")
+        else base_url
+    )
+    request_url = f"{request_base_url}/{endpoint_path}" if request_base_url and endpoint_path else request_base_url
     persisted = bool(explicit)
     provenance = dict(explicit.get("provenance") or {})
     provenance.setdefault("source", source if persisted else "legacy_projection")
     provenance.setdefault("confidence", "authoritative" if persisted else "reviewed" if inferred else "hint")
 
     return {
-        "version": 1,
+        "version": 2,
         "modelRef": make_model_ref(provider_id, route),
         "providerId": str(provider_id or "").strip(),
         "modelId": route,
@@ -184,6 +208,12 @@ def build_model_endpoint_binding(
         "endpointPath": endpoint_path,
         "providerModelId": provider_model_id,
         "operationKind": operation_kind,
+        "channelId": str(channel.get("id") or ""),
+        "channelLabel": str(channel.get("label") or ""),
+        "channelSource": str(channel.get("selectionSource") or channel.get("source") or ""),
+        "availableChannelIds": list(channel.get("availableChannelIds") or []),
+        "baseUrl": base_url,
+        "apiVersion": api_version,
         "apiStandard": api_standard,
         "adapter": adapter,
         "wireProtocol": wire_protocol,
@@ -216,6 +246,23 @@ def persist_model_endpoint_binding(
         model,
         source=source,
     )
+    if not binding.get("channelId"):
+        raise ValueError("model endpoint binding requires a valid Provider channel")
+    requested_channel_id = str(
+        ((model.get("endpointBinding") or {}).get("channelId") or "")
+    ).strip().lower()
+    if requested_channel_id and requested_channel_id != binding.get("channelId") and requested_channel_id != "default":
+        raise ValueError(f"unknown Provider channel: {requested_channel_id}")
+    selected_channel = resolve_provider_channel(
+        provider_meta,
+        channel_id=binding.get("channelId"),
+        wire_protocol=binding.get("wireProtocol"),
+    )
+    allowed_protocols = list(selected_channel.get("wireProtocols") or [])
+    if binding.get("wireProtocol") and allowed_protocols and binding["wireProtocol"] not in allowed_protocols:
+        raise ValueError(
+            f"wireProtocol '{binding['wireProtocol']}' is not supported by Provider channel '{binding['channelId']}'"
+        )
     binding["persisted"] = True
     binding["provenance"] = {
         **dict(binding.get("provenance") or {}),
@@ -276,6 +323,7 @@ def public_models_config(config: Dict[str, Any]) -> Dict[str, Any]:
             or provider_meta.get("credentialMode")
             or ("oauthFile" if raw_credential.startswith("oauth:") else "apiKey")
         )
+        provider_meta.update(public_provider_channels(provider_meta))
         provider_data["provider"] = provider_meta
         models = dict(provider_data.get("models") or {})
         for model_id, model_meta_raw in models.items():

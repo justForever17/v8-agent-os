@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from core.model_endpoint_binding import (
     build_model_endpoint_binding,
     persist_model_endpoint_binding,
@@ -82,6 +84,111 @@ def test_provider_native_media_route_is_split_without_a_hidden_adapter_rewrite()
     assert binding["providerModelId"] == "qwen-image-2.0-pro"
     assert binding["operationKind"] == "image.generate"
     assert binding["requestUrlPreview"] == "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+
+
+def test_model_binding_selects_an_explicit_provider_channel_without_rewriting_base_url():
+    provider = {
+        "api_standard": "openai",
+        "base_url": "https://api.example.test/v1",
+        "channels": [
+            {
+                "id": "openai",
+                "label": "OpenAI-compatible",
+                "apiStandard": "openai",
+                "baseUrl": "https://api.example.test/v1",
+                "wireProtocols": ["openai.chat_completions"],
+                "defaultWireProtocol": "openai.chat_completions",
+            },
+            {
+                "id": "anthropic",
+                "label": "Anthropic Messages",
+                "apiStandard": "anthropic",
+                "baseUrl": "https://api.example.test/anthropic",
+                "wireProtocols": ["anthropic.messages"],
+                "defaultWireProtocol": "anthropic.messages",
+            },
+        ],
+        "defaultChannelId": "openai",
+    }
+    binding = build_model_endpoint_binding(
+        "example",
+        "model-a",
+        provider,
+        {"type": "TEXT", "endpointBinding": {"channelId": "anthropic"}},
+    )
+
+    assert binding["channelId"] == "anthropic"
+    assert binding["apiStandard"] == "anthropic"
+    assert binding["wireProtocol"] == "anthropic.messages"
+    assert binding["baseUrl"] == "https://api.example.test/anthropic"
+    assert binding["requestUrlPreview"] == "https://api.example.test/anthropic/messages"
+
+
+def test_legacy_provider_projection_keeps_v1_and_does_not_infer_gemini_v1beta():
+    binding = build_model_endpoint_binding(
+        "custom",
+        "gemini-3.5-flash-low",
+        {"api_standard": "openai", "base_url": "https://proxy.example.test/v1"},
+        {"type": "TEXT"},
+    )
+
+    assert binding["channelId"] == "default"
+    assert binding["baseUrl"] == "https://proxy.example.test/v1"
+    assert binding["wireProtocol"] == ""
+
+
+def test_model_binding_rejects_protocol_outside_selected_channel():
+    provider = {
+        "channels": [
+            {
+                "id": "anthropic",
+                "apiStandard": "anthropic",
+                "baseUrl": "https://api.example.test/anthropic",
+                "wireProtocols": ["anthropic.messages"],
+                "defaultWireProtocol": "anthropic.messages",
+            }
+        ],
+        "defaultChannelId": "anthropic",
+    }
+
+    with pytest.raises(ValueError, match="is not supported"):
+        persist_model_endpoint_binding(
+            "example",
+            "model-a",
+            provider,
+            {
+                "type": "TEXT",
+                "endpointBinding": {
+                    "channelId": "anthropic",
+                    "wireProtocol": "openai.chat_completions",
+                },
+            },
+            source="manual",
+        )
+
+
+def test_explicit_channel_api_version_is_visible_in_request_preview():
+    binding = build_model_endpoint_binding(
+        "gemini-proxy",
+        "gemini-3.5-flash-low",
+        {
+            "channels": [
+                {
+                    "id": "gemini",
+                    "apiStandard": "gemini",
+                    "baseUrl": "https://provider.example.test/gemini",
+                    "apiVersion": "v1beta",
+                    "wireProtocols": ["gemini.generate_content"],
+                    "defaultWireProtocol": "gemini.generate_content",
+                }
+            ],
+            "defaultChannelId": "gemini",
+        },
+        {"type": "MULTIMODAL", "endpointBinding": {"channelId": "gemini"}},
+    )
+
+    assert binding["apiVersion"] == "v1beta"
+    assert binding["requestUrlPreview"] == "https://provider.example.test/gemini/v1beta/models/{model}:generateContent"
 
 
 def test_public_config_redacts_credentials_and_projects_legacy_binding_without_mutation():
@@ -175,3 +282,49 @@ def test_provider_write_persists_only_credential_reference(monkeypatch):
     assert stored_provider["credentialRef"].startswith("cred:v8-model:")
     assert plane.get_config()["providers"]["cpm"]["provider"]["api_key"] == "secret-value"
     assert "api_key" not in plane.get_public_config()["providers"]["cpm"]["provider"]
+
+
+def test_provider_write_persists_multiple_channels_and_projects_them_publicly(monkeypatch):
+    persisted = {"providers": {}}
+    plane = ModelControlPlane(credential_store=CredentialRefStore(MemoryCredentialBackend()))
+    monkeypatch.setattr(storage, "get_models_config", lambda: deepcopy(persisted))
+
+    def save_config(config):
+        persisted.clear()
+        persisted.update(deepcopy(config))
+
+    monkeypatch.setattr(storage, "save_models_config", save_config)
+    channels = [
+        {
+            "id": "openai",
+            "label": "OpenAI-compatible",
+            "apiStandard": "openai",
+            "baseUrl": "https://api.example.test/v1",
+            "wireProtocols": ["openai.chat_completions"],
+            "defaultWireProtocol": "openai.chat_completions",
+        },
+        {
+            "id": "anthropic",
+            "label": "Anthropic Messages",
+            "apiStandard": "anthropic",
+            "baseUrl": "https://api.example.test/anthropic",
+            "wireProtocols": ["anthropic.messages"],
+            "defaultWireProtocol": "anthropic.messages",
+        },
+    ]
+
+    plane.upsert_provider_record(
+        "multi",
+        {
+            "name": "Multi",
+            "base_url": channels[0]["baseUrl"],
+            "api_standard": "openai",
+            "channels": channels,
+            "defaultChannelId": "openai",
+        },
+    )
+
+    public_provider = plane.get_public_config()["providers"]["multi"]["provider"]
+    assert public_provider["defaultChannelId"] == "openai"
+    assert [item["id"] for item in public_provider["channels"]] == ["openai", "anthropic"]
+    assert public_provider["channelsSource"] == "configured"

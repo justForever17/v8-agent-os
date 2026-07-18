@@ -66,7 +66,7 @@ def test_langchain_google_genai_projects_system_messages_to_native_system_instru
     assert history[0].parts[0].text == expected_human_text
 
 
-def test_gemini_custom_provider_base_url_reaches_google_genai_client_options() -> None:
+def test_gemini_custom_provider_base_url_is_preserved_exactly() -> None:
     kwargs = LLMFactory._build_gemini_kwargs(
         "gemini-3.5-flash-low",
         {
@@ -75,5 +75,19 @@ def test_gemini_custom_provider_base_url_reaches_google_genai_client_options() -
         },
     )
 
-    assert kwargs["client_options"] == "https://provider.example.test/v1beta"
+    assert kwargs["client_options"] == "https://provider.example.test/v1"
     assert kwargs["api_version"] == ""
+
+
+def test_gemini_channel_api_version_is_only_applied_when_explicit() -> None:
+    kwargs = LLMFactory._build_gemini_kwargs(
+        "gemini-3.5-flash-low",
+        {
+            "api_key": "test-key",
+            "base_url": "https://provider.example.test/gemini",
+            "api_version": "v1beta",
+        },
+    )
+
+    assert kwargs["client_options"] == "https://provider.example.test/gemini"
+    assert kwargs["api_version"] == "v1beta"

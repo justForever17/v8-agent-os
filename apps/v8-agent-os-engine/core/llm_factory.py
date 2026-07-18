@@ -33,6 +33,7 @@ from core.provider_runtime_profiles import (
 )
 from core.model_budget_service import model_budget_service
 from core.model_control_plane import model_control_plane, normalize_config_temperature
+from core.model_endpoint_binding import build_model_endpoint_binding
 from core.provider_hosted_tools import normalize_provider_hosted_tools
 from core.model_telemetry import model_telemetry_service
 from core.model_thinking_control import (
@@ -751,10 +752,19 @@ class LLMFactory:
             p_name = str(record.get("provider_id") or "")
             p_conf = dict(record.get("provider") or {})
             meta = dict(record.get("model") or {})
-            endpoint_binding = dict(meta.get("endpointBinding") or {})
+            endpoint_binding = build_model_endpoint_binding(
+                p_name,
+                str(record.get("model_id") or target_model_name),
+                p_conf,
+                meta,
+            )
             upstream_model_id = str(record.get("model_id") or target_model_name)
             model_ref = str(record.get("model_ref") or "")
-            api_standard = str(p_conf.get("api_standard", "openai") or "openai")
+            api_standard = str(
+                endpoint_binding.get("apiStandard")
+                or p_conf.get("api_standard", "openai")
+                or "openai"
+            )
             capability_class = str(meta.get("capabilityClass") or "")
 
             oauth_resolution = resolve_provider_oauth_credential(
@@ -762,7 +772,11 @@ class LLMFactory:
                 provider_config=p_conf,
             )
             t_api_key = str(oauth_resolution.get("credential") or "")
-            t_base_url = p_conf.get("base_url", "")
+            t_base_url = str(
+                endpoint_binding.get("baseUrl")
+                or p_conf.get("base_url", "")
+                or ""
+            )
             oauth_error = str(oauth_resolution.get("error") or "")
             oauth_flavor = str(oauth_resolution.get("oauthFlavor") or "")
             is_gemini_cli = cls._is_gemini_cli_provider(
@@ -862,7 +876,7 @@ class LLMFactory:
                 "base_url": t_base_url,
                 "api_key": t_api_key,
                 "api_standard": api_standard,
-                "api_version": p_conf.get("api_version") or p_conf.get("apiVersion") or "",
+                "api_version": endpoint_binding.get("apiVersion") or p_conf.get("api_version") or p_conf.get("apiVersion") or "",
                 "organization_id": p_conf.get("organization_id") or p_conf.get("organizationId") or "",
                 "extra_headers": p_conf.get("extra_headers") or p_conf.get("extraHeaders") or {},
                 "proxy": p_conf.get("proxy") or p_conf.get("openai_proxy") or p_conf.get("anthropic_proxy") or "",
@@ -1068,16 +1082,11 @@ class LLMFactory:
             # HttpOptions.base_url. Without it, a custom Gemini-compatible
             # Provider silently falls back to Google's public endpoint.
             gemini_base_url = str(meta["base_url"]).rstrip("/")
-            if re.search(r"/v1$", gemini_base_url, flags=re.IGNORECASE):
-                gemini_base_url = re.sub(r"/v1$", "/v1beta", gemini_base_url, flags=re.IGNORECASE)
             final_kwargs["client_options"] = gemini_base_url
-            if re.search(r"/v1(?:beta)?$", gemini_base_url, flags=re.IGNORECASE):
-                # google-genai normally appends its api_version. A Provider
-                # base URL that already owns /v1 or /v1beta must not become
-                # /v1/v1beta/models/...
-                final_kwargs["api_version"] = ""
-            elif meta.get("api_version"):
-                final_kwargs["api_version"] = str(meta["api_version"]).strip()
+            # A configured channel base URL is exact. V8OS never rewrites /v1
+            # to /v1beta. apiVersion is only appended when the user explicitly
+            # configured it on that channel.
+            final_kwargs["api_version"] = str(meta.get("api_version") or "").strip()
         timeout = cls._extract_timeout(meta, **kwargs)
         if timeout is not None:
             final_kwargs["timeout"] = timeout

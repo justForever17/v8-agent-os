@@ -3,6 +3,16 @@ import { ik } from "@/i18n/admin-legacy";
 export type ProviderCredentialMode = "apiKey" | "oauthFile";
 export type PlatformLoginPreset = "codex";
 export type ProviderApiStandard = "openai" | "anthropic" | "gemini";
+export type ProviderChannel = {
+  id: string;
+  label: string;
+  apiStandard: string;
+  baseUrl: string;
+  apiVersion: string;
+  wireProtocols: string[];
+  defaultWireProtocol: string;
+  source?: string;
+};
 export type LocalBackendPreset = "ollama" | "nexa" | "vllm" | "lmstudio";
 export type PlatformLoginPresetConfig = {
   id: PlatformLoginPreset;
@@ -43,6 +53,9 @@ type EngineProviderMeta = {
   credentialConfigured?: boolean;
   credentialMode?: string;
   oauthPath?: string;
+  channels?: ProviderChannel[];
+  defaultChannelId?: string;
+  channelsSource?: string;
 };
 type EngineProviderContainer = {
   provider?: EngineProviderMeta;
@@ -230,6 +243,18 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
       isEnabled: modelMeta.isEnabled !== false
     };
   });
+  const channels = (Array.isArray(meta.channels) ? meta.channels : [])
+    .filter((item): item is ProviderChannel => Boolean(item && typeof item === "object" && String(item.id || "").trim()))
+    .map((item) => ({
+      id: String(item.id || "").trim(),
+      label: String(item.label || item.id || "").trim(),
+      apiStandard: String(item.apiStandard || "openai").trim(),
+      baseUrl: String(item.baseUrl || "").trim(),
+      apiVersion: String(item.apiVersion || "").trim(),
+      wireProtocols: Array.isArray(item.wireProtocols) ? item.wireProtocols.map((protocol) => String(protocol)) : [],
+      defaultWireProtocol: String(item.defaultWireProtocol || "").trim(),
+      source: String(item.source || meta.channelsSource || ""),
+    }));
   return {
     id: providerId,
     name: meta.name || providerId,
@@ -251,6 +276,9 @@ export function mapEngineProvider(providerId: string, providerData: EngineProvid
     oauthPathMasked: oauthPath ? maskPath(oauthPath) : "",
     platformLoginPreset,
     localBackendPreset,
+    channels,
+    defaultChannelId: String(meta.defaultChannelId || channels[0]?.id || ""),
+    channelsSource: String(meta.channelsSource || ""),
     models
   };
 }

@@ -227,7 +227,7 @@ def test_embedding_models_do_not_receive_chat_protocol_advice():
     assert advice["confidence"] == "not_applicable"
 
 
-def test_quick_connect_persists_reviewed_protocol_for_first_party_gpt(monkeypatch):
+def test_quick_connect_exposes_but_does_not_persist_first_party_protocol_suggestion(monkeypatch):
     saved: dict = {}
     provider = {
         "id": "openai",
@@ -249,12 +249,13 @@ def test_quick_connect_persists_reviewed_protocol_for_first_party_gpt(monkeypatc
     }))
 
     binding = result["config"]["providers"]["openai"]["models"]["gpt-5.6-sol"]["endpointBinding"]
-    assert binding["wireProtocol"] == "openai.responses"
-    assert binding["endpointPath"] == "responses"
+    assert binding["wireProtocol"] == ""
+    assert binding["endpointPath"] == ""
+    assert binding["protocolSuggestion"] == "openai.responses"
     assert binding["protocolConfidence"] == "reviewed"
 
 
-def test_quick_connect_custom_provider_keeps_chat_fallback_warning(monkeypatch):
+def test_quick_connect_custom_provider_keeps_chat_suggestion_without_silent_binding(monkeypatch):
     saved: dict = {}
     provider = {
         "id": "custom-cpm-a3678d32",
@@ -277,7 +278,8 @@ def test_quick_connect_custom_provider_keeps_chat_fallback_warning(monkeypatch):
     }))
 
     binding = result["config"]["providers"][provider["id"]]["models"]["gpt-5.6-sol"]["endpointBinding"]
-    assert binding["wireProtocol"] == "openai.chat_completions"
-    assert binding["endpointPath"] == "chat/completions"
+    assert binding["wireProtocol"] == ""
+    assert binding["endpointPath"] == ""
+    assert binding["protocolSuggestion"] == "openai.chat_completions"
     assert binding["protocolConfidence"] == "hint"
     assert binding["protocolWarning"]

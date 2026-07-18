@@ -18,6 +18,7 @@ from core.model_reasoning_repair import model_reasoning_repair_service
 from core.model_control_plane import model_control_plane
 from core.model_ref import make_model_ref
 from core.model_provider_catalog import model_provider_catalog
+from core.model_provider_channels import resolve_provider_channel
 from core.model_protocol_registry import suggest_model_protocol
 from core.model_role_doctor import diagnose_models
 from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata
@@ -1305,6 +1306,10 @@ async def probe_model_provider(data: dict = Body(...)):
         declared_capabilities = data.get("declaredCapabilities") or data.get("declared_capabilities") or []
         if not isinstance(declared_capabilities, list):
             declared_capabilities = []
+        requested_channels = data.get("channels") if isinstance(data.get("channels"), list) else []
+        requested_default_channel_id = str(
+            data.get("defaultChannelId") or data.get("default_channel_id") or ""
+        ).strip().lower()
         provider = None
         if is_custom_probe:
             provider = model_provider_catalog.build_custom_provider(
@@ -1315,6 +1320,9 @@ async def probe_model_provider(data: dict = Body(...)):
                 api_standard=api_standard,
                 declared_capabilities=declared_capabilities,
             )
+            if requested_channels:
+                provider["channels"] = requested_channels
+                provider["defaultChannelId"] = requested_default_channel_id
             provider_id = str(provider.get("id") or "")
         elif not credential:
             catalog_provider = model_provider_catalog.get_provider(provider_id)
@@ -1385,6 +1393,11 @@ async def connect_model_provider(data: dict = Body(...)):
         operation_kind = str(data.get("operationKind") or data.get("operation_kind") or "").strip()
         adapter = str(data.get("adapter") or "").strip()
         wire_protocol = str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip()
+        channel_id = str(data.get("channelId") or data.get("channel_id") or "").strip().lower()
+        requested_channels = data.get("channels") if isinstance(data.get("channels"), list) else []
+        requested_default_channel_id = str(
+            data.get("defaultChannelId") or data.get("default_channel_id") or ""
+        ).strip().lower()
         provider = model_provider_catalog.get_provider(provider_id)
         if not provider and provider_id in {"__custom__", "custom"}:
             if not incoming_credential:
@@ -1397,12 +1410,28 @@ async def connect_model_provider(data: dict = Body(...)):
                 api_standard=api_standard or "openai",
                 declared_capabilities=declared_capabilities,
             )
+            if requested_channels:
+                provider["channels"] = requested_channels
+                provider["defaultChannelId"] = requested_default_channel_id or channel_id
             provider = model_provider_catalog.save_custom_provider(provider)
             provider_id = str(provider.get("id") or "")
         if not provider:
             raise HTTPException(status_code=404, detail="provider not found")
 
         model = model_provider_catalog.normalize_model(provider, model_id)
+        channel_provider = {
+            **provider,
+            **({"channels": requested_channels, "defaultChannelId": requested_default_channel_id or channel_id} if requested_channels else {}),
+        }
+        requested_channel = resolve_provider_channel(
+            channel_provider,
+            channel_id=channel_id,
+            wire_protocol=wire_protocol,
+        )
+        if channel_id and requested_channel.get("id") != channel_id:
+            raise HTTPException(status_code=422, detail=f"unknown Provider channel: {channel_id}")
+        if not wire_protocol and requested_channel.get("source") == "configured":
+            wire_protocol = str(requested_channel.get("defaultWireProtocol") or "")
         protocol_advice = suggest_model_protocol(
             provider_id,
             api_standard or provider.get("apiStandard") or "openai",
@@ -1410,8 +1439,6 @@ async def connect_model_provider(data: dict = Body(...)):
             provider_meta=provider,
             model_meta=model,
         )
-        if not wire_protocol:
-            wire_protocol = str(protocol_advice.get("wireProtocol") or "")
         if not endpoint_path and wire_protocol and str(model.get("type") or "").upper() not in {
             "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "MEDIA", "WORKFLOW", "MODEL3D",
         }:
@@ -1448,6 +1475,22 @@ async def connect_model_provider(data: dict = Body(...)):
             or prompt_cache_profile_id_for_provider(provider_id),
             "is_enabled": True,
         }
+        if requested_channels:
+            next_provider["channels"] = requested_channels
+            next_provider["defaultChannelId"] = requested_default_channel_id or channel_id
+        elif provider.get("channels"):
+            next_provider["channels"] = provider.get("channels")
+            next_provider["defaultChannelId"] = str(provider.get("defaultChannelId") or channel_id or "")
+        selected_channel = resolve_provider_channel(
+            next_provider,
+            channel_id=channel_id,
+            wire_protocol=wire_protocol,
+        )
+        if channel_id and selected_channel.get("id") != channel_id:
+            raise HTTPException(status_code=422, detail=f"unknown Provider channel: {channel_id}")
+        if selected_channel.get("source") == "configured":
+            next_provider["base_url"] = str(selected_channel.get("baseUrl") or next_provider.get("base_url") or "")
+            next_provider["api_standard"] = str(selected_channel.get("apiStandard") or next_provider.get("api_standard") or "openai")
         is_custom_provider = bool(provider.get("isCustom"))
         is_oauth_provider = auth.get("type") == "oauth_file"
         media_model_types = {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}
@@ -1482,7 +1525,7 @@ async def connect_model_provider(data: dict = Body(...)):
             or prompt_cache_profile_id_for_provider(provider_id),
             "isEnabled": True,
         }
-        if endpoint_path or provider_model_id or operation_kind or adapter or wire_protocol:
+        if endpoint_path or provider_model_id or operation_kind or adapter or wire_protocol or channel_id:
             next_model["endpointBinding"] = {
                 "route": model_id,
                 "endpointPath": endpoint_path,
@@ -1490,10 +1533,11 @@ async def connect_model_provider(data: dict = Body(...)):
                 "operationKind": operation_kind,
                 "adapter": adapter,
                 "wireProtocol": wire_protocol,
-                "protocolConfidence": "authoritative" if str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip() else str(protocol_advice.get("confidence") or "hint"),
-                "protocolSource": "manual" if str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip() else str(protocol_advice.get("source") or "fallback"),
+                "channelId": str(selected_channel.get("id") or channel_id or ""),
+                "protocolConfidence": "authoritative" if wire_protocol and requested_channel.get("source") == "configured" else str(protocol_advice.get("confidence") or "hint"),
+                "protocolSource": "channel" if wire_protocol and requested_channel.get("source") == "configured" else str(protocol_advice.get("source") or "fallback"),
                 "protocolSourceRefs": list(protocol_advice.get("sourceRefs") or []),
-                "protocolWarning": "" if str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip() else str(protocol_advice.get("warning") or ""),
+                "protocolWarning": "" if wire_protocol and requested_channel.get("source") == "configured" else str(protocol_advice.get("warning") or ""),
                 "provenance": {
                     "source": "quick_connect",
                     "confidence": "authoritative",

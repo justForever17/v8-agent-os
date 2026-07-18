@@ -105,12 +105,10 @@ class ModelConnectionTester:
         return "claude" in normalized or "anthropic" in normalized
 
     def _derive_gemini_native_base_url(self, base_url: str) -> str:
-        root = str(base_url or "").strip().rstrip("/")
-        if root.endswith("/v1beta"):
-            return root
-        if root.endswith("/v1"):
-            return f"{root[:-3]}/v1beta"
-        return f"{root}/v1beta" if root else ""
+        # Kept as an exact-url helper for the explicit probe implementation.
+        # Channel selection owns protocol/version semantics; this method must
+        # never translate /v1 to /v1beta.
+        return str(base_url or "").strip().rstrip("/")
 
     def _build_gemini_generate_content_endpoint(self, *, base_url: str, model_id: str) -> str:
         native_base = self._derive_gemini_native_base_url(base_url).rstrip("/")
@@ -130,14 +128,12 @@ class ModelConnectionTester:
         return f"{root}/v1/messages" if root else ""
 
     def _should_probe_gemini_native_route(self, *, model_id: str, meta: Dict[str, Any]) -> bool:
-        api_standard = str(meta.get("api_standard") or "openai").strip().lower()
-        base_url = str(meta.get("base_url") or "").strip()
-        return api_standard == "openai" and bool(base_url) and self._looks_like_gemini_model(model_id)
+        del model_id, meta
+        return False
 
     def _should_probe_anthropic_native_route(self, *, model_id: str, meta: Dict[str, Any]) -> bool:
-        api_standard = str(meta.get("api_standard") or "openai").strip().lower()
-        base_url = str(meta.get("base_url") or "").strip()
-        return api_standard == "openai" and bool(base_url) and self._looks_like_anthropic_model(model_id)
+        del model_id, meta
+        return False
 
     def _probe_gemini_native_generate_content(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         base_url = str(meta.get("base_url") or "").strip()
@@ -264,49 +260,11 @@ class ModelConnectionTester:
         model_id: str,
         meta: Dict[str, Any],
     ) -> Dict[str, Any]:
-        native_probe = self._probe_protocol_native_route(model_id=model_id, meta=meta)
-        if not native_probe:
-            return result
-        if native_probe.get("requestKind") == "gemini_generate_content":
-            recommended_api_standard = "gemini"
-            recommended_base_url = self._derive_gemini_native_base_url(str(meta.get("base_url") or ""))
-            if native_probe.get("status") == "passed":
-                warning_code = "gemini_native_route_detected"
-                warning_message = (
-                    "当前连接测试按 OpenAI 兼容协议通过；同时检测到该 Gemini 模型的原生 /v1beta generateContent 路径可用。"
-                    "如果实际调用需要 Gemini 原生协议，请拆分为 Gemini Provider，并使用 /v1beta baseURL。"
-                )
-            else:
-                warning_code = "gemini_model_under_openai_provider"
-                warning_message = (
-                    "当前连接测试只验证了 OpenAI 兼容路径；模型名属于 Gemini，但原生 /v1beta 路径未通过或未验证。"
-                    "如果代理只支持 Gemini 原生 generateContent，请把 baseURL 改为 /v1beta 并使用 Gemini 协议。"
-                )
-        else:
-            recommended_api_standard = "anthropic"
-            recommended_base_url = str(meta.get("base_url") or "").strip().rstrip("/")
-            if native_probe.get("status") == "passed":
-                warning_code = "anthropic_native_route_detected"
-                warning_message = (
-                    "当前连接测试按 OpenAI 兼容协议通过；同时检测到该 Claude/Anthropic 模型的原生 Messages 路径可用。"
-                    "如果实际调用需要 Anthropic 原生协议，请拆分为 Anthropic Provider，并使用 Messages 兼容 baseURL。"
-                )
-            else:
-                warning_code = "anthropic_model_under_openai_provider"
-                warning_message = (
-                    "当前连接测试只验证了 OpenAI 兼容路径；模型名属于 Claude/Anthropic，但原生 Messages 路径未通过或未验证。"
-                    "如果代理只支持 Anthropic Messages，请改用 Anthropic 协议 Provider。"
-                )
-        return {
-            **result,
-            "protocolWarning": warning_code,
-            "protocolWarningMessage": warning_message,
-            "recommendedApiStandard": recommended_api_standard,
-            "recommendedBaseUrl": recommended_base_url,
-            "nativeProtocolProbe": native_probe,
-            "nativeGeminiProbe": native_probe if native_probe.get("requestKind") == "gemini_generate_content" else None,
-            "nativeAnthropicProbe": native_probe if native_probe.get("requestKind") == "anthropic_messages" else None,
-        }
+        # Kept as a compatibility no-op for callers from older test harnesses.
+        # Protocol suggestions are now rendered from explicit channel metadata;
+        # this method never probes or rewrites another endpoint.
+        del model_id, meta
+        return result
 
     def _probe_local_capability(self, *, model_id: str, meta: Dict[str, Any]) -> Dict[str, Any] | None:
         provider_record = dict(meta.get("provider_record") or {})
@@ -770,7 +728,6 @@ class ModelConnectionTester:
                 capability_checks = self._skipped_runtime_capability_checks("media_generation_provider_probe_only")
             else:
                 result = self._test_chat_model(model_id=runtime_model_id, meta=meta)
-                result = self._attach_protocol_warning(result=result, model_id=wire_model_id, meta=meta)
                 if runtime_ready and self._is_basic_connection_probe_only(meta):
                     capability_checks = self._basic_probe_only_capability_checks("basic_connection_probe_only_for_oauth_quota_safety")
                 elif runtime_ready:
@@ -842,28 +799,12 @@ class ModelConnectionTester:
             }
         except Exception as exc:
             normalized = normalize_provider_error(exc, provider=provider_name, model=wire_model_id)
-            native_protocol_probe = self._probe_protocol_native_route(model_id=wire_model_id, meta=meta)
-            if native_protocol_probe and native_protocol_probe.get("status") == "passed":
-                if native_protocol_probe.get("requestKind") == "gemini_generate_content":
-                    protocol_name = "Gemini 原生 /v1beta generateContent"
-                    recommended_api_standard = "gemini"
-                    recommended_base_url = self._derive_gemini_native_base_url(str(meta.get("base_url") or ""))
-                else:
-                    protocol_name = "Anthropic 原生 Messages"
-                    recommended_api_standard = "anthropic"
-                    recommended_base_url = str(meta.get("base_url") or "").strip().rstrip("/")
-                normalized = {
-                    **normalized,
-                    "code": "protocol_mismatch",
-                    "message": (
-                        f"OpenAI 兼容连接测试失败，但 {protocol_name} 路径测试通过。"
-                        "当前 Provider 协议配置与模型实际可用协议不一致，请拆分对应协议 Provider 后重试。"
-                    ),
-                    "openaiCompatibleError": normalized,
-                }
-            else:
-                recommended_api_standard = None
-                recommended_base_url = None
+            # Protocol/channel probing is explicit in ModelHub. A failed model
+            # test must not trigger model-name based requests against guessed
+            # Gemini or Anthropic endpoints.
+            native_protocol_probe = None
+            recommended_api_standard = None
+            recommended_base_url = None
             latency_ms = round((time.perf_counter() - started) * 1000, 2)
             self._record_health(
                 provider_id=provider_id,

@@ -30,7 +30,7 @@ import { getAdminOptions, resolveAdminLabel } from "@/lib/admin-labels";
 import audioVoicePresets from "@/lib/models/audio-voice-presets.json";
 import { resolveModelIcon, resolveProviderLogo } from "@/lib/models/model-assets";
 import { deriveMediaOperationKinds, getMediaCapabilityOptions, resolveMediaCapabilityModes } from "@/lib/models/media-capabilities";
-import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, } from "@/lib/models/provider-admin";
+import { getLocalBackendPresetConfig, getPlatformLoginPresetConfig, inferPlatformLoginPreset, inferLocalBackendPreset, LOCAL_BACKEND_PRESETS, PLATFORM_LOGIN_PRESETS, type LocalBackendPreset, type PlatformLoginPreset, type ProviderChannel, } from "@/lib/models/provider-admin";
 type AIProvider = {
     id: string;
     name: string;
@@ -50,6 +50,9 @@ type AIProvider = {
     oauthPath?: string;
     oauthPathMasked?: string;
     localBackendPreset?: LocalBackendPreset;
+    channels?: ProviderChannel[];
+    defaultChannelId?: string;
+    channelsSource?: string;
     models: {
         id: string;
     }[];
@@ -137,6 +140,8 @@ type CatalogProvider = {
         messagesPath?: string;
         sourceUrl?: string;
     };
+    channels?: ProviderChannel[];
+    defaultChannelId?: string;
     auth?: { type?: string; path?: string };
     probeStrategy?: string;
     confidence?: string;
@@ -155,7 +160,7 @@ type CatalogProvider = {
 };
 type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
 type CustomProviderCapability = "text" | "vision" | "image" | "video" | "voice" | "music" | "model3d";
-type CatalogRuntimeProtocol = "default" | "anthropic";
+type CatalogRuntimeProtocol = string;
 type ModelWireProtocol = "" | "openai.chat_completions" | "openai.responses" | "anthropic.messages" | "gemini.generate_content";
 
 const MODEL_WIRE_PROTOCOLS: Array<{ id: Exclude<ModelWireProtocol, "">; labelKey: string }> = [
@@ -164,6 +169,39 @@ const MODEL_WIRE_PROTOCOLS: Array<{ id: Exclude<ModelWireProtocol, "">; labelKey
     { id: "anthropic.messages", labelKey: "app.admin.dashboard.model.hub.protocol.anthropicMessages" },
     { id: "gemini.generate_content", labelKey: "app.admin.dashboard.model.hub.protocol.geminiGenerateContent" },
 ];
+
+const PROVIDER_CHANNEL_PRESETS: Array<{
+    id: string;
+    labelKey: string;
+    apiStandard: "openai" | "anthropic" | "gemini" | "comfyui";
+    wireProtocols: Exclude<ModelWireProtocol, "">[];
+    defaultWireProtocol: ModelWireProtocol;
+}> = [
+    { id: "openai", labelKey: "app.admin.dashboard.model.hub.channel.openai", apiStandard: "openai", wireProtocols: ["openai.chat_completions", "openai.responses"], defaultWireProtocol: "openai.chat_completions" },
+    { id: "anthropic", labelKey: "app.admin.dashboard.model.hub.channel.anthropic", apiStandard: "anthropic", wireProtocols: ["anthropic.messages"], defaultWireProtocol: "anthropic.messages" },
+    { id: "gemini", labelKey: "app.admin.dashboard.model.hub.channel.gemini", apiStandard: "gemini", wireProtocols: ["gemini.generate_content"], defaultWireProtocol: "gemini.generate_content" },
+    { id: "comfyui", labelKey: "app.admin.dashboard.model.hub.channel.comfyui", apiStandard: "comfyui", wireProtocols: [], defaultWireProtocol: "" },
+];
+
+function createProviderChannel(apiStandard: string, baseUrl = "", id?: string): ProviderChannel {
+    const preset = PROVIDER_CHANNEL_PRESETS.find((item) => item.apiStandard === apiStandard) || PROVIDER_CHANNEL_PRESETS[0];
+    return {
+        id: id || preset.id,
+        label: preset.id,
+        apiStandard: preset.apiStandard,
+        baseUrl,
+        apiVersion: "",
+        wireProtocols: [...preset.wireProtocols],
+        defaultWireProtocol: preset.defaultWireProtocol,
+        source: "configured",
+    };
+}
+
+function editableProviderChannels(provider: AIProvider | null, apiStandard: string, baseUrl: string): ProviderChannel[] {
+    const configured = (provider?.channels || []).filter((channel) => channel.source !== "legacy_projection");
+    if (configured.length > 0) return configured.map((channel) => ({ ...channel, wireProtocols: [...channel.wireProtocols] }));
+    return [createProviderChannel(apiStandard, baseUrl, "default")];
+}
 
 const CUSTOM_PROVIDER_CAPABILITIES: Array<{ id: CustomProviderCapability; labelKey: string }> = [
     { id: "text", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityText" },
@@ -411,6 +449,17 @@ function previewModelsUrl(provider?: CatalogProvider | null): string {
     return `${provider.baseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function catalogProviderChannels(provider?: CatalogProvider | null): ProviderChannel[] {
+    if (!provider) return [];
+    if (provider.channels?.length) return provider.channels;
+    const primary = createProviderChannel(provider.apiStandard || "openai", provider.baseUrl || "", "default");
+    const channels = [primary];
+    if (provider.anthropicCompatible?.baseUrl) {
+        channels.push(createProviderChannel("anthropic", provider.anthropicCompatible.baseUrl, "anthropic"));
+    }
+    return channels;
+}
+
 function isXiaomiAnthropicBaseUrl(value: string | null | undefined) {
     const normalized = String(value || "").trim().toLowerCase().replace(/\/+$/, "");
     return normalized.includes("xiaomimimo.com/anthropic") || normalized.includes("token-plan-cn.xiaomimimo.com/anthropic");
@@ -601,6 +650,8 @@ export default function ModelHubPage() {
     const [providerCredentialMode, setProviderCredentialMode] = useState<"apiKey" | "oauthFile">("apiKey");
     const [providerApiStandard, setProviderApiStandard] = useState<"openai" | "anthropic" | "gemini" | "comfyui">("openai");
     const [providerBaseUrl, setProviderBaseUrl] = useState("");
+    const [providerChannels, setProviderChannels] = useState<ProviderChannel[]>([createProviderChannel("openai", "", "default")]);
+    const [providerDefaultChannelId, setProviderDefaultChannelId] = useState("default");
     const [providerApiKey, setProviderApiKey] = useState("");
     const [providerOauthPath, setProviderOauthPath] = useState("");
     const [platformLoginPreset, setPlatformLoginPreset] = useState<PlatformLoginPreset>("codex");
@@ -608,6 +659,8 @@ export default function ModelHubPage() {
     const [modelType, setModelType] = useState("TEXT");
     const [mediaCapabilityModes, setMediaCapabilityModes] = useState<string[]>([]);
     const [modelProviderId, setModelProviderId] = useState("");
+    const [modelChannelId, setModelChannelId] = useState("");
+    const [modelWireProtocol, setModelWireProtocol] = useState<ModelWireProtocol>("");
     const [rerankApiFlavor, setRerankApiFlavor] = useState("generic");
     const [connectionStatusMap, setConnectionStatusMap] = useState<Record<string, ModelConnectionStatus>>({});
     const [reasoningRepairStatusMap, setReasoningRepairStatusMap] = useState<Record<string, ModelReasoningRepairStatus>>({});
@@ -624,6 +677,8 @@ export default function ModelHubPage() {
     const [catalogModelFilter, setCatalogModelFilter] = useState("");
     const [customProviderName, setCustomProviderName] = useState("");
     const [customProviderBaseUrl, setCustomProviderBaseUrl] = useState("");
+    const [customProviderChannels, setCustomProviderChannels] = useState<ProviderChannel[]>([createProviderChannel("openai")]);
+    const [customProviderDefaultChannelId, setCustomProviderDefaultChannelId] = useState("openai");
     const [customProviderCapabilities, setCustomProviderCapabilities] = useState<CustomProviderCapability[]>(["text", "vision"]);
     const [probedCatalogProviderId, setProbedCatalogProviderId] = useState("");
     const [catalogProbeStatus, setCatalogProbeStatus] = useState<{
@@ -676,21 +731,40 @@ export default function ModelHubPage() {
         () => apiCatalogProviders.find((item) => item.id === selectedCatalogProviderId) || catalogProviders.find((item) => item.id === selectedCatalogProviderId) || null,
         [apiCatalogProviders, catalogProviders, selectedCatalogProviderId],
     );
+    const selectedModelProvider = useMemo(
+        () => providers.find((provider) => provider.id === modelProviderId) || null,
+        [modelProviderId, providers],
+    );
+    const selectedModelChannel = useMemo(
+        () => selectedModelProvider?.channels?.find((channel) => channel.id === modelChannelId)
+            || selectedModelProvider?.channels?.find((channel) => channel.id === selectedModelProvider.defaultChannelId)
+            || selectedModelProvider?.channels?.[0]
+            || null,
+        [modelChannelId, selectedModelProvider],
+    );
+    const selectedCustomChannel = useMemo(
+        () => customProviderChannels.find((channel) => channel.id === customProviderDefaultChannelId)
+            || customProviderChannels[0],
+        [customProviderChannels, customProviderDefaultChannelId],
+    );
     const catalogPurposeConfig = useMemo(() => getCatalogPurposeConfig(catalogPurpose), [catalogPurpose]);
+    const selectedCatalogChannels = useMemo(
+        () => catalogProviderChannels(selectedCatalogProvider),
+        [selectedCatalogProvider],
+    );
     const selectedCatalogRuntime = useMemo(() => {
-        if (catalogPurpose === "chat" && catalogRuntimeProtocol === "anthropic" && selectedCatalogProvider?.anthropicCompatible?.baseUrl) {
-            return {
-                apiStandard: "anthropic",
-                baseUrl: selectedCatalogProvider.anthropicCompatible.baseUrl,
-                label: "Anthropic-compatible",
-            };
-        }
+        const requestedChannelId = catalogRuntimeProtocol === "default"
+            ? selectedCatalogProvider?.defaultChannelId || selectedCatalogChannels[0]?.id
+            : catalogRuntimeProtocol;
+        const channel = selectedCatalogChannels.find((item) => item.id === requestedChannelId) || selectedCatalogChannels[0];
         return {
-            apiStandard: selectedCatalogProvider?.apiStandard || (catalogPurpose === "workflow" ? "comfyui" : "openai"),
-            baseUrl: selectedCatalogProvider?.baseUrl || "",
-            label: selectedCatalogProvider?.apiStandard || "default",
+            channelId: channel?.id || "",
+            apiStandard: channel?.apiStandard || selectedCatalogProvider?.apiStandard || (catalogPurpose === "workflow" ? "comfyui" : "openai"),
+            baseUrl: channel?.baseUrl || selectedCatalogProvider?.baseUrl || "",
+            label: channel?.label || selectedCatalogProvider?.apiStandard || "default",
+            wireProtocol: channel?.defaultWireProtocol || "",
         };
-    }, [catalogPurpose, catalogRuntimeProtocol, selectedCatalogProvider]);
+    }, [catalogPurpose, catalogRuntimeProtocol, selectedCatalogChannels, selectedCatalogProvider]);
     const catalogPurposeLabel = t(catalogPurposeConfig.labelKey);
     const selectedCredentialHelpUrl = useMemo(() => {
         const help = selectedCatalogProvider?.credentialHelp;
@@ -783,14 +857,37 @@ export default function ModelHubPage() {
     const handleSaveProvider = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const formData = new FormData(event.currentTarget);
-        const payload = Object.fromEntries(formData.entries());
+        const payload: Record<string, unknown> = Object.fromEntries(formData.entries());
+        if (providerType === "API") {
+            const normalizedChannels = providerChannels.map((channel) => ({
+                ...channel,
+                id: channel.id.trim().toLowerCase(),
+                label: channel.label.trim() || channel.id.trim(),
+                baseUrl: channel.baseUrl.trim().replace(/\/+$/, ""),
+                apiVersion: channel.apiVersion.trim().replace(/^\/+|\/+$/g, ""),
+            }));
+            const defaultChannel = normalizedChannels.find((channel) => channel.id === providerDefaultChannelId) || normalizedChannels[0];
+            payload.channels = normalizedChannels;
+            payload.defaultChannelId = defaultChannel?.id || "";
+            payload.baseUrl = defaultChannel?.baseUrl || providerBaseUrl;
+            payload.apiStandard = defaultChannel?.apiStandard || providerApiStandard;
+        }
         const url = editingProvider ? `/api/providers/${editingProvider.id}` : "/api/providers";
         const method = editingProvider ? "PUT" : "POST";
-        await fetch(url, {
+        const response = await fetch(url, {
             method,
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
         });
+        if (!response.ok) {
+            const errorMessage = await readJsonErrorMessage(response, t("app.admin.dashboard.model.hub.page.kd2b2caac"));
+            toast({
+                variant: "destructive",
+                title: t("app.admin.dashboard.model.hub.page.kd2b2caac"),
+                description: errorMessage,
+            });
+            return;
+        }
         setIsProviderDialogOpen(false);
         setEditingProvider(null);
         await fetchData(true);
@@ -808,7 +905,11 @@ export default function ModelHubPage() {
             ...Object.fromEntries(formData.entries()),
             mediaLimits: editingModel?.mediaLimits || undefined,
             endpointBinding: editingModel?.endpointBinding || undefined,
+            channelId: modelChannelId,
         };
+        if (["TEXT", "MULTIMODAL", "VISION", "CHAT"].includes(modelType)) {
+            payload.wireProtocol = modelWireProtocol;
+        }
         if (getMediaCapabilityOptions(modelType).length > 0) {
             payload.capabilityModes = mediaCapabilityModes;
         }
@@ -1059,7 +1160,9 @@ export default function ModelHubPage() {
         if (!selectedCatalogProviderId) return;
         const isCustomProvider = selectedCatalogProviderId === "__custom__";
         const isMediaPurpose = catalogPurpose !== "chat";
-        const baseUrl = isCustomProvider ? customProviderBaseUrl.trim() : (selectedCatalogProvider?.baseUrl || "");
+        const baseUrl = isCustomProvider
+            ? (selectedCustomChannel?.baseUrl || customProviderBaseUrl).trim()
+            : (selectedCatalogProvider?.baseUrl || selectedCatalogRuntime.baseUrl || "");
         const customAnthropicRuntime = isCustomProvider && catalogPurpose === "chat" && isXiaomiAnthropicBaseUrl(baseUrl);
         if (isCustomProvider && (!customProviderName.trim() || !baseUrl)) {
             toast({
@@ -1137,8 +1240,12 @@ export default function ModelHubPage() {
                     customProviderName: isCustomProvider ? customProviderName : "",
                     providerKind: isMediaPurpose ? "media_generation" : "chat",
                     mediaModality: isMediaPurpose ? catalogPurposeConfig.modality : "",
-                    apiStandard: selectedCatalogProvider?.apiStandard || (catalogPurpose === "workflow" ? "comfyui" : "openai"),
+                    apiStandard: isCustomProvider
+                        ? selectedCustomChannel?.apiStandard || (catalogPurpose === "workflow" ? "comfyui" : "openai")
+                        : selectedCatalogProvider?.apiStandard || selectedCatalogRuntime.apiStandard,
                     declaredCapabilities: isCustomProvider ? customProviderCapabilities : [],
+                    channels: isCustomProvider ? customProviderChannels : selectedCatalogChannels,
+                    defaultChannelId: isCustomProvider ? customProviderDefaultChannelId : selectedCatalogRuntime.channelId,
                 }),
             });
             const data = await response.json().catch(() => ({}));
@@ -1242,7 +1349,9 @@ export default function ModelHubPage() {
                 ? `${endpointPath}/${providerModelId}`
                 : modelId;
             const isCustomProvider = providerId === "__custom__" || selectedCatalogProviderId === "__custom__";
-            const baseUrl = isCustomProvider ? customProviderBaseUrl.trim() : selectedCatalogRuntime.baseUrl || provider?.baseUrl || "";
+            const baseUrl = isCustomProvider
+                ? (selectedCustomChannel?.baseUrl || customProviderBaseUrl).trim()
+                : selectedCatalogRuntime.baseUrl || provider?.baseUrl || "";
             const isMediaPurpose = catalogPurpose !== "chat";
             const customAnthropicRuntime = isCustomProvider && catalogPurpose === "chat" && isXiaomiAnthropicBaseUrl(baseUrl);
             const response = await fetch("/api/models/connect", {
@@ -1257,7 +1366,7 @@ export default function ModelHubPage() {
                     providerKind: isMediaPurpose ? "media_generation" : (provider?.providerKind || "chat"),
                     mediaModality: isMediaPurpose ? catalogPurposeConfig.modality : (provider?.mediaModality || ""),
                     apiStandard: isCustomProvider
-                        ? (customAnthropicRuntime ? "anthropic" : catalogPurpose === "workflow" ? "comfyui" : "openai")
+                        ? (selectedCustomChannel?.apiStandard || (customAnthropicRuntime ? "anthropic" : catalogPurpose === "workflow" ? "comfyui" : "openai"))
                         : selectedCatalogRuntime.apiStandard,
                     modelType: getModelTypeForPurpose(catalogPurpose),
                     voiceAppId: requiresVolcengineVoiceConfig ? catalogVoiceAppId.trim() : "",
@@ -1267,7 +1376,10 @@ export default function ModelHubPage() {
                     providerModelId,
                     operationKind: operationKinds[0] || defaultOperationKind[catalogPurpose],
                     adapter: String(mediaLimits.adapter || sourceProvider?.adapter || provider?.adapter || ""),
-                    wireProtocol: catalogRuntimeProtocol === "anthropic" ? "anthropic.messages" : "",
+                    channels: isCustomProvider ? customProviderChannels : selectedCatalogChannels,
+                    defaultChannelId: isCustomProvider ? customProviderDefaultChannelId : selectedCatalogRuntime.channelId,
+                    channelId: isCustomProvider ? selectedCustomChannel?.id || "" : selectedCatalogRuntime.channelId,
+                    wireProtocol: isCustomProvider ? selectedCustomChannel?.defaultWireProtocol || "" : selectedCatalogRuntime.wireProtocol,
                 }),
             });
             const data = await response.json().catch(() => ({}));
@@ -1873,6 +1985,8 @@ export default function ModelHubPage() {
                 setProviderCredentialMode("apiKey");
                 setProviderApiStandard("openai");
                 setProviderBaseUrl("");
+                setProviderChannels([createProviderChannel("openai", "", "default")]);
+                setProviderDefaultChannelId("default");
                 setProviderApiKey("");
                 setProviderOauthPath("");
                 setPlatformLoginPreset("codex");
@@ -1882,7 +1996,18 @@ export default function ModelHubPage() {
                             <Plus className="mr-2 h-4 w-4"/>
                             {t("app.admin.dashboard.model.hub.page.k9e31d9ed")}
                         </Button>
-                        <Button disabled={providers.length === 0} onClick={() => { setEditingModel(null); setModelType("TEXT"); setMediaCapabilityModes([]); setModelProviderId(providers[0]?.id || ""); setRerankApiFlavor("generic"); setIsModelDialogOpen(true); }}>
+                        <Button disabled={providers.length === 0} onClick={() => {
+                            const provider = providers[0];
+                            const channel = provider?.channels?.find((item) => item.id === provider.defaultChannelId) || provider?.channels?.[0];
+                            setEditingModel(null);
+                            setModelType("TEXT");
+                            setMediaCapabilityModes([]);
+                            setModelProviderId(provider?.id || "");
+                            setModelChannelId(channel?.id || "");
+                            setModelWireProtocol((channel?.defaultWireProtocol || "") as ModelWireProtocol);
+                            setRerankApiFlavor("generic");
+                            setIsModelDialogOpen(true);
+                        }}>
                             <Plus className="mr-2 h-4 w-4"/>
                             {t("app.admin.dashboard.model.hub.page.k82b1063c")}
                         </Button>
@@ -1981,31 +2106,74 @@ export default function ModelHubPage() {
                                 <Input value={catalogVoiceResourceId} onChange={(event) => setCatalogVoiceResourceId(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.voiceResourceIdPlaceholder")} />
                             </div>
                         ) : null}
-                        {catalogPurpose === "chat" && selectedCatalogProvider?.anthropicCompatible?.baseUrl ? (
+                        {catalogPurpose === "chat" && selectedCatalogChannels.length > 1 ? (
                             <div className="mt-3 grid gap-2 rounded-xl border border-dashed px-3 py-2">
-                                <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocol")}</Label>
-                                <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-foreground dark:text-slate-300">{catalogRuntimeProtocol === "anthropic" ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic") : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</div>}>
-                                    <Select value={catalogRuntimeProtocol} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
+                                <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.channel.title")}</Label>
+                                <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-foreground dark:text-slate-300">{selectedCatalogRuntime.label}</div>}>
+                                    <Select value={selectedCatalogRuntime.channelId} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
                                         <SelectTrigger className="h-9">
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="default">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolDefault")}</SelectItem>
-                                            <SelectItem value="anthropic">{t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropic")}</SelectItem>
+                                            {selectedCatalogChannels.map((channel) => <SelectItem key={channel.id} value={channel.id}>{channel.label} · {channel.apiStandard}</SelectItem>)}
                                         </SelectContent>
                                     </Select>
                                 </HydrationSafeClientOnly>
                                 <div className="text-xs text-muted-foreground">
-                                    {catalogRuntimeProtocol === "anthropic"
-                                        ? t("app.admin.dashboard.model.hub.catalog.runtimeProtocolAnthropicHint", { baseUrl: selectedCatalogProvider.anthropicCompatible.baseUrl })
-                                        : t("app.admin.dashboard.model.hub.catalog.runtimeProtocolProbeHint", { url: previewModelsUrl(selectedCatalogProvider) })}
+                                    {t("app.admin.dashboard.model.hub.channel.runtimeHint", { baseUrl: selectedCatalogRuntime.baseUrl, protocol: selectedCatalogRuntime.apiStandard })}
                                 </div>
                             </div>
                         ) : null}
                         {selectedCatalogProviderId === "__custom__" ? (
                             <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                <Input value={customProviderName} onChange={(event) => setCustomProviderName(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customNamePlaceholder")}/>
-                                <Input value={customProviderBaseUrl} onChange={(event) => setCustomProviderBaseUrl(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customBaseUrlPlaceholder")}/>
+                                <Input className="md:col-span-2" value={customProviderName} onChange={(event) => setCustomProviderName(event.target.value)} placeholder={t("app.admin.dashboard.model.hub.catalog.customNamePlaceholder")}/>
+                                <div className="md:col-span-2 space-y-2 rounded-xl border border-border/70 p-3">
+                                    <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.channel.title")}</Label>
+                                    {PROVIDER_CHANNEL_PRESETS.filter((preset) => catalogPurpose === "chat" ? preset.apiStandard !== "comfyui" : preset.apiStandard === "openai" || (catalogPurpose === "workflow" && preset.apiStandard === "comfyui")).map((preset) => {
+                                        const channel = customProviderChannels.find((item) => item.id === preset.id);
+                                        const checked = Boolean(channel);
+                                        return (
+                                            <div key={preset.id} className="grid gap-2 rounded-lg border border-border/60 p-2 md:grid-cols-[auto_auto_minmax(0,1fr)] md:items-center">
+                                                <Checkbox
+                                                    checked={checked}
+                                                    disabled={checked && customProviderChannels.length === 1}
+                                                    onCheckedChange={(next) => {
+                                                        if (next === true) {
+                                                            const nextChannel = createProviderChannel(preset.apiStandard, "", preset.id);
+                                                            setCustomProviderChannels((current) => [...current, nextChannel]);
+                                                            if (!customProviderDefaultChannelId) setCustomProviderDefaultChannelId(nextChannel.id);
+                                                        } else {
+                                                            const remaining = customProviderChannels.filter((item) => item.id !== preset.id);
+                                                            setCustomProviderChannels(remaining);
+                                                            if (customProviderDefaultChannelId === preset.id) setCustomProviderDefaultChannelId(remaining[0]?.id || "");
+                                                        }
+                                                    }}
+                                                />
+                                                <label className="flex items-center gap-1.5 text-sm">
+                                                    <input
+                                                        type="radio"
+                                                        name="custom-default-channel"
+                                                        checked={customProviderDefaultChannelId === preset.id}
+                                                        disabled={!checked}
+                                                        onChange={() => setCustomProviderDefaultChannelId(preset.id)}
+                                                    />
+                                                    {t(preset.labelKey)}
+                                                </label>
+                                                <Input
+                                                    value={channel?.baseUrl || ""}
+                                                    disabled={!checked}
+                                                    onChange={(event) => {
+                                                        const nextBaseUrl = event.target.value;
+                                                        setCustomProviderChannels((current) => current.map((item) => item.id === preset.id ? { ...item, baseUrl: nextBaseUrl } : item));
+                                                        if (customProviderDefaultChannelId === preset.id) setCustomProviderBaseUrl(nextBaseUrl);
+                                                    }}
+                                                    placeholder={t("app.admin.dashboard.model.hub.catalog.customBaseUrlPlaceholder")}
+                                                />
+                                            </div>
+                                        );
+                                    })}
+                                    <p className="text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.channel.customHelp")}</p>
+                                </div>
                                 <div className="md:col-span-2">
                                     <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.catalog.capabilities")}</Label>
                                     <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -2150,6 +2318,9 @@ export default function ModelHubPage() {
                     setProviderCredentialMode(provider.type === "PLATFORM" ? "oauthFile" : (provider.credentialMode || "apiKey"));
                     setProviderApiStandard((provider.apiStandard as "openai" | "anthropic" | "gemini" | "comfyui") || "openai");
                     setProviderBaseUrl(provider.baseUrl || "");
+                    const nextChannels = editableProviderChannels(provider, provider.apiStandard || "openai", provider.baseUrl || "");
+                    setProviderChannels(nextChannels);
+                    setProviderDefaultChannelId(provider.defaultChannelId || nextChannels[0]?.id || "default");
                     setProviderApiKey(provider.apiKey || "");
                     setProviderOauthPath(provider.oauthPath || "");
                     setPlatformLoginPreset(inferredPreset);
@@ -2211,6 +2382,8 @@ export default function ModelHubPage() {
                             : model.operationKinds || [model.endpointBinding?.operationKind],
                     ));
                     setModelProviderId(model.providerId);
+                    setModelChannelId(String(model.endpointBinding?.channelId || ""));
+                    setModelWireProtocol(String(model.endpointBinding?.wireProtocol || "") as ModelWireProtocol);
                     setRerankApiFlavor(model.rerankApiFlavor || "generic");
                     setIsModelDialogOpen(true);
                 }} onDelete={handleDeleteModel} onTestConnection={handleTestConnection} onRepairReasoning={handleRepairReasoning} onToggleNoThink={(disabled) => handleToggleNoThink(model, controlMeta, disabled)} onSetReasoningLevel={(level) => handleSetReasoningLevel(model, controlMeta, level)} onToggleProviderHostedTools={(enabled) => handleToggleProviderHostedTools(model, controlMeta, enabled)} onSetDefault={handleSetDefaultModel}/>);
@@ -2223,7 +2396,7 @@ export default function ModelHubPage() {
             {hubEnvelope ? (<SourceMetaRow source={hubEnvelope.source} savePath={hubEnvelope.savePath} reloadRequired={hubEnvelope.reloadRequired}/>) : null}
 
             <Dialog open={isProviderDialogOpen} onOpenChange={setIsProviderDialogOpen}>
-                <DialogContent>
+                <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
                     <DialogHeader>
                         <DialogTitle>{editingProvider ? t("app.admin.dashboard.model.hub.page.k03d9a3c5") : t("app.admin.dashboard.model.hub.page.k9e31d9ed")}</DialogTitle>
                     </DialogHeader>
@@ -2327,17 +2500,111 @@ export default function ModelHubPage() {
                                     <Input id="provider-api-standard-readonly" value={t("app.admin.dashboard.model.hub.page.kdab0f774")} readOnly/>
                                     <input type="hidden" name="apiStandard" value={providerApiStandard}/>
                                 </div>
-                            </>) : (<div className="space-y-2">
-                                <Label htmlFor="provider-api-standard">{t("app.admin.dashboard.model.hub.page.k3a701154")}</Label>
-                                <input type="hidden" name="apiStandard" value={providerApiStandard}/>
-                                <Select value={providerApiStandard} onValueChange={(value: "openai" | "anthropic" | "gemini" | "comfyui") => setProviderApiStandard(value)}>
-                                    <SelectTrigger id="provider-api-standard"><SelectValue>{resolveAdminLabel(t, "providerApiStandard", providerApiStandard)}</SelectValue></SelectTrigger>
-                                    <SelectContent>
-                                        {getAdminOptions("providerApiStandard").map((option) => <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>)}
-                                    </SelectContent>
-                                </Select>
+                            </>) : (<div className="space-y-3 rounded-xl border border-border/70 p-3">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <Label>{t("app.admin.dashboard.model.hub.channel.title")}</Label>
+                                        <p className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.channel.help")}</p>
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                            const used = new Set(providerChannels.map((channel) => channel.id));
+                                            const preset = PROVIDER_CHANNEL_PRESETS.find((item) => !used.has(item.id)) || PROVIDER_CHANNEL_PRESETS[0];
+                                            const suffix = providerChannels.filter((channel) => channel.id.startsWith(preset.id)).length + 1;
+                                            setProviderChannels((current) => [...current, createProviderChannel(preset.apiStandard, "", used.has(preset.id) ? `${preset.id}-${suffix}` : preset.id)]);
+                                        }}
+                                    >
+                                        <Plus className="mr-1 h-3.5 w-3.5" />{t("app.admin.dashboard.model.hub.channel.add")}
+                                    </Button>
+                                </div>
+                                {providerChannels.map((channel, index) => (
+                                    <div key={`${channel.id}-${index}`} className="grid gap-2 rounded-lg border border-border/60 bg-muted/10 p-2 md:grid-cols-2">
+                                        <div className="flex items-center gap-2 md:col-span-2">
+                                            <input
+                                                type="radio"
+                                                name="default-provider-channel"
+                                                checked={providerDefaultChannelId === channel.id}
+                                                onChange={() => setProviderDefaultChannelId(channel.id)}
+                                                aria-label={t("app.admin.dashboard.model.hub.channel.default")}
+                                            />
+                                            <span className="text-xs text-muted-foreground">{t("app.admin.dashboard.model.hub.channel.default")}</span>
+                                            {providerChannels.length > 1 ? (
+                                                <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="ml-auto h-7"
+                                                    onClick={() => {
+                                                        const next = providerChannels.filter((_, itemIndex) => itemIndex !== index);
+                                                        setProviderChannels(next);
+                                                        if (providerDefaultChannelId === channel.id) setProviderDefaultChannelId(next[0]?.id || "");
+                                                    }}
+                                                >
+                                                    <Trash2 className="h-3.5 w-3.5" />
+                                                </Button>
+                                            ) : null}
+                                        </div>
+                                        <Input
+                                            value={channel.id}
+                                            onChange={(event) => {
+                                                const previousId = channel.id;
+                                                const nextId = event.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, "");
+                                                setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, id: nextId } : item));
+                                                if (providerDefaultChannelId === previousId) setProviderDefaultChannelId(nextId);
+                                            }}
+                                            placeholder="openai"
+                                            aria-label={t("app.admin.dashboard.model.hub.channel.id")}
+                                        />
+                                        <Input
+                                            value={channel.label}
+                                            onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item))}
+                                            placeholder={t("app.admin.dashboard.model.hub.channel.label")}
+                                        />
+                                        <select
+                                            value={channel.apiStandard}
+                                            onChange={(event) => {
+                                                const preset = PROVIDER_CHANNEL_PRESETS.find((item) => item.apiStandard === event.target.value) || PROVIDER_CHANNEL_PRESETS[0];
+                                                setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? {
+                                                    ...item,
+                                                    apiStandard: preset.apiStandard,
+                                                    wireProtocols: [...preset.wireProtocols],
+                                                    defaultWireProtocol: preset.defaultWireProtocol,
+                                                } : item));
+                                            }}
+                                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+                                        >
+                                            {PROVIDER_CHANNEL_PRESETS.map((preset) => <option key={preset.id} value={preset.apiStandard}>{t(preset.labelKey)}</option>)}
+                                        </select>
+                                        <select
+                                            value={channel.defaultWireProtocol}
+                                            disabled={channel.wireProtocols.length === 0}
+                                            onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, defaultWireProtocol: event.target.value } : item))}
+                                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground disabled:opacity-60"
+                                        >
+                                            {channel.wireProtocols.length === 0 ? <option value="">{t("app.admin.dashboard.model.hub.channel.noWireProtocol")}</option> : null}
+                                            {MODEL_WIRE_PROTOCOLS.filter((protocol) => channel.wireProtocols.includes(protocol.id)).map((protocol) => <option key={protocol.id} value={protocol.id}>{t(protocol.labelKey)}</option>)}
+                                        </select>
+                                        <Input
+                                            className="md:col-span-2"
+                                            value={channel.baseUrl}
+                                            onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, baseUrl: event.target.value } : item))}
+                                            placeholder={t("app.admin.dashboard.model.hub.catalog.customBaseUrlPlaceholder")}
+                                        />
+                                        {channel.apiStandard === "gemini" ? (
+                                            <Input
+                                                className="md:col-span-2"
+                                                value={channel.apiVersion}
+                                                onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, apiVersion: event.target.value } : item))}
+                                                placeholder={t("app.admin.dashboard.model.hub.channel.apiVersionPlaceholder")}
+                                            />
+                                        ) : null}
+                                    </div>
+                                ))}
                             </div>)}
-                        <div className="space-y-2">
+                        {providerType !== "API" ? (<div className="space-y-2">
                             <Label htmlFor="provider-base-url">{t("app.admin.dashboard.model.hub.page.k8331921c")}</Label>
                             <Input
                                 id="provider-base-url"
@@ -2356,7 +2623,7 @@ export default function ModelHubPage() {
                                     {t("app.admin.dashboard.model.hub.catalog.manualAnthropicBaseUrlHint")}
                                 </p>
                             ) : null}
-                        </div>
+                        </div>) : null}
                         {!platformProviderSelected ? (<div className="space-y-2">
                                 <Label htmlFor="provider-credential-mode">{t("app.admin.dashboard.model.hub.page.k1947a36f")}</Label>
                                 <input type="hidden" name="credentialMode" value={providerCredentialMode}/>
@@ -2394,12 +2661,42 @@ export default function ModelHubPage() {
                         <div className="space-y-2">
                             <Label htmlFor="model-provider">{t("app.admin.dashboard.model.hub.page.kc9371614")}</Label>
                             <input type="hidden" name="providerId" value={modelProviderId}/>
-                            <Select value={modelProviderId} onValueChange={setModelProviderId}>
+                            <Select value={modelProviderId} onValueChange={(value) => {
+                                const provider = providers.find((item) => item.id === value);
+                                const channel = provider?.channels?.find((item) => item.id === provider.defaultChannelId) || provider?.channels?.[0];
+                                setModelProviderId(value);
+                                setModelChannelId(channel?.id || "");
+                                setModelWireProtocol((channel?.defaultWireProtocol || "") as ModelWireProtocol);
+                            }}>
                                 <SelectTrigger id="model-provider"><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                     {providers.map((provider) => (<SelectItem key={provider.id} value={provider.id}>{provider.name}</SelectItem>))}
                                 </SelectContent>
                             </Select>
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="model-channel">{t("app.admin.dashboard.model.hub.channel.modelChannel")}</Label>
+                            <select
+                                id="model-channel"
+                                name="channelId"
+                                value={modelChannelId || selectedModelChannel?.id || ""}
+                                onChange={(event) => {
+                                    const channel = selectedModelProvider?.channels?.find((item) => item.id === event.target.value);
+                                    setModelChannelId(event.target.value);
+                                    setModelWireProtocol((channel?.defaultWireProtocol || "") as ModelWireProtocol);
+                                }}
+                                disabled={!selectedModelProvider?.channels?.length}
+                                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                            >
+                                {(selectedModelProvider?.channels || []).map((channel) => (
+                                    <option key={channel.id} value={channel.id}>
+                                        {channel.label} · {channel.apiStandard} · {channel.baseUrl}
+                                    </option>
+                                ))}
+                            </select>
+                            <p className="text-xs leading-5 text-muted-foreground">
+                                {t("app.admin.dashboard.model.hub.channel.modelChannelHelp")}
+                            </p>
                         </div>
                         <div className="space-y-2">
                             <Label htmlFor="model-model-id">{t("app.admin.dashboard.model.hub.page.k8dbca6d6")}</Label>
@@ -2450,11 +2747,12 @@ export default function ModelHubPage() {
                                     <select
                                         id="model-wire-protocol"
                                         name="wireProtocol"
-                                        defaultValue={String(editingModel?.endpointBinding?.wireProtocol || "")}
+                                        value={modelWireProtocol}
+                                        onChange={(event) => setModelWireProtocol(event.target.value as ModelWireProtocol)}
                                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                     >
                                         <option value="">{t("app.admin.dashboard.model.hub.page.wireProtocolAuto")}</option>
-                                        {MODEL_WIRE_PROTOCOLS.map((protocol) => (
+                                        {MODEL_WIRE_PROTOCOLS.filter((protocol) => !selectedModelChannel?.wireProtocols?.length || selectedModelChannel.wireProtocols.includes(protocol.id)).map((protocol) => (
                                             <option key={protocol.id} value={protocol.id}>{t(protocol.labelKey)}</option>
                                         ))}
                                     </select>

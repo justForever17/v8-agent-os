@@ -130,7 +130,7 @@ def test_media_generation_connection_uses_provider_probe(monkeypatch):
     assert result["capabilityChecks"]["streaming"]["reason"] == "media_generation_provider_probe_only"
 
 
-def test_openai_provider_gemini_model_reports_native_route_warning(monkeypatch):
+def test_openai_provider_gemini_model_does_not_probe_an_unconfigured_native_route(monkeypatch):
     tester = ModelConnectionTester()
     meta = {
         "model_id": "gemini-3.5-flash-low",
@@ -163,24 +163,17 @@ def test_openai_provider_gemini_model_reports_native_route_warning(monkeypatch):
     monkeypatch.setattr(
         tester,
         "_probe_gemini_native_generate_content",
-        lambda **_kwargs: {
-            "status": "passed",
-            "requestKind": "gemini_generate_content",
-            "resolvedEndpoint": "http://127.0.0.1:8731/v1beta/models/gemini-3.5-flash-low:generateContent",
-            "message": "OK",
-        },
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unconfigured channel must not be probed")),
     )
 
     result = tester.test_model_connection(model_id="gemini-3.5-flash-low", provider_id="cliproxy")
 
     assert result["ok"] is True
-    assert result["protocolWarning"] == "gemini_native_route_detected"
-    assert result["recommendedApiStandard"] == "gemini"
-    assert result["recommendedBaseUrl"] == "http://127.0.0.1:8731/v1beta"
-    assert result["nativeGeminiProbe"]["status"] == "passed"
+    assert "protocolWarning" not in result
+    assert result.get("nativeGeminiProbe") is None
 
 
-def test_openai_failure_with_gemini_native_success_reports_protocol_mismatch(monkeypatch):
+def test_openai_failure_does_not_retry_a_guessed_gemini_route(monkeypatch):
     tester = ModelConnectionTester()
     meta = {
         "model_id": "gemini-3.5-flash-low",
@@ -207,23 +200,18 @@ def test_openai_failure_with_gemini_native_success_reports_protocol_mismatch(mon
     monkeypatch.setattr(
         tester,
         "_probe_gemini_native_generate_content",
-        lambda **_kwargs: {
-            "status": "passed",
-            "requestKind": "gemini_generate_content",
-            "resolvedEndpoint": "http://127.0.0.1:8731/v1beta/models/gemini-3.5-flash-low:generateContent",
-            "message": "OK",
-        },
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unconfigured channel must not be probed")),
     )
 
     result = tester.test_model_connection(model_id="gemini-3.5-flash-low", provider_id="cliproxy")
 
     assert result["ok"] is False
-    assert result["error"]["code"] == "protocol_mismatch"
-    assert result["nativeGeminiProbe"]["status"] == "passed"
-    assert result["recommendedBaseUrl"] == "http://127.0.0.1:8731/v1beta"
+    assert result["error"]["code"] != "protocol_mismatch"
+    assert result["nativeGeminiProbe"] is None
+    assert result["recommendedBaseUrl"] is None
 
 
-def test_openai_provider_claude_model_reports_anthropic_route_warning(monkeypatch):
+def test_openai_provider_claude_model_does_not_probe_an_unconfigured_anthropic_route(monkeypatch):
     tester = ModelConnectionTester()
     meta = {
         "model_id": "claude-sonnet-4-5",
@@ -256,24 +244,17 @@ def test_openai_provider_claude_model_reports_anthropic_route_warning(monkeypatc
     monkeypatch.setattr(
         tester,
         "_probe_anthropic_native_messages",
-        lambda **_kwargs: {
-            "status": "passed",
-            "requestKind": "anthropic_messages",
-            "resolvedEndpoint": "http://127.0.0.1:8731/v1/messages",
-            "message": "OK",
-        },
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unconfigured channel must not be probed")),
     )
 
     result = tester.test_model_connection(model_id="claude-sonnet-4-5", provider_id="cliproxy")
 
     assert result["ok"] is True
-    assert result["protocolWarning"] == "anthropic_native_route_detected"
-    assert result["recommendedApiStandard"] == "anthropic"
-    assert result["recommendedBaseUrl"] == "http://127.0.0.1:8731/v1"
-    assert result["nativeAnthropicProbe"]["status"] == "passed"
+    assert "protocolWarning" not in result
+    assert result.get("nativeAnthropicProbe") is None
 
 
-def test_openai_failure_with_anthropic_native_success_reports_protocol_mismatch(monkeypatch):
+def test_openai_failure_does_not_retry_a_guessed_anthropic_route(monkeypatch):
     tester = ModelConnectionTester()
     meta = {
         "model_id": "claude-sonnet-4-5",
@@ -300,17 +281,12 @@ def test_openai_failure_with_anthropic_native_success_reports_protocol_mismatch(
     monkeypatch.setattr(
         tester,
         "_probe_anthropic_native_messages",
-        lambda **_kwargs: {
-            "status": "passed",
-            "requestKind": "anthropic_messages",
-            "resolvedEndpoint": "http://127.0.0.1:8731/v1/messages",
-            "message": "OK",
-        },
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unconfigured channel must not be probed")),
     )
 
     result = tester.test_model_connection(model_id="claude-sonnet-4-5", provider_id="cliproxy")
 
     assert result["ok"] is False
-    assert result["error"]["code"] == "protocol_mismatch"
-    assert result["nativeAnthropicProbe"]["status"] == "passed"
-    assert result["recommendedApiStandard"] == "anthropic"
+    assert result["error"]["code"] != "protocol_mismatch"
+    assert result["nativeAnthropicProbe"] is None
+    assert result["recommendedApiStandard"] is None

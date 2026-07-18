@@ -64,6 +64,10 @@ test("Manual and quick model setup share the canonical binding write surface", (
   assert.match(form, /name="providerModelId"/);
   assert.match(form, /name="operationKind"/);
   assert.match(form, /name="wireProtocol"/);
+  assert.match(form, /name="channelId"/);
+  assert.match(form, /providerChannels/);
+  assert.match(form, /customProviderChannels/);
+  assert.match(form, /defaultChannelId/);
   assert.match(form, /openai\.responses/);
   assert.match(form, /handleToggleProviderHostedTools/);
   assert.match(form, /tools: \["web_search"\]/);

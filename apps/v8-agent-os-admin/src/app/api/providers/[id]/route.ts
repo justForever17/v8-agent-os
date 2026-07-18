@@ -41,6 +41,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         if ("credentialMode" in data) providerPatch.credential_mode = data.credentialMode;
         if ("platformLoginPreset" in data) providerPatch.oauth_preset = data.platformLoginPreset;
         if ("localBackendPreset" in data) providerPatch.local_backend_preset = data.localBackendPreset;
+        if (Array.isArray(data.channels)) providerPatch.channels = data.channels;
+        if ("defaultChannelId" in data) providerPatch.defaultChannelId = data.defaultChannelId;
         let currentCredential = buildStoredCredential({
             providerType: String(data.type || ""),
             credentialMode: String(data.credentialMode || ""),

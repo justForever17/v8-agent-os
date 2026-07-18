@@ -181,6 +181,10 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
         ? String(existingBinding.wireProtocol || "").trim()
         : String(data.wireProtocol || "").trim();
     const protocolFieldPresent = Object.prototype.hasOwnProperty.call(data, "wireProtocol");
+    const channelId = data.channelId === undefined
+        ? String(existingBinding.channelId || "").trim()
+        : String(data.channelId || "").trim();
+    const channelFieldPresent = Object.prototype.hasOwnProperty.call(data, "channelId");
     const protocolEndpointPaths: Record<string, string> = {
         "openai.chat_completions": "chat/completions",
         "openai.responses": "responses",
@@ -204,13 +208,14 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
     const adapter = data.adapter === undefined
         ? String(existingBinding.adapter || "").trim()
         : String(data.adapter || "").trim();
-    if (endpointPath || providerModelId || operationKind || adapter || wireProtocol || protocolFieldPresent || capabilityModesProvided) {
+    if (endpointPath || providerModelId || operationKind || adapter || wireProtocol || channelId || protocolFieldPresent || channelFieldPresent || capabilityModesProvided) {
         payload.endpointBinding = {
             ...existingBinding,
             endpointPath,
             providerModelId,
             operationKind,
             adapter,
+            channelId,
             wireProtocol,
             protocolConfidence: wireProtocol ? "authoritative" : "",
             protocolSource: wireProtocol ? "manual" : "",

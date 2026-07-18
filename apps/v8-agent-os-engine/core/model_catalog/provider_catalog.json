@@ -7,6 +7,11 @@
       "name": "OpenAI",
       "apiStandard": "openai",
       "baseUrl": "https://api.openai.com/v1",
+      "defaultChannelId": "responses",
+      "channels": [
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://api.openai.com/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.openai.com/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -683,6 +688,11 @@
       "name": "DeepSeek",
       "apiStandard": "openai",
       "baseUrl": "https://api.deepseek.com",
+      "defaultChannelId": "openai",
+      "channels": [
+        { "id": "openai", "label": "OpenAI-compatible", "apiStandard": "openai", "baseUrl": "https://api.deepseek.com", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.deepseek.com/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -1453,6 +1463,11 @@
       "name": "Xiaomi MiMo",
       "apiStandard": "openai",
       "baseUrl": "https://api.xiaomimimo.com/v1",
+      "defaultChannelId": "openai",
+      "channels": [
+        { "id": "openai", "label": "OpenAI-compatible", "apiStandard": "openai", "baseUrl": "https://api.xiaomimimo.com/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.xiaomimimo.com/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -1673,6 +1688,11 @@
       "name": "Xiaomi MiMo TokenPlan",
       "apiStandard": "openai",
       "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1",
+      "defaultChannelId": "openai",
+      "channels": [
+        { "id": "openai", "label": "OpenAI-compatible", "apiStandard": "openai", "baseUrl": "https://token-plan-cn.xiaomimimo.com/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://token-plan-cn.xiaomimimo.com/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -1939,6 +1959,11 @@
       "name": "MiniMax International",
       "apiStandard": "openai",
       "baseUrl": "https://api.minimax.io/v1",
+      "defaultChannelId": "openai",
+      "channels": [
+        { "id": "openai", "label": "OpenAI-compatible", "apiStandard": "openai", "baseUrl": "https://api.minimax.io/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.minimax.io/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -2127,6 +2152,11 @@
       "name": "MiniMax 中国站",
       "apiStandard": "openai",
       "baseUrl": "https://api.minimaxi.com/v1",
+      "defaultChannelId": "openai",
+      "channels": [
+        { "id": "openai", "label": "OpenAI-compatible", "apiStandard": "openai", "baseUrl": "https://api.minimaxi.com/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.minimaxi.com/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",

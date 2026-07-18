@@ -51,6 +51,8 @@ export async function POST(req: NextRequest) {
             oauth_preset: data.platformLoginPreset || "",
             local_backend_preset: data.localBackendPreset || "",
         };
+        if (Array.isArray(data.channels)) providerPatch.channels = data.channels;
+        if ("defaultChannelId" in data) providerPatch.defaultChannelId = data.defaultChannelId;
         let storedCredential = buildStoredCredential({
             providerType: String(data.type || ""),
             credentialMode: String(data.credentialMode || ""),

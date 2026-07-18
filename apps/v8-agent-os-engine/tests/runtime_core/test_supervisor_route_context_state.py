@@ -21,6 +21,9 @@ def test_supervisor_runtime_metadata_reports_strict_checkpoint_contract():
 
     assert metadata["checkpoint_deserialization"] == "msgpack_strict"
     assert metadata["checkpoint_write_contract"] is True
+    assert metadata["checkpoint_encryption"] == "aes_256_gcm"
+    assert metadata["checkpoint_delta_channel"] is True
+    assert metadata["checkpoint_replay_governance"] is True
 
 
 def test_supervisor_initial_state_promotes_identity_to_top_level_fields():

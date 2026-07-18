@@ -1,10 +1,19 @@
-from typing import TypedDict, Sequence, Annotated
-import operator
-from langchain_core.messages import BaseMessage
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import AnyMessage
+from langgraph.channels import DeltaChannel
 from langgraph.graph import StateGraph, START, END
 
+from .state_channels import MESSAGE_DELTA_SNAPSHOT_FREQUENCY, reduce_message_deltas
+
 class HookState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], operator.add]
+    messages: Annotated[
+        list[AnyMessage],
+        DeltaChannel(
+            reduce_message_deltas,
+            snapshot_frequency=MESSAGE_DELTA_SNAPSHOT_FREQUENCY,
+        ),
+    ]
     agent_name: str
     hook_event: str
     hook_context: dict

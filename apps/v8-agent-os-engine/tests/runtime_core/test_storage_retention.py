@@ -6,11 +6,52 @@ from contextlib import closing
 from pathlib import Path
 
 from core.database import DatabaseManager
+from erc.checkpoint_security import build_checkpoint_serializer
 from erc.checkpoint_store import CheckpointStore
 from langgraph.checkpoint.base import empty_checkpoint
 from core.observability_db import ObservabilityDatabaseManager
 from core.storage_retention import StorageRetentionService
 import core.storage_retention as storage_retention_module
+
+
+def _create_checkpoint_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
+    conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
+
+
+def _insert_checkpoint(
+    conn: sqlite3.Connection,
+    *,
+    thread_id: str,
+    checkpoint_id: str,
+    parent_checkpoint_id: str | None,
+    channel_values: dict | None = None,
+) -> None:
+    serializer = build_checkpoint_serializer()
+    checkpoint = empty_checkpoint()
+    checkpoint["id"] = checkpoint_id
+    checkpoint["channel_values"] = dict(channel_values or {"messages": []})
+    serialization_type, blob = serializer.dumps_typed(checkpoint)
+    conn.execute(
+        "INSERT INTO checkpoints VALUES (?, '', ?, ?, ?, ?, ?)",
+        (thread_id, checkpoint_id, parent_checkpoint_id, serialization_type, blob, b"{}"),
+    )
+
+
+def _insert_write(
+    conn: sqlite3.Connection,
+    *,
+    thread_id: str,
+    checkpoint_id: str,
+    task_id: str,
+    channel: str,
+    value: object,
+) -> None:
+    serialization_type, blob = build_checkpoint_serializer().dumps_typed(value)
+    conn.execute(
+        "INSERT INTO writes VALUES (?, '', ?, ?, 0, ?, ?, ?)",
+        (thread_id, checkpoint_id, task_id, channel, serialization_type, blob),
+    )
 
 
 def _patch_retention_paths(monkeypatch, root: Path) -> ObservabilityDatabaseManager:
@@ -266,13 +307,12 @@ def test_retention_prunes_old_checkpoints_but_keeps_active_and_idle_latest(monke
         )
         checkpoint_path = root / "checkpoints.db"
         with closing(sqlite3.connect(checkpoint_path)) as conn:
-            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
-            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
-            conn.execute("INSERT INTO checkpoints VALUES ('active-thread', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
-            conn.execute("INSERT INTO checkpoints VALUES ('old-thread', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
-            conn.execute("INSERT INTO checkpoints VALUES ('old-thread', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
-            conn.execute("INSERT INTO writes VALUES ('old-thread', '', '001', 'task', 0, 'messages', 'msgpack', zeroblob(1024))")
-            conn.execute("INSERT INTO writes VALUES ('old-thread', '', '002', 'task', 0, 'messages', 'msgpack', zeroblob(1024))")
+            _create_checkpoint_tables(conn)
+            _insert_checkpoint(conn, thread_id="active-thread", checkpoint_id="001", parent_checkpoint_id=None)
+            _insert_checkpoint(conn, thread_id="old-thread", checkpoint_id="001", parent_checkpoint_id=None)
+            _insert_checkpoint(conn, thread_id="old-thread", checkpoint_id="002", parent_checkpoint_id="001")
+            _insert_write(conn, thread_id="old-thread", checkpoint_id="001", task_id="task", channel="messages", value=[])
+            _insert_write(conn, thread_id="old-thread", checkpoint_id="002", task_id="task", channel="messages", value=[])
             conn.commit()
         service = _make_service(1)
 
@@ -298,10 +338,9 @@ def test_checkpoint_lifecycle_pruning_runs_even_when_storage_is_below_budget(mon
         db.create_or_update_session("idle-session", "idle", user_id="user")
         checkpoint_path = root / "checkpoints.db"
         with closing(sqlite3.connect(checkpoint_path)) as conn:
-            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
-            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
-            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
-            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
+            _create_checkpoint_tables(conn)
+            _insert_checkpoint(conn, thread_id="idle-session", checkpoint_id="001", parent_checkpoint_id=None)
+            _insert_checkpoint(conn, thread_id="idle-session", checkpoint_id="002", parent_checkpoint_id="001")
             conn.commit()
         service = _make_service(10 * 1024 * 1024)
 
@@ -380,14 +419,15 @@ def test_waiting_session_keeps_bounded_recovery_tail(monkeypatch):
         )
         checkpoint_path = root / "checkpoints.db"
         with closing(sqlite3.connect(checkpoint_path)) as conn:
-            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
-            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
+            _create_checkpoint_tables(conn)
             for index in range(12):
                 checkpoint_id = f"{index:03d}"
                 parent = f"{index - 1:03d}" if index else None
-                conn.execute(
-                    "INSERT INTO checkpoints VALUES (?, '', ?, ?, 'msgpack', zeroblob(1024), zeroblob(10))",
-                    ("waiting-session", checkpoint_id, parent),
+                _insert_checkpoint(
+                    conn,
+                    thread_id="waiting-session",
+                    checkpoint_id=checkpoint_id,
+                    parent_checkpoint_id=parent,
                 )
             conn.commit()
         result = _make_service(1).enforce(dry_run=False, reason="waiting_tail_test")
@@ -409,10 +449,9 @@ def test_retention_backup_failure_blocks_checkpoint_mutation(monkeypatch):
         db.create_or_update_session("idle-session", "idle", user_id="user")
         checkpoint_path = root / "checkpoints.db"
         with closing(sqlite3.connect(checkpoint_path)) as conn:
-            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
-            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
-            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
-            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
+            _create_checkpoint_tables(conn)
+            _insert_checkpoint(conn, thread_id="idle-session", checkpoint_id="001", parent_checkpoint_id=None)
+            _insert_checkpoint(conn, thread_id="idle-session", checkpoint_id="002", parent_checkpoint_id="001")
             conn.commit()
 
         def fail_backup(*_args, **_kwargs):
@@ -435,10 +474,9 @@ def test_emergency_safe_mode_never_prunes_checkpoints(monkeypatch):
         db.create_or_update_session("idle-session", "idle", user_id="user")
         checkpoint_path = root / "checkpoints.db"
         with closing(sqlite3.connect(checkpoint_path)) as conn:
-            conn.execute("CREATE TABLE checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))")
-            conn.execute("CREATE TABLE writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))")
-            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '001', NULL, 'msgpack', zeroblob(1024), zeroblob(10))")
-            conn.execute("INSERT INTO checkpoints VALUES ('idle-session', '', '002', '001', 'msgpack', zeroblob(1024), zeroblob(10))")
+            _create_checkpoint_tables(conn)
+            _insert_checkpoint(conn, thread_id="idle-session", checkpoint_id="001", parent_checkpoint_id=None)
+            _insert_checkpoint(conn, thread_id="idle-session", checkpoint_id="002", parent_checkpoint_id="001")
             conn.commit()
         service = _make_service(1)
         monkeypatch.setattr(

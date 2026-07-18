@@ -2839,10 +2839,11 @@ async def generate_periodic_summary(
 # === Agent Hook 包装 ===
 
 from typing import TypedDict, Any
+from langchain_core.messages import AnyMessage
 from langgraph.graph import StateGraph, START, END
 
 class AgentHookState(TypedDict):
-    messages: list
+    messages: list[AnyMessage]
     hook_event: str
     hook_context: Dict[str, Any]
 

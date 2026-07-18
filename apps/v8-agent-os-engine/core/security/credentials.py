@@ -11,10 +11,12 @@ from typing import Any
 _REF_PREFIXES = {
     "plugin": "cred:v8-plugin:",
     "model": "cred:v8-model:",
+    "system": "cred:v8-system:",
 }
 _TARGET_PREFIXES = {
     "plugin": "V8AgentOS/plugin/",
     "model": "V8AgentOS/model/",
+    "system": "V8AgentOS/system/",
 }
 
 

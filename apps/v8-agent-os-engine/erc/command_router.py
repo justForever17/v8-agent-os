@@ -145,8 +145,20 @@ class RuntimeCommandRouter:
             result = erc_kernel.approve(approval_id, response=command.response)
             if result:
                 approval = result.get("approval") or {}
+                approval_kind = self._approval_kind(approval)
+                if approval_kind in {"checkpoint_replay", "checkpoint_fork"}:
+                    request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+                    operation_id = str(request.get("operationId") or request.get("operation_id") or "").strip()
+                    if not operation_id:
+                        raise ValueError("Checkpoint approval is missing operationId")
+                    from erc.checkpoint_governance import checkpoint_governance_service
+
+                    result["checkpoint_operation"] = checkpoint_governance_service.schedule_approved_operation(
+                        operation_id
+                    )
+                    return result
                 spec_approval_result = None
-                if self._approval_kind(approval) == "spec_stage_approval":
+                if approval_kind == "spec_stage_approval":
                     spec_approval_result = self._apply_spec_stage_approval(approval, command.response or {})
                     result["spec_stage_approval"] = spec_approval_result
                 if isinstance(spec_approval_result, dict) and spec_approval_result.get("ok") is False:
@@ -170,6 +182,18 @@ class RuntimeCommandRouter:
             result = erc_kernel.reject(approval_id, response=command.response)
             if result:
                 approval = result.get("approval") or {}
+                approval_kind = self._approval_kind(approval)
+                if approval_kind in {"checkpoint_replay", "checkpoint_fork"}:
+                    request = approval.get("request") if isinstance(approval.get("request"), dict) else {}
+                    operation_id = str(request.get("operationId") or request.get("operation_id") or "").strip()
+                    if operation_id:
+                        from erc.checkpoint_governance import checkpoint_governance_service
+
+                        result["checkpoint_operation"] = checkpoint_governance_service.reject_operation(
+                            operation_id,
+                            reason=str((command.response or {}).get("reason") or "user_rejected"),
+                        )
+                    return result
                 if self._approval_kind(approval) == "spec_stage_approval":
                     resume_info = self._resume_spec_revision(approval, command.response or {})
                     if resume_info:

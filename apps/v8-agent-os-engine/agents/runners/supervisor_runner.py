@@ -63,6 +63,9 @@ class SupervisorAgentRunner:
             "checkpoint_backend": "sqlite_async",
             "checkpoint_deserialization": "msgpack_strict",
             "checkpoint_write_contract": True,
+            "checkpoint_encryption": "aes_256_gcm",
+            "checkpoint_delta_channel": True,
+            "checkpoint_replay_governance": True,
             "supports_checkpoint_resume": True,
             "supports_graph_interrupt": True,
         }

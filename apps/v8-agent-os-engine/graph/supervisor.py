@@ -1,11 +1,12 @@
-from typing import Annotated, NotRequired, Sequence, TypedDict
+from typing import Annotated, NotRequired, TypedDict
 import operator
 
 from runtimes.memory.scope_resolution import scope_resolution_service
 from core.models.provider_compatibility import install_provider_compatibility_patches
 from core.response_normalizer import ensure_reasoning_content
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AnyMessage
+from langgraph.channels import DeltaChannel
 
 from runtimes.extensions.skills.loader import fetch_skill_instructions
 from api.models import EngineConfig
@@ -16,13 +17,20 @@ from .supervisor_builder import build_supervisor_node, build_supervisor_runtime_
 from .supervisor_support import build_agent_runtime_failure_command, extract_task_context, resolve_todos
 from .workflow_assembly import compile_supervisor_workflow
 from .route_context import merge_route_context
+from .state_channels import MESSAGE_DELTA_SNAPSHOT_FREQUENCY, reduce_message_deltas
 
 install_provider_compatibility_patches()
 
 from langgraph.managed import RemainingSteps
 
 class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], operator.add]
+    messages: Annotated[
+        list[AnyMessage],
+        DeltaChannel(
+            reduce_message_deltas,
+            snapshot_frequency=MESSAGE_DELTA_SNAPSHOT_FREQUENCY,
+        ),
+    ]
     remaining_steps: RemainingSteps
     todos: Annotated[list, operator.add]
     delegation_contexts: Annotated[list, operator.add]

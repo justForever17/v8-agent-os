@@ -997,11 +997,15 @@ class StorageRetentionService:
     def _prune_old_checkpoints(self, *, dry_run: bool) -> List[Dict[str, Any]]:
         if not CHECKPOINT_DB_PATH.exists():
             return []
+        from erc.checkpoint_security import build_checkpoint_serializer
+
+        serializer = build_checkpoint_serializer()
         policies = self._checkpoint_thread_policies()
         with _connect(CHECKPOINT_DB_PATH) as conn:
             rows = conn.execute(
                 """
                 SELECT c.thread_id, c.checkpoint_ns, c.checkpoint_id, c.parent_checkpoint_id,
+                       c.metadata,
                        COALESCE(length(c.checkpoint), 0) + COALESCE(length(c.metadata), 0)
                        + COALESCE((
                            SELECT SUM(COALESCE(length(w.value), 0)) FROM writes w
@@ -1019,6 +1023,9 @@ class StorageRetentionService:
             delete_keys: List[tuple[str, str, str]] = []
             delete_sizes: Dict[tuple[str, str, str], int] = {}
             retained: Dict[tuple[str, str], List[str]] = {}
+            recovery_targets: Dict[tuple[str, str], List[str]] = {}
+            delta_managed_keys: set[tuple[str, str]] = set()
+            anchor_count = 0
             policy_counts = {"running": 0, "recoverable": 0, "idle": 0, "orphan": 0}
             for key, checkpoints in grouped.items():
                 thread_id, checkpoint_ns = key
@@ -1026,20 +1033,31 @@ class StorageRetentionService:
                 policy_counts[policy] = policy_counts.get(policy, 0) + 1
                 if policy == "running":
                     retained[key] = [str(row["checkpoint_id"]) for row in checkpoints]
+                    recovery_targets[key] = [str(checkpoints[0]["checkpoint_id"])] if checkpoints else []
                     continue
-                keep_ids: List[str] = []
+                target_ids: List[str] = []
                 if policy == "recoverable":
                     kept_bytes = 0
                     for index, row in enumerate(checkpoints):
                         size = int(row["logical_bytes"] or 0)
                         if index == 0 or (
-                            len(keep_ids) < RECOVERY_CHECKPOINT_MAX_COUNT
+                            len(target_ids) < RECOVERY_CHECKPOINT_MAX_COUNT
                             and kept_bytes + size <= RECOVERY_CHECKPOINT_MAX_BYTES
                         ):
-                            keep_ids.append(str(row["checkpoint_id"]))
+                            target_ids.append(str(row["checkpoint_id"]))
                             kept_bytes += size
                 elif policy == "idle":
-                    keep_ids = [str(checkpoints[0]["checkpoint_id"])] if checkpoints else []
+                    target_ids = [str(checkpoints[0]["checkpoint_id"])] if checkpoints else []
+                recovery_targets[key] = list(target_ids)
+                keep_ids, delta_managed = self._delta_safe_checkpoint_ids(
+                    conn,
+                    checkpoints,
+                    target_ids=target_ids,
+                    serializer=serializer,
+                )
+                if delta_managed:
+                    delta_managed_keys.add(key)
+                anchor_count += max(0, len(keep_ids) - len(target_ids))
                 retained[key] = keep_ids
                 keep_set = set(keep_ids)
                 for row in checkpoints:
@@ -1059,9 +1077,15 @@ class StorageRetentionService:
             delete_set = set(delete_keys)
             if not dry_run:
                 latest_before = {
-                    key: self._checkpoint_resume_fingerprint(conn, key[0], key[1], checkpoints[0]["checkpoint_id"])
-                    for key, checkpoints in grouped.items()
-                    if checkpoints and policies.get(key[0], "orphan") != "orphan"
+                    (key[0], key[1], checkpoint_id): self._checkpoint_resume_fingerprint(
+                        conn,
+                        key[0],
+                        key[1],
+                        checkpoint_id,
+                        serializer=serializer,
+                    )
+                    for key, checkpoint_ids in recovery_targets.items()
+                    for checkpoint_id in checkpoint_ids
                 }
                 conn.execute("BEGIN IMMEDIATE")
                 try:
@@ -1084,25 +1108,34 @@ class StorageRetentionService:
                         if row and row["parent_checkpoint_id"] and (
                             key[0], key[1], str(row["parent_checkpoint_id"])
                         ) in delete_set:
+                            checkpoint_row = conn.execute(
+                                "SELECT type, checkpoint, metadata FROM checkpoints "
+                                "WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
+                                (key[0], key[1], oldest_retained),
+                            ).fetchone()
+                            if key in delta_managed_keys and (
+                                not checkpoint_row or not self._checkpoint_is_delta_boundary(
+                                    checkpoint_row,
+                                    serializer=serializer,
+                                )
+                            ):
+                                raise RuntimeError(
+                                    f"retention would sever DeltaChannel history for {(key[0], key[1], oldest_retained)}"
+                                )
                             conn.execute(
                                 "UPDATE checkpoints SET parent_checkpoint_id = NULL WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
                                 (key[0], key[1], oldest_retained),
                             )
                     for key, fingerprint in latest_before.items():
-                        latest_row = conn.execute(
-                            "SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ? ORDER BY checkpoint_id DESC LIMIT 1",
-                            key,
-                        ).fetchone()
-                        if not latest_row:
-                            raise RuntimeError(f"retention removed latest checkpoint for {key}")
                         after = self._checkpoint_resume_fingerprint(
                             conn,
                             key[0],
                             key[1],
-                            str(latest_row["checkpoint_id"]),
+                            key[2],
+                            serializer=serializer,
                         )
                         if after != fingerprint:
-                            raise RuntimeError(f"latest checkpoint resume fingerprint changed for {key}")
+                            raise RuntimeError(f"checkpoint resume fingerprint changed for {key}")
                     conn.commit()
                 except Exception:
                     conn.rollback()
@@ -1112,8 +1145,119 @@ class StorageRetentionService:
                 "checkpoints": total_delete_count if dry_run else len(delete_keys),
                 "estimatedLogicalBytes": total_estimated_bytes if dry_run else estimated_bytes,
                 "policies": policy_counts,
+                "deltaAnchorCheckpoints": anchor_count,
                 "dryRun": dry_run,
             }]
+
+    @staticmethod
+    def _checkpoint_message_delta_flags(
+        row: sqlite3.Row,
+        *,
+        serializer: Any,
+    ) -> tuple[bool, bool]:
+        from erc.checkpoint_security import CHECKPOINT_MESSAGE_RETENTION_METADATA_KEY
+
+        metadata_blob = row["metadata"] if "metadata" in row.keys() else None
+        if metadata_blob:
+            try:
+                metadata = json.loads(bytes(metadata_blob).decode("utf-8"))
+            except (TypeError, ValueError, UnicodeError):
+                metadata = {}
+            marker = str(
+                (metadata.get(CHECKPOINT_MESSAGE_RETENTION_METADATA_KEY, "") or "")
+                if isinstance(metadata, dict)
+                else ""
+            ).strip().lower()
+            if marker == "seed":
+                return True, True
+            if marker == "delta":
+                return True, False
+            if marker == "none":
+                return False, False
+        checkpoint = serializer.loads_typed((str(row["type"] or ""), bytes(row["checkpoint"] or b"")))
+        values = checkpoint.get("channel_values") if isinstance(checkpoint, dict) else None
+        versions = checkpoint.get("channel_versions") if isinstance(checkpoint, dict) else None
+        has_seed = isinstance(values, dict) and "messages" in values
+        tracks_messages = has_seed or (isinstance(versions, dict) and "messages" in versions)
+        return tracks_messages, has_seed
+
+    @classmethod
+    def _checkpoint_is_delta_boundary(
+        cls,
+        row: sqlite3.Row,
+        *,
+        serializer: Any,
+    ) -> bool:
+        tracks_messages, has_seed = cls._checkpoint_message_delta_flags(row, serializer=serializer)
+        # A checkpoint before the messages channel exists is the deterministic
+        # empty-state boundary.  A checkpoint with channel_values.messages is a
+        # full DeltaChannel seed/snapshot boundary.
+        return has_seed or not tracks_messages
+
+    @classmethod
+    def _delta_safe_checkpoint_ids(
+        cls,
+        conn: sqlite3.Connection,
+        checkpoints: List[sqlite3.Row],
+        *,
+        target_ids: List[str],
+        serializer: Any,
+    ) -> tuple[List[str], bool]:
+        if not target_ids:
+            return [], False
+        rows_by_id = {str(row["checkpoint_id"]): row for row in checkpoints}
+        retained: set[str] = set()
+        delta_managed = False
+        flags_by_id: Dict[str, tuple[bool, bool]] = {}
+
+        def flags(checkpoint_id: str) -> tuple[bool, bool]:
+            cached = flags_by_id.get(checkpoint_id)
+            if cached is not None:
+                return cached
+            checkpoint_row = conn.execute(
+                """
+                SELECT type, checkpoint, metadata FROM checkpoints
+                WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?
+                """,
+                (
+                    str(rows_by_id[checkpoint_id]["thread_id"]),
+                    str(rows_by_id[checkpoint_id]["checkpoint_ns"]),
+                    checkpoint_id,
+                ),
+            ).fetchone()
+            if checkpoint_row is None:
+                raise RuntimeError(f"checkpoint payload is missing at {checkpoint_id}")
+            resolved = cls._checkpoint_message_delta_flags(checkpoint_row, serializer=serializer)
+            flags_by_id[checkpoint_id] = resolved
+            return resolved
+
+        for target_id in target_ids:
+            current_id = target_id
+            visited: set[str] = set()
+            while current_id:
+                if current_id in retained:
+                    break
+                if current_id in visited:
+                    raise RuntimeError(f"checkpoint parent cycle detected at {current_id}")
+                visited.add(current_id)
+                row = rows_by_id.get(current_id)
+                if row is None:
+                    raise RuntimeError(f"checkpoint parent chain is incomplete at {current_id}")
+                retained.add(current_id)
+                tracks_messages, has_seed = flags(current_id)
+                if current_id == target_id and not tracks_messages:
+                    break
+                delta_managed = True
+                if has_seed or not tracks_messages:
+                    break
+                parent_id = str(row["parent_checkpoint_id"] or "").strip()
+                if not parent_id:
+                    raise RuntimeError(f"DeltaChannel history has no recoverable seed at {current_id}")
+                current_id = parent_id
+        return (
+            [str(row["checkpoint_id"]) for row in checkpoints if str(row["checkpoint_id"]) in retained],
+            delta_managed,
+        )
 
     @staticmethod
     def _checkpoint_resume_fingerprint(
@@ -1121,6 +1265,8 @@ class StorageRetentionService:
         thread_id: str,
         checkpoint_ns: str,
         checkpoint_id: str,
+        *,
+        serializer: Any,
     ) -> Dict[str, Any]:
         row = conn.execute(
             """
@@ -1150,7 +1296,58 @@ class StorageRetentionService:
             digest.update(str(write["channel"]).encode("utf-8"))
             digest.update(str(write["type"] or "").encode("utf-8"))
             digest.update(bytes(write["value"] or b""))
-        return {"checkpointId": str(row["checkpoint_id"]), "hash": digest.hexdigest(), "pendingWrites": len(writes)}
+        message_digest = StorageRetentionService._checkpoint_message_digest(
+            conn,
+            thread_id,
+            checkpoint_ns,
+            checkpoint_id,
+            serializer=serializer,
+        )
+        return {
+            "checkpointId": str(row["checkpoint_id"]),
+            "hash": digest.hexdigest(),
+            "pendingWrites": len(writes),
+            "messageDigest": message_digest,
+        }
+
+    @staticmethod
+    def _checkpoint_message_digest(
+        conn: sqlite3.Connection,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str,
+        *,
+        serializer: Any,
+    ) -> str:
+        from langgraph.channels import DeltaChannel
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        from graph.state_channels import message_state_digest_payload, reduce_message_deltas
+
+        saver = SqliteSaver(conn, serde=serializer)
+        # Retention already verified the schema. Avoid SqliteSaver.setup(), whose
+        # executescript would implicitly commit our surrounding pruning transaction.
+        saver.is_setup = True
+        config = {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
+                "checkpoint_id": checkpoint_id,
+            }
+        }
+        checkpoint_tuple = saver.get_tuple(config)
+        if checkpoint_tuple is None:
+            raise RuntimeError(f"checkpoint not found during retention verification: {checkpoint_id}")
+        values = checkpoint_tuple.checkpoint.get("channel_values") or {}
+        if "messages" in values:
+            channel = DeltaChannel(reduce_message_deltas, list).from_checkpoint(values["messages"])
+        else:
+            history = saver.get_delta_channel_history(config=config, channels=["messages"])["messages"]
+            channel = DeltaChannel(reduce_message_deltas, list).from_checkpoint(history.get("seed", []))
+            channel.replay_writes(history.get("writes", []))
+        payload = message_state_digest_payload(channel.get())
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
     def _checkpoint_thread_policies(self) -> Dict[str, str]:
         policies: Dict[str, str] = {}

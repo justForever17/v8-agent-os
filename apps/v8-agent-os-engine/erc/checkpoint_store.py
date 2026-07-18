@@ -12,13 +12,17 @@ from core.langgraph_checkpoint_bootstrap import enforce_strict_langgraph_msgpack
 enforce_strict_langgraph_msgpack()
 
 import aiosqlite
+from langgraph.checkpoint.serde.base import SerializerProtocol
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from core.v8_agent_os_paths import CHECKPOINT_DB_PATH
 from erc.checkpoint_security import (
     StrictCheckpointSerializer,
     build_checkpoint_serializer,
+    checkpoint_encryption_key_info,
+    checkpoint_retention_metadata,
     run_checkpoint_preflight,
+    strict_checkpoint_serializer,
 )
 
 
@@ -30,14 +34,15 @@ class V8AsyncSqliteSaver(AsyncSqliteSaver):
 
     _RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0)
 
-    def __init__(self, conn: aiosqlite.Connection, *, serde: StrictCheckpointSerializer) -> None:
+    def __init__(self, conn: aiosqlite.Connection, *, serde: SerializerProtocol) -> None:
         super().__init__(conn, serde=serde)
         self._v8_write_lock = asyncio.Lock()
 
     def _strict_serializer(self) -> StrictCheckpointSerializer:
-        if not isinstance(self.serde, StrictCheckpointSerializer):
-            raise RuntimeError("V8OS checkpoint saver lost its strict serializer contract.")
-        return self.serde
+        return strict_checkpoint_serializer(self.serde)
+
+    def _assert_encrypted_serializer(self) -> None:
+        checkpoint_encryption_key_info(self.serde)
 
     @classmethod
     async def _call_with_lock_retry(cls, operation: Any, *args: Any, **kwargs: Any) -> Any:
@@ -70,17 +75,19 @@ class V8AsyncSqliteSaver(AsyncSqliteSaver):
         new_versions: Any,
     ) -> Any:
         self._strict_serializer()
+        self._assert_encrypted_serializer()
         # Every state mutation enters through aput_writes(), where the new value is
         # checked deeply. The full checkpoint is derived from those accepted writes;
         # re-walking accumulated messages here would make every step O(history).
         if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("channel_values"), dict):
             raise RuntimeError("LangGraph checkpoint does not match the expected mapping contract.")
+        governed_metadata = checkpoint_retention_metadata(metadata, checkpoint)
         async with self._v8_write_lock:
             return await self._call_with_lock_retry(
                 super().aput,
                 config,
                 checkpoint,
-                metadata,
+                governed_metadata,
                 new_versions,
             )
 
@@ -92,6 +99,7 @@ class V8AsyncSqliteSaver(AsyncSqliteSaver):
         task_path: str = "",
     ) -> None:
         strict_serializer = self._strict_serializer()
+        self._assert_encrypted_serializer()
         materialized_writes = tuple(writes)
         for index, (channel, value) in enumerate(materialized_writes):
             strict_serializer.assert_write_safe(value, root=f"writes[{index}].{channel}")

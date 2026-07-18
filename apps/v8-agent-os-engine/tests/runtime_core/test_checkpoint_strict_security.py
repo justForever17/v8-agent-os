@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import subprocess
@@ -10,26 +11,36 @@ from pathlib import Path
 from typing import Annotated
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langgraph.channels import DeltaChannel
 from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel
 from typing_extensions import NotRequired, TypedDict
 
 from erc.checkpoint_security import (
+    CHECKPOINT_ENCRYPTION_REFERENCE,
+    CHECKPOINT_ENCRYPTION_SCHEME,
+    CHECKPOINT_MESSAGE_RETENTION_METADATA_KEY,
     CHECKPOINT_SECURITY_AUDIT_TABLE,
+    CHECKPOINT_SECURITY_STATE_TABLE,
     V8_STABLE_MSGPACK_ALLOWLIST,
+    CheckpointDecryptionBlocked,
     CheckpointDeserializationBlocked,
+    CheckpointEncryptionKeyError,
+    CheckpointKeyManager,
     CheckpointPreflightError,
     CheckpointWriteContractError,
     StrictCheckpointSerializer,
     build_checkpoint_serializer,
     run_checkpoint_preflight,
+    strict_checkpoint_serializer,
 )
 from erc.checkpoint_store import CheckpointStore
+from graph.state_channels import reduce_message_deltas
+from core.security.credentials import CredentialRefStore, MemoryCredentialBackend
 
 
 @dataclass
@@ -47,7 +58,7 @@ class _TypedState(TypedDict):
 
 
 class _RecoveryState(TypedDict):
-    messages: Annotated[list, add_messages]
+    messages: Annotated[list[AnyMessage], DeltaChannel(reduce_message_deltas, snapshot_frequency=4)]
     phase: str
     gate_kind: str
     runtime_handoff: dict
@@ -121,10 +132,98 @@ def test_engine_main_enables_strict_msgpack_before_langgraph_import() -> None:
 
 def test_serializer_is_strict_without_pickle_or_broad_v8_allowlist() -> None:
     serializer = build_checkpoint_serializer()
+    strict = strict_checkpoint_serializer(serializer)
 
-    assert serializer.pickle_fallback is False
-    assert getattr(serializer, "_allowed_msgpack_modules") is None
+    assert strict.pickle_fallback is False
+    assert getattr(strict, "_allowed_msgpack_modules") is None
     assert V8_STABLE_MSGPACK_ALLOWLIST == ()
+    serialization_type, blob = serializer.dumps_typed({"secret": "checkpoint-confidential"})
+    assert serialization_type.endswith(f"+{CHECKPOINT_ENCRYPTION_SCHEME}")
+    assert b"checkpoint-confidential" not in blob
+
+
+def test_checkpoint_cipher_rejects_tampered_ciphertext() -> None:
+    serializer = build_checkpoint_serializer()
+    serialization_type, blob = serializer.dumps_typed({"phase": "waiting_approval"})
+    tampered = blob[:-1] + bytes([blob[-1] ^ 0x01])
+
+    with pytest.raises(CheckpointDecryptionBlocked, match="authentication failed"):
+        serializer.loads_typed((serialization_type, tampered))
+
+
+def test_checkpoint_key_is_generated_only_in_secure_credential_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("V8_CHECKPOINT_AES_KEY", raising=False)
+    monkeypatch.delenv("LANGGRAPH_AES_KEY", raising=False)
+    store = CredentialRefStore(MemoryCredentialBackend())
+    manager = CheckpointKeyManager(store)
+
+    first = manager.resolve()
+    second = CheckpointKeyManager(store).resolve()
+
+    assert first.key == second.key
+    assert len(first.key) == 32
+    assert first.source == "os_credential_store"
+    assert store.status(CHECKPOINT_ENCRYPTION_REFERENCE).configured is True
+
+
+def test_plaintext_history_is_atomically_encrypted_and_physically_compacted(tmp_path: Path) -> None:
+    path = tmp_path / "plaintext-checkpoints.db"
+    plaintext = StrictCheckpointSerializer()
+    marker = "plaintext-history-must-disappear"
+    checkpoint_type, checkpoint_blob = plaintext.dumps_typed(
+        {"v": 4, "id": "checkpoint-1", "channel_values": {"messages": [HumanMessage(content=marker)]}}
+    )
+    write_type, write_blob = plaintext.dumps_typed([AIMessage(content=f"{marker}-write")])
+    with _create_checkpoint_tables(path) as conn:
+        conn.execute(
+            "INSERT INTO checkpoints VALUES (?, '', ?, NULL, ?, ?, ?)",
+            ("thread-1", "checkpoint-1", checkpoint_type, checkpoint_blob, b"{}"),
+        )
+        conn.execute(
+            "INSERT INTO writes VALUES (?, '', ?, ?, 0, ?, ?, ?)",
+            ("thread-1", "checkpoint-1", "task-1", "messages", write_type, write_blob),
+        )
+        conn.commit()
+
+    serializer = build_checkpoint_serializer()
+    result = run_checkpoint_preflight(path, serializer)
+
+    assert result["mode"] == "full_scan_and_encrypt"
+    assert result["migratedRows"] == 2
+    with sqlite3.connect(path) as conn:
+        checkpoint_row = conn.execute("SELECT type, checkpoint, metadata FROM checkpoints").fetchone()
+        write_row = conn.execute("SELECT type, value FROM writes").fetchone()
+        assert checkpoint_row[0].endswith(f"+{CHECKPOINT_ENCRYPTION_SCHEME}")
+        assert write_row[0].endswith(f"+{CHECKPOINT_ENCRYPTION_SCHEME}")
+        assert serializer.loads_typed((checkpoint_row[0], checkpoint_row[1]))["channel_values"]["messages"][0].content == marker
+        assert json.loads(bytes(checkpoint_row[2]).decode("utf-8"))[
+            CHECKPOINT_MESSAGE_RETENTION_METADATA_KEY
+        ] == "seed"
+        assert conn.execute(
+            f"SELECT state FROM {CHECKPOINT_SECURITY_STATE_TABLE} WHERE policy_version = 2"
+        ).fetchone()[0] == "completed"
+    assert marker.encode("utf-8") not in path.read_bytes()
+
+
+def test_completed_encryption_marker_rejects_key_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "key-mismatch.db"
+    monkeypatch.setenv("V8_CHECKPOINT_AES_KEY", "33" * 32)
+    first_serializer = build_checkpoint_serializer(
+        key_manager=CheckpointKeyManager(CredentialRefStore(MemoryCredentialBackend()))
+    )
+    with _create_checkpoint_tables(path):
+        pass
+    run_checkpoint_preflight(path, first_serializer)
+
+    monkeypatch.setenv("V8_CHECKPOINT_AES_KEY", "44" * 32)
+    second_serializer = build_checkpoint_serializer(
+        key_manager=CheckpointKeyManager(CredentialRefStore(MemoryCredentialBackend()))
+    )
+    with pytest.raises(CheckpointEncryptionKeyError, match="different key"):
+        run_checkpoint_preflight(path, second_serializer)
 
 
 def test_blocked_deserialization_fails_instead_of_returning_raw_dict() -> None:
@@ -181,12 +280,52 @@ def test_preflight_scans_once_and_reuses_database_marker(tmp_path: Path) -> None
     first = run_checkpoint_preflight(path, serializer)
     second = run_checkpoint_preflight(path, build_checkpoint_serializer())
 
-    assert first["mode"] == "full_scan"
+    assert first["mode"] == "full_scan_and_encrypt"
     assert first["checkpointRows"] == 1
     assert first["writeRows"] == 1
     assert second["mode"] == "previously_completed"
     with sqlite3.connect(path) as conn:
         assert conn.execute(f"SELECT COUNT(*) FROM {CHECKPOINT_SECURITY_AUDIT_TABLE}").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("payload_kind", ["checkpoint", "write"])
+def test_completed_preflight_rejects_plaintext_rows_added_after_marker_without_deserializing_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload_kind: str,
+) -> None:
+    path = tmp_path / f"plaintext-after-marker-{payload_kind}.db"
+    serializer = build_checkpoint_serializer()
+    with _create_checkpoint_tables(path):
+        pass
+    run_checkpoint_preflight(path, serializer)
+
+    plaintext = StrictCheckpointSerializer()
+    checkpoint_type, checkpoint_blob = plaintext.dumps_typed(
+        {"v": 4, "id": "checkpoint-1", "channel_values": {"phase": "running"}}
+    )
+    write_type, write_blob = plaintext.dumps_typed({"phase": "running"})
+    with sqlite3.connect(path) as conn:
+        if payload_kind == "checkpoint":
+            conn.execute(
+                "INSERT INTO checkpoints VALUES (?, '', ?, NULL, ?, ?, ?)",
+                ("thread-1", "checkpoint-1", checkpoint_type, checkpoint_blob, b"{}"),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, ?, ?, ?)",
+                ("thread-1", "checkpoint-1", "task-1", "phase", write_type, write_blob),
+            )
+        conn.commit()
+
+    marker_serializer = build_checkpoint_serializer()
+    monkeypatch.setattr(
+        marker_serializer,
+        "loads_typed",
+        lambda _data: (_ for _ in ()).throw(AssertionError("completed marker must not deserialize history")),
+    )
+    with pytest.raises(CheckpointPreflightError, match="marker is stale"):
+        run_checkpoint_preflight(path, marker_serializer)
 
 
 def test_preflight_rejects_historical_unknown_type_without_marking_complete(tmp_path: Path) -> None:
@@ -212,14 +351,17 @@ def test_runtime_read_blocks_tampering_added_after_completed_preflight(tmp_path:
 
     async def _run() -> None:
         initial_store = CheckpointStore(path)
-        assert (await initial_store.ensure_preflight())["mode"] == "full_scan"
+        assert (await initial_store.ensure_preflight())["mode"] == "full_scan_and_encrypt"
         await initial_store.close()
 
         checkpoint = empty_checkpoint()
         checkpoint["channel_values"] = {"payload": _BlockedPayload(value="tampered")}
         checkpoint["channel_versions"] = {"payload": "0001"}
         permissive = JsonPlusSerializer(pickle_fallback=False, allowed_msgpack_modules=True)
-        serialization_type, blob = permissive.dumps_typed(checkpoint)
+        plaintext_type, plaintext_blob = permissive.dumps_typed(checkpoint)
+        governed_serializer = build_checkpoint_serializer()
+        cipher_name, blob = governed_serializer.cipher.encrypt(plaintext_blob)
+        serialization_type = f"{plaintext_type}+{cipher_name}"
         with sqlite3.connect(path) as conn:
             conn.execute(
                 "INSERT INTO checkpoints VALUES (?, '', ?, NULL, ?, ?, ?)",
@@ -261,9 +403,10 @@ def test_schema_derived_allowlist_survives_store_restart(tmp_path: Path) -> None
             .compile(checkpointer=saver)
         )
         effective_serializer = graph.checkpointer.serde
-        assert isinstance(effective_serializer, StrictCheckpointSerializer)
+        effective_strict = strict_checkpoint_serializer(effective_serializer)
+        assert isinstance(effective_strict, StrictCheckpointSerializer)
         assert (_StablePayload.__module__, _StablePayload.__name__) in getattr(
-            effective_serializer,
+            effective_strict,
             "_allowed_msgpack_modules",
         )
         config = {"configurable": {"thread_id": "typed-thread"}}

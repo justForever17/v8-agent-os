@@ -24,6 +24,7 @@ from runtimes.memory.prompts import (
 )
 
 from . import chat_realtime_routes as chat_realtime_routes_module
+from . import checkpoint_governance_routes as checkpoint_governance_routes_module
 from . import command_preset_routes as command_preset_routes_module
 from . import config_migration_routes as config_migration_routes_module
 from . import config_registry_routes as config_registry_routes_module
@@ -108,6 +109,7 @@ def _service_states(profile: str = _STARTUP_PROFILE) -> dict[str, dict[str, obje
 
 
 router.include_router(chat_realtime_routes_module.router)
+router.include_router(checkpoint_governance_routes_module.router)
 router.include_router(command_preset_routes_module.router)
 router.include_router(config_migration_routes_module.router)
 router.include_router(config_registry_routes_module.router)

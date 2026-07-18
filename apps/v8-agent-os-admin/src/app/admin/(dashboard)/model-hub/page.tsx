@@ -151,8 +151,16 @@ type CatalogProvider = {
     models?: CatalogModel[];
 };
 type CatalogPurpose = "chat" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
-type CustomProviderCapability = "text" | "vision" | "image" | "video" | "voice" | "music" | "workflow" | "model3d";
+type CustomProviderCapability = "text" | "vision" | "image" | "video" | "voice" | "music" | "model3d";
 type CatalogRuntimeProtocol = "default" | "anthropic";
+type ModelWireProtocol = "" | "openai.chat_completions" | "openai.responses" | "anthropic.messages" | "gemini.generate_content";
+
+const MODEL_WIRE_PROTOCOLS: Array<{ id: Exclude<ModelWireProtocol, "">; labelKey: string }> = [
+    { id: "openai.chat_completions", labelKey: "app.admin.dashboard.model.hub.protocol.openaiChatCompletions" },
+    { id: "openai.responses", labelKey: "app.admin.dashboard.model.hub.protocol.openaiResponses" },
+    { id: "anthropic.messages", labelKey: "app.admin.dashboard.model.hub.protocol.anthropicMessages" },
+    { id: "gemini.generate_content", labelKey: "app.admin.dashboard.model.hub.protocol.geminiGenerateContent" },
+];
 
 const CUSTOM_PROVIDER_CAPABILITIES: Array<{ id: CustomProviderCapability; labelKey: string }> = [
     { id: "text", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityText" },
@@ -161,7 +169,6 @@ const CUSTOM_PROVIDER_CAPABILITIES: Array<{ id: CustomProviderCapability; labelK
     { id: "video", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVideo" },
     { id: "voice", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityVoice" },
     { id: "music", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityMusic" },
-    { id: "workflow", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityWorkflow" },
     { id: "model3d", labelKey: "app.admin.dashboard.model.hub.catalog.capabilityModel3d" },
 ];
 type AudioRuntimeConfig = {
@@ -783,9 +790,12 @@ export default function ModelHubPage() {
     const handleSaveModel = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
         const formData = new FormData(event.currentTarget);
-        const payload = Object.fromEntries(formData.entries());
+        const payload: Record<string, unknown> = {
+            ...Object.fromEntries(formData.entries()),
+            endpointBinding: editingModel?.endpointBinding || undefined,
+        };
         for (const key of ["contextWindow", "maxTokens"]) {
-            if (payload[key] === "") payload[key] = null as unknown as FormDataEntryValue;
+            if (payload[key] === "") payload[key] = null;
         }
         const url = editingModel
             ? `/api/models/${encodeURIComponent(editingModel.id)}?providerId=${encodeURIComponent(editingModel.providerId)}`
@@ -1155,6 +1165,7 @@ export default function ModelHubPage() {
                     providerModelId,
                     operationKind: operationKinds[0] || defaultOperationKind[catalogPurpose],
                     adapter: String(mediaLimits.adapter || sourceProvider?.adapter || provider?.adapter || ""),
+                    wireProtocol: catalogRuntimeProtocol === "anthropic" ? "anthropic.messages" : "",
                 }),
             });
             const data = await response.json().catch(() => ({}));
@@ -1955,7 +1966,7 @@ export default function ModelHubPage() {
                                             const hasExplicitRoute = Boolean(providerModelId && providerModelId !== modelId);
                                             const visibleModelPath = hasExplicitRoute ? modelId.replace(/^\/+/, "") : modelId;
                                             const modelIcon = resolveModelIcon({
-                                                modelId,
+                                                modelId: providerModelId || modelId,
                                                 providerId: probedCatalogProviderId || selectedCatalogProvider?.id || selectedCatalogProviderId,
                                                 providerName: selectedCatalogProvider?.name || "",
                                                 explicitAsset: model.logoAsset || null,
@@ -1975,10 +1986,10 @@ export default function ModelHubPage() {
                                                             {modelIcon ? <Image src={modelIcon} alt="" width={16} height={16} className="h-4 w-4 object-contain" unoptimized /> : null}
                                                         </span>
                                                         <span className="min-w-0">
-                                                            <span className="block truncate">{visibleModelPath}</span>
+                                                            <span className="block truncate">{providerModelId || modelId}</span>
                                                             {hasExplicitRoute ? (
                                                                 <span className="block truncate text-[10px] opacity-70">
-                                                                    {t("app.admin.dashboard.model.hub.catalog.providerModelId", { modelId: providerModelId })} · {t("app.admin.dashboard.model.hub.catalog.routeFromCatalog")}
+                                                                    {t("app.admin.dashboard.model.hub.catalog.modelRoute", { route: visibleModelPath })}
                                                                 </span>
                                                             ) : null}
                                                         </span>
@@ -2299,8 +2310,9 @@ export default function ModelHubPage() {
                                     {t("app.admin.dashboard.model.hub.page.kfaf657c9")}
                                 </p>
                             </div>) : null}
-                        {modelType === "TEXT" || modelType === "MULTIMODAL" ? (
-                            <div className="grid gap-4 md:grid-cols-2">
+                        {modelType === "TEXT" || modelType === "MULTIMODAL" || modelType === "VISION" || modelType === "CHAT" ? (
+                            <div className="space-y-4">
+                                <div className="grid gap-4 md:grid-cols-2">
                                 <div className="space-y-2">
                                     <Label htmlFor="model-context-window">{t("app.admin.dashboard.model.hub.page.k20e21cd2")}</Label>
                                     <Input id="model-context-window" name="contextWindow" type="number" defaultValue={editingModel?.contextWindow ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.contextWindowPlaceholder")}/>
@@ -2308,6 +2320,22 @@ export default function ModelHubPage() {
                                 <div className="space-y-2">
                                     <Label htmlFor="model-max-tokens">{t("app.admin.dashboard.model.hub.page.k1f9a045b")}</Label>
                                     <Input id="model-max-tokens" name="maxTokens" type="number" defaultValue={editingModel?.maxTokens ?? ""} placeholder={t("app.admin.dashboard.model.hub.page.maxTokensPlaceholder")}/>
+                                </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <Label htmlFor="model-wire-protocol">{t("app.admin.dashboard.model.hub.page.wireProtocol")}</Label>
+                                    <select
+                                        id="model-wire-protocol"
+                                        name="wireProtocol"
+                                        defaultValue={String(editingModel?.endpointBinding?.wireProtocol || "")}
+                                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                        <option value="">{t("app.admin.dashboard.model.hub.page.wireProtocolAuto")}</option>
+                                        {MODEL_WIRE_PROTOCOLS.map((protocol) => (
+                                            <option key={protocol.id} value={protocol.id}>{t(protocol.labelKey)}</option>
+                                        ))}
+                                    </select>
+                                    <p className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.model.hub.page.wireProtocolHelp")}</p>
                                 </div>
                             </div>
                         ) : RETRIEVAL_MODEL_TYPES.has(modelType) ? (

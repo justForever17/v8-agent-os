@@ -750,6 +750,7 @@ class LLMFactory:
             p_name = str(record.get("provider_id") or "")
             p_conf = dict(record.get("provider") or {})
             meta = dict(record.get("model") or {})
+            endpoint_binding = dict(meta.get("endpointBinding") or {})
             upstream_model_id = str(record.get("model_id") or target_model_name)
             model_ref = str(record.get("model_ref") or "")
             api_standard = str(p_conf.get("api_standard", "openai") or "openai")
@@ -854,6 +855,8 @@ class LLMFactory:
                 "provider_name": p_name,
                 "provider_record": p_conf,
                 "model_record": meta,
+                "endpoint_binding": endpoint_binding,
+                "wire_protocol": str(endpoint_binding.get("wireProtocol") or endpoint_binding.get("wire_protocol") or "").strip(),
                 "base_url": t_base_url,
                 "api_key": t_api_key,
                 "api_standard": api_standard,
@@ -992,6 +995,15 @@ class LLMFactory:
                 meta.get("request_reasoning_effort"),
             ),
         )
+        # Protocol is a model binding, never inferred from a route at request
+        # time. Only an explicit Responses binding opts into that schema, and
+        # request kwargs cannot silently override the persisted choice.
+        if str(meta.get("wire_protocol") or "").strip() == "openai.responses":
+            final_kwargs["use_responses_api"] = True
+            final_kwargs["store"] = False
+            final_kwargs["use_previous_response_id"] = False
+        elif str(meta.get("wire_protocol") or "").strip() == "openai.chat_completions":
+            final_kwargs["use_responses_api"] = False
         return final_kwargs
 
     @classmethod
@@ -1186,9 +1198,20 @@ class LLMFactory:
         api_standard = str(meta.get("api_standard", "openai")).lower()
         if requested_reasoning_effort:
             meta = {**meta, "request_reasoning_effort": requested_reasoning_effort}
-        wire_model_id = str(meta.get("model_id") or model_id)
+        wire_model_id = str(
+            (meta.get("endpoint_binding") or {}).get("providerModelId")
+            or meta.get("model_id")
+            or model_id
+        )
         try:
-            if api_standard == "anthropic":
+            wire_protocol = str(meta.get("wire_protocol") or "").strip()
+            runtime_provider_standard = (
+                "anthropic" if wire_protocol == "anthropic.messages"
+                else "gemini" if wire_protocol == "gemini.generate_content"
+                else "openai" if wire_protocol.startswith("openai.")
+                else api_standard
+            )
+            if wire_protocol == "anthropic.messages" or (not wire_protocol and api_standard == "anthropic"):
                 provider_kwargs = cls._attach_telemetry(
                     cls._build_anthropic_kwargs(wire_model_id, meta, **kwargs),
                     meta,
@@ -1198,7 +1221,7 @@ class LLMFactory:
                     capability_class_override=capability_class_override,
                 )
                 builder = lambda: ChatAnthropic(**provider_kwargs)
-            elif api_standard in {"google", "gemini"}:
+            elif wire_protocol == "gemini.generate_content" or (not wire_protocol and api_standard in {"google", "gemini"}):
                 if cls._is_gemini_cli_provider(
                     api_standard=api_standard,
                     provider_config=dict(meta.get("provider_record") or {}),
@@ -1255,7 +1278,7 @@ class LLMFactory:
                 builder = lambda: ChatOpenAI(**provider_kwargs)
             return V8ChatModelAdapter(
                 model_id=wire_model_id,
-                provider_standard=api_standard,
+                provider_standard=runtime_provider_standard,
                 role=role,
                 meta=meta,
                 model_kwargs=provider_kwargs,

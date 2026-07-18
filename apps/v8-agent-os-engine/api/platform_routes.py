@@ -18,6 +18,7 @@ from core.model_reasoning_repair import model_reasoning_repair_service
 from core.model_control_plane import model_control_plane
 from core.model_ref import make_model_ref
 from core.model_provider_catalog import model_provider_catalog
+from core.model_protocol_registry import suggest_model_protocol
 from core.model_role_doctor import diagnose_models
 from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
@@ -1383,6 +1384,7 @@ async def connect_model_provider(data: dict = Body(...)):
         provider_model_id = str(data.get("providerModelId") or data.get("provider_model_id") or "").strip()
         operation_kind = str(data.get("operationKind") or data.get("operation_kind") or "").strip()
         adapter = str(data.get("adapter") or "").strip()
+        wire_protocol = str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip()
         provider = model_provider_catalog.get_provider(provider_id)
         if not provider and provider_id in {"__custom__", "custom"}:
             if not incoming_credential:
@@ -1401,6 +1403,19 @@ async def connect_model_provider(data: dict = Body(...)):
             raise HTTPException(status_code=404, detail="provider not found")
 
         model = model_provider_catalog.normalize_model(provider, model_id)
+        protocol_advice = suggest_model_protocol(
+            provider_id,
+            api_standard or provider.get("apiStandard") or "openai",
+            provider_model_id or model.get("id") or model_id,
+            provider_meta=provider,
+            model_meta=model,
+        )
+        if not wire_protocol:
+            wire_protocol = str(protocol_advice.get("wireProtocol") or "")
+        if not endpoint_path and wire_protocol and str(model.get("type") or "").upper() not in {
+            "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "MEDIA", "WORKFLOW", "MODEL3D",
+        }:
+            endpoint_path = str(protocol_advice.get("endpointPath") or "")
         config = model_control_plane.get_config()
         providers = dict(config.get("providers") or {})
         existing = dict(providers.get(provider_id) or {})
@@ -1467,14 +1482,22 @@ async def connect_model_provider(data: dict = Body(...)):
             or prompt_cache_profile_id_for_provider(provider_id),
             "isEnabled": True,
         }
-        if endpoint_path or provider_model_id or operation_kind or adapter:
+        if endpoint_path or provider_model_id or operation_kind or adapter or wire_protocol:
             next_model["endpointBinding"] = {
                 "route": model_id,
                 "endpointPath": endpoint_path,
                 "providerModelId": provider_model_id,
                 "operationKind": operation_kind,
                 "adapter": adapter,
-                "provenance": {"source": "quick_connect", "confidence": "authoritative"},
+                "wireProtocol": wire_protocol,
+                "protocolConfidence": "authoritative" if str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip() else str(protocol_advice.get("confidence") or "hint"),
+                "protocolSource": "manual" if str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip() else str(protocol_advice.get("source") or "fallback"),
+                "protocolSourceRefs": list(protocol_advice.get("sourceRefs") or []),
+                "protocolWarning": "" if str(data.get("wireProtocol") or data.get("wire_protocol") or "").strip() else str(protocol_advice.get("warning") or ""),
+                "provenance": {
+                    "source": "quick_connect",
+                    "confidence": "authoritative",
+                },
             }
         mutation = model_control_plane.upsert_provider_model_records(
             provider_id=provider_id,

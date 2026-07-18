@@ -5,6 +5,7 @@ from typing import Any, Dict
 from urllib.parse import urlparse
 
 from core.model_ref import make_model_ref
+from core.model_protocol_registry import endpoint_path_for_protocol, suggest_model_protocol
 
 
 _MEDIA_MODEL_TYPES = {
@@ -145,6 +146,26 @@ def build_model_endpoint_binding(
         or model.get("adapter")
         or ""
     ).strip()
+    wire_protocol = str(explicit.get("wireProtocol") or explicit.get("wire_protocol") or "").strip()
+    protocol_advice = suggest_model_protocol(
+        provider_id,
+        api_standard,
+        provider_model_id or route,
+        provider_meta=provider,
+        model_meta=model,
+    )
+    if wire_protocol:
+        protocol_advice = {
+            **protocol_advice,
+            "wireProtocol": wire_protocol,
+            "endpointPath": endpoint_path_for_protocol(wire_protocol),
+            "confidence": str(explicit.get("protocolConfidence") or "authoritative"),
+            "source": str(explicit.get("protocolSource") or "manual"),
+            "sourceRefs": list(explicit.get("protocolSourceRefs") or protocol_advice.get("sourceRefs") or []),
+            "warning": str(explicit.get("protocolWarning") or ""),
+        }
+    if wire_protocol and not endpoint_path and not _is_media_model(model):
+        endpoint_path = endpoint_path_for_protocol(wire_protocol)
     base_url = str(provider.get("base_url") or provider.get("baseUrl") or "").strip().rstrip("/")
     request_url = f"{base_url}/{endpoint_path}" if base_url and endpoint_path else base_url
     persisted = bool(explicit)
@@ -163,6 +184,13 @@ def build_model_endpoint_binding(
         "operationKind": operation_kind,
         "apiStandard": api_standard,
         "adapter": adapter,
+        "wireProtocol": wire_protocol,
+        "protocolSuggestion": str(protocol_advice.get("wireProtocol") or ""),
+        "protocolEndpointPath": str(protocol_advice.get("endpointPath") or ""),
+        "protocolConfidence": str(protocol_advice.get("confidence") or ""),
+        "protocolSource": str(protocol_advice.get("source") or ""),
+        "protocolSourceRefs": list(protocol_advice.get("sourceRefs") or []),
+        "protocolWarning": str(protocol_advice.get("warning") or ""),
         "requestUrlPreview": request_url,
         "persisted": persisted,
         "provenance": provenance,

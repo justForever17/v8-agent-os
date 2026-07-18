@@ -63,6 +63,13 @@ export type ControlPlaneModel = {
         endpointPath?: string;
         providerModelId?: string;
         operationKind?: string;
+        wireProtocol?: string;
+        protocolSuggestion?: string;
+        protocolEndpointPath?: string;
+        protocolConfidence?: string;
+        protocolSource?: string;
+        protocolSourceRefs?: string[];
+        protocolWarning?: string;
         requestUrlPreview?: string;
         provenance?: Record<string, unknown>;
     } | null;

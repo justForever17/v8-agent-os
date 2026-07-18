@@ -143,17 +143,46 @@ export function buildModelMutationPayload(data: Record<string, unknown>) {
     if (data.thinkingControl && typeof data.thinkingControl === "object") {
         payload.thinkingControl = data.thinkingControl;
     }
-    const endpointPath = String(data.endpointPath || "").trim().replace(/^\/+|\/+$/g, "");
-    const providerModelId = String(data.providerModelId || "").trim().replace(/^\/+|\/+$/g, "");
-    const operationKind = String(data.operationKind || "").trim();
-    const adapter = String(data.adapter || "").trim();
-    if (endpointPath || providerModelId || operationKind || adapter) {
+    const existingBinding = data.endpointBinding && typeof data.endpointBinding === "object"
+        ? data.endpointBinding as Record<string, unknown>
+        : {};
+    const wireProtocol = data.wireProtocol === undefined
+        ? String(existingBinding.wireProtocol || "").trim()
+        : String(data.wireProtocol || "").trim();
+    const protocolFieldPresent = Object.prototype.hasOwnProperty.call(data, "wireProtocol");
+    const protocolEndpointPaths: Record<string, string> = {
+        "openai.chat_completions": "chat/completions",
+        "openai.responses": "responses",
+        "anthropic.messages": "messages",
+        "gemini.generate_content": "models/{model}:generateContent",
+    };
+    let endpointPath = data.endpointPath === undefined
+        ? String(existingBinding.endpointPath || "").trim().replace(/^\/+|\/+$/g, "")
+        : String(data.endpointPath || "").trim().replace(/^\/+|\/+$/g, "");
+    if (protocolFieldPresent) {
+        endpointPath = wireProtocol ? (protocolEndpointPaths[wireProtocol] || endpointPath) : "";
+    }
+    const providerModelId = data.providerModelId === undefined
+        ? String(existingBinding.providerModelId || "").trim().replace(/^\/+|\/+$/g, "")
+        : String(data.providerModelId || "").trim().replace(/^\/+|\/+$/g, "");
+    const operationKind = data.operationKind === undefined
+        ? String(existingBinding.operationKind || "").trim()
+        : String(data.operationKind || "").trim();
+    const adapter = data.adapter === undefined
+        ? String(existingBinding.adapter || "").trim()
+        : String(data.adapter || "").trim();
+    if (endpointPath || providerModelId || operationKind || adapter || wireProtocol || protocolFieldPresent) {
         payload.endpointBinding = {
-            ...(data.endpointBinding && typeof data.endpointBinding === "object" ? data.endpointBinding : {}),
+            ...existingBinding,
             endpointPath,
             providerModelId,
             operationKind,
             adapter,
+            wireProtocol,
+            protocolConfidence: wireProtocol ? "authoritative" : "",
+            protocolSource: wireProtocol ? "manual" : "",
+            protocolSourceRefs: wireProtocol ? (existingBinding.protocolSourceRefs || []) : [],
+            protocolWarning: "",
             provenance: { source: "manual", confidence: "authoritative" },
         };
     }

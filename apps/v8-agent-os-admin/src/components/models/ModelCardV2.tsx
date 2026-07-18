@@ -124,6 +124,10 @@ function stringRecordValue(record: Record<string, unknown> | null | undefined, k
   const value = record?.[key];
   return typeof value === "string" ? value.trim() : "";
 }
+function stringRecordList(record: Record<string, unknown> | null | undefined, key: string): string[] {
+  const value = record?.[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
+}
 function resolveVisibleModelRoute(model: ModelCardV2Props["model"], controlMeta?: ControlPlaneModel | null) {
   const mediaLimits = {
     ...(model.mediaLimits || {}),
@@ -133,14 +137,25 @@ function resolveVisibleModelRoute(model: ModelCardV2Props["model"], controlMeta?
     ...(model.endpointBinding || {}),
     ...(controlMeta?.endpointBinding || {}),
   };
-  const displayModelId = stringRecordValue(endpointBinding, "route") || stringRecordValue(mediaLimits, "displayModelId") || model.modelId;
+  const storedRoute = stringRecordValue(endpointBinding, "route") || stringRecordValue(mediaLimits, "displayModelId") || model.modelId;
   const providerModelId = stringRecordValue(endpointBinding, "providerModelId") || stringRecordValue(mediaLimits, "providerModelId");
+  const submitPath = stringRecordValue(endpointBinding, "endpointPath") || stringRecordValue(mediaLimits, "submitPath");
+  const displayModelId = providerModelId && submitPath && storedRoute === providerModelId
+    ? submitPath.includes("{model}")
+      ? submitPath.replace("{model}", providerModelId).replace(/^\/+|\/+$/g, "")
+      : `${submitPath.replace(/^\/+|\/+$/g, "")}/${providerModelId}`
+    : storedRoute;
   const hasExplicitRoute = Boolean(providerModelId && displayModelId !== providerModelId);
   return {
     displayModelId,
     providerModelId,
     requestSuffix: hasExplicitRoute ? displayModelId.replace(/^\/+/, "") : "",
-    submitPath: stringRecordValue(endpointBinding, "endpointPath") || stringRecordValue(mediaLimits, "submitPath"),
+    submitPath,
+    wireProtocol: stringRecordValue(endpointBinding, "wireProtocol"),
+    protocolSuggestion: stringRecordValue(endpointBinding, "protocolSuggestion"),
+    protocolConfidence: stringRecordValue(endpointBinding, "protocolConfidence"),
+    protocolWarning: stringRecordValue(endpointBinding, "protocolWarning"),
+    protocolSourceRefs: stringRecordList(endpointBinding, "protocolSourceRefs"),
   };
 }
 function modelCategoryShape(modelType: string, controlMeta?: ControlPlaneModel | null) {
@@ -263,7 +278,6 @@ export function ModelCardV2({
   const t = useT();
   const capabilityTags = controlMeta?.capabilityTags || [];
   const assignedRoles = controlMeta?.assignedRoles || [];
-  const providerMark = (model.provider?.name || model.modelId || "M").trim().charAt(0).toUpperCase();
   const currentStatus = connectionStatus?.status || "idle";
   const repairStatus = reasoningRepairStatus?.status || "idle";
   const repairActive = repairStatus !== "idle";
@@ -302,26 +316,40 @@ export function ModelCardV2({
   }
   const defaultCategoryOptions = buildDefaultCategoryOptions(model.type, controlMeta, assignedRoles)
     .filter((option) => !defaultCategoryKeys.has(option.key));
+  const routeLeafFallback = /^(?:images\/(?:generations|edits)|image_generation|videos\/generations|video_generation|audio\/speech|t2a_v2|music_generation)\//i.test(model.modelId)
+    ? model.modelId.split("/").filter(Boolean).pop() || model.modelId
+    : model.modelId;
+  const providerModelLabel = visibleRoute.providerModelId || registry?.canonicalModelId || routeLeafFallback;
+  const visibleProtocol = visibleRoute.wireProtocol || visibleRoute.protocolSuggestion;
   const modelIcon = resolveModelIcon({
-    modelId: model.modelId,
+    modelId: providerModelLabel,
     providerId: model.provider?.id,
     providerName: model.provider?.name,
     explicitAsset: model.logoAsset || null
   });
-  const details = [`ID: ${model.modelId}`, visibleRoute.requestSuffix ? `Request suffix: ${visibleRoute.requestSuffix}` : "", visibleRoute.providerModelId ? `Provider model ID: ${visibleRoute.providerModelId}` : "", visibleRoute.submitPath ? `Catalog submit path: ${visibleRoute.submitPath}` : "", `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, model.provider?.baseUrl ? `Base URL: ${model.provider.baseUrl}` : "", `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", supportsNoThink ? `No-think control: ${noThinkDisabled ? "disabled reasoning on request" : "model default thinking"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
+  const details = [`Route: ${visibleRoute.displayModelId}`, `Provider model ID: ${providerModelLabel}`, visibleRoute.submitPath ? `Request endpoint: ${visibleRoute.submitPath}` : "", visibleProtocol ? `Wire protocol: ${visibleProtocol} (${visibleRoute.protocolConfidence || "unknown"})` : "", visibleRoute.protocolSourceRefs.length ? `Protocol sources: ${visibleRoute.protocolSourceRefs.join(", ")}` : "", `Ref: ${modelRef}`, `Provider: ${model.provider?.name || "unknown"}`, model.provider?.baseUrl ? `Base URL: ${model.provider.baseUrl}` : "", `Type: ${model.type}`, typeof model.contextWindow === "number" ? `Context: ${model.contextWindow}` : "", typeof model.maxTokens === "number" ? `Max output: ${model.maxTokens}` : "", controlMeta?.capabilitySource ? `Capability source: ${controlMeta.capabilitySource}` : "", reasoningSurface ? `Reasoning surface: ${reasoningSurface.mode || "unknown"} / ${reasoningSurface.displayKind || "hidden"} / ${reasoningSurface.trust || "unknown"}` : "", supportsNoThink ? `No-think control: ${noThinkDisabled ? "disabled reasoning on request" : "model default thinking"}` : "", registry?.canonicalModelId ? `Capability registry: ${registry.canonicalModelId} (${registry.confidence || "unknown"})` : "", pricing && (typeof pricing.inputPerMillionTokens === "number" || typeof pricing.outputPerMillionTokens === "number") ? `Price est.: $${pricing.inputPerMillionTokens ?? "?"} in / $${pricing.outputPerMillionTokens ?? "?"} out per 1M` : "", missingFields.length ? `Missing: ${missingFields.join(", ")}` : "", controlMeta?.parameterProfile ? `Parameter profile: ${controlMeta.parameterProfile}` : "", roleDoctorIssues.length ? `Role Doctor issues: ${roleDoctorIssues.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", roleDoctorWarnings.length ? `Role Doctor warnings: ${roleDoctorWarnings.map((item: RoleDoctorFinding) => item.code || item.message).join(", ")}` : "", capabilityTags.length ? `Capabilities: ${capabilityTags.join(", ")}` : "", assignedRoles.length ? `Roles: ${assignedRoles.map(role => ROLE_LABELS[role] ? t(ROLE_LABELS[role]) : role).join(", ")}` : "Roles: none", statusMessage ? `Status: ${statusMessage}` : ""].filter(Boolean);
   return <Card className={`group/card relative h-[128px] overflow-visible transition-colors ${defaultBadges.length ? "border-primary shadow-sm" : "hover:border-primary/50"}`}>
             <CardContent className="flex h-full flex-col p-3">
                 <div className="flex min-w-0 items-start gap-2">
                     <AdminHoverInfo lines={details} triggerClassName="h-7 w-7 shrink-0 justify-center rounded-lg bg-slate-100 text-xs font-semibold text-slate-600 dark:bg-muted dark:text-muted-foreground">
 
-                        {modelIcon ? <Image src={modelIcon} alt="" width={20} height={20} className="h-5 w-5 rounded object-contain" unoptimized /> : model.provider?.icon || providerMark}
+                        {modelIcon ? <Image src={modelIcon} alt="" width={20} height={20} className="h-5 w-5 rounded object-contain" unoptimized /> : <Brain className="h-5 w-5 text-muted-foreground" aria-hidden="true" />}
                     </AdminHoverInfo>
                     <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-1.5">
-                            <span className="truncate text-sm font-semibold leading-5" title={`${visibleRoute.requestSuffix || model.modelId} · ${model.provider?.name || ""}`}>
-                                {visibleRoute.requestSuffix || model.modelId}
+                            <span className="truncate text-sm font-semibold leading-5" title={`${providerModelLabel} · ${model.provider?.name || ""}`}>
+                                {providerModelLabel}
                                 <span className="font-normal text-muted-foreground"> · {model.provider?.name || t("components.models.ModelCardV2.k4f162e67")}</span>
                             </span>
+                            {visibleRoute.protocolWarning ? (
+                              <AdminHoverInfo
+                                content={t("components.models.ModelCardV2.protocolVerificationWarning")}
+                                align="right"
+                                panelClassName="whitespace-normal text-xs leading-5"
+                              >
+                                <AlertCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={t("components.models.ModelCardV2.protocolVerificationWarning")} />
+                              </AdminHoverInfo>
+                            ) : null}
                             {defaultBadges.map((category) => {
               const badgeTone = String(category.badge || "sky");
               const badgeClass = DEFAULT_CATEGORY_BADGE_CLASSES[badgeTone] || DEFAULT_CATEGORY_BADGE_CLASSES.sky;
@@ -333,11 +361,9 @@ export function ModelCardV2({
             })}
                         </div>
                         <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-muted-foreground">
-                            {visibleRoute.providerModelId ? (
-                                <span className="mr-1 truncate font-mono text-[10px]" title={t("components.models.ModelCardV2.providerModelId", { modelId: visibleRoute.providerModelId })}>
-                                    {t("components.models.ModelCardV2.providerModelId", { modelId: visibleRoute.providerModelId })} · {t("components.models.ModelCardV2.routeFromCatalog")}
-                                </span>
-                            ) : null}
+                            <span className="mr-1 truncate font-mono text-[10px]" title={t("components.models.ModelCardV2.modelRoute", { route: visibleRoute.displayModelId })}>
+                                {t("components.models.ModelCardV2.modelRoute", { route: visibleRoute.displayModelId })}
+                            </span>
                             {capabilityIconItems.map(({
               key,
               labelKey,

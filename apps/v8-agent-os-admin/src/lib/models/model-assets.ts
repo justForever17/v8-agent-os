@@ -295,6 +295,23 @@ function modelSlugCandidates(modelId?: string | null) {
     return uniq(candidates);
 }
 
+function modelIdentityCandidates(modelId?: string | null) {
+    const raw = String(modelId || "").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!raw) return [];
+    const candidates = [raw];
+    const knownEndpointPrefix = /^(?:images\/(?:generations|edits)|image_generation|videos\/generations|video_generation|audio\/speech|t2a_v2|music_generation)\//i;
+    if (knownEndpointPrefix.test(raw)) {
+        const leaf = raw.split("/").filter(Boolean).pop();
+        if (leaf) candidates.push(leaf);
+    }
+    return uniq(candidates);
+}
+
+function isEndpointQualifiedModelId(modelId?: string | null) {
+    const raw = String(modelId || "").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    return /^(?:images\/(?:generations|edits)|image_generation|videos\/generations|video_generation|audio\/speech|t2a_v2|music_generation)\//i.test(raw);
+}
+
 export function resolveProviderLogo(params: {
     providerId?: string | null;
     providerName?: string | null;
@@ -320,10 +337,18 @@ export function resolveModelIcon(params: {
     providerName?: string | null;
     explicitAsset?: string | null;
 }) {
+    const endpointQualified = isEndpointQualifiedModelId(params.modelId);
+    if (params.explicitAsset && !endpointQualified) return params.explicitAsset;
+    const modelIds = modelIdentityCandidates(params.modelId);
+    for (const modelId of modelIds) {
+        const localAsset = pickLocalModelIcon(modelId);
+        if (localAsset) return localAsset;
+    }
+    for (const modelId of modelIds) {
+        const modelAsset = pickLobeIcon(modelSlugCandidates(modelId));
+        if (modelAsset) return modelAsset;
+    }
     if (params.explicitAsset) return params.explicitAsset;
-    const localAsset = pickLocalModelIcon(params.modelId);
-    if (localAsset) return localAsset;
-    const modelAsset = pickLobeIcon(modelSlugCandidates(params.modelId));
-    if (modelAsset) return modelAsset;
+    if (endpointQualified) return null;
     return resolveProviderLogo(params);
 }

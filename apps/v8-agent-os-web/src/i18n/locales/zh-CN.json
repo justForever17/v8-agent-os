@@ -697,5 +697,18 @@
   "web.collaborationMicroStage.status.completed": "完成",
   "web.collaborationMicroStage.status.degraded": "降级",
   "web.collaborationMicroStage.status.failed": "失败",
-  "web.collaborationMicroStage.status.pending": "等待"
+  "web.collaborationMicroStage.status.pending": "等待",
+  "web.personalization.background.title": "亮色背景",
+  "web.personalization.background.description": "仅在亮色主题显示；窗口缩放时按中心动态裁边，不会拉伸图片。卡片会自动切换为半透明毛玻璃表面。",
+  "web.personalization.background.on": "已启用",
+  "web.personalization.background.off": "未启用",
+  "web.personalization.background.enabled": "亮色背景已启用",
+  "web.personalization.background.disabled": "亮色背景已停用",
+  "web.personalization.background.empty": "选择一张背景图片",
+  "web.personalization.background.choose": "选择背景图",
+  "web.personalization.background.clear": "清除背景",
+  "web.personalization.background.cleared": "亮色背景已清除",
+  "web.personalization.background.uploaded": "背景图已上传并启用",
+  "web.personalization.background.uploadFailed": "背景图上传失败",
+  "web.personalization.background.saveFailed": "外观保存失败"
 }

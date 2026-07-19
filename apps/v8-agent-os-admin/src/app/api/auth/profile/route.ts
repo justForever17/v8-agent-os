@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
 import { updateUserRecord, findUserByIdentifier, getSessionIdentifier } from "@/lib/users";
+import { removeManagedUserMedia } from "@/lib/user-media";
 import { verifyServiceAuth } from "@/lib/service-auth";
 
 async function resolveCurrentUser(req: NextRequest) {
@@ -26,6 +27,7 @@ export async function GET(req: NextRequest) {
         email: user.email || user.login,
         name: user.name || "",
         image: user.image || "",
+        appearance: user.appearance || {},
         role: user.role,
         mustChangePassword: Boolean(user.mustChangePassword),
     });
@@ -41,8 +43,15 @@ export async function PATCH(req: NextRequest) {
     const name = typeof body.name === "string" ? body.name : user.name || "";
     const image = typeof body.image === "string" ? body.image : user.image || "";
     const email = typeof body.email === "string" ? body.email : user.email || "";
+    const appearance = body.appearance && typeof body.appearance === "object" && !Array.isArray(body.appearance)
+        ? { ...(user.appearance || {}), ...body.appearance }
+        : user.appearance || {};
 
-    const updated = updateUserRecord(user.id, { name, image, email });
+    const previousBackground = user.appearance?.lightBackgroundImage || "";
+    const updated = updateUserRecord(user.id, { name, image, email, appearance });
+    if (previousBackground && previousBackground !== updated.appearance?.lightBackgroundImage) {
+        removeManagedUserMedia(previousBackground, "background");
+    }
     return NextResponse.json({
         success: true,
         user: {
@@ -51,6 +60,7 @@ export async function PATCH(req: NextRequest) {
             email: getSessionIdentifier(updated),
             name: updated.name || "",
             image: updated.image || "",
+            appearance: updated.appearance || {},
             role: updated.role,
             mustChangePassword: Boolean(updated.mustChangePassword),
         },

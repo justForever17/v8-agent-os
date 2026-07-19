@@ -241,7 +241,7 @@ export function WorkbenchShell(props: WorkbenchShellProps) {
         <aside
             ref={panelRef}
             className={cn(
-                "z-[70] flex min-h-0 flex-col overflow-hidden bg-background",
+                "v8-workbench-surface z-[70] flex min-h-0 flex-col overflow-hidden bg-background",
                 effectiveMode === "focus" ? "absolute inset-0" : "relative h-full shrink-0",
             )}
             style={effectiveMode === "split" ? { width: panelWidth } : undefined}

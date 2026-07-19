@@ -353,8 +353,10 @@ export function Sidebar() {
                                 <button
                                     type="button"
                                     className={cn(
-                                        "inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60",
-                                        group.pinned ? "text-primary hover:bg-primary/10" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                                        "inline-flex h-7 w-7 cursor-pointer items-center justify-center border-0 bg-transparent p-0 opacity-55 shadow-none transition-[color,filter,opacity] duration-150",
+                                        "hover:bg-transparent hover:text-foreground hover:opacity-100 hover:brightness-125 focus-visible:bg-transparent focus-visible:text-foreground focus-visible:opacity-100 focus-visible:brightness-125 focus-visible:outline-none",
+                                        "disabled:cursor-wait disabled:opacity-60",
+                                        group.pinned && "text-primary opacity-100",
                                     )}
                                     onClick={(event) => void toggleGroupPin(event, group)}
                                     disabled={Boolean(presentationBusyKey)}
@@ -365,13 +367,13 @@ export function Sidebar() {
                                     {presentationBusyKey === `group:${group.key}` ? (
                                         <Loader2 className="h-4 w-4 animate-spin" />
                                     ) : (
-                                        <Pin className={cn("h-4 w-4", group.pinned && "fill-current")} />
+                                        <Pin className={cn("h-4 w-4 -rotate-45", group.pinned && "fill-current")} />
                                     )}
                                 </button>
                                 {group.creationBinding ? (
                                     <button
                                         type="button"
-                                        className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60"
+                                        className="inline-flex h-7 w-7 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-muted-foreground opacity-55 shadow-none transition-[color,filter,opacity] duration-150 hover:bg-transparent hover:text-foreground hover:opacity-100 hover:brightness-125 focus-visible:bg-transparent focus-visible:text-foreground focus-visible:opacity-100 focus-visible:brightness-125 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
                                         onClick={(event) => void createConversationInGroup(event, group)}
                                         disabled={Boolean(creatingGroupKey)}
                                         aria-label={t("web.sidebar.createInWorkspace", { value0: group.label })}
@@ -445,7 +447,7 @@ export function Sidebar() {
                                                         ) : (
                                                             <span className="block min-w-0 flex-1 truncate text-sm">{conv.title || t("web.generated.fca06b0605")}</span>
                                                         )}
-                                                        {conv.pinned && editingSessionId !== canonicalSessionId ? <Pin className="h-3.5 w-3.5 shrink-0 fill-current text-primary/75" /> : null}
+                                                        {conv.pinned && editingSessionId !== canonicalSessionId ? <Pin className="h-3.5 w-3.5 -rotate-45 shrink-0 fill-current text-primary/75" /> : null}
                                                         {activityState === "active" && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
                                                         {activityState === "failed" && <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />}
                                                     </span>
@@ -463,8 +465,9 @@ export function Sidebar() {
                                                         variant="ghost"
                                                         size="icon"
                                                         className={cn(
-                                                            "h-7 w-7 rounded-md text-muted-foreground hover:bg-background/80 hover:text-foreground",
-                                                            conv.pinned && "text-primary",
+                                                            "h-7 w-7 rounded-none bg-transparent p-0 text-muted-foreground opacity-55 shadow-none transition-[color,filter,opacity] duration-150",
+                                                            "hover:bg-transparent hover:text-foreground hover:opacity-100 hover:brightness-125 focus-visible:bg-transparent focus-visible:text-foreground focus-visible:opacity-100 focus-visible:brightness-125 focus-visible:ring-0 focus-visible:ring-offset-0",
+                                                            conv.pinned && "text-primary opacity-100",
                                                         )}
                                                         onClick={(event) => {
                                                             event.stopPropagation();
@@ -478,15 +481,15 @@ export function Sidebar() {
                                                         {presentationBusyKey === `session:${canonicalSessionId}` ? (
                                                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                                         ) : conv.pinned ? (
-                                                            <PinOff className="h-3.5 w-3.5" />
+                                                            <PinOff className="h-3.5 w-3.5 -rotate-45" />
                                                         ) : (
-                                                            <Pin className="h-3.5 w-3.5" />
+                                                            <Pin className="h-3.5 w-3.5 -rotate-45" />
                                                         )}
                                                     </Button>
                                                     <Button
                                                         variant="ghost"
                                                         size="icon"
-                                                        className="h-7 w-7 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                                        className="h-7 w-7 rounded-none bg-transparent p-0 text-muted-foreground opacity-55 shadow-none transition-[color,filter,opacity] duration-150 hover:bg-transparent hover:text-destructive hover:opacity-100 hover:brightness-125 focus-visible:bg-transparent focus-visible:text-destructive focus-visible:opacity-100 focus-visible:brightness-125 focus-visible:ring-0 focus-visible:ring-offset-0"
                                                         onClick={(event) => {
                                                             event.stopPropagation();
                                                             setContextMenu(null);
@@ -582,7 +585,7 @@ export function Sidebar() {
         <>
             <div
                 className={cn(
-                    "group/sidebar relative z-20 hidden h-[calc(100vh-3.5rem)] flex-shrink-0 flex-col transition-[width] [transition-duration:220ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:[transition-duration:150ms] md:flex",
+                    "group/sidebar relative z-20 hidden h-full flex-shrink-0 flex-col transition-[width] [transition-duration:220ms] [transition-timing-function:var(--v8-product-motion)] motion-reduce:[transition-duration:150ms] md:flex",
                     isCollapsed ? "w-0 overflow-visible" : "w-[280px] glass-panel",
                 )}
             >

@@ -288,7 +288,7 @@ export function ChatWindow({
                     </div>
                     <div
                         className={cn(
-                            "custom-scrollbar relative min-h-0 w-full flex-1 overflow-y-auto overscroll-contain bg-transparent px-3 pb-6 sm:px-4 sm:pb-8 lg:px-5 lg:pb-10 md:rounded-[30px] md:border md:border-border/50 md:bg-slate-50/65 md:shadow-sm md:backdrop-blur-sm md:dark:bg-zinc-900/50",
+                            "v8-chat-viewport-surface custom-scrollbar relative min-h-0 w-full flex-1 overflow-y-auto overscroll-contain bg-transparent px-3 pb-6 sm:px-4 sm:pb-8 lg:px-5 lg:pb-10 md:rounded-[30px] md:border md:border-border/50 md:bg-slate-50/65 md:shadow-sm md:backdrop-blur-sm md:dark:bg-zinc-900/50",
                             shellClassName ?? "max-w-4xl"
                         )}
                         ref={scrollContainerRef}

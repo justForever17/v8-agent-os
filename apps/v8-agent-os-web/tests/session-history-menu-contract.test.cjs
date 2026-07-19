@@ -34,6 +34,10 @@ test("web history items expose a lightweight V8OS session ID context menu", () =
   assert.match(source, /group-hover\/header:pointer-events-auto/);
   assert.match(source, /group-hover\/task:pointer-events-auto/);
   assert.match(source, /pointer-events-none ml-auto flex shrink-0/);
+  assert.match(source, /hover:bg-transparent hover:text-foreground hover:opacity-100 hover:brightness-125/);
+  assert.match(source, /<Pin className=\{cn\("h-4 w-4 -rotate-45"/);
+  assert.doesNotMatch(source, /text-muted-foreground hover:bg-muted hover:text-foreground/);
+  assert.doesNotMatch(source, /rounded-md text-muted-foreground hover:bg-background\/80/);
   assert.doesNotMatch(source, /codex:\/\/threads/);
 });
 
@@ -68,8 +72,8 @@ test("session history action labels are localized", () => {
 
   assert.equal(webZh["web.sidebar.copySessionId"], "复制会话 ID");
   assert.equal(webZh["web.sidebar.copiedSessionId"], "已复制会话 ID");
-  assert.equal(webZh["web.sidebar.deleteConversation"], "删除会话");
-  assert.equal(webZh["web.sidebar.continueInNewSession"], "在新会话中继续");
+  assert.equal(webZh["web.sidebar.deleteConversation"], "删除任务");
+  assert.equal(webZh["web.sidebar.continueInNewSession"], "在新任务中继续");
   assert.equal(webEn["web.sidebar.copySessionId"], "Copy session ID");
 
   assert.equal(phoneZh["shared.conversation.copy_session_id"], "复制会话 ID");

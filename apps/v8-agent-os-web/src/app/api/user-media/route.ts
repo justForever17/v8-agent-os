@@ -5,5 +5,5 @@ import { proxyUserMedia } from "@/lib/server/user-media-proxy";
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
-    return proxyUserMedia(req, { allowedKinds: ["avatar"], allowLegacyAvatar: true });
+    return proxyUserMedia(req, { allowedKinds: ["background"] });
 }

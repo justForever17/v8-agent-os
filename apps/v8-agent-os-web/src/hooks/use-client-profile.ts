@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 
 import { getUserProfile, type SharedUserProfile } from "@/lib/actions/user.actions";
+import { normalizeAppearance } from "@/lib/personalization";
 
 const PROFILE_UPDATED_EVENT = "v8-client-profile-updated";
 
@@ -12,6 +13,15 @@ function normalizeProfileValue(value?: string | null) {
 }
 
 function profilesMatch(left?: SharedUserProfile | null, right?: SharedUserProfile | null) {
+    return normalizeProfileValue(left?.login) === normalizeProfileValue(right?.login)
+        && normalizeProfileValue(left?.email) === normalizeProfileValue(right?.email)
+        && normalizeProfileValue(left?.name) === normalizeProfileValue(right?.name)
+        && normalizeProfileValue(left?.image) === normalizeProfileValue(right?.image)
+        && JSON.stringify(normalizeAppearance(left?.appearance)) === JSON.stringify(normalizeAppearance(right?.appearance))
+        && normalizeProfileValue(left?.role) === normalizeProfileValue(right?.role);
+}
+
+function sessionFieldsMatch(left?: SharedUserProfile | null, right?: SharedUserProfile | null) {
     return normalizeProfileValue(left?.login) === normalizeProfileValue(right?.login)
         && normalizeProfileValue(left?.email) === normalizeProfileValue(right?.email)
         && normalizeProfileValue(left?.name) === normalizeProfileValue(right?.name)
@@ -37,6 +47,7 @@ export function useClientProfile() {
     const { data: session, status, update } = useSession();
     const [profile, setProfile] = useState<SharedUserProfile | null>(null);
     const [loading, setLoading] = useState(false);
+    const [canonicalLoaded, setCanonicalLoaded] = useState(false);
     const sessionUserId = session?.user?.id;
     const sessionUserLogin = session?.user?.login;
     const sessionUserEmail = session?.user?.email;
@@ -58,10 +69,13 @@ export function useClientProfile() {
     }, [hasSessionUser, sessionUserEmail, sessionUserId, sessionUserImage, sessionUserLogin, sessionUserName, sessionUserRole]);
 
     const applyProfile = useCallback(async (next: SharedUserProfile | null) => {
+        setCanonicalLoaded(true);
         setProfile((current) => profilesMatch(current, next) ? current : next);
         emitProfileUpdate(next);
         if (!next) return;
-        if (profilesMatch(next, sessionProfile)) return;
+        // Appearance is canonical profile data, not part of the NextAuth session.
+        // Comparing it here would make every profile consumer refresh the session forever.
+        if (sessionFieldsMatch(next, sessionProfile)) return;
         void update({
             login: next.login,
             role: next.role,
@@ -76,6 +90,7 @@ export function useClientProfile() {
     const refreshProfile = useCallback(async () => {
         if (!hasSessionUser) {
             setProfile(null);
+            setCanonicalLoaded(true);
             return null;
         }
         setLoading(true);
@@ -94,6 +109,7 @@ export function useClientProfile() {
     useEffect(() => {
         if (status !== "authenticated") {
             setProfile(null);
+            setCanonicalLoaded(status === "unauthenticated");
             return;
         }
         void refreshProfile();
@@ -115,6 +131,7 @@ export function useClientProfile() {
         status,
         profile: profile || sessionProfile,
         loading,
+        canonicalLoaded,
         refreshProfile,
         applyProfile,
     };

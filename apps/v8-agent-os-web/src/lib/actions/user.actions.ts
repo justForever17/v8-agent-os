@@ -2,6 +2,7 @@
 
 import { auth } from "@/lib/auth";
 import { resolveAdminApiBaseUrl, resolveInternalSecret } from "@/lib/server/runtime-config";
+import type { UserAppearancePreferences } from "@/lib/personalization";
 
 async function createAdminRequest(path: string, init: RequestInit = {}) {
     const session = await auth();
@@ -32,6 +33,7 @@ export type SharedUserProfile = {
     name?: string;
     image?: string;
     role?: string;
+    appearance?: UserAppearancePreferences;
     mustChangePassword?: boolean;
 };
 
@@ -86,5 +88,22 @@ export async function updateUserAvatar(image: string) {
     } catch (error) {
         console.error("Failed to update avatar:", error);
         return { success: false, error: "头像更新失败" };
+    }
+}
+
+export async function updateUserAppearance(appearance: UserAppearancePreferences) {
+    try {
+        const response = await createAdminRequest("/auth/profile", {
+            method: "PATCH",
+            body: JSON.stringify({ appearance }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            return { success: false, error: String(data.error || "外观更新失败") };
+        }
+        return { success: true, user: data.user as SharedUserProfile };
+    } catch (error) {
+        console.error("Failed to update appearance:", error);
+        return { success: false, error: "外观更新失败" };
     }
 }

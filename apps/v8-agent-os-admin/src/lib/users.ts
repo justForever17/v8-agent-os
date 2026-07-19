@@ -2,6 +2,10 @@ import { v4 as uuidv4 } from "uuid";
 import { readJson, writeJson } from "@/lib/storage";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
 export type AdminUserRole = "ADMIN" | "USER";
+export type UserAppearancePreferences = {
+  lightBackgroundImage?: string;
+  lightBackgroundEnabled?: boolean;
+};
 export type AdminUserRecord = {
   id: string;
   login: string;
@@ -10,6 +14,7 @@ export type AdminUserRecord = {
   role: AdminUserRole;
   password?: string;
   image?: string;
+  appearance?: UserAppearancePreferences;
   mustChangePassword?: boolean;
   createdAt: string;
   updatedAt?: string;
@@ -22,6 +27,20 @@ type AdminUsersPayload = {
 function normalizeRole(role: unknown): AdminUserRole {
   return String(role || "").toUpperCase() === "ADMIN" ? "ADMIN" : "USER";
 }
+function normalizeAppearance(value: unknown): UserAppearancePreferences {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const rawImage = String(record.lightBackgroundImage || "").trim().slice(0, 2048);
+  let lightBackgroundImage = "";
+  if (rawImage.startsWith("/user-assets/background/")) {
+    lightBackgroundImage = rawImage;
+  }
+  return {
+    lightBackgroundImage,
+    lightBackgroundEnabled: Boolean(record.lightBackgroundEnabled && lightBackgroundImage),
+  };
+}
 function normalizeUserRecord(raw: Record<string, unknown>, index: number): AdminUserRecord {
   const login = String(raw.login || raw.email || `user-${index + 1}`).trim();
   const email = String(raw.email || "").trim() || undefined;
@@ -33,6 +52,7 @@ function normalizeUserRecord(raw: Record<string, unknown>, index: number): Admin
     role: normalizeRole(raw.role),
     password: typeof raw.password === "string" ? raw.password : "",
     image: typeof raw.image === "string" ? raw.image : "",
+    appearance: normalizeAppearance(raw.appearance),
     mustChangePassword: Boolean(raw.mustChangePassword),
     createdAt: String(raw.createdAt || new Date().toISOString()),
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : undefined
@@ -98,6 +118,7 @@ export function createUserRecord(input: {
   password?: string;
   email?: string;
   image?: string;
+  appearance?: UserAppearancePreferences;
   mustChangePassword?: boolean;
 }) {
   const payload = readUsersPayload();
@@ -121,6 +142,7 @@ export function createUserRecord(input: {
     role,
     password: input.password || "",
     image: String(input.image || "").trim(),
+    appearance: normalizeAppearance(input.appearance),
     mustChangePassword: Boolean(input.mustChangePassword),
     createdAt: now,
     updatedAt: now
@@ -129,7 +151,7 @@ export function createUserRecord(input: {
   writeUsersPayload(payload);
   return nextUser;
 }
-export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord, "login" | "name" | "role" | "password" | "image" | "mustChangePassword" | "email">>) {
+export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord, "login" | "name" | "role" | "password" | "image" | "appearance" | "mustChangePassword" | "email">>) {
   const payload = readUsersPayload();
   const target = payload.users.find(user => user.id === id);
   if (!target) {
@@ -157,6 +179,9 @@ export function updateUserRecord(id: string, patch: Partial<Pick<AdminUserRecord
   }
   if (typeof patch.image === "string") {
     target.image = patch.image.trim();
+  }
+  if (patch.appearance && typeof patch.appearance === "object") {
+    target.appearance = normalizeAppearance(patch.appearance);
   }
   if (typeof patch.email === "string") {
     target.email = patch.email.trim() || undefined;

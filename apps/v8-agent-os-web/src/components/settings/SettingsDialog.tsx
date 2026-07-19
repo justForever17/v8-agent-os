@@ -1,7 +1,7 @@
 "use client";
 
-import Image from "next/image";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
     Dialog,
     DialogContent,
@@ -12,12 +12,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { updateUserAvatar, updateUserNickname } from "@/lib/actions/user.actions";
+import { updateUserAppearance, updateUserAvatar, updateUserNickname } from "@/lib/actions/user.actions";
 import { resolveProfileAvatarSrc, useClientProfile } from "@/hooks/use-client-profile";
-import { useEffect, useState } from "react";
+import { normalizeAppearance, resolveLightBackgroundSrc } from "@/lib/personalization";
+import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "../layout/ThemeToggle";
 import { useT } from "@/components/providers/LocaleProvider";
+import { ImageUp } from "lucide-react";
 
 interface SettingsDialogProps {
     open: boolean;
@@ -29,14 +30,20 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     const t = useT();
     const [nickname, setNickname] = useState(profile?.name || "");
     const [avatarUrl, setAvatarUrl] = useState(profile?.image || "");
-    const [customAvatarUrl, setCustomAvatarUrl] = useState("");
+    const [backgroundUrl, setBackgroundUrl] = useState("");
+    const [backgroundEnabled, setBackgroundEnabled] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+    const avatarFileInputRef = useRef<HTMLInputElement>(null);
+    const backgroundFileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         setNickname(profile?.name || "");
         setAvatarUrl(profile?.image || "");
-    }, [profile?.image, profile?.name]);
+        const appearance = normalizeAppearance(profile?.appearance);
+        setBackgroundUrl(appearance.lightBackgroundImage || "");
+        setBackgroundEnabled(Boolean(appearance.lightBackgroundEnabled));
+    }, [profile?.appearance, profile?.image, profile?.name]);
 
     useEffect(() => {
         if (!open) return;
@@ -76,12 +83,8 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 throw new Error(data.error || t("web.generated.6ba695e4a7"));
             }
             const nextImage = String(data.path || data.url);
-            const result = await updateUserAvatar(nextImage);
-            if (!result.success) {
-                throw new Error(result.error || t("web.generated.18142c77e9"));
-            }
             setAvatarUrl(nextImage);
-            await applyProfile(result.user || { ...(profile || {}), image: nextImage });
+            await applyProfile(data.user || { ...(profile || {}), image: nextImage });
             setMessage({ type: "success", text: t("web.generated.3b77e58de9") });
         } catch (error) {
             setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.generated.348cb3f84a") });
@@ -90,25 +93,45 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         }
     };
 
-    const handleAvatarUrlSave = async () => {
-        if (!customAvatarUrl.trim()) {
-            setMessage({ type: "error", text: t("web.generated.0381b828e4") });
-            return;
+    const applyAppearance = async (nextImage: string, nextEnabled: boolean, successText: string) => {
+        const nextAppearance = {
+            lightBackgroundImage: nextImage,
+            lightBackgroundEnabled: Boolean(nextEnabled && nextImage),
+        };
+        const result = await updateUserAppearance(nextAppearance);
+        if (!result.success) {
+            throw new Error(result.error || t("web.personalization.background.saveFailed"));
         }
+        setBackgroundUrl(nextAppearance.lightBackgroundImage);
+        setBackgroundEnabled(nextAppearance.lightBackgroundEnabled);
+        await applyProfile(result.user || { ...(profile || {}), appearance: nextAppearance });
+        setMessage({ type: "success", text: successText });
+    };
+
+    const handleBackgroundUpload = async (file: File) => {
         setIsLoading(true);
         setMessage(null);
         try {
-            const nextUrl = customAvatarUrl.trim();
-            const result = await updateUserAvatar(nextUrl);
-            if (!result.success) {
-                throw new Error(result.error || t("web.generated.18142c77e9"));
+            const formData = new FormData();
+            formData.append("file", file);
+            const response = await fetch("/api/user-background-upload", { method: "POST", body: formData });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.url) {
+                throw new Error(data.error || t("web.personalization.background.uploadFailed"));
             }
-            setAvatarUrl(nextUrl);
-            await applyProfile(result.user || { ...(profile || {}), image: nextUrl });
-            setCustomAvatarUrl("");
-            setMessage({ type: "success", text: t("web.generated.3b77e58de9") });
+            const nextImage = String(data.path || data.url);
+            setBackgroundUrl(nextImage);
+            setBackgroundEnabled(true);
+            await applyProfile(data.user || {
+                ...(profile || {}),
+                appearance: { lightBackgroundImage: nextImage, lightBackgroundEnabled: true },
+            });
+            setMessage({ type: "success", text: t("web.personalization.background.uploaded") });
         } catch (error) {
-            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.generated.348cb3f84a") });
+            setMessage({
+                type: "error",
+                text: error instanceof Error ? error.message : t("web.personalization.background.uploadFailed"),
+            });
         } finally {
             setIsLoading(false);
         }
@@ -116,75 +139,70 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-[560px]">
-                <DialogHeader>
+            <DialogContent className="v8-personalization-dialog max-h-[86dvh] gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+                <DialogHeader className="border-b px-6 pb-4 pt-5 text-left">
                     <DialogTitle>{t("web.generated.36b502ac91")}</DialogTitle>
                     <DialogDescription>
                         {t("web.generated.17ceff9267")}
                     </DialogDescription>
                 </DialogHeader>
 
-                <Tabs defaultValue="profile" className="w-full">
-                    <TabsList className="grid w-full grid-cols-1">
-                        <TabsTrigger value="profile">{t("web.generated.0f5a6e0b58")}</TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent value="profile" className="space-y-4 py-4">
-                        <div className="flex items-center gap-4">
-                            <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center overflow-hidden text-2xl font-semibold text-muted-foreground">
-                                {avatarUrl ? (
-                                    <Image
+                <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-4">
+                    <section className="rounded-2xl border border-border/70 bg-card/55 p-4">
+                        <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-4">
+                            <div className="flex flex-col items-center gap-2">
+                                <Avatar className="h-20 w-20 border border-border/60 bg-muted text-2xl font-semibold text-muted-foreground shadow-sm">
+                                    <AvatarImage
                                         src={resolveProfileAvatarSrc(avatarUrl)}
                                         alt={profile?.name || t("web.generated.154566d5fa")}
-                                        width={64}
-                                        height={64}
-                                        className="h-full w-full object-cover"
-                                        unoptimized
+                                        className="object-cover"
                                     />
-                                ) : (profile?.name?.charAt(0).toUpperCase() || "U")}
+                                    <AvatarFallback>{profile?.name?.charAt(0).toUpperCase() || "U"}</AvatarFallback>
+                                </Avatar>
+                                <input
+                                    ref={avatarFileInputRef}
+                                    id="user-avatar-upload"
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={(event) => {
+                                        const file = event.target.files?.[0];
+                                        if (file) void handleAvatarUpload(file);
+                                        event.target.value = "";
+                                    }}
+                                />
                             </div>
-                            <div className="flex-1 space-y-3">
-                                <Label htmlFor="nickname">{t("web.generated.a04cc6036e")}</Label>
-                                <div className="flex gap-2">
-                                    <Input
-                                        id="nickname"
-                                        value={nickname}
-                                        onChange={(e) => setNickname(e.target.value)}
-                                        placeholder={t("web.generated.14f7afc6d0")}
-                                    />
-                                    <Button onClick={handleUpdateNickname} disabled={isLoading}>
-                                        {t("web.generated.5fe30f30dd")}
-                                    </Button>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label htmlFor="user-avatar-upload">{t("web.generated.8f6f49e2f3")}</Label>
-                                    <div className="flex flex-wrap gap-2">
+
+                            <div className="min-w-0 space-y-2">
+                                <div className="space-y-1.5">
+                                    <Label htmlFor="nickname">{t("web.generated.a04cc6036e")}</Label>
+                                    <div className="flex flex-wrap items-center gap-2">
                                         <Input
-                                            id="user-avatar-upload"
-                                            type="file"
-                                            accept="image/*"
-                                            onChange={(event) => {
-                                                const file = event.target.files?.[0];
-                                                if (file) {
-                                                    void handleAvatarUpload(file);
-                                                    event.target.value = "";
-                                                }
-                                            }}
+                                            id="nickname"
+                                            className="min-w-[180px] flex-1"
+                                            value={nickname}
+                                            onChange={(e) => setNickname(e.target.value)}
+                                            placeholder={t("web.generated.14f7afc6d0")}
                                         />
-                                        <div className="flex w-full gap-2">
-                                            <Input
-                                                value={customAvatarUrl}
-                                                onChange={(event) => setCustomAvatarUrl(event.target.value)}
-                                                placeholder={t("web.generated.df178badba")}
-                                            />
-                                            <Button onClick={handleAvatarUrlSave} disabled={isLoading}>
-                                                {t("web.generated.4a0177af0a")}
-                                            </Button>
-                                        </div>
+                                        <Button className="h-8 px-3 text-xs" onClick={handleUpdateNickname} disabled={isLoading}>
+                                            {t("web.generated.5fe30f30dd")}
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            className="h-8 px-3 text-xs"
+                                            variant="outline"
+                                            disabled={isLoading}
+                                            onClick={() => avatarFileInputRef.current?.click()}
+                                        >
+                                            <ImageUp className="mr-1.5 h-3.5 w-3.5" />
+                                            {t("web.generated.8f6f49e2f3")}
+                                        </Button>
                                         {avatarUrl ? (
                                             <Button
                                                 type="button"
-                                                variant="outline"
+                                                className="h-8 px-2.5 text-xs"
+                                                variant="ghost"
+                                                disabled={isLoading}
                                                 onClick={async () => {
                                                     const result = await updateUserAvatar("");
                                                     if (result.success) {
@@ -203,26 +221,121 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                                 </div>
                             </div>
                         </div>
+                    </section>
 
-                        <div className="space-y-2 pt-4 border-t">
-                            <Label>{t("web.generated.2d9d54c63a")}</Label>
-                            <div className="flex items-center justify-between p-2 border rounded-lg">
-                                <span className="text-sm text-muted-foreground">{t("web.generated.98ed00c0e4")}</span>
+                    <section className="space-y-3 rounded-2xl border border-border/70 bg-card/55 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <Label>{t("web.personalization.background.title")}</Label>
+                                <p className="mt-1 max-w-[460px] text-xs leading-5 text-muted-foreground">
+                                    {t("web.personalization.background.description")}
+                                </p>
+                            </div>
+                            <div className="flex items-center gap-2">
                                 <ThemeToggle />
+                                <Button
+                                    type="button"
+                                    className="h-8 px-3 text-xs"
+                                    variant={backgroundEnabled ? "default" : "outline"}
+                                    aria-pressed={backgroundEnabled}
+                                    disabled={isLoading || !backgroundUrl}
+                                    onClick={async () => {
+                                        setIsLoading(true);
+                                        setMessage(null);
+                                        try {
+                                            await applyAppearance(
+                                                backgroundUrl,
+                                                !backgroundEnabled,
+                                                !backgroundEnabled
+                                                    ? t("web.personalization.background.enabled")
+                                                    : t("web.personalization.background.disabled"),
+                                            );
+                                        } catch (error) {
+                                            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.personalization.background.saveFailed") });
+                                        } finally {
+                                            setIsLoading(false);
+                                        }
+                                    }}
+                                >
+                                    {backgroundEnabled
+                                        ? t("web.personalization.background.on")
+                                        : t("web.personalization.background.off")}
+                                </Button>
                             </div>
                         </div>
-                    </TabsContent>
 
-                </Tabs>
+                        <div
+                            data-testid="light-background-preview"
+                            className="relative h-32 overflow-hidden rounded-xl border border-border/60 bg-muted/70 shadow-inner sm:h-36"
+                            style={backgroundUrl ? {
+                                backgroundImage: `linear-gradient(rgb(255 255 255 / 0.12), rgb(15 23 42 / 0.08)), url(${JSON.stringify(resolveLightBackgroundSrc(backgroundUrl))})`,
+                                backgroundPosition: "center center",
+                                backgroundRepeat: "no-repeat",
+                                backgroundSize: "cover",
+                            } : undefined}
+                        >
+                            {!backgroundUrl ? (
+                                <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+                                    {t("web.personalization.background.empty")}
+                                </div>
+                            ) : null}
+                        </div>
 
-                {message && (
-                    <div className={`p-2 rounded text-sm ${message.type === 'success' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
-                        {message.text}
-                    </div>
-                )}
+                        <input
+                            ref={backgroundFileInputRef}
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            className="hidden"
+                            onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                if (file) void handleBackgroundUpload(file);
+                                event.target.value = "";
+                            }}
+                        />
+                        <div className="flex flex-wrap gap-2">
+                            <Button
+                                type="button"
+                                className="h-8 px-3 text-xs"
+                                variant="outline"
+                                disabled={isLoading}
+                                onClick={() => backgroundFileInputRef.current?.click()}
+                            >
+                                <ImageUp className="mr-2 h-4 w-4" />
+                                {t("web.personalization.background.choose")}
+                            </Button>
+                            {backgroundUrl ? (
+                                <Button
+                                    type="button"
+                                    className="h-8 px-2.5 text-xs"
+                                    variant="ghost"
+                                    disabled={isLoading}
+                                    onClick={async () => {
+                                        setIsLoading(true);
+                                        setMessage(null);
+                                        try {
+                                            await applyAppearance("", false, t("web.personalization.background.cleared"));
+                                        } catch (error) {
+                                            setMessage({ type: "error", text: error instanceof Error ? error.message : t("web.personalization.background.saveFailed") });
+                                        } finally {
+                                            setIsLoading(false);
+                                        }
+                                    }}
+                                >
+                                    {t("web.personalization.background.clear")}
+                                </Button>
+                            ) : null}
+                        </div>
+                    </section>
 
-                <DialogFooter>
-                    <Button variant="outline" onClick={() => onOpenChange(false)}>{t("web.generated.fbd8cee012")}</Button>
+                    {message && (
+                        <div className={`rounded-lg p-2 text-sm ${message.type === 'success' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
+                            {message.text}
+                        </div>
+                    )}
+                </div>
+
+                <DialogFooter className="border-t px-6 py-3">
+                    <Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>{t("web.generated.fbd8cee012")}</Button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>

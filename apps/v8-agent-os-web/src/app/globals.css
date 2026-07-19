@@ -85,6 +85,7 @@
     body {
         @apply bg-background text-foreground antialiased selection:bg-violet-200 selection:text-violet-950 dark:selection:bg-violet-900 dark:selection:text-violet-100;
         font-feature-settings: "rlig" 1, "calt" 1;
+        isolation: isolate;
     }
 
     /* Subtle background pattern for visual texture */
@@ -295,5 +296,105 @@
             opacity: 0.25;
             background-position: 50% 50%;
         }
+    }
+}
+
+/* User wallpaper is a light-theme appearance variant. The image always keeps
+   its aspect ratio: window resizing crops from the center instead of stretching. */
+.v8-personalization-wallpaper,
+.v8-personalization-wallpaper-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+}
+
+html.light[data-v8-wallpaper="active"] body {
+    background-color: transparent !important;
+}
+
+html.light[data-v8-wallpaper="active"] body::before {
+    display: none;
+}
+
+html.light[data-v8-wallpaper="active"] .v8-personalization-wallpaper {
+    display: block;
+    z-index: -2;
+    background-image: var(--v8-wallpaper-image);
+    background-position: center center;
+    background-repeat: no-repeat;
+    background-size: cover;
+}
+
+html.light[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
+    display: block;
+    z-index: -1;
+    background:
+        linear-gradient(115deg, rgb(248 250 252 / 0.48), rgb(248 250 252 / 0.2) 48%, rgb(248 250 252 / 0.4)),
+        radial-gradient(circle at 50% 35%, rgb(255 255 255 / 0.08), rgb(15 23 42 / 0.12));
+}
+
+html.light[data-v8-wallpaper="active"] :where(.bg-card, [class*="bg-card/"]) {
+    background-color: rgb(255 255 255 / 0.56) !important;
+}
+
+html.light[data-v8-wallpaper="active"] :where(.bg-background, [class*="bg-background/"]) {
+    background-color: rgb(248 250 252 / 0.64) !important;
+}
+
+html.light[data-v8-wallpaper="active"] :where(.bg-popover, [class*="bg-popover/"]) {
+    background-color: rgb(255 255 255 / 0.88) !important;
+    -webkit-backdrop-filter: blur(14px) saturate(1.08);
+    backdrop-filter: blur(14px) saturate(1.08);
+}
+
+html.light[data-v8-wallpaper="active"] :where(.bg-slate-50, [class*="bg-slate-50/"], .bg-white, [class*="bg-white/"]) {
+    background-color: rgb(248 250 252 / 0.54) !important;
+}
+
+/* Keep GPU-heavy backdrop sampling on one large shell surface instead of every
+   nested card. This avoids Windows/Electron compositing flashes. */
+html.light[data-v8-wallpaper="active"] .glass-panel {
+    background: linear-gradient(90deg, rgb(248 250 252 / 0.5) 0%, rgb(248 250 252 / 0.34) 74%, rgb(248 250 252 / 0.2) 100%) !important;
+    border-right-color: rgb(255 255 255 / 0.26) !important;
+    box-shadow: inset -1px 0 rgb(255 255 255 / 0.16);
+    -webkit-backdrop-filter: blur(20px) saturate(1.08);
+    backdrop-filter: blur(20px) saturate(1.08);
+}
+
+html.light[data-v8-wallpaper="active"] .glass-card,
+html.light[data-v8-wallpaper="active"] .v8-personalization-dialog {
+    background-color: rgb(248 250 252 / 0.82) !important;
+    border-color: rgb(255 255 255 / 0.56) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(1.06);
+    backdrop-filter: blur(16px) saturate(1.06);
+}
+
+html.light[data-v8-wallpaper="active"] .v8-product-topbar {
+    background: linear-gradient(90deg, rgb(248 250 252 / 0.58), rgb(248 250 252 / 0.46));
+    border-bottom-color: rgb(255 255 255 / 0.44);
+    -webkit-backdrop-filter: blur(18px) saturate(1.08);
+    backdrop-filter: blur(18px) saturate(1.08);
+}
+
+html.light[data-v8-wallpaper="active"] .v8-chat-viewport-surface {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+}
+
+html.light[data-v8-wallpaper="active"] .v8-workbench-surface,
+html.light[data-v8-wallpaper="active"] .v8-workbench-surface > [role="tabpanel"],
+html.light[data-v8-wallpaper="active"] .v8-workbench-surface > [role="tabpanel"] > :first-child {
+    background: transparent !important;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    html.light[data-v8-wallpaper="active"] :where(.bg-card, [class*="bg-card/"], .bg-background, [class*="bg-background/"], .bg-popover, [class*="bg-popover/"], .bg-slate-50, [class*="bg-slate-50/"], .bg-white, [class*="bg-white/"]) {
+        background-color: rgb(255 255 255 / 0.92) !important;
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
     }
 }

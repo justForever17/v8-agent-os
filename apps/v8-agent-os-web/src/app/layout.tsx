@@ -7,7 +7,9 @@ import { Topbar } from "@/components/layout/Topbar";
 import { SessionProvider } from "@/components/providers/SessionProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
+import { PersonalizationProvider } from "@/components/providers/PersonalizationProvider";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
+import { buildPersonalizationBootstrapScript } from "@/lib/personalization";
 import { resolveInitialProductTheme } from "@/lib/server/product-theme";
 
 
@@ -43,6 +45,10 @@ export default async function RootLayout({
                         __html: buildProductThemeBootstrapScript(initialTheme.theme, PRODUCT_THEME_STORAGE_KEY),
                     }}
                 />
+                <script
+                    id="v8-personalization-bootstrap"
+                    dangerouslySetInnerHTML={{ __html: buildPersonalizationBootstrapScript() }}
+                />
             </head>
             <body className="h-full overflow-hidden bg-background text-foreground antialiased font-sans" suppressHydrationWarning={true}>
                 <LocaleProvider initialLocale={initialLocale}>
@@ -56,12 +62,14 @@ export default async function RootLayout({
                             storageKey={PRODUCT_THEME_STORAGE_KEY}
                             disableTransitionOnChange
                         >
-                            <div className="flex h-dvh min-h-dvh flex-col overflow-hidden">
-                                <Topbar />
-                                <main className="flex min-h-0 flex-1 overflow-hidden">
-                                    {children}
-                                </main>
-                            </div>
+                            <PersonalizationProvider>
+                                <div className="relative z-0 flex h-dvh min-h-dvh flex-col overflow-hidden">
+                                    <Topbar />
+                                    <main className="flex min-h-0 flex-1 overflow-hidden">
+                                        {children}
+                                    </main>
+                                </div>
+                            </PersonalizationProvider>
                         </ThemeProvider>
                     </SessionProvider>
                 </LocaleProvider>

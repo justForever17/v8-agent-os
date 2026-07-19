@@ -697,5 +697,18 @@
   "web.collaborationMicroStage.status.completed": "Completed",
   "web.collaborationMicroStage.status.degraded": "Degraded",
   "web.collaborationMicroStage.status.failed": "Failed",
-  "web.collaborationMicroStage.status.pending": "Waiting"
+  "web.collaborationMicroStage.status.pending": "Waiting",
+  "web.personalization.background.title": "Light background",
+  "web.personalization.background.description": "Shown only in light theme. Resizing crops from the center without stretching, while cards switch to translucent glass surfaces.",
+  "web.personalization.background.on": "Enabled",
+  "web.personalization.background.off": "Disabled",
+  "web.personalization.background.enabled": "Light background enabled",
+  "web.personalization.background.disabled": "Light background disabled",
+  "web.personalization.background.empty": "Choose a background image",
+  "web.personalization.background.choose": "Choose background",
+  "web.personalization.background.clear": "Clear background",
+  "web.personalization.background.cleared": "Light background cleared",
+  "web.personalization.background.uploaded": "Background uploaded and enabled",
+  "web.personalization.background.uploadFailed": "Background upload failed",
+  "web.personalization.background.saveFailed": "Failed to save appearance"
 }

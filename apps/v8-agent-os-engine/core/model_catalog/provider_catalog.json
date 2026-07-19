@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "lastCheckedAt": "2026-07-13",
+  "lastCheckedAt": "2026-07-19",
   "providers": [
     {
       "id": "openai",
@@ -206,7 +206,13 @@
       "id": "anthropic",
       "name": "Anthropic",
       "apiStandard": "anthropic",
-      "baseUrl": "https://api.anthropic.com/v1",
+      "baseUrl": "https://api.anthropic.com",
+      "modelsUrl": "https://api.anthropic.com/v1/models",
+      "defaultChannelId": "anthropic-messages",
+      "channels": [
+        { "id": "anthropic-messages", "label": "Anthropic Messages (native)", "apiStandard": "anthropic", "baseUrl": "https://api.anthropic.com", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" },
+        { "id": "openai-compatible", "label": "OpenAI Chat Completions (compatibility)", "apiStandard": "openai", "baseUrl": "https://api.anthropic.com/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "x-api-key"
@@ -404,6 +410,11 @@
       "name": "Google Gemini API",
       "apiStandard": "gemini",
       "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "defaultChannelId": "gemini-native",
+      "channels": [
+        { "id": "gemini-native", "label": "Gemini GenerateContent (native)", "apiStandard": "gemini", "baseUrl": "https://generativelanguage.googleapis.com/v1beta", "wireProtocols": ["gemini.generate_content"], "defaultWireProtocol": "gemini.generate_content" },
+        { "id": "openai-compatible", "label": "OpenAI Chat Completions (compatibility)", "apiStandard": "openai", "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" }
+      ],
       "auth": {
         "type": "api_key",
         "query": "key"
@@ -650,6 +661,11 @@
       "name": "OpenRouter",
       "apiStandard": "openai",
       "baseUrl": "https://openrouter.ai/api/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://openrouter.ai/api/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://openrouter.ai/api/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -773,6 +789,12 @@
       "name": "Alibaba DashScope / Qwen",
       "apiStandard": "openai",
       "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://dashscope.aliyuncs.com/apps/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -846,13 +868,18 @@
       "name": "SiliconFlow",
       "apiStandard": "openai",
       "baseUrl": "https://api.siliconflow.cn/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.siliconflow.cn/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.siliconflow.cn", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "sourceUrl": "https://siliconflow.readme.io/reference/retrieve-a-list-of-models",
+      "sourceUrl": "https://api-docs.siliconflow.cn/docs/userguide/introduction",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
@@ -868,13 +895,18 @@
       "name": "ModelScope",
       "apiStandard": "openai",
       "baseUrl": "https://api-inference.modelscope.cn/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api-inference.modelscope.cn/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages (beta)", "apiStandard": "anthropic", "baseUrl": "https://api-inference.modelscope.cn", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "sourceUrl": "https://www.modelscope.cn",
+      "sourceUrl": "https://modelscope.cn/docs/model-service/API-Inference/intro",
       "credentialHelp": {
         "label": "获取 Token",
         "kind": "api_key",
@@ -890,6 +922,11 @@
       "name": "Hugging Face Router",
       "apiStandard": "openai",
       "baseUrl": "https://router.huggingface.co/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://router.huggingface.co/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses (beta)", "apiStandard": "openai", "baseUrl": "https://router.huggingface.co/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -912,6 +949,11 @@
       "name": "Zhipu BigModel",
       "apiStandard": "openai",
       "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://open.bigmodel.cn/api/paas/v4", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://open.bigmodel.cn/api/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -1349,6 +1391,11 @@
       "name": "Z.ai Coding",
       "apiStandard": "openai",
       "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.z.ai/api/coding/paas/v4", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.z.ai/api/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -1781,6 +1828,11 @@
       "name": "Volcengine Ark / Doubao",
       "apiStandard": "openai",
       "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://ark.cn-beijing.volces.com/api/v3", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://ark.cn-beijing.volces.com/api/v3", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -1884,6 +1936,11 @@
       "name": "Tencent Hunyuan",
       "apiStandard": "openai",
       "baseUrl": "https://api.hunyuan.cloud.tencent.com/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.hunyuan.cloud.tencent.com/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.hunyuan.cloud.tencent.com/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -2383,6 +2440,11 @@
       "name": "xAI",
       "apiStandard": "openai",
       "baseUrl": "https://api.x.ai/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.x.ai/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://api.x.ai/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -2421,6 +2483,11 @@
       "name": "Groq",
       "apiStandard": "openai",
       "baseUrl": "https://api.groq.com/openai/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.groq.com/openai/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://api.groq.com/openai/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -2465,6 +2532,12 @@
       "name": "Ollama",
       "apiStandard": "openai",
       "baseUrl": "http://127.0.0.1:11434/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "http://127.0.0.1:11434/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses (Ollama 0.13.3+)", "apiStandard": "openai", "baseUrl": "http://127.0.0.1:11434/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "http://127.0.0.1:11434", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "none"
       },
@@ -2489,6 +2562,12 @@
       "name": "LM Studio",
       "apiStandard": "openai",
       "baseUrl": "http://127.0.0.1:1234/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "http://127.0.0.1:1234/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "http://127.0.0.1:1234/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "http://127.0.0.1:1234", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "none"
       },
@@ -2504,6 +2583,12 @@
       "name": "vLLM",
       "apiStandard": "openai",
       "baseUrl": "http://127.0.0.1:8000/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "http://127.0.0.1:8000/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "http://127.0.0.1:8000/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "http://127.0.0.1:8000", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "none"
       },
@@ -2569,13 +2654,18 @@
       "name": "Perplexity",
       "apiStandard": "openai",
       "baseUrl": "https://api.perplexity.ai",
+      "defaultChannelId": "sonar-chat",
+      "channels": [
+        { "id": "sonar-chat", "label": "OpenAI Chat Completions (Sonar)", "apiStandard": "openai", "baseUrl": "https://api.perplexity.ai", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "agent-responses", "label": "OpenAI Responses (Agent API)", "apiStandard": "openai", "baseUrl": "https://api.perplexity.ai/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
         "scheme": "Bearer"
       },
       "probeStrategy": "catalog_only",
-      "sourceUrl": "https://docs.perplexity.ai/api-reference/chat-completions",
+      "sourceUrl": "https://docs.perplexity.ai/docs/agent-api/openai-compatibility",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",
@@ -2612,6 +2702,12 @@
       "name": "Fireworks AI",
       "apiStandard": "openai",
       "baseUrl": "https://api.fireworks.ai/inference/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.fireworks.ai/inference/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://api.fireworks.ai/inference/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.fireworks.ai/inference", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -2769,6 +2865,12 @@
       "name": "Baidu Qianfan",
       "apiStandard": "openai",
       "baseUrl": "https://qianfan.baidubce.com/v2",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://qianfan.baidubce.com/v2", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses", "apiStandard": "openai", "baseUrl": "https://qianfan.baidubce.com/v2", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://qianfan.baidubce.com/anthropic", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
@@ -2791,13 +2893,19 @@
       "name": "StepFun",
       "apiStandard": "openai",
       "baseUrl": "https://api.stepfun.com/v1",
+      "defaultChannelId": "chat-completions",
+      "channels": [
+        { "id": "chat-completions", "label": "OpenAI Chat Completions", "apiStandard": "openai", "baseUrl": "https://api.stepfun.com/v1", "wireProtocols": ["openai.chat_completions"], "defaultWireProtocol": "openai.chat_completions" },
+        { "id": "responses", "label": "OpenAI Responses (Step 3.7 Flash)", "apiStandard": "openai", "baseUrl": "https://api.stepfun.com/v1", "wireProtocols": ["openai.responses"], "defaultWireProtocol": "openai.responses" },
+        { "id": "anthropic-messages", "label": "Anthropic Messages", "apiStandard": "anthropic", "baseUrl": "https://api.stepfun.com", "wireProtocols": ["anthropic.messages"], "defaultWireProtocol": "anthropic.messages" }
+      ],
       "auth": {
         "type": "api_key",
         "header": "Authorization",
         "scheme": "Bearer"
       },
       "probeStrategy": "openai_models",
-      "sourceUrl": "https://platform.stepfun.com/docs/llm/text",
+      "sourceUrl": "https://platform.stepfun.com/docs/zh/api-reference/responses/responses-create",
       "credentialHelp": {
         "label": "获取 API Key",
         "kind": "api_key",

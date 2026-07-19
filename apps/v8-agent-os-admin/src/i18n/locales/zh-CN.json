@@ -1476,6 +1476,7 @@
   "app.admin.dashboard.model.hub.page.wireProtocolAuto": "暂不指定（保留当前兼容行为）",
   "app.admin.dashboard.model.hub.page.wireProtocolHelp": "这是模型级真实配置。手动选择会直接决定请求协议；系统不会根据模型名称在背后改写。",
   "app.admin.dashboard.model.hub.channel.title": "API 通道",
+  "app.admin.dashboard.model.hub.channel.catalogEntryTitle": "API 入口",
   "app.admin.dashboard.model.hub.channel.help": "同一供应商可以配置多条协议入口，凭据仍由供应商统一管理。",
   "app.admin.dashboard.model.hub.channel.add": "添加通道",
   "app.admin.dashboard.model.hub.channel.default": "默认通道",

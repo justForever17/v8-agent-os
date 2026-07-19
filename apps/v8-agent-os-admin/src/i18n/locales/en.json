@@ -1476,6 +1476,7 @@
   "app.admin.dashboard.model.hub.page.wireProtocolAuto": "Unspecified (keep current compatibility behavior)",
   "app.admin.dashboard.model.hub.page.wireProtocolHelp": "This is the model-level source of truth. A manual choice directly controls the request protocol; V8OS will not rewrite it from the model name.",
   "app.admin.dashboard.model.hub.channel.title": "API channels",
+  "app.admin.dashboard.model.hub.channel.catalogEntryTitle": "API entry",
   "app.admin.dashboard.model.hub.channel.help": "One Provider can expose multiple protocol endpoints while sharing Provider-managed credentials.",
   "app.admin.dashboard.model.hub.channel.add": "Add channel",
   "app.admin.dashboard.model.hub.channel.default": "Default channel",

@@ -668,7 +668,7 @@ export default function ModelHubPage() {
     const [catalogProviders, setCatalogProviders] = useState<CatalogProvider[]>([]);
     const [catalogPurpose, setCatalogPurpose] = useState<CatalogPurpose>("chat");
     const [catalogRuntimeProtocol, setCatalogRuntimeProtocol] = useState<CatalogRuntimeProtocol>("default");
-    const [selectedCatalogProviderId, setSelectedCatalogProviderId] = useState("openai");
+    const [selectedCatalogProviderId, setSelectedCatalogProviderId] = useState("");
     const [catalogApiKey, setCatalogApiKey] = useState("");
     const [catalogVoiceAppId, setCatalogVoiceAppId] = useState("");
     const [catalogVoiceResourceId, setCatalogVoiceResourceId] = useState("");
@@ -835,6 +835,7 @@ export default function ModelHubPage() {
     const customTtsVoicePresets = useMemo(() => voicePresetsForCustomTtsProtocol(customTtsProtocol, t), [customTtsProtocol, t]);
     const customTtsVoiceOptions = customTtsRemoteVoices.length > 0 ? customTtsRemoteVoices : customTtsVoicePresets;
     useEffect(() => {
+        if (isLoading) return;
         if (apiCatalogProviders.some((item) => item.id === selectedCatalogProviderId) || selectedCatalogProviderId === "__custom__") return;
         setSelectedCatalogProviderId(apiCatalogProviders[0]?.id || "__custom__");
         setCatalogProbeModels([]);
@@ -844,7 +845,7 @@ export default function ModelHubPage() {
         setCatalogProbeStatus(null);
         setManualModelEntryEnabled(false);
         setCatalogRuntimeProtocol("default");
-    }, [apiCatalogProviders, selectedCatalogProviderId]);
+    }, [apiCatalogProviders, isLoading, selectedCatalogProviderId]);
     useEffect(() => {
         setModelRefTtsVoices([]);
         setModelRefTtsVoiceInfo(null);
@@ -2048,7 +2049,7 @@ export default function ModelHubPage() {
                         </div>
                         <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.2fr_auto]">
                             <HydrationSafeClientOnly fallback={<div className="h-10 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground">{selectedCatalogProvider?.name || t("app.admin.dashboard.model.hub.catalog.selectProvider")}</div>}>
-                                <Select value={selectedCatalogProviderId} onValueChange={(value) => {
+                                <Select value={selectedCatalogProviderId} disabled={isLoading} onValueChange={(value) => {
                                     setSelectedCatalogProviderId(value);
                                     setCatalogProbeModels([]);
                                     setSelectedCatalogModelId("");
@@ -2058,7 +2059,7 @@ export default function ModelHubPage() {
                                     setManualModelEntryEnabled(false);
                                     setCatalogRuntimeProtocol("default");
                                 }}>
-                                    <SelectTrigger>
+                                    <SelectTrigger data-testid="quick-connect-provider-trigger">
                                         <SelectValue placeholder={t("app.admin.dashboard.model.hub.catalog.selectProvider")}/>
                                     </SelectTrigger>
                                     <SelectContent>
@@ -2108,10 +2109,10 @@ export default function ModelHubPage() {
                         ) : null}
                         {catalogPurpose === "chat" && selectedCatalogChannels.length > 1 ? (
                             <div className="mt-3 grid gap-2 rounded-xl border border-dashed px-3 py-2">
-                                <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.channel.title")}</Label>
+                                <Label className="text-xs font-semibold">{t("app.admin.dashboard.model.hub.channel.catalogEntryTitle")}</Label>
                                 <HydrationSafeClientOnly fallback={<div className="h-9 rounded-md border bg-background px-3 py-2 text-sm text-foreground dark:text-slate-300">{selectedCatalogRuntime.label}</div>}>
                                     <Select value={selectedCatalogRuntime.channelId} onValueChange={(value: CatalogRuntimeProtocol) => setCatalogRuntimeProtocol(value)}>
-                                        <SelectTrigger className="h-9">
+                                        <SelectTrigger className="h-9" data-testid="quick-connect-entry-trigger">
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>

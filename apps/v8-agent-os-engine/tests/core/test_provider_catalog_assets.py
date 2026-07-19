@@ -15,6 +15,40 @@ TRUSTED_NETWORK_CATALOG = REPO_ROOT / "apps" / "v8-agent-os-engine" / "erc" / "a
 RESEARCH_SOURCE_CATALOG = REPO_ROOT / "apps" / "v8-agent-os-engine" / "runtimes" / "research" / "assets" / "source_quality_catalog.json"
 ASSET_ROOT = REPO_ROOT / "apps" / "v8-agent-os-admin" / "public"
 MANIFEST = ASSET_ROOT / "model-assets" / "manifest.json"
+SUPPORTED_CHAT_WIRE_PROTOCOLS = {
+    "openai.chat_completions",
+    "openai.responses",
+    "anthropic.messages",
+    "gemini.generate_content",
+}
+EXPECTED_MULTI_CHANNEL_PROVIDER_IDS = {
+    "openai",
+    "anthropic",
+    "gemini-api",
+    "openrouter",
+    "deepseek",
+    "dashscope",
+    "siliconflow",
+    "modelscope",
+    "huggingface-router",
+    "zhipu",
+    "zai-coding",
+    "xiaomi-mimo",
+    "xiaomi-mimo-tokenplan",
+    "volcengine-ark",
+    "tencent-hunyuan",
+    "minimax",
+    "minimax-cn",
+    "xai",
+    "groq",
+    "ollama",
+    "lmstudio",
+    "vllm",
+    "fireworks",
+    "baidu-qianfan",
+    "stepfun",
+    "perplexity",
+}
 
 
 def test_llm_provider_catalog_contains_new_model_providers():
@@ -107,6 +141,55 @@ def test_llm_provider_catalog_contains_new_model_providers():
         loaded_dashscope_sources
     )
     assert "openai_images" not in loaded_dashscope_sources
+
+
+def test_quick_connect_multi_channel_catalog_is_explicit_and_runtime_supported():
+    payload = json.loads(PROVIDER_CATALOG.read_text(encoding="utf-8"))
+    providers = {item["id"]: item for item in payload["providers"]}
+    multi_channel_ids = {
+        provider_id
+        for provider_id, provider in providers.items()
+        if len(provider.get("channels") or []) > 1
+    }
+
+    assert multi_channel_ids == EXPECTED_MULTI_CHANNEL_PROVIDER_IDS
+    assert "cpm" not in providers
+
+    for provider_id in multi_channel_ids:
+        provider = providers[provider_id]
+        channels = provider["channels"]
+        channel_ids = [item["id"] for item in channels]
+        assert len(channel_ids) == len(set(channel_ids)), provider_id
+        assert provider["defaultChannelId"] in channel_ids, provider_id
+        for channel in channels:
+            assert channel["baseUrl"], (provider_id, channel["id"])
+            assert channel["defaultWireProtocol"] in channel["wireProtocols"], (provider_id, channel["id"])
+            assert set(channel["wireProtocols"]).issubset(SUPPORTED_CHAT_WIRE_PROTOCOLS), (provider_id, channel["id"])
+
+    expected_new_channels = {
+        "siliconflow": [
+            ("chat-completions", "https://api.siliconflow.cn/v1", "openai.chat_completions"),
+            ("anthropic-messages", "https://api.siliconflow.cn", "anthropic.messages"),
+        ],
+        "modelscope": [
+            ("chat-completions", "https://api-inference.modelscope.cn/v1", "openai.chat_completions"),
+            ("anthropic-messages", "https://api-inference.modelscope.cn", "anthropic.messages"),
+        ],
+        "stepfun": [
+            ("chat-completions", "https://api.stepfun.com/v1", "openai.chat_completions"),
+            ("responses", "https://api.stepfun.com/v1", "openai.responses"),
+            ("anthropic-messages", "https://api.stepfun.com", "anthropic.messages"),
+        ],
+        "perplexity": [
+            ("sonar-chat", "https://api.perplexity.ai", "openai.chat_completions"),
+            ("agent-responses", "https://api.perplexity.ai/v1", "openai.responses"),
+        ],
+    }
+    for provider_id, expected in expected_new_channels.items():
+        assert [
+            (channel["id"], channel["baseUrl"], channel["defaultWireProtocol"])
+            for channel in providers[provider_id]["channels"]
+        ] == expected
 
 
 def test_media_matrix_contains_requested_generation_providers():

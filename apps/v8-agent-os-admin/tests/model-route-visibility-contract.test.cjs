@@ -84,6 +84,26 @@ test("Manual and quick model setup share the canonical binding write surface", (
   assert.match(form, /operationKind: operationKinds\[0\]/);
 });
 
+test("Quick connect exposes an explicit entry selector only for multi-channel providers", () => {
+  const form = readText("src/app/admin/(dashboard)/model-hub/page.tsx");
+  const zh = JSON.parse(readText("src/i18n/locales/zh-CN.json"));
+  const en = JSON.parse(readText("src/i18n/locales/en.json"));
+
+  assert.match(form, /selectedCatalogChannels\.length > 1/);
+  assert.match(form, /if \(isLoading\) return;\s*if \(apiCatalogProviders\.some/);
+  assert.match(form, /\[apiCatalogProviders, isLoading, selectedCatalogProviderId\]/);
+  assert.match(form, /selectedCatalogProviderId, setSelectedCatalogProviderId\] = useState\(""\)/);
+  assert.match(form, /data-testid="quick-connect-provider-trigger"/);
+  assert.match(form, /data-testid="quick-connect-entry-trigger"/);
+  assert.match(form, /Select value=\{selectedCatalogRuntime\.channelId\}/);
+  assert.match(form, /setCatalogRuntimeProtocol\(value\)/);
+  assert.match(form, /defaultChannelId: isCustomProvider \? customProviderDefaultChannelId : selectedCatalogRuntime\.channelId/);
+  assert.match(form, /channelId: isCustomProvider \? selectedCustomChannel\?\.id \|\| "" : selectedCatalogRuntime\.channelId/);
+  assert.match(form, /wireProtocol: isCustomProvider \? selectedCustomChannel\?\.defaultWireProtocol \|\| "" : selectedCatalogRuntime\.wireProtocol/);
+  assert.equal(zh["app.admin.dashboard.model.hub.channel.catalogEntryTitle"], "API 入口");
+  assert.equal(en["app.admin.dashboard.model.hub.channel.catalogEntryTitle"], "API entry");
+});
+
 test("Reasoning effort is persisted per model without growing the fixed model card", () => {
   const modelCard = readText("src/components/models/ModelCardV2.tsx");
   const projection = readText("src/lib/models/model-admin.ts");

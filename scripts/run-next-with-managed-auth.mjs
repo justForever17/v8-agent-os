@@ -16,6 +16,9 @@ const port = argumentValue("--port", app === "admin" ? "9528" : "9527");
 if (!['admin', 'web'].includes(app) || !['dev', 'build', 'start'].includes(mode)) {
   throw new Error("Usage: --app admin|web --mode dev|build|start [--port 9528]");
 }
+// Phone is the only remote client and reaches Engine exclusively through the
+// authenticated Admin BFF. Web remains a local-only desktop surface.
+const runtimeHostname = app === "admin" ? "0.0.0.0" : "127.0.0.1";
 
 const appDir = path.join(repoRoot, "apps", `v8-agent-os-${app}`);
 const buildHome = path.join(repoRoot, ".next-v8os-home");
@@ -89,7 +92,7 @@ const child = spawn(process.execPath, args, {
     NEXTAUTH_SECRET: managed.secret,
     AUTH_TRUST_HOST: "true",
     NEXTAUTH_URL: `http://127.0.0.1:${port}`,
-    HOSTNAME: "127.0.0.1",
+    HOSTNAME: runtimeHostname,
     PORT: port,
     V8_AGENT_OS_HOME: mode === "build" ? buildHome : process.env.V8_AGENT_OS_HOME,
     V8_NEXT_BUILD: mode === "build" ? "1" : process.env.V8_NEXT_BUILD,

@@ -72,7 +72,15 @@ type RemoteLinkConfig = {
 const DEFAULT_ENGINE_BASE_URL = "http://127.0.0.1:9530/v1";
 const DEFAULT_ADMIN_BASE_URL = "http://127.0.0.1:9528/api";
 const DEFAULT_DESKTOP_LIVE_BRIDGE_BASE_URL = "http://127.0.0.1:8011/v1";
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+const NON_ROUTABLE_CLIENT_HOSTS = new Set([
+    "0.0.0.0",
+    "127.0.0.1",
+    "localhost",
+    "[::]",
+    "::",
+    "[::1]",
+    "::1",
+]);
 
 function inferEnginePythonPath() {
     const repoRoots = [
@@ -327,7 +335,7 @@ export function isReachableClientSurfaceOrigin(baseUrl: string) {
     }
     try {
         const parsed = new URL(normalized);
-        return !LOOPBACK_HOSTS.has(parsed.hostname || "");
+        return !NON_ROUTABLE_CLIENT_HOSTS.has(parsed.hostname || "");
     } catch {
         return false;
     }

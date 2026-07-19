@@ -185,10 +185,22 @@ test('Admin and Web release builds use Next standalone servers', () => {
   assert.match(runner, /windowsHide:\s*true/);
   assert.match(runner, /mode === "build"/);
   assert.match(runner, /"--webpack"/);
-  assert.match(runner, /HOSTNAME:\s*"127\.0\.0\.1"/);
+  assert.match(runner, /const runtimeHostname = app === "admin" \? "0\.0\.0\.0" : "127\.0\.0\.1"/);
+  assert.match(runner, /HOSTNAME:\s*runtimeHostname/);
   assert.match(runner, /PORT:\s*port/);
   assert.match(runner, /buildHome/);
   assert.match(runner, /V8_AGENT_OS_HOME:\s*mode === "build" \? buildHome/);
+});
+
+test('Phone pairing exposes Admin on LAN without advertising wildcard bind hosts', () => {
+  const runtimeConfig = fs.readFileSync(
+    path.join(repoRoot, 'apps', 'v8-agent-os-admin', 'src', 'lib', 'server', 'runtime-config.ts'),
+    'utf8',
+  );
+  assert.match(runtimeConfig, /const NON_ROUTABLE_CLIENT_HOSTS = new Set\(\[/);
+  assert.match(runtimeConfig, /"0\.0\.0\.0"/);
+  assert.match(runtimeConfig, /"\[::\]"/);
+  assert.match(runtimeConfig, /!NON_ROUTABLE_CLIENT_HOSTS\.has\(parsed\.hostname \|\| ""\)/);
 });
 
 test('desktop pet consumes packaged realtime contract instead of rebuilding workspace package', () => {

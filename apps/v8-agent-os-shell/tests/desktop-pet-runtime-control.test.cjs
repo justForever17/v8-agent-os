@@ -20,4 +20,13 @@ test('Admin and tray runtime controls share the graceful desktop pet shutdown pa
   const gracefulEnd = mainSource.indexOf('async function setDesktopPetEnabled', gracefulStart);
   const gracefulSource = mainSource.slice(gracefulStart, gracefulEnd);
   assert.ok(gracefulSource.indexOf('if (!result.acked)') < gracefulSource.indexOf("shellStop(['desktop-pet'])"));
+
+  const quitStart = mainSource.indexOf('async function quitV8OS');
+  const quitEnd = mainSource.indexOf('function updateTrayMenu', quitStart);
+  const quitSource = mainSource.slice(quitStart, quitEnd);
+  assert.ok(quitSource.indexOf('await stopDesktopPetGracefully()') < quitSource.indexOf("shellStop(coreIds, stopOptions)"));
+  assert.match(quitSource, /Desktop pet shutdown phase failed; core shutdown will continue/);
+  assert.match(quitSource, /stopVerifiedPortOwners: coreIds/);
+  assert.match(quitSource, /await waitForCoreServicesStopped\(shellStatus\)/);
+  assert.match(quitSource, /finally \{[\s\S]*app\.quit\(\)/);
 });

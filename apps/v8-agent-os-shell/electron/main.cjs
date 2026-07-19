@@ -459,18 +459,55 @@ async function toggleDesktopPet() {
   return setDesktopPetEnabled(!shouldStop);
 }
 
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForCoreServicesStopped(shellStatus, attempts = 15) {
+  let statuses = [];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    statuses = await shellStatus(['engine', 'admin', 'web']);
+    if (statuses.every((item) => !item.pidAlive && !item.portOpen)) return statuses;
+    await wait(100);
+  }
+  return statuses;
+}
+
 async function quitV8OS() {
+  if (quitting) return;
   quitting = true;
   try {
     if (desktopPetProcessRunning || shellControl?.hasAuthenticatedClient()) {
       await stopDesktopPetGracefully();
     }
-    const { removeShellProcessRecord, shellStop } = await cliApi();
-    shellStop(['engine', 'admin', 'web']);
+  } catch (error) {
+    console.error('[V8OS Shell] Desktop pet shutdown phase failed; core shutdown will continue', {
+      reason: error?.message || 'unknown_error',
+    });
+  }
+  try {
+    const { removeShellProcessRecord, shellStatus, shellStop } = await cliApi();
+    const coreIds = ['engine', 'admin', 'web'];
+    const stopOptions = { stopVerifiedPortOwners: coreIds };
+    const firstStop = shellStop(coreIds, stopOptions);
+    let remaining = await waitForCoreServicesStopped(shellStatus);
+    if (remaining.some((item) => item.pidAlive || item.portOpen)) {
+      const retryStop = shellStop(coreIds, stopOptions);
+      remaining = await waitForCoreServicesStopped(shellStatus, 10);
+      console.warn('[V8OS Shell] Core shutdown required reconciliation', { firstStop, retryStop, remaining });
+    }
+    if (remaining.some((item) => item.pidAlive || item.portOpen)) {
+      console.error('[V8OS Shell] Core services remain after shutdown', { remaining });
+    }
     removeShellProcessRecord();
-  } catch {}
-  await shellControl?.stop().catch(() => undefined);
-  app.quit();
+  } catch (error) {
+    console.error('[V8OS Shell] Core shutdown phase failed', { reason: error?.message || 'unknown_error' });
+  } finally {
+    await shellControl?.stop().catch((error) => {
+      console.warn('[V8OS Shell] Control channel shutdown failed', { reason: error?.message || 'unknown_error' });
+    });
+    app.quit();
+  }
 }
 
 function updateTrayMenu() {

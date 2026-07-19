@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { ensureDir } from "./json_file.mjs";
 import { COMPONENTS, logPathsFor } from "./components.mjs";
-import { LOG_DIR, STATE_ROOT } from "./paths.mjs";
+import { LOG_DIR, REPO_ROOT, STATE_ROOT } from "./paths.mjs";
 import { isPortOpen } from "./ports.mjs";
 import { isPidAlive, readProcessState, writeProcessState } from "./process_state.mjs";
 
@@ -28,10 +28,22 @@ function processCandidateMatchesEngine(candidate, commandSpec) {
   return engineSignature && ownedRuntime;
 }
 
+function processCandidateMatchesNextApp(componentId, candidate) {
+  if (!candidate || typeof candidate !== "object" || !["admin", "web"].includes(componentId)) return false;
+  const commandLine = normalizeProcessText(candidate.commandLine);
+  const appDir = normalizeProcessText(path.join(REPO_ROOT, "apps", `v8-agent-os-${componentId}`));
+  const port = COMPONENTS[componentId]?.port;
+  const standaloneSignature = commandLine.includes(`${appDir}\\.next\\standalone\\server.js`);
+  const launcherSignature = commandLine.includes("scripts\\run-next-with-managed-auth.mjs")
+    && commandLine.includes(`--app ${componentId}`)
+    && commandLine.includes(`--port ${port}`);
+  return standaloneSignature || launcherSignature;
+}
+
 export function verifiedComponentPortOwner(componentId, descriptor) {
-  if (componentId !== "engine" || !descriptor || typeof descriptor !== "object") return null;
+  if (!descriptor || typeof descriptor !== "object") return null;
   const component = COMPONENTS[componentId];
-  if (!component) return null;
+  if (!component || !["engine", "admin", "web"].includes(componentId)) return null;
   const commandSpec = component.command({ mode: "start" });
   const owner = {
     pid: Number(descriptor.pid),
@@ -43,8 +55,11 @@ export function verifiedComponentPortOwner(componentId, descriptor) {
     executablePath: descriptor.parentExecutablePath,
     commandLine: descriptor.parentCommandLine,
   };
-  const ownerMatches = Number.isInteger(owner.pid) && owner.pid > 0 && processCandidateMatchesEngine(owner, commandSpec);
-  const parentMatches = Number.isInteger(parent.pid) && parent.pid > 0 && processCandidateMatchesEngine(parent, commandSpec);
+  const matcher = componentId === "engine"
+    ? (candidate) => processCandidateMatchesEngine(candidate, commandSpec)
+    : (candidate) => processCandidateMatchesNextApp(componentId, candidate);
+  const ownerMatches = Number.isInteger(owner.pid) && owner.pid > 0 && matcher(owner);
+  const parentMatches = Number.isInteger(parent.pid) && parent.pid > 0 && matcher(parent);
   if (!ownerMatches && !parentMatches) return null;
   return {
     ownerPid: owner.pid,

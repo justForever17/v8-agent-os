@@ -12,8 +12,8 @@ export async function shellStart(componentIds, options = {}) {
   });
 }
 
-export function shellStop(componentIds = ALL_COMPONENTS) {
-  return stopComponents(componentIds);
+export function shellStop(componentIds = ALL_COMPONENTS, options = {}) {
+  return stopComponents(componentIds, options);
 }
 
 export function removeShellProcessRecord() {

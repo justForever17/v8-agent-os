@@ -222,6 +222,33 @@ test("preview rebuild adopts only a verified current-repo Engine port owner", ()
   assert.equal(verifiedComponentPortOwner("admin", { pid: 41000 }), null);
 });
 
+test("shutdown can reconcile only verified current-repo Admin and Web port owners", () => {
+  const adminDir = path.join(repoRoot, "apps", "v8-agent-os-admin");
+  const verifiedAdmin = verifiedComponentPortOwner("admin", {
+    pid: 43001,
+    parentPid: 43000,
+    executablePath: "D:\\Program Files\\node.exe",
+    commandLine: `"D:\\Program Files\\node.exe" ${path.join(adminDir, ".next", "standalone", "server.js")}`,
+    parentExecutablePath: "D:\\Program Files\\node.exe",
+    parentCommandLine: 'node scripts/run-next-with-managed-auth.mjs --app admin --mode start --port 9528',
+  });
+  const unrelated = verifiedComponentPortOwner("web", {
+    pid: 44001,
+    parentPid: 44000,
+    executablePath: "D:\\Program Files\\node.exe",
+    commandLine: 'node C:\\other-app\\server.js --port 9527',
+    parentExecutablePath: "D:\\Program Files\\node.exe",
+    parentCommandLine: 'node scripts/run-next-with-managed-auth.mjs --app unrelated --mode start --port 9527',
+  });
+
+  assert.deepEqual(verifiedAdmin, {
+    ownerPid: 43001,
+    killPid: 43000,
+    matchedBy: "verified_parent_runtime",
+  });
+  assert.equal(unrelated, null);
+});
+
 test("preview rebuild lease is atomic, bounded, and removable only by its owner", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-shell-restart-lease-"));
   const filePath = path.join(root, "shell-restart.json");

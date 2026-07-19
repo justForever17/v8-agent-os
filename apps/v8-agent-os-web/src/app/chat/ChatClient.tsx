@@ -194,6 +194,16 @@ function readString(value: unknown): string {
     return typeof value === "string" ? value.trim() : "";
 }
 
+function earlierTimestamp(left?: string, right?: string) {
+    if (!left) return right;
+    if (!right) return left;
+    const leftTime = Date.parse(left);
+    const rightTime = Date.parse(right);
+    if (!Number.isFinite(leftTime)) return right;
+    if (!Number.isFinite(rightTime)) return left;
+    return leftTime <= rightTime ? left : right;
+}
+
 function isWorkspaceBindingErrorMessage(value: unknown) {
     const text = String(value || "").toLowerCase();
     return text.includes("workspace_binding_required")
@@ -947,6 +957,8 @@ export default function ChatClient() {
     const [totalTurnCount, setTotalTurnCount] = useState(0);
     const [focusedTurnId, setFocusedTurnId] = useState<string | null>(null);
     const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
+    const queuedMessagesSessionIdRef = useRef<string | null>(activeConversationId);
+    queuedMessagesSessionIdRef.current = activeConversationId;
     const [queuedMessagesCollapsed, setQueuedMessagesCollapsed] = useState(false);
     const [queuedMessageMenuId, setQueuedMessageMenuId] = useState<string | null>(null);
     const [queuedMessageBusyId, setQueuedMessageBusyId] = useState("");
@@ -1029,7 +1041,8 @@ export default function ChatClient() {
 
     const upsertQueuedMessage = useCallback((incoming: unknown) => {
         const normalized = normalizeQueuedMessage(incoming);
-        if (!normalized) {
+        const sessionId = queuedMessagesSessionIdRef.current;
+        if (!normalized || !sessionId || normalized.sessionId !== sessionId) {
             return;
         }
         setQueuedMessages((current) => {
@@ -1038,16 +1051,19 @@ export default function ChatClient() {
         });
     }, []);
 
-    const applyQueuedMessagesSnapshot = useCallback((incoming: QueuedChatMessage[] | null) => {
-        if (!incoming) {
+    const applyQueuedMessagesSnapshot = useCallback((incoming: QueuedChatMessage[] | null, expectedSessionId?: string | null) => {
+        const sessionId = expectedSessionId || queuedMessagesSessionIdRef.current;
+        if (!incoming || !sessionId) {
             return;
         }
-        setQueuedMessages(sortQueuedMessages(incoming));
+        setQueuedMessages(sortQueuedMessages(incoming.filter((item) => item.sessionId === sessionId)));
     }, []);
 
     const visibleQueuedMessages = useMemo(
-        () => sortQueuedMessages(queuedMessages.filter(isVisibleQueuedMessage)),
-        [queuedMessages],
+        () => sortQueuedMessages(queuedMessages.filter((item) => (
+            item.sessionId === activeConversationId && isVisibleQueuedMessage(item)
+        ))),
+        [activeConversationId, queuedMessages],
     );
 
     const upsertManualTerminalSession = useCallback((payload: ManualTerminalSessionView, makeActive = false) => {
@@ -1897,11 +1913,13 @@ export default function ChatClient() {
             const turnId = String(entry.turnId || "").trim();
             const position = Number(entry.position || 0);
             if (!turnId || !Number.isFinite(position) || position < 1) continue;
+            const previous = byId.get(turnId);
             byId.set(turnId, {
                 turnId,
                 position,
-                preview: typeof entry.preview === "string" ? entry.preview : undefined,
-                state: typeof entry.state === "string" ? entry.state : undefined,
+                preview: typeof entry.preview === "string" ? entry.preview : previous?.preview,
+                state: typeof entry.state === "string" ? entry.state : previous?.state,
+                createdAt: earlierTimestamp(previous?.createdAt, entry.createdAt),
             });
         }
         const merged = Array.from(byId.values()).sort((left, right) => left.position - right.position);
@@ -1935,6 +1953,7 @@ export default function ChatClient() {
                     position: Number(record.position || 0),
                     preview: typeof record.preview === "string" ? record.preview : undefined,
                     state: typeof record.state === "string" ? record.state : undefined,
+                    createdAt: readString(record.createdAt) || readString(record.created_at) || undefined,
                 };
             }).filter((entry: ChatTurnIndexEntry) => entry.turnId && entry.position > 0)
             : [];
@@ -1996,6 +2015,7 @@ export default function ChatClient() {
     }, []);
 
     const loadConversationHistory = useCallback(async (conversationId: string) => {
+        setQueuedMessages([]);
         turnIndexRef.current = [];
         setTurnIndex([]);
         setTotalTurnCount(0);
@@ -2023,7 +2043,10 @@ export default function ChatClient() {
             ? detailPayload.projection
             : detailPayload;
         setLegacyChatUnsupported(isLegacyChatUnsupportedPayload(detailPayload) || isLegacyChatUnsupportedPayload(projectionPayload));
-        applyQueuedMessagesSnapshot(extractQueuedMessages(projectionPayload) ?? extractQueuedMessages(detailPayload));
+        applyQueuedMessagesSnapshot(
+            extractQueuedMessages(projectionPayload) ?? extractQueuedMessages(detailPayload),
+            conversationId,
+        );
         const projection = deriveAuthoritativeSessionView(projectionPayload).view as SessionProjectionView | null;
         setSessionProjection(projection);
         if (projection?.askUserInteractions?.length) {
@@ -2038,7 +2061,12 @@ export default function ChatClient() {
         const normalized = normalizeMessagesForState(turnPage.messages);
         const messageTurnEntries = normalized.flatMap<ChatTurnIndexEntry>((message) => (
             message.turnId && Number(message.turnPosition || 0) > 0
-                ? [{ turnId: message.turnId, position: Number(message.turnPosition), preview: String(message.content || "").slice(0, 120) }]
+                ? [{
+                    turnId: message.turnId,
+                    position: Number(message.turnPosition),
+                    preview: String(message.content || "").slice(0, 120),
+                    createdAt: Number.isFinite(message.timestamp) ? new Date(message.timestamp).toISOString() : undefined,
+                }]
                 : []
         ));
         mergeTurnIndexEntries(messageTurnEntries);
@@ -2080,6 +2108,16 @@ export default function ChatClient() {
         try {
             const turnPage = await loadConversationTurnPage(conversationId, { before });
             const incoming = normalizeMessagesForState(turnPage.messages);
+            mergeTurnIndexEntries(incoming.flatMap<ChatTurnIndexEntry>((message) => (
+                message.turnId && Number(message.turnPosition || 0) > 0
+                    ? [{
+                        turnId: message.turnId,
+                        position: Number(message.turnPosition),
+                        preview: String(message.content || "").slice(0, 120),
+                        createdAt: Number.isFinite(message.timestamp) ? new Date(message.timestamp).toISOString() : undefined,
+                    }]
+                    : []
+            )));
             const seen = new Set(incoming.map((message) => String(message.id || "")));
             const nextMessages = normalizeMessagesForState([
                 ...incoming,
@@ -2099,7 +2137,7 @@ export default function ChatClient() {
             isLoadingOlderTurnsRef.current = false;
             setIsLoadingOlderTurns(false);
         }
-    }, [hasOlderTurns, loadConversationTurnPage, setMessages]);
+    }, [hasOlderTurns, loadConversationTurnPage, mergeTurnIndexEntries, setMessages]);
 
     const resolveTurnIndexEntryAtPosition = useCallback(async (
         conversationId: string,
@@ -2136,6 +2174,16 @@ export default function ChatClient() {
                 return;
             }
             const nextMessages = normalizeMessagesForState(turnPage.messages);
+            mergeTurnIndexEntries(nextMessages.flatMap<ChatTurnIndexEntry>((message) => (
+                message.turnId && Number(message.turnPosition || 0) > 0
+                    ? [{
+                        turnId: message.turnId,
+                        position: Number(message.turnPosition),
+                        preview: String(message.content || "").slice(0, 120),
+                        createdAt: Number.isFinite(message.timestamp) ? new Date(message.timestamp).toISOString() : undefined,
+                    }]
+                    : []
+            )));
             turnBeforeCursorRef.current = turnPage.pageInfo.beforeCursor;
             setHasOlderTurns(Boolean(turnPage.pageInfo.hasOlder));
             messagesRef.current = nextMessages;
@@ -2153,7 +2201,7 @@ export default function ChatClient() {
         } finally {
             isJumpingTurnRef.current = false;
         }
-    }, [loadConversationTurnPage, resolveTurnIndexEntryAtPosition, setMessages]);
+    }, [loadConversationTurnPage, mergeTurnIndexEntries, resolveTurnIndexEntryAtPosition, setMessages]);
 
     useEffect(() => {
         const wasLoading = previousStreamLoadingRef.current;
@@ -3143,7 +3191,7 @@ export default function ChatClient() {
                 if (isLegacyChatUnsupportedPayload(snapshotPayload)) {
                     setLegacyChatUnsupported(true);
                 }
-                applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload));
+                applyQueuedMessagesSnapshot(extractQueuedMessages(snapshotPayload), activeConversationId);
                 const localStreamActive = isLocalStreamActive(activeConversationId);
                 const nextView = deriveAuthoritativeSessionView(snapshotPayload).view as SessionProjectionView | null;
                 setSessionProjection((current) => {
@@ -3302,7 +3350,7 @@ export default function ChatClient() {
 
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-hidden py-1 sm:py-1.5">
+                <div className="min-h-0 flex-1 overflow-visible py-1 sm:py-1.5">
                     {messages.length === 0 && !activeConversationId ? (
                         <div className="flex h-full min-h-0 flex-col items-center justify-center overflow-y-auto p-8 animate-in fade-in zoom-in-95 duration-500">
                             <div className="w-full max-w-3xl space-y-8">

@@ -21,6 +21,7 @@ def test_turn_routes_expose_index_and_random_seek_contract() -> None:
         Path(__file__).resolve().parents[2] / "api" / "session_workflow_routes.py"
     ).read_text(encoding="utf-8")
     assert '@router.get("/sessions/{session_id}/turn-index")' in source
+    assert "await asyncio.to_thread" in source
     assert "around_turn_id=normalized_around or None" in source
     assert "radius requires around" in source
 
@@ -113,6 +114,24 @@ def test_turn_window_falls_back_to_user_message_boundaries_without_run_id() -> N
     assert [[row["id"] for row in group] for group in groups] == [["u1", "a1", "t1"], ["u2", "a2"]]
     assert loaded_turns == 1
     assert [row["id"] for row in selected] == ["u2", "a2"]
+
+
+def test_turn_keeps_user_message_with_complete_supervisor_run_when_user_run_id_is_missing() -> None:
+    rows_asc = [
+        _row("u1", "user", 1),
+        _row("a1-progress", "assistant", 2, "run-a"),
+        _row("t1", "tool", 3, "run-a"),
+        _row("a1-final", "assistant", 4, "run-a"),
+        _row("u2", "user", 5),
+        _row("a2", "assistant", 6, "run-b"),
+    ]
+
+    groups = group_canonical_turn_rows(rows_asc)
+
+    assert [[row["id"] for row in group] for group in groups] == [
+        ["u1", "a1-progress", "t1", "a1-final"],
+        ["u2", "a2"],
+    ]
 
 
 def test_turn_index_is_stable_opaque_and_reasoning_free() -> None:

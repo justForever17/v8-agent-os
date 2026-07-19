@@ -437,24 +437,37 @@ def build_canonical_chat_turn_index(
 def group_canonical_turn_rows(rows_asc: list[CanonicalMessage]) -> list[list[CanonicalMessage]]:
     groups: list[list[CanonicalMessage]] = []
     current: list[CanonicalMessage] = []
-    current_key = ""
+    current_orphan_key = ""
+    current_starts_with_user = False
 
     for row in rows_asc:
         run_id = str(row.get("run_id") or "").strip()
-        role = str(row.get("role") or "").strip()
-        if run_id:
-            key = f"run:{run_id}"
-            if current and current_key != key:
+        role = str(row.get("role") or "").strip().lower()
+
+        # A Human Surface turn is anchored by the user's message.  The complete
+        # Supervisor response belongs to that turn even when retention or an
+        # older producer left the user row without the run foreign key.
+        if role == "user":
+            if current:
                 groups.append(current)
-                current = []
-            current_key = key
+            current = [row]
+            current_orphan_key = ""
+            current_starts_with_user = True
+            continue
+
+        if current_starts_with_user:
             current.append(row)
             continue
 
-        if role == "user" and current:
+        # Assistant-only/system-generated historical runs have no user anchor.
+        # Preserve their run boundary so unrelated background turns are not
+        # collapsed into one navigation marker.
+        orphan_key = f"run:{run_id}" if run_id else ""
+        if current and current_orphan_key and orphan_key and current_orphan_key != orphan_key:
             groups.append(current)
             current = []
-        current_key = ""
+        if not current:
+            current_orphan_key = orphan_key
         current.append(row)
 
     if current:

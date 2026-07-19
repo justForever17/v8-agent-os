@@ -1274,7 +1274,11 @@ async def get_session_turn_index(
         session_row = db.get_session(session_id)
         if session_row is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        payload = build_canonical_chat_turn_index(
+        # Building the random-access index may scan a long transcript.  Keep it
+        # off the event loop so the independent newest-turn request can render
+        # the conversation immediately instead of waiting behind this scan.
+        payload = await asyncio.to_thread(
+            build_canonical_chat_turn_index,
             session_id,
             before_position=before,
             limit_turns=max(1, min(int(limit or 200), 500)),

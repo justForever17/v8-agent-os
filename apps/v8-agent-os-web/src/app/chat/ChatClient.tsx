@@ -3513,47 +3513,54 @@ export default function ChatClient() {
                 >
                     <div className="flex flex-col gap-2">
                         <div className="relative shrink-0">
-                            {activeConversationId && hasAskUserSurface ? (
-                                <div className={cn("mb-2", askUserCollapsed && "hidden")}>
-                                    <AskUserModal
-                                        key={askUserApprovalId || askUserToolCallId || 'default-modal'}
-                                        isOpen={askUserModalOpen && !askUserCollapsed}
-                                        question={askUserQuestion}
-                                        request={askUserRequest}
-                                        toolCallId={askUserToolCallId}
-                                        onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
-                                        onCancel={() => setAskUserCollapsed(true)}
-                                    />
-                                </div>
-                            ) : null}
-                            {activeConversationId && hasAskUserSurface && askUserCollapsed ? (
-                                <div className="mb-2 flex justify-end">
-                                    <button
-                                        type="button"
-                                        className="rounded-full border border-border/55 bg-background/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition hover:border-primary/35 hover:text-foreground"
-                                        onClick={() => setAskUserCollapsed(false)}
-                                    >
-                                        {t("web.generated.41b5da53c6")}
-                                    </button>
-                                </div>
-                            ) : null}
-                            {activeConversationId && visibleQueuedMessages.length > 0 ? (
-                                <div className="mb-2">
-                                    <QueuedMessagesStrip
-                                        messages={visibleQueuedMessages}
-                                        collapsed={queuedMessagesCollapsed}
-                                        menuOpenId={queuedMessageMenuId}
-                                        busyId={queuedMessageBusyId}
-                                        labels={queueLabels}
-                                        onToggleCollapsed={() => setQueuedMessagesCollapsed((current) => !current)}
-                                        onOpenMenu={setQueuedMessageMenuId}
-                                        onPromote={handlePromoteQueuedMessage}
-                                        onCancel={handleCancelQueuedMessage}
-                                        onEdit={handleOpenQueuedMessageEditor}
-                                    />
-                                    {queuedMessageError ? (
-                                        <div className="mx-auto mt-1 max-w-4xl rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                                            {queuedMessageError}
+                            {activeConversationId && (hasAskUserSurface || visibleQueuedMessages.length > 0) ? (
+                                <div
+                                    data-testid="chat-transient-dock"
+                                    className="pointer-events-none absolute inset-x-0 bottom-full z-[75] mb-2 flex max-h-[min(62vh,560px)] flex-col justify-end gap-2 overflow-y-auto overscroll-contain"
+                                >
+                                    {hasAskUserSurface && !askUserCollapsed ? (
+                                        <div className="pointer-events-auto shrink-0">
+                                            <AskUserModal
+                                                key={askUserApprovalId || askUserToolCallId || 'default-modal'}
+                                                isOpen={askUserModalOpen && !askUserCollapsed}
+                                                question={askUserQuestion}
+                                                request={askUserRequest}
+                                                toolCallId={askUserToolCallId}
+                                                onSubmit={(_, answer, approve) => handleAskUserSubmit(answer, approve)}
+                                                onCancel={() => setAskUserCollapsed(true)}
+                                            />
+                                        </div>
+                                    ) : null}
+                                    {hasAskUserSurface && askUserCollapsed ? (
+                                        <div className="pointer-events-auto flex shrink-0 justify-end">
+                                            <button
+                                                type="button"
+                                                className="rounded-full border border-border/55 bg-background/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition hover:border-primary/35 hover:text-foreground"
+                                                onClick={() => setAskUserCollapsed(false)}
+                                            >
+                                                {t("web.generated.41b5da53c6")}
+                                            </button>
+                                        </div>
+                                    ) : null}
+                                    {visibleQueuedMessages.length > 0 ? (
+                                        <div className="pointer-events-auto shrink-0">
+                                            <QueuedMessagesStrip
+                                                messages={visibleQueuedMessages}
+                                                collapsed={queuedMessagesCollapsed}
+                                                menuOpenId={queuedMessageMenuId}
+                                                busyId={queuedMessageBusyId}
+                                                labels={queueLabels}
+                                                onToggleCollapsed={() => setQueuedMessagesCollapsed((current) => !current)}
+                                                onOpenMenu={setQueuedMessageMenuId}
+                                                onPromote={handlePromoteQueuedMessage}
+                                                onCancel={handleCancelQueuedMessage}
+                                                onEdit={handleOpenQueuedMessageEditor}
+                                            />
+                                            {queuedMessageError ? (
+                                                <div className="mx-auto mt-1 max-w-4xl rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                                    {queuedMessageError}
+                                                </div>
+                                            ) : null}
                                         </div>
                                     ) : null}
                                 </div>

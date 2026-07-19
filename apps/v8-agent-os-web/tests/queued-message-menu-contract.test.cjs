@@ -19,3 +19,9 @@ test("queued message actions use a portal menu above clipped composer surfaces",
     assert.match(component, /collisionPadding=\{12\}/);
     assert.doesNotMatch(component, /absolute bottom-full/);
 });
+
+test("ask-user and queued messages float above the composer without shrinking chat history", () => {
+    assert.match(source, /data-testid="chat-transient-dock"/);
+    assert.match(source, /pointer-events-none absolute inset-x-0 bottom-full/);
+    assert.match(source, /max-h-\[min\(62vh,560px\)\]/);
+});

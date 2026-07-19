@@ -4801,5 +4801,14 @@
   "components.memory.GraphViewer.summaryHint": "The most relevant connections are shown first. Relation editing is a maintenance action.",
   "components.memory.GraphViewer.noRelations": "This node has no visible relations yet.",
   "components.memory.GraphViewer.manageRelations": "Manage relations",
-  "components.memory.GraphViewer.backToSummary": "Back to relation summary"
+  "components.memory.GraphViewer.backToSummary": "Back to relation summary",
+  "admin.avatarCrop.title": "Adjust avatar crop",
+  "admin.avatarCrop.description": "Drag the image to choose what remains, then refine the framing with zoom.",
+  "admin.avatarCrop.area": "Avatar crop area",
+  "admin.avatarCrop.instruction": "Drag to reposition. Use the wheel, slider, or buttons to zoom.",
+  "admin.avatarCrop.zoom": "Zoom",
+  "admin.avatarCrop.zoomOut": "Zoom out",
+  "admin.avatarCrop.zoomIn": "Zoom in",
+  "admin.avatarCrop.cancel": "Cancel",
+  "admin.avatarCrop.confirm": "Use this crop"
 }

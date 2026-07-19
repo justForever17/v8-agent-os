@@ -14,9 +14,10 @@ function isAllowedPath(pathname: string, options: UserMediaProxyOptions) {
     if (options.allowLegacyAvatar && /^\/(?:Avatar|user)\/[^/?#]+$/i.test(pathname)) {
         return true;
     }
-    return options.allowedKinds.some((kind) => (
-        new RegExp(`^/user-assets/${kind}/[A-Za-z0-9][A-Za-z0-9._-]{0,180}\\.webp$`, "i").test(pathname)
-    ));
+    return options.allowedKinds.some((kind) => {
+        const extension = kind === "background" ? "(?:webp|mp4)" : "webp";
+        return new RegExp(`^/user-assets/${kind}/[A-Za-z0-9][A-Za-z0-9._-]{0,180}\\.${extension}$`, "i").test(pathname);
+    });
 }
 
 export async function proxyUserMedia(req: NextRequest, options: UserMediaProxyOptions) {
@@ -52,7 +53,18 @@ export async function proxyUserMedia(req: NextRequest, options: UserMediaProxyOp
     }
 
     try {
-        const upstream = await fetch(target, { cache: "no-store" });
+        const range = req.headers.get("range");
+        const upstream = await fetch(target, {
+            cache: "no-store",
+            headers: range ? { Range: range } : undefined,
+        });
+        if (upstream.status === 416) {
+            const headers = new Headers({
+                "Content-Range": upstream.headers.get("content-range") || "bytes */0",
+                "Accept-Ranges": "bytes",
+            });
+            return new NextResponse(null, { status: 416, headers });
+        }
         if (!upstream.ok || !upstream.body) {
             return NextResponse.json(
                 { error: upstream.status === 404 ? "User media not found" : "Failed to load user media" },
@@ -64,9 +76,11 @@ export async function proxyUserMedia(req: NextRequest, options: UserMediaProxyOp
             "Cache-Control": upstream.headers.get("cache-control") || "private, max-age=300",
             "X-Content-Type-Options": "nosniff",
         });
-        const etag = upstream.headers.get("etag");
-        if (etag) headers.set("ETag", etag);
-        return new NextResponse(upstream.body, { status: 200, headers });
+        for (const name of ["etag", "accept-ranges", "content-range", "content-length"]) {
+            const value = upstream.headers.get(name);
+            if (value) headers.set(name, value);
+        }
+        return new NextResponse(upstream.body, { status: upstream.status, headers });
     } catch (error) {
         return NextResponse.json(
             { error: error instanceof Error ? error.message : "Failed to proxy user media" },

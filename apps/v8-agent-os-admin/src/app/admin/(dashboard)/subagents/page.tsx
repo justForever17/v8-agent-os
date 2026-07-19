@@ -2,6 +2,7 @@
 
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { AvatarCropDialog } from "@/components/media/AvatarCropDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -680,6 +681,7 @@ export default function SubagentsPage() {
   const [isSavingRecursiveDelegation, setIsSavingRecursiveDelegation] = useState(false);
   const [globalConfigDialog, setGlobalConfigDialog] = useState<"research" | "recursive" | null>(null);
   const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [form, setForm] = useState<AgentFormState>(DEFAULT_FORM_STATE);
   const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -742,12 +744,14 @@ export default function SubagentsPage() {
         throw new Error(String(payload.error || t("app.admin.dashboard.subagents.page.avatarUploadFailed")));
       }
       setForm(current => ({ ...current, avatar: String(payload.url) }));
+      return true;
     } catch (error) {
       toast({
         variant: "destructive",
         title: t("app.admin.dashboard.subagents.page.avatarUploadFailed"),
         description: error instanceof Error ? error.message : t("app.admin.dashboard.subagents.page.avatarUploadFailed"),
       });
+      return false;
     } finally {
       setIsAvatarUploading(false);
       if (avatarFileInputRef.current) avatarFileInputRef.current.value = "";
@@ -1398,7 +1402,7 @@ export default function SubagentsPage() {
       });
     }
   }, [fetchData, t, toast]);
-  return <div className="w-full space-y-8 p-6 lg:p-8">
+  return <><div className="w-full space-y-8 p-6 lg:p-8">
             <div className="flex items-center justify-between gap-3">
                 <div className="flex items-start gap-4">
                     <div>
@@ -2125,7 +2129,11 @@ export default function SubagentsPage() {
                                             type="file"
                                             accept="image/png,image/jpeg,image/webp,image/gif"
                                             className="hidden"
-                                            onChange={event => void handleAvatarUpload(event.target.files?.[0] || null)}
+                                            onChange={event => {
+                                                const file = event.target.files?.[0] || null;
+                                                if (file) setAvatarCropFile(file);
+                                                event.target.value = "";
+                                            }}
                                         />
                                         <Button type="button" variant="outline" size="sm" disabled={isAvatarUploading} onClick={() => avatarFileInputRef.current?.click()}>
                                             {isAvatarUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ImageUp className="mr-2 h-4 w-4" />}
@@ -2451,5 +2459,12 @@ export default function SubagentsPage() {
                     </div>
                 </DialogContent>
             </Dialog>
-        </div>;
+        </div><AvatarCropDialog
+            file={avatarCropFile}
+            busy={isAvatarUploading}
+            onCancel={() => setAvatarCropFile(null)}
+            onConfirm={async file => {
+                if (await handleAvatarUpload(file)) setAvatarCropFile(null);
+            }}
+        /></>;
 }

@@ -902,5 +902,12 @@
   "src.screens.rpascreen.starting": "Starting…",
   "src.screens.rpascreen.started": "“{template}” has started. Any required confirmation will appear in the task.",
   "src.screens.rpascreen.start_failed": "Unable to start this automation.",
-  "src.screens.rpascreen.refresh": "Refresh templates"
+  "src.screens.rpascreen.refresh": "Refresh templates",
+  "src.components.ui.avatarcropmodal.crop_avatar": "Crop avatar",
+  "src.components.ui.avatarcropmodal.drag_and_zoom": "Drag to choose the crop. Pinch or use the buttons to zoom.",
+  "src.components.ui.avatarcropmodal.crop_area": "Avatar crop area",
+  "src.components.ui.avatarcropmodal.zoom_out": "Zoom out",
+  "src.components.ui.avatarcropmodal.zoom_in": "Zoom in",
+  "src.components.ui.avatarcropmodal.cancel": "Cancel",
+  "src.components.ui.avatarcropmodal.use_crop": "Use this crop"
 }

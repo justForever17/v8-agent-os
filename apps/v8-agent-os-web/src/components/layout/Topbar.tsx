@@ -10,7 +10,7 @@ import {
 import { LocaleToggle } from "@/components/layout/LocaleToggle";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { UserProfile } from "@/components/layout/UserProfile";
-import { VoiceToggle } from "@/components/layout/VoiceToggle";
+import { BackgroundVideoSoundToggle } from "@/components/layout/BackgroundVideoSoundToggle";
 import Link from "next/link";
 import { useT } from "@/components/providers/LocaleProvider";
 import { Bot } from "lucide-react";
@@ -69,7 +69,7 @@ export function WebTopbar({ windowControls }: { windowControls?: ReactNode }) {
                     </Link>
                 </TopbarGlowActionButton>
                 <LocaleToggle />
-                <VoiceToggle />
+                <BackgroundVideoSoundToggle />
                 <ThemeToggle />
                 <UserProfile />
                 </>

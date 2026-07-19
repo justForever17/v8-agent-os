@@ -9,7 +9,6 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { approvePendingItem, listPendingApprovals } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -17,10 +16,9 @@ import { colors, spacing } from "@/src/theme/tokens";
 import type { PendingApproval } from "@/src/types/admin";
 
 export default function ApprovalsScreen() {
-    const { status, user, adminBaseUrl, authorizedFetch } = useAppSession();
+    const { status, userAvatarUri, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
-    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const [items, setItems] = useState<PendingApproval[]>([]);
     const [refreshing, setRefreshing] = useState(false);
     const [busyId, setBusyId] = useState("");
@@ -78,7 +76,7 @@ export default function ApprovalsScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView
                     contentContainerStyle={styles.content}

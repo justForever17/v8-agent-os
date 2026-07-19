@@ -47,9 +47,10 @@ export async function PATCH(req: NextRequest) {
         ? { ...(user.appearance || {}), ...body.appearance }
         : user.appearance || {};
 
-    const previousBackground = user.appearance?.lightBackgroundImage || "";
+    const previousBackground = user.appearance?.lightBackgroundMedia || user.appearance?.lightBackgroundImage || "";
     const updated = updateUserRecord(user.id, { name, image, email, appearance });
-    if (previousBackground && previousBackground !== updated.appearance?.lightBackgroundImage) {
+    const nextBackground = updated.appearance?.lightBackgroundMedia || updated.appearance?.lightBackgroundImage || "";
+    if (previousBackground && previousBackground !== nextBackground) {
         removeManagedUserMedia(previousBackground, "background");
     }
     return NextResponse.json({

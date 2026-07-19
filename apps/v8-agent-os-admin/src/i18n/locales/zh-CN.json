@@ -4801,5 +4801,14 @@
   "components.memory.GraphViewer.summaryHint": "这里先展示与当前节点最相关的连接；编辑关系属于维护操作。",
   "components.memory.GraphViewer.noRelations": "当前节点还没有可展示的关联。",
   "components.memory.GraphViewer.manageRelations": "管理节点关系",
-  "components.memory.GraphViewer.backToSummary": "返回关联概览"
+  "components.memory.GraphViewer.backToSummary": "返回关联概览",
+  "admin.avatarCrop.title": "调整头像裁剪",
+  "admin.avatarCrop.description": "拖动图片选择保留区域，再用缩放控制细化构图。",
+  "admin.avatarCrop.area": "头像裁剪区域",
+  "admin.avatarCrop.instruction": "拖动图片调整位置；滚轮、滑杆或加减按钮可缩放。",
+  "admin.avatarCrop.zoom": "缩放",
+  "admin.avatarCrop.zoomOut": "缩小图片",
+  "admin.avatarCrop.zoomIn": "放大图片",
+  "admin.avatarCrop.cancel": "取消",
+  "admin.avatarCrop.confirm": "使用此裁剪"
 }

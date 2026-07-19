@@ -7,6 +7,29 @@ import { getUserProfile, type SharedUserProfile } from "@/lib/actions/user.actio
 import { normalizeAppearance } from "@/lib/personalization";
 
 const PROFILE_UPDATED_EVENT = "v8-client-profile-updated";
+let sharedProfileRequest: Promise<SharedUserProfile | null> | null = null;
+let sharedProfileSnapshot: SharedUserProfile | null | undefined;
+let sharedProfileFetchedAt = 0;
+
+async function loadSharedProfile() {
+    if (sharedProfileRequest) return sharedProfileRequest;
+    if (sharedProfileSnapshot !== undefined && Date.now() - sharedProfileFetchedAt < 3_000) {
+        return sharedProfileSnapshot;
+    }
+    const request = (async () => {
+        const result = await getUserProfile();
+        const next = result.success && result.user ? result.user : null;
+        sharedProfileSnapshot = next;
+        sharedProfileFetchedAt = Date.now();
+        return next;
+    })();
+    sharedProfileRequest = request;
+    try {
+        return await request;
+    } finally {
+        if (sharedProfileRequest === request) sharedProfileRequest = null;
+    }
+}
 
 function normalizeProfileValue(value?: string | null) {
     return String(value || "").trim();
@@ -40,6 +63,8 @@ export function resolveProfileAvatarSrc(image?: string | null) {
 
 function emitProfileUpdate(profile: SharedUserProfile | null) {
     if (typeof window === "undefined") return;
+    sharedProfileSnapshot = profile;
+    sharedProfileFetchedAt = Date.now();
     window.dispatchEvent(new CustomEvent<SharedUserProfile | null>(PROFILE_UPDATED_EVENT, { detail: profile }));
 }
 
@@ -87,22 +112,19 @@ export function useClientProfile() {
         });
     }, [sessionProfile, update]);
 
-    const refreshProfile = useCallback(async () => {
+    const refreshProfile = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
         if (!hasSessionUser) {
             setProfile(null);
             setCanonicalLoaded(true);
             return null;
         }
-        setLoading(true);
+        if (!silent) setLoading(true);
         try {
-            const result = await getUserProfile();
-            if (result.success && result.user) {
-                await applyProfile(result.user);
-                return result.user;
-            }
-            return null;
+            const next = await loadSharedProfile();
+            await applyProfile(next);
+            return next;
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     }, [applyProfile, hasSessionUser]);
 
@@ -126,6 +148,24 @@ export function useClientProfile() {
         window.addEventListener(PROFILE_UPDATED_EVENT, handleProfileUpdate);
         return () => window.removeEventListener(PROFILE_UPDATED_EVENT, handleProfileUpdate);
     }, []);
+
+    useEffect(() => {
+        if (status !== "authenticated" || typeof window === "undefined") return;
+        const refreshSilently = () => { void refreshProfile({ silent: true }); };
+        const handleVisibility = () => {
+            if (document.visibilityState === "visible") refreshSilently();
+        };
+        window.addEventListener("focus", refreshSilently);
+        document.addEventListener("visibilitychange", handleVisibility);
+        const timer = window.setInterval(() => {
+            if (document.visibilityState === "visible") refreshSilently();
+        }, 10_000);
+        return () => {
+            window.removeEventListener("focus", refreshSilently);
+            document.removeEventListener("visibilitychange", handleVisibility);
+            window.clearInterval(timer);
+        };
+    }, [refreshProfile, status]);
 
     return {
         status,

@@ -18,7 +18,6 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import {
     approveSpecStage,
     editSpecStage,
@@ -34,11 +33,10 @@ import type { SpecDetailResponse, SpecSummary } from "@/src/types/admin";
 const STAGES = ["requirements", "bugfix", "design", "tasks"];
 
 export default function SpecApprovalScreen() {
-    const { status, user, adminBaseUrl, authorizedFetch } = useAppSession();
+    const { status, userAvatarUri, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const params = useLocalSearchParams<{ workspace?: string; workspacePath?: string; specId?: string; stage?: string }>();
-    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const initialWorkspacePath = String(params.workspace || params.workspacePath || "").trim();
     const initialSpecId = String(params.specId || "").trim();
     const initialStage = String(params.stage || "").trim().toLowerCase();
@@ -167,7 +165,7 @@ export default function SpecApprovalScreen() {
     return (
         <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
                 <View style={styles.header}>
                     <Text style={styles.eyebrow}>SPEC APPROVAL</Text>
                     <Text style={styles.title}>{t("src.screens.specapprovalscreen.title")}</Text>

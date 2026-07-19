@@ -902,5 +902,12 @@
   "src.screens.rpascreen.starting": "正在启动…",
   "src.screens.rpascreen.started": "“{template}”已启动；如果需要确认，会在任务中提示你。",
   "src.screens.rpascreen.start_failed": "无法启动这个自动流程。",
-  "src.screens.rpascreen.refresh": "刷新模板"
+  "src.screens.rpascreen.refresh": "刷新模板",
+  "src.components.ui.avatarcropmodal.crop_avatar": "裁剪头像",
+  "src.components.ui.avatarcropmodal.drag_and_zoom": "拖动图片选择区域；双指或按钮可缩放。",
+  "src.components.ui.avatarcropmodal.crop_area": "头像裁剪区域",
+  "src.components.ui.avatarcropmodal.zoom_out": "缩小图片",
+  "src.components.ui.avatarcropmodal.zoom_in": "放大图片",
+  "src.components.ui.avatarcropmodal.cancel": "取消",
+  "src.components.ui.avatarcropmodal.use_crop": "使用此区域"
 }

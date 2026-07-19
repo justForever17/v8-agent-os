@@ -186,7 +186,6 @@ export const ChatWindow = memo(function ChatWindow({
         ].join(":");
     }, [lastVisibleMessage]);
     const resolvedEmptyState = emptyState || {
-        icon: "robot-happy-outline" as const,
         title: t("src.components.chat.chatwindow.no_messages_yet"),
         subtitle: t("src.components.chat.chatwindow.start_the_conversation"),
         variant: "default" as const,
@@ -240,7 +239,7 @@ export const ChatWindow = memo(function ChatWindow({
                     ) : null}
                     ListEmptyComponent={(
                         <View style={styles.emptyState}>
-                            {resolvedEmptyState.icon ? (
+                            {"icon" in resolvedEmptyState && resolvedEmptyState.icon ? (
                                 <MaterialCommunityIcons
                                     name={resolvedEmptyState.icon}
                                     size={42}

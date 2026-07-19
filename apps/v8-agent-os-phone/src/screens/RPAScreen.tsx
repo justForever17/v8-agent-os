@@ -17,7 +17,6 @@ import { CheckCircle2, ChevronDown, ChevronUp, CirclePlay, Plus, RefreshCw, Tras
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { getRpaAvailability, listRpaTemplates, runRpaTemplate } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -97,10 +96,9 @@ function usesComputerUsePlaybook(template: RPATemplateSummary | null) {
 }
 
 export default function RPAScreen() {
-    const { status, user, adminBaseUrl, authorizedFetch } = useAppSession();
+    const { status, userAvatarUri, authorizedFetch } = useAppSession();
     const { t, colors, themeMode, toggleThemeMode } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
-    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const nextExtraId = useRef(1);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -218,7 +216,7 @@ export default function RPAScreen() {
 
     return (
         <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.backgroundDeep }]} edges={["top", "left", "right"]}>
-            <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
+            <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
             <ScrollView
                 contentInsetAdjustmentBehavior="automatic"
                 refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor={colors.primary} />}

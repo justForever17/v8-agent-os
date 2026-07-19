@@ -30,6 +30,9 @@ test("light wallpaper uses center cropping and never changes dark theme", () => 
   assert.match(settings, /backgroundSize: "cover"/);
   assert.match(provider, /root\.dataset\.v8Wallpaper = "active"/);
   assert.match(provider, /image\.onload/);
+  assert.match(provider, /<video/);
+  assert.match(provider, /muted=\{videoMuted\}/);
+  assert.match(provider, /resolvedTheme === "light"/);
   assert.match(provider, /root\.style\.getPropertyValue\("--v8-wallpaper-image"\) !== cssValue/);
   assert.match(styles, /html\.light\[data-v8-wallpaper="active"\]/);
   assert.match(styles, /background-size: cover/);
@@ -37,6 +40,38 @@ test("light wallpaper uses center cropping and never changes dark theme", () => 
   assert.match(chatWindow, /v8-chat-viewport-surface/);
   assert.match(sidebar, /group\/sidebar relative z-20 hidden h-full/);
   assert.doesNotMatch(styles, /html\.dark\[data-v8-wallpaper="active"\]/);
+});
+
+test("topbar sound control belongs only to an active MP4 wallpaper", () => {
+  const topbar = read("src/components/layout/Topbar.tsx");
+  const toggle = read("src/components/layout/BackgroundVideoSoundToggle.tsx");
+  const provider = read("src/components/providers/PersonalizationProvider.tsx");
+  const voiceCard = read("src/components/chat/VoiceCard.tsx");
+
+  assert.match(topbar, /<BackgroundVideoSoundToggle/);
+  assert.match(toggle, /if \(!available\) return null/);
+  assert.match(toggle, /toggleMuted/);
+  assert.match(provider, /video\.volume = 0\.65/);
+  assert.doesNotMatch(voiceCard, /isVoiceEnabled|useVoiceStore|Auto-play prevented/);
+});
+
+test("large MP4 wallpaper uploads stream through the Web bridge", () => {
+  const settings = read("src/components/settings/SettingsDialog.tsx");
+  const upload = read("src/app/api/user-background-upload/route.ts");
+
+  assert.match(settings, /headers: \{ "content-type": file\.type \}/);
+  assert.match(settings, /body: file/);
+  assert.match(upload, /"x-v8-upload-mode": "raw"/);
+  assert.match(upload, /body: req\.body/);
+  assert.match(upload, /duplex: "half"/);
+  assert.doesNotMatch(upload, /req\.formData\(\)/);
+});
+
+test("profile refreshes across clients while retaining the canonical profile", () => {
+  const profile = read("src/hooks/use-client-profile.ts");
+  assert.match(profile, /visibilitychange/);
+  assert.match(profile, /window\.addEventListener\("focus"/);
+  assert.match(profile, /10_000/);
 });
 
 test("wallpaper bootstrap and profile projection share one appearance truth", () => {

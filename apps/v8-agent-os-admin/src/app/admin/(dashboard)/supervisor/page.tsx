@@ -17,6 +17,7 @@ import { useT } from "@/components/providers/LocaleProvider";
 import { ir, tg, ti } from "@/i18n/admin-legacy";
 import { useDebugMode } from "@/lib/useDebugMode";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
+import { AvatarCropDialog } from "@/components/media/AvatarCropDialog";
 interface AIModel {
   id: string;
   modelRef?: string;
@@ -108,6 +109,7 @@ export default function SupervisorPage() {
   const [name, setName] = useState(tg(t, "8537cbcf"));
   const [roleLabel, setRoleLabel] = useState(t("components.models.ModelCardV2.kf45c6152"));
   const [avatar, setAvatar] = useState("");
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
   const [supervisorTemperature, setSupervisorTemperature] = useState("");
   const [subagentTemperature, setSubagentTemperature] = useState("");
   const [models, setModels] = useState<AIModel[]>([]);
@@ -300,12 +302,38 @@ export default function SupervisorPage() {
       setIsSaving(false);
     }
   };
+  const handleAvatarUpload = async (file: File) => {
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const response = await fetch("/api/avatar-upload", {
+        method: "POST",
+        body: formData
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.url) {
+        throw new Error(data.error || t("app.admin.dashboard.extensions.page.k0dc966ec"));
+      }
+      setAvatar(String(data.url));
+      return true;
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("app.admin.dashboard.supervisor.page.k6faec809"),
+        description: error instanceof Error ? error.message : t("app.admin.dashboard.supervisor.page.k2eee8863")
+      });
+      return false;
+    } finally {
+      setIsUploading(false);
+    }
+  };
   if (isLoading) {
     return <div className="flex h-[50vh] items-center justify-center">
                 <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
             </div>;
   }
-  return <div className="w-full space-y-8 p-6 lg:p-8">
+  return <><div className="w-full space-y-8 p-6 lg:p-8">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-4">
                     <div>
@@ -363,32 +391,10 @@ export default function SupervisorPage() {
                                         </div>
                                         <div className="min-w-0 space-y-3">
                                             <div className="flex flex-wrap gap-2">
-                                                <Input id="supervisor-avatar-upload" type="file" accept="image/*" className="hidden" onChange={async event => {
+                                                <Input id="supervisor-avatar-upload" type="file" accept="image/*" className="hidden" onChange={event => {
                                                     const file = event.target.files?.[0];
-                                                    if (!file) return;
-                                                    setIsUploading(true);
-                                                    const formData = new FormData();
-                                                    formData.append("file", file);
-                                                    try {
-                                                        const response = await fetch("/api/avatar-upload", {
-                                                            method: "POST",
-                                                            body: formData
-                                                        });
-                                                        const data = await response.json().catch(() => ({}));
-                                                        if (!response.ok || !data.url) {
-                                                            throw new Error(data.error || t("app.admin.dashboard.extensions.page.k0dc966ec"));
-                                                        }
-                                                        setAvatar(String(data.url));
-                                                    } catch (error) {
-                                                        toast({
-                                                            variant: "destructive",
-                                                            title: t("app.admin.dashboard.supervisor.page.k6faec809"),
-                                                            description: error instanceof Error ? error.message : t("app.admin.dashboard.supervisor.page.k2eee8863")
-                                                        });
-                                                    } finally {
-                                                        setIsUploading(false);
-                                                        event.target.value = "";
-                                                    }
+                                                    if (file) setAvatarCropFile(file);
+                                                    event.target.value = "";
                                                 }} />
                                                 <Button type="button" variant="outline" size="sm" onClick={() => document.getElementById("supervisor-avatar-upload")?.click()} disabled={isUploading}>
                                                     <Upload className="mr-2 h-4 w-4" />
@@ -658,5 +664,12 @@ export default function SupervisorPage() {
                     </Card>
                 </div>
             </div>
-        </div>;
+        </div><AvatarCropDialog
+            file={avatarCropFile}
+            busy={isUploading}
+            onCancel={() => setAvatarCropFile(null)}
+            onConfirm={async file => {
+              if (await handleAvatarUpload(file)) setAvatarCropFile(null);
+            }}
+        /></>;
 }

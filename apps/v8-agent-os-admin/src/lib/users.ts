@@ -3,6 +3,9 @@ import { readJson, writeJson } from "@/lib/storage";
 import { INTERNAL_READABLE } from "@/i18n/internal-readable";
 export type AdminUserRole = "ADMIN" | "USER";
 export type UserAppearancePreferences = {
+  lightBackgroundMedia?: string;
+  lightBackgroundMediaType?: "image" | "video";
+  /** @deprecated Read compatibility for image-only clients. Use lightBackgroundMedia. */
   lightBackgroundImage?: string;
   lightBackgroundEnabled?: boolean;
 };
@@ -31,14 +34,20 @@ function normalizeAppearance(value: unknown): UserAppearancePreferences {
   const record = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-  const rawImage = String(record.lightBackgroundImage || "").trim().slice(0, 2048);
-  let lightBackgroundImage = "";
-  if (rawImage.startsWith("/user-assets/background/")) {
-    lightBackgroundImage = rawImage;
-  }
+  const rawMedia = String(record.lightBackgroundMedia || record.lightBackgroundImage || "").trim().slice(0, 2048);
+  const lightBackgroundMedia = /^\/user-assets\/background\/[A-Za-z0-9][A-Za-z0-9._-]{0,180}\.(?:webp|mp4)$/i.test(rawMedia)
+    ? rawMedia
+    : "";
+  const inferredType = lightBackgroundMedia.toLowerCase().endsWith(".mp4") ? "video" : "image";
+  const requestedType = String(record.lightBackgroundMediaType || "").trim().toLowerCase();
+  const lightBackgroundMediaType: "image" | "video" = requestedType === "video" && inferredType === "video"
+    ? "video"
+    : inferredType;
   return {
-    lightBackgroundImage,
-    lightBackgroundEnabled: Boolean(record.lightBackgroundEnabled && lightBackgroundImage),
+    lightBackgroundMedia,
+    lightBackgroundMediaType,
+    lightBackgroundImage: lightBackgroundMediaType === "image" ? lightBackgroundMedia : "",
+    lightBackgroundEnabled: Boolean(record.lightBackgroundEnabled && lightBackgroundMedia),
   };
 }
 function normalizeUserRecord(raw: Record<string, unknown>, index: number): AdminUserRecord {

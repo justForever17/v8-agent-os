@@ -50,7 +50,6 @@ import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { HistoryDrawer } from "@/src/components/layout/HistoryDrawer";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { ProfileMenuOverlay } from "@/src/components/chat/ProfileMenuOverlay";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { buildPhoneChatProjection } from "@/src/lib/chat-projection";
 import { normalizeMessagesForState, upsertApproval } from "@/src/lib/chat-state";
 import {
@@ -2027,6 +2026,7 @@ export default function ChatScreen() {
     const {
         status,
         user,
+        userAvatarUri,
         adminBaseUrl,
         accessToken,
         activeConversationId,
@@ -6711,8 +6711,7 @@ export default function ChatScreen() {
         return <LoadingScreen label={t("src.screens.chatscreen.loading_the_conversation_lane")} />;
     }
 
-    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
-    const greetingEmptyState = !activeConversationId && projection.projectedMessages.length === 0
+    const greetingEmptyState = projection.projectedMessages.length === 0
         ? {
             title: getDayGreeting(locale),
             subtitle: t("src.screens.chatscreen.choose_a_workspace_then_start_a_new_conversation"),
@@ -7066,7 +7065,7 @@ export default function ChatScreen() {
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
                 <PhoneTopbar
                     actions={topbarActions}
-                    userImageUri={profileImageUri || undefined}
+                    userImageUri={userAvatarUri || undefined}
                     onBrandPress={() => void handleBrandPress()}
                     onProfilePress={() => setProfileMenuVisible(true)}
                 />
@@ -7253,7 +7252,7 @@ export default function ChatScreen() {
                                     onDeleteMessage={handleDeleteMessage}
                                     speakingKey={speakingId}
                                     onSpeakVoice={handleSpeakVoice}
-                                    userImageUri={profileImageUri || ""}
+                                    userImageUri={userAvatarUri || ""}
                                     userDisplayName={user?.name || user?.login || user?.email || ""}
                                     processes={hudProcesses}
                                     runtimeActivities={projection.runtimeStageModel.messageActivities}

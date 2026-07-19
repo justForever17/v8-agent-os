@@ -1,6 +1,11 @@
 export const PERSONALIZATION_STORAGE_KEY = "v8-web-personalization";
 
+export type LightBackgroundMediaType = "image" | "video";
+
 export type UserAppearancePreferences = {
+    lightBackgroundMedia?: string;
+    lightBackgroundMediaType?: LightBackgroundMediaType;
+    /** @deprecated Read compatibility for image-only profiles. */
     lightBackgroundImage?: string;
     lightBackgroundEnabled?: boolean;
 };
@@ -9,21 +14,26 @@ export function normalizeAppearance(value: unknown): UserAppearancePreferences {
     const record = value && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown>
         : {};
-    const image = String(record.lightBackgroundImage || "").trim();
+    const media = String(record.lightBackgroundMedia || record.lightBackgroundImage || "").trim();
+    const inferredType: LightBackgroundMediaType = media.toLowerCase().endsWith(".mp4") ? "video" : "image";
+    const requestedType = String(record.lightBackgroundMediaType || "").trim().toLowerCase();
+    const mediaType: LightBackgroundMediaType = requestedType === "video" && inferredType === "video" ? "video" : inferredType;
     return {
-        lightBackgroundImage: image,
-        lightBackgroundEnabled: Boolean(record.lightBackgroundEnabled && image),
+        lightBackgroundMedia: media,
+        lightBackgroundMediaType: mediaType,
+        lightBackgroundImage: mediaType === "image" ? media : "",
+        lightBackgroundEnabled: Boolean(record.lightBackgroundEnabled && media),
     };
 }
 
-export function resolveLightBackgroundSrc(value?: string | null) {
+export function resolveLightBackgroundMediaSrc(value?: string | null) {
     const raw = String(value || "").trim();
-    if (raw.startsWith("/user-assets/background/")) {
+    if (/^\/user-assets\/background\/[A-Za-z0-9][A-Za-z0-9._-]{0,180}\.(?:webp|mp4)$/i.test(raw)) {
         return `/api/user-media?src=${encodeURIComponent(raw)}`;
     }
     return "";
 }
 
 export function buildPersonalizationBootstrapScript() {
-    return `(() => { try { const raw = localStorage.getItem(${JSON.stringify(PERSONALIZATION_STORAGE_KEY)}); if (!raw) return; const value = JSON.parse(raw); const image = typeof value?.lightBackgroundImage === "string" ? value.lightBackgroundImage.trim() : ""; if (!value?.lightBackgroundEnabled || !image.startsWith("/user-assets/background/")) return; const src = "/api/user-media?src=" + encodeURIComponent(image); const root = document.documentElement; root.dataset.v8Wallpaper = "active"; root.style.setProperty("--v8-wallpaper-image", "url(" + JSON.stringify(src) + ")"); } catch (_) {} })();`;
+    return `(() => { try { const raw = localStorage.getItem(${JSON.stringify(PERSONALIZATION_STORAGE_KEY)}); if (!raw) return; const value = JSON.parse(raw); const media = typeof value?.lightBackgroundMedia === "string" ? value.lightBackgroundMedia.trim() : (typeof value?.lightBackgroundImage === "string" ? value.lightBackgroundImage.trim() : ""); const kind = value?.lightBackgroundMediaType === "video" || media.toLowerCase().endsWith(".mp4") ? "video" : "image"; if (!value?.lightBackgroundEnabled || !media.startsWith("/user-assets/background/")) return; const root = document.documentElement; root.dataset.v8WallpaperKind = kind; if (kind !== "image") return; const src = "/api/user-media?src=" + encodeURIComponent(media); root.dataset.v8Wallpaper = "active"; root.style.setProperty("--v8-wallpaper-image", "url(" + JSON.stringify(src) + ")"); } catch (_) {} })();`;
 }

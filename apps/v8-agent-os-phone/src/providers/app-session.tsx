@@ -1,11 +1,12 @@
 import React from "react";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import { translateCurrent } from "@/src/lib/locale";
 
 import {
     buildAdminApiUrl,
     normalizeAdminBaseUrl,
     parseJsonSafe,
+    resolveAdminAssetUrl,
     streamSse,
     streamSseWithXmlHttpRequest,
 } from "@/src/lib/admin-client";
@@ -20,6 +21,7 @@ import {
 } from "@/src/lib/admin-connection-profiles";
 import { ENGINE_NOW_HEADER, getEngineNowMs as resolveEngineNowMs, toEngineClockOffsetMs } from "@/src/lib/engine-time";
 import { clearSessionStorage, getStoredValue, removeStoredValue, setStoredValue } from "@/src/lib/mobile-storage";
+import { cacheProfileAvatar } from "@/src/lib/profile-avatar-cache";
 import { pairDevice as consumeDevicePairing, parseDevicePairingUri } from "@/src/lib/phone-api";
 import type { DevicePairingInput, PhoneUser } from "@/src/types/admin";
 
@@ -41,6 +43,7 @@ type SessionStatus = "booting" | "anonymous" | "authenticated";
 type SessionContextValue = {
     status: SessionStatus;
     user: PhoneUser | null;
+    userAvatarUri: string;
     adminBaseUrl: string;
     accessToken: string;
     activeConversationId: string | null;
@@ -188,12 +191,14 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const [accessToken, setAccessToken] = React.useState("");
     const [refreshToken, setRefreshToken] = React.useState("");
     const [user, setUser] = React.useState<PhoneUser | null>(null);
+    const [userAvatarUri, setUserAvatarUri] = React.useState("");
     const [activeConversationId, setActiveConversationIdState] = React.useState<string | null>(null);
     const [engineClockOffsetMs, setEngineClockOffsetMs] = React.useState(0);
     const bootStartedAtRef = React.useRef(Date.now());
     const statusRef = React.useRef<SessionStatus>("booting");
     const userRef = React.useRef<PhoneUser | null>(null);
     const connectionCandidatesRef = React.useRef<string[]>([]);
+    const refreshUserInFlightRef = React.useRef<Promise<PhoneUser | null> | null>(null);
 
     React.useEffect(() => {
         statusRef.current = status;
@@ -202,6 +207,24 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     React.useEffect(() => {
         userRef.current = user;
     }, [user]);
+
+    React.useEffect(() => {
+        const source = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
+        let cancelled = false;
+        if (!source) {
+            setUserAvatarUri("");
+            return () => { cancelled = true; };
+        }
+        if (Platform.OS === "web") {
+            setUserAvatarUri(source);
+            return () => { cancelled = true; };
+        }
+        setUserAvatarUri("");
+        void cacheProfileAvatar(source).then((cachedUri) => {
+            if (!cancelled) setUserAvatarUri(cachedUri);
+        });
+        return () => { cancelled = true; };
+    }, [adminBaseUrl, user?.image]);
 
     const awaitMinimumBootScreen = React.useCallback(async () => {
         if (statusRef.current !== "booting") {
@@ -410,30 +433,49 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         setAccessToken("");
         setRefreshToken("");
         setUser(null);
+        setUserAvatarUri("");
         setActiveConversationIdState(null);
         setEngineClockOffsetMs(0);
         setStatus("anonymous");
     }, [adminBaseUrl, refreshToken]);
 
     const refreshUser = React.useCallback(async () => {
-        const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
-        if (!baseUrl || !accessToken) {
-            return null;
+        if (refreshUserInFlightRef.current) return refreshUserInFlightRef.current;
+        const request = (async () => {
+            const baseUrl = normalizeAdminBaseUrl(adminBaseUrl);
+            if (!baseUrl || !accessToken) return null;
+            const response = await fetchWithTimeout(buildAdminApiUrl(baseUrl, "/api/client/auth/me"), {
+                headers: { Authorization: `Bearer ${accessToken}` },
+            }, 4000);
+            if (!response.ok) return null;
+            const payload = await parseJsonSafe<{ user?: PhoneUser }>(response);
+            if (!payload?.user) return null;
+            setUser((current) => phoneUsersMatch(current, payload.user) ? current : payload.user || null);
+            await setStoredValue("user", JSON.stringify(payload.user));
+            return payload.user;
+        })();
+        refreshUserInFlightRef.current = request;
+        try {
+            return await request;
+        } finally {
+            if (refreshUserInFlightRef.current === request) refreshUserInFlightRef.current = null;
         }
-        const response = await fetchWithTimeout(buildAdminApiUrl(baseUrl, "/api/client/auth/me"), {
-            headers: { Authorization: `Bearer ${accessToken}` },
-        }, 4000);
-        if (!response.ok) {
-            return null;
-        }
-        const payload = await parseJsonSafe<{ user?: PhoneUser }>(response);
-        if (!payload?.user) {
-            return null;
-        }
-        setUser(payload.user);
-        await setStoredValue("user", JSON.stringify(payload.user));
-        return payload.user;
     }, [accessToken, adminBaseUrl]);
+
+    React.useEffect(() => {
+        if (status !== "authenticated") return;
+        const refresh = () => { void refreshUser().catch(() => undefined); };
+        const subscription = AppState.addEventListener("change", (nextState) => {
+            if (nextState === "active") refresh();
+        });
+        const timer = setInterval(() => {
+            if (AppState.currentState === "active") refresh();
+        }, 10_000);
+        return () => {
+            subscription.remove();
+            clearInterval(timer);
+        };
+    }, [refreshUser, status]);
 
     const updateCurrentUser = React.useCallback(async (next: PhoneUser | null) => {
         const current = userRef.current;
@@ -614,6 +656,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
     const contextValue = React.useMemo<SessionContextValue>(() => ({
         status,
         user,
+        userAvatarUri,
         adminBaseUrl,
         accessToken,
         activeConversationId,
@@ -627,7 +670,7 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
         authorizedRealtimeStream,
         engineClockOffsetMs,
         getEngineNowMs,
-    }), [status, user, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
+    }), [status, user, userAvatarUri, adminBaseUrl, accessToken, activeConversationId, setAdminBaseUrl, setActiveConversationId, pairDevice, signOut, refreshUser, updateCurrentUser, authorizedFetch, authorizedRealtimeStream, engineClockOffsetMs, getEngineNowMs]);
 
     return <SessionContext.Provider value={contextValue}>{children}</SessionContext.Provider>;
 }

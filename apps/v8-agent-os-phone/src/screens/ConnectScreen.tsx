@@ -18,7 +18,6 @@ import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import {
     type AdminConnectionProfile,
     readActiveAdminConnectionProfileId,
@@ -44,10 +43,9 @@ function formatTransportKind(kind?: string) {
 }
 
 export default function ConnectScreen() {
-    const { status, user, adminBaseUrl, setAdminBaseUrl, signOut, authorizedFetch } = useAppSession();
+    const { status, user, userAvatarUri, adminBaseUrl, setAdminBaseUrl, signOut, authorizedFetch } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
-    const profileImageUri = resolveAdminAssetUrl(adminBaseUrl, user?.image || "");
     const [draftBaseUrl, setDraftBaseUrl] = useState(adminBaseUrl);
     const [busy, setBusy] = useState(false);
     const [summary, setSummary] = useState<ConnectionSummary | null>(null);
@@ -213,7 +211,7 @@ export default function ConnectScreen() {
             style={styles.gradient}
         >
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
-                <PhoneTopbar actions={actions} userImageUri={profileImageUri || undefined} onBrandPress={() => void goHomeToChat()} />
+                <PhoneTopbar actions={actions} userImageUri={userAvatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
                 <ScrollView contentContainerStyle={styles.content}>
                     <GlassCard style={styles.heroCard}>

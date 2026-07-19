@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Square, RotateCcw, Volume2, Loader2, ChevronDown, ChevronUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useT } from "@/components/providers/LocaleProvider";
-import { useVoiceStore } from "@/store/useVoiceStore";
 import { cn } from "@/lib/utils";
 
 interface VoiceCardProps {
@@ -14,7 +13,6 @@ interface VoiceCardProps {
 
 export function VoiceCard({ content, isStreaming }: VoiceCardProps) {
     const t = useT();
-    const { isVoiceEnabled, setSpeaking } = useVoiceStore();
     const [isPlaying, setIsPlaying] = useState(false);
     const [isGenerating, setIsGenerating] = useState(false);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -32,25 +30,17 @@ export function VoiceCard({ content, isStreaming }: VoiceCardProps) {
         [],
     );
 
-    // Effect: Request Audio when component mounts and TTS is enabled
+    // TTS is intentionally controlled by this message card. The topbar sound
+    // control belongs exclusively to a personalized MP4 background.
     useEffect(() => {
-        // Do not request if still streaming text (wait for full sentence/block) or disabled, or already requested
-        if (isStreaming || !isVoiceEnabled || hasRequestedAudio.current || !content.trim()) return;
-        
-        hasRequestedAudio.current = true;
-        generateAndPlayAudio(content);
-        
         return () => {
             if (audioUrl) URL.revokeObjectURL(audioUrl);
-            setSpeaking(false);
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, isVoiceEnabled, content]);
+    }, [audioUrl]);
 
     const generateAndPlayAudio = async (text: string) => {
         try {
             setIsGenerating(true);
-            setSpeaking(true);
             
             const response = await fetch("/api/audio/tts", {
                 method: "POST",
@@ -64,12 +54,6 @@ export function VoiceCard({ content, isStreaming }: VoiceCardProps) {
             const url = URL.createObjectURL(blob);
             setAudioUrl(url);
             
-            // Automatically play if voice is globally enabled
-            if (isVoiceEnabled && audioRef.current) {
-                audioRef.current.src = url;
-                audioRef.current.play().catch(e => console.error("Auto-play prevented:", e));
-                setIsPlaying(true);
-            }
         } catch (error) {
             console.error("Voice Generation Error:", error);
             // Fallback: show text if audio fails
@@ -92,17 +76,14 @@ export function VoiceCard({ content, isStreaming }: VoiceCardProps) {
         if (isPlaying) {
             audioRef.current.pause();
             setIsPlaying(false);
-            setSpeaking(false);
         } else {
             audioRef.current.play().catch(console.error);
             setIsPlaying(true);
-            setSpeaking(true);
         }
     };
 
     const handleEnded = () => {
         setIsPlaying(false);
-        setSpeaking(false);
         setHasPlayed(true);
         setShowText(true); // Auto reveal text after hearing it once
     };
@@ -189,8 +170,8 @@ export function VoiceCard({ content, isStreaming }: VoiceCardProps) {
                     ref={audioRef} 
                     src={audioUrl} 
                     onEnded={handleEnded}
-                    onPause={() => { setIsPlaying(false); setSpeaking(false); }}
-                    onPlay={() => { setIsPlaying(true); setSpeaking(true); }}
+                    onPause={() => setIsPlaying(false)}
+                    onPlay={() => setIsPlaying(true)}
                  />
             )}
         </div>

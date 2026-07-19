@@ -14,27 +14,24 @@ import { Redirect, router, type Href } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import * as ImagePicker from "expo-image-picker";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
 import { LoadingScreen } from "@/src/components/common/LoadingScreen";
 import { PhoneTopbar, type PhoneTopbarAction } from "@/src/components/layout/PhoneTopbar";
 import { useGoHomeToChat } from "@/src/hooks/use-go-home-to-chat";
-import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
-import { getCurrentProfile, updateProfile, uploadUserAvatar } from "@/src/lib/phone-api";
+import { getCurrentProfile, updateProfile } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { colors, radii, spacing } from "@/src/theme/tokens";
 
 export default function SettingsScreen() {
-    const { status, user, adminBaseUrl, signOut, authorizedFetch, refreshUser, updateCurrentUser } = useAppSession();
+    const { status, user, userAvatarUri, adminBaseUrl, signOut, authorizedFetch, refreshUser, updateCurrentUser } = useAppSession();
     const { t } = useUiPrefs();
     const goHomeToChat = useGoHomeToChat();
     const [name, setName] = useState(user?.name || "");
     const [email, setEmail] = useState(user?.email || "");
     const [image, setImage] = useState(user?.image || "");
     const [profileBusy, setProfileBusy] = useState(false);
-    const [avatarBusy, setAvatarBusy] = useState(false);
     const [profileMessage, setProfileMessage] = useState("");
     const [loadingProfile, setLoadingProfile] = useState(false);
 
@@ -82,7 +79,7 @@ export default function SettingsScreen() {
         };
     }, [authorizedFetch, status, updateCurrentUser]);
 
-    const avatarUri = image ? resolveAdminAssetUrl(adminBaseUrl, image) : "";
+    const avatarUri = image ? userAvatarUri : "";
 
     const saveProfile = async () => {
         setProfileBusy(true);
@@ -106,51 +103,6 @@ export default function SettingsScreen() {
         }
     };
 
-    const pickAvatar = async () => {
-        setAvatarBusy(true);
-        setProfileMessage("");
-        try {
-            const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-            if (!permission.granted) {
-                throw new Error(t("src.screens.settingsscreen.photo_library_permission_is_required_to_upload_an_avatar"));
-            }
-            const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ["images"],
-                quality: 0.9,
-                allowsEditing: true,
-                aspect: [1, 1],
-            });
-            if (result.canceled || !result.assets[0]) {
-                return;
-            }
-            const asset = result.assets[0];
-            const uploaded = await uploadUserAvatar(authorizedFetch, {
-                uri: asset.uri,
-                name: asset.fileName || `avatar-${Date.now()}.jpg`,
-                type: asset.mimeType || "image/jpeg",
-            });
-            if (!uploaded.url) {
-                throw new Error(t("src.screens.settingsscreen.the_avatar_upload_succeeded_but_no_url_was_returned"));
-            }
-            setImage(uploaded.url);
-            const updated = await updateProfile(authorizedFetch, {
-                name: name.trim() || undefined,
-                email: email.trim() || undefined,
-                image: uploaded.url,
-            });
-            if (updated) {
-                await updateCurrentUser(updated);
-            } else {
-                await refreshUser();
-            }
-            setProfileMessage(t("src.screens.settingsscreen.avatar_updated"));
-        } catch (error) {
-            Alert.alert(t("src.screens.settingsscreen.avatar_update_failed"), error instanceof Error ? error.message : t("src.screens.settingsscreen.unable_to_update_the_avatar"));
-        } finally {
-            setAvatarBusy(false);
-        }
-    };
-
     if (status === "booting") {
         return <LoadingScreen label={t("src.screens.settingsscreen.loading_phone_settings")} />;
     }
@@ -160,7 +112,8 @@ export default function SettingsScreen() {
     }
 
     return (
-        <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
+        <>
+            <LinearGradient colors={[colors.background, "#FFF7ED"]} style={styles.gradient}>
             <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
                 <PhoneTopbar actions={actions} userImageUri={avatarUri || undefined} onBrandPress={() => void goHomeToChat()} />
 
@@ -188,22 +141,6 @@ export default function SettingsScreen() {
                             {loadingProfile ? <ActivityIndicator color={colors.primary} size="small" /> : null}
                         </View>
                         <View style={styles.profileCard}>
-                            <Pressable style={styles.avatarPicker} onPress={() => void pickAvatar()} disabled={avatarBusy}>
-                                {avatarUri ? (
-                                    <Image source={{ uri: avatarUri }} style={styles.avatarPickerImage} />
-                                ) : (
-                                    <View style={styles.avatarPickerFallback}>
-                                        <Text style={styles.avatarPickerText}>{(name || user?.login || "V").slice(0, 1).toUpperCase()}</Text>
-                                    </View>
-                                )}
-                                <View style={styles.avatarPickerBadge}>
-                                    {avatarBusy ? (
-                                        <ActivityIndicator color="#FFFFFF" size="small" />
-                                    ) : (
-                                        <MaterialCommunityIcons name="qrcode-scan" size={16} color="#FFFFFF" />
-                                    )}
-                                </View>
-                            </Pressable>
                             <View style={styles.profileFields}>
                                 <View style={styles.field}>
                                     <Text style={styles.fieldLabel}>{t("src.screens.settingsscreen.display_name")}</Text>
@@ -259,7 +196,8 @@ export default function SettingsScreen() {
                     </GlassCard>
                 </ScrollView>
             </SafeAreaView>
-        </LinearGradient>
+            </LinearGradient>
+        </>
     );
 }
 
@@ -329,44 +267,6 @@ const styles = StyleSheet.create({
         gap: spacing.md,
         alignItems: "flex-start",
         marginBottom: spacing.md,
-    },
-    avatarPicker: {
-        width: 86,
-        alignItems: "center",
-        justifyContent: "center",
-        position: "relative",
-    },
-    avatarPickerImage: {
-        width: 86,
-        height: 86,
-        borderRadius: 28,
-        backgroundColor: colors.surface,
-    },
-    avatarPickerFallback: {
-        width: 86,
-        height: 86,
-        borderRadius: 28,
-        backgroundColor: colors.primarySoft,
-        alignItems: "center",
-        justifyContent: "center",
-    },
-    avatarPickerText: {
-        color: colors.primaryDeep,
-        fontSize: 28,
-        fontWeight: "900",
-    },
-    avatarPickerBadge: {
-        position: "absolute",
-        right: 4,
-        bottom: 4,
-        width: 28,
-        height: 28,
-        borderRadius: 14,
-        backgroundColor: colors.primary,
-        alignItems: "center",
-        justifyContent: "center",
-        borderWidth: 2,
-        borderColor: "#FFFFFF",
     },
     profileFields: {
         flex: 1,

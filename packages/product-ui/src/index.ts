@@ -37,3 +37,8 @@ export {
   buildProductThemeBootstrapScript,
   normalizeProductTheme,
 } from "./product-theme-bootstrap.js";
+export {
+  SquareImageCropper,
+  type SquareImageCropperLabels,
+  type SquareImageCropperProps,
+} from "./SquareImageCropper.js";

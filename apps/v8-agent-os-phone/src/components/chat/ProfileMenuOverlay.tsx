@@ -15,6 +15,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 
 import { GlassCard } from "@/src/components/common/GlassCard";
+import { AvatarCropModal, type AvatarCropSource } from "@/src/components/ui/AvatarCropModal";
 import { resolveAdminAssetUrl } from "@/src/lib/admin-client";
 import { getCurrentProfile, updateProfile, uploadUserAvatar } from "@/src/lib/phone-api";
 import { useAppSession } from "@/src/providers/app-session";
@@ -28,13 +29,14 @@ export function ProfileMenuOverlay({
     visible: boolean;
     onClose: () => void;
 }) {
-    const { status, user, adminBaseUrl, signOut, authorizedFetch, refreshUser, updateCurrentUser } = useAppSession();
+    const { status, user, userAvatarUri, adminBaseUrl, signOut, authorizedFetch, refreshUser, updateCurrentUser } = useAppSession();
     const { t } = useUiPrefs();
     const [name, setName] = useState(user?.name || "");
     const [email, setEmail] = useState(user?.email || "");
     const [image, setImage] = useState(user?.image || "");
     const [profileBusy, setProfileBusy] = useState(false);
     const [avatarBusy, setAvatarBusy] = useState(false);
+    const [avatarCropSource, setAvatarCropSource] = useState<AvatarCropSource | null>(null);
     const [profileMessage, setProfileMessage] = useState("");
     const [loadingProfile, setLoadingProfile] = useState(false);
 
@@ -73,7 +75,9 @@ export function ProfileMenuOverlay({
         };
     }, [authorizedFetch, status, updateCurrentUser, visible]);
 
-    const avatarUri = image ? resolveAdminAssetUrl(adminBaseUrl, image) : "";
+    const avatarUri = image
+        ? (image === user?.image && userAvatarUri ? userAvatarUri : resolveAdminAssetUrl(adminBaseUrl, image))
+        : "";
 
     const saveProfile = async () => {
         setProfileBusy(true);
@@ -108,18 +112,31 @@ export function ProfileMenuOverlay({
             const result = await ImagePicker.launchImageLibraryAsync({
                 mediaTypes: ["images"],
                 quality: 0.9,
-                allowsEditing: true,
-                aspect: [1, 1],
+                allowsEditing: false,
             });
             if (result.canceled || !result.assets[0]) {
                 return;
             }
             const asset = result.assets[0];
-            const uploaded = await uploadUserAvatar(authorizedFetch, {
+            setAvatarCropSource({
                 uri: asset.uri,
-                name: asset.fileName || `avatar-${Date.now()}.jpg`,
-                type: asset.mimeType || "image/jpeg",
+                width: asset.width,
+                height: asset.height,
+                fileName: asset.fileName,
+                mimeType: asset.mimeType,
             });
+        } catch (error) {
+            Alert.alert(t("src.screens.settingsscreen.avatar_update_failed"), error instanceof Error ? error.message : t("src.screens.settingsscreen.unable_to_update_the_avatar"));
+        } finally {
+            setAvatarBusy(false);
+        }
+    };
+
+    const uploadCroppedAvatar = async (file: { uri: string; name: string; type: string }) => {
+        setAvatarBusy(true);
+        setProfileMessage("");
+        try {
+            const uploaded = await uploadUserAvatar(authorizedFetch, file);
             if (!uploaded.url) {
                 throw new Error(t("src.screens.settingsscreen.the_avatar_upload_succeeded_but_no_url_was_returned"));
             }
@@ -134,6 +151,7 @@ export function ProfileMenuOverlay({
             } else {
                 await refreshUser();
             }
+            setAvatarCropSource(null);
             setProfileMessage(t("src.screens.settingsscreen.avatar_updated"));
         } catch (error) {
             Alert.alert(t("src.screens.settingsscreen.avatar_update_failed"), error instanceof Error ? error.message : t("src.screens.settingsscreen.unable_to_update_the_avatar"));
@@ -155,7 +173,8 @@ export function ProfileMenuOverlay({
     if (!visible) return null;
 
     return (
-        <View style={StyleSheet.absoluteFillObject} pointerEvents="auto">
+        <>
+            <View style={StyleSheet.absoluteFillObject} pointerEvents="auto">
             {/* Dimmed backdrop press target */}
             <Pressable style={styles.backdrop} onPress={onClose} />
             <View style={styles.modalContainer} pointerEvents="box-none">
@@ -250,7 +269,14 @@ export function ProfileMenuOverlay({
                     </ScrollView>
                 </GlassCard>
             </View>
-        </View>
+            </View>
+            <AvatarCropModal
+                source={avatarCropSource}
+                busy={avatarBusy}
+                onCancel={() => setAvatarCropSource(null)}
+                onConfirm={uploadCroppedAvatar}
+            />
+        </>
     );
 }
 

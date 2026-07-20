@@ -14,6 +14,7 @@ from graph.agent_factories import (
     _delegated_tool_names,
     _delegated_visible_result_text,
     _format_delegated_task_contract,
+    _resolve_inherited_route_context,
     build_contextual_auto_tool_node,
     build_specialist_agent_components,
 )
@@ -250,6 +251,90 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertEqual(normalized["behaviorScope"], ["Do not modify files."])
         self.assertEqual(normalized["evidenceRefs"], ["artifact://evidence-1"])
         self.assertEqual(normalized["detailRefs"], ["detail://task-1"])
+
+    def test_task_brief_normalization_preserves_delegation_depth(self):
+        normalized = normalize_task_brief(
+            {
+                "taskBriefId": "terminal-verifier",
+                "goal": "Read and execute one file.",
+                "delegationDepth": 2,
+                "toolPolicy": {
+                    "mode": "allowlist",
+                    "allowedTools": ["read_native_file", "run_system_command"],
+                },
+            }
+        )
+
+        self.assertEqual(normalized["delegationDepth"], 2)
+
+    def test_parallel_branch_is_authoritative_over_stale_same_agent_context(self):
+        branch_task = normalize_task_brief(
+            {
+                "taskBriefId": "terminal-verifier",
+                "goal": "Read and execute src/check.py.",
+                "delegationDepth": 2,
+                "readOnly": True,
+                "readSet": ["src/check.py"],
+                "allowChildDelegation": False,
+                "childDelegationPolicyExplicit": True,
+                "toolPolicy": {
+                    "mode": "allowlist",
+                    "allowedTools": ["read_native_file", "run_system_command"],
+                },
+            }
+        )
+        state = {
+            "delegation_contexts": [
+                {
+                    "agentId": "implementation-engineer",
+                    "query": "stale parent task",
+                    "mode": "serial",
+                    "selectedSkillIds": ["skill:stale"],
+                    "selectedSkillNames": ["stale-skill"],
+                    "taskBrief": {
+                        "taskBriefId": "parent",
+                        "goal": "Parent implementation task.",
+                        "toolPolicy": {"mode": "default"},
+                    },
+                }
+            ],
+            "parallel_branch": {
+                "agentId": "implementation-engineer",
+                "delegationId": "subagent::child",
+                "parentDelegationId": "subagent::parent",
+                "delegationDepth": 2,
+                "taskBrief": branch_task,
+            },
+        }
+
+        resolved = _resolve_inherited_route_context(
+            state,
+            [],
+            agent_id="implementation-engineer",
+        )
+
+        self.assertEqual(resolved["delegationDepth"], 2)
+        self.assertEqual(resolved["delegationId"], "subagent::child")
+        self.assertEqual(resolved["taskBrief"]["taskBriefId"], "terminal-verifier")
+        self.assertEqual(resolved["taskBrief"]["delegationDepth"], 2)
+        self.assertEqual(resolved["taskBrief"]["runtimeAccess"], [])
+        self.assertIn(
+            "TERMINAL VERIFICATION IS CLOSED-WORLD",
+            _format_delegated_task_contract(resolved["taskBrief"]),
+        )
+        filtered = _apply_task_tool_policy(
+            [
+                _tool("read_native_file"),
+                _tool("run_system_command"),
+                _tool("fetch_skill_instructions"),
+                _tool("delegation_broker"),
+            ],
+            resolved["taskBrief"],
+        )
+        self.assertEqual(
+            [tool.name for tool in filtered],
+            ["read_native_file", "run_system_command"],
+        )
 
     def test_delegation_tool_schema_exposes_authority_and_acceptance_fields(self):
         from core.tools.native.delegation import delegation_broker

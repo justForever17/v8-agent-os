@@ -1595,6 +1595,8 @@ class RuntimeEpisodeRunner:
                 "commandsrun",
                 "testresults",
                 "verification",
+                "verificationresults",
+                "verificationevidence",
                 "validations",
                 "skillartifactvalidation",
             },
@@ -3824,6 +3826,7 @@ class RuntimeEpisodeRunner:
         if not sends:
             return [], []
         from graph.parallel_support import (
+            _delegation_summary_allows_changeset_promotion,
             _fail_managed_branch_workspace,
             _finalize_managed_branch_workspace,
             _run_parallel_agent_branch,
@@ -4165,7 +4168,8 @@ class RuntimeEpisodeRunner:
                     summary["status"] = "waiting_child_delegation"
                 summary = _finalize_managed_branch_workspace(branch, summary)
                 if (
-                    isinstance(summary.get("gitChangeSet"), dict)
+                    _delegation_summary_allows_changeset_promotion(summary)
+                    and isinstance(summary.get("gitChangeSet"), dict)
                     and not isinstance(summary.get("parentWorktreeMerge"), dict)
                     and run_id
                 ):

@@ -389,6 +389,7 @@ class DelegationTaskInput(TypedDict, total=False):
     preferredWorkerType: str
     dependency: list[str] | str
     allowChildDelegation: bool
+    requireChildDelegation: bool
     childDelegationBudget: dict[str, Any]
 
 
@@ -659,6 +660,45 @@ def _with_recursive_delegation_access(task_brief: dict[str, Any]) -> dict[str, A
         runtime_access.append("delegation.recursive")
     normalized["runtimeAccess"] = runtime_access
     return normalized
+
+
+def _terminalize_grandchild_task_brief(task_brief: dict[str, Any]) -> dict[str, Any]:
+    """Make the depth-two boundary explicit in both authority and model-visible policy."""
+
+    terminal = dict(task_brief or {})
+    terminal["allowChildDelegation"] = False
+    terminal["requireChildDelegation"] = False
+    terminal["childDelegationPolicyExplicit"] = True
+    terminal["childDelegationBudget"] = {}
+    terminal["runtimeAccess"] = [
+        str(item).strip()
+        for item in list(terminal.get("runtimeAccess") or terminal.get("runtime_access") or [])
+        if str(item).strip() and str(item).strip() != "delegation.recursive"
+    ]
+    terminal["allowedTools"] = [
+        str(item).strip()
+        for item in list(terminal.get("allowedTools") or terminal.get("allowed_tools") or [])
+        if str(item).strip() and str(item).strip() != "delegation_broker"
+    ]
+    tool_policy = dict(terminal.get("toolPolicy") or {}) if isinstance(terminal.get("toolPolicy"), dict) else {}
+    if tool_policy:
+        tool_policy["allowedTools"] = [
+            str(item).strip()
+            for item in list(tool_policy.get("allowedTools") or tool_policy.get("allowed_tools") or [])
+            if str(item).strip() and str(item).strip() != "delegation_broker"
+        ]
+        terminal["toolPolicy"] = tool_policy
+    delegation_policy = (
+        dict(terminal.get("delegationPolicy") or {})
+        if isinstance(terminal.get("delegationPolicy"), dict)
+        else {}
+    )
+    if delegation_policy:
+        delegation_policy["allowChildDelegation"] = False
+        delegation_policy["requireChildDelegation"] = False
+        delegation_policy["childDelegationBudget"] = {}
+        terminal["delegationPolicy"] = delegation_policy
+    return terminal
 
 
 def _delegation_policy_from_task(task_brief: dict[str, Any]) -> dict[str, Any]:
@@ -1238,7 +1278,7 @@ def delegation_broker(
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
     Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"allowlist","allowedTools":["read_native_file","write_native_file"]}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
-    A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set `allow_child_delegation=false` on a task to forbid that path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
+    A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set task `requireChildDelegation=true` when the must-level acceptance contract itself requires that verifier; set `allow_child_delegation=false` to forbid the path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
     Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
     """
     normalized_mode = str(mode or "observe").strip().lower()
@@ -1574,6 +1614,11 @@ def delegation_broker(
             )
 
         invocation_id = f"delegation_{uuid.uuid4().hex[:12]}"
+        effective_task_briefs_by_id = {
+            str(task.get("taskBriefId") or "").strip(): dict(task)
+            for task in normalized_tasks
+            if isinstance(task, dict) and str(task.get("taskBriefId") or "").strip()
+        }
         loaded_agents = _delegation_storage().get_all_agents()
         registry_snapshot, registry_agents = _registry_snapshot_from_state_or_agents(base_state, loaded_agents)
         registry_version = _registry_version(registry_snapshot)
@@ -1749,6 +1794,7 @@ def delegation_broker(
                         branch_task_brief,
                         shell_dialect=default_shell_dialect(),
                     )
+                    branch_task_brief = _terminalize_grandchild_task_brief(branch_task_brief)
                 active_collaborators = _active_collaborator_summaries(
                     normalized_tasks,
                     registry_agents,
@@ -1783,6 +1829,9 @@ def delegation_broker(
                     branch_task_brief["preferredAgentId"] = agent_id
                 branch_task_brief["context"] = branch_context_payload
                 branch_task_brief["delegationDepth"] = current_depth + 1
+                effective_task_briefs_by_id[
+                    str(branch_task_brief.get("taskBriefId") or "").strip()
+                ] = dict(branch_task_brief)
                 delegation_id_value = make_local_delegation_id(
                     invocation_id=invocation_id,
                     branch_index=index,
@@ -1818,6 +1867,9 @@ def delegation_broker(
                             or task_query
                             or f"Task {index + 1}"
                         )
+                        effective_task_briefs_by_id[
+                            str(branch_task_brief.get("taskBriefId") or "").strip()
+                        ] = dict(branch_task_brief)
                 except Exception as exc:
                     error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
                     parallel_results.append(
@@ -2009,7 +2061,7 @@ def delegation_broker(
                 sends.append(Send("parallel_delegate_task", branch_state))
                 compact_item = _delegation_compact_item(
                         delegation_id=delegation_id_value,
-                        task_brief=task_brief,
+                        task_brief=branch_task_brief,
                         lane="subagent",
                         target_id=agent_id,
                         target_label=agent_name,
@@ -2303,11 +2355,7 @@ def delegation_broker(
             or runtime_context.get("workspacePath")
             or ""
         ).strip()
-        task_briefs_by_id = {
-            str(task.get("taskBriefId") or "").strip(): dict(task)
-            for task in normalized_tasks
-            if isinstance(task, dict) and str(task.get("taskBriefId") or "").strip()
-        }
+        task_briefs_by_id = dict(effective_task_briefs_by_id)
         for item in items:
             if not isinstance(item, dict):
                 continue

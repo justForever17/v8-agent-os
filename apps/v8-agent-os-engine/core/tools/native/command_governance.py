@@ -66,10 +66,25 @@ def _detect_interactive_command(command: str) -> str | None:
     if lowered in bare_interactive:
         return f"检测到交互式命令 `{stripped}`，同步命令工具会阻塞等待输入。"
 
-    if head in {"python", "python3"}:
+    if head in {"python", "python3", "py"}:
         non_interactive_flags = {"-c", "-m"}
-        if len(tokens) == 1 or not any(flag in tokens for flag in non_interactive_flags):
+        if any(flag in tokens for flag in non_interactive_flags):
+            return None
+        script_arguments: list[str] = []
+        skip_next = False
+        for token in tokens[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if token in {"-w", "-x", "--check-hash-based-pycs"}:
+                skip_next = True
+                continue
+            if token.startswith("-"):
+                continue
+            script_arguments.append(token)
+        if not script_arguments:
             return f"检测到 `{head}` 进入 REPL/交互模式的风险。"
+        return None
 
     if head in {"node", "bash", "sh", "pwsh", "powershell"}:
         non_interactive_flags = {"-c", "-command", "-file", "-e"}

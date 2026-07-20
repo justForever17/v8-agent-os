@@ -1,8 +1,64 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core.json_safe import to_jsonable
+
+
+DELEGATION_ACCEPTANCE_DECISION_RE = re.compile(
+    r"(?:验收(?:决定|结论|结果|动作)|acceptance\s+(?:decision|conclusion|result|action))"
+    r"\s*[`*_~]*\s*[：:]\s*(?:(?:显式|明确)\s*)?[`*_~]*\s*"
+    r"(ACCEPT|RETRY|IGNORE)\b\s*[`*_~]*",
+    re.IGNORECASE,
+)
+
+DELEGATION_ACCEPTANCE_HEADING_RE = re.compile(
+    r"(?:^|\n)\s{0,3}(?:#{1,6}\s*)?"
+    r"(?:验收动作|acceptance\s+action)\s*(?:\r?\n)+\s*"
+    r"[`*_~\s]*(ACCEPT|RETRY|IGNORE)\b[`*_~\s]*"
+    r"(?=[：:\-—–]|$)",
+    re.IGNORECASE,
+)
+
+
+def parse_delegation_acceptance_text(
+    value: Any,
+    *,
+    summary_limit: int = 600,
+) -> dict[str, str] | None:
+    text = str(value or "").strip()
+    matches = sorted(
+        [
+            *DELEGATION_ACCEPTANCE_DECISION_RE.finditer(text),
+            *DELEGATION_ACCEPTANCE_HEADING_RE.finditer(text),
+        ],
+        key=lambda match: match.start(),
+    )
+    decisions = {
+        str(match.group(1) or "").strip().upper()
+        for match in matches
+        if str(match.group(1) or "").strip()
+    }
+    if len(decisions) != 1:
+        return None
+    decision = next(iter(decisions))
+    status = {
+        "ACCEPT": "accepted",
+        "RETRY": "retry",
+        "IGNORE": "ignored",
+    }.get(decision)
+    if not status:
+        return None
+    evidence_basis = text[matches[-1].end():].strip()
+    evidence_basis = re.sub(r"^[`*\s>—–:：-]+", "", evidence_basis)
+    if len(evidence_basis) > summary_limit:
+        evidence_basis = f"{evidence_basis[: max(0, summary_limit - 1)].rstrip()}…"
+    return {
+        "status": status,
+        "decision": decision,
+        "summary": evidence_basis or f"Supervisor recorded {decision} for the delegated result.",
+    }
 
 
 def _compact(value: Any, *, limit: int = 900) -> str:
@@ -108,6 +164,14 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         "parentWorktreeMerge": to_jsonable(item.get("parentWorktreeMerge"))
         if isinstance(item.get("parentWorktreeMerge"), dict)
         else None,
+        "verificationEvidence": to_jsonable(item.get("verificationEvidence"))
+        if isinstance(item.get("verificationEvidence"), dict)
+        else None,
+        "verificationResults": to_jsonable(item.get("verificationResults"))
+        if isinstance(item.get("verificationResults"), list)
+        else None,
+        "missingVerificationTools": _list(item.get("missingVerificationTools")),
+        "verificationEvidenceMismatches": _list(item.get("verificationEvidenceMismatches")),
         "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
         "toolPolicy": dict(item.get("toolPolicy") or task_brief.get("toolPolicy") or {})
         if isinstance(item.get("toolPolicy") or task_brief.get("toolPolicy") or {}, dict)

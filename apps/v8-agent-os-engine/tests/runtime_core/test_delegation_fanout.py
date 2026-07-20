@@ -1,4 +1,11 @@
-from core.delegation_broker import expand_delegation_task_briefs, normalize_task_brief
+import json
+
+from core.delegation_broker import (
+    expand_delegation_task_briefs,
+    normalize_task_brief,
+    task_brief_query_text,
+    task_brief_requires_child_delegation,
+)
 from graph.parallel_support import (
     _fallback_child_delegation_request,
     _subagent_reported_terminal_failure,
@@ -121,3 +128,173 @@ def test_in_graph_incomplete_child_dispatch_repairs_to_read_only_parent_mirror()
     assert child_task["engineeringTaskCapsule"]["executionMode"] == "verify"
     assert child_task["writeSet"] == []
     assert child_task["readSet"] == ["src/result.py"]
+
+
+def test_incomplete_child_dispatch_preserves_explicit_grandchild_verification_contract():
+    parent_task = normalize_task_brief(
+        {
+            "taskBriefId": "parent-exact-proof",
+            "goal": "Fix the file and independently verify it.",
+            "context": {
+                "workspacePath": "C:/managed/parent",
+                "mandatoryGrandchildBrief": {
+                    "goal": "Read and execute the final Python file.",
+                    "readSet": ["src/result.py"],
+                    "writeSet": [],
+                    "expectedOutputs": ["command, exit code, stdout, and stderr"],
+                    "acceptanceContract": [
+                        "执行 python src/result.py",
+                        "stdout 严格等于 exact-proof",
+                        "stderr 为空",
+                    ],
+                    "toolPolicy": {
+                        "mode": "allowlist",
+                        "allowedTools": ["read_native_file", "run_system_command"],
+                    },
+                },
+            },
+            "writeSet": ["src/result.py"],
+            "requireChildDelegation": True,
+        }
+    )
+
+    request = _fallback_child_delegation_request(
+        branch={
+            "invocationId": "invoke-exact",
+            "delegationId": "delegation-exact",
+            "delegationDepth": 1,
+            "reason": parent_task["goal"],
+            "taskBrief": parent_task,
+        },
+        summary={},
+    )
+
+    child_task = request["childTaskBrief"]
+    assert child_task["goal"] == "Read and execute the final Python file."
+    assert child_task["readSet"] == ["src/result.py"]
+    assert child_task["writeSet"] == []
+    assert child_task["toolPolicy"]["allowedTools"] == ["read_native_file", "run_system_command"]
+    assert child_task["allowChildDelegation"] is False
+    assert child_task["requireChildDelegation"] is False
+    assert task_brief_requires_child_delegation(child_task) is False
+    evidence_contract = child_task["context"]["verificationEvidenceContract"]
+    assert evidence_contract["requiredCommands"] == ["python src/result.py"]
+    assert evidence_contract["expectedStdout"] == ["exact-proof"]
+    assert evidence_contract["expectEmptyStderr"] is True
+
+
+def test_grandchild_fallback_projects_evidence_without_parent_topology_acceptance():
+    parent_task = normalize_task_brief(
+        {
+            "taskBriefId": "parent-topology",
+            "goal": "Fix and verify the Python target.",
+            "writeSet": ["src/result.py"],
+            "expectedOutputs": ["Implementation handoff", "grandchild handoff"],
+            "acceptanceContract": {
+                "must": [
+                    "直接子 Agent must delegate a 孙 Agent and return its parentEpisodeId.",
+                    "孙 Agent 独立读取并实际执行 src/result.py.",
+                    "执行退出码为 0，stdout 严格为 exact-result，stderr 为空.",
+                    "Supervisor must accept the final handoff.",
+                ]
+            },
+            "requireChildDelegation": True,
+        }
+    )
+
+    request = _fallback_child_delegation_request(
+        branch={
+            "invocationId": "invoke-topology",
+            "delegationId": "delegation-topology",
+            "delegationDepth": 1,
+            "reason": parent_task["goal"],
+            "taskBrief": parent_task,
+        },
+        summary={},
+    )
+
+    child_task = request["childTaskBrief"]
+    query_text = task_brief_query_text(child_task)
+    acceptance_text = json.dumps(child_task["acceptanceContract"], ensure_ascii=False)
+    assert "parentEpisodeId" not in acceptance_text
+    assert "Supervisor" not in acceptance_text
+    assert "delegate a 孙 Agent" not in acceptance_text
+    assert "python src/result.py" in acceptance_text
+    assert "exact-result" in acceptance_text
+    assert "inheritedEngineeringContract" not in query_text
+    assert "parentEpisodeId" not in query_text
+    assert "python src/result.py" in query_text
+    assert "exact-result" in query_text
+    assert child_task["expectedOutputs"] == [
+        "Successful read evidence for every declared verification path",
+        "Successful command evidence with command, exit code, exact stdout, and stderr",
+        "Compact independent verification handoff for the parent Agent",
+    ]
+    assert child_task["context"]["verificationEvidenceContract"] == {
+        "requiredReadPaths": ["src/result.py"],
+        "requiredCommands": ["python src/result.py"],
+        "requiredCommandTargets": [],
+        "expectedStdout": ["exact-result"],
+        "expectEmptyStderr": True,
+    }
+
+
+def test_explicit_terminal_child_requirement_overrides_inherited_grandchild_words():
+    task = normalize_task_brief(
+        {
+            "taskBriefId": "terminal-verifier",
+            "goal": "Verify the disposable grandchild result.",
+            "acceptanceContract": [
+                "孙 Agent 的 parentEpisodeId 指向直接子 Agent",
+                "执行目标文件并返回 stdout",
+            ],
+            "allowChildDelegation": False,
+            "requireChildDelegation": False,
+            "childDelegationPolicyExplicit": True,
+        }
+    )
+
+    assert task["allowChildDelegation"] is False
+    assert task["requireChildDelegation"] is False
+    assert task_brief_requires_child_delegation(task) is False
+
+
+def test_negative_child_delegation_acceptance_is_not_reversed_into_a_requirement():
+    task = normalize_task_brief(
+        {
+            "taskBriefId": "direct-verifier",
+            "goal": "Verify the result without another worker.",
+            "acceptanceContract": {
+                "must": [
+                    "不得创建或委派孙 Agent；全部验证必须由 Verification Engineer 本人完成",
+                    "Do not create a child agent or nested delegation.",
+                ]
+            },
+            "allowChildDelegation": False,
+            "childDelegationPolicyExplicit": True,
+        }
+    )
+
+    assert task["allowChildDelegation"] is False
+    assert task["requireChildDelegation"] is False
+    assert task_brief_requires_child_delegation(task) is False
+
+
+def test_task_brief_normalization_preserves_explicit_verification_evidence_contract():
+    task = normalize_task_brief(
+        {
+            "taskBriefId": "verify-structured-evidence",
+            "goal": "Verify one file.",
+            "verificationEvidenceContract": {
+                "requiredReadPaths": ["src/result.py"],
+                "requiredCommands": ["python src/result.py"],
+                "expectedStdout": ["exact-result"],
+            },
+        }
+    )
+
+    assert task["verificationEvidenceContract"] == {
+        "requiredReadPaths": ["src/result.py"],
+        "requiredCommands": ["python src/result.py"],
+        "expectedStdout": ["exact-result"],
+    }

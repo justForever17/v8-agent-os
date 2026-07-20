@@ -44,7 +44,13 @@ from core.system_tools.baseline import BASELINE_SYSTEM_TOOL_NAME_ORDER
 from core.spec_service import spec_service
 from erc.runtime_context import bind_runtime_context
 from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capability_registry
-from graph.agent_factories import _format_delegated_task_contract, _select_contextual_subagent_native_tools
+from graph.agent_factories import (
+    _align_extension_route_to_task_tools,
+    _build_atomic_worker_extension_route,
+    _format_delegated_task_contract,
+    _preserve_direct_worker_extension_candidates,
+    _select_contextual_subagent_native_tools,
+)
 
 
 def _set_pack_runtime_installed(monkeypatch, installed: bool) -> None:
@@ -76,6 +82,36 @@ def test_child_delegation_normalization_preserves_unset_vs_explicit_false():
     assert renormalized["childDelegationPolicyExplicit"] is False
     assert forbidden["allowChildDelegation"] is False
     assert forbidden["childDelegationPolicyExplicit"] is True
+
+
+def test_must_acceptance_names_required_grandchild_as_structured_contract():
+    brief = normalize_task_brief(
+        {
+            "taskBriefId": "required-grandchild",
+            "goal": "Implement one change and verify it independently.",
+            "acceptanceContract": {
+                "must": [
+                    "Implementation Engineer 必须委派孙 Agent 独立验证最终文件。",
+                    "The command exits successfully.",
+                ],
+                "should": ["Keep the handoff compact."],
+            },
+        }
+    )
+
+    assert brief["requireChildDelegation"] is True
+    assert brief["allowChildDelegation"] is True
+    assert brief["childDelegationPolicyExplicit"] is False
+    assert brief["childDelegationBudget"] == {"maxChildren": 1, "maxDepth": 1}
+    rendered = _format_delegated_task_contract(
+        {**brief, "delegationDepth": 1, "runtimeAccess": ["delegation.recursive"]}
+    )
+    assert "REQUIRED BY ACCEPTANCE" in rendered
+    assert "delegation_broker(mode='dispatch')" in rendered
+    assert "complete your own assigned write" in rendered
+    assert "run your own local self-check" in rendered
+    assert "disposable mirror rule is authoritative" in rendered
+    assert "do not pass targetAgentName" in rendered
 
 
 def test_runtime_episode_preserves_managed_workspace_authority_and_parent_worktree(monkeypatch):
@@ -2148,9 +2184,15 @@ def test_direct_subagent_dispatches_one_grandchild_and_grandchild_is_terminal(mo
                     "taskBriefId": "grandchild-review",
                     "goal": "Independently verify one implementation result and return evidence.",
                     "expectedOutputs": ["A concise verification result."],
-                    "acceptanceContract": "Report pass/fail and the evidence used.",
+                    "acceptanceContract": {
+                        "must": ["孙 Agent must report pass/fail and the evidence used."]
+                    },
                     "preferredAgentId": "verification-engineer",
-                    "toolPolicy": {"mode": "none"},
+                    "runtimeAccess": ["delegation.recursive"],
+                    "toolPolicy": {
+                        "mode": "allowlist",
+                        "allowedTools": ["read_native_file", "delegation_broker"],
+                    },
                 }
             ],
             state=state,
@@ -2164,6 +2206,18 @@ def test_direct_subagent_dispatches_one_grandchild_and_grandchild_is_terminal(mo
     assert branch["allowChildDelegation"] is False
     assert branch["taskBrief"]["delegationDepth"] == 2
     assert branch["taskBrief"]["writeSet"] == []
+    assert branch["taskBrief"]["allowChildDelegation"] is False
+    assert branch["taskBrief"]["requireChildDelegation"] is False
+    assert branch["taskBrief"]["childDelegationPolicyExplicit"] is True
+    assert branch["taskBrief"]["childDelegationBudget"] == {}
+    assert "delegation.recursive" not in branch["taskBrief"]["runtimeAccess"]
+    assert "delegation_broker" not in branch["taskBrief"]["allowedTools"]
+    durable_episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    durable_brief = durable_episode["inputs"]["workerBriefs"][0]
+    assert durable_brief["delegationDepth"] == 2
+    assert durable_brief["allowChildDelegation"] is False
+    assert "delegation.recursive" not in durable_brief["runtimeAccess"]
+    assert "delegation_broker" not in durable_brief["allowedTools"]
 
     with bind_runtime_context(
         runtime_kind="subagent",
@@ -2379,6 +2433,101 @@ def test_subagent_prompt_explains_bounded_delegation_authority_without_false_mis
         {"taskBriefId": "task-3", "goal": "Review one result", "delegationDepth": 2},
     )
     assert "cannot create another delegation layer" in grandchild
+    assert "TERMINAL VERIFICATION IS CLOSED-WORLD" in grandchild
+    assert "do not fetch Skills" in grandchild
+
+
+def test_delegated_extension_route_matches_final_allowlisted_tools():
+    route_bundle = SimpleNamespace(
+        prompt_addition="[Extensions Runtime]\n- Current Skill: irrelevant-skill\n- MCP: unrelated_mcp",
+        filtered_tools=[_tool("read_native_file"), _tool("fetch_skill_instructions"), _tool("unrelated_mcp")],
+        selected_skill_names=["irrelevant-skill"],
+        selected_skill_ids=["skill:irrelevant"],
+        exposed_mcp_tool_names=["unrelated_mcp"],
+        candidate_summary={
+            "selectedSkills": ["irrelevant-skill"],
+            "selectedSkillIds": ["skill:irrelevant"],
+            "selectedMcpTools": ["unrelated_mcp"],
+            "skillEntries": [{"skillName": "irrelevant-skill"}],
+        },
+    )
+
+    aligned = _align_extension_route_to_task_tools(
+        route_bundle,
+        [_tool("read_native_file"), _tool("run_system_command")],
+    )
+
+    assert [tool.name for tool in aligned.filtered_tools] == ["read_native_file", "run_system_command"]
+    assert aligned.selected_skill_names == []
+    assert aligned.selected_skill_ids == []
+    assert aligned.exposed_mcp_tool_names == []
+    assert aligned.candidate_summary["skillEntries"] == []
+    assert "Extension candidates are optional references" in aligned.prompt_addition
+    assert "No Skill entry or fetch_skill_instructions tool is exposed" in aligned.prompt_addition
+    assert "No MCP tool is exposed" in aligned.prompt_addition
+    assert "irrelevant-skill" not in aligned.prompt_addition
+    assert "unrelated_mcp" not in aligned.prompt_addition
+
+
+def test_direct_worker_keeps_optional_extension_candidates_but_grandchild_remains_atomic():
+    route_bundle = SimpleNamespace(
+        filtered_tools=[
+            _tool("read_native_file"),
+            _tool("run_system_command"),
+            _tool("fetch_skill_instructions"),
+            _tool("query-docs"),
+        ],
+        exposed_mcp_tool_names=["query-docs"],
+    )
+    task = {
+        "toolPolicy": {
+            "mode": "allowlist",
+            "allowedTools": ["read_native_file", "run_system_command"],
+        }
+    }
+    bounded_native = [_tool("read_native_file"), _tool("run_system_command")]
+
+    direct = _preserve_direct_worker_extension_candidates(
+        route_bundle,
+        bounded_native,
+        task,
+        delegation_depth=1,
+    )
+    grandchild = _preserve_direct_worker_extension_candidates(
+        route_bundle,
+        bounded_native,
+        task,
+        delegation_depth=2,
+    )
+
+    assert {tool.name for tool in direct} == {
+        "read_native_file",
+        "run_system_command",
+        "fetch_skill_instructions",
+        "query-docs",
+    }
+    assert {tool.name for tool in grandchild} == {
+        "read_native_file",
+        "run_system_command",
+    }
+
+
+def test_atomic_worker_extension_route_skips_skill_and_mcp_candidates_entirely():
+    route = _build_atomic_worker_extension_route(
+        [_tool("read_native_file"), _tool("run_system_command")]
+    )
+
+    assert [tool.name for tool in route.filtered_tools] == [
+        "read_native_file",
+        "run_system_command",
+    ]
+    assert route.prompt_addition == ""
+    assert route.selected_skill_names == []
+    assert route.selected_skill_ids == []
+    assert route.exposed_mcp_tool_names == []
+    assert route.candidate_summary["routingMode"] == "atomic_closed_world"
+    assert route.candidate_summary["skillsRoutingMode"] == "disabled_for_atomic_worker"
+    assert route.candidate_summary["mcpRoutingMode"] == "disabled_for_atomic_worker"
 
 
 def test_memory_broker_is_default_supervisor_read_only_entry_but_not_default_subagent_tool():

@@ -559,6 +559,86 @@ def test_non_spec_required_write_with_file_and_proof_can_complete(tmp_path) -> N
     assert decision.action == "complete"
 
 
+def test_proven_retry_supersedes_older_failed_attempt_for_same_write_set(tmp_path) -> None:
+    artifact = tmp_path / "result.md"
+    artifact.write_text("done", encoding="utf-8")
+    failed = {
+        **_required_write_episode(str(tmp_path), state="failed"),
+        "episodeId": "episode-write-failed",
+        "created_at": "2026-07-20T10:00:00.000Z",
+        "updated_at": "2026-07-20T10:01:00.000Z",
+    }
+    proven = {
+        **_required_write_episode(str(tmp_path), state="completed"),
+        "episodeId": "episode-write-proven",
+        "created_at": "2026-07-20T10:02:00.000Z",
+        "updated_at": "2026-07-20T10:03:00.000Z",
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[failed, proven],
+        handoffs_by_episode={
+            "episode-write-failed": [{"status": "failed", "errorCode": "first_attempt_failed"}],
+            "episode-write-proven": [
+                {
+                    "status": "ready",
+                    "changedFiles": ["result.md"],
+                    "proofRefs": ["proof://verified-retry"],
+                    "verificationResults": [
+                        {
+                            "status": "verified",
+                            "passed": True,
+                            "observations": [
+                                {"command": "python result.md", "returnCode": 0, "stdout": "done"}
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+        final_text="验收决定: ACCEPT\n新尝试已覆盖同一交付范围。",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
+def test_proven_retry_does_not_hide_failed_disjoint_write_obligation(tmp_path) -> None:
+    artifact = tmp_path / "result.md"
+    artifact.write_text("done", encoding="utf-8")
+    failed = {
+        **_required_write_episode(str(tmp_path), state="failed"),
+        "episodeId": "episode-other-failed",
+        "created_at": "2026-07-20T10:00:00.000Z",
+        "updated_at": "2026-07-20T10:01:00.000Z",
+    }
+    failed["inputs"]["taskBriefs"][0]["writeSet"] = ["other.md"]
+    proven = {
+        **_required_write_episode(str(tmp_path), state="completed"),
+        "episodeId": "episode-result-proven",
+        "created_at": "2026-07-20T10:02:00.000Z",
+        "updated_at": "2026-07-20T10:03:00.000Z",
+    }
+    decision = evaluate_supervisor_completion(
+        episodes=[failed, proven],
+        handoffs_by_episode={
+            "episode-other-failed": [{"status": "failed", "errorCode": "other_obligation_failed"}],
+            "episode-result-proven": [
+                {
+                    "status": "ready",
+                    "changedFiles": ["result.md"],
+                    "proofRefs": ["proof://verified-retry"],
+                    "verificationResults": [{"status": "verified", "passed": True}],
+                }
+            ],
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "fail"
+    assert decision.details["episodeId"] == "episode-other-failed"
+
+
 def test_non_spec_required_write_accepts_managed_git_changed_paths(tmp_path) -> None:
     artifact = tmp_path / "result.md"
     artifact.write_text("done", encoding="utf-8")

@@ -318,6 +318,11 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
             )
 
         self.assertEqual(bundle.candidate_summary["skillEntries"][0]["description"], skills[0]["description"])
+        self.assertIn(
+            "Extension candidates are optional references. Use them only when they materially help the current task.",
+            bundle.prompt_addition,
+        )
+        self.assertNotIn("候选预筛：当前使用第 1 层 shortlist。", bundle.prompt_addition)
         self.assertIn("Skill description: 女娲造人：输入人名或模糊需求", bundle.prompt_addition)
         self.assertNotIn("Root: C:/skills/huashu-nuwa", bundle.prompt_addition)
         self.assertNotIn("Skill ID: global:67cb9ebfa7543040", bundle.prompt_addition)
@@ -411,8 +416,8 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 mcp_limit=2,
             )
 
-        self.assertIn("当前暴露给本轮的 MCP 工具：", bundle.prompt_addition)
-        self.assertIn("query-docs (context7): 暂无说明。", bundle.prompt_addition)
+        self.assertIn("MCP tools exposed for this turn:", bundle.prompt_addition)
+        self.assertIn("query-docs (context7): No description.", bundle.prompt_addition)
 
     def test_extensions_runtime_shortlist_hits_nuwa_skill_by_raw_name_query(self):
         service = ExtensionsRuntimeService()

@@ -14,6 +14,7 @@ from .supervisor_context import (
 from .no_progress_breaker import apply_no_progress_breaker
 from .supervisor_execution import debug_supervisor_messages, prepare_supervisor_messages
 from core.context.delegation import build_delegation_context
+from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.memory_observability import log_memory_observation
 from core.runtime.extensions_runtime import extensions_runtime_service
 from core.runtime_tool_access import filter_visible_tools_for_actor
@@ -1360,6 +1361,9 @@ def _latest_message_is_true_user_input(messages) -> bool:
     latest = ordered[-1]
     if not isinstance(latest, HumanMessage):
         return False
+    additional_kwargs = dict(getattr(latest, "additional_kwargs", None) or {})
+    if str(additional_kwargs.get("v8_governance_type") or "").strip():
+        return False
     content = str(getattr(latest, "content", "") or "").strip()
     if not content:
         return False
@@ -1652,12 +1656,6 @@ def _response_has_tool_calls(response) -> bool:
     return bool(additional_kwargs.get("tool_calls") or additional_kwargs.get("toolCalls"))
 
 
-_DELEGATION_ACCEPTANCE_DECISION_RE = re.compile(
-    r"(?:验收决定|acceptance\s+decision)\s*[：:]\s*[`*_~]*\s*(ACCEPT|RETRY|IGNORE)\b\s*[`*_~]*",
-    re.IGNORECASE,
-)
-
-
 def _response_text_content(response) -> str:
     content = getattr(response, "content", "")
     if isinstance(content, str):
@@ -1676,13 +1674,10 @@ def _response_text_content(response) -> str:
 
 
 def _response_has_delegation_acceptance(response) -> bool:
-    return bool(_DELEGATION_ACCEPTANCE_DECISION_RE.search(_response_text_content(response)))
+    return bool(parse_delegation_acceptance_text(_response_text_content(response)))
 
 
 def _state_has_pending_delegation_acceptance(state) -> bool:
-    if not _runtime_episode_handoff_ready(state):
-        return False
-
     def _walk(value) -> bool:
         if isinstance(value, dict):
             acceptance = value.get("supervisorAcceptance")
@@ -1695,6 +1690,25 @@ def _state_has_pending_delegation_acceptance(state) -> bool:
             return any(_walk(item) for item in value)
         return False
 
+    # Direct delegation rejoins the Supervisor inside the same graph and does
+    # not pass through runtime_episode_wait, so runtime_dispatch_status is not
+    # present on that path. The current-turn governance envelope is the safe
+    # boundary: it follows the user's request, while a later true user message
+    # prevents a stale result from a prior run from forcing a new decision.
+    for message in reversed(list((state or {}).get("messages") or [])):
+        if not isinstance(message, HumanMessage):
+            continue
+        additional_kwargs = dict(getattr(message, "additional_kwargs", None) or {})
+        governance_type = str(additional_kwargs.get("v8_governance_type") or "").strip()
+        if governance_type == "delegation_handoff":
+            if _walk(additional_kwargs.get("v8_delegation_handoffs")):
+                return True
+            continue
+        if not governance_type and str(getattr(message, "content", "") or "").strip():
+            break
+
+    if not _runtime_episode_handoff_ready(state):
+        return False
     route_context = dict((state or {}).get("current_route_context") or {})
     return _walk((state or {}).get("parallel_results")) or _walk(route_context.get("handoffRefs"))
 

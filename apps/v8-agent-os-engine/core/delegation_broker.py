@@ -177,6 +177,58 @@ def _normalize_acceptance_tiers(value: Any) -> dict[str, list[str]]:
     return tiers
 
 
+_REQUIRED_CHILD_DELEGATION_RE = re.compile(
+    r"(?:孙\s*(?:agent|代理|智能体)|grandchild|child\s+agent|nested\s+delegation)",
+    re.IGNORECASE,
+)
+
+_FORBIDDEN_CHILD_DELEGATION_RE = re.compile(
+    r"(?:不得|禁止|不要|无需|不需要|不允许|不能|不可)[^\n，。；;]{0,48}"
+    r"(?:孙\s*(?:agent|代理|智能体)|grandchild|child\s+agent|nested\s+delegation)"
+    r"|(?:do\s+not|must\s+not|cannot|can't|may\s+not|without|forbid(?:den)?|prohibit(?:ed)?|disallow(?:ed)?)"
+    r"[^\n.;]{0,64}(?:grandchild|child\s+agent|nested\s+delegation)",
+    re.IGNORECASE,
+)
+
+
+def acceptance_requires_child_delegation(value: Any) -> bool:
+    """Return true only when a must-level acceptance item names a child layer.
+
+    This is contract interpretation, not task-shape guessing: optional prose,
+    family hints, and the general ability to delegate never make delegation
+    mandatory.
+    """
+
+    tiers = _normalize_acceptance_tiers(value)
+    must_items = [str(item or "").strip() for item in tiers.get("must") or []]
+    return any(
+        _REQUIRED_CHILD_DELEGATION_RE.search(item)
+        and not _FORBIDDEN_CHILD_DELEGATION_RE.search(item)
+        for item in must_items
+        if item
+    )
+
+
+def task_brief_requires_child_delegation(task_brief: dict[str, Any] | None) -> bool:
+    if not isinstance(task_brief, dict):
+        return False
+    explicit = _first_present(
+        task_brief,
+        (
+            "requireChildDelegation",
+            "require_child_delegation",
+            "childDelegationRequired",
+            "child_delegation_required",
+        ),
+    )
+    if explicit is not None:
+        return _safe_bool(explicit)
+    acceptance = task_brief.get("acceptanceTiers") or task_brief.get("acceptance_tiers")
+    if acceptance is None:
+        acceptance = task_brief.get("acceptanceContract") or task_brief.get("acceptance_contract")
+    return acceptance_requires_child_delegation(acceptance)
+
+
 def _default_task_brief(index: int = 0) -> dict[str, Any]:
     return {
         "taskBriefId": f"task-{index + 1}",
@@ -208,6 +260,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "workerBriefs": [],
         "fanoutReason": "",
         "allowChildDelegation": False,
+        "requireChildDelegation": False,
         "childDelegationPolicyExplicit": False,
         "childDelegationBudget": {},
         "writeSetPartitions": [],
@@ -268,6 +321,31 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     acceptance_contract = _first_present(payload, ("acceptanceContract", "acceptance_contract", "acceptance"))
     acceptance_tiers = _first_present(payload, ("acceptanceTiers", "acceptance_tiers", "tieredAcceptance", "tiered_acceptance"))
     normalized_acceptance_tiers = _normalize_acceptance_tiers(acceptance_tiers if acceptance_tiers is not None else acceptance_contract)
+    child_requirement_value = _first_present(
+        payload,
+        (
+            "requireChildDelegation",
+            "require_child_delegation",
+            "childDelegationRequired",
+            "child_delegation_required",
+        ),
+    )
+    child_delegation_required = (
+        _safe_bool(child_requirement_value)
+        if child_requirement_value is not None
+        else acceptance_requires_child_delegation(normalized_acceptance_tiers)
+    )
+    # A must-level child-verification contract is itself authority to use the
+    # default one-layer delegation path unless the caller explicitly forbade
+    # it.  Persisting ``required=true`` beside an implicit ``allowed=false``
+    # leaves the prompt renderer to repair a contradictory contract later and
+    # makes durable Runtime episodes misleading to operators and recovery
+    # code.
+    child_delegation_allowed = _safe_bool(child_policy_value)
+    if child_delegation_required and not child_policy_explicit:
+        child_delegation_allowed = True
+        if not isinstance(child_delegation_budget, dict) or not child_delegation_budget:
+            child_delegation_budget = {"maxChildren": 1, "maxDepth": 1}
     raw_tool_policy = _first_present(payload, ("toolPolicy", "tool_policy"))
     tool_policy = dict(raw_tool_policy or {}) if isinstance(raw_tool_policy, dict) else {}
     allowed_tools_present = any(key in payload for key in ("allowedTools", "allowed_tools")) or any(
@@ -354,7 +432,8 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "targetCount": target_count,
         "workerBriefs": worker_briefs,
         "fanoutReason": str(payload.get("fanoutReason") or payload.get("fanout_reason") or payload.get("parallelismReason") or payload.get("parallelism_reason") or "").strip(),
-        "allowChildDelegation": _safe_bool(child_policy_value),
+        "allowChildDelegation": child_delegation_allowed,
+        "requireChildDelegation": child_delegation_required,
         "childDelegationPolicyExplicit": child_policy_explicit,
         "childDelegationBudget": (
             dict(child_delegation_budget or {})
@@ -385,6 +464,22 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     if "readOnly" in payload or "read_only" in payload:
         normalized["readOnly"] = _safe_bool(
             _first_present(payload, ("readOnly", "read_only"))
+        )
+    if "delegationDepth" in payload or "delegation_depth" in payload:
+        try:
+            normalized["delegationDepth"] = max(
+                0,
+                int(_first_present(payload, ("delegationDepth", "delegation_depth")) or 0),
+            )
+        except (TypeError, ValueError):
+            pass
+    if isinstance(payload.get("verificationEvidenceContract"), dict):
+        normalized["verificationEvidenceContract"] = dict(
+            payload.get("verificationEvidenceContract") or {}
+        )
+    elif isinstance(payload.get("verification_evidence_contract"), dict):
+        normalized["verificationEvidenceContract"] = dict(
+            payload.get("verification_evidence_contract") or {}
         )
     if "validateSkillArtifact" in payload or "validate_skill_artifact" in payload:
         normalized["validateSkillArtifact"] = _safe_bool(
@@ -571,6 +666,33 @@ def _stringify_context(value: Any) -> str:
     return str(value or "").strip()
 
 
+_TASK_QUERY_RUNTIME_ONLY_CONTEXT_KEYS = {
+    "stageContent",
+    "specExecutionBundle",
+    "engineeringExecutionContract",
+    "engineering_execution_contract",
+    "engineeringTaskCapsule",
+    "engineering_task_capsule",
+    "inheritedEngineeringContract",
+    "inherited_engineering_contract",
+    "handoffContract",
+    "assignedTaskDetails",
+    "assignedTaskSummaries",
+    "parentContext",
+    "workerContext",
+}
+
+
+def _task_query_context(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: item
+        for key, item in value.items()
+        if key not in _TASK_QUERY_RUNTIME_ONLY_CONTEXT_KEYS
+    }
+
+
 def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
     if not isinstance(task_brief, dict):
         return ""
@@ -578,7 +700,7 @@ def task_brief_query_text(task_brief: dict[str, Any] | None) -> str:
     goal = str(task_brief.get("goal") or "").strip()
     if goal:
         parts.append(goal)
-    context_text = _stringify_context(task_brief.get("context"))
+    context_text = _stringify_context(_task_query_context(task_brief.get("context")))
     if context_text:
         parts.append(f"Context: {context_text}")
     capabilities = [str(item).strip() for item in list(task_brief.get("requiredCapabilities") or []) if str(item).strip()]

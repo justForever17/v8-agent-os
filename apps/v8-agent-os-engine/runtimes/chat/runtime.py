@@ -26,6 +26,7 @@ from core.delegation_broker import (
     normalize_task_brief,
     normalize_task_briefs,
 )
+from core.delegation_result_contract import parse_delegation_acceptance_text
 from core.llm_factory import llm_factory
 from core.response_normalizer import V8_CANONICAL_TOOL_CALL_PREFIX, is_v8_canonical_tool_call_id
 from core.system_tools.command_presets import read_command_preset
@@ -102,39 +103,8 @@ _SUPERVISOR_SCOPE_LIGHTWEIGHT_TOOLS = {
     "write_todos",
 }
 
-_DELEGATION_ACCEPTANCE_PATTERN = re.compile(
-    r"(?:验收决定|acceptance\s+decision)\s*[：:]\s*[`*_~]*\s*(ACCEPT|RETRY|IGNORE)\b\s*[`*_~]*",
-    re.IGNORECASE,
-)
-
-
 def _delegation_acceptance_from_final_text(final_text: str | None) -> dict[str, Any] | None:
-    text = str(final_text or "").strip()
-    matches = list(_DELEGATION_ACCEPTANCE_PATTERN.finditer(text))
-    decisions = {
-        str(match.group(1) or "").strip().upper()
-        for match in matches
-        if str(match.group(1) or "").strip()
-    }
-    if len(decisions) != 1:
-        return None
-    decision = next(iter(decisions))
-    status = {
-        "ACCEPT": "accepted",
-        "RETRY": "retry",
-        "IGNORE": "ignored",
-    }.get(decision)
-    if not status:
-        return None
-    evidence_basis = text[matches[-1].end():].strip()
-    evidence_basis = re.sub(r"^[`*\s>—–:：-]+", "", evidence_basis)
-    if len(evidence_basis) > 600:
-        evidence_basis = f"{evidence_basis[:599].rstrip()}…"
-    return {
-        "status": status,
-        "decision": decision,
-        "summary": evidence_basis or f"Supervisor recorded {decision} for the delegated result.",
-    }
+    return parse_delegation_acceptance_text(final_text)
 
 
 def _nested_delegation_results_from_handoffs(handoffs: list[dict[str, Any]]) -> list[dict[str, Any]]:

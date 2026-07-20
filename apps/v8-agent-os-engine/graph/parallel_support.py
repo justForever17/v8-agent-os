@@ -14,6 +14,7 @@ from langgraph.types import Command, Send
 
 from core.database import db
 from core.context.delegation import build_delegation_context, latest_delegation_context
+from core.delegation_broker import task_brief_requires_child_delegation
 from core.delegation_result_contract import build_delegation_result_contract
 from core.engineering_capsule import (
     derive_grandchild_engineering_task,
@@ -93,6 +94,8 @@ def _render_delegation_handoff_message(
             f"<delegation_handoffs>{payload}</delegation_handoffs>\n"
             "精确子 Agent 输出只读取 resultText；summary/compactTranscript 仅供展示，不得用包装文案替代结果。"
             "你必须逐项明确 accept、retry 或 ignore；只依据上述合同验收，不要把内部 ID 当作用户说明。"
+            "在面向用户的结论中用独立一行记录父级决定：`验收决定：ACCEPT`、`验收决定：RETRY` "
+            "或 `验收决定：IGNORE`。"
         ),
         id=str(uuid.uuid4()),
         additional_kwargs={
@@ -191,6 +194,21 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
     return {key: value for key, value in context.items() if value is not None and str(value).strip()}
 
 
+def _delegation_summary_allows_changeset_promotion(summary: dict[str, Any]) -> bool:
+    """Return whether a delegated result may alter its parent/integration branch.
+
+    Finalizing a managed worktree preserves the candidate for audit and recovery;
+    it is not evidence that the delegated task succeeded.  Promotion therefore
+    requires an explicit successful result (or an explicitly continuable degraded
+    result) and never infers success from the presence of files or artifact refs.
+    """
+
+    status = str(summary.get("status") or "").strip().lower()
+    if status in {"ok", "ready", "success", "completed", "done"}:
+        return True
+    return status == "degraded" and bool(summary.get("canContinueParent"))
+
+
 def _finalize_managed_branch_workspace(branch: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
     managed = branch.get("engineeringWorkspace") if isinstance(branch.get("engineeringWorkspace"), dict) else {}
     worktree_id = str(managed.get("worktree_id") or managed.get("worktreeId") or "").strip()
@@ -229,6 +247,70 @@ def _finalize_managed_branch_workspace(branch: dict[str, Any], summary: dict[str
             },
         }
     change_set_payload = change_set.as_dict()
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    capsule = (
+        task_brief.get("engineeringTaskCapsule")
+        if isinstance(task_brief.get("engineeringTaskCapsule"), dict)
+        else {}
+    )
+    write_required = not bool(task_brief.get("readOnly")) and bool(
+        task_brief.get("writeRequired")
+        or task_brief.get("writeSet")
+        or capsule.get("writeRequired")
+        or capsule.get("allowedWorkset")
+    )
+    promotion_allowed = _delegation_summary_allows_changeset_promotion(summary)
+    if promotion_allowed and write_required and not list(change_set.changed_paths):
+        sandbox_service.preserve_task_workspace_unmerged(
+            worktree_id=worktree_id,
+            reason="managed_worktree_no_declared_changes",
+        )
+        return {
+            **summary,
+            "status": "error",
+            "error": "managed_worktree_no_declared_changes",
+            "gitChangeSet": change_set_payload,
+            "localSelfCheck": (
+                "The task required a workspace write, but the managed worktree finalized with no changed paths. "
+                "A pre-existing file reference or prose tool call is not write evidence."
+            ),
+            "sandboxEvidence": {
+                "worktreeId": worktree_id,
+                "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+                "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+                "state": "no_changes",
+                "errorCode": "managed_worktree_no_declared_changes",
+            },
+        }
+    artifact_refs = list(summary.get("artifactRefs") or [])
+    artifact_refs.append(
+        {
+            "kind": "git_changeset",
+            "ref": f"git://{change_set.repository_id}/{change_set.commit_id}",
+            "commitId": change_set.commit_id,
+            "changedPaths": list(change_set.changed_paths),
+            "accepted": promotion_allowed,
+        }
+    )
+    if not promotion_allowed:
+        sandbox_service.preserve_task_workspace_unmerged(
+            worktree_id=worktree_id,
+            reason=str(summary.get("error") or f"delegation_result_{status or 'unknown'}"),
+        )
+        return {
+            **summary,
+            "gitChangeSet": change_set_payload,
+            "artifactRefs": artifact_refs,
+            "sandboxEvidence": {
+                "worktreeId": worktree_id,
+                "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+                "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+                "capabilities": managed.get("sandbox_capabilities") or managed.get("sandboxCapabilities"),
+                "state": "preserved_unmerged",
+                "mergeEligibility": "rejected",
+                "resultStatus": status or "unknown",
+            },
+        }
     parent_merge: dict[str, Any] | None = None
     parent_worktree_id = str(
         managed.get("parent_worktree_id") or managed.get("parentWorktreeId") or ""
@@ -258,15 +340,6 @@ def _finalize_managed_branch_workspace(branch: dict[str, Any], summary: dict[str
                     "errorCode": error_code,
                 },
             }
-    artifact_refs = list(summary.get("artifactRefs") or [])
-    artifact_refs.append(
-        {
-            "kind": "git_changeset",
-            "ref": f"git://{change_set.repository_id}/{change_set.commit_id}",
-            "commitId": change_set.commit_id,
-            "changedPaths": list(change_set.changed_paths),
-        }
-    )
     return {
         **summary,
         "gitChangeSet": change_set_payload,
@@ -522,6 +595,351 @@ def _extract_tool_names(messages: list[Any]) -> list[str]:
             if name not in names:
                 names.append(name)
     return names
+
+
+def _required_verification_tools(branch: dict[str, Any]) -> set[str]:
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    capsule = (
+        task_brief.get("engineeringTaskCapsule")
+        if isinstance(task_brief.get("engineeringTaskCapsule"), dict)
+        else context.get("engineeringExecutionContract")
+        if isinstance(context.get("engineeringExecutionContract"), dict)
+        else {}
+    )
+    mode = str(capsule.get("executionMode") or capsule.get("execution_mode") or "").strip().lower()
+    if mode != "verify" and not bool(task_brief.get("readOnly") or task_brief.get("read_only")):
+        return set()
+    required: set[str] = set()
+    must_read = list(capsule.get("mustRead") or capsule.get("readSet") or task_brief.get("readSet") or [])
+    if any(str(item or "").strip() for item in must_read):
+        required.add("read_native_file")
+    contract_blob = "\n".join(
+        _stringify_for_acceptance(value)
+        for value in (
+            task_brief.get("acceptanceTiers"),
+            task_brief.get("acceptanceContract"),
+            task_brief.get("expectedOutputs"),
+            capsule.get("acceptance"),
+            capsule.get("expectedOutputs"),
+            capsule.get("verificationContract"),
+        )
+    ).lower()
+    if any(
+        marker in contract_blob
+        for marker in (
+            "实际执行",
+            "执行退出码",
+            "stdout",
+            "stderr",
+            "run the command",
+            "execute the",
+            "exit code",
+        )
+    ):
+        required.add("run_system_command")
+    return required
+
+
+def _tool_message_evidence_succeeded(message: Any, *, tool_name: str) -> bool:
+    if not isinstance(message, ToolMessage):
+        return False
+    if str(getattr(message, "name", "") or "").strip() != tool_name:
+        return False
+    content = str(getattr(message, "content", "") or "").strip()
+    if not content:
+        return False
+    try:
+        payload = json.loads(content)
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        if payload.get("ok") is False:
+            return False
+        if tool_name == "run_system_command":
+            try:
+                return_code = int(payload.get("returnCode", payload.get("return_code", -1)))
+            except (TypeError, ValueError):
+                return False
+            return (
+                payload.get("ok") is True
+                and str(payload.get("kind") or "").strip() == "command_result"
+                and return_code == 0
+            )
+        return payload.get("ok") is not False
+    lowered = content.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "error:",
+            "[command_session_required]",
+            "[completed with no output]",
+            "not a valid tool",
+        )
+    ):
+        return False
+    if tool_name == "run_system_command":
+        # Agent-visible command results are intentionally rendered as a small
+        # terminal transcript instead of raw JSON. A leading command plus a
+        # stdout/stderr envelope is the successful zero-exit surface; non-zero
+        # results carry an explicit exit-code marker and were rejected above.
+        return bool(
+            re.search(r"(?m)^\$\s+\S", content)
+            and ("<stdout>" in lowered or "<stderr>" in lowered or "[completed with no output]" in lowered)
+            and not re.search(r"(?im)^\[exit code:\s*[1-9]\d*\]", content)
+        )
+    return True
+
+
+def _tool_execution_records(messages: list[Any]) -> list[dict[str, Any]]:
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    for message in messages:
+        for call in _tool_call_dicts_from_message(message):
+            call_id = str(call.get("id") or "").strip()
+            if call_id:
+                calls_by_id[call_id] = call
+
+    records: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        call_id = str(getattr(message, "tool_call_id", "") or "").strip()
+        call = calls_by_id.get(call_id, {})
+        tool_name = str(getattr(message, "name", "") or call.get("name") or "").strip()
+        args = _normalize_tool_call_args(call.get("args"))
+        content = str(getattr(message, "content", "") or "").strip()
+        try:
+            payload = json.loads(content)
+        except Exception:
+            payload = None
+        payload = payload if isinstance(payload, dict) else {}
+        command = str(args.get("command") or payload.get("command") or "").strip()
+        if not command:
+            command_match = re.search(r"(?m)^\$\s+(.+?)\s*$", content)
+            command = str(command_match.group(1) if command_match else "").strip()
+        path = str(args.get("path") or payload.get("path") or "").strip()
+        if not path:
+            path_match = re.search(r"(?m)^---\s*File:\s*(.+?)(?:\s*\(Lines?\b.*)?\s*---$", content)
+            path = str(path_match.group(1) if path_match else "").strip()
+        stdout = str(payload.get("keyOutput") or payload.get("stdout") or payload.get("stdoutPreview") or "")
+        stderr = str(payload.get("keyErrors") or payload.get("stderr") or payload.get("stderrPreview") or "")
+        if not payload:
+            stdout_match = re.search(r"<stdout>\s*\n?(.*?)\n?\s*</stdout>", content, re.DOTALL | re.IGNORECASE)
+            stderr_match = re.search(r"<stderr>\s*\n?(.*?)\n?\s*</stderr>", content, re.DOTALL | re.IGNORECASE)
+            stdout = str(stdout_match.group(1) if stdout_match else "")
+            stderr = str(stderr_match.group(1) if stderr_match else "")
+        return_code: int | None = None
+        raw_return_code = payload.get("returnCode", payload.get("return_code"))
+        if raw_return_code is not None:
+            try:
+                return_code = int(raw_return_code)
+            except (TypeError, ValueError):
+                return_code = None
+        elif tool_name == "run_system_command" and _tool_message_evidence_succeeded(message, tool_name=tool_name):
+            return_code = 0
+        records.append(
+            {
+                "toolCallId": call_id,
+                "tool": tool_name,
+                "args": args,
+                "path": path,
+                "command": command,
+                "returnCode": return_code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "succeeded": _tool_message_evidence_succeeded(message, tool_name=tool_name),
+            }
+        )
+    return records
+
+
+def _verification_contract_sources(branch: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
+    capsule = (
+        task_brief.get("engineeringTaskCapsule")
+        if isinstance(task_brief.get("engineeringTaskCapsule"), dict)
+        else context.get("engineeringExecutionContract")
+        if isinstance(context.get("engineeringExecutionContract"), dict)
+        else {}
+    )
+    return task_brief, context, capsule
+
+
+def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
+    task_brief, context, capsule = _verification_contract_sources(branch)
+    explicit = next(
+        (
+            dict(value)
+            for value in (
+                task_brief.get("verificationEvidenceContract"),
+                context.get("verificationEvidenceContract"),
+                capsule.get("verificationEvidenceContract"),
+            )
+            if isinstance(value, dict)
+        ),
+        {},
+    )
+
+    def _texts(value: Any) -> list[str]:
+        values = value if isinstance(value, (list, tuple, set)) else [value]
+        return list(dict.fromkeys(str(item or "").strip() for item in values if str(item or "").strip()))
+
+    read_paths = _texts(
+        explicit.get("requiredReadPaths")
+        or capsule.get("mustRead")
+        or capsule.get("readSet")
+        or task_brief.get("readSet")
+    )
+    contract_values = (
+        task_brief.get("acceptanceTiers"),
+        task_brief.get("acceptanceContract"),
+        task_brief.get("expectedOutputs"),
+        task_brief.get("proofExpectations"),
+        capsule.get("acceptance"),
+        capsule.get("expectedOutputs"),
+        capsule.get("verificationContract"),
+    )
+    contract_blob = "\n".join(_stringify_for_acceptance(value) for value in contract_values)
+    required_commands = _texts(explicit.get("requiredCommands"))
+    if not required_commands:
+        command_pattern = re.compile(
+            r"(?:执行|运行|execute|run)\s+(?:命令\s*)?[`'\"]?"
+            r"((?:python(?:3)?|pytest|npm|pnpm|yarn|npx|node|bun|deno|go|cargo|dotnet|gradle|mvn)\b"
+            r"[^，,；;\n\]\)\"']*)",
+            re.IGNORECASE,
+        )
+        required_commands = list(
+            dict.fromkeys(match.group(1).strip().strip("`'") for match in command_pattern.finditer(contract_blob))
+        )
+    expected_stdout = _texts(explicit.get("expectedStdout"))
+    if not expected_stdout:
+        stdout_pattern = re.compile(
+            r"stdout[^\n，,；;]{0,56}?(?:"
+            r"严格(?:等于|为)|精确(?:等于|为)|等于|为|"
+            r"(?:must\s+)?(?:strictly\s+|exactly\s+)?(?:equals?|is|be)"
+            r")\s*(?:exactly\s*)?[:=]?\s*[`'\"]?"
+            r"([A-Za-z0-9_.:/-]+)",
+            re.IGNORECASE,
+        )
+        expected_stdout = list(dict.fromkeys(match.group(1).strip() for match in stdout_pattern.finditer(contract_blob)))
+    expect_empty_stderr = bool(explicit.get("expectEmptyStderr")) or bool(
+        re.search(r"stderr[^\n，,；;]{0,32}(?:为空|empty|blank|must\s+be\s+empty)", contract_blob, re.IGNORECASE)
+    )
+    required_tools = _required_verification_tools(branch)
+    command_targets = _texts(explicit.get("requiredCommandTargets"))
+    if "run_system_command" in required_tools and not required_commands:
+        command_targets = command_targets or read_paths
+    return {
+        "requiredTools": sorted(required_tools),
+        "requiredReadPaths": read_paths,
+        "requiredCommands": required_commands,
+        "requiredCommandTargets": command_targets,
+        "expectedStdout": expected_stdout,
+        "expectEmptyStderr": expect_empty_stderr,
+    }
+
+
+def _normalized_evidence_path(value: Any) -> str:
+    text = str(value or "").strip().strip("`'\"").replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return re.sub(r"/+", "/", text).casefold()
+
+
+def _verification_evidence_result(
+    *,
+    branch: dict[str, Any],
+    delta_messages: list[Any],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    expectations = _verification_expectations(branch)
+    records = _tool_execution_records(delta_messages)
+    missing_tools: list[str] = []
+    mismatches: list[str] = []
+    successful_by_tool = {
+        tool: [record for record in records if record.get("tool") == tool and record.get("succeeded")]
+        for tool in expectations["requiredTools"]
+    }
+    for tool_name in expectations["requiredTools"]:
+        if not successful_by_tool.get(tool_name):
+            missing_tools.append(tool_name)
+
+    required_read_paths = [_normalized_evidence_path(item) for item in expectations["requiredReadPaths"]]
+    observed_read_paths = [
+        _normalized_evidence_path(record.get("path"))
+        for record in successful_by_tool.get("read_native_file", [])
+        if _normalized_evidence_path(record.get("path"))
+    ]
+    for required_path in required_read_paths:
+        if not any(observed == required_path or observed.endswith("/" + required_path) for observed in observed_read_paths):
+            mismatches.append(f"read_path_not_verified:{required_path}")
+
+    command_records = successful_by_tool.get("run_system_command", [])
+    normalized_commands = [
+        re.sub(r"\s+", " ", str(record.get("command") or "").strip().replace("\\", "/")).casefold()
+        for record in command_records
+    ]
+    for required_command in expectations["requiredCommands"]:
+        normalized_required = re.sub(r"\s+", " ", str(required_command).replace("\\", "/")).casefold()
+        if normalized_required and not any(normalized_required in command for command in normalized_commands):
+            mismatches.append(f"required_command_not_executed:{required_command}")
+    for target in expectations["requiredCommandTargets"]:
+        normalized_target = _normalized_evidence_path(target)
+        if normalized_target and not any(normalized_target in command for command in normalized_commands):
+            mismatches.append(f"command_target_not_executed:{target}")
+
+    expected_stdout = list(expectations["expectedStdout"])
+    if expected_stdout and command_records:
+        observed_stdout = [str(record.get("stdout") or "").strip() for record in command_records]
+        for expected in expected_stdout:
+            if str(expected).strip() not in observed_stdout:
+                mismatches.append(f"stdout_mismatch:expected={expected}")
+    if expectations["expectEmptyStderr"] and command_records:
+        if not any(not str(record.get("stderr") or "").strip() for record in command_records):
+            mismatches.append("stderr_not_empty")
+
+    compact_records = [
+        {
+            key: record.get(key)
+            for key in ("toolCallId", "tool", "path", "command", "returnCode", "stdout", "stderr")
+            if record.get(key) not in (None, "", [], {})
+        }
+        for record in records
+        if record.get("tool") in set(expectations["requiredTools"])
+    ]
+    evidence = {
+        "passed": not missing_tools and not mismatches,
+        "expectations": expectations,
+        "observations": compact_records[:12],
+    }
+    return evidence, missing_tools, mismatches
+
+
+def _validate_required_verification_evidence(
+    *,
+    branch: dict[str, Any],
+    delta_messages: list[Any],
+) -> dict[str, Any] | None:
+    required_tools = _required_verification_tools(branch)
+    if not required_tools:
+        return None
+    _evidence, missing, mismatches = _verification_evidence_result(
+        branch=branch,
+        delta_messages=delta_messages,
+    )
+    if not missing and not mismatches:
+        return None
+    return {
+        "status": "failed",
+        "error": "verification_evidence_missing" if missing else "verification_evidence_mismatch",
+        "missingVerificationTools": missing,
+        "verificationEvidenceMismatches": mismatches,
+        "localSelfCheck": (
+            "This verification worker returned without tool evidence that semantically matches its execution "
+            "contract. A successful unrelated command, a tool name, or a prose claim is not proof."
+        ),
+        "acceptanceHint": "Retry the verification worker against the exact declared paths, commands, and outputs before acceptance.",
+    }
 
 
 def _tool_call_dicts_from_message(message: Any) -> list[dict[str, Any]]:
@@ -1057,6 +1475,182 @@ def _dedupe_child_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any
     return deduped
 
 
+def _grandchild_verification_brief(
+    *,
+    parent_task_brief: dict[str, Any],
+    child_task_brief_id: str,
+    fallback_goal: str,
+) -> dict[str, Any]:
+    """Preserve the parent's exact verification intent for a disposable mirror.
+
+    Supervisor-authored task briefs often carry an explicit grandchild contract
+    in context. Losing that object during Send recovery turns an exact command
+    and output check into a vague "verify independently" prompt, which is an
+    information failure rather than model disobedience.
+    """
+
+    context = parent_task_brief.get("context") if isinstance(parent_task_brief.get("context"), dict) else {}
+    explicit = next(
+        (
+            dict(value)
+            for value in (
+                context.get("mandatoryGrandchildBrief"),
+                context.get("grandchildContract"),
+                context.get("childVerificationContract"),
+                context.get("childDelegationContract"),
+            )
+            if isinstance(value, dict)
+        ),
+        {},
+    )
+    child = dict(explicit)
+    child["taskBriefId"] = child_task_brief_id
+    child["goal"] = str(
+        child.get("goal")
+        or f"Independently verify the final result of the parent task: {fallback_goal}"
+    ).strip()
+    child["readSet"] = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in [
+                *list(child.get("readSet") or []),
+                *list(parent_task_brief.get("writeSet") or []),
+            ]
+            if str(item or "").strip()
+        )
+    )
+    child["writeSet"] = []
+    child["readOnly"] = True
+    child["writeRequired"] = False
+    child["expectedArtifacts"] = []
+    parent_expectations = _verification_expectations({"taskBrief": parent_task_brief})
+    parent_contract_blob = "\n".join(
+        _stringify_for_acceptance(value)
+        for value in (
+            parent_task_brief.get("acceptanceTiers"),
+            parent_task_brief.get("acceptanceContract"),
+            parent_task_brief.get("expectedOutputs"),
+            parent_task_brief.get("proofExpectations"),
+        )
+    )
+    requires_execution = bool(
+        parent_expectations.get("requiredCommands")
+        or parent_expectations.get("expectedStdout")
+        or re.search(
+            r"(?:实际执行|执行退出码|运行结果|stdout|stderr|run the command|execute the|exit code)",
+            parent_contract_blob,
+            re.IGNORECASE,
+        )
+    )
+    required_commands = list(parent_expectations.get("requiredCommands") or [])
+    if requires_execution and not required_commands:
+        for path in list(child.get("readSet") or []):
+            normalized_path = str(path or "").strip().replace("\\", "/")
+            if normalized_path.lower().endswith(".py"):
+                required_commands.append(f"python {normalized_path}")
+            elif normalized_path.lower().endswith((".js", ".mjs", ".cjs")):
+                required_commands.append(f"node {normalized_path}")
+    focused_evidence_contract = {
+        "requiredReadPaths": list(child.get("readSet") or []),
+        "requiredCommands": required_commands,
+        "requiredCommandTargets": (
+            [] if required_commands else list(child.get("readSet") or []) if requires_execution else []
+        ),
+        "expectedStdout": list(parent_expectations.get("expectedStdout") or []),
+        "expectEmptyStderr": bool(parent_expectations.get("expectEmptyStderr")),
+    }
+    child_context = child.get("context") if isinstance(child.get("context"), dict) else {}
+    child_context["verificationEvidenceContract"] = focused_evidence_contract
+    child["context"] = child_context
+    if not list(child.get("expectedOutputs") or []):
+        child["expectedOutputs"] = [
+            "Successful read evidence for every declared verification path",
+            *(
+                ["Successful command evidence with command, exit code, exact stdout, and stderr"]
+                if requires_execution
+                else []
+            ),
+            "Compact independent verification handoff for the parent Agent",
+        ]
+    if child.get("acceptanceContract") in (None, "", [], {}):
+        focused_must = [
+            *(f"Read the final file with read_native_file: {path}" for path in child["readSet"]),
+            *(f"Execute with run_system_command: {command}" for command in required_commands),
+            *(
+                ["The verification command must complete with exit code 0."]
+                if requires_execution
+                else []
+            ),
+            *(
+                f"The command stdout must equal exactly: {expected}"
+                for expected in focused_evidence_contract["expectedStdout"]
+            ),
+            *(
+                ["The command stderr must be empty."]
+                if focused_evidence_contract["expectEmptyStderr"]
+                else []
+            ),
+            "Return the real ToolMessage evidence to the parent; do not create files or delegate again.",
+        ]
+        child["acceptanceContract"] = {"must": focused_must}
+    tool_policy = child.get("toolPolicy") if isinstance(child.get("toolPolicy"), dict) else {}
+    if not tool_policy:
+        tool_policy = {
+            "mode": "allowlist",
+            "allowedTools": ["read_native_file", "run_system_command"],
+        }
+    child["toolPolicy"] = tool_policy
+    child["allowedTools"] = list(tool_policy.get("allowedTools") or [])
+    child["allowChildDelegation"] = False
+    child["requireChildDelegation"] = False
+    child["childDelegationPolicyExplicit"] = True
+    for key in (
+        "targetAgentName",
+        "target_agent_name",
+        "preferredAgentId",
+        "preferred_agent_id",
+        "agentId",
+        "agentName",
+    ):
+        child.pop(key, None)
+
+    derived = derive_grandchild_engineering_task(parent_task_brief, child)
+    derived_context = derived.get("context") if isinstance(derived.get("context"), dict) else {}
+    evidence_contract = _verification_expectations({"taskBrief": derived})
+    derived_context["verificationEvidenceContract"] = {
+        "requiredReadPaths": evidence_contract["requiredReadPaths"],
+        "requiredCommands": evidence_contract["requiredCommands"],
+        "requiredCommandTargets": evidence_contract["requiredCommandTargets"],
+        "expectedStdout": evidence_contract["expectedStdout"],
+        "expectEmptyStderr": evidence_contract["expectEmptyStderr"],
+    }
+    derived["context"] = derived_context
+    return derived
+
+
+def _render_required_child_contract(branch: dict[str, Any]) -> str:
+    parent_task_brief = branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    child = _grandchild_verification_brief(
+        parent_task_brief=parent_task_brief,
+        child_task_brief_id=f"{branch.get('taskBriefId') or branch.get('invocationId') or 'task'}:verification",
+        fallback_goal=str(branch.get("reason") or parent_task_brief.get("goal") or "assigned task"),
+    )
+    visible = {
+        "taskBriefId": child.get("taskBriefId"),
+        "goal": child.get("goal"),
+        "readSet": child.get("readSet"),
+        "writeSet": [],
+        "expectedOutputs": child.get("expectedOutputs"),
+        "acceptanceContract": child.get("acceptanceContract"),
+        "toolPolicy": child.get("toolPolicy"),
+        "allowChildDelegation": False,
+        "requireChildDelegation": False,
+        "childDelegationPolicyExplicit": True,
+        "childDelegationBudget": {},
+    }
+    return json.dumps(visible, ensure_ascii=False, separators=(",", ":"))[:6000]
+
+
 def _fallback_child_delegation_request(
     *,
     branch: dict[str, Any],
@@ -1088,21 +1682,16 @@ def _fallback_child_delegation_request(
     parent_task_brief = (
         branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
     )
-    child_task_brief = derive_grandchild_engineering_task(
-        parent_task_brief,
-        {
-            "taskBriefId": f"{child_invocation_id}:brief",
-            "goal": f"Continue child delegation for: {task_goal}",
-            "readSet": list(parent_task_brief.get("writeSet") or []),
-            "expectedOutputs": ["Compact independent verification handoff for the parent Agent"],
-            "acceptanceContract": "Independently verify the parent result and return concrete evidence.",
-        },
+    child_task_brief = _grandchild_verification_brief(
+        parent_task_brief=parent_task_brief,
+        child_task_brief_id=f"{child_invocation_id}:brief",
+        fallback_goal=task_goal,
     )
     child_branch = {
         "invocationId": child_invocation_id,
         "delegationId": child_delegation_id,
         "taskBriefId": f"{child_invocation_id}:brief",
-        "reason": f"Continue child delegation for: {task_goal}",
+        "reason": str(child_task_brief.get("goal") or f"Independently verify: {task_goal}"),
         "delegationDepth": int(branch.get("delegationDepth") or 0) + 1,
         "runtimeAccess": ["delegation.recursive"],
         "allowChildDelegation": False,
@@ -1299,10 +1888,15 @@ async def _run_parallel_agent_branch(
     seen_progress_states: dict[str, int] = {}
     repeat_sensitive_tool_limit = 2
     repeat_tool_correction_used = False
+    required_child_correction_count = 0
+    verification_correction_count = 0
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
     initial_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
+    required_child_delegation = task_brief_requires_child_delegation(
+        branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None
+    )
     artifact_snapshot = initial_artifact_snapshot
     artifact_stall_rounds = 0
     artifact_stall_limit = 80
@@ -1625,6 +2219,156 @@ async def _run_parallel_agent_branch(
         goto = getattr(result, "goto", None)
         if isinstance(goto, str):
             if goto == "supervisor":
+                if required_child_delegation and required_child_correction_count < 2:
+                    required_child_correction_count += 1
+                    required_child_contract = _render_required_child_contract(branch)
+                    if required_child_correction_count == 1:
+                        correction_text = (
+                            "The must-level acceptance contract requires one grandchild verification. "
+                            "Follow this exact order: (1) complete your own assigned write, (2) run your own "
+                            "local self-check, (3) call `delegation_broker(mode='dispatch')` exactly once with "
+                            "the focused read-only task below, and (4) wait for the child handoff before returning "
+                            "your final result. Preserve the task's paths, tools, expected outputs, and acceptance "
+                            "criteria. The broker creates a disposable mirror of you; any registered Agent name in "
+                            "the surrounding prose is context only, so do not select another registered Agent.\n"
+                        )
+                    else:
+                        correction_text = (
+                            "You returned again without satisfying the required child-verification step. The "
+                            "transcript already contains the earlier ordered instruction and your work so far. "
+                            "Complete only any genuinely missing local self-check, then your next model action must "
+                            "be one real `delegation_broker(mode='dispatch')` call with the exact task below. Do not "
+                            "return a final result, narrate the call, choose a registered Agent, or repeat completed "
+                            "file work.\n"
+                        )
+                    local_state = _merge_state_update(
+                        local_state,
+                        {
+                            "messages": [
+                                HumanMessage(
+                                    content=(
+                                        "[V8OS delegated acceptance correction]\n"
+                                        f"{correction_text}"
+                                        f"Required child task: {required_child_contract}\n"
+                                        "Do not return a final handoff or describe a tool call in prose."
+                                    ),
+                                    additional_kwargs={
+                                        "v8_governance_type": "required_child_delegation_correction"
+                                    },
+                                )
+                            ]
+                        },
+                    )
+                    _publish_parallel_progress(
+                        progress_callback,
+                        stage="discipline_corrected",
+                        status="running",
+                        summary=(
+                            f"{branch.get('agentName') or agent_id} 正在补齐验收合同要求的独立子级验证。"
+                        ),
+                    )
+                    current_node = agent_id
+                    continue
+                if required_child_delegation:
+                    delta_messages = list(local_state.get("messages") or [])[initial_message_count:]
+                    delta_todos = list(local_state.get("todos") or [])[initial_todo_count:]
+                    return delta_messages, delta_todos, {
+                        "invocationId": branch.get("invocationId"),
+                        "taskBriefId": branch.get("taskBriefId"),
+                        "taskBrief": branch.get("taskBrief")
+                        if isinstance(branch.get("taskBrief"), dict)
+                        else None,
+                        "taskGoal": branch.get("reason"),
+                        "agentId": agent_id,
+                        "agentName": branch.get("agentName") or agent_id,
+                        "delegationId": branch.get("delegationId"),
+                        "lane": branch.get("lane") or "subagent",
+                        "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
+                        "targetLabel": branch.get("agentName") or agent_id,
+                        "branchIndex": branch.get("branchIndex"),
+                        "status": "blocked",
+                        "error": "required_child_delegation_missing",
+                        "completedAt": _now_iso(),
+                        "messageCount": len(delta_messages),
+                        "todoDeltaCount": len(delta_todos),
+                        "toolMode": agent_data.get("tool_mode"),
+                        "toolsUsed": _extract_tool_names(delta_messages),
+                        "compactTranscript": _compact_transcript(delta_messages),
+                        "localSelfCheck": (
+                            "The worker returned after both the ordered and focused corrections without the "
+                            "grandchild verification required by the must-level acceptance contract."
+                        ),
+                        "acceptanceHint": (
+                            "Retry the direct worker with delegation_broker available; do not accept this result."
+                        ),
+                    }, []
+                verification_failure = _validate_required_verification_evidence(
+                    branch=branch,
+                    delta_messages=list(local_state.get("messages") or [])[initial_message_count:],
+                )
+                if verification_failure and verification_correction_count < 2:
+                    verification_correction_count += 1
+                    missing_tools = [
+                        str(item).strip()
+                        for item in list(verification_failure.get("missingVerificationTools") or [])
+                        if str(item).strip()
+                    ]
+                    required_steps: list[str] = []
+                    if "read_native_file" in missing_tools:
+                        required_steps.append(
+                            "Call `read_native_file` for the declared readSet path and use its successful ToolMessage as evidence."
+                        )
+                    if "run_system_command" in missing_tools:
+                        required_steps.append(
+                            "Call `run_system_command` once with the exact verification command from the acceptance contract, "
+                            "using the current Active Workspace Root as cwd; require returnCode=0 and preserve stdout/stderr."
+                        )
+                    mismatches = [
+                        str(item).strip()
+                        for item in list(verification_failure.get("verificationEvidenceMismatches") or [])
+                        if str(item).strip()
+                    ]
+                    expectations = _verification_expectations(branch)
+                    focused_retry = (
+                        "This is the final focused correction. Your next action must be the missing real tool call; "
+                        "do not emit its arguments as JSON or prose. "
+                        if verification_correction_count == 2
+                        else ""
+                    )
+                    local_state = _merge_state_update(
+                        local_state,
+                        {
+                            "messages": [
+                                HumanMessage(
+                                    content=(
+                                        "[V8OS delegated verification correction]\n"
+                                        "Your final answer is missing successful tool evidence required by the acceptance contract. "
+                                        + focused_retry
+                                        + f"Missing tools: {', '.join(missing_tools)}. "
+                                        + f"Evidence mismatches: {', '.join(mismatches) or 'none'}. "
+                                        + " ".join(required_steps)
+                                        + " Exact verification contract: "
+                                        + json.dumps(expectations, ensure_ascii=False, separators=(",", ":"))[:5000]
+                                        + " Do not call skill lookup, alternate tools, or describe a tool call in prose. "
+                                        "After the successful ToolMessages are present, return the compact verification result."
+                                    ),
+                                    additional_kwargs={
+                                        "v8_governance_type": "required_verification_evidence_correction"
+                                    },
+                                )
+                            ]
+                        },
+                    )
+                    _publish_parallel_progress(
+                        progress_callback,
+                        stage="discipline_corrected",
+                        status="running",
+                        summary=(
+                            f"{branch.get('agentName') or agent_id} 正在补齐验收合同要求的真实验证证据。"
+                        ),
+                    )
+                    current_node = agent_id
+                    continue
                 break
             current_node = goto
             continue
@@ -1726,6 +2470,37 @@ async def _run_parallel_agent_branch(
             "toolsUsed": _extract_tool_names(delta_messages),
             **artifact_failure,
         }, []
+    verification_failure = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=delta_messages,
+    )
+    if verification_failure:
+        return delta_messages, delta_todos, {
+            "invocationId": branch.get("invocationId"),
+            "taskBriefId": branch.get("taskBriefId"),
+            "taskBrief": branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else None,
+            "taskGoal": branch.get("reason"),
+            "agentId": agent_id,
+            "agentName": branch.get("agentName") or agent_id,
+            "delegationId": branch.get("delegationId"),
+            "lane": branch.get("lane") or "subagent",
+            "targetId": branch.get("targetId") or branch.get("ephemeralAgentId") or agent_id,
+            "targetLabel": branch.get("agentName") or agent_id,
+            "branchIndex": branch.get("branchIndex"),
+            "completedAt": _now_iso(),
+            "messageCount": len(delta_messages),
+            "todoDeltaCount": len(delta_todos),
+            "toolMode": agent_data.get("tool_mode"),
+            "toolsUsed": _extract_tool_names(delta_messages),
+            "compactTranscript": _compact_transcript(delta_messages),
+            **verification_failure,
+        }, []
+    verification_evidence: dict[str, Any] | None = None
+    if _required_verification_tools(branch):
+        verification_evidence, _missing_verification, _verification_mismatches = _verification_evidence_result(
+            branch=branch,
+            delta_messages=delta_messages,
+        )
     result_text = _subagent_result_text(delta_messages)
     reported_failure = _subagent_reported_terminal_failure(result_text)
     final_artifact_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
@@ -1791,6 +2566,19 @@ async def _run_parallel_agent_branch(
             if path not in changed_artifact_paths
         ],
         "missingExpectedArtifacts": [str(path) for path in expected_artifact_paths if not path.exists()],
+        **(
+            {
+                "verificationEvidence": verification_evidence,
+                "verificationResults": [
+                    {
+                        "status": "verified" if verification_evidence.get("passed") else "failed",
+                        **verification_evidence,
+                    }
+                ],
+            }
+            if verification_evidence
+            else {}
+        ),
         "supervisorAcceptance": {"status": "pending", "requiredAction": ["accept", "retry", "ignore"]},
         "resultSchemaMatched": True,
     }
@@ -2266,7 +3054,7 @@ def build_parallel_delegate_join_node():
         candidate_results = [
             item
             for item in results
-            if str(item.get("status") or "").strip().lower() == "ok"
+            if _delegation_summary_allows_changeset_promotion(item)
             and isinstance(item.get("gitChangeSet"), dict)
             and not isinstance(item.get("parentWorktreeMerge"), dict)
             and int(item.get("delegationDepth") or 1) <= 1
@@ -2274,7 +3062,7 @@ def build_parallel_delegate_join_node():
         failed_results = [
             item
             for item in results
-            if str(item.get("status") or "").strip().lower() not in {"ok", "completed"}
+            if not _delegation_summary_allows_changeset_promotion(item)
         ]
         if run_id and candidate_results and not failed_results:
             from core.engineering_sandbox.service import get_engineering_sandbox_service

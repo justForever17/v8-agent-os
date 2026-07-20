@@ -6,16 +6,15 @@ import re
 from typing import Any, Iterable, Mapping
 
 from core.database import db
-from core.runtime_episodes import ACTIVE_EPISODE_STATES
-
-
-RUNTIME_EXECUTION_HANDOFF_STATUSES = {"ready", "degraded"}
-DELEGATION_ACCEPTANCE_DECISION_RE = re.compile(
-    r"(?:验收决定|acceptance\s+decision)\s*[：:]\s*[`*_~]*\s*(ACCEPT|RETRY|IGNORE)\b\s*[`*_~]*",
-    re.IGNORECASE,
+from core.delegation_result_contract import parse_delegation_acceptance_text
+from core.runtime_episodes import (
+    ACTIVE_EPISODE_STATES,
+    runtime_episode_parent_id,
+    superseded_runtime_episode_ids,
 )
 
 
+RUNTIME_EXECUTION_HANDOFF_STATUSES = {"ready", "degraded"}
 @dataclass(frozen=True, slots=True)
 class SupervisorCompletionDecision:
     action: str = "complete"
@@ -123,12 +122,7 @@ def _delegation_acceptance_missing(
     *,
     final_text: str,
 ) -> list[str]:
-    acceptance_decisions = {
-        str(match.group(1) or "").strip().upper()
-        for match in DELEGATION_ACCEPTANCE_DECISION_RE.finditer(str(final_text or ""))
-        if str(match.group(1) or "").strip()
-    }
-    if len(acceptance_decisions) == 1:
+    if parse_delegation_acceptance_text(final_text):
         return []
     pending: list[str] = []
     for episode in episodes:
@@ -512,7 +506,16 @@ def evaluate_supervisor_completion(
             details={"episodeIds": active[:12]},
         )
 
-    for episode in normalized_episodes:
+    superseded_ids = superseded_runtime_episode_ids(normalized_episodes, normalized_handoffs)
+    effective_episodes = [
+        episode
+        for episode in normalized_episodes
+        if not runtime_episode_parent_id(episode)
+        and str(episode.get("episodeId") or episode.get("id") or episode.get("needId") or "").strip()
+        not in superseded_ids
+    ]
+
+    for episode in effective_episodes:
         if _is_optional_episode(episode):
             continue
         episode_id = str(episode.get("episodeId") or episode.get("id") or "")
@@ -548,7 +551,7 @@ def evaluate_supervisor_completion(
                 )
 
     missing_delegation_acceptance = _delegation_acceptance_missing(
-        normalized_episodes,
+        effective_episodes,
         normalized_handoffs,
         final_text=final_text,
     )
@@ -563,7 +566,7 @@ def evaluate_supervisor_completion(
         )
 
     if not spec_mode:
-        write_delivery_failure = _non_spec_write_delivery_failure(normalized_episodes, normalized_handoffs)
+        write_delivery_failure = _non_spec_write_delivery_failure(effective_episodes, normalized_handoffs)
         if write_delivery_failure:
             return SupervisorCompletionDecision(
                 action="fail",
@@ -615,10 +618,10 @@ def evaluate_supervisor_completion(
                 },
             )
         if bool(pipeline.get("runtimeExecutionAllowed")) and not _has_ready_runtime_handoff(
-            normalized_episodes,
+            effective_episodes,
             normalized_handoffs,
         ):
-            if not normalized_episodes:
+            if not effective_episodes:
                 return SupervisorCompletionDecision(
                     action="fail",
                     reason="spec_runtime_execution_episode_missing",
@@ -634,11 +637,11 @@ def evaluate_supervisor_completion(
                 details={
                     "specId": brief.get("specId"),
                     "currentStage": brief.get("currentStage"),
-                    "episodeCount": len(normalized_episodes),
+                    "episodeCount": len(effective_episodes),
                 },
             )
         if bool(pipeline.get("runtimeExecutionAllowed")):
-            degraded_handoffs = _required_runtime_degraded_handoffs(normalized_episodes, normalized_handoffs)
+            degraded_handoffs = _required_runtime_degraded_handoffs(effective_episodes, normalized_handoffs)
             if degraded_handoffs:
                 return SupervisorCompletionDecision(
                     action="fail",
@@ -649,7 +652,7 @@ def evaluate_supervisor_completion(
                         "handoffs": degraded_handoffs[:8],
                     },
                 )
-            missing_proof = _missing_spec_proof_handoffs(brief, normalized_episodes, normalized_handoffs)
+            missing_proof = _missing_spec_proof_handoffs(brief, effective_episodes, normalized_handoffs)
             if missing_proof:
                 return SupervisorCompletionDecision(
                     action="fail",
@@ -667,7 +670,7 @@ def evaluate_supervisor_completion(
         # Treating this as a failure poisons the run with a false terminal
         # status while the continuation is already in flight.
 
-    if normalized_episodes and _looks_forward_only(final_text):
+    if effective_episodes and _looks_forward_only(final_text):
         return SupervisorCompletionDecision(
             action="complete",
             reason="forward_only_supervisor_advisory",

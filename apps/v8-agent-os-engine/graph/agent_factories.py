@@ -9,7 +9,12 @@ from langgraph.types import Command
 
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.background_context_guard import prepare_background_model_messages
-from core.delegation_broker import infer_engineering_task_role, task_brief_query_text, task_brief_route_query_text
+from core.delegation_broker import (
+    infer_engineering_task_role,
+    task_brief_query_text,
+    task_brief_requires_child_delegation,
+    task_brief_route_query_text,
+)
 from core.engineering_capsule import engineering_tool_allowed
 from core.engineering_kernel import build_engineering_kernel_context, detect_command_environment
 from core.context_governance import emit_context_prepared_event
@@ -18,7 +23,7 @@ from core.delegated_agent_charter import DELEGATED_AGENT_OPERATING_CHARTER
 from core.host_load import render_host_load_line
 from core.safety_active_defense import render_host_alerts_line
 from core.prompt_cache_segments import build_prompt_segments_from_parts
-from core.runtime.extensions_runtime import extensions_runtime_service
+from core.runtime.extensions_runtime import ExtensionRouteBundle, extensions_runtime_service
 from core.models.factory import llm_factory
 from core.response_normalizer import ensure_reasoning_content, extract_text_and_reasoning
 from core.system_tools.baseline import select_baseline_system_tool_names, select_baseline_system_tools
@@ -262,6 +267,145 @@ def _apply_task_tool_policy(tools: list, task_brief: dict[str, Any] | None) -> l
     return _dedupe_tools(filtered)
 
 
+def _align_extension_route_to_task_tools(route_bundle: Any, tools: list[Any]) -> Any:
+    """Make the route prompt and audit projection match the final tool surface."""
+
+    final_tool_names = {
+        str(getattr(tool, "name", "") or "").strip()
+        for tool in list(tools or [])
+        if str(getattr(tool, "name", "") or "").strip()
+    }
+    skill_available = "fetch_skill_instructions" in final_tool_names
+    original_mcp_names = [
+        str(item or "").strip()
+        for item in list(getattr(route_bundle, "exposed_mcp_tool_names", None) or [])
+        if str(item or "").strip()
+    ]
+    exposed_mcp_names = [name for name in original_mcp_names if name in final_tool_names]
+    selected_skill_names = (
+        list(getattr(route_bundle, "selected_skill_names", None) or [])
+        if skill_available
+        else []
+    )
+    selected_skill_ids = (
+        list(getattr(route_bundle, "selected_skill_ids", None) or [])
+        if skill_available
+        else []
+    )
+    route_unchanged = skill_available and exposed_mcp_names == original_mcp_names
+    route_bundle.filtered_tools = list(tools or [])
+    route_bundle.selected_skill_names = selected_skill_names
+    route_bundle.selected_skill_ids = selected_skill_ids
+    route_bundle.exposed_mcp_tool_names = exposed_mcp_names
+    if route_unchanged:
+        return route_bundle
+
+    candidate_summary = dict(getattr(route_bundle, "candidate_summary", None) or {})
+    candidate_summary["selectedSkills"] = list(selected_skill_names)
+    candidate_summary["selectedSkillIds"] = list(selected_skill_ids)
+    candidate_summary["selectedMcpTools"] = list(exposed_mcp_names)
+    if not skill_available:
+        candidate_summary["skillEntries"] = []
+    route_bundle.candidate_summary = candidate_summary
+    prompt_lines = [
+        "\n[Extensions Runtime]",
+        "- The delegated task tool policy is authoritative for this worker.",
+        "- Extension candidates are optional references, not mandatory tool-use instructions.",
+    ]
+    if selected_skill_names:
+        prompt_lines.append(f"- Selected Skill entries exposed: {', '.join(selected_skill_names)}")
+    else:
+        prompt_lines.append("- No Skill entry or fetch_skill_instructions tool is exposed for this task.")
+    if exposed_mcp_names:
+        prompt_lines.append(f"- MCP tools exposed: {', '.join(exposed_mcp_names)}")
+    else:
+        prompt_lines.append("- No MCP tool is exposed for this task.")
+    if "plugin_cli" in final_tool_names:
+        prompt_lines.append("- plugin_cli remains available only through its typed action contract.")
+    prompt_lines.append("[/Extensions Runtime]")
+    route_bundle.prompt_addition = "\n".join(prompt_lines)
+    return route_bundle
+
+
+def _preserve_direct_worker_extension_candidates(
+    route_bundle: Any,
+    tools: list[Any],
+    task_brief: dict[str, Any] | None,
+    *,
+    delegation_depth: int,
+) -> list[Any]:
+    """Keep optional extension candidates for direct workers only.
+
+    A task allowlist bounds native execution authority. It must not silently
+    erase the Skill/MCP shortlist that helps a direct subagent choose a better
+    method. Depth-two disposable workers are intentionally atomic and remain
+    closed-world. Explicit ``none`` and forbidden tool entries still win.
+    """
+
+    if int(delegation_depth or 0) >= 2:
+        return _dedupe_tools(list(tools or []))
+    task = dict(task_brief or {})
+    policy = dict(task.get("toolPolicy") or {}) if isinstance(task.get("toolPolicy"), dict) else {}
+    if str(policy.get("mode") or "").strip().lower() == "none":
+        return _dedupe_tools(list(tools or []))
+    forbidden = {
+        str(item or "").strip()
+        for item in list(policy.get("forbiddenTools") or task.get("forbiddenTools") or [])
+        if str(item or "").strip()
+    }
+    optional_names = {
+        "fetch_skill_instructions",
+        *(
+            str(item or "").strip()
+            for item in list(getattr(route_bundle, "exposed_mcp_tool_names", None) or [])
+            if str(item or "").strip()
+        ),
+    }
+    restored = list(tools or [])
+    for tool_ref in list(getattr(route_bundle, "filtered_tools", None) or []):
+        names = {
+            value
+            for value in (
+                str(getattr(tool_ref, "name", "") or "").strip(),
+                _canonical_tool_name(tool_ref),
+                _raw_tool_name(tool_ref),
+            )
+            if value
+        }
+        if not names.intersection(optional_names) or names.intersection(forbidden):
+            continue
+        restored.append(tool_ref)
+    return _dedupe_tools(restored)
+
+
+def _build_atomic_worker_extension_route(tools: list[Any]) -> ExtensionRouteBundle:
+    """Return the closed extension surface used by terminal delegated workers.
+
+    A disposable grandchild is an atomic execution unit.  Running the normal
+    Extensions prefilter for it would both spend routing budget and leak Skill
+    or MCP suggestions that are outside the parent-owned task contract.
+    """
+
+    return ExtensionRouteBundle(
+        prompt_addition="",
+        filtered_tools=_dedupe_tools(list(tools or [])),
+        selected_skill_names=[],
+        selected_skill_ids=[],
+        skill_root_descriptors=[],
+        exposed_mcp_tool_names=[],
+        candidate_summary={
+            "mode": "atomic_closed_world",
+            "routingMode": "atomic_closed_world",
+            "skillsRoutingMode": "disabled_for_atomic_worker",
+            "mcpRoutingMode": "disabled_for_atomic_worker",
+            "selectedSkills": [],
+            "selectedSkillIds": [],
+            "selectedMcpTools": [],
+            "skillEntries": [],
+        },
+    )
+
+
 def _resolved_tool_mode(agent_data: dict) -> str:
     configured = str(agent_data.get("tool_mode") or agent_data.get("toolMode") or "").strip()
     if configured in {"explicit", "contextual_auto"}:
@@ -442,6 +586,7 @@ _AGENT_VISIBLE_CONTEXT_KEYS: tuple[tuple[str, str, int], ...] = (
     ("Handoff Usage", "handoffUsage", 900),
     ("Shell Dialect", "shellDialect", 120),
     ("Workspace Path", "workspacePath", 260),
+    ("Verification Evidence Contract", "verificationEvidenceContract", 1800),
     ("Artifact Write Discipline", "artifactWriteDiscipline", 800),
     ("Artifact Acceptance Guard", "artifactAcceptanceGuard", 800),
 )
@@ -548,7 +693,6 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
         "You are executing one bounded task from the supervisor's delegation/runtime pipeline.",
         "Use this local task contract as the routing truth; do not reinterpret the original user request as your primary scope.",
         "For code, file, command, test, or artifact work: treat taskBriefId, workspace, readSet/writeSet, acceptance, proofExpectations, and any Spec refs as your execution boundary. If required boundaries are missing, return a blocker instead of broadening the task.",
-        "If both built-in runtime capability and installed Skill/MCP tools appear relevant, obey the supervisor/user route first; when no route is specified and a selected installed Skill/MCP explicitly advertises 免费/free use, prefer that selected channel within your granted tools.",
         "If the task is to configure MCP servers, use the supervisor-provided MCP config route/tool; do not call Admin login-only APIs or edit V8OS config files directly.",
     ]
     if isinstance(task_brief, dict) and task_brief:
@@ -641,6 +785,7 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             and (True if explicit_child_policy is None else bool(explicit_child_policy))
             and tool_policy_allows_delegation
         )
+        child_delegation_required = task_brief_requires_child_delegation(task_brief)
         lines.append("")
         lines.append("Delegation Authority:")
         if child_delegation_allowed:
@@ -650,6 +795,13 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             lines.append(
                 "- Each grandchild is a temporary, cleaner-context mirror of you, named from your own name plus a worker suffix. Do not select another registered subagent as your grandchild; supply explicit shard boundaries and acceptance, then let the broker preserve lineage. Grandchildren cannot delegate again and are never persisted."
             )
+            if child_delegation_required:
+                lines.append(
+                    "- REQUIRED BY ACCEPTANCE: follow this exact sequence: (1) complete your own assigned write, (2) run your own local self-check, (3) call `delegation_broker(mode='dispatch')` exactly once for the independent verification shard, and (4) wait for its handoff before returning your final result."
+                )
+                lines.append(
+                    "- The disposable mirror rule is authoritative for this depth. If the goal or acceptance prose names a registered Agent such as Verification Engineer as the grandchild, treat that name only as a capability label; do not pass targetAgentName, preferredAgentId, or another registered Agent to the broker."
+                )
         else:
             lines.append(
                 "- This actor cannot create another delegation layer under the current depth or tool policy. The absence of `delegation_broker` is intentional, not a missing-tool failure."
@@ -657,6 +809,14 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             lines.append(
                 "- Complete the assigned slice with the tools you have, or return a concrete blocker without attempting to create another worker."
             )
+            if child_delegation_required:
+                lines.append(
+                    "- Contract conflict: the must-level acceptance requires a child verifier, but this task has no child-delegation authority. Return `required_child_delegation_unavailable`; never claim completion."
+                )
+            if delegation_depth >= 2:
+                lines.append(
+                    "- TERMINAL VERIFICATION IS CLOSED-WORLD: the tools allowed by this task brief are the complete tool surface. Execute the acceptance steps literally; do not fetch Skills, probe MCP/extensions, request another Agent, or emit tool arguments as prose/JSON."
+                )
         context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
         active_collaborators = [
             item for item in list(context.get("activeCollaborators") or [])
@@ -907,6 +1067,43 @@ def _build_agent_system_content(
 
 def _resolve_inherited_route_context(state: dict, task_messages: list, *, agent_id: str) -> dict[str, list[str] | str]:
     delegated = latest_delegation_context(list(state.get("delegation_contexts") or []), agent_id=agent_id)
+    parallel_branch = (
+        dict(state.get("parallel_branch") or {})
+        if isinstance(state.get("parallel_branch"), dict)
+        else {}
+    )
+    branch_agent_id = str(parallel_branch.get("agentId") or "").strip()
+    branch_task_brief = (
+        dict(parallel_branch.get("taskBrief") or {})
+        if isinstance(parallel_branch.get("taskBrief"), dict)
+        else {}
+    )
+    if branch_task_brief and (not branch_agent_id or branch_agent_id == str(agent_id or "").strip()):
+        # A Send branch is the execution truth for this worker.  Additive
+        # graph reducers may retain older contexts for the same persistent
+        # Agent id (especially disposable grandchildren), so never let a
+        # stale parent context replace the branch-local task/tool contract.
+        branch_depth = parallel_branch.get("delegationDepth")
+        if branch_depth is not None:
+            branch_task_brief["delegationDepth"] = branch_depth
+        delegated = {
+            **dict(delegated or {}),
+            "taskBrief": branch_task_brief,
+            "query": task_brief_route_query_text(branch_task_brief)
+            or task_brief_query_text(branch_task_brief)
+            or str(delegated.get("query") or "").strip(),
+        }
+        for key in (
+            "parentDelegationId",
+            "delegationId",
+            "delegationDepth",
+            "delegationNodeCount",
+            "delegationBudget",
+        ):
+            if key in parallel_branch:
+                delegated[key] = parallel_branch.get(key)
+        delegated["runtimeAccess"] = list(branch_task_brief.get("runtimeAccess") or [])
+        return delegated
     if any(delegated.get(key) for key in ("selectedSkillIds", "selectedSkillNames", "selectedSkillEntries", "skillRootDescriptors", "selectedMcpTools", "selectedBaselineTools", "query")):
         return delegated
     current_route_context = dict(state.get("current_route_context") or {})
@@ -1070,6 +1267,15 @@ def build_agent_node(
             )
             ephemeral_info = delegated_context.get("ephemeralMirror") if isinstance(delegated_context.get("ephemeralMirror"), dict) else {}
             ephemeral_mirror = bool(ephemeral_info or (delegated_task_brief or {}).get("ephemeralMirror"))
+            try:
+                delegation_depth = int(
+                    inherited_route_context.get("delegationDepth")
+                    or (delegated_task_brief or {}).get("delegationDepth")
+                    or 0
+                )
+            except (TypeError, ValueError):
+                delegation_depth = 0
+            atomic_delegated_worker = bool(ephemeral_mirror or delegation_depth >= 2)
             effective_agent_name = str(
                 ephemeral_info.get("name")
                 or (state.get("parallel_branch") or {}).get("agentName")
@@ -1105,7 +1311,8 @@ def build_agent_node(
             }
             contextual_base_tools = _dedupe_tools(
                 filter_visible_tools_for_actor(
-                    _select_contextual_subagent_native_tools(filtered_native_tools, delegated_runtime_access) + [fetch_skill_instructions_tool],
+                    _select_contextual_subagent_native_tools(filtered_native_tools, delegated_runtime_access)
+                    + ([] if atomic_delegated_worker else [fetch_skill_instructions_tool]),
                     actor="subagent",
                     route_context=actor_route_context,
                     runtime_access=delegated_runtime_access,
@@ -1113,7 +1320,7 @@ def build_agent_node(
             )
             explicit_base_tools = _dedupe_tools(
                 filter_visible_tools_for_actor(
-                    list(filtered_native_tools) + [fetch_skill_instructions_tool],
+                    list(filtered_native_tools) + ([] if atomic_delegated_worker else [fetch_skill_instructions_tool]),
                     actor="subagent",
                     route_context=actor_route_context,
                     runtime_access=delegated_runtime_access,
@@ -1124,18 +1331,30 @@ def build_agent_node(
 
             if agent_tool_mode == "explicit":
                 base_tools = explicit_base_tools
-                available_tools = _dedupe_tools(base_tools + selected_mcp_tools)
-                inherited_skill_ids: list[str] = explicit_skill_ids
-                inherited_skill_names: list[str] = explicit_skill_names
+                available_tools = _dedupe_tools(
+                    base_tools + ([] if atomic_delegated_worker else selected_mcp_tools)
+                )
+                inherited_skill_ids: list[str] = [] if atomic_delegated_worker else explicit_skill_ids
+                inherited_skill_names: list[str] = [] if atomic_delegated_worker else explicit_skill_names
             else:
                 base_tools = contextual_base_tools
                 inherited_mcp_tools = _resolve_selected_mcp_tools(
                     all_mcp_tools,
                     list(inherited_route_context.get("selectedMcpTools") or []),
                 )
-                inherited_skill_ids = list(inherited_route_context.get("selectedSkillIds") or [])
-                inherited_skill_names = list(inherited_route_context.get("selectedSkillNames") or [])
-                if inherited_mcp_tools or inherited_skill_ids or inherited_skill_names:
+                inherited_skill_ids = (
+                    []
+                    if atomic_delegated_worker
+                    else list(inherited_route_context.get("selectedSkillIds") or [])
+                )
+                inherited_skill_names = (
+                    []
+                    if atomic_delegated_worker
+                    else list(inherited_route_context.get("selectedSkillNames") or [])
+                )
+                if atomic_delegated_worker:
+                    available_tools = _dedupe_tools(base_tools)
+                elif inherited_mcp_tools or inherited_skill_ids or inherited_skill_names:
                     available_tools = _dedupe_tools(base_tools + inherited_mcp_tools)
                 else:
                     available_tools = _dedupe_tools(base_tools + list(all_mcp_tools))
@@ -1153,18 +1372,38 @@ def build_agent_node(
                 delegation_depth=inherited_route_context.get("delegationDepth"),
             )
             try:
-                route_bundle = extensions_runtime_service.build_contextual_route(
+                if atomic_delegated_worker:
+                    combined_tools = _apply_task_tool_policy(
+                        available_tools,
+                        delegated_task_brief,
+                    )
+                    route_bundle = _build_atomic_worker_extension_route(combined_tools)
+                else:
+                    route_bundle = extensions_runtime_service.build_contextual_route(
+                        user_query=extensions_route_query,
+                        available_tools=available_tools,
+                        loaded_agents=None,
+                        inherited_skill_ids=inherited_skill_ids,
+                        inherited_skill_names=inherited_skill_names,
+                        mcp_limit=6,
+                    )
+                    combined_tools = _apply_task_tool_policy(
+                        route_bundle.filtered_tools,
+                        delegated_task_brief,
+                    )
+                    combined_tools = _preserve_direct_worker_extension_candidates(
+                        route_bundle,
+                        combined_tools,
+                        delegated_task_brief,
+                        delegation_depth=delegation_depth,
+                    )
+                    route_bundle = _align_extension_route_to_task_tools(
+                        route_bundle,
+                        combined_tools,
+                    )
+                extensions_runtime_service.emit_route_selected(
                     user_query=extensions_route_query,
-                    available_tools=available_tools,
-                    loaded_agents=None,
-                    inherited_skill_ids=inherited_skill_ids,
-                    inherited_skill_names=inherited_skill_names,
-                    mcp_limit=6,
-                )
-                extensions_runtime_service.emit_route_selected(user_query=extensions_route_query, route_bundle=route_bundle)
-                combined_tools = _apply_task_tool_policy(
-                    route_bundle.filtered_tools,
-                    delegated_task_brief,
+                    route_bundle=route_bundle,
                 )
             finally:
                 extensions_runtime_service.reset_execution_context(route_context_token)

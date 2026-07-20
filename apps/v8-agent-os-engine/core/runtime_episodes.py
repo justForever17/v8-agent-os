@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from copy import deepcopy
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from erc.runtime_context import get_runtime_context
 from core.time_truth import utc_now_iso
@@ -32,6 +32,200 @@ TYPED_HANDOFF_KINDS = {
     "delegation": "subagent_result_bundle",
     "verification": "verification_report",
 }
+
+
+def runtime_episode_parent_id(episode: Mapping[str, Any]) -> str:
+    return str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip()
+
+
+def runtime_episode_write_set(episode: Mapping[str, Any]) -> list[str]:
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    briefs = inputs.get("workerBriefs") or inputs.get("taskBriefs") or inputs.get("tasks") or []
+    raw_input_write_set = inputs.get("writeSet") or inputs.get("write_set") or []
+    values: list[Any] = (
+        list(raw_input_write_set)
+        if isinstance(raw_input_write_set, (list, tuple, set))
+        else [raw_input_write_set]
+    )
+    for brief in list(briefs or []):
+        if not isinstance(brief, Mapping):
+            continue
+        values.extend(list(brief.get("writeSet") or brief.get("write_set") or []))
+        capsule = brief.get("engineeringTaskCapsule") if isinstance(brief.get("engineeringTaskCapsule"), Mapping) else {}
+        values.extend(list(capsule.get("writeSet") or capsule.get("write_set") or []))
+
+    normalized: list[str] = []
+    for value in values:
+        text = str(value or "").strip().strip("`'\"").replace("\\", "/")
+        while text.startswith("./"):
+            text = text[2:]
+        text = "/".join(part for part in text.split("/") if part).casefold()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _runtime_episode_workspace_identity(episode: Mapping[str, Any]) -> str:
+    inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
+    engineering_workspace = (
+        inputs.get("engineeringWorkspace")
+        if isinstance(inputs.get("engineeringWorkspace"), Mapping)
+        else {}
+    )
+    value = (
+        engineering_workspace.get("originalWorkspacePath")
+        or engineering_workspace.get("original_workspace_path")
+        or inputs.get("originalWorkspacePath")
+        or inputs.get("original_workspace_path")
+        or inputs.get("workspacePath")
+        or inputs.get("workspace_path")
+        or ""
+    )
+    return str(value).strip().replace("\\", "/").rstrip("/").casefold()
+
+
+def _runtime_handoff_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    payload = value.get("payload") if isinstance(value.get("payload"), Mapping) else {}
+    return {**dict(value), **dict(payload)}
+
+
+def _walk_runtime_handoff(value: Any) -> Iterable[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        yield value
+        for child in value.values():
+            if isinstance(child, (Mapping, list, tuple)):
+                yield from _walk_runtime_handoff(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _walk_runtime_handoff(child)
+
+
+def runtime_handoffs_have_verified_write_delivery(
+    handoffs: Iterable[Mapping[str, Any]],
+    *,
+    write_set: Iterable[str],
+) -> bool:
+    """Return true only for a ready delivery with semantic proof and file coverage.
+
+    This intentionally does not accept a status label, an arbitrary successful
+    command, or a git ref by itself. It is used solely to decide whether a newer
+    retry may retire an older failed attempt from the active completion truth.
+    """
+
+    expected = {str(item or "").strip().replace("\\", "/").casefold() for item in write_set if str(item or "").strip()}
+    if not expected:
+        return False
+    ready = False
+    verified = False
+    changed_paths: set[str] = set()
+    for raw_handoff in handoffs:
+        handoff = _runtime_handoff_payload(raw_handoff)
+        if str(handoff.get("status") or "").strip().lower() in {"ready", "completed", "success", "ok"}:
+            ready = True
+        for item in _walk_runtime_handoff(handoff):
+            verification = item.get("verificationEvidence")
+            if isinstance(verification, Mapping) and verification.get("passed") is True:
+                verified = True
+            verification_results = item.get("verificationResults")
+            if isinstance(verification_results, list):
+                for result in verification_results:
+                    if not isinstance(result, Mapping):
+                        continue
+                    status = str(result.get("status") or "").strip().lower()
+                    if result.get("passed") is True or status in {"verified", "passed", "success", "completed"}:
+                        verified = True
+            for key in (
+                "changedPaths",
+                "changed_paths",
+                "changedFiles",
+                "changed_files",
+                "createdFiles",
+                "created_files",
+                "modifiedFiles",
+                "modified_files",
+                "writtenFiles",
+                "written_files",
+            ):
+                raw_values = item.get(key)
+                values = raw_values if isinstance(raw_values, list) else [raw_values] if raw_values else []
+                for value in values:
+                    text = str(value or "").strip().strip("`'\"").replace("\\", "/").casefold()
+                    while text.startswith("./"):
+                        text = text[2:]
+                    if text:
+                        changed_paths.add(text)
+            for ref in list(item.get("artifactRefs") or []):
+                if isinstance(ref, Mapping):
+                    value = ref.get("path") or ref.get("workspaceRelativePath")
+                else:
+                    value = ref
+                text = str(value or "").strip().strip("`'\"").replace("\\", "/").casefold()
+                while text.startswith("./"):
+                    text = text[2:]
+                if text and not text.startswith(("git://", "artifact://")):
+                    changed_paths.add(text)
+    covered = all(any(path == target or path.endswith("/" + target) for path in changed_paths) for target in expected)
+    return ready and verified and covered
+
+
+def superseded_runtime_episode_ids(
+    episodes: Iterable[Mapping[str, Any]],
+    handoffs_by_episode: Mapping[str, Iterable[Mapping[str, Any]]],
+) -> set[str]:
+    """Identify older top-level write attempts replaced by a proven retry."""
+
+    rows = [dict(item) for item in episodes if isinstance(item, Mapping) and not runtime_episode_parent_id(item)]
+
+    def _episode_id(item: Mapping[str, Any]) -> str:
+        return str(item.get("episodeId") or item.get("id") or item.get("needId") or "").strip()
+
+    def _time_key(item: Mapping[str, Any], index: int) -> tuple[str, int]:
+        return (
+            str(
+                item.get("completed_at")
+                or item.get("updated_at")
+                or item.get("updatedAt")
+                or item.get("created_at")
+                or item.get("createdAt")
+                or ""
+            ),
+            index,
+        )
+
+    proven: list[tuple[dict[str, Any], set[str], tuple[str, int]]] = []
+    for index, episode in enumerate(rows):
+        episode_id = _episode_id(episode)
+        write_set = set(runtime_episode_write_set(episode))
+        state = str(episode.get("state") or "").strip().lower()
+        if (
+            episode_id
+            and state in {"completed", "merged"}
+            and runtime_handoffs_have_verified_write_delivery(
+                handoffs_by_episode.get(episode_id, []),
+                write_set=write_set,
+            )
+        ):
+            proven.append((episode, write_set, _time_key(episode, index)))
+
+    superseded: set[str] = set()
+    for index, episode in enumerate(rows):
+        episode_id = _episode_id(episode)
+        write_set = set(runtime_episode_write_set(episode))
+        if not episode_id or not write_set:
+            continue
+        episode_time = _time_key(episode, index)
+        workspace = _runtime_episode_workspace_identity(episode)
+        for candidate, candidate_write_set, candidate_time in proven:
+            candidate_id = _episode_id(candidate)
+            candidate_workspace = _runtime_episode_workspace_identity(candidate)
+            if candidate_id == episode_id or candidate_time <= episode_time:
+                continue
+            if workspace and candidate_workspace and workspace != candidate_workspace:
+                continue
+            if write_set.issubset(candidate_write_set):
+                superseded.add(episode_id)
+                break
+    return superseded
 
 
 def normalize_capability_kind(value: Any) -> str:

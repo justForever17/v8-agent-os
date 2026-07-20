@@ -453,6 +453,74 @@ def test_runtime_episode_wait_node_projects_nested_delegation_proof_without_loss
     assert projected["evidenceComplete"] is True
 
 
+def test_runtime_episode_wait_node_projects_recursive_grandchild_verification_truth() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_recursive_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "engineering", "reason": "write and verify recursively"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="engineering_patch_bundle",
+        compact_summary="Engineering execution completed with child verification.",
+        status="ready",
+        extra={
+            "childHandoffs": [
+                {
+                    "status": "ready",
+                    "childHandoffs": [
+                        {
+                            "status": "ready",
+                            "results": [
+                                {
+                                    "taskBriefId": "verify-result",
+                                    "delegationId": "delegation-grandchild",
+                                    "parentDelegationId": "delegation-parent",
+                                    "delegationDepth": 2,
+                                    "targetLabel": "Implementation Engineer · worker-01",
+                                    "status": "ok",
+                                    "toolsUsed": ["read_native_file", "run_system_command"],
+                                    "verificationEvidence": {
+                                        "passed": True,
+                                        "observations": [
+                                            {"tool": "read_native_file", "path": "src/result.py"},
+                                            {
+                                                "tool": "run_system_command",
+                                                "command": "python src/result.py",
+                                                "returnCode": 0,
+                                                "stdout": "exact-proof",
+                                                "stderr": "",
+                                            },
+                                        ],
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    content = str(message.content)
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]["results"][0]
+    assert "python src/result.py" in content
+    assert "stdout='exact-proof'" in content
+    assert "depth=2" in content
+    assert projected["parentDelegationId"] == "delegation-parent"
+    assert projected["verificationPassed"] is True
+    assert projected["evidenceComplete"] is True
+
+
 def test_runtime_episode_wait_node_reports_failed_handoff_as_recoverable_failure() -> None:
     node = build_runtime_episode_wait_node()
     episode_id = f"episode_wait_failed_{uuid4().hex}"
@@ -486,6 +554,98 @@ def test_runtime_episode_wait_node_reports_failed_handoff_as_recoverable_failure
     assert status["nextAction"] == "recoverable_failure"
     assert status["state"] == "episode_failed"
     assert status["failedHandoffCount"] == 1
+
+
+def test_runtime_episode_wait_node_uses_proven_retry_instead_of_stale_failure() -> None:
+    node = build_runtime_episode_wait_node()
+    run_id = f"run_wait_retry_{uuid4().hex}"
+    session_id = f"session_wait_retry_{uuid4().hex}"
+    failed_id = f"episode_wait_old_failure_{uuid4().hex}"
+    proven_id = f"episode_wait_proven_retry_{uuid4().hex}"
+    task_inputs = {
+        "workspacePath": "E:/workspace/retry-proof",
+        "taskBriefs": [
+            {
+                "taskBriefId": "repair-result",
+                "goal": "Repair result.py.",
+                "writeRequired": True,
+                "writeSet": ["src/result.py"],
+            }
+        ],
+    }
+    db.create_or_update_session(session_id=session_id, title="Runtime retry proof", user_id="test")
+    db.create_run_record(run_id=run_id, session_id=session_id, run_type="chat", status="running")
+    failed = build_runtime_episode(
+        need={"episodeId": failed_id, "runId": run_id, "kind": "delegation", "inputs": task_inputs},
+        kind="delegation",
+        state="queued",
+    )
+    db.upsert_runtime_episode_record(failed, session_id=session_id, run_id=run_id, enqueue=True, priority=999)
+    failed_handoff = build_handoff_ref(
+        producer_episode_id=failed_id,
+        kind="subagent_result_bundle",
+        compact_summary="First attempt failed.",
+        status="failed",
+        extra={"errorCode": "first_attempt_failed"},
+    )
+    db.add_runtime_episode_handoff(episode_id=failed_id, session_id=session_id, run_id=run_id, handoff=failed_handoff)
+    db.complete_runtime_episode(
+        failed_id,
+        state="failed",
+        result_ref=failed_handoff["handoffRefId"],
+        error_code="first_attempt_failed",
+    )
+
+    proven = build_runtime_episode(
+        need={"episodeId": proven_id, "runId": run_id, "kind": "engineering", "inputs": task_inputs},
+        kind="engineering",
+        state="queued",
+    )
+    db.upsert_runtime_episode_record(proven, session_id=session_id, run_id=run_id, enqueue=True, priority=999)
+    proven_handoff = build_handoff_ref(
+        producer_episode_id=proven_id,
+        kind="engineering_patch_bundle",
+        compact_summary="Retry produced the requested file and independent verification.",
+        status="ready",
+        extra={
+            "changedFiles": ["src/result.py"],
+            "verificationResults": [
+                {
+                    "status": "verified",
+                    "passed": True,
+                    "observations": [
+                        {
+                            "command": "python src/result.py",
+                            "returnCode": 0,
+                            "stdout": "exact-proof",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=proven_id, session_id=session_id, run_id=run_id, handoff=proven_handoff)
+    db.complete_runtime_episode(proven_id, state="completed", result_ref=proven_handoff["handoffRefId"])
+
+    command = asyncio.run(
+        node(
+            {
+                "run_id": run_id,
+                "session_id": session_id,
+                "current_route_context": {
+                    "runId": run_id,
+                    "capabilityEpisodes": [failed, proven],
+                },
+            }
+        )
+    )
+
+    status = command.update["runtime_dispatch_status"]
+    assert command.goto == "supervisor"
+    assert status["nextAction"] == "resume_supervisor"
+    assert status["state"] == "handoff_ready"
+    assert command.update["current_route_context"]["supersededRuntimeEpisodeIds"] == [failed_id]
+    assert "Retry produced the requested file" in str(command.update["messages"][0].content)
 
 
 def test_runtime_episode_wait_node_resumes_when_only_optional_lane_failed() -> None:

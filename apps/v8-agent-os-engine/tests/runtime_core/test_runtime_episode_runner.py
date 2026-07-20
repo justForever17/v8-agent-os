@@ -3432,6 +3432,437 @@ def test_parallel_branch_blocks_child_delegation_without_explicit_budget():
     assert summary["blockedChildDelegationCount"] == 1
 
 
+def test_parallel_branch_repairs_twice_then_blocks_missing_required_grandchild():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langgraph.types import Command
+
+    calls: list[list] = []
+    parent_state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "implementation_worker",
+            "agentName": "Implementation Worker",
+            "delegationId": "delegation-required-child",
+            "invocationId": "invoke-required-child",
+            "taskBriefId": "brief-required-child",
+            "reason": "Implement and delegate verification.",
+            "allowChildDelegation": True,
+            "taskBrief": {
+                "taskBriefId": "brief-required-child",
+                "requireChildDelegation": True,
+                "writeSet": ["src/result.py"],
+                "context": {
+                    "mandatoryGrandchildBrief": {
+                        "goal": "Execute the exact final target.",
+                        "readSet": ["src/result.py"],
+                        "acceptanceContract": ["执行 python src/result.py", "stdout 严格等于 exact-result"],
+                        "toolPolicy": {
+                            "mode": "allowlist",
+                            "allowedTools": ["read_native_file", "run_system_command"],
+                        },
+                    }
+                },
+                "acceptanceContract": {
+                    "must": ["A grandchild must independently verify the result."]
+                },
+            },
+        },
+    }
+
+    def _node_func(state):
+        calls.append(list(state.get("messages") or []))
+        return Command(
+            goto="supervisor",
+            update={"messages": [AIMessage(content="Finished without delegation.")]},
+        )
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(
+            parent_state,
+            {"node_func": _node_func, "tool_mode": "test"},
+        )
+    )
+
+    assert len(calls) == 3
+    assert any(
+        isinstance(message, HumanMessage)
+        and "delegation_broker(mode='dispatch')" in str(message.content)
+        and "python src/result.py" in str(message.content)
+        and "exact-result" in str(message.content)
+        and '"requireChildDelegation":false' in str(message.content)
+        and '"childDelegationPolicyExplicit":true' in str(message.content)
+        for message in calls[1]
+    )
+    assert any(
+        isinstance(message, HumanMessage)
+        and "your next model action must be one real" in str(message.content)
+        and "repeat completed file work" in str(message.content)
+        for message in calls[2]
+    )
+    assert child_requests == []
+    assert summary["status"] == "blocked"
+    assert summary["error"] == "required_child_delegation_missing"
+
+
+def test_verification_contract_requires_successful_read_and_command_results():
+    from graph.parallel_support import _validate_required_verification_evidence
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    branch = {
+        "taskBrief": {
+            "readOnly": True,
+            "readSet": ["src/sandbox_live.py"],
+            "expectedOutputs": ["实际执行文件并返回退出码、stdout 和 stderr"],
+            "engineeringTaskCapsule": {
+                "executionMode": "verify",
+                "mustRead": ["src/sandbox_live.py"],
+                "acceptance": "执行退出码为 0，stdout 为 sandbox-live-ok，stderr 为空",
+            },
+        }
+    }
+    read_result = ToolMessage(
+        content="--- File: src/sandbox_live.py ---\nprint('sandbox-live-ok')",
+        name="read_native_file",
+        tool_call_id="read-1",
+    )
+    read_call = AIMessage(
+        content="",
+        tool_calls=[{"id": "read-1", "name": "read_native_file", "args": {"path": "src/sandbox_live.py"}}],
+    )
+    failed_command = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": False,
+                "kind": "command_session_required",
+                "returnCode": None,
+            }
+        ),
+        name="run_system_command",
+        tool_call_id="run-1",
+    )
+    successful_command = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "kind": "command_result",
+                "returnCode": 0,
+                "keyOutput": "sandbox-live-ok",
+            }
+        ),
+        name="run_system_command",
+        tool_call_id="run-2",
+    )
+    failed_command_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "run-1", "name": "run_system_command", "args": {"command": "python src/sandbox_live.py"}}
+        ],
+    )
+    successful_command_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "run-2", "name": "run_system_command", "args": {"command": "python src/sandbox_live.py"}}
+        ],
+    )
+    unrelated_command_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "run-unrelated", "name": "run_system_command", "args": {"command": "git status; git log -n 5"}}
+        ],
+    )
+    unrelated_command = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "kind": "command_result",
+                "returnCode": 0,
+                "keyOutput": "sandbox-live-ok",
+            }
+        ),
+        name="run_system_command",
+        tool_call_id="run-unrelated",
+    )
+    surface_command_call = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "run-surface", "name": "run_system_command", "args": {"command": "python src/sandbox_live.py"}}
+        ],
+    )
+    surface_command = ToolMessage(
+        content="$ python src/sandbox_live.py\n<stdout>\nsandbox-live-ok\n</stdout>",
+        name="run_system_command",
+        tool_call_id="run-surface",
+    )
+
+    failure = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=[read_call, read_result, failed_command_call, failed_command],
+    )
+    success = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=[read_call, read_result, successful_command_call, successful_command],
+    )
+    unrelated = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=[read_call, read_result, unrelated_command_call, unrelated_command],
+    )
+    surface_success = _validate_required_verification_evidence(
+        branch=branch,
+        delta_messages=[read_call, read_result, surface_command_call, surface_command],
+    )
+
+    assert failure is not None
+    assert failure["error"] == "verification_evidence_missing"
+    assert failure["missingVerificationTools"] == ["run_system_command"]
+    assert success is None
+    assert surface_success is None
+    assert unrelated is not None
+    assert unrelated["error"] == "verification_evidence_mismatch"
+    assert unrelated["verificationEvidenceMismatches"] == [
+        "command_target_not_executed:src/sandbox_live.py"
+    ]
+
+
+def test_verification_contract_parses_english_exact_stdout_without_treating_exactly_as_value():
+    from graph.parallel_support import _validate_required_verification_evidence
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    branch = {
+        "taskBrief": {
+            "readOnly": True,
+            "readSet": ["src/sandbox_live.py"],
+            "acceptanceContract": [
+                "Read the final file with read_native_file: src/sandbox_live.py",
+                "Execute with run_system_command: python src/sandbox_live.py",
+                "The command stdout must equal exactly: sandbox-live-ok",
+            ],
+            "engineeringTaskCapsule": {
+                "executionMode": "verify",
+                "mustRead": ["src/sandbox_live.py"],
+            },
+        }
+    }
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "read-exact", "name": "read_native_file", "args": {"path": "src/sandbox_live.py"}}],
+        ),
+        ToolMessage(
+            content="--- File: src/sandbox_live.py ---\nprint('sandbox-live-ok')",
+            name="read_native_file",
+            tool_call_id="read-exact",
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "run-exact", "name": "run_system_command", "args": {"command": "python src/sandbox_live.py"}}],
+        ),
+        ToolMessage(
+            content="$ python src/sandbox_live.py\n<stdout>\nsandbox-live-ok\n</stdout>",
+            name="run_system_command",
+            tool_call_id="run-exact",
+        ),
+    ]
+
+    assert _validate_required_verification_evidence(branch=branch, delta_messages=messages) is None
+
+
+def test_parallel_verifier_gets_one_correction_to_collect_missing_command_evidence():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langgraph.types import Command
+
+    calls: list[list] = []
+    parent_state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "verification_worker",
+            "agentName": "Verification Worker",
+            "delegationId": "delegation-verification-evidence",
+            "invocationId": "invoke-verification-evidence",
+            "taskBriefId": "brief-verification-evidence",
+            "reason": "Read and execute the requested verification target.",
+            "taskBrief": {
+                "taskBriefId": "brief-verification-evidence",
+                "readOnly": True,
+                "readSet": ["src/sandbox_live.py"],
+                "acceptanceContract": "执行退出码为 0，stdout 为 sandbox-live-ok，stderr 为空",
+                "engineeringTaskCapsule": {
+                    "executionMode": "verify",
+                    "mustRead": ["src/sandbox_live.py"],
+                    "acceptance": "执行退出码为 0，stdout 为 sandbox-live-ok，stderr 为空",
+                },
+            },
+        },
+    }
+
+    def _node_func(state):
+        calls.append(list(state.get("messages") or []))
+        if len(calls) == 1:
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content="--- File: src/sandbox_live.py ---\nprint('sandbox-live-ok')",
+                            name="read_native_file",
+                            tool_call_id="read-proof",
+                        ),
+                        AIMessage(content="The file looks correct."),
+                    ]
+                },
+            )
+        return Command(
+            goto="supervisor",
+            update={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "run-proof",
+                                "name": "run_system_command",
+                                "args": {"command": "python src/sandbox_live.py"},
+                            }
+                        ],
+                    ),
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "ok": True,
+                                "kind": "command_result",
+                                "returnCode": 0,
+                                "keyOutput": "sandbox-live-ok",
+                            }
+                        ),
+                        name="run_system_command",
+                        tool_call_id="run-proof",
+                    ),
+                    AIMessage(content="Verified with a successful command result."),
+                ]
+            },
+        )
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(
+            parent_state,
+            {"node_func": _node_func, "tool_mode": "test"},
+        )
+    )
+
+    assert len(calls) == 2
+    assert any(
+        isinstance(message, HumanMessage)
+        and "Missing tools: run_system_command" in str(message.content)
+        for message in calls[1]
+    )
+    assert child_requests == []
+    assert summary["status"] == "ok"
+    assert "run_system_command" in summary["toolsUsed"]
+    assert summary["verificationEvidence"]["passed"] is True
+
+
+def test_parallel_verifier_gets_focused_correction_after_plain_json_tool_intent():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langgraph.types import Command
+
+    calls: list[list] = []
+    parent_state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "verification_worker",
+            "agentName": "Verification Worker",
+            "delegationId": "delegation-verification-json",
+            "invocationId": "invoke-verification-json",
+            "taskBriefId": "brief-verification-json",
+            "reason": "Read and execute the requested verification target.",
+            "taskBrief": {
+                "taskBriefId": "brief-verification-json",
+                "readOnly": True,
+                "readSet": ["src/sandbox_live.py"],
+                "acceptanceContract": "执行退出码为 0，stdout 为 sandbox-live-ok",
+                "engineeringTaskCapsule": {
+                    "executionMode": "verify",
+                    "mustRead": ["src/sandbox_live.py"],
+                    "acceptance": "执行退出码为 0，stdout 为 sandbox-live-ok",
+                },
+            },
+        },
+    }
+
+    def _node_func(state):
+        calls.append(list(state.get("messages") or []))
+        if len(calls) == 1:
+            messages = [
+                ToolMessage(
+                    content="--- File: src/sandbox_live.py ---\nprint('sandbox-live-ok')",
+                    name="read_native_file",
+                    tool_call_id="read-json-proof",
+                ),
+                AIMessage(content="The file looks correct."),
+            ]
+        elif len(calls) == 2:
+            messages = [
+                AIMessage(
+                    content=json.dumps(
+                        {
+                            "tool_name": "run_system_command",
+                            "arguments": {"command": "python src/sandbox_live.py"},
+                        }
+                    )
+                )
+            ]
+        else:
+            messages = [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "run-json-proof",
+                            "name": "run_system_command",
+                            "args": {"command": "python src/sandbox_live.py"},
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content=json.dumps(
+                        {
+                            "ok": True,
+                            "kind": "command_result",
+                            "returnCode": 0,
+                            "keyOutput": "sandbox-live-ok",
+                        }
+                    ),
+                    name="run_system_command",
+                    tool_call_id="run-json-proof",
+                ),
+                AIMessage(content="Verified with real tool evidence."),
+            ]
+        return Command(goto="supervisor", update={"messages": messages})
+
+    _delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(
+            parent_state,
+            {"node_func": _node_func, "tool_mode": "test"},
+        )
+    )
+
+    assert len(calls) == 3
+    assert any(
+        isinstance(message, HumanMessage)
+        and "final focused correction" in str(message.content)
+        and "do not emit its arguments as JSON or prose" in str(message.content)
+        for message in calls[2]
+    )
+    assert child_requests == []
+    assert summary["status"] == "ok"
+    assert summary["verificationEvidence"]["passed"] is True
+
+
 def test_parallel_branch_can_continue_beyond_legacy_fixed_step_limit():
     from graph.parallel_support import _run_parallel_agent_branch
     from langchain_core.messages import HumanMessage

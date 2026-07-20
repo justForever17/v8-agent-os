@@ -144,6 +144,23 @@ def latest_delegation_context(
             invocation_id=item.get("invocationId"),
             task_brief=item.get("taskBrief"),
         )
+        # These fields are graph/runtime authority, not extension routing
+        # hints.  Rebuilding the compact route context used to discard them,
+        # which made a depth-two disposable worker look like a direct child
+        # after the first tool turn.  Preserve only the stable governance
+        # fields; large runtime payloads remain outside this projection.
+        for key in (
+            "parentDelegationId",
+            "delegationId",
+            "delegationDepth",
+            "delegationNodeCount",
+            "delegationBudget",
+            "runtimeAccess",
+            "safetyApprovalMode",
+            "safety_approval_mode",
+        ):
+            if key in item:
+                normalized[key] = item.get(key)
         latest_any = normalized
         if target_agent_id and normalized.get("agentId") == target_agent_id:
             latest_match = normalized

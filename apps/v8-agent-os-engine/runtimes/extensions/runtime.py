@@ -3072,7 +3072,7 @@ class ExtensionsRuntimeService:
             "mode": "fallback",
             "modelId": "",
             "role": "extensions_prefilter",
-            "reason": "未绑定可用的扩展候选预筛模型。",
+            "reason": "No extension-prefilter model is currently bound.",
             "skills": _stage_policy(skills_policy, default_top=20, default_llm_top=5),
             "mcp": _stage_policy(mcp_policy, default_top=20, default_llm_top=2),
         }
@@ -3607,9 +3607,9 @@ class ExtensionsRuntimeService:
         skill_state: dict[str, Any] = {
             "mode": skill_routing_mode,
             "reason": prefilter_reason or (
-                "Stage 2 已关闭，直接使用第 1 层 shortlist。"
+                "Stage 2 is disabled; using the Stage 1 shortlist directly."
                 if skill_stage1_enabled
-                else "Stage 1 与 Stage 2 已关闭，直接暴露完整 inventory。"
+                else "Stages 1 and 2 are disabled; exposing the available inventory directly."
             ),
             "timedOut": False,
             "cacheHit": False,
@@ -3618,9 +3618,9 @@ class ExtensionsRuntimeService:
         mcp_state: dict[str, Any] = {
             "mode": mcp_routing_mode,
             "reason": prefilter_reason or (
-                "Stage 2 已关闭，直接使用第 1 层 shortlist。"
+                "Stage 2 is disabled; using the Stage 1 shortlist directly."
                 if mcp_stage1_enabled
-                else "Stage 1 与 Stage 2 已关闭，直接暴露完整 inventory。"
+                else "Stages 1 and 2 are disabled; exposing the available inventory directly."
             ),
             "timedOut": False,
             "cacheHit": False,
@@ -3637,7 +3637,7 @@ class ExtensionsRuntimeService:
                 skill_routing_mode = "llm_rerank_shortlist" if skill_stage1_enabled else "llm_rerank_full_inventory"
                 skill_state = {
                     "mode": skill_routing_mode,
-                    "reason": "候选数量不足，直接使用当前候选集。",
+                    "reason": "The candidate set is already small enough to use directly.",
                     "timedOut": False,
                     "cacheHit": False,
                     "bypassed": True,
@@ -3651,7 +3651,7 @@ class ExtensionsRuntimeService:
                 mcp_routing_mode = "llm_rerank_shortlist" if mcp_stage1_enabled else "llm_rerank_full_inventory"
                 mcp_state = {
                     "mode": mcp_routing_mode,
-                    "reason": "候选数量不足，直接使用当前候选集。",
+                    "reason": "The candidate set is already small enough to use directly.",
                     "timedOut": False,
                     "cacheHit": False,
                     "bypassed": True,
@@ -3902,50 +3902,50 @@ class ExtensionsRuntimeService:
 
         lines = [
             "\n[Extensions Runtime]",
-            f"- Skills 候选：{len(selected_skill_names)} / 已安装 {len(skill_entries)}",
-            f"- MCP 工具候选：{len(exposed_mcp_tool_names)} / 已连接工具 {len(mcp_tools)}",
+            "- Extension candidates are optional references. Use them only when they materially help the current task.",
+            f"- Skill candidates: {len(selected_skill_names)} / installed: {len(skill_entries)}",
+            f"- MCP tool candidates: {len(exposed_mcp_tool_names)} / connected tools: {len(mcp_tools)}",
         ]
         if cross_runtime_escape:
-            lines.append("- Cross-runtime escape：已启用。检测到阻塞/切换类任务语义，本轮适度放宽跨 runtime 候选。")
+            lines.append("- Cross-runtime escape is active because the task indicates a blocked or runtime-switching flow.")
         if any(mode.startswith("llm_rerank") for mode in (skill_routing_mode, mcp_routing_mode)):
-            lines.append(f"- 候选预筛：已启用两层预筛（LLM 精排模型：{prefilter_model_id}）")
+            lines.append(f"- Candidate prefilter: two-stage ranking via {prefilter_model_id}.")
         elif any(mode.startswith("fallback") for mode in (skill_routing_mode, mcp_routing_mode)):
-            details = prefilter_reason or "当前未绑定可用的扩展候选预筛模型。"
-            lines.append(f"- 候选预筛：本轮已回退 lexical（{_truncate(details, 120)}）")
-        elif skill_stage1_enabled or mcp_stage1_enabled:
-            lines.append("- 候选预筛：当前使用第 1 层 shortlist。")
+            details = prefilter_reason or "No extension-prefilter model is currently bound."
+            lines.append(f"- Candidate prefilter: lexical fallback ({_truncate(details, 120)}).")
         else:
-            lines.append("- 候选预筛：当前未启用 Stage 1 / Stage 2，将直接暴露完整 inventory。")
+            if not (skill_stage1_enabled or mcp_stage1_enabled):
+                lines.append("- Candidate prefilter is disabled; the connected inventory remains available.")
         if selected_skill_names:
-            lines.append("- 当前命中的 Skills 目录入口：")
+            lines.append("- Relevant Skill catalog entries:")
             for entry in selected_skill_entries:
                 source_label = str(entry.get("sourceType") or "global").strip() or "global"
                 normalized_entry_name = str(entry.get("skillName") or "").strip().lower()
                 has_duplicate_skill_name = skill_name_counts.get(normalized_entry_name, 0) > 1
                 lines.append(f"  - {entry.get('skillName') or 'unknown'} [{source_label}]")
                 lines.append(
-                    f"    - Skill description: {_truncate(_single_line_text(entry.get('description') or '') or '暂无说明。', 180)}"
+                    f"    - Skill description: {_truncate(_single_line_text(entry.get('description') or '') or 'No description.', 180)}"
                 )
                 if has_duplicate_skill_name and entry.get("skillRoot"):
                     lines.append(f"    - Root: {entry.get('skillRoot')}")
         if exposed_mcp_tool_names:
-            lines.append("- 当前暴露给本轮的 MCP servers（选中 server 后暴露完整工具树）：")
+            lines.append("- Relevant MCP servers (a selected server exposes its complete tool tree):")
             for server in selected_mcp_servers:
                 lines.append(f"  - {server.get('serverName')} ({server.get('toolCount')} tools)")
-            lines.append("- 当前暴露给本轮的 MCP 工具：")
+            lines.append("- MCP tools exposed for this turn:")
             for tool in selected_mcp_tools:
                 server_name = _mcp_tool_server_name(tool)
                 lines.append(
-                    f"  - {_tool_name(tool)} ({server_name}): {_truncate(_tool_description(tool) or '暂无说明。', 80)}"
+                    f"  - {_tool_name(tool)} ({server_name}): {_truncate(_tool_description(tool) or 'No description.', 80)}"
                 )
         if plugin_projection.get("grants"):
-            lines.append("- 插件特权投影（来自用户插件引用或 Supervisor 最小任务授权）：")
+            lines.append("- Privileged plugin projection from an explicit user reference or a minimal Supervisor task grant:")
             for grant in list(plugin_projection.get("grants") or []):
                 lines.append(
                     f"  - {grant.get('pluginId')} | {grant.get('scope')} | components={len(list(grant.get('componentIds') or []))}"
                 )
             if plugin_projection.get("cliProfiles"):
-                lines.append("- 已授权 CLI 仅通过 plugin_cli 的 actionId + typed parameters 合同执行，禁止传入任意 argv 或拼接 shell 字符串。")
+                lines.append("- Authorized CLI actions use plugin_cli actionId plus typed parameters; arbitrary argv and shell concatenation are forbidden.")
         lines.append("[/Extensions Runtime]")
 
         return ExtensionRouteBundle(
@@ -4285,6 +4285,11 @@ class ExtensionsRuntimeService:
             "extension.route.selected",
             {
                 "queryPreview": _truncate(user_query, 160),
+                "boundToolNames": [
+                    str(getattr(tool_ref, "name", "") or "").strip()
+                    for tool_ref in list(route_bundle.filtered_tools or [])
+                    if str(getattr(tool_ref, "name", "") or "").strip()
+                ],
                 "skillCandidates": route_bundle.selected_skill_names,
                 "selectedSkillIds": route_bundle.selected_skill_ids,
                 "mcpToolCandidates": route_bundle.exposed_mcp_tool_names,

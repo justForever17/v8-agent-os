@@ -22,9 +22,44 @@ from core.engineering_sandbox.platform_driver import (
 )
 from core.engineering_sandbox.service import EngineeringSandboxService
 from core.engineering_sandbox.workspace_topology import resolve_workspace_topology
-from graph.parallel_support import _fail_managed_branch_workspace
+from graph.parallel_support import (
+    _delegation_summary_allows_changeset_promotion,
+    _fail_managed_branch_workspace,
+    _finalize_managed_branch_workspace,
+)
 from core.delegation_broker import normalize_task_brief
 from core.engineering_capsule import derive_grandchild_engineering_task
+
+
+def test_managed_git_retries_windows_dll_initialization_failure(monkeypatch, tmp_path: Path) -> None:
+    from core.engineering_sandbox import git_service as git_service_module
+
+    calls: list[dict] = []
+    responses = [
+        subprocess.CompletedProcess(["git"], 0xC0000142, stdout="", stderr=""),
+        subprocess.CompletedProcess(["git"], 0, stdout="head\n", stderr=""),
+    ]
+
+    def _run(*_args, **kwargs):
+        calls.append(dict(kwargs))
+        return responses.pop(0)
+
+    delays: list[float] = []
+    monkeypatch.setattr(git_service_module.subprocess, "run", _run)
+    monkeypatch.setattr(
+        git_service_module,
+        "_is_windows_dll_init_failure",
+        lambda return_code: return_code == 0xC0000142,
+    )
+    monkeypatch.setattr(git_service_module.time, "sleep", delays.append)
+    service = ManagedGitService(home=tmp_path / "v8-home", git_executable="git")
+
+    result = service.run(["rev-parse", "HEAD"], cwd=tmp_path)
+
+    assert result.returncode == 0
+    assert result.stdout == "head\n"
+    assert len(calls) == 2
+    assert delays == [0.05]
 
 
 def test_workspace_topology_preserves_monorepo_subdirectory(tmp_path: Path) -> None:
@@ -75,6 +110,188 @@ def test_failed_agent_branch_closes_managed_worktree_lease(monkeypatch) -> None:
     }
     assert result["sandboxEvidence"]["state"] == "failed"
     assert result["sandboxEvidence"]["leaseId"] == "lease-failed"
+
+
+def test_write_task_rejects_managed_worktree_with_no_changed_paths(monkeypatch) -> None:
+    from core.engineering_sandbox.contracts import GitChangeSetRef
+
+    class FakeService:
+        def finalize_task_workspace(self, *, worktree_id: str, commit_message: str):
+            assert worktree_id == "worktree-no-change"
+            assert commit_message.startswith("V8OS delegated task:")
+            return GitChangeSetRef(
+                repository_id="repo-test",
+                worktree_id=worktree_id,
+                branch_name="v8os/test",
+                base_commit="base",
+                commit_id="base",
+                changed_paths=(),
+                status="no_changes",
+            )
+
+        def preserve_task_workspace_unmerged(self, *, worktree_id: str, reason: str) -> None:
+            assert worktree_id == "worktree-no-change"
+            assert reason == "managed_worktree_no_declared_changes"
+
+    monkeypatch.setattr(
+        "core.engineering_sandbox.service.get_engineering_sandbox_service",
+        lambda: FakeService(),
+    )
+
+    result = _finalize_managed_branch_workspace(
+        {
+            "taskBriefId": "write-required",
+            "taskBrief": {
+                "taskBriefId": "write-required",
+                "writeRequired": True,
+                "writeSet": ["src/sandbox_live.py"],
+            },
+            "engineeringWorkspace": {
+                "worktree_id": "worktree-no-change",
+                "sandbox_lease_id": "lease-no-change",
+                "sandbox_policy_digest": "policy-no-change",
+            },
+        },
+        {"status": "ok", "summary": "claimed success"},
+    )
+
+    assert result["status"] == "error"
+    assert result["error"] == "managed_worktree_no_declared_changes"
+    assert result["gitChangeSet"]["changedPaths"] == []
+    assert result["sandboxEvidence"]["state"] == "no_changes"
+
+
+def test_failed_managed_worktree_is_preserved_but_never_merged(monkeypatch) -> None:
+    from core.engineering_sandbox.contracts import GitChangeSetRef
+
+    merge_calls: list[str] = []
+
+    class FakeService:
+        def finalize_task_workspace(self, *, worktree_id: str, commit_message: str):
+            assert worktree_id == "worktree-failed-candidate"
+            assert commit_message.startswith("V8OS delegated task:")
+            return GitChangeSetRef(
+                repository_id="repo-test",
+                worktree_id=worktree_id,
+                branch_name="v8os/failed-candidate",
+                base_commit="base",
+                commit_id="failed-candidate",
+                changed_paths=("src/sandbox_live.py",),
+                status="candidate",
+            )
+
+        def merge_child_change_set_to_parent(self, *, child_worktree_id: str, run_id: str):
+            merge_calls.append(child_worktree_id)
+            raise AssertionError("failed delegation must not merge into its parent")
+
+        def preserve_task_workspace_unmerged(self, *, worktree_id: str, reason: str) -> None:
+            assert worktree_id == "worktree-failed-candidate"
+            assert reason == "required_child_delegation_missing"
+
+    monkeypatch.setattr(
+        "core.engineering_sandbox.service.get_engineering_sandbox_service",
+        lambda: FakeService(),
+    )
+
+    result = _finalize_managed_branch_workspace(
+        {
+            "taskBriefId": "failed-write",
+            "taskBrief": {
+                "taskBriefId": "failed-write",
+                "writeRequired": True,
+                "writeSet": ["src/sandbox_live.py"],
+            },
+            "engineeringWorkspace": {
+                "worktree_id": "worktree-failed-candidate",
+                "parent_worktree_id": "parent-worktree",
+                "sandbox_lease_id": "lease-failed-candidate",
+                "sandbox_policy_digest": "policy-failed-candidate",
+            },
+        },
+        {
+            "status": "blocked",
+            "error": "required_child_delegation_missing",
+            "summary": "The direct subagent omitted its required child delegation.",
+        },
+    )
+
+    assert merge_calls == []
+    assert result["status"] == "blocked"
+    assert result["error"] == "required_child_delegation_missing"
+    assert result["gitChangeSet"]["changedPaths"] == ["src/sandbox_live.py"]
+    assert "parentWorktreeMerge" not in result
+    assert result["sandboxEvidence"]["state"] == "preserved_unmerged"
+    assert result["sandboxEvidence"]["mergeEligibility"] == "rejected"
+    assert result["artifactRefs"][-1]["accepted"] is False
+
+
+def test_successful_managed_child_changeset_merges_to_parent(monkeypatch) -> None:
+    from core.engineering_sandbox.contracts import GitChangeSetRef
+
+    class FakeService:
+        def finalize_task_workspace(self, *, worktree_id: str, commit_message: str):
+            return GitChangeSetRef(
+                repository_id="repo-test",
+                worktree_id=worktree_id,
+                branch_name="v8os/success-candidate",
+                base_commit="base",
+                commit_id="success-candidate",
+                changed_paths=("src/sandbox_live.py",),
+                status="candidate",
+            )
+
+        def merge_child_change_set_to_parent(self, *, child_worktree_id: str, run_id: str):
+            assert child_worktree_id == "worktree-success-candidate"
+            assert run_id == "run-success"
+            return {
+                "status": "merged_to_parent",
+                "parentWorktreeId": "parent-worktree",
+                "childWorktreeId": child_worktree_id,
+                "changedPaths": ["src/sandbox_live.py"],
+            }
+
+    monkeypatch.setattr(
+        "core.engineering_sandbox.service.get_engineering_sandbox_service",
+        lambda: FakeService(),
+    )
+
+    result = _finalize_managed_branch_workspace(
+        {
+            "taskBriefId": "successful-write",
+            "invocationId": "run-success",
+            "taskBrief": {
+                "taskBriefId": "successful-write",
+                "writeRequired": True,
+                "writeSet": ["src/sandbox_live.py"],
+            },
+            "engineeringWorkspace": {
+                "worktree_id": "worktree-success-candidate",
+                "parent_worktree_id": "parent-worktree",
+            },
+        },
+        {"status": "ok", "summary": "implemented and verified"},
+    )
+
+    assert result["status"] == "ok"
+    assert result["parentWorktreeMerge"]["status"] == "merged_to_parent"
+    assert result["sandboxEvidence"]["state"] == "completed"
+    assert result["artifactRefs"][-1]["accepted"] is True
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        ({"status": "ok"}, True),
+        ({"status": "completed"}, True),
+        ({"status": "degraded", "canContinueParent": True}, True),
+        ({"status": "degraded", "canContinueParent": False}, False),
+        ({"status": "blocked", "artifactRefs": ["git://candidate"]}, False),
+        ({"status": "error", "changedFiles": ["src/a.py"]}, False),
+        ({"artifactRefs": ["git://candidate"]}, False),
+    ],
+)
+def test_delegation_changeset_promotion_requires_explicit_success(summary, expected) -> None:
+    assert _delegation_summary_allows_changeset_promotion(summary) is expected
 
 
 def test_aborting_run_closes_only_nonterminal_worktrees_and_leases(tmp_path: Path) -> None:

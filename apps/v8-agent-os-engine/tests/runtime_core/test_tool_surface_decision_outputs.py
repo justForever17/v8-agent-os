@@ -442,6 +442,28 @@ def test_fetch_skill_instructions_keeps_method_and_hides_loader_paths():
     assert "not a replacement for the instructions above" in visible
 
 
+def test_invalid_fetch_skill_call_stays_a_compact_error_instead_of_skill_guidance():
+    message = ToolMessage(
+        content=(
+            "Error: fetch_skill_instructions is not a valid tool, "
+            "try one of [read_native_file, run_system_command]."
+        ),
+        name="fetch_skill_instructions",
+        tool_call_id="call-invalid-fetch-skill",
+    )
+    visible_message = apply_tool_surface_budget(
+        message,
+        {"agentVisibleBudget": 1200},
+        tool_name="fetch_skill_instructions",
+    )
+    visible = str(visible_message.content)
+
+    assert visible.startswith("Error: fetch_skill_instructions is not a valid tool")
+    assert "Skill instructions" not in visible
+    assert "Relative path continuation" not in visible
+    assert visible_message.additional_kwargs["v8_tool_output_budget"]["semanticTruncationStrategy"] == "invalid_tool_error"
+
+
 def test_fetch_skill_instructions_drops_manifest_before_truncating_main_contract():
     main_body = "Main contract line.\n" * 80
     manifest_body = "- references/generated.md\n" * 200

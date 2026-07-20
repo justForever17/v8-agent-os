@@ -339,6 +339,8 @@ def main() -> int:
                 "ignored",
                 "failed",
                 "blocked",
+                "cancelled",
+                "canceled",
                 "cleaned",
             }
         ]

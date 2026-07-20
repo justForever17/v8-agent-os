@@ -13,6 +13,9 @@ def test_command_governance_detects_interactive_and_session_preferred_commands()
 
     assert _detect_interactive_command("python")
     assert _detect_interactive_command("python -c \"print(1)\"") is None
+    assert _detect_interactive_command("python src/sandbox_live.py") is None
+    assert _detect_interactive_command("python -u src/sandbox_live.py") is None
+    assert _detect_interactive_command("py src/sandbox_live.py") is None
     assert _detect_session_preferred_command("npm install")
     assert _detect_session_preferred_command("python -m pip install pytest")
     assert _detect_session_preferred_command("uv add fastapi")

@@ -15,6 +15,8 @@ from core.runtime_episodes import (
     TERMINAL_EPISODE_STATES,
     append_handoff_ref,
     emit_runtime_episode_event,
+    runtime_episode_parent_id,
+    superseded_runtime_episode_ids,
     transition_runtime_episode,
 )
 from core.time_truth import utc_now_iso
@@ -222,7 +224,8 @@ def build_runtime_episode_wait_node():
             for item in list(updated.get("handoffRefs") or [])
             if isinstance(item, dict)
         }
-        merged: list[dict] = []
+        available: list[dict] = []
+        available_ids: set[str] = set()
         for episode in episodes:
             episode_id = _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
             if not episode_id:
@@ -234,45 +237,105 @@ def build_runtime_episode_wait_node():
             for row in handoffs:
                 payload = dict(row.get("payload") or row.get("handoff") or row)
                 handoff_id = _string_value(payload.get("handoffRefId"), payload.get("handoffId"), payload.get("artifactId"))
+                if not handoff_id or handoff_id not in available_ids:
+                    available.append(payload)
+                    if handoff_id:
+                        available_ids.add(handoff_id)
                 if handoff_id and handoff_id in existing_ids:
                     continue
                 updated = append_handoff_ref(updated, payload)
                 if handoff_id:
                     existing_ids.add(handoff_id)
-                merged.append(payload)
-        return updated, merged
+        return updated, available
 
     def _compact_handoff_projection(handoff: dict) -> dict:
-        nested_handoff = handoff.get("delegationHandoff")
-        nested_handoff = dict(nested_handoff) if isinstance(nested_handoff, dict) else {}
-        results = [item for item in list(handoff.get("results") or []) if isinstance(item, dict)]
-        for item in list(nested_handoff.get("results") or []):
-            if isinstance(item, dict) and item not in results:
-                results.append(item)
+        def _collect_results(value: object, *, depth: int = 0) -> list[dict]:
+            if depth > 8 or not isinstance(value, dict):
+                return []
+            collected = [item for item in list(value.get("results") or []) if isinstance(item, dict)]
+            nested = value.get("delegationHandoff")
+            if isinstance(nested, dict):
+                collected.extend(_collect_results(nested, depth=depth + 1))
+            for child in list(value.get("childHandoffs") or []):
+                if isinstance(child, dict):
+                    collected.extend(_collect_results(child, depth=depth + 1))
+            return collected
+
+        results: list[dict] = []
+        result_keys: set[tuple[str, str, str]] = set()
+        for item in _collect_results(handoff):
+            key = (
+                _string_value(item.get("delegationId"), item.get("invocationId")),
+                _string_value(item.get("taskBriefId"), item.get("taskId")),
+                _string_value(item.get("status")),
+            )
+            if key in result_keys:
+                continue
+            result_keys.add(key)
+            results.append(item)
         compact_results: list[dict] = []
         for item in results[:8]:
             artifact_refs = list(item.get("artifactRefs") or item.get("artifacts") or [])[:8]
             proof_refs = list(item.get("proofRefs") or [])[:8]
             status = _string_value(item.get("status"))
+            verification_results = [
+                dict(result)
+                for result in list(item.get("verificationResults") or [])
+                if isinstance(result, dict)
+            ][:4]
+            verification_evidence = (
+                dict(item.get("verificationEvidence"))
+                if isinstance(item.get("verificationEvidence"), dict)
+                else {}
+            )
+            verification_passed = bool(verification_evidence.get("passed")) or any(
+                result.get("passed") is True
+                or str(result.get("status") or "").strip().lower() in {"verified", "passed", "success", "completed"}
+                for result in verification_results
+            )
+            verification_lines: list[str] = []
+            evidence_source = verification_evidence or (verification_results[0] if verification_results else {})
+            for observation in list(evidence_source.get("observations") or [])[:4]:
+                if not isinstance(observation, dict):
+                    continue
+                if observation.get("path"):
+                    verification_lines.append(f"read={observation.get('path')}")
+                if observation.get("command"):
+                    verification_lines.append(
+                        f"command={observation.get('command')}; exit={observation.get('returnCode')}; "
+                        f"stdout={str(observation.get('stdout') or '')!r}; stderr={str(observation.get('stderr') or '')!r}"
+                    )
             evidence_complete = bool(
                 status in {"ok", "completed", "ready", "success"}
-                and artifact_refs
+                and (artifact_refs or verification_passed)
                 and not item.get("error")
                 and not item.get("missingArtifactEvidence")
                 and not item.get("blockers")
             )
+            result_text = _string_value(item.get("resultText"), item.get("summary"), item.get("localSelfCheck"))[:1800]
+            if verification_lines:
+                result_text = ("; ".join(verification_lines) + (f"; {result_text}" if result_text else ""))[:1800]
             compact_results.append(
                 {
                     "taskBriefId": _string_value(item.get("taskBriefId"), item.get("taskId")),
+                    "delegationId": _string_value(item.get("delegationId")),
+                    "parentDelegationId": _string_value(item.get("parentDelegationId")),
+                    "producerEpisodeId": _string_value(item.get("producerEpisodeId")),
+                    "delegationDepth": item.get("delegationDepth"),
                     "targetLabel": _string_value(item.get("targetLabel"), item.get("agentName"), item.get("agentId")),
                     "status": status,
-                    "result": _string_value(item.get("resultText"), item.get("summary"), item.get("localSelfCheck"))[:1800],
+                    "result": result_text,
                     "artifactRefs": artifact_refs,
                     "proofRefs": proof_refs,
+                    "toolsUsed": list(item.get("toolsUsed") or [])[:12],
+                    "verificationResults": verification_results,
+                    "verificationPassed": verification_passed,
                     "blockers": list(item.get("blockers") or item.get("residualRisks") or [])[:6],
                     "evidenceComplete": evidence_complete,
                 }
             )
+        nested_handoff = handoff.get("delegationHandoff")
+        nested_handoff = dict(nested_handoff) if isinstance(nested_handoff, dict) else {}
         nested_refs = list(nested_handoff.get("refs") or nested_handoff.get("artifactRefs") or [])
         nested_proof_refs = list(nested_handoff.get("proofRefs") or nested_handoff.get("verificationRefs") or [])
         return {
@@ -305,12 +368,20 @@ def build_runtime_episode_wait_node():
                     result_status = _string_value(result.get("status"), "unknown")
                     result_text = _string_value(result.get("result"))[:1600]
                     lines.append(f"  - {task_id} · {target} · {result_status}: {result_text or '已回传结构化结果。'}")
+                    if result.get("delegationDepth") or result.get("parentDelegationId"):
+                        lines.append(
+                            "    lineage: "
+                            f"depth={result.get('delegationDepth') or 'unknown'}; "
+                            f"delegation={_string_value(result.get('delegationId')) or 'unknown'}; "
+                            f"parent={_string_value(result.get('parentDelegationId')) or 'none'}"
+                        )
                     artifact_count = len(list(result.get("artifactRefs") or []))
                     proof_count = len(list(result.get("proofRefs") or []))
-                    if artifact_count or proof_count:
+                    if artifact_count or proof_count or result.get("verificationPassed"):
                         evidence_state = "complete" if result.get("evidenceComplete") else "review_required"
                         lines.append(
-                            f"    evidence: {evidence_state}; artifacts={artifact_count}, proofRefs={proof_count}"
+                            f"    evidence: {evidence_state}; artifacts={artifact_count}, proofRefs={proof_count}, "
+                            f"semanticVerification={bool(result.get('verificationPassed'))}"
                         )
         else:
             lines.append("Episodes:")
@@ -451,11 +522,36 @@ def build_runtime_episode_wait_node():
             active = _active_episodes(episodes)
             terminal = _terminal_episodes(episodes)
             if episodes and not active:
-                failed_handoffs = _failed_handoffs(handoffs)
-                degraded_handoffs = _degraded_handoffs(handoffs)
-                failed_episodes = _failed_episodes(terminal or episodes)
-                required_failed_handoffs = _required_failed_handoffs(handoffs, terminal or episodes)
-                required_failed_episodes = _required_failed_episodes(terminal or episodes)
+                handoffs_by_episode: dict[str, list[dict]] = {}
+                for handoff in handoffs:
+                    producer_id = _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId"))
+                    if producer_id:
+                        handoffs_by_episode.setdefault(producer_id, []).append(handoff)
+                superseded_ids = superseded_runtime_episode_ids(terminal or episodes, handoffs_by_episode)
+                if superseded_ids:
+                    route_context["supersededRuntimeEpisodeIds"] = sorted(superseded_ids)
+                effective_terminal = [
+                    episode
+                    for episode in (terminal or episodes)
+                    if not runtime_episode_parent_id(episode)
+                    and _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+                    not in superseded_ids
+                ]
+                effective_episode_ids = {
+                    _string_value(episode.get("episodeId"), episode.get("id"), episode.get("needId"))
+                    for episode in effective_terminal
+                }
+                effective_handoffs = [
+                    handoff
+                    for handoff in handoffs
+                    if _string_value(handoff.get("producerEpisodeId"), handoff.get("episodeId"))
+                    in effective_episode_ids
+                ]
+                failed_handoffs = _failed_handoffs(effective_handoffs)
+                degraded_handoffs = _degraded_handoffs(effective_handoffs)
+                failed_episodes = _failed_episodes(effective_terminal)
+                required_failed_handoffs = _required_failed_handoffs(effective_handoffs, effective_terminal)
+                required_failed_episodes = _required_failed_episodes(effective_terminal)
                 if required_failed_handoffs or required_failed_episodes:
                     failure_reason = _string_value(
                         (required_failed_episodes[0] if required_failed_episodes else {}).get("errorCode"),
@@ -467,7 +563,7 @@ def build_runtime_episode_wait_node():
                         "runtime_episode_failed",
                     )
                     failure_key = _failure_summary_key(
-                        episodes=required_failed_episodes or terminal or episodes,
+                        episodes=required_failed_episodes or effective_terminal,
                         handoffs=required_failed_handoffs,
                         reason=failure_reason,
                     )
@@ -487,8 +583,8 @@ def build_runtime_episode_wait_node():
                                 "mode": "runtime_episode",
                                 "nextAction": "recoverable_failure",
                                 "state": "episode_failed",
-                                "episodeCount": len(episodes),
-                                "handoffCount": len(handoffs),
+                                "episodeCount": len(effective_terminal),
+                                "handoffCount": len(effective_handoffs),
                                 "failedEpisodeCount": len(required_failed_episodes),
                                 "failedHandoffCount": len(required_failed_handoffs),
                                 "degradedEpisodeCount": len(failed_episodes) - len(required_failed_episodes),
@@ -499,8 +595,8 @@ def build_runtime_episode_wait_node():
                             "messages": (
                                 [
                                     _summary_message(
-                                        episodes=required_failed_episodes or terminal or episodes,
-                                        handoffs=required_failed_handoffs or handoffs,
+                                        episodes=required_failed_episodes or effective_terminal,
+                                        handoffs=required_failed_handoffs or effective_handoffs,
                                         status="Recoverable Failure",
                                         reason=failure_reason,
                                     )
@@ -520,15 +616,15 @@ def build_runtime_episode_wait_node():
                             "mode": "runtime_episode",
                             "nextAction": "resume_supervisor",
                             "state": "degraded_handoff_ready" if degraded_count else ("handoff_ready" if handoffs else "episode_terminal"),
-                            "episodeCount": len(episodes),
-                            "handoffCount": len(handoffs),
+                            "episodeCount": len(effective_terminal),
+                            "handoffCount": len(effective_handoffs),
                             "degradedEpisodeCount": len(failed_episodes),
                             "degradedHandoffCount": len(failed_handoffs) + len(degraded_handoffs),
                         },
                         "messages": [
                             _summary_message(
-                                episodes=terminal or episodes,
-                                handoffs=handoffs,
+                                episodes=effective_terminal,
+                                handoffs=effective_handoffs,
                                 status="Degraded Handoff Ready" if degraded_count else "Handoff Ready",
                                 reason="optional_lane_degraded" if degraded_count else "",
                             )

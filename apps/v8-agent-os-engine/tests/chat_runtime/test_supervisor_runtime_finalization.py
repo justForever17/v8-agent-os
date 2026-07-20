@@ -12,6 +12,7 @@ import graph.supervisor_turn as supervisor_turn_module
 from graph.supervisor_turn import (
     _coerce_recoverable_failure_response,
     _filter_tool_names,
+    _latest_message_is_true_user_input,
     _runtime_episode_handoff_ready,
     _runtime_episode_recoverable_failure,
     _runtime_handoff_continuation_message,
@@ -157,6 +158,30 @@ def test_delegation_acceptance_parser_requires_one_explicit_decision():
         "decision": "ACCEPT",
         "summary": "依据：证据完整。",
     }
+    natural_accepted = _delegation_acceptance_from_final_text(
+        "验收结论：**accept**\n\n- accept：证据完整。\n- retry：不执行。\n- ignore：不执行。"
+    )
+    assert natural_accepted == {
+        "status": "accepted",
+        "decision": "ACCEPT",
+        "summary": "accept：证据完整。\n- retry：不执行。\n- ignore：不执行。",
+    }
+    action_accepted = _delegation_acceptance_from_final_text(
+        "1. **验收动作**：显式 **ACCEPT**（验收通过）。\n2. 依据：工具证据完整。"
+    )
+    assert action_accepted == {
+        "status": "accepted",
+        "decision": "ACCEPT",
+        "summary": "（验收通过）。\n2. 依据：工具证据完整。",
+    }
+    heading_accepted = _delegation_acceptance_from_final_text(
+        "## 验收动作\n\n**`accept` — 接受 Verification Engineer 的验收结果。**"
+    )
+    assert heading_accepted == {
+        "status": "accepted",
+        "decision": "ACCEPT",
+        "summary": "接受 Verification Engineer 的验收结果。**",
+    }
     repeated_accepted = _delegation_acceptance_from_final_text(
         "验收决定：ACCEPT\n前置结论。\n### 验收决定：ACCEPT\n依据：父子结果一致。"
     )
@@ -210,6 +235,81 @@ def test_runtime_handoff_retries_missing_delegation_acceptance_once():
     assert "Delegation Acceptance Discipline Correction" in calls[0]["messages"][-1].content
 
 
+def test_direct_delegation_handoff_retries_acceptance_without_runtime_dispatch_status():
+    calls = []
+    contract = {"supervisorAcceptance": {"status": "pending"}}
+    state = {
+        "messages": [
+            HumanMessage(content="verify this"),
+            HumanMessage(
+                content="[V8OS 子代理结构化回流]",
+                additional_kwargs={
+                    "v8_governance_type": "delegation_handoff",
+                    "v8_delegation_handoffs": [contract],
+                },
+            ),
+        ],
+        "parallel_results": [contract],
+    }
+
+    def _robust_invoke(_llm, messages, tools, **_kwargs):
+        calls.append({"messages": messages, "tools": tools})
+        return AIMessage(content="验收决定：ACCEPT\n依据：回流证据满足合同。")
+
+    result = _retry_delegation_acceptance_once(
+        AIMessage(content="结果已通过。"),
+        state=state,
+        prepared_messages=[HumanMessage(content="original")],
+        invoke_llm=object(),
+        robust_invoke=_robust_invoke,
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert result.content.startswith("验收决定：ACCEPT")
+    assert len(calls) == 1
+
+
+def test_stale_delegation_handoff_does_not_force_acceptance_after_new_user_message():
+    calls = []
+    state = {
+        "messages": [
+            HumanMessage(
+                content="[V8OS 子代理结构化回流]",
+                additional_kwargs={
+                    "v8_governance_type": "delegation_handoff",
+                    "v8_delegation_handoffs": [{"supervisorAcceptance": {"status": "pending"}}],
+                },
+            ),
+            HumanMessage(content="start an unrelated new task"),
+        ],
+        "parallel_results": [{"supervisorAcceptance": {"status": "pending"}}],
+    }
+
+    result = _retry_delegation_acceptance_once(
+        AIMessage(content="new task response"),
+        state=state,
+        prepared_messages=[],
+        invoke_llm=object(),
+        robust_invoke=lambda *_args, **_kwargs: calls.append(True),
+        preferred_model_id="test-model",
+        build_model=lambda _model_id: object(),
+        sanitize_response_tool_calls=lambda response: response,
+    )
+
+    assert result.content == "new task response"
+    assert calls == []
+
+
+def test_internal_delegation_handoff_is_not_treated_as_new_user_input():
+    message = HumanMessage(
+        content="[V8OS 子代理结构化回流]",
+        additional_kwargs={"v8_governance_type": "delegation_handoff"},
+    )
+    assert not _latest_message_is_true_user_input([message])
+
+
 def test_completion_gate_blocks_terminal_delegation_without_parent_acceptance():
     episode = {
         "episodeId": "subagent::parent",
@@ -236,6 +336,11 @@ def test_completion_gate_blocks_terminal_delegation_without_parent_acceptance():
         handoffs_by_episode=handoffs,
         final_text="> 验收决定：**ACCEPT**\n> 依据：证据完整。",
     )
+    natural_accepted = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode=handoffs,
+        final_text="验收结论：**accept**\n- retry：不执行。\n- ignore：不执行。",
+    )
     repeated_accepted = evaluate_supervisor_completion(
         episodes=[episode],
         handoffs_by_episode=handoffs,
@@ -250,6 +355,7 @@ def test_completion_gate_blocks_terminal_delegation_without_parent_acceptance():
     assert missing.action == "fail"
     assert missing.reason == "delegation_supervisor_acceptance_missing"
     assert accepted.action == "complete"
+    assert natural_accepted.action == "complete"
     assert repeated_accepted.action == "complete"
     assert conflicting.action == "fail"
     assert conflicting.reason == "delegation_supervisor_acceptance_missing"

@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any, Iterable, Mapping, Sequence
 
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
@@ -47,6 +48,12 @@ MANAGED_GITIGNORE_LINES = (
     "target/",
     "coverage/",
 )
+WINDOWS_DLL_INIT_FAILED = 0xC0000142
+WINDOWS_PROCESS_START_RETRY_DELAYS = (0.05, 0.15)
+
+
+def _is_windows_dll_init_failure(return_code: int) -> bool:
+    return os.name == "nt" and int(return_code) == WINDOWS_DLL_INIT_FAILED
 
 
 class ManagedGitError(RuntimeError):
@@ -174,24 +181,40 @@ class ManagedGitService:
         text: bool = True,
         input_text: str | bytes | None = None,
     ) -> subprocess.CompletedProcess[Any]:
-        result = subprocess.run(
-            [*self._command_prefix(), *[str(item) for item in args]],
-            cwd=str(cwd),
-            env=self._environment(env),
-            shell=False,
-            capture_output=True,
-            text=text,
-            input=input_text,
-            encoding="utf-8" if text else None,
-            errors="replace" if text else None,
-            timeout=120,
-        )
+        command = [*self._command_prefix(), *[str(item) for item in args]]
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        result: subprocess.CompletedProcess[Any] | None = None
+        attempts = 0
+        for retry_delay in (*WINDOWS_PROCESS_START_RETRY_DELAYS, None):
+            attempts += 1
+            result = subprocess.run(
+                command,
+                cwd=str(cwd),
+                env=self._environment(env),
+                shell=False,
+                capture_output=True,
+                text=text,
+                input=input_text,
+                encoding="utf-8" if text else None,
+                errors="replace" if text else None,
+                timeout=120,
+                creationflags=creationflags,
+            )
+            if not _is_windows_dll_init_failure(result.returncode) or retry_delay is None:
+                break
+            time.sleep(retry_delay)
+        assert result is not None
         if check and result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else str(result.stderr or "")
             raise ManagedGitError(
                 "git_command_failed",
                 stderr.strip() or f"Git command failed with exit code {result.returncode}.",
-                details={"args": list(args), "cwd": str(cwd), "returnCode": result.returncode},
+                details={
+                    "args": list(args),
+                    "cwd": str(cwd),
+                    "returnCode": result.returncode,
+                    "attempts": attempts,
+                },
             )
         return result
 

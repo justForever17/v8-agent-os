@@ -831,6 +831,22 @@ class EngineeringSandboxService:
                 error_code=error_code,
             )
 
+    def preserve_task_workspace_unmerged(self, *, worktree_id: str, reason: str) -> None:
+        """Close a finalized candidate without promoting or deleting its evidence."""
+
+        row = self._get_worktree_row(worktree_id)
+        if row is None:
+            return
+        normalized_reason = str(reason or "delegation_result_rejected").strip() or "delegation_result_rejected"
+        self._update_worktree_state(worktree_id, "ignored", error_code=normalized_reason)
+        lease = self._get_active_lease_for_worktree(worktree_id)
+        if lease is not None:
+            self._update_lease_state(
+                str(lease["lease_id"]),
+                SandboxLeaseState.COMPLETED,
+                error_code=normalized_reason,
+            )
+
     def reconcile_startup(self) -> dict[str, Any]:
         now = _utc_now()
         expired = 0

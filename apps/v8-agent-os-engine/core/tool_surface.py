@@ -2550,6 +2550,26 @@ def apply_tool_surface_budget(
             )
             return _copy_tool_message_with_budget(message, command_surface, budget_meta)
 
+    if "not a valid tool" in content_str.lower():
+        invalid_surface = (
+            content_str
+            if len(content_str) <= budget
+            else _head_tail_truncate_text(
+                content_str,
+                budget,
+                f"invalid tool response truncated; rawRef={raw_ref}",
+            )
+        )
+        budget_meta.update(
+            {
+                "wasBudgetTruncated": len(invalid_surface) < len(content_str),
+                "semanticTruncationStrategy": "invalid_tool_error",
+                "originalChars": len(original_content_str),
+                "visibleChars": len(invalid_surface),
+            }
+        )
+        return _copy_tool_message_with_budget(message, invalid_surface, budget_meta)
+
     if tool_name == "fetch_skill_instructions":
         skill_surface = _render_skill_instructions_surface(content_str, raw_ref, budget=budget)
         budget_meta.update(

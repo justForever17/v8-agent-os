@@ -155,6 +155,7 @@ for (const [name, filePath] of [
   ["engine.portablePython", pythonExe],
   ["engine.portablePythonw", pythonwExe],
   ["engine.portablePythonPathConfig", walkFor(portablePythonRoot, (_fullPath, fileName) => /^python.*\._pth$/i.test(fileName), 1)],
+  ["engine.sandboxHost", path.join(engineRoot, "bin", process.platform === "win32" ? "v8-sandbox-host.exe" : "v8-sandbox-host")],
   ["admin.productionBuild", path.join(adminRoot, ".next", "BUILD_ID")],
   ["admin.standaloneServer", adminStandaloneServer || adminStandaloneExpected],
   ["web.productionBuild", path.join(webRoot, ".next", "BUILD_ID")],
@@ -214,18 +215,16 @@ pushOptionalCheck(checks, degraded, "playwright.chromiumBrowser", Boolean(chromi
   reason: "Chromium is intentionally omitted from the slim desktop preview package unless a full browser-automation build profile is used",
 });
 
-for (const [name, command] of [
-  ["external.git", "git"],
-  ["external.ffmpeg", "ffmpeg"],
-]) {
-  const result = commandExists(command);
-  const item = { name, ok: result.ok, preview: result.preview };
-  if (!result.ok) degraded.push(item);
-  pushCheck(checks, name, true, {
-    degraded: !result.ok,
-    preview: result.preview || (result.ok ? "" : "not bundled or not on PATH"),
-  });
-}
+const gitResult = commandExists("git");
+pushCheck(checks, "external.git", gitResult.ok, {
+  requiredFor: "managed engineering workspaces",
+  preview: gitResult.preview || "Git is required but was not found on PATH",
+});
+const ffmpegResult = commandExists("ffmpeg");
+pushOptionalCheck(checks, degraded, "external.ffmpeg", ffmpegResult.ok, {
+  preview: ffmpegResult.preview || "not bundled or not on PATH",
+  reason: "ffmpeg is an optional media capability in the unsigned desktop preview package",
+});
 
 const failures = checks.filter((item) => !item.ok);
 const payload = {
@@ -236,8 +235,8 @@ const payload = {
   degraded,
   checks,
   notes: [
-    "Git/ffmpeg are treated as degraded external capabilities until bundled by the installer.",
-    "Hard checks cover portable Engine Python, production bundles, desktop pet bundle, and the slim preview Python runtime.",
+    "Git is a required managed-engineering dependency; ffmpeg remains a degraded external capability until bundled by the installer.",
+    "Hard checks cover portable Engine Python, the native sandbox host, production bundles, desktop pet bundle, and the slim preview Python runtime.",
     "Browser automation, full RPA, realtime media, and heavy optional modules may be reported as degraded in unsigned preview builds.",
   ],
 };

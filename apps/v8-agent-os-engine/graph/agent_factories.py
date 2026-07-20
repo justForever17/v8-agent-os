@@ -583,6 +583,9 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             lines.append("- Tool discipline: only the explicit allowlist is available; do not report other tools as missing.")
         else:
             lines.append("- Tool discipline: call a granted tool only when it is necessary for this task's acceptance contract; do not probe unrelated capabilities.")
+        lines.append(
+            "- Evidence sufficiency: once prior ToolMessages directly prove an acceptance item, reuse that evidence. Do not recapture the same file or command result through alternate encodings; stop probing and return the typed handoff (or dispatch the one required child) promptly."
+        )
         allowed_tool_names = {
             str(item or "").strip()
             for item in list(tool_policy.get("allowedTools") or task_brief.get("allowedTools") or [])
@@ -603,18 +606,35 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             delegation_depth = max(1, int(task_brief.get("delegationDepth") or 1))
         except (TypeError, ValueError):
             delegation_depth = 1
-        explicit_child_policy = next(
-            (
-                value
-                for value in (
-                    task_brief.get("allowChildDelegation"),
-                    task_brief.get("allow_child_delegation"),
-                    delegation_policy.get("allowChildDelegation"),
-                    delegation_policy.get("allow_child_delegation"),
-                )
-                if value is not None
-            ),
-            None,
+        child_policy_marker = task_brief.get("childDelegationPolicyExplicit")
+        if child_policy_marker is None:
+            child_policy_marker = task_brief.get("child_delegation_policy_explicit")
+        if child_policy_marker is None:
+            child_policy_explicit = any(
+                key in task_brief
+                for key in ("allowChildDelegation", "allow_child_delegation")
+            ) or any(
+                key in delegation_policy
+                for key in ("allowChildDelegation", "allow_child_delegation")
+            )
+        else:
+            child_policy_explicit = bool(child_policy_marker)
+        explicit_child_policy = (
+            next(
+                (
+                    value
+                    for value in (
+                        task_brief.get("allowChildDelegation"),
+                        task_brief.get("allow_child_delegation"),
+                        delegation_policy.get("allowChildDelegation"),
+                        delegation_policy.get("allow_child_delegation"),
+                    )
+                    if value is not None
+                ),
+                None,
+            )
+            if child_policy_explicit
+            else None
         )
         child_delegation_allowed = (
             delegation_depth == 1

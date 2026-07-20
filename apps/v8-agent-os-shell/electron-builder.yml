@@ -28,6 +28,7 @@ extraResources:
       - "!workspace/**"
       - "!tmp/**"
       - "!reports/**"
+      - "!native/**/target/**"
       - "!*.db"
       - "!*.log"
   - from: ../../apps/v8-agent-os-admin

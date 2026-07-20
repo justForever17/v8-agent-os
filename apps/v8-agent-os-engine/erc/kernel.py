@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -394,6 +395,28 @@ class ExecutionRuntimeCore:
         )
         command_service.cancel_run(run_id, reason=reason)
         workflow_ledger_service.sync_run_status(run_id, run_status="cancelled", reason=reason)
+        try:
+            from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+            cleanup = get_engineering_sandbox_service().abort_run_workspaces(
+                run_id=run_id,
+                error_code="run_cancelled",
+            )
+            if cleanup.get("worktreeIds") or cleanup.get("leaseIds"):
+                emitter.emit(
+                    "engineering.worktree.cancelled",
+                    {
+                        "summary": "本轮未交付的隔离工程工作已关闭，变更证据仍保留用于诊断。",
+                        "worktreeCount": len(cleanup.get("worktreeIds") or []),
+                        "leaseCount": len(cleanup.get("leaseIds") or []),
+                        "reason": reason,
+                    },
+                )
+        except Exception:
+            logging.getLogger("v8chat.erc").exception(
+                "Failed to close managed engineering workspaces for cancelled run '%s'",
+                run_id,
+            )
         return {"transition_event": transition_event, "command_event": event}
 
     def interrupt_run(self, run_id: str, *, reason: str = "manual_interrupt") -> Optional[Dict[str, Any]]:

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, Loader2, Plus, Save, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, FolderOpen, GitBranch, Loader2, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
 
 import { AdminPageHeader } from "@/components/admin-shell/AdminPageHeader";
 import { AdminPageShell } from "@/components/admin-shell/AdminPageShell";
@@ -47,6 +47,32 @@ type WorkspaceData = {
     pathStatus?: WorkspacePathStatus;
 };
 
+type EngineeringWorkspaceStatus = {
+    workspace?: { root?: string; role?: string };
+    repository?: {
+        state?: string;
+        role?: string;
+        initializedByV8OS?: boolean;
+        topology?: {
+            originalWorkspaceRoot?: string;
+            repositoryRoot?: string;
+            workspaceRelativePath?: string;
+        };
+    };
+    worktree?: { role?: string; root?: string | null };
+    sandbox?: {
+        role?: string;
+        capabilities?: {
+            platform?: string;
+            architecture?: string;
+            enforcement_level?: string;
+            reason?: string;
+        };
+    };
+    adoptionRequired?: boolean;
+    dependency?: { kind?: string; state?: string };
+};
+
 type WorkspaceRulesPayload = {
     workspacePath: string;
     path: string;
@@ -73,6 +99,9 @@ type ProjectEditorState = {
     rulesSaving: boolean;
     rules: WorkspaceRulesPayload | null;
     loadedWorkspacePath: string;
+    engineeringStatus: EngineeringWorkspaceStatus | null;
+    engineeringStatusLoading: boolean;
+    engineeringAdopting: boolean;
 };
 
 const WORKSPACE_RULES_BUDGET_TOKENS = 10_000;
@@ -171,6 +200,9 @@ function buildProjectEditors(projects: ProjectRecord[], previous: Record<string,
             rulesSaving: current?.rulesSaving ?? false,
             rules: current?.rules ?? null,
             loadedWorkspacePath: current?.loadedWorkspacePath ?? "",
+            engineeringStatus: current?.engineeringStatus ?? null,
+            engineeringStatusLoading: current?.engineeringStatusLoading ?? false,
+            engineeringAdopting: current?.engineeringAdopting ?? false,
         };
     });
     return next;
@@ -570,6 +602,65 @@ export default function ProjectsWorkspacesPage() {
         }));
     }, []);
 
+    const loadEngineeringWorkspaceStatus = useCallback(async (projectId: string) => {
+        patchProjectEditor(projectId, { engineeringStatusLoading: true });
+        try {
+            const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/engineering-workspace`, {
+                cache: "no-store",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.engineering.error.load")));
+            }
+            patchProjectEditor(projectId, {
+                engineeringStatus: payload as EngineeringWorkspaceStatus,
+                engineeringStatusLoading: false,
+            });
+        } catch (error) {
+            patchProjectEditor(projectId, { engineeringStatus: {}, engineeringStatusLoading: false });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.engineering.error.title"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.engineering.error.load"),
+                variant: "destructive",
+            });
+        }
+    }, [patchProjectEditor, t, toast]);
+
+    const adoptEngineeringWorkspace = useCallback(async (projectId: string) => {
+        patchProjectEditor(projectId, { engineeringAdopting: true });
+        try {
+            const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/engineering-workspace`, {
+                method: "POST",
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.engineering.error.adopt")));
+            }
+            patchProjectEditor(projectId, {
+                engineeringStatus: payload as EngineeringWorkspaceStatus,
+                engineeringAdopting: false,
+            });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.engineering.adopted"),
+                description: t("app.admin.dashboard.projects.workspaces.page.engineering.readyHint"),
+            });
+        } catch (error) {
+            patchProjectEditor(projectId, { engineeringAdopting: false });
+            toast({
+                title: t("app.admin.dashboard.projects.workspaces.page.engineering.error.title"),
+                description: error instanceof Error ? error.message : t("app.admin.dashboard.projects.workspaces.page.engineering.error.adopt"),
+                variant: "destructive",
+            });
+        }
+    }, [patchProjectEditor, t, toast]);
+
+    useEffect(() => {
+        if (!expandedProjectId) return;
+        const editor = projectEditors[expandedProjectId];
+        if (editor?.engineeringStatus || editor?.engineeringStatusLoading) return;
+        void loadEngineeringWorkspaceStatus(expandedProjectId);
+    }, [expandedProjectId, loadEngineeringWorkspaceStatus, projectEditors]);
+
     const handleSaveProject = useCallback(async (project: ProjectRecord) => {
         const editor = projectEditors[project.id];
         const normalized = String(editor?.workspacePathDraft || "").trim();
@@ -612,6 +703,7 @@ export default function ProjectsWorkspacesPage() {
             if (!response.ok) {
                 throw new Error(payloadErrorMessage(payload, t("app.admin.dashboard.projects.workspaces.page.error.projectSaveFailed")));
             }
+            patchProjectEditor(project.id, { engineeringStatus: null });
             await load();
             setExpandedProjectId(project.id);
             toast({
@@ -913,6 +1005,13 @@ export default function ProjectsWorkspacesPage() {
                                 const projectStatus = editor?.rules?.workspaceStatus || {};
                                 const trustState = projectTrustState(project);
                                 const rulesBlockedByTrust = trustState === "restricted";
+                                const engineeringStatus = editor?.engineeringStatus;
+                                const repositoryState = String(engineeringStatus?.repository?.state || "unknown");
+                                const engineeringReady = repositoryState === "ready";
+                                const gitRequired = repositoryState === "git_required";
+                                const repositoryRoot = String(engineeringStatus?.repository?.topology?.repositoryRoot || "");
+                                const workspaceRelativePath = String(engineeringStatus?.repository?.topology?.workspaceRelativePath || ".");
+                                const sandboxCapabilities = engineeringStatus?.sandbox?.capabilities;
                                 return (
                                     <div key={project.id} className="rounded-2xl border border-border bg-card">
                                         <button
@@ -987,6 +1086,69 @@ export default function ProjectsWorkspacesPage() {
                                                         <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.existsLabel")} ok={Boolean(projectStatus.exists)} okText={t("app.admin.dashboard.projects.workspaces.page.status.exists")} badText={t("app.admin.dashboard.projects.workspaces.page.status.missing")} />
                                                         <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.absoluteLabel")} ok={Boolean(projectStatus.isAbsolute)} okText={t("app.admin.dashboard.projects.workspaces.page.status.absoluteOk")} badText={t("app.admin.dashboard.projects.workspaces.page.status.absoluteRequired")} />
                                                         <StatusChip label={t("app.admin.dashboard.projects.workspaces.page.status.writableLabel")} ok={Boolean(projectStatus.writable)} okText={t("app.admin.dashboard.projects.workspaces.page.status.writable")} badText={t("app.admin.dashboard.projects.workspaces.page.status.pending")} />
+                                                    </div>
+
+                                                    <div className="rounded-2xl border border-border bg-muted/35 px-4 py-4">
+                                                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                                                                    <GitBranch className="h-4 w-4 text-primary" />
+                                                                    {t("app.admin.dashboard.projects.workspaces.page.engineering.title")}
+                                                                    {editor?.engineeringStatusLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                                                                </div>
+                                                                <div className="mt-2 grid gap-1 text-xs leading-5 text-muted-foreground">
+                                                                    <span>{t("app.admin.dashboard.projects.workspaces.page.engineering.workspaceRole")}</span>
+                                                                    <span>
+                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.repositoryRole")}
+                                                                        {repositoryRoot ? ` · ${repositoryRoot}` : ""}
+                                                                        {workspaceRelativePath !== "." ? ` · ${workspaceRelativePath}` : ""}
+                                                                    </span>
+                                                                    <span>{t("app.admin.dashboard.projects.workspaces.page.engineering.worktreeRole")}</span>
+                                                                    <span className="flex items-center gap-1.5">
+                                                                        <ShieldCheck className="h-3.5 w-3.5" />
+                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.sandboxRole")}
+                                                                        {sandboxCapabilities?.platform ? ` · ${sandboxCapabilities.platform}/${sandboxCapabilities.architecture || "?"}` : ""}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex shrink-0 items-center gap-2">
+                                                                <span className={cn(
+                                                                    "rounded-full border px-2.5 py-1 text-xs font-medium",
+                                                                    engineeringReady
+                                                                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300"
+                                                                        : gitRequired
+                                                                            ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300"
+                                                                            : "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300",
+                                                                )}>
+                                                                    {engineeringReady
+                                                                        ? t("app.admin.dashboard.projects.workspaces.page.engineering.ready")
+                                                                        : gitRequired
+                                                                            ? t("app.admin.dashboard.projects.workspaces.page.engineering.gitRequired")
+                                                                            : t("app.admin.dashboard.projects.workspaces.page.engineering.adoptionRequired")}
+                                                                </span>
+                                                                {engineeringStatus?.adoptionRequired ? (
+                                                                    <Button
+                                                                        type="button"
+                                                                        size="sm"
+                                                                        onClick={() => void adoptEngineeringWorkspace(project.id)}
+                                                                        disabled={editor?.engineeringAdopting || trustState !== "trusted"}
+                                                                    >
+                                                                        {editor?.engineeringAdopting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <GitBranch className="mr-2 h-4 w-4" />}
+                                                                        {t("app.admin.dashboard.projects.workspaces.page.engineering.adopt")}
+                                                                    </Button>
+                                                                ) : null}
+                                                            </div>
+                                                        </div>
+                                                        {sandboxCapabilities?.reason ? (
+                                                            <div className="mt-3 border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                                                                {t("app.admin.dashboard.projects.workspaces.page.engineering.partialHint")}
+                                                            </div>
+                                                        ) : null}
+                                                        {gitRequired ? (
+                                                            <div className="mt-3 border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                                                                {t("app.admin.dashboard.projects.workspaces.page.engineering.gitRequiredHint")}
+                                                            </div>
+                                                        ) : null}
                                                     </div>
 
                                                     <div className="rounded-2xl border border-border bg-muted/80 px-4 py-3 text-xs leading-5 text-muted-foreground">

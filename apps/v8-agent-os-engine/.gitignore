@@ -11,3 +11,5 @@ workspace/
 *.sqlite-shm
 *.sqlite-wal
 *.log
+bin/v8-sandbox-host
+bin/v8-sandbox-host.exe

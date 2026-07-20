@@ -559,6 +559,35 @@ def test_non_spec_required_write_with_file_and_proof_can_complete(tmp_path) -> N
     assert decision.action == "complete"
 
 
+def test_non_spec_required_write_accepts_managed_git_changed_paths(tmp_path) -> None:
+    artifact = tmp_path / "result.md"
+    artifact.write_text("done", encoding="utf-8")
+    decision = evaluate_supervisor_completion(
+        episodes=[_required_write_episode(str(tmp_path))],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "delegationHandoff": {
+                        "status": "ready",
+                        "results": [
+                            {
+                                "status": "ok",
+                                "gitChangeSet": {"changedPaths": ["result.md"]},
+                            }
+                        ],
+                        "acceptanceCheck": {"must": {"passed": True}},
+                    },
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
 def test_non_spec_required_write_accepts_nested_runtime_acceptance_proof(tmp_path) -> None:
     artifact = tmp_path / "result.txt"
     artifact.write_text("done", encoding="utf-8")

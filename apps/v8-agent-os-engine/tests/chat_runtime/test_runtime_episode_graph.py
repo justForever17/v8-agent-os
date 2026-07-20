@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from core.database import db
 from core.runtime_episodes import build_handoff_ref, build_runtime_episode
@@ -18,12 +18,14 @@ from graph.supervisor_turn import (
     _delegation_dispatch_contract_error,
     _explicit_runtime_orchestration_guidance,
     _explicit_runtime_orchestration_kinds,
+    _merge_runtime_route_guidance_into_primary_system,
     _normalize_runtime_broker_response_arguments,
     _observed_runtime_episode_kinds,
     _pending_runtime_continuation_kinds,
     _required_orchestration_tool_name,
     _response_has_required_broker_attempt,
     _response_runtime_route_kinds,
+    _runtime_route_correction_message,
     _runtime_handoff_continuation_message,
     _runtime_handoff_requires_continuation,
 )
@@ -171,6 +173,7 @@ def test_engineering_continuation_requires_fresh_engineering_route_until_episode
     assert '"taskBriefs": [' in guidance.content
     assert '"dependency":' not in guidance.content
     assert "dependencies is plural" in guidance.content
+    assert "sibling top-level taskBrief" in guidance.content
     assert "never send need={}" in guidance.content
     assert "..." not in guidance.content
 
@@ -179,6 +182,60 @@ def test_engineering_continuation_requires_fresh_engineering_route_until_episode
     ]
     observed = _observed_runtime_episode_kinds(state)
     assert [kind for kind in _authoritative_runtime_route_kinds(state) if kind not in observed] == []
+
+
+def test_required_runtime_guidance_stays_in_primary_system_message() -> None:
+    messages = [
+        SystemMessage(content="base supervisor contract"),
+        HumanMessage(content="use Engineering runtime"),
+    ]
+
+    merged = _merge_runtime_route_guidance_into_primary_system(
+        messages,
+        _authoritative_runtime_route_guidance(["engineering"]),
+    )
+
+    assert len(merged) == 2
+    assert isinstance(merged[0], SystemMessage)
+    assert "base supervisor contract" in merged[0].content
+    assert "Required Runtime Route" in merged[0].content
+    assert merged[0].additional_kwargs["v8_runtime_route_guidance"] is True
+    assert isinstance(merged[1], HumanMessage)
+
+
+def test_required_runtime_correction_is_transient_human_turn_after_model_response() -> None:
+    messages = [
+        SystemMessage(content="base supervisor contract"),
+        HumanMessage(content="use Engineering runtime"),
+        AIMessage(content="I will run a shell command directly."),
+        _runtime_route_correction_message(["engineering"], authoritative=True),
+    ]
+
+    assert isinstance(messages[-1], HumanMessage)
+    assert messages[-1].additional_kwargs["v8_governance_type"] == "runtime_route_correction"
+    assert "single correction attempt" in messages[-1].content
+    assert "runtime_broker route call" in messages[-1].content
+    assert not any(isinstance(message, SystemMessage) for message in messages[1:])
+
+
+def test_explicit_engineering_runtime_request_is_authoritative_without_rebinding_work_mode() -> None:
+    explicit_state = {
+        "current_route_context": {
+            "engineeringRequired": True,
+            "engineeringMode": "force",
+            "capabilityEpisodes": [],
+        }
+    }
+    work_mode_state = {
+        "current_route_context": {
+            "engineeringRequired": False,
+            "engineeringMode": "force",
+            "capabilityEpisodes": [],
+        }
+    }
+
+    assert _authoritative_runtime_route_kinds(explicit_state) == ["engineering"]
+    assert _authoritative_runtime_route_kinds(work_mode_state) == []
 
 
 def test_response_runtime_route_kinds_reads_runtime_and_delegation_calls() -> None:

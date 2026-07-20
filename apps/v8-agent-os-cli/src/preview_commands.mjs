@@ -126,6 +126,25 @@ export function runNextBuild(app) {
   return logs;
 }
 
+export function runSandboxHostBuild(options = {}) {
+  const script = path.join(REPO_ROOT, "scripts", "desktop", "build-sandbox-host.mjs");
+  const args = [script];
+  if (options.check) args.push("--check");
+  if (options.force) args.push("--force");
+  const result = spawnSync(process.execPath, args, {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    windowsHide: true,
+    shell: false,
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      String(result.stderr || result.stdout || "Native sandbox host build failed.").trim(),
+    );
+  }
+  return JSON.parse(String(result.stdout || "{}").trim() || "{}");
+}
+
 export async function commandPreview(args = {}) {
   const rebuild = Boolean(args.rebuild);
   const noBuild = Boolean(args.noBuild);
@@ -146,6 +165,7 @@ export async function commandPreview(args = {}) {
     if (stopFailures.length > 0) {
       throw new Error(`Unable to stop the running preview before rebuild: ${stopFailures.map((item) => item.id).join(", ")}. Run v8os stop and retry.`);
     }
+    const sandboxHost = runSandboxHostBuild({ check: noBuild, force: rebuild });
     const buildResults = [];
     for (const item of buildPlan) {
       if (!item.shouldBuild) {
@@ -161,6 +181,7 @@ export async function commandPreview(args = {}) {
     return {
       buildPlan,
       rebuildStopResults,
+      sandboxHost,
       buildResults,
       serviceResults,
       shellResults,

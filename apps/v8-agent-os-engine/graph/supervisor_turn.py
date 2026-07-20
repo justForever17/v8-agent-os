@@ -654,6 +654,8 @@ def _authoritative_runtime_route_kinds(state) -> list[str]:
     continuation = route_context.get("engineeringContinuation")
     if not isinstance(continuation, dict):
         continuation = task_shape.get("engineeringContinuation") if isinstance(task_shape.get("engineeringContinuation"), dict) else {}
+    if bool(route_context.get("engineeringRequired")):
+        return ["engineering"]
     if bool(continuation.get("active")) and bool(route_context.get("engineeringRequired", True)):
         return ["engineering"]
     return []
@@ -671,15 +673,70 @@ def _authoritative_runtime_route_guidance(kinds: list[str], *, correction: bool 
     return SystemMessage(
         content=(
             f"{prefix}\n"
-            f"The current turn is an authoritative continuation of a prior {required_kind} episode in the same session and workspace. "
+            f"The current turn has an authoritative continuation or explicit route requirement for the {required_kind} runtime in the same session and workspace. "
             f"{correction_line}Do not repair it with Supervisor-local file or shell tools and do not answer with a prose-only diagnosis. "
             "Your first durable action MUST be one runtime_broker route call. Copy the complete JSON shape below, replace placeholder "
             "values with current evidence, and preserve every object/array type; never send need={}, an ellipsis, or JSON-encoded nested strings.\n"
             f"{contract_example}\n"
             "Omit optional arrays when empty. For ordered multi-task routes, dependencies is plural and must remain an array of taskBriefId values. "
+            "When one direct child is required to delegate a grandchild verifier, keep implementation and nested verification in one parent taskBrief; "
+            "do not create the intended grandchild as a sibling top-level taskBrief. "
             "Carry the new symptom, the prior episode/proof refs from engineeringContinuation, the current workspace binding, "
             "a bounded write set when known, and explicit verification expectations. After the typed handoff returns, review its proof and deliver or repair it once."
         )
+    )
+
+
+def _merge_runtime_route_guidance_into_primary_system(
+    messages: list,
+    guidance: SystemMessage,
+) -> list:
+    """Keep provider system instructions contiguous and authoritative.
+
+    Runtime route guidance is computed after the canonical message chain has
+    already been prepared. Appending another SystemMessage after user turns is
+    rejected by Anthropic-compatible surfaces and interpreted inconsistently by
+    other providers. Fold it into the primary system instruction instead.
+    """
+
+    merged = list(messages or [])
+    for index, message in enumerate(merged):
+        if not isinstance(message, SystemMessage):
+            continue
+        content = str(getattr(message, "content", "") or "").rstrip()
+        guidance_content = str(guidance.content or "").strip()
+        merged[index] = SystemMessage(
+            content=f"{content}\n\n{guidance_content}" if content else guidance_content,
+            additional_kwargs={
+                **dict(getattr(message, "additional_kwargs", {}) or {}),
+                "v8_runtime_route_guidance": True,
+            },
+        )
+        return merged
+    return [guidance, *merged]
+
+
+def _runtime_route_correction_message(
+    kinds: list[str],
+    *,
+    authoritative: bool,
+) -> HumanMessage:
+    """Return a transient correction turn without creating a late system turn."""
+
+    guidance = (
+        _authoritative_runtime_route_guidance(kinds, correction=True)
+        if authoritative
+        else _explicit_runtime_orchestration_guidance(kinds, correction=True)
+    )
+    return HumanMessage(
+        content=(
+            "[V8OS internal runtime-contract correction; this is not a new user request]\n"
+            f"{guidance.content}"
+        ),
+        additional_kwargs={
+            "v8_governance_type": "runtime_route_correction",
+            "v8_internal": True,
+        },
     )
 
 
@@ -2053,10 +2110,15 @@ def execute_supervisor_turn(
         if spec_revision_contract:
             prepared_messages.append(_spec_revision_discipline_message(spec_revision_contract))
         if pending_required_runtime_kinds:
-            if authoritative_runtime_kinds:
-                prepared_messages.append(_authoritative_runtime_route_guidance(pending_required_runtime_kinds))
-            else:
-                prepared_messages.append(_explicit_runtime_orchestration_guidance(pending_required_runtime_kinds))
+            route_guidance = (
+                _authoritative_runtime_route_guidance(pending_required_runtime_kinds)
+                if authoritative_runtime_kinds
+                else _explicit_runtime_orchestration_guidance(pending_required_runtime_kinds)
+            )
+            prepared_messages = _merge_runtime_route_guidance_into_primary_system(
+                prepared_messages,
+                route_guidance,
+            )
         extensions_runtime_service.emit_supervisor_diagnostics(
             {
                 "queryPreview": str(user_query or "")[:160],
@@ -2130,11 +2192,11 @@ def execute_supervisor_turn(
                 **invoke_caller_kwargs,
             ),
             tool_choice=required_orchestration_tool or None,
-            result_validator=(
-                _required_route_result_validator
-                if required_orchestration_kind
-                else None
-            ),
+            # A missing route is a Supervisor behavior error, not a provider
+            # outage. Return the first response so the same model can receive
+            # one precise contract correction before failover governance is
+            # considered.
+            result_validator=None,
         )
         response = _normalize_runtime_broker_response_arguments(
             sanitize_response_tool_calls(response)
@@ -2182,10 +2244,9 @@ def execute_supervisor_turn(
                 correction_messages = [
                     *prepared_messages,
                     response,
-                    (
-                        _authoritative_runtime_route_guidance(pending_required_runtime_kinds, correction=True)
-                        if authoritative_runtime_kinds
-                        else _explicit_runtime_orchestration_guidance(pending_required_runtime_kinds, correction=True)
+                    _runtime_route_correction_message(
+                        pending_required_runtime_kinds,
+                        authoritative=bool(authoritative_runtime_kinds),
                     ),
                 ]
                 response = robust_invoke(

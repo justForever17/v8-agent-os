@@ -48,9 +48,29 @@ def _normalize_scope_values(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, (list, tuple, set)):
-        return _unique_str_list(value)
+        flattened: list[Any] = []
+        for item in value:
+            if isinstance(item, str):
+                raw = item.strip()
+                if raw.startswith("[") and raw.endswith("]"):
+                    try:
+                        decoded = json.loads(raw)
+                    except Exception:
+                        decoded = None
+                    if isinstance(decoded, list):
+                        flattened.extend(decoded)
+                        continue
+            flattened.append(item)
+        return _unique_str_list(flattened)
     if isinstance(value, str):
         normalized = value.strip()
+        if normalized.startswith("[") and normalized.endswith("]"):
+            try:
+                decoded = json.loads(normalized)
+            except Exception:
+                decoded = None
+            if isinstance(decoded, list):
+                return _normalize_scope_values(decoded)
         return [normalized] if normalized else []
     return [str(value).strip()] if str(value).strip() else []
 
@@ -188,6 +208,7 @@ def _default_task_brief(index: int = 0) -> dict[str, Any]:
         "workerBriefs": [],
         "fanoutReason": "",
         "allowChildDelegation": False,
+        "childDelegationPolicyExplicit": False,
         "childDelegationBudget": {},
         "writeSetPartitions": [],
     }
@@ -220,7 +241,29 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
     )
     if worker_briefs:
         target_count = max(target_count, len(worker_briefs))
+    raw_delegation_policy = payload.get("delegationPolicy") or payload.get("delegation_policy")
+    delegation_policy = dict(raw_delegation_policy or {}) if isinstance(raw_delegation_policy, dict) else {}
+    child_policy_keys = (
+        "allowChildDelegation",
+        "allow_child_delegation",
+        "allowNestedDelegation",
+        "allow_nested_delegation",
+    )
+    if "childDelegationPolicyExplicit" in payload:
+        child_policy_explicit = _safe_bool(payload.get("childDelegationPolicyExplicit"))
+    else:
+        child_policy_explicit = any(key in payload for key in child_policy_keys) or any(
+            key in delegation_policy for key in child_policy_keys
+        )
+    child_policy_value = _first_present(payload, child_policy_keys)
+    if child_policy_value is None:
+        child_policy_value = _first_present(delegation_policy, child_policy_keys)
     child_delegation_budget = _first_present(payload, ("childDelegationBudget", "child_delegation_budget", "childBudget", "child_budget"))
+    if child_delegation_budget is None:
+        child_delegation_budget = _first_present(
+            delegation_policy,
+            ("childDelegationBudget", "child_delegation_budget", "childBudget", "child_budget"),
+        )
     write_set_partitions = _first_present(payload, ("writeSetPartitions", "write_set_partitions", "writePartitions", "write_partitions"))
     acceptance_contract = _first_present(payload, ("acceptanceContract", "acceptance_contract", "acceptance"))
     acceptance_tiers = _first_present(payload, ("acceptanceTiers", "acceptance_tiers", "tieredAcceptance", "tiered_acceptance"))
@@ -311,9 +354,8 @@ def normalize_task_brief(value: Any, *, index: int = 0) -> dict[str, Any]:
         "targetCount": target_count,
         "workerBriefs": worker_briefs,
         "fanoutReason": str(payload.get("fanoutReason") or payload.get("fanout_reason") or payload.get("parallelismReason") or payload.get("parallelism_reason") or "").strip(),
-        "allowChildDelegation": _safe_bool(
-            _first_present(payload, ("allowChildDelegation", "allow_child_delegation", "allowNestedDelegation", "allow_nested_delegation"))
-        ),
+        "allowChildDelegation": _safe_bool(child_policy_value),
+        "childDelegationPolicyExplicit": child_policy_explicit,
         "childDelegationBudget": (
             dict(child_delegation_budget or {})
             if isinstance(child_delegation_budget, dict)

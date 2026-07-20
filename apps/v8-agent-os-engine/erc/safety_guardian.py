@@ -4870,7 +4870,12 @@ class SafetyGuardian:
             return "download_pipe_to_interpreter"
         if "downloadstring" in lower and (" iex" in lower or "invoke-expression" in lower):
             return "downloadstring_invoke_expression"
-        if re.search(r"\b(?:invoke-webrequest|invoke-restmethod|iwr|irm|curl|wget|certutil|bitsadmin)\b", lower):
+        download_command = bool(
+            re.search(r"\b(?:invoke-webrequest|invoke-restmethod|iwr|irm|curl|wget)\b", lower)
+            or re.search(r"\bcertutil\b.*\s-urlcache\b.*https?://", lower)
+            or re.search(r"\bbitsadmin\b.*\s/(?:transfer|download)\b.*https?://", lower)
+        )
+        if download_command:
             if re.search(r"(?:;|&&|\|).*\b(?:start-process|powershell(?:\.exe)?\s+-file|pwsh(?:\.exe)?\s+-file|cmd\s+/c|bash\s+|sh\s+|python\s+|node\s+)", lower):
                 return "download_then_execute_in_command"
             if "chmod +x" in lower and re.search(r"(?:;|&&).*(?:\./|/tmp/|temp|\.sh|\.py|\.js)", lower):

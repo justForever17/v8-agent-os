@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Sequence
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -301,8 +302,75 @@ class V8ChatModelAdapter(BaseChatModel):
 
     def normalize_input_for_provider(self, input_value: Any) -> Any:
         if isinstance(input_value, list) and all(isinstance(item, BaseMessage) for item in input_value):
-            return self._provider_surface.normalize_messages(input_value)
+            return self._normalize_messages_for_provider(input_value)
         return input_value
+
+    def _normalize_messages_for_provider(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+        normalized = self._provider_surface.normalize_messages(messages)
+        if str(self._meta.get("wire_protocol") or self._meta.get("wireProtocol") or "").strip() != "openai.responses":
+            return normalized
+
+        # V8 owns stable canonical tool-call ids inside LangGraph/checkpoints,
+        # while Responses requires the provider-issued call id on the wire.
+        # Re-project the shadow id only at the provider boundary so a resumed
+        # tool call and its function_call_output remain a valid pair.
+        provider_id_by_canonical: dict[str, str] = {}
+        projected: list[BaseMessage] = []
+        for message in normalized:
+            if isinstance(message, AIMessage) and list(getattr(message, "tool_calls", None) or []):
+                clean_message = deepcopy(message)
+                clean_tool_calls: list[dict[str, Any]] = []
+                for raw_call in list(clean_message.tool_calls or []):
+                    call = dict(raw_call or {})
+                    canonical_id = str(call.get("id") or "").strip()
+                    provider_id = str(
+                        call.get("providerToolCallId")
+                        or call.get("provider_tool_call_id")
+                        or ""
+                    ).strip()
+                    if canonical_id and provider_id:
+                        provider_id_by_canonical[canonical_id] = provider_id
+                        call["id"] = provider_id
+                    clean_tool_calls.append(call)
+                clean_message.tool_calls = clean_tool_calls
+
+                additional_kwargs = dict(clean_message.additional_kwargs or {})
+                additional_calls = additional_kwargs.get("tool_calls")
+                if isinstance(additional_calls, list):
+                    wire_calls: list[Any] = []
+                    for raw_call in additional_calls:
+                        if not isinstance(raw_call, Mapping):
+                            wire_calls.append(raw_call)
+                            continue
+                        call = dict(raw_call)
+                        canonical_id = str(call.get("id") or call.get("tool_call_id") or "").strip()
+                        provider_id = str(
+                            call.get("providerToolCallId")
+                            or call.get("provider_tool_call_id")
+                            or provider_id_by_canonical.get(canonical_id)
+                            or ""
+                        ).strip()
+                        if provider_id:
+                            if "tool_call_id" in call and "id" not in call:
+                                call["tool_call_id"] = provider_id
+                            else:
+                                call["id"] = provider_id
+                        wire_calls.append(call)
+                    additional_kwargs["tool_calls"] = wire_calls
+                    clean_message.additional_kwargs = additional_kwargs
+                projected.append(clean_message)
+                continue
+
+            if isinstance(message, ToolMessage):
+                canonical_id = str(message.tool_call_id or "").strip()
+                provider_id = provider_id_by_canonical.get(canonical_id)
+                if provider_id:
+                    clean_message = deepcopy(message)
+                    clean_message.tool_call_id = provider_id
+                    projected.append(clean_message)
+                    continue
+            projected.append(message)
+        return projected
 
     def _get_base_model(self) -> Any:
         if self._base_model is None:
@@ -607,7 +675,7 @@ class V8ChatModelAdapter(BaseChatModel):
         return chunk
 
     def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> ChatResult:
-        normalized_messages = self._provider_surface.normalize_messages(messages)
+        normalized_messages = self._normalize_messages_for_provider(messages)
         if self._bound_tools and not self._provider_surface.supports_native_tools():
             normalized_messages = self._tool_prompt_messages(normalized_messages)
         prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, **kwargs)
@@ -667,7 +735,7 @@ class V8ChatModelAdapter(BaseChatModel):
             raise_as_v8_llm_error(exc, provider=self.provider_standard, model=self.model_id, details={"mode": "invoke"})
 
     async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> ChatResult:
-        normalized_messages = self._provider_surface.normalize_messages(messages)
+        normalized_messages = self._normalize_messages_for_provider(messages)
         if self._bound_tools and not self._provider_surface.supports_native_tools():
             normalized_messages = self._tool_prompt_messages(normalized_messages)
         prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, **kwargs)
@@ -727,7 +795,7 @@ class V8ChatModelAdapter(BaseChatModel):
             raise_as_v8_llm_error(exc, provider=self.provider_standard, model=self.model_id, details={"mode": "ainvoke"})
 
     def _stream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> Iterator[ChatGenerationChunk]:
-        normalized_messages = self._provider_surface.normalize_messages(messages)
+        normalized_messages = self._normalize_messages_for_provider(messages)
         if self._bound_tools and not self._provider_surface.supports_native_tools():
             normalized_messages = self._tool_prompt_messages(normalized_messages)
         prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, streaming=True, **kwargs)
@@ -771,7 +839,7 @@ class V8ChatModelAdapter(BaseChatModel):
             raise_as_v8_llm_error(exc, provider=self.provider_standard, model=self.model_id, details={"mode": "stream"})
 
     async def _astream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> AsyncIterator[ChatGenerationChunk]:
-        normalized_messages = self._provider_surface.normalize_messages(messages)
+        normalized_messages = self._normalize_messages_for_provider(messages)
         if self._bound_tools and not self._provider_surface.supports_native_tools():
             normalized_messages = self._tool_prompt_messages(normalized_messages)
         prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, streaming=True, **kwargs)

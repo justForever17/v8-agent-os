@@ -13,12 +13,14 @@ from core.delegation_broker import (
     normalize_task_brief,
 )
 from core.engineering_capsule import (
+    bind_engineering_task_workspace,
     derive_grandchild_engineering_task,
     engineering_capsule_mode,
+    engineering_tool_allowed,
 )
 from core.engineering_kernel import build_engineering_kernel_context, detect_command_environment
 from core.runtime_tool_access import filter_visible_tools_for_actor
-from core.tools.native.command import run_system_command
+from core.tools.native.command import _engineering_command_scope_block, run_system_command
 from core.tools.native import delegation as native_delegation
 from core.tools.native.delegation import request_peer_help
 from core.tools.native.workspace_file import write_native_file
@@ -313,6 +315,45 @@ def test_native_guards_reject_subagent_mutation_without_capsule(tmp_path: Path) 
     assert not (tmp_path / "new.txt").exists()
 
 
+def test_read_only_capsule_can_run_non_mutating_verification_but_not_write_commands(tmp_path: Path) -> None:
+    task = normalize_task_brief(
+        {
+            "taskBriefId": "read-only-verification",
+            "goal": "Run the assigned verification without modifying files.",
+            "context": {"workspacePath": str(tmp_path)},
+            "readOnly": True,
+            "readSet": ["src/result.py"],
+            "expectedOutputs": ["stdout and exit code"],
+            "toolPolicy": {
+                "mode": "allowlist",
+                "allowedTools": ["read_native_file", "run_system_command"],
+            },
+        }
+    )
+
+    assert engineering_capsule_mode(task) == "read_only"
+    assert engineering_tool_allowed("run_system_command", task) is True
+    runtime_context = {
+        "runtime_kind": "subagent",
+        "engineering_capsule_mode": "read_only",
+    }
+    assert (
+        _engineering_command_scope_block(
+            runtime_context,
+            operation="verification",
+            command="echo sandbox-live-ok",
+        )
+        is None
+    )
+    write_block = _engineering_command_scope_block(
+        runtime_context,
+        operation="verification",
+        command="New-Item result.txt",
+    )
+    assert write_block is not None
+    assert write_block["kind"] == "engineering_capsule_required"
+
+
 @pytest.mark.parametrize("approval_mode", ["manual", "reduced", "minimal"])
 def test_parallel_runtime_context_projects_capsule_workspace_and_approval(
     tmp_path: Path,
@@ -350,7 +391,7 @@ def test_parallel_runtime_context_projects_capsule_workspace_and_approval(
     assert context["allowed_write_paths"] == ["src/page.tsx"]
 
 
-def test_grandchild_capsule_preserves_parent_contract_without_write_authority(tmp_path: Path) -> None:
+def test_grandchild_capsule_preserves_parent_contract_as_read_only_verification(tmp_path: Path) -> None:
     parent = _write_task(tmp_path)
     child = derive_grandchild_engineering_task(
         parent,
@@ -364,7 +405,7 @@ def test_grandchild_capsule_preserves_parent_contract_without_write_authority(tm
         shell_dialect=detect_command_environment()["shellDialect"],
     )
 
-    assert engineering_capsule_mode(child) == "read_only"
+    assert engineering_capsule_mode(child) == "verify"
     assert child["writeSet"] == []
     assert "src/page.tsx" in child["readSet"]
     inherited = child["context"]["inheritedEngineeringContract"]
@@ -418,12 +459,12 @@ def test_grandchild_capsule_allows_only_explicit_strict_write_partition(tmp_path
     assert engineering_capsule_mode(allowed) == "write"
     assert allowed["writeSet"] == ["src/components/a.tsx"]
     assert "grandchild_explicit_write_subset" in allowed["engineeringTaskCapsule"]["riskFlags"]
-    assert engineering_capsule_mode(rejected) == "read_only"
+    assert engineering_capsule_mode(rejected) == "verify"
     assert rejected["writeSet"] == []
     assert "grandchild_write_authority_not_inherited" in rejected["engineeringTaskCapsule"]["riskFlags"]
 
 
-def test_peer_help_derives_read_only_grandchild_capsule(tmp_path: Path) -> None:
+def test_peer_help_derives_verify_grandchild_capsule(tmp_path: Path) -> None:
     parent = _write_task(tmp_path)
     command = request_peer_help.func(
         needed_capabilities=["code_review"],
@@ -444,7 +485,28 @@ def test_peer_help_derives_read_only_grandchild_capsule(tmp_path: Path) -> None:
     pending = command.update["pending_child_delegations"][0]
     child = pending["childTaskBrief"]
 
-    assert child["engineeringTaskCapsule"]["executionMode"] == "read_only"
+    assert child["engineeringTaskCapsule"]["executionMode"] == "verify"
     assert child["engineeringTaskCapsule"]["parentCapsuleId"] == parent["engineeringTaskCapsule"]["capsuleId"]
     assert child["writeSet"] == []
     assert pending["childBranch"]["runtimeAccess"] == []
+
+
+def test_engineering_capsule_binds_active_worktree_without_losing_authority_root(tmp_path: Path) -> None:
+    original = tmp_path / "workspace"
+    active = tmp_path / "managed-worktree"
+    task = _write_task(original)
+
+    bound = bind_engineering_task_workspace(
+        task,
+        workspace_path=str(active),
+        original_workspace_path=str(original),
+    )
+
+    assert bound["workspacePath"] == str(active)
+    assert bound["originalWorkspacePath"] == str(original)
+    assert bound["context"]["workspacePath"] == str(active)
+    assert bound["context"]["originalWorkspacePath"] == str(original)
+    assert bound["context"]["engineeringExecutionContract"]["workspacePath"] == str(active)
+    assert bound["engineeringTaskCapsule"]["workspacePath"] == str(active)
+    assert bound["engineeringTaskCapsule"]["originalWorkspacePath"] == str(original)
+    assert bound["engineeringTaskCapsule"]["capsuleId"] != task["engineeringTaskCapsule"]["capsuleId"]

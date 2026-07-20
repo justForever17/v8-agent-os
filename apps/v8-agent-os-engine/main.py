@@ -281,6 +281,18 @@ async def _reconcile_session_lanes():
         print(f"[Engine] Session lane reconciliation error (non-fatal): {e}")
 
 
+async def _reconcile_engineering_workspaces():
+    try:
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        service = get_engineering_sandbox_service()
+        result = await asyncio.to_thread(service.reconcile_startup)
+        if any(result.values()):
+            print("[Engine] Managed engineering workspace reconciliation completed.", result)
+    except Exception as e:
+        print(f"[Engine] Managed engineering workspace reconciliation error (non-fatal): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup logic: Load all SKILL.md files into the registry
@@ -324,6 +336,24 @@ async def lifespan(app: FastAPI):
         _start_skill_refresh(app)
     await _reconcile_orphaned_workflows()
     await _reconcile_session_lanes()
+    await _reconcile_engineering_workspaces()
+    async def _cleanup_terminal_engineering_workspaces() -> None:
+        try:
+            from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+            cleanup = await asyncio.to_thread(
+                get_engineering_sandbox_service().cleanup_terminal_worktrees,
+                older_than_days=7,
+                limit=50,
+            )
+            if cleanup.get("removed") or cleanup.get("failures"):
+                print("[Engine] Managed engineering workspace cleanup completed.", cleanup)
+        except Exception as exc:
+            print(f"[Engine] Managed engineering workspace cleanup failed (non-fatal): {exc}")
+
+    app.state.engineering_workspace_cleanup_task = asyncio.create_task(
+        _cleanup_terminal_engineering_workspaces()
+    )
     async def _recover_knowledge_projections() -> None:
         try:
             projection_recovery = await asyncio.to_thread(
@@ -417,6 +447,13 @@ async def lifespan(app: FastAPI):
         retention_task.cancel()
         try:
             await retention_task
+        except asyncio.CancelledError:
+            pass
+    engineering_cleanup_task = getattr(app.state, "engineering_workspace_cleanup_task", None)
+    if engineering_cleanup_task and not engineering_cleanup_task.done():
+        engineering_cleanup_task.cancel()
+        try:
+            await engineering_cleanup_task
         except asyncio.CancelledError:
             pass
     # MCP cleanup with timeout — prevents Lark WebSocket from blocking shutdown

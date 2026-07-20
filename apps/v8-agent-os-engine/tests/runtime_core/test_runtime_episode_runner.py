@@ -11,6 +11,7 @@ from erc.runtime_context import bind_runtime_context
 from core.database import DatabaseManager, db
 from core.agents import default_subagent_configs
 from core.delegation_broker import choose_best_local_agent_with_diagnostics
+from core.engineering_capsule import engineering_capsule_mode
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 import core.runtime_episode_runner as runtime_episode_runner_module
 from core.runtime_episode_runner import RuntimeEpisodeRunner
@@ -576,6 +577,72 @@ def test_local_delegation_retries_unsafe_verification_once_after_artifact_exists
     assert retry_arg["parallel_branch"]["taskBrief"]["context"]["governanceSafeVerificationRetry"]["required"] is True
     assert "不要重试该命令" in retry_arg["messages"][-1].content
     assert [item["status"] for item in results] == ["ok", "ok"]
+    assert results[0]["governanceSafeRetry"] is True
+
+
+def test_grandchild_verification_retry_uses_inherited_artifact_contract(monkeypatch, tmp_path):
+    runner = RuntimeEpisodeRunner()
+    artifact = tmp_path / "src" / "sandbox_live.py"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("print('sandbox-live-ok')\n", encoding="utf-8")
+    calls: list[dict] = []
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_build_agent_nodes_map", lambda _self: {"worker": {"id": "worker"}})
+
+    async def _await_without_heartbeat(_self, _episode_id, awaitable, **_kwargs):
+        return await awaitable
+
+    monkeypatch.setattr(RuntimeEpisodeRunner, "_await_with_heartbeat", _await_without_heartbeat)
+
+    async def _fake_branch(arg, _agent_data, progress_callback=None):
+        calls.append(arg)
+        if len(calls) == 1:
+            raise ModelGovernanceInterventionRequired(
+                "unsafe verification",
+                approval_kind="safety_review",
+                question="approve eval",
+                details={"safety": {"riskCode": "encoded_command_review"}},
+            )
+        return [], [], {"taskBriefId": "VERIFY-001", "status": "ok", "summary": "verified"}, []
+
+    monkeypatch.setattr("graph.parallel_support._run_parallel_agent_branch", _fake_branch)
+    verify_task = {
+        "taskBriefId": "VERIFY-001",
+        "writeRequired": False,
+        "engineeringTaskCapsule": {
+            "executionMode": "verify",
+            "expectedArtifacts": [],
+            "inheritedEngineeringContract": {
+                "expectedArtifacts": ["src/sandbox_live.py"],
+            },
+        },
+    }
+    sends = [
+        Send(
+            "parallel_delegate_task",
+            {
+                "parallel_branch": {
+                    "agentId": "worker",
+                    "agentName": "worker",
+                    "taskBriefId": "VERIFY-001",
+                    "taskBrief": verify_task,
+                    "reason": "Verify inherited artifact",
+                }
+            },
+        )
+    ]
+
+    results, _children = asyncio.run(
+        runner._execute_local_delegation_sends(
+            SimpleNamespace(goto=sends),
+            {"episodeId": "episode_verify", "inputs": {"workspacePath": str(tmp_path)}, "need": {}},
+        )
+    )
+
+    assert len(calls) == 2
+    retry = calls[1]
+    instruction = retry["parallel_branch"]["taskBrief"]["context"]["governanceSafeVerificationRetry"]["instruction"]
+    assert "python -B <path>" in instruction
     assert results[0]["governanceSafeRetry"] is True
 
 
@@ -1724,6 +1791,36 @@ def test_engineering_resume_loads_child_handoff_payload_before_delegating_again(
     assert "child worker produced validation proof" in handoff["compactSummary"]
 
 
+def test_engineering_resume_does_not_promote_degraded_child_handoff():
+    child_handoff = build_handoff_ref(
+        producer_episode_id="child-delegation-episode",
+        kind="delegation_degraded",
+        compact_summary="child verification is blocked",
+        status="degraded",
+        confidence="high",
+        extra={"errorCode": "verification_blocked"},
+    )
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "resume after degraded child"},
+        kind="engineering",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "resumeToken": {
+                "resumedFrom": "child_handoffs",
+                "handoffBundle": [child_handoff],
+            }
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_engineering(parent))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["engineeringState"] == "recoverable_failed"
+    assert handoff["errorCode"] == "child_handoff_not_acceptable"
+    assert handoff["blockingChildHandoffCount"] == 1
+
+
 def test_network_peer_target_completes_with_remote_handoff(monkeypatch):
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "remote peer task"},
@@ -2444,6 +2541,92 @@ def test_broker_selected_direct_child_rehydrates_recursive_policy_from_durable_b
     assert branch["childDelegationBudget"] == {"maxChildren": 1, "maxDepth": 2}
 
 
+def test_broker_selected_direct_child_has_one_grandchild_by_default():
+    episode = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "Implement one change and independently verify it.",
+        },
+        kind="delegation",
+        state="queued",
+        continuation_target="parallel_delegate_join",
+        extra={
+            "episodeId": "subagent::delegation_default_child::0::parent::implementation-engineer",
+            "needId": "subagent::delegation_default_child::0::parent::implementation-engineer",
+            "targetId": "implementation-engineer",
+        },
+    )
+
+    command = RuntimeEpisodeRunner._broker_selected_local_episode_command(
+        episode,
+        worker_briefs=[
+            {
+                "taskBriefId": "default-child-budget",
+                "goal": "Implement one change and independently verify it.",
+            }
+        ],
+        session_id="session-default-child-budget",
+        run_id="run-default-child-budget",
+        workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+    )
+
+    assert command is not None
+    branch = list(command.goto)[0].arg["parallel_branch"]
+    assert branch["delegationDepth"] == 1
+    assert branch["allowChildDelegation"] is True
+    assert branch["childDelegationBudget"] == {"maxChildren": 1}
+
+
+def test_persisted_direct_child_parent_equal_to_root_keeps_grandchild_authority():
+    root_episode_id = "episode_engineering_root"
+    episode = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "Implement one change and independently verify it.",
+        },
+        kind="delegation",
+        state="queued",
+        parent_episode_id=root_episode_id,
+        continuation_target="parallel_delegate_join",
+        extra={
+            "episodeId": "subagent::delegation_persisted_direct::0::parent::implementation-engineer",
+            "needId": "subagent::delegation_persisted_direct::0::parent::implementation-engineer",
+            "targetId": "implementation-engineer",
+            "rootEpisodeId": root_episode_id,
+        },
+    )
+
+    command = RuntimeEpisodeRunner._broker_selected_local_episode_command(
+        episode,
+        worker_briefs=[
+            {
+                "taskBriefId": "persisted-direct-child",
+                "goal": "Implement one change and independently verify it.",
+                "allowChildDelegation": False,
+                "childDelegationPolicyExplicit": False,
+            }
+        ],
+        session_id="session-persisted-direct",
+        run_id="run-persisted-direct",
+        workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+    )
+
+    assert command is not None
+    send = list(command.goto)[0]
+    branch = send.arg["parallel_branch"]
+    task_brief = send.arg["current_route_context"]["taskBrief"]
+    assert branch["delegationDepth"] == 1
+    assert branch["allowChildDelegation"] is True
+    assert task_brief["delegationDepth"] == 1
+    assert task_brief["allowChildDelegation"] is True
+    assert task_brief["runtimeAccess"] == ["delegation.recursive"]
+    assert send.arg["current_route_context"]["runtimeToolGrants"] == [
+        {"group": "delegation.recursive", "runtimeKind": "subagent"}
+    ]
+
+
 def test_failed_grandchild_delegation_unblocks_parent_episode_chain():
     parent = build_runtime_episode(
         need={"kind": "engineering", "source": "test", "reason": "parent waiting for delegation"},
@@ -2670,6 +2853,134 @@ def test_child_delegation_request_preserves_rich_task_brief_for_grandchild():
     assert worker_brief["workspacePath"] == "E:/Projects/test3"
 
 
+def test_durable_managed_child_scheduler_defers_worktree_allocation_to_actual_worker():
+    from core.delegation_broker import normalize_task_brief
+
+    parent_brief = normalize_task_brief(
+        {
+            "taskBriefId": "parent-write",
+            "goal": "Implement the target file and delegate verification.",
+            "context": {"workspacePath": "C:/managed/parent"},
+            "writeRequired": True,
+            "writeSet": ["src/result.py"],
+            "expectedOutputs": ["src/result.py"],
+            "acceptanceContract": "The target script runs successfully.",
+        }
+    )
+    db.create_or_update_session("session-managed-child", "Managed child capsule test", user_id="test")
+    db.create_run_record(
+        run_id="run-managed-child",
+        session_id="session-managed-child",
+        run_type="chat",
+        status="running",
+    )
+    parent = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "managed parent",
+            "inputs": {
+                "workerBriefs": [parent_brief],
+                "workspacePath": "C:/managed/supervisor-integration",
+            },
+        },
+        kind="delegation",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(parent, session_id="session-managed-child", run_id="run-managed-child", enqueue=False)
+    stale_child = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "needId": "grandchild-delegation",
+            "parentEpisodeId": parent["episodeId"],
+            "reason": "stale parent-bound verification request",
+            "inputs": {
+                "workspacePath": "C:/managed/parent",
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "grandchild-verify",
+                        "goal": "Independently run the target script and report evidence.",
+                        "context": {"workspacePath": "C:/managed/parent"},
+                    }
+                ],
+            },
+        },
+        kind="delegation",
+        state="queued",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(
+        stale_child,
+        session_id="session-managed-child",
+        run_id="run-managed-child",
+        enqueue=True,
+    )
+    child_ids = RuntimeEpisodeRunner()._enqueue_child_delegation_requests(
+        [
+            {
+                "requestId": "verify-request",
+                "sourceDelegationId": parent["episodeId"],
+                "sourceInvocationId": "parent-invocation",
+                "sourceAgentId": "implementation-engineer",
+                "sourceAgentName": "Implementation Engineer",
+                "childDelegationId": "grandchild-delegation",
+                "childInvocationId": "grandchild-invocation",
+                "childTaskBriefId": "grandchild-verify",
+                "childTaskGoal": "Independently run the target script and report evidence.",
+                "childTaskBrief": {
+                    "taskBriefId": "grandchild-verify",
+                    "goal": "Independently run the target script and report evidence.",
+                    "expectedOutputs": ["stdout and exit code evidence"],
+                    "acceptanceContract": "Return concrete execution evidence.",
+                },
+                "childDepth": 2,
+                "send": {"arg": {"parallel_branch": {"delegationDepth": 2}}},
+            }
+        ],
+        episode=db.get_runtime_episode(parent["episodeId"]),
+        parent_engineering_workspace={
+            "workspace_path": "C:/managed/parent",
+            "original_workspace_path": "C:/projects/app",
+            "worktree_id": "parent-worktree",
+        },
+    )
+
+    assert len(child_ids) == 1
+    child = db.get_runtime_episode(child_ids[0])
+    assert child is not None
+    worker = child["inputs"]["workerBriefs"][0]
+    assert worker["engineeringTaskCapsule"]["executionMode"] == "verify"
+    assert worker["engineeringTaskCapsule"]["workspacePath"] == "C:/managed/parent"
+    assert worker["workspacePath"] == "C:/managed/parent"
+    assert "engineeringWorkspace" not in child["inputs"]
+    assert child["inputs"]["parentWorktreeId"] == "parent-worktree"
+    assert child["inputs"]["originalWorkspacePath"] == "C:/projects/app"
+    assert child["inputs"]["workspacePath"] == "C:/managed/parent"
+    assert child["need"]["inputs"]["workspacePath"] == "C:/managed/parent"
+
+
+def test_child_scheduler_recovers_parent_workspace_from_persisted_direct_episode():
+    direct_parent = {
+        "inputs": {
+            "workspacePath": "C:/managed/supervisor-integration",
+            "engineeringWorkspace": {
+                "workspace_path": "C:/managed/direct-worker",
+                "original_workspace_path": "C:/projects/app",
+                "worktree_id": "direct-worker-worktree",
+            },
+        }
+    }
+
+    recovered = RuntimeEpisodeRunner._child_schedule_parent_workspace({}, direct_parent)
+
+    assert recovered["workspace_path"] == "C:/managed/direct-worker"
+    assert recovered["original_workspace_path"] == "C:/projects/app"
+    assert recovered["worktree_id"] == "direct-worker-worktree"
+
+
 def test_child_delegation_repairs_malformed_target_back_to_parent_mirror():
     episode = build_runtime_episode(
         need={"kind": "delegation", "source": "test", "reason": "verification child target repair"},
@@ -2757,6 +3068,55 @@ def test_completed_child_delegation_requeues_parent_with_handoff_bundle():
     assert resumed_parent["resumeToken"]["childHandoffs"][0]["compactSummary"] == "child produced implementation proof"
 
 
+def test_completed_child_delegation_projects_only_its_final_handoff():
+    parent = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "parent waiting for final child truth"},
+        kind="engineering",
+        state="waiting_child",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(parent, enqueue=False)
+    child = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "child completed", "parentEpisodeId": parent["episodeId"]},
+        kind="delegation",
+        state="completed",
+        parent_episode_id=parent["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(child, enqueue=False)
+    db.add_runtime_episode_handoff(
+        episode_id=child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=child["episodeId"],
+            kind="delegation",
+            compact_summary="waiting for grandchild",
+            status="waiting",
+            confidence="medium",
+            extra={"delegationState": "waiting_child", "error": "delegation_child_requested"},
+        ),
+    )
+    db.add_runtime_episode_handoff(
+        episode_id=child["episodeId"],
+        handoff=build_handoff_ref(
+            producer_episode_id=child["episodeId"],
+            kind="delegation",
+            compact_summary="grandchild verification completed",
+            status="ready",
+            confidence="high",
+            extra={"delegationState": "handoff_ready", "proofRefs": ["proof://grandchild"]},
+        ),
+    )
+
+    RuntimeEpisodeRunner()._maybe_resume_parent_episode(child, session_id=None, run_id=None)
+
+    resumed_parent = db.get_runtime_episode(parent["episodeId"])
+    assert resumed_parent is not None
+    handoffs = resumed_parent["resumeToken"]["childHandoffs"]
+    assert len(handoffs) == 1
+    assert handoffs[0]["compactSummary"] == "grandchild verification completed"
+    assert handoffs[0]["proofRefs"] == ["proof://grandchild"]
+
+
 def test_delegation_resume_merges_child_handoffs_without_redispatching(monkeypatch):
     child_handoff = build_handoff_ref(
         producer_episode_id="child-delegation-episode",
@@ -2798,6 +3158,36 @@ def test_delegation_resume_merges_child_handoffs_without_redispatching(monkeypat
     assert handoff["delegationState"] == "handoff_ready"
     assert handoff["childHandoffs"][0]["compactSummary"] == "child delegation produced independent verification proof"
     assert "handoff_ready" in handoff["compactSummary"]
+
+
+def test_delegation_resume_does_not_promote_degraded_child_handoff(monkeypatch):
+    child_handoff = build_handoff_ref(
+        producer_episode_id="child-delegation-episode",
+        kind="delegation_degraded",
+        compact_summary="child verification is blocked",
+        status="degraded",
+        confidence="high",
+        extra={"errorCode": "verification_blocked"},
+    )
+    parent = build_runtime_episode(
+        need={"kind": "delegation", "source": "test", "reason": "parent delegation resume"},
+        kind="delegation",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+        extra={
+            "resumeToken": {
+                "resumedFrom": "child_handoffs",
+                "handoffBundle": [child_handoff],
+            },
+        },
+    )
+
+    handoff = asyncio.run(RuntimeEpisodeRunner()._execute_delegation(parent))
+
+    assert handoff["status"] == "degraded"
+    assert handoff["delegationState"] == "delegation_degraded"
+    assert handoff["errorCode"] == "child_handoff_not_acceptable"
+    assert handoff["blockingChildHandoffCount"] == 1
 
 
 def test_delegation_episode_promotes_malformed_child_delegate_signal(monkeypatch):
@@ -3147,6 +3537,72 @@ def test_parallel_branch_stops_repeated_same_tool_purpose_loop():
 
     with pytest.raises(RuntimeError, match="same tool purpose"):
         asyncio.run(_run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"}))
+
+
+def test_parallel_branch_can_converge_after_repeated_tool_discipline_correction():
+    from graph.parallel_support import _run_parallel_agent_branch
+    from langchain_core.messages import AIMessage
+    from langgraph.types import Command
+
+    state = {
+        "messages": [],
+        "todos": [],
+        "parallel_branch": {
+            "agentId": "correctable_worker",
+            "agentName": "Correctable Worker",
+            "delegationId": "delegation-correctable-tool",
+            "invocationId": "invoke-correctable-tool",
+            "taskBriefId": "TASK-CORRECTABLE-TOOL",
+            "reason": "Use existing evidence after one correction.",
+            "allowChildDelegation": False,
+        },
+    }
+    call_count = 0
+
+    def _node_func(current_state):
+        nonlocal call_count
+        call_count += 1
+        corrections = [
+            message
+            for message in list(current_state.get("messages") or [])
+            if getattr(message, "additional_kwargs", {}).get("v8_governance_type")
+            == "delegated_execution_correction"
+        ]
+        if corrections:
+            return Command(
+                goto="supervisor",
+                update={"messages": [AIMessage(content="Verified from existing evidence; handoff complete.")]},
+            )
+        return Command(
+            goto="correctable_worker",
+            update={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": f"call-correctable-{call_count}",
+                                "name": "read_native_file",
+                                "args": {"path": "src/result.py"},
+                            }
+                        ],
+                    )
+                ]
+            },
+        )
+
+    delta_messages, _delta_todos, summary, child_requests = asyncio.run(
+        _run_parallel_agent_branch(state, {"node_func": _node_func, "tool_mode": "test"})
+    )
+
+    assert call_count == 4
+    assert child_requests == []
+    assert summary["status"] == "ok"
+    assert any(
+        getattr(message, "additional_kwargs", {}).get("v8_governance_type")
+        == "delegated_execution_correction"
+        for message in delta_messages
+    )
 
 
 def test_parallel_branch_stops_semantic_artifact_stall_even_with_varied_messages(tmp_path):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from pathlib import Path
@@ -98,11 +99,45 @@ class ProjectRegistryService:
             payload_has_trust=payload_has_trust,
         )
 
+        workspace_root = Path(workspace_path).expanduser()
+        workspace_existed = workspace_root.exists()
+        workspace_had_user_content = False
+        if workspace_existed and workspace_root.is_dir():
+            try:
+                workspace_had_user_content = any(
+                    child.name not in {".agents", ".v8-agent-os"}
+                    for child in workspace_root.iterdir()
+                )
+            except OSError:
+                workspace_had_user_content = True
+
         try:
-            Path(workspace_path).expanduser().mkdir(parents=True, exist_ok=True)
+            workspace_root.mkdir(parents=True, exist_ok=True)
             self._ensure_workspace_skeleton(workspace_path)
         except Exception as exc:
             raise RuntimeError(f"Failed to create project workspace directory: {workspace_path}") from exc
+
+        # Workspace identity remains the user-facing scope. Git is the version
+        # boundary beneath it and may resolve to a parent repository. Only a new
+        # or effectively empty directory is initialized without an adoption step.
+        try:
+            from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+            get_engineering_sandbox_service().ensure_project_repository(
+                workspace_root=workspace_root,
+                project_id=project_id,
+                allow_initialize=(not workspace_existed or not workspace_had_user_content),
+            )
+        except Exception as exc:
+            if str(getattr(exc, "code", "")) != "git_not_installed":
+                raise
+            # Workspace identity and trust remain usable without Git. Only the
+            # managed engineering execution plane is unavailable until the
+            # mandatory dependency is installed.
+            logging.getLogger("v8chat.project_registry").warning(
+                "Project '%s' was saved without managed Git because Git is unavailable.",
+                project_id,
+            )
 
         descriptor = ProjectDescriptor.model_validate(prepared_payload).normalized()
         saved = self.project_repo.save_project(descriptor)

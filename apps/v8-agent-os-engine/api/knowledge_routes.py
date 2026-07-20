@@ -1285,6 +1285,86 @@ async def get_project(project_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects/{project_id}/engineering-workspace")
+async def get_project_engineering_workspace(project_id: str):
+    project = project_registry_service.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
+    workspace_path = str(project.workspace_path or "").strip()
+    if not workspace_path:
+        raise HTTPException(status_code=409, detail="project_workspace_missing")
+    try:
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        return get_engineering_sandbox_service().project_repository_status(
+            workspace_root=workspace_path,
+            project_id=project_id,
+        )
+    except Exception as exc:
+        if str(getattr(exc, "code", "")) == "git_not_installed":
+            from core.engineering_sandbox.platform_driver import probe_sandbox_capabilities
+
+            workspace_root = str(Path(workspace_path).expanduser().resolve(strict=False))
+            return {
+                "workspace": {
+                    "root": workspace_root,
+                    "role": "user_scope_and_authority",
+                },
+                "repository": {
+                    "state": "git_required",
+                    "role": "version_and_merge_truth",
+                    "topology": {
+                        "originalWorkspaceRoot": workspace_root,
+                        "repositoryRoot": None,
+                        "workspaceRelativePath": ".",
+                    },
+                },
+                "worktree": {
+                    "role": "temporary_parallel_execution_copy",
+                    "root": None,
+                },
+                "sandbox": {
+                    "role": "process_lease_bound_to_one_worktree",
+                    "capabilities": probe_sandbox_capabilities().as_dict(),
+                },
+                "adoptionRequired": False,
+                "dependency": {
+                    "kind": "git",
+                    "state": "missing",
+                },
+            }
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/engineering-workspace/adopt")
+async def adopt_project_engineering_workspace(project_id: str):
+    project = project_registry_service.get_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
+    if str(project.workspace_trust_state or "").strip().lower() != "trusted":
+        raise HTTPException(status_code=403, detail="workspace_trust_required")
+    workspace_path = str(project.workspace_path or "").strip()
+    if not workspace_path:
+        raise HTTPException(status_code=409, detail="project_workspace_missing")
+    try:
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        return get_engineering_sandbox_service().adopt_project_repository(
+            workspace_root=workspace_path,
+            project_id=project_id,
+        )
+    except Exception as exc:
+        status_code = 409 if getattr(exc, "code", "") else 500
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "error": str(getattr(exc, "code", None) or "engineering_workspace_adoption_failed"),
+                "message": str(exc),
+                "details": dict(getattr(exc, "details", None) or {}),
+            },
+        ) from exc
+
+
 @router.patch("/projects/{project_id}")
 async def patch_project(project_id: str, updates: dict = Body(...)):
     try:

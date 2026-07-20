@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from core import workspace_capability as workspace_capability_module
 from core import workspace_authority as workspace_authority_module
+from core.engineering_sandbox.contracts import SandboxPolicy
 from core.workspace_capability import preflight_command_workspace, resolve_workspace_tool_path
 from erc.runtime_context import bind_runtime_context
 
@@ -74,6 +77,87 @@ def test_relative_tool_path_resolves_inside_active_workspace(tmp_path, monkeypat
     assert result["ok"] is True
     assert Path(result["resolvedPath"]) == active_root / "src" / "app.ts"
     assert result["relation"] == "inside_active_workspace"
+
+
+def test_managed_execution_inherits_authority_but_resolves_only_in_worktree(tmp_path, monkeypatch):
+    original_root = tmp_path / "workspace"
+    worktree_root = tmp_path / "managed-worktree"
+    main_root = tmp_path / "main"
+    original_root.mkdir()
+    worktree_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=original_root, main_root=main_root)
+    policy = SandboxPolicy(
+        policy_id="policy-managed",
+        lease_id="lease-managed",
+        repository_id="repo-managed",
+        worktree_id="worktree-managed",
+        worktree_root=str(worktree_root),
+        original_workspace_root=str(original_root),
+        base_commit="a" * 40,
+        execution_mode="write",
+        actor_role="direct_subagent",
+        runtime_kind="engineering",
+        write_set=("src/result.ts",),
+    )
+    context = {
+        "workspace_path": str(worktree_root),
+        "original_workspace_path": str(original_root),
+        "workspace_id": "test2",
+        "project_id": "test2",
+        "managed_engineering_execution": True,
+        "sandbox_lease_id": policy.lease_id,
+        "sandbox_policy": policy.as_dict(),
+        "sandbox_policy_digest": policy.digest,
+    }
+
+    relative_result = resolve_workspace_tool_path("src/result.ts", runtime_context=context)
+    original_result = resolve_workspace_tool_path(
+        str(original_root / "src" / "result.ts"),
+        runtime_context=context,
+    )
+
+    assert relative_result["ok"] is True
+    assert Path(relative_result["resolvedPath"]) == worktree_root / "src" / "result.ts"
+    assert relative_result["binding"]["activeWorkspaceRoot"] == str(worktree_root.resolve())
+    assert relative_result["binding"]["authorityWorkspaceRoot"] == str(original_root.resolve())
+    assert relative_result["binding"]["managedExecution"] is True
+    assert original_result["ok"] is False
+    assert original_result["relation"] == "outside_active_workspace"
+
+
+def test_managed_execution_rejects_policy_digest_mismatch(tmp_path, monkeypatch):
+    original_root = tmp_path / "workspace"
+    worktree_root = tmp_path / "managed-worktree"
+    main_root = tmp_path / "main"
+    original_root.mkdir()
+    worktree_root.mkdir()
+    main_root.mkdir()
+    _patch_descriptor(monkeypatch, active_root=original_root, main_root=main_root)
+    policy = SandboxPolicy(
+        policy_id="policy-managed",
+        lease_id="lease-managed",
+        repository_id="repo-managed",
+        worktree_id="worktree-managed",
+        worktree_root=str(worktree_root),
+        original_workspace_root=str(original_root),
+        base_commit="a" * 40,
+        execution_mode="read",
+        actor_role="supervisor",
+        runtime_kind="engineering",
+    )
+
+    with pytest.raises(RuntimeError, match="policy_digest_mismatch"):
+        resolve_workspace_tool_path(
+            "README.md",
+            runtime_context={
+                "workspace_path": str(worktree_root),
+                "original_workspace_path": str(original_root),
+                "managed_engineering_execution": True,
+                "sandbox_policy": policy.as_dict(),
+                "sandbox_policy_digest": "tampered",
+            },
+        )
 
 
 def test_absolute_default_workspace_path_is_blocked_when_scoped(tmp_path, monkeypatch):

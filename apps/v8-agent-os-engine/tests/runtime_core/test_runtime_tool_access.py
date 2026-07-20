@@ -11,6 +11,7 @@ import pytest
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 import core.tools.native.delegation as native_delegation
+import core.tools.native.runtime as native_runtime
 from core.actor_identity import (
     DIRECT_SUBAGENT_ACTOR,
     GRANDCHILD_ACTOR,
@@ -57,6 +58,64 @@ def _set_pack_runtime_installed(monkeypatch, installed: bool) -> None:
 
 def _tool(name: str):
     return SimpleNamespace(name=name)
+
+
+def test_child_delegation_normalization_preserves_unset_vs_explicit_false():
+    defaulted = normalize_task_brief({"taskBriefId": "default", "goal": "Implement one change."})
+    forbidden = normalize_task_brief(
+        {
+            "taskBriefId": "forbidden",
+            "goal": "Implement without further delegation.",
+            "allowChildDelegation": False,
+        }
+    )
+    renormalized = normalize_task_brief(defaulted)
+
+    assert defaulted["allowChildDelegation"] is False
+    assert defaulted["childDelegationPolicyExplicit"] is False
+    assert renormalized["childDelegationPolicyExplicit"] is False
+    assert forbidden["allowChildDelegation"] is False
+    assert forbidden["childDelegationPolicyExplicit"] is True
+
+
+def test_runtime_episode_preserves_managed_workspace_authority_and_parent_worktree(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "enqueue_runtime_episode",
+        lambda episode, **_kwargs: {**episode, "state": "queued"},
+    )
+    with bind_runtime_context(
+        runtime_kind="chat",
+        actor_role="supervisor",
+        session_id="session-managed-route",
+        run_id="run-managed-route",
+        workspace_path=r"C:\Users\test\.v8-agent-os\worktrees\repo\run\supervisor",
+        original_workspace_path=r"E:\Projects\example",
+        repository_root=r"E:\Projects\example",
+        worktree_root=r"C:\Users\test\.v8-agent-os\worktrees\repo\run\supervisor",
+        worktree_id="supervisor-worktree",
+        sandbox_lease_id="sandbox-lease",
+        sandbox_policy_digest="policy-digest",
+        managed_engineering_execution=True,
+    ):
+        _updated, episode = native_runtime._append_runtime_episode(
+            {},
+            need={
+                "kind": "engineering",
+                "reason": "Implement a focused change.",
+                "inputs": {"taskBriefs": [{"taskBriefId": "task-1", "goal": "Implement it."}]},
+            },
+            kind="engineering",
+            groups=[],
+            allow_direct_fallback=False,
+        )
+
+    inputs = episode["inputs"]
+    assert inputs["workspacePath"].endswith("supervisor")
+    assert inputs["originalWorkspacePath"] == r"E:\Projects\example"
+    assert inputs["parentWorktreeId"] == "supervisor-worktree"
+    assert inputs["engineeringWorkspace"]["worktree_id"] == "supervisor-worktree"
+    assert inputs["engineeringWorkspace"]["original_workspace_path"] == r"E:\Projects\example"
 
 
 def test_collaboration_actor_identity_separates_user_facing_tree_from_internal_models():
@@ -1514,6 +1573,173 @@ def test_direct_subagent_missing_tasks_returns_to_same_agent_for_one_contract_re
     assert payload["exampleTasks"][0]["expectedOutputs"]
 
 
+def test_direct_subagent_child_budget_is_enforced_before_episode_projection():
+    state = {
+        "current_route_context": {
+            "delegationId": "subagent::parent-child-budget",
+            "delegationDepth": 1,
+            "taskBrief": {
+                "taskBriefId": "parent-child-budget",
+                "goal": "Complete the implementation and request one independent check.",
+                "readSet": ["src/result.py"],
+                "writeSet": [],
+                "acceptanceContract": "Return one independent check.",
+            },
+        },
+        "parallel_branch": {
+            "childDelegationBudget": {"maxChildren": 1},
+        },
+    }
+    with bind_runtime_context(
+        runtime_kind="subagent",
+        actor_role="direct_subagent",
+        agent_id="implementation-engineer",
+        delegation_id="subagent::parent-child-budget",
+        delegation_depth=1,
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "verify-a",
+                    "goal": "Independently verify result A.",
+                    "expectedOutputs": ["A verification"],
+                    "acceptanceContract": "Return evidence for A.",
+                    "toolPolicy": {"mode": "none"},
+                },
+                {
+                    "taskBriefId": "verify-b",
+                    "goal": "Independently verify result B.",
+                    "expectedOutputs": ["B verification"],
+                    "acceptanceContract": "Return evidence for B.",
+                    "toolPolicy": {"mode": "none"},
+                },
+            ],
+            state=state,
+            tool_call_id="call-child-budget-two",
+        )
+
+    payload = _tool_message_payload(command)
+    assert command.goto == "implementation-engineer"
+    assert payload["error"] == "delegation_budget_exceeded"
+    assert payload["reason"] == "max_children_per_delegation_exceeded"
+    assert payload["budget"]["maxChildrenPerDelegation"] == 1
+    assert "parallel_invocations" not in command.update
+
+
+def test_direct_subagent_cannot_redelegate_its_full_write_contract_to_grandchild():
+    parent_task = {
+        "taskBriefId": "parent-write",
+        "goal": "Implement src/result.py, then request independent verification.",
+        "writeRequired": True,
+        "writeSet": ["src/result.py"],
+        "expectedOutputs": ["src/result.py"],
+        "acceptanceContract": "src/result.py is implemented and verified.",
+    }
+    state = {
+        "current_route_context": {
+            "delegationId": "subagent::parent-write",
+            "delegationDepth": 1,
+            "taskBrief": parent_task,
+        },
+        "parallel_branch": {
+            "childDelegationBudget": {"maxChildren": 1},
+        },
+    }
+    with bind_runtime_context(
+        runtime_kind="subagent",
+        actor_role="direct_subagent",
+        agent_id="implementation-engineer",
+        delegation_id="subagent::parent-write",
+        delegation_depth=1,
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "grandchild-duplicate-write",
+                    "goal": "Implement src/result.py for the parent.",
+                    "writeRequired": True,
+                    "writeSet": ["src/result.py"],
+                    "expectedOutputs": ["src/result.py"],
+                    "acceptanceContract": "src/result.py is implemented.",
+                    "toolPolicy": {
+                        "mode": "allowlist",
+                        "allowedTools": ["read_native_file", "write_native_file"],
+                    },
+                }
+            ],
+            state=state,
+            tool_call_id="call-grandchild-duplicate-write",
+        )
+
+    payload = _tool_message_payload(command)
+    assert command.goto == "implementation-engineer"
+    assert payload["error"] == "grandchild_write_authority_not_granted"
+    assert payload["blockedTaskBriefIds"] == ["grandchild-duplicate-write"]
+    assert "parallel_invocations" not in command.update
+
+
+def test_managed_delegation_instruction_uses_child_worktree_not_parent_checkout(monkeypatch):
+    monkeypatch.setattr(native_delegation, "persist_runtime_episode", lambda episode, **_kwargs: dict(episode))
+    monkeypatch.setattr(native_delegation, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    parent_workspace = r"C:\Users\test\.v8-agent-os\worktrees\repo\run\supervisor"
+    child_workspace = r"C:\Users\test\.v8-agent-os\worktrees\repo\run\task-child"
+    monkeypatch.setattr(
+        native_delegation,
+        "prepare_delegated_engineering_workspace",
+        lambda **_kwargs: {
+            "workspace_path": child_workspace,
+            "original_workspace_path": r"E:\Projects\app",
+            "worktree_id": "task-child",
+            "worktree_root": child_workspace,
+            "managed_engineering_execution": True,
+        },
+    )
+    state = {
+        "session_id": "session-managed-child",
+        "run_id": "run-managed-child",
+        "workspace_path": parent_workspace,
+        "current_route_context": {"workspacePath": parent_workspace},
+    }
+
+    with bind_runtime_context(
+        runtime_kind="delegation",
+        actor_role="supervisor",
+        agent_id="supervisor",
+        session_id=state["session_id"],
+        run_id=state["run_id"],
+        workspace_path=parent_workspace,
+    ):
+        command = delegation_broker.func(
+            mode="dispatch",
+            tasks=[
+                {
+                    "taskBriefId": "managed-write",
+                    "targetAgentName": "Implementation Engineer",
+                    "goal": "Fix src/app.py and return evidence.",
+                    "context": {"workspacePath": parent_workspace},
+                    "writeRequired": True,
+                    "writeSet": ["src/app.py"],
+                    "expectedOutputs": ["src/app.py"],
+                    "acceptanceContract": "src/app.py is fixed.",
+                    "preferredAgentId": "implementation-engineer",
+                }
+            ],
+            state=state,
+            tool_call_id="call-managed-child-workspace",
+        )
+
+    send = list(command.goto)[0]
+    instruction = send.arg["messages"][-1].content
+    rendered_instruction = instruction.replace("\\\\", "\\")
+    task_brief = send.arg["parallel_branch"]["taskBrief"]
+    assert child_workspace in rendered_instruction
+    assert parent_workspace not in rendered_instruction
+    assert task_brief["workspacePath"] == child_workspace
+    assert task_brief["engineeringTaskCapsule"]["workspacePath"] == child_workspace
+
+
 def test_direct_subagent_children_are_disposable_parent_mirrors_with_peer_boundaries(monkeypatch):
     monkeypatch.setattr(native_delegation, "persist_runtime_episode", lambda episode, **_kwargs: dict(episode))
     monkeypatch.setattr(native_delegation, "emit_runtime_episode_event", lambda *_args, **_kwargs: None)
@@ -2108,10 +2334,18 @@ def test_unbound_custom_subagent_does_not_auto_receive_runtime_tools():
     assert names == {"read_native_file", "delegation_broker"}
 
 
-def test_local_subagent_dispatch_only_adds_recursive_grant_when_child_delegation_allowed():
+def test_local_subagent_dispatch_defaults_to_one_recursive_layer_unless_forbidden():
     from core.tools.native.delegation import _with_recursive_delegation_access
 
     plain = _with_recursive_delegation_access({"taskBriefId": "task-1", "goal": "Review the patch"})
+    forbidden = _with_recursive_delegation_access(
+        {
+            "taskBriefId": "task-forbidden",
+            "goal": "Review without another worker",
+            "allowChildDelegation": False,
+            "childDelegationPolicyExplicit": True,
+        }
+    )
     recursive = _with_recursive_delegation_access(
         {
             "taskBriefId": "task-2",
@@ -2120,7 +2354,8 @@ def test_local_subagent_dispatch_only_adds_recursive_grant_when_child_delegation
         }
     )
 
-    assert plain["runtimeAccess"] == []
+    assert plain["runtimeAccess"] == ["delegation.recursive"]
+    assert forbidden["runtimeAccess"] == []
     assert recursive["runtimeAccess"] == ["delegation.recursive"]
 
 
@@ -2188,6 +2423,25 @@ def test_memory_broker_explain_injection_is_read_only_decision_surface():
 def test_normalize_task_brief_preserves_runtime_access():
     brief = normalize_task_brief({"taskBriefId": "task-1", "runtime_access": ["creative_media.core"]})
     assert brief["runtimeAccess"] == ["creative_media.core"]
+
+
+def test_normalize_task_brief_decodes_json_array_values_from_typed_tool_payloads():
+    brief = normalize_task_brief(
+        {
+            "taskBriefId": "typed-array-repair",
+            "goal": "Repair one file.",
+            "writeRequired": True,
+            "writeSet": ['["src/result.py"]'],
+            "expectedOutputs": '["src/result.py", "test output"]',
+            "behaviorScope": ['["read target", "write target"]'],
+            "acceptanceContract": "The target passes its test.",
+        }
+    )
+
+    assert brief["writeSet"] == ["src/result.py"]
+    assert brief["expectedOutputs"] == ["src/result.py", "test output"]
+    assert brief["behaviorScope"] == ["read target", "write target"]
+    assert brief["engineeringTaskCapsule"]["writeSet"] == ["src/result.py"]
 
 
 def test_normalize_task_brief_preserves_child_delegation_policy():

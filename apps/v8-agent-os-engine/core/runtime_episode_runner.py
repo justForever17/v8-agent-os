@@ -19,7 +19,11 @@ from core.json_safe import to_jsonable
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
 from core.runtime_episodes import ACTIVE_EPISODE_STATES, build_handoff_ref, build_runtime_episode
 from core.time_truth import utc_now_iso
-from core.engineering_capsule import ensure_engineering_task_capsule
+from core.engineering_capsule import (
+    derive_grandchild_engineering_task,
+    engineering_capsule_mode,
+    ensure_engineering_task_capsule,
+)
 from core.engineering_kernel import build_engineering_kernel_context
 from erc.runtime_context import bind_runtime_context
 
@@ -725,10 +729,19 @@ class RuntimeEpisodeRunner:
         failed_children = [child for child in children if str(child.get("state") or "") in {"failed", "cancelled", "degraded"}]
         child_handoffs: list[dict[str, Any]] = []
         for child in [*completed_children, *failed_children]:
-            for handoff in db.list_runtime_episode_handoffs(str(child.get("episodeId") or child.get("id") or "")):
-                payload = dict(handoff.get("payload") or {})
-                if payload:
-                    child_handoffs.append(payload)
+            handoffs = db.list_runtime_episode_handoffs(
+                str(child.get("episodeId") or child.get("id") or "")
+            )
+            final_payload = next(
+                (
+                    dict(handoff.get("payload") or {})
+                    for handoff in reversed(handoffs)
+                    if isinstance(handoff.get("payload"), dict) and handoff.get("payload")
+                ),
+                {},
+            )
+            if final_payload:
+                child_handoffs.append(final_payload)
         resume_token = {
             "resumedFrom": "child_handoffs",
             "childEpisodeIds": [child.get("episodeId") for child in children],
@@ -1036,6 +1049,32 @@ class RuntimeEpisodeRunner:
             )
         if child_handoffs:
             ready_count = len(child_handoffs)
+            blocking_child_handoffs = [
+                item
+                for item in child_handoffs
+                if isinstance(item, dict)
+                and str(item.get("status") or "").strip().lower()
+                in {"degraded", "failed", "blocked", "error", "cancelled", "canceled"}
+            ]
+            if blocking_child_handoffs:
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="engineering",
+                    compact_summary=(
+                        "Engineering could not accept one or more child delegation handoffs; "
+                        "the parent must repair, retry, or explicitly narrow the task."
+                    ),
+                    status="degraded",
+                    confidence="high",
+                    consumer_hint="Do not claim delivery from a degraded child handoff. Repair or retry the failed child contract.",
+                    extra={
+                        "engineeringState": "recoverable_failed",
+                        "recoverable": True,
+                        "errorCode": "child_handoff_not_acceptable",
+                        "childHandoffs": child_handoffs,
+                        "blockingChildHandoffCount": len(blocking_child_handoffs),
+                    },
+                )
             resumed_worker_briefs = normalize_task_briefs(
                 inputs.get("workerBriefs")
                 or inputs.get("worker_briefs")
@@ -1659,6 +1698,11 @@ class RuntimeEpisodeRunner:
             capsule = brief.get("engineeringTaskCapsule") or brief.get("engineering_task_capsule")
             if isinstance(capsule, dict):
                 sources.append(capsule)
+                inherited = capsule.get("inheritedEngineeringContract") or capsule.get(
+                    "inherited_engineering_contract"
+                )
+                if isinstance(inherited, dict):
+                    sources.append(inherited)
             context = brief.get("context")
             if isinstance(context, dict):
                 contract = context.get("engineeringExecutionContract") or context.get("engineering_execution_contract")
@@ -1701,6 +1745,11 @@ class RuntimeEpisodeRunner:
             capsule = brief.get("engineeringTaskCapsule") or brief.get("engineering_task_capsule")
             if isinstance(capsule, dict):
                 sources.append(capsule)
+                inherited = capsule.get("inheritedEngineeringContract") or capsule.get(
+                    "inherited_engineering_contract"
+                )
+                if isinstance(inherited, dict):
+                    sources.append(inherited)
             context = brief.get("context")
             if isinstance(context, dict):
                 contract = context.get("engineeringExecutionContract") or context.get("engineering_execution_contract")
@@ -2465,7 +2514,9 @@ class RuntimeEpisodeRunner:
             "instruction": (
                 "The declared artifact already exists. Do not repeat the rejected command and do not execute "
                 "artifact content through eval, exec, encoded commands, or reflective loaders. Use read-only "
-                "static checks or an already-approved browser/runtime tool. If exact behavior cannot be proven "
+                "static checks or an already-approved browser/runtime tool. If dynamic verification is required, "
+                "invoke the declared file directly by path (for example, python -B <path>), never through -c, "
+                "eval/exec, or read-then-execute. If exact behavior cannot be proven "
                 "safely, return the remaining verification limitation without claiming success for that proof."
             ),
         }
@@ -2479,6 +2530,7 @@ class RuntimeEpisodeRunner:
                 content=(
                     "[V8OS 安全纠偏] 上一条验证命令被 Safety Guardian 拒绝，因为它通过 eval/exec 或编码/反射方式执行了产物内容。"
                     "产物已按声明路径落盘；不要重试该命令、不要扩大写入范围。改用只读静态检查或当前已获准的浏览器/运行时工具；"
+                    "若合同要求动态验证，必须直接按文件路径调用（例如 python -B <path>），禁止 -c、eval/exec 或读取后执行；"
                     "如果无法安全证明动态行为，明确回传剩余验证限制，不得伪造验证成功。"
                 )
             )
@@ -3026,6 +3078,35 @@ class RuntimeEpisodeRunner:
             )
         if child_handoffs:
             ready_count = len(child_handoffs)
+            blocking_child_handoffs = [
+                item
+                for item in child_handoffs
+                if isinstance(item, dict)
+                and str(item.get("status") or "").strip().lower()
+                in {"degraded", "failed", "blocked", "error", "cancelled", "canceled"}
+            ]
+            if blocking_child_handoffs:
+                return build_handoff_ref(
+                    producer_episode_id=str(episode.get("episodeId") or ""),
+                    kind="delegation_degraded",
+                    compact_summary=(
+                        "Delegation could not accept one or more child handoffs; "
+                        "the parent must repair, retry, or explicitly narrow the task."
+                    ),
+                    status="degraded",
+                    confidence="high",
+                    consumer_hint="Do not promote a degraded child handoff to ready. Repair or retry the child contract.",
+                    extra={
+                        "delegationState": "delegation_degraded",
+                        "dispatchStatus": "child_handoff_not_acceptable",
+                        "degraded": True,
+                        "degradedReason": "child_handoff_not_acceptable",
+                        "recoverable": True,
+                        "errorCode": "child_handoff_not_acceptable",
+                        "childHandoffs": child_handoffs,
+                        "blockingChildHandoffCount": len(blocking_child_handoffs),
+                    },
+                )
             budget_blocked = [
                 item
                 for item in child_handoffs
@@ -3037,6 +3118,79 @@ class RuntimeEpisodeRunner:
             )
             if budget_blocked:
                 summary += f" child_budget_boundary={len(budget_blocked)}"
+            managed_workspace = (
+                dict(inputs.get("engineeringWorkspace") or {})
+                if isinstance(inputs.get("engineeringWorkspace"), dict)
+                else {}
+            )
+            managed_result: dict[str, Any] = {}
+            worktree_id = str(
+                managed_workspace.get("worktree_id")
+                or managed_workspace.get("worktreeId")
+                or ""
+            ).strip()
+            if worktree_id:
+                try:
+                    from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+                    sandbox_service = get_engineering_sandbox_service()
+                    change_set = sandbox_service.finalize_task_workspace(
+                        worktree_id=worktree_id,
+                        commit_message=f"V8OS resumed delegation {episode.get('episodeId') or worktree_id}",
+                    )
+                    parent_merge = sandbox_service.merge_child_change_set_to_parent(
+                        child_worktree_id=worktree_id,
+                        run_id=str(episode.get("run_id") or episode.get("runId") or "delegation-resume"),
+                    )
+                    managed_result = {
+                        "gitChangeSet": change_set.as_dict(),
+                        "sandboxEvidence": {
+                            "worktreeId": worktree_id,
+                            "leaseId": managed_workspace.get("sandbox_lease_id")
+                            or managed_workspace.get("sandboxLeaseId"),
+                            "policyDigest": managed_workspace.get("sandbox_policy_digest")
+                            or managed_workspace.get("sandboxPolicyDigest"),
+                            "state": "completed",
+                        },
+                        **(
+                            {"parentWorktreeMerge": parent_merge}
+                            if parent_merge.get("status") == "merged_to_parent"
+                            else {}
+                        ),
+                    }
+                    if parent_merge.get("status") == "not_nested":
+                        run_id = str(episode.get("run_id") or episode.get("runId") or "").strip()
+                        if run_id:
+                            integration, integration_change_set = sandbox_service.build_run_integration(
+                                run_id=run_id,
+                                invocation_id=str(episode.get("episodeId") or worktree_id),
+                                change_sets=[change_set.as_dict()],
+                            )
+                            managed_result.update(
+                                {
+                                    "integrationChangeSet": integration_change_set.as_dict(),
+                                    "integrationWorktreeId": integration.worktree_id,
+                                }
+                            )
+                except Exception as exc:
+                    return build_handoff_ref(
+                        producer_episode_id=str(episode.get("episodeId") or ""),
+                        kind="delegation",
+                        compact_summary=(
+                            "Delegation child work completed, but the managed parent worktree could not be finalized: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                        status="failed",
+                        confidence="high",
+                        consumer_hint="Repair the preserved managed worktree or integration conflict before retrying.",
+                        extra={
+                            "delegationState": "recoverable_failed",
+                            "recoverable": True,
+                            "errorCode": str(getattr(exc, "code", None) or "managed_worktree_finalize_failed"),
+                            "worktreeId": worktree_id,
+                            "childHandoffs": child_handoffs,
+                        },
+                    )
             return build_handoff_ref(
                 producer_episode_id=str(episode.get("episodeId") or ""),
                 kind="delegation",
@@ -3049,6 +3203,7 @@ class RuntimeEpisodeRunner:
                     "childHandoffs": child_handoffs,
                     "handoffRefs": [item.get("handoffId") or item.get("handoffRefId") for item in child_handoffs if isinstance(item, dict)],
                     "budgetBoundaryChildCount": int(resume_token.get("budgetBoundaryChildCount") or len(budget_blocked) or 0),
+                    **managed_result,
                 },
             )
         worker_briefs = [
@@ -3145,6 +3300,21 @@ class RuntimeEpisodeRunner:
                 or (episode.get("need") or {}).get("workspace_path")
                 or ""
             ).strip() or None
+            parent_worktree_id = str(
+                inputs.get("parentWorktreeId")
+                or inputs.get("parent_worktree_id")
+                or need.get("parentWorktreeId")
+                or need.get("parent_worktree_id")
+                or ""
+            ).strip() or None
+            original_workspace_path = str(
+                inputs.get("originalWorkspacePath")
+                or inputs.get("original_workspace_path")
+                or need.get("originalWorkspacePath")
+                or need.get("original_workspace_path")
+                or workspace_path
+                or ""
+            ).strip() or None
             runtime_context = {
                 "runtime_kind": "delegation",
                 "trigger_source": "runtime_episode_runner",
@@ -3154,7 +3324,9 @@ class RuntimeEpisodeRunner:
                 "delegation_depth": 1 if recursive_dispatch else 0,
                 "session_id": session_id,
                 "run_id": run_id,
-                "workspace_path": workspace_path,
+                "workspace_path": original_workspace_path,
+                "original_workspace_path": original_workspace_path,
+                "worktree_id": parent_worktree_id,
                 "goal": str(episode.get("reason") or (episode.get("need") or {}).get("reason") or "").strip(),
             }
             selected_local_command = self._broker_selected_local_episode_command(
@@ -3184,7 +3356,9 @@ class RuntimeEpisodeRunner:
                         state={
                             "run_id": run_id,
                             "session_id": session_id,
-                            "workspace_path": workspace_path,
+                            "workspace_path": original_workspace_path,
+                            "original_workspace_path": original_workspace_path,
+                            "worktree_id": parent_worktree_id,
                             "delegationDispatchSource": "runtime_episode_runner",
                             "current_route_context": {
                                 "activeCapabilityEpisodeId": episode.get("episodeId"),
@@ -3192,7 +3366,21 @@ class RuntimeEpisodeRunner:
                                 "runtimeToolGrants": [{"group": "delegation.recursive", "runtimeKind": "subagent"}],
                                 **({"parentDelegationId": parent_episode_id, "delegationId": parent_episode_id, "delegationDepth": 1} if recursive_dispatch else {}),
                                 **({"taskBrief": parent_task_brief} if parent_task_brief else {}),
-                                **({"workspacePath": workspace_path, "workspace_path": workspace_path} if workspace_path else {}),
+                                **(
+                                    {
+                                        "workspacePath": original_workspace_path,
+                                        "workspace_path": original_workspace_path,
+                                        "originalWorkspacePath": original_workspace_path,
+                                        "original_workspace_path": original_workspace_path,
+                                    }
+                                    if original_workspace_path
+                                    else {}
+                                ),
+                                **(
+                                    {"worktreeId": parent_worktree_id, "worktree_id": parent_worktree_id}
+                                    if parent_worktree_id
+                                    else {}
+                                ),
                             },
                         },
                         tool_call_id=f"episode:{episode.get('episodeId')}:delegation_dispatch",
@@ -3448,6 +3636,19 @@ class RuntimeEpisodeRunner:
         from langgraph.types import Command, Send
 
         task_brief = dict(worker_briefs[0])
+        inputs = dict(episode.get("inputs") or {})
+        engineering_workspace = (
+            dict(
+                inputs.get("engineeringWorkspace")
+                or episode.get("engineeringWorkspace")
+                or {}
+            )
+            if isinstance(
+                inputs.get("engineeringWorkspace") or episode.get("engineeringWorkspace"),
+                dict,
+            )
+            else {}
+        )
         parts = episode_id.split("::")
         invocation_id = parts[1] if len(parts) > 1 and parts[1] else f"delegation_{uuid.uuid4().hex[:12]}"
         try:
@@ -3460,7 +3661,24 @@ class RuntimeEpisodeRunner:
             or (episode.get("need") or {}).get("parentEpisodeId")
             or ""
         ).strip()
-        delegation_depth = 2 if parent_episode_id else 1
+        root_episode_id = str(
+            episode.get("rootEpisodeId")
+            or episode.get("root_episode_id")
+            or (episode.get("need") or {}).get("rootEpisodeId")
+            or ""
+        ).strip()
+        # A broker-selected direct child always has the Engineering episode as
+        # both its parent and root. Presence of a parent alone therefore does
+        # not imply grandchild depth. Only a parent below the durable root is a
+        # recursive delegation.
+        recursive_parent = bool(
+            parent_episode_id
+            and (
+                (root_episode_id and parent_episode_id != root_episode_id)
+                or (not root_episode_id and parent_episode_id.startswith("subagent::"))
+            )
+        )
+        delegation_depth = 2 if recursive_parent else 1
         task_goal = str(task_brief.get("goal") or episode.get("reason") or "Delegated task").strip()
         task_query = task_brief_query_text(task_brief) or task_goal
         delegation_policy = task_brief.get("delegationPolicy")
@@ -3468,14 +3686,19 @@ class RuntimeEpisodeRunner:
             delegation_policy = task_brief.get("delegation_policy")
         if not isinstance(delegation_policy, dict):
             delegation_policy = {}
-        child_policy = task_brief.get("allowChildDelegation")
-        if child_policy is None:
-            child_policy = task_brief.get("allow_child_delegation")
-        if child_policy is None:
-            child_policy = delegation_policy.get("allowChildDelegation")
-        if child_policy is None:
-            child_policy = delegation_policy.get("allow_child_delegation")
-        allow_child_delegation = bool(child_policy) and delegation_depth < 2
+        policy_explicit = task_brief.get("childDelegationPolicyExplicit")
+        child_policy = None
+        if policy_explicit is True:
+            child_policy = task_brief.get("allowChildDelegation")
+            if child_policy is None:
+                child_policy = task_brief.get("allow_child_delegation")
+            if child_policy is None:
+                child_policy = delegation_policy.get("allowChildDelegation")
+            if child_policy is None:
+                child_policy = delegation_policy.get("allow_child_delegation")
+        allow_child_delegation = delegation_depth < 2 and (
+            True if child_policy is None else bool(child_policy)
+        )
         child_budget = dict(
             task_brief.get("childDelegationBudget")
             or task_brief.get("child_delegation_budget")
@@ -3483,6 +3706,22 @@ class RuntimeEpisodeRunner:
             or delegation_policy.get("child_delegation_budget")
             or {}
         )
+        if allow_child_delegation and not child_budget:
+            child_budget = {"maxChildren": 1}
+        task_runtime_access = [
+            str(item or "").strip()
+            for item in list(task_brief.get("runtimeAccess") or [])
+            if str(item or "").strip()
+        ]
+        if allow_child_delegation and "delegation.recursive" not in task_runtime_access:
+            task_runtime_access.append("delegation.recursive")
+        task_brief = {
+            **task_brief,
+            "delegationDepth": delegation_depth,
+            "allowChildDelegation": allow_child_delegation,
+            "childDelegationBudget": child_budget,
+            "runtimeAccess": task_runtime_access,
+        }
         target_label = str(episode.get("targetLabel") or target_id).strip() or target_id
         task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
         ephemeral_info = task_context.get("ephemeralMirror") if isinstance(task_context.get("ephemeralMirror"), dict) else {}
@@ -3494,9 +3733,14 @@ class RuntimeEpisodeRunner:
             "taskBrief": task_brief,
             "delegationId": episode_id,
             "delegationDepth": delegation_depth,
-            "runtimeToolGrants": [{"group": "delegation.direct", "runtimeKind": "subagent"}],
+            "runtimeToolGrants": (
+                [{"group": "delegation.recursive", "runtimeKind": "subagent"}]
+                if allow_child_delegation
+                else []
+            ),
             **({"parentDelegationId": parent_episode_id} if parent_episode_id else {}),
             **({"workspacePath": workspace_path, "workspace_path": workspace_path} if workspace_path else {}),
+            **engineering_workspace,
         }
         branch_state = {
             "messages": [
@@ -3537,12 +3781,34 @@ class RuntimeEpisodeRunner:
                 "writeSetPartitions": list(task_brief.get("writeSetPartitions") or []),
                 "initialMessageCount": 1,
                 "initialTodoCount": 0,
+                **({"engineeringWorkspace": engineering_workspace} if engineering_workspace else {}),
             },
             **({"session_id": session_id, "sessionId": session_id} if session_id else {}),
             **({"run_id": run_id, "runId": run_id} if run_id else {}),
             **({"workspace_path": workspace_path, "workspacePath": workspace_path} if workspace_path else {}),
+            **engineering_workspace,
         }
         return Command(goto=[Send("parallel_delegate_task", branch_state)], update={})
+
+    @staticmethod
+    def _child_schedule_parent_workspace(
+        branch: dict[str, Any],
+        direct_parent: dict[str, Any],
+    ) -> dict[str, Any]:
+        branch_workspace = (
+            dict(branch.get("engineeringWorkspace") or {})
+            if isinstance(branch.get("engineeringWorkspace"), dict)
+            else {}
+        )
+        if branch_workspace:
+            return branch_workspace
+        direct_parent_inputs = (
+            dict(direct_parent.get("inputs") or {})
+            if isinstance(direct_parent.get("inputs"), dict)
+            else {}
+        )
+        persisted_workspace = direct_parent_inputs.get("engineeringWorkspace")
+        return dict(persisted_workspace or {}) if isinstance(persisted_workspace, dict) else {}
 
     async def _execute_local_delegation_sends(
         self,
@@ -3557,7 +3823,11 @@ class RuntimeEpisodeRunner:
         sends = [item for item in (goto if isinstance(goto, list) else []) if isinstance(item, Send)]
         if not sends:
             return [], []
-        from graph.parallel_support import _run_parallel_agent_branch
+        from graph.parallel_support import (
+            _fail_managed_branch_workspace,
+            _finalize_managed_branch_workspace,
+            _run_parallel_agent_branch,
+        )
 
         agent_nodes_map = self._build_agent_nodes_map()
         results: list[dict[str, Any]] = []
@@ -3877,9 +4147,50 @@ class RuntimeEpisodeRunner:
                 )
                 summary.setdefault("taskBriefId", task_id or branch.get("taskBriefId"))
                 direct_parent = direct_episode or episode
-                branch_child_ids = self._enqueue_child_delegation_requests(child_requests, episode=direct_parent)
+                # The persisted direct-worker episode is the durable source of
+                # its managed checkout.  Some provider Send boundaries omit
+                # this non-model metadata, so never fall back to the Supervisor
+                # integration root when scheduling a grandchild.
+                branch_engineering_workspace = self._child_schedule_parent_workspace(
+                    branch,
+                    direct_parent,
+                )
+                branch_child_ids = self._enqueue_child_delegation_requests(
+                    child_requests,
+                    episode=direct_parent,
+                    parent_engineering_workspace=branch_engineering_workspace or None,
+                )
                 if branch_child_ids:
                     summary["childEpisodeIds"] = branch_child_ids
+                    summary["status"] = "waiting_child_delegation"
+                summary = _finalize_managed_branch_workspace(branch, summary)
+                if (
+                    isinstance(summary.get("gitChangeSet"), dict)
+                    and not isinstance(summary.get("parentWorktreeMerge"), dict)
+                    and run_id
+                ):
+                    try:
+                        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+                        integration, integration_change_set = (
+                            get_engineering_sandbox_service().build_run_integration(
+                                run_id=run_id,
+                                invocation_id=str(branch.get("invocationId") or episode.get("episodeId") or "delegation"),
+                                change_sets=[dict(summary.get("gitChangeSet") or {})],
+                            )
+                        )
+                        summary["integrationChangeSet"] = integration_change_set.as_dict()
+                        summary["integrationWorktreeId"] = integration.worktree_id
+                    except Exception as exc:
+                        summary = {
+                            **summary,
+                            "status": "error",
+                            "error": f"managed_integration_failed:{getattr(exc, 'code', None) or exc}",
+                            "integrationEvidence": {
+                                "state": "blocked",
+                                "errorCode": str(getattr(exc, "code", None) or exc),
+                            },
+                        }
                 results.append(summary)
                 _progress(
                     {
@@ -3894,6 +4205,10 @@ class RuntimeEpisodeRunner:
                     completed_by_task_id[task_id] = summary
                 child_episode_ids.extend(branch_child_ids)
             except Exception as exc:
+                sandbox_failure = _fail_managed_branch_workspace(
+                    branch,
+                    str(getattr(exc, "code", None) or exc or exc.__class__.__name__),
+                )
                 summary = {
                     "invocationId": branch.get("invocationId"),
                     "taskBriefId": task_id or branch.get("taskBriefId"),
@@ -3910,6 +4225,7 @@ class RuntimeEpisodeRunner:
                     "error": str(exc).strip() or exc.__class__.__name__,
                     "compactExecutionTrace": str(getattr(exc, "compact_trace", "") or "")[:2400],
                     "toolsUsed": list(getattr(exc, "tools_used", []) or [])[:12],
+                    **sandbox_failure,
                     "completedAt": utc_now_iso(),
                 }
                 results.append(summary)
@@ -3992,52 +4308,9 @@ class RuntimeEpisodeRunner:
 
     @staticmethod
     def _fallback_child_delegation_request(*, branch: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
-        source_invocation_id = str(
-            summary.get("invocationId")
-            or branch.get("invocationId")
-            or uuid.uuid4().hex[:12]
-        ).strip()
-        source_delegation_id = str(summary.get("delegationId") or branch.get("delegationId") or "").strip()
-        child_invocation_id = f"{source_invocation_id}:child:{uuid.uuid4().hex[:8]}"
-        child_delegation_id = f"{source_delegation_id or source_invocation_id}:child"
-        task_goal = str(
-            summary.get("taskGoal")
-            or branch.get("reason")
-            or "Continue the child delegation requested by the subagent."
-        ).strip()
-        child_branch = {
-            "invocationId": child_invocation_id,
-            "delegationId": child_delegation_id,
-            "taskBriefId": f"{child_invocation_id}:brief",
-            "reason": f"Continue child delegation for: {task_goal}",
-            "delegationDepth": int(branch.get("delegationDepth") or 0) + 1,
-            "runtimeAccess": ["delegation.recursive"],
-            "allowChildDelegation": False,
-        }
-        return {
-            "requestId": f"fallback_child_{child_invocation_id}",
-            "createdAt": utc_now_iso(),
-            "sourceInvocationId": source_invocation_id,
-            "sourceDelegationId": source_delegation_id or None,
-            "sourceAgentId": summary.get("agentId") or branch.get("agentId"),
-            "sourceAgentName": summary.get("agentName") or branch.get("agentName"),
-            "childInvocationId": child_invocation_id,
-            "childDelegationId": child_delegation_id,
-            "childTaskBriefId": child_branch["taskBriefId"],
-            "childTaskGoal": child_branch["reason"],
-            "childAgentId": child_branch.get("agentId"),
-            "childAgentName": child_branch.get("agentName"),
-            "childDepth": child_branch["delegationDepth"],
-            "fallbackReason": "incomplete_nested_delegation_payload",
-            "send": {
-                "node": "parallel_delegate_task",
-                "arg": {
-                    "parallel_branch": child_branch,
-                    "messages": [],
-                    "todos": [],
-                },
-            },
-        }
+        from graph.parallel_support import _fallback_child_delegation_request
+
+        return _fallback_child_delegation_request(branch=branch, summary=summary)
 
     @classmethod
     def _repair_child_worker_target(
@@ -4176,7 +4449,13 @@ class RuntimeEpisodeRunner:
             worker_brief["workspacePath"] = workspace_path
         return cls._repair_child_worker_target(worker_brief, request=request, child_branch=child_branch), child_branch
 
-    def _enqueue_child_delegation_requests(self, child_requests: list[dict[str, Any]], *, episode: dict[str, Any]) -> list[str]:
+    def _enqueue_child_delegation_requests(
+        self,
+        child_requests: list[dict[str, Any]],
+        *,
+        episode: dict[str, Any],
+        parent_engineering_workspace: dict[str, Any] | None = None,
+    ) -> list[str]:
         if not child_requests:
             return []
         episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
@@ -4193,18 +4472,71 @@ class RuntimeEpisodeRunner:
             or episode.get("workspace_path")
             or ""
         ).strip() or None
+        parent_workspace = dict(parent_engineering_workspace or {})
+        workspace_path = str(
+            parent_workspace.get("workspace_path")
+            or parent_workspace.get("workspacePath")
+            or workspace_path
+            or ""
+        ).strip() or None
+        original_workspace_path = str(
+            parent_workspace.get("original_workspace_path")
+            or parent_workspace.get("originalWorkspacePath")
+            or workspace_path
+            or ""
+        ).strip() or None
+        parent_worktree_id = str(
+            parent_workspace.get("worktree_id")
+            or parent_workspace.get("worktreeId")
+            or ""
+        ).strip() or None
+        parent_worker_briefs = normalize_task_briefs(
+            inputs.get("workerBriefs")
+            or inputs.get("worker_briefs")
+            or inputs.get("taskBriefs")
+            or inputs.get("task_briefs")
+            or []
+        )
+        parent_task_brief = parent_worker_briefs[0] if parent_worker_briefs else {}
         child_episode_ids: list[str] = []
         for item in child_requests:
             worker_brief, child_branch = self._child_worker_brief_from_request(item, workspace_path=workspace_path)
+            if (
+                parent_worktree_id
+                and parent_task_brief
+                and engineering_capsule_mode(worker_brief) not in {"verify", "write"}
+            ):
+                worker_brief = derive_grandchild_engineering_task(
+                    parent_task_brief,
+                    worker_brief,
+                )
+            child_delegation_id = str(
+                item.get("childDelegationId")
+                or child_branch.get("delegationId")
+                or item.get("childInvocationId")
+                or ""
+            ).strip()
+            # This episode is a durable scheduler for the requested grandchild,
+            # not an executing worker.  Keep only the parent's worktree identity
+            # here.  The real brokered worker allocates exactly one child
+            # worktree/lease when it is dispatched; preallocating another one at
+            # the scheduler layer leaks an active empty sandbox after completion.
             child_inputs = {
                 "targetCount": 1,
                 "workerBriefs": [worker_brief],
                 "allowChildDelegation": bool(child_branch.get("allowChildDelegation")),
                 "childDelegationBudget": child_branch.get("childDelegationBudget") or {},
                 "writeSetPartitions": child_branch.get("writeSetPartitions") or [],
+                **({"parentWorktreeId": parent_worktree_id} if parent_worktree_id else {}),
+                **({"originalWorkspacePath": original_workspace_path} if original_workspace_path else {}),
             }
-            if workspace_path:
-                child_inputs["workspacePath"] = workspace_path
+            child_execution_workspace = str(
+                workspace_path
+                or original_workspace_path
+                or ""
+            ).strip()
+            if child_execution_workspace:
+                child_inputs["workspacePath"] = child_execution_workspace
             extra = {
                 "sourceInvocationId": item.get("sourceInvocationId"),
                 "sourceAgentId": item.get("sourceAgentId"),
@@ -4225,9 +4557,10 @@ class RuntimeEpisodeRunner:
                     "originalChildAgentId": worker_brief.get("originalAgentId"),
                     "originalChildAgentName": worker_brief.get("originalAgentName"),
                 }
-            if workspace_path:
-                extra["workspacePath"] = workspace_path
-            child_delegation_id = str(item.get("childDelegationId") or "").strip()
+            if child_execution_workspace:
+                extra["workspacePath"] = child_execution_workspace
+            if parent_worktree_id:
+                extra["parentWorktreeId"] = parent_worktree_id
             child_episode = db.get_runtime_episode(child_delegation_id) if child_delegation_id else None
             if child_episode and str(
                 child_episode.get("parentEpisodeId") or child_episode.get("parent_episode_id") or ""
@@ -4250,10 +4583,42 @@ class RuntimeEpisodeRunner:
                     continuation_target="runtime_episode_runner",
                     extra=extra,
                 )
+            else:
+                existing_inputs = (
+                    dict(child_episode.get("inputs") or {})
+                    if isinstance(child_episode.get("inputs"), dict)
+                    else {}
+                )
+                authoritative_inputs = {**existing_inputs, **child_inputs}
+                existing_need = (
+                    dict(child_episode.get("need") or {})
+                    if isinstance(child_episode.get("need"), dict)
+                    else {}
+                )
+                child_episode = {
+                    **child_episode,
+                    **extra,
+                    "kind": "delegation",
+                    "parentEpisodeId": episode_id,
+                    "inputs": authoritative_inputs,
+                    "need": {
+                        **existing_need,
+                        "kind": "delegation",
+                        "source": str(existing_need.get("source") or "subagent"),
+                        "reason": str(
+                            item.get("childTaskGoal")
+                            or existing_need.get("reason")
+                            or "child delegation"
+                        ),
+                        "needId": child_delegation_id or item.get("childInvocationId"),
+                        "parentEpisodeId": episode_id,
+                        "inputs": authoritative_inputs,
+                    },
+                }
             with bind_runtime_context(
                 session_id=session_id,
                 run_id=run_id,
-                workspace_path=workspace_path,
+                workspace_path=child_execution_workspace or workspace_path,
                 runtime_kind="delegation",
                 trigger_source="runtime_episode_runner.child_delegation",
             ):

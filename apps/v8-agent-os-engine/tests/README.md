@@ -55,6 +55,7 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 | --- | --- |
 | 改 ChatRuntime / Supervisor / queue / transcript | `tests/chat_runtime/` + 受影响的 `tests/runtime_core/` |
 | 改 Runtime Episode / Engineering / Delegation / Computer Use | `tests/runtime_core/` |
+| 改工作区拓扑、自动 Git、worktree 或原生工程沙箱 | `tests/runtime_core/test_engineering_sandbox.py` + `test_workspace_capability.py` + `test_delegation_fanout.py` |
 | 改 Memory 抽取、注入、scope、视觉增强 | `tests/memory/` + `tests/evals/` 中相关 memory eval |
 | 改 ModelHub、provider、reasoning、embedding/rerank | `tests/model_control/` |
 | 改 Skill / MCP / Plugin Manager | `tests/extensions/` + `tests/plugin_manager/` |

@@ -3,7 +3,7 @@ import sqlite3
 import threading
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from core.llm_chat_adapter import V8ChatModelAdapter
 from core.prompt_cache_gateway import prompt_cache_gateway
@@ -13,6 +13,7 @@ from erc.checkpoint_store import CheckpointStore, V8AsyncSqliteSaver
 class _NativeModel:
     def __init__(self) -> None:
         self.last_config = None
+        self.last_messages = None
         self.bound_tools = None
         self.bound_kwargs = None
 
@@ -21,8 +22,9 @@ class _NativeModel:
         self.bound_kwargs = dict(kwargs)
         return self
 
-    def invoke(self, _messages, *, config=None, **_kwargs):
+    def invoke(self, messages, *, config=None, **_kwargs):
         self.last_config = config
+        self.last_messages = list(messages)
         return AIMessage(content="ok")
 
 
@@ -168,6 +170,89 @@ def test_responses_hosted_tools_merge_with_v8_tools_without_changing_local_contr
     adapter.bind_tools([local_tool]).invoke([HumanMessage(content="inspect then search")])
 
     assert native.bound_tools == [local_tool, {"type": "web_search"}]
+
+
+def test_responses_reprojects_canonical_tool_ids_to_provider_ids_at_wire_boundary():
+    native = _NativeModel()
+    adapter = V8ChatModelAdapter(
+        model_id="gpt-5.6-sol",
+        provider_standard="openai",
+        role="supervisor",
+        meta={
+            "api_standard": "openai",
+            "wire_protocol": "openai.responses",
+            "capabilityClass": "chat_tool_calling",
+            "capabilities": {"supportsTools": True},
+        },
+        model_kwargs={},
+        builder=lambda: native,
+    )
+    canonical_id = "call_v8_0123456789abcdef01234567"
+    provider_id = "call_provider_responses_123"
+    assistant = AIMessage(
+        content=[
+            {
+                "type": "function_call",
+                "id": provider_id,
+                "name": "runtime_broker",
+                "arguments": '{"mode":"route"}',
+            }
+        ],
+        tool_calls=[
+            {
+                "id": canonical_id,
+                "name": "runtime_broker",
+                "args": {"mode": "route"},
+            }
+        ],
+    )
+    assistant.tool_calls[0]["providerToolCallId"] = provider_id
+    result = ToolMessage(
+        content="Engineering runtime completed.",
+        name="runtime_broker",
+        tool_call_id=canonical_id,
+    )
+
+    adapter.invoke([HumanMessage(content="route engineering"), assistant, result])
+
+    assert native.last_messages[1].tool_calls[0]["id"] == provider_id
+    assert native.last_messages[2].tool_call_id == provider_id
+    assert assistant.tool_calls[0]["id"] == canonical_id
+    assert result.tool_call_id == canonical_id
+
+
+def test_chat_completions_keeps_canonical_tool_ids_on_wire():
+    adapter = V8ChatModelAdapter(
+        model_id="chat-model",
+        provider_standard="openai",
+        role="supervisor",
+        meta={
+            "api_standard": "openai",
+            "wire_protocol": "openai.chat_completions",
+            "capabilityClass": "chat_tool_calling",
+            "capabilities": {"supportsTools": True},
+        },
+        model_kwargs={},
+        builder=lambda: _NativeModel(),
+    )
+    canonical_id = "call_v8_abcdef0123456789abcdef01"
+    assistant = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": canonical_id,
+                "name": "runtime_broker",
+                "args": {"mode": "route"},
+            }
+        ],
+    )
+    assistant.tool_calls[0]["providerToolCallId"] = "call_provider_original"
+    result = ToolMessage(content="done", name="runtime_broker", tool_call_id=canonical_id)
+
+    projected = adapter.normalize_input_for_provider([assistant, result])
+
+    assert projected[0].tool_calls[0]["id"] == canonical_id
+    assert projected[1].tool_call_id == canonical_id
 
 
 def test_provider_hosted_tool_outputs_remain_server_content_not_local_tool_calls():

@@ -1148,6 +1148,86 @@ class DatabaseManager:
             ''')
 
             conn.execute('''
+                CREATE TABLE IF NOT EXISTS managed_git_repositories (
+                    repository_id TEXT PRIMARY KEY,
+                    project_id TEXT,
+                    original_workspace_root TEXT NOT NULL,
+                    repository_root TEXT NOT NULL,
+                    workspace_relative_path TEXT NOT NULL DEFAULT '.',
+                    state TEXT NOT NULL,
+                    head_commit TEXT,
+                    default_branch TEXT,
+                    initialized_by_v8os INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+            conn.execute("DROP INDEX IF EXISTS idx_managed_git_repository_root")
+            conn.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_git_workspace_topology
+                ON managed_git_repositories(repository_root, original_workspace_root)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS engineering_worktrees (
+                    worktree_id TEXT PRIMARY KEY,
+                    repository_id TEXT NOT NULL,
+                    session_id TEXT,
+                    run_id TEXT,
+                    delegation_id TEXT,
+                    parent_worktree_id TEXT,
+                    worktree_kind TEXT NOT NULL DEFAULT 'task',
+                    branch_name TEXT NOT NULL,
+                    base_commit TEXT NOT NULL,
+                    worktree_root TEXT NOT NULL,
+                    worktree_workspace_root TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    change_set_json TEXT,
+                    error_code TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    FOREIGN KEY (repository_id) REFERENCES managed_git_repositories(repository_id) ON DELETE RESTRICT
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_engineering_worktrees_run_state
+                ON engineering_worktrees(run_id, state, created_at)
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS sandbox_execution_leases (
+                    lease_id TEXT PRIMARY KEY,
+                    policy_id TEXT NOT NULL,
+                    policy_digest TEXT NOT NULL,
+                    write_set_digest TEXT NOT NULL,
+                    repository_id TEXT NOT NULL,
+                    worktree_id TEXT NOT NULL,
+                    session_id TEXT,
+                    run_id TEXT,
+                    delegation_id TEXT,
+                    actor_role TEXT NOT NULL,
+                    runtime_kind TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL,
+                    network_profile TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    capabilities_json TEXT NOT NULL,
+                    policy_json TEXT NOT NULL,
+                    error_code TEXT,
+                    created_at TEXT NOT NULL,
+                    activated_at TEXT,
+                    expires_at TEXT,
+                    finished_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (repository_id) REFERENCES managed_git_repositories(repository_id) ON DELETE RESTRICT,
+                    FOREIGN KEY (worktree_id) REFERENCES engineering_worktrees(worktree_id) ON DELETE RESTRICT
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_sandbox_execution_leases_run_state
+                ON sandbox_execution_leases(run_id, state, created_at)
+            ''')
+
+            conn.execute('''
                 CREATE TABLE IF NOT EXISTS session_sources (
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -1422,6 +1502,14 @@ class DatabaseManager:
                     conn.execute("ALTER TABLE messages ADD COLUMN images TEXT")
                 if 'metadata_json' not in columns:
                     conn.execute("ALTER TABLE messages ADD COLUMN metadata_json TEXT")
+
+                cursor.execute("PRAGMA table_info(engineering_worktrees)")
+                engineering_worktree_columns = [row['name'] for row in cursor.fetchall()]
+                if engineering_worktree_columns and 'worktree_kind' not in engineering_worktree_columns:
+                    conn.execute(
+                        "ALTER TABLE engineering_worktrees "
+                        "ADD COLUMN worktree_kind TEXT NOT NULL DEFAULT 'task'"
+                    )
 
                 cursor.execute("PRAGMA table_info(runtime_events)")
                 runtime_event_columns = [row['name'] for row in cursor.fetchall()]

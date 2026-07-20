@@ -98,6 +98,7 @@ test('desktop release config emits unsigned Windows installer and zip artifacts'
   assert.match(config, /to: v8os\/apps\/v8-agent-os-engine/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-web/);
   assert.match(config, /!\.next\/dev\/\*\*/);
+  assert.match(config, /!native\/\*\*\/target\/\*\*/);
 });
 
 test('desktop workflow exists and publishes checksummed Windows artifacts', () => {
@@ -107,10 +108,25 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /windows-latest/);
   assert.match(workflow, /packages\/session-realtime\/package-lock\.json/);
   assert.match(workflow, /Install shared realtime package dependencies/);
+  assert.match(workflow, /Build native engineering sandbox host/);
+  assert.match(workflow, /build-sandbox-host\.mjs --force/);
   assert.match(workflow, /working-directory: packages\/session-realtime/);
   assert.match(workflow, /npm exec -- tsc --version/);
   assert.match(workflow, /apps\/v8-agent-os-shell run dist:win/);
   assert.match(workflow, /SHA256/);
+});
+
+test('native sandbox host has targeted Windows Linux and macOS contract builds', () => {
+  const workflowPath = path.join(repoRoot, '.github', 'workflows', 'sandbox-host-contract.yml');
+  assert.equal(fs.existsSync(workflowPath), true);
+  const workflow = fs.readFileSync(workflowPath, 'utf8');
+  assert.match(workflow, /windows-latest/);
+  assert.match(workflow, /ubuntu-latest/);
+  assert.match(workflow, /macos-latest/);
+  assert.match(workflow, /build-sandbox-host\.mjs --force/);
+  assert.match(workflow, /build-sandbox-host\.mjs --check/);
+  assert.match(workflow, /aarch64-pc-windows-msvc/);
+  assert.match(workflow, /timeout-minutes: 10/);
 });
 
 test('desktop workflow uses free-tier guardrails and keeps release permissions scoped', () => {

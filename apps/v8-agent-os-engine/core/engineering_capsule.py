@@ -315,6 +315,54 @@ def ensure_engineering_task_capsule(
     return task
 
 
+def bind_engineering_task_workspace(
+    task_brief: dict[str, Any],
+    *,
+    workspace_path: str,
+    original_workspace_path: str = "",
+) -> dict[str, Any]:
+    """Project one engineering brief onto its actual execution worktree.
+
+    The original workspace remains the authority boundary.  The active workspace
+    path is execution-only and must follow the worktree allocated to this branch;
+    otherwise a child receives a valid sandbox lease while its task capsule still
+    points at the parent's checkout.
+    """
+
+    task = deepcopy(dict(task_brief or {}))
+    active_workspace = str(workspace_path or "").strip()
+    authority_workspace = str(original_workspace_path or "").strip()
+    if not active_workspace:
+        return task
+
+    context = _task_context(task)
+    context["workspacePath"] = active_workspace
+    if authority_workspace:
+        context["originalWorkspacePath"] = authority_workspace
+    execution_contract = (
+        deepcopy(context.get("engineeringExecutionContract"))
+        if isinstance(context.get("engineeringExecutionContract"), dict)
+        else {}
+    )
+    execution_contract["workspacePath"] = active_workspace
+    if authority_workspace:
+        execution_contract["originalWorkspacePath"] = authority_workspace
+    context["engineeringExecutionContract"] = execution_contract
+    task["context"] = context
+    task["workspacePath"] = active_workspace
+    if authority_workspace:
+        task["originalWorkspacePath"] = authority_workspace
+
+    capsule = effective_engineering_capsule(task)
+    if capsule:
+        capsule["workspacePath"] = active_workspace
+        if authority_workspace:
+            capsule["originalWorkspacePath"] = authority_workspace
+        task["engineeringTaskCapsule"] = _seal_capsule(capsule)
+        task = ensure_engineering_task_capsule(task)
+    return task
+
+
 def derive_grandchild_engineering_task(
     parent_task_brief: dict[str, Any] | None,
     child_task_brief: dict[str, Any],
@@ -421,7 +469,7 @@ def derive_grandchild_engineering_task(
         "taskId": str(child.get("taskBriefId") or child.get("id") or "").strip(),
         "workspacePath": parent_capsule.get("workspacePath"),
         "shellDialect": shell_dialect or parent_capsule.get("shellDialect") or "",
-        "executionMode": "write" if explicit_subset else "read_only",
+        "executionMode": "write" if explicit_subset else "verify",
         "writeRequired": explicit_subset,
         "criticalFiles": list(parent_capsule.get("criticalFiles") or []),
         "readSet": list(child.get("readSet") or []),
@@ -445,7 +493,11 @@ def engineering_tool_allowed(tool_name: str, task_brief: dict[str, Any] | None) 
     if name in ENGINEERING_FILE_MUTATION_TOOL_NAMES:
         return mode == "write"
     if name in ENGINEERING_COMMAND_TOOL_NAMES:
-        return mode in {"verify", "write"}
+        # ``read_only`` is a delivery contract, not a ban on executing tests or
+        # diagnostics.  The command guard still rejects commands that may mutate
+        # the checkout, while the managed worktree finalizer proves that a
+        # verification branch produced no file changes.
+        return mode in {"read_only", "verify", "write"}
     return True
 
 
@@ -462,6 +514,7 @@ def task_brief_from_route_context(route_context: dict[str, Any] | None) -> dict[
 
 
 __all__ = [
+    "bind_engineering_task_workspace",
     "ENGINEERING_COMMAND_TOOL_NAMES",
     "ENGINEERING_FILE_MUTATION_TOOL_NAMES",
     "derive_grandchild_engineering_task",

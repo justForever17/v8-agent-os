@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.engineering_sandbox.contracts import SandboxPolicy
 from core.workspace_authority import workspace_authority_service
 from core.workspace_resolution import workspace_resolution_service
 
@@ -26,6 +27,8 @@ class WorkspaceBinding:
     side_effects_allowed: bool = True
     capabilities: dict[str, bool] | None = None
     allowed_extra_roots: tuple[Path, ...] = ()
+    authority_workspace_root: Path | None = None
+    managed_execution: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +46,8 @@ class WorkspaceBinding:
             "sideEffectsAllowed": self.side_effects_allowed,
             "capabilities": dict(self.capabilities or {}),
             "allowedExtraRoots": [str(item) for item in self.allowed_extra_roots],
+            "authorityWorkspaceRoot": str(self.authority_workspace_root or self.active_workspace_root),
+            "managedExecution": self.managed_execution,
         }
 
 
@@ -99,11 +104,68 @@ def _iter_extra_roots(context: dict[str, Any]) -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def _managed_execution_policy(context: dict[str, Any]) -> SandboxPolicy | None:
+    managed = bool(
+        context.get("managed_engineering_execution")
+        or context.get("managedEngineeringExecution")
+    )
+    if not managed:
+        return None
+    payload = context.get("sandbox_policy") or context.get("sandboxPolicy")
+    if not isinstance(payload, dict):
+        raise RuntimeError("managed_workspace_sandbox_policy_required")
+    policy = SandboxPolicy.from_dict(payload)
+    expected_digest = str(
+        context.get("sandbox_policy_digest")
+        or context.get("sandboxPolicyDigest")
+        or ""
+    ).strip()
+    if not expected_digest or expected_digest != policy.digest:
+        raise RuntimeError("managed_workspace_sandbox_policy_digest_mismatch")
+    lease_id = str(
+        context.get("sandbox_lease_id")
+        or context.get("sandboxLeaseId")
+        or ""
+    ).strip()
+    if lease_id and lease_id != policy.lease_id:
+        raise RuntimeError("managed_workspace_sandbox_lease_mismatch")
+    execution_root = str(context.get("workspace_path") or context.get("workspacePath") or "").strip()
+    if execution_root and _resolve_path(execution_root) != _resolve_path(policy.worktree_root):
+        raise RuntimeError("managed_workspace_execution_root_mismatch")
+    original_root = str(
+        context.get("original_workspace_path")
+        or context.get("originalWorkspacePath")
+        or ""
+    ).strip()
+    if original_root and _resolve_path(original_root) != _resolve_path(policy.original_workspace_root):
+        raise RuntimeError("managed_workspace_authority_root_mismatch")
+    return policy
+
+
 def build_workspace_binding(runtime_context: dict[str, Any] | None = None, *, runtime_kind: str | None = None) -> WorkspaceBinding:
     context = dict(runtime_context or {})
     effective_runtime_kind = str(runtime_kind or context.get("runtime_kind") or context.get("runtimeKind") or "chat").strip() or "chat"
-    descriptor = workspace_authority_service.resolve_from_context(context, runtime_kind=effective_runtime_kind).as_dict()
-    active_root = _resolve_path(str(descriptor.get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path()))
+    managed_policy = _managed_execution_policy(context)
+    authority_context = dict(context)
+    if managed_policy is not None:
+        # The user authorizes the durable workspace. The lease then replaces only
+        # the process/file execution root with its isolated worktree.
+        authority_context["workspace_path"] = managed_policy.original_workspace_root
+        authority_context["workspacePath"] = managed_policy.original_workspace_root
+    descriptor = workspace_authority_service.resolve_from_context(
+        authority_context,
+        runtime_kind=effective_runtime_kind,
+    ).as_dict()
+    authority_root = _resolve_path(
+        str(descriptor.get("workspaceRoot") or workspace_resolution_service.get_main_workspace_path())
+    )
+    if managed_policy is not None and authority_root != _resolve_path(managed_policy.original_workspace_root):
+        raise RuntimeError("managed_workspace_authority_resolution_mismatch")
+    active_root = (
+        _resolve_path(managed_policy.worktree_root)
+        if managed_policy is not None
+        else authority_root
+    )
     main_root = _resolve_path(str(descriptor.get("mainWorkspaceRoot") or descriptor.get("mainWorkspacePath") or workspace_resolution_service.get_main_workspace_path()))
     return WorkspaceBinding(
         runtime_kind=effective_runtime_kind,
@@ -120,6 +182,8 @@ def build_workspace_binding(runtime_context: dict[str, Any] | None = None, *, ru
         side_effects_allowed=bool(descriptor.get("sideEffectsAllowed")),
         capabilities=dict(descriptor.get("capabilities") or {}),
         allowed_extra_roots=_iter_extra_roots(context),
+        authority_workspace_root=authority_root,
+        managed_execution=managed_policy is not None,
     )
 
 

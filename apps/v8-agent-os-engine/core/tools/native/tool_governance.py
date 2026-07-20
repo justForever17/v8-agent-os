@@ -195,7 +195,29 @@ def _safety_operation_fingerprint(
         "riskCode": decision.risk_code,
         "governanceTarget": decision.governance_target,
         "target": str(target).strip(),
+        "sandboxLeaseId": str(
+            runtime_context.get("sandbox_lease_id") or runtime_context.get("sandboxLeaseId") or ""
+        ).strip(),
+        "sandboxPolicyDigest": str(
+            runtime_context.get("sandbox_policy_digest")
+            or runtime_context.get("sandboxPolicyDigest")
+            or ""
+        ).strip(),
+        "worktreeId": str(runtime_context.get("worktree_id") or runtime_context.get("worktreeId") or "").strip(),
     }
+    sandbox_policy = runtime_context.get("sandbox_policy") or runtime_context.get("sandboxPolicy")
+    if isinstance(sandbox_policy, dict):
+        payload.update(
+            {
+                "baseCommit": str(
+                    sandbox_policy.get("base_commit") or sandbox_policy.get("baseCommit") or ""
+                ).strip(),
+                "writeSet": list(sandbox_policy.get("write_set") or sandbox_policy.get("writeSet") or []),
+                "networkProfile": str(
+                    sandbox_policy.get("network_profile") or sandbox_policy.get("networkProfile") or ""
+                ).strip(),
+            }
+        )
     if include_tool_call_id:
         payload["toolCallId"] = str(tool_call_id or "").strip()
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

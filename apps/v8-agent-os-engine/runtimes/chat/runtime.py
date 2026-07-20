@@ -279,6 +279,8 @@ class ChatRunContext:
     transport: str
     existing_binding: Any | None
     preflight_decision: Any
+    engineering_workspace: dict[str, Any] = field(default_factory=dict)
+    engineering_change_set: dict[str, Any] = field(default_factory=dict)
 
     @property
     def active_run_id(self) -> str:
@@ -2738,7 +2740,8 @@ class ChatRuntime:
                 if str(item or "").strip()
             }
             engineering_required = (
-                bool(continuation_context.get("active"))
+                bool(prepared.explicit_engineering_requested)
+                or bool(continuation_context.get("active"))
                 or (
                     primary_shape == "project_coding"
                     and ("research" in secondary_shapes or shape_reason == "research_plus_project_build_intent")
@@ -3355,6 +3358,14 @@ class ChatRuntime:
                 or context.get("safetyApprovalMode")
             ),
         )
+        engineering_workspace = dict(getattr(chat_run, "engineering_workspace", {}) or {})
+        active_workspace_path = str(
+            engineering_workspace.get("workspace_path")
+            or context.get("workspace_path")
+            or context.get("workspacePath")
+            or binding.workspace_path
+            or ""
+        ).strip()
         context.update(
             {
                 "session_id": chat_run.session_id,
@@ -3365,25 +3376,20 @@ class ChatRuntime:
                 "projectId": binding.project_id,
                 "workspace_id": binding.workspace_id,
                 "workspaceId": binding.workspace_id,
-                "workspace_path": binding.workspace_path,
-                "workspacePath": binding.workspace_path,
+                "workspace_path": active_workspace_path,
+                "workspacePath": active_workspace_path,
                 "resolved_scope": binding.resolved_scope,
                 "resolvedScope": binding.resolved_scope,
                 "safety_approval_mode": safety_mode,
                 "safetyApprovalMode": safety_mode,
-                "supervisor_work_mode": chat_run.prepared.supervisor_work_mode,
-                "supervisorWorkMode": chat_run.prepared.supervisor_work_mode,
+                "supervisor_work_mode": getattr(chat_run.prepared, "supervisor_work_mode", None),
+                "supervisorWorkMode": getattr(chat_run.prepared, "supervisor_work_mode", None),
             }
         )
+        if engineering_workspace:
+            context.update(engineering_workspace)
         context["workspaceBinding"] = build_workspace_binding(
-            {
-                "runtime_kind": "chat",
-                "session_id": chat_run.session_id,
-                "project_id": binding.project_id,
-                "workspace_id": binding.workspace_id,
-                "workspace_path": binding.workspace_path,
-                "resolved_scope": binding.resolved_scope,
-            },
+            context,
             runtime_kind="chat",
         ).as_dict()
         return context
@@ -3391,6 +3397,10 @@ class ChatRuntime:
     async def create_execution_bundle(self, *, chat_run: ChatRunContext) -> ChatExecutionBundle:
         compat_diagnostics = _compat_ingress_diagnostics_from_request(chat_run.request)
         safety_approval_mode = self._safety_approval_mode_for_run(chat_run)
+        bound_runtime_context = self._runtime_context_kwargs(chat_run)
+        active_workspace_path = str(
+            bound_runtime_context.get("workspace_path") or chat_run.scope_result.binding.workspace_path or ""
+        ).strip()
         current_route_context = {
             "session_id": chat_run.session_id,
             "sessionId": chat_run.session_id,
@@ -3398,8 +3408,8 @@ class ChatRuntime:
             "runId": chat_run.active_run_id,
             "project_id": chat_run.scope_result.binding.project_id,
             "projectId": chat_run.scope_result.binding.project_id,
-            "workspace_path": chat_run.scope_result.binding.workspace_path,
-            "workspacePath": chat_run.scope_result.binding.workspace_path,
+            "workspace_path": active_workspace_path,
+            "workspacePath": active_workspace_path,
             "workspace_id": chat_run.scope_result.binding.workspace_id,
             "workspaceId": chat_run.scope_result.binding.workspace_id,
             "resolved_scope": chat_run.scope_result.binding.resolved_scope,
@@ -3420,6 +3430,7 @@ class ChatRuntime:
             "plugin_references": list(chat_run.prepared.plugin_references),
             "pluginAuthorizations": list(chat_run.prepared.plugin_authorizations),
             "plugin_authorizations": list(chat_run.prepared.plugin_authorizations),
+            **dict(getattr(chat_run, "engineering_workspace", {}) or {}),
         }
         current_route_context["workspaceBinding"] = build_workspace_binding(
             current_route_context,
@@ -8212,6 +8223,64 @@ class ChatRuntime:
             node="engineering_lane",
         )
 
+    async def finalize_supervisor_engineering_workspace(
+        self,
+        chat_run: ChatRunContext,
+        execution_bundle: ChatExecutionBundle | None,
+        *,
+        final_text: str | None,
+    ) -> None:
+        if not chat_run.engineering_workspace or chat_run.engineering_change_set:
+            return
+        worktree_id = str(chat_run.engineering_workspace.get("worktree_id") or "").strip()
+        if not worktree_id:
+            return
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        sandbox_service = get_engineering_sandbox_service()
+        change_set = sandbox_service.finalize_task_workspace(
+            worktree_id=worktree_id,
+            commit_message=f"V8OS Supervisor engineering run {chat_run.active_run_id}",
+        )
+        chat_run.engineering_change_set = change_set.as_dict()
+        managed_delegation_results: list[dict[str, Any]] = []
+        if execution_bundle is not None:
+            state = await supervisor_runner.get_state_snapshot(execution_bundle.runner_bundle)
+            managed_delegation_results = [
+                dict(item)
+                for item in list((state or {}).get("parallel_results") or [])
+                if isinstance(item, dict)
+                and isinstance(item.get("gitChangeSet"), dict)
+                and int(item.get("delegationDepth") or 1) <= 1
+            ]
+        chat_run.emit_runtime_event(
+            "engineering.worktree.ready",
+            {
+                "summary": "本轮工程变更已在隔离工作树完成校验，等待最终交付。",
+                "changedPaths": list(change_set.changed_paths),
+                "commitRef": change_set.commit_id,
+                "worktreeRef": worktree_id,
+                "delegationAcceptanceRequired": bool(managed_delegation_results),
+            },
+            agent_id=None,
+            node="engineering_worktree_finalize",
+        )
+        if not managed_delegation_results:
+            promotion = sandbox_service.promote_run_integration(run_id=chat_run.active_run_id)
+            if promotion.get("status") != "delivered":
+                raise RuntimeError("supervisor_engineering_integration_not_delivered")
+            chat_run.emit_runtime_event(
+                "engineering.worktree.delivered",
+                {
+                    "summary": "主理人完成的工程变更已安全交付到原工作区。",
+                    "changedPaths": list(promotion.get("changedPaths") or []),
+                    "commitRef": promotion.get("commitId"),
+                    "worktreeRef": promotion.get("worktreeId"),
+                },
+                agent_id=None,
+                node="engineering_worktree_promotion",
+            )
+
     async def emit_subagent_swarm_projection(
         self,
         chat_run: ChatRunContext,
@@ -8289,6 +8358,43 @@ class ChatRuntime:
                     expanded_ids.add(nested_identity)
                 expanded_results.append(nested)
         results = expanded_results
+        managed_top_level_results = [
+            item
+            for item in results
+            if isinstance(item.get("gitChangeSet"), dict)
+            and int(item.get("delegationDepth") or 1) <= 1
+        ]
+        if acceptance and managed_top_level_results:
+            accepted_managed_results = [
+                item
+                for item in managed_top_level_results
+                if str((item.get("supervisorAcceptance") or {}).get("status") or "").strip()
+                == str(acceptance.get("status") or "").strip()
+            ]
+            if len(accepted_managed_results) == len(managed_top_level_results):
+                from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+                sandbox_service = get_engineering_sandbox_service()
+                if acceptance.get("status") == "accepted":
+                    promotion = sandbox_service.promote_run_integration(run_id=chat_run.active_run_id)
+                    if promotion.get("status") != "delivered":
+                        raise RuntimeError("managed_integration_missing_for_accepted_delegation")
+                    chat_run.emit_runtime_event(
+                        "engineering.worktree.delivered",
+                        {
+                            "summary": "Supervisor 验收通过，隔离变更已安全交付到原工作区。",
+                            "changedPaths": list(promotion.get("changedPaths") or []),
+                            "commitRef": promotion.get("commitId"),
+                            "worktreeRef": promotion.get("worktreeId"),
+                        },
+                        agent_id=None,
+                        node="engineering_worktree_promotion",
+                    )
+                else:
+                    sandbox_service.record_run_integration_decision(
+                        run_id=chat_run.active_run_id,
+                        decision=str(acceptance.get("status") or ""),
+                    )
         seen: set[tuple[str, str, str]] = set()
         for item in results:
             invocation_id = str(item.get("invocationId") or "").strip()
@@ -8441,6 +8547,7 @@ class ChatRuntime:
         status = "paused" if interrupted_signal.get("command") in {"pause", "interrupt"} else "cancelled"
         if status == "cancelled":
             self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_cancelled")
+            self._abort_engineering_workspaces(chat_run, error_code="run_cancelled")
         return [
             self.build_legacy_control_event(interrupted_signal),
             {"type": "done", "status": status, "run_id": chat_run.active_run_id},
@@ -8686,6 +8793,7 @@ class ChatRuntime:
             )
             chat_run.run_handle.fail(decision.reason, node="completion_gate")
             self._expire_plugin_task_grants(chat_run.active_run_id, reason="completion_gate_failed")
+            self._abort_engineering_workspaces(chat_run, error_code="completion_gate_failed")
             return {
                 "type": "done",
                 "status": "failed",
@@ -8908,6 +9016,8 @@ class ChatRuntime:
                         chat_run.active_run_id,
                     )
             self._expire_plugin_task_grants(chat_run.active_run_id, reason="run_failed")
+            if not bool(normalized.get("recoverable")):
+                self._abort_engineering_workspaces(chat_run, error_code="run_failed")
         return [
             {
                 "type": "error",
@@ -8930,6 +9040,33 @@ class ChatRuntime:
             logging.getLogger("v8chat.chat_runtime").exception(
                 "Failed to expire plugin task grants for terminal run '%s'",
                 run_id,
+            )
+
+    @staticmethod
+    def _abort_engineering_workspaces(chat_run: ChatRunContext, *, error_code: str) -> None:
+        try:
+            from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+            result = get_engineering_sandbox_service().abort_run_workspaces(
+                run_id=chat_run.active_run_id,
+                error_code=error_code,
+            )
+            if result.get("worktreeIds") or result.get("leaseIds"):
+                chat_run.emit_runtime_event(
+                    "engineering.worktree.cancelled",
+                    {
+                        "summary": "本轮未交付的隔离工程工作已关闭，变更证据仍保留用于诊断。",
+                        "worktreeCount": len(result.get("worktreeIds") or []),
+                        "leaseCount": len(result.get("leaseIds") or []),
+                        "reason": error_code,
+                    },
+                    agent_id=None,
+                    node="engineering_worktree_cleanup",
+                )
+        except Exception:
+            logging.getLogger("v8chat.chat_runtime").exception(
+                "Failed to close managed engineering workspaces for terminal run '%s'",
+                chat_run.active_run_id,
             )
 
     def should_stop_stream(self, signal: dict | None) -> bool:
@@ -8992,6 +9129,29 @@ class ChatRuntime:
             context["specRevision"] = dict(spec_revision)
         if chat_run.prepared.live_audit_context:
             context["live_audit"] = dict(chat_run.prepared.live_audit_context)
+        engineering_active = bool(
+            dict(getattr(chat_run.prepared, "engineering_trigger_decision", {}) or {}).get("active")
+            or str(getattr(chat_run.prepared, "engineering_mode", "") or "").strip() == "force"
+        )
+        supports_managed_workspace = hasattr(chat_run, "engineering_workspace")
+        if engineering_active and context.get("workspace_path") and supports_managed_workspace:
+            if not getattr(chat_run, "engineering_workspace", None):
+                from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+                prepared_workspace = get_engineering_sandbox_service().prepare_task_workspace(
+                    workspace_root=str(context["workspace_path"]),
+                    project_id=str(context.get("project_id") or "").strip() or None,
+                    session_id=chat_run.session_id,
+                    run_id=chat_run.active_run_id,
+                    delegation_id=None,
+                    worktree_id=f"supervisor_{uuid.uuid5(uuid.NAMESPACE_URL, chat_run.active_run_id).hex[:24]}",
+                    write_set=("**",),
+                    actor_role="supervisor",
+                    runtime_kind="engineering",
+                    worktree_kind="supervisor_integration",
+                )
+                chat_run.engineering_workspace = prepared_workspace.runtime_context()
+            context.update(dict(getattr(chat_run, "engineering_workspace", {}) or {}))
         context["workspace_binding"] = build_workspace_binding(context, runtime_kind="chat").as_dict()
         return context
 
@@ -9513,11 +9673,17 @@ class ChatRuntime:
             for flushed_event in await self.flush_stream_state(chat_run, stream_state):
                 yield flushed_event
             await self.reconcile_final_assistant_message(chat_run, stream_state, last_execution_bundle)
+            completion_final_text = self._completion_final_text(chat_run, stream_state)
+            await self.finalize_supervisor_engineering_workspace(
+                chat_run,
+                last_execution_bundle,
+                final_text=completion_final_text,
+            )
             await self.emit_engineering_lane_projection(chat_run, last_execution_bundle)
             await self.emit_subagent_swarm_projection(
                 chat_run,
                 last_execution_bundle,
-                final_text=self._completion_final_text(chat_run, stream_state),
+                final_text=completion_final_text,
             )
             self.persist_final_assistant_message(chat_run, stream_state)
             yield self.finalize_success_run(chat_run, stream_state)

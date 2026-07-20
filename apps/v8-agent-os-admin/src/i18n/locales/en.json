@@ -4810,5 +4810,21 @@
   "admin.avatarCrop.zoomOut": "Zoom out",
   "admin.avatarCrop.zoomIn": "Zoom in",
   "admin.avatarCrop.cancel": "Cancel",
-  "admin.avatarCrop.confirm": "Use this crop"
+  "admin.avatarCrop.confirm": "Use this crop",
+  "app.admin.dashboard.projects.workspaces.page.engineering.title": "Managed engineering space",
+  "app.admin.dashboard.projects.workspaces.page.engineering.workspaceRole": "Workspace: the long-lived project scope the user sees and authorizes.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.repositoryRole": "Git repository: source of truth for baselines, integration, and rollback.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.worktreeRole": "Worktree: a temporary execution copy for one parallel task; it does not change project identity.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.sandboxRole": "Sandbox: constrains processes, environment, and resources for one worktree; it does not own project data.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.ready": "Parallel work ready",
+  "app.admin.dashboard.projects.workspaces.page.engineering.adoptionRequired": "Git adoption required",
+  "app.admin.dashboard.projects.workspaces.page.engineering.gitRequired": "Git required",
+  "app.admin.dashboard.projects.workspaces.page.engineering.gitRequiredHint": "The workspace identity and authorization remain valid. Managed worktrees, integration, and engineering sandbox execution become available after Git is installed.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.adopt": "Enable managed engineering",
+  "app.admin.dashboard.projects.workspaces.page.engineering.adopted": "Managed engineering space is ready",
+  "app.admin.dashboard.projects.workspaces.page.engineering.readyHint": "Future parallel engineering tasks run in isolated worktrees and are delivered only after Supervisor acceptance.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.partialHint": "The lightweight sandbox currently governs process trees, resources, environments, and change sets. Unsupported hard platform boundaries are reported as partial isolation, never presented as complete isolation.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.error.title": "Managed engineering space unavailable",
+  "app.admin.dashboard.projects.workspaces.page.engineering.error.load": "Git, worktree, and sandbox status could not be loaded.",
+  "app.admin.dashboard.projects.workspaces.page.engineering.error.adopt": "The Git baseline for this project could not be initialized or adopted."
 }

@@ -93,6 +93,21 @@ def build_delegation_result_contract(result: dict[str, Any]) -> dict[str, Any]:
         "acceptanceHint": acceptance_hint,
         "supervisorAcceptance": supervisor_acceptance,
         "resultSchemaMatched": bool(result_schema_matched),
+        "gitChangeSet": to_jsonable(item.get("gitChangeSet"))
+        if isinstance(item.get("gitChangeSet"), dict)
+        else None,
+        "sandboxEvidence": to_jsonable(item.get("sandboxEvidence"))
+        if isinstance(item.get("sandboxEvidence"), dict)
+        else None,
+        "integrationChangeSet": to_jsonable(item.get("integrationChangeSet"))
+        if isinstance(item.get("integrationChangeSet"), dict)
+        else None,
+        "integrationEvidence": to_jsonable(item.get("integrationEvidence"))
+        if isinstance(item.get("integrationEvidence"), dict)
+        else None,
+        "parentWorktreeMerge": to_jsonable(item.get("parentWorktreeMerge"))
+        if isinstance(item.get("parentWorktreeMerge"), dict)
+        else None,
         "toolsUsed": list(item.get("toolsUsed") or item.get("toolNames") or []),
         "toolPolicy": dict(item.get("toolPolicy") or task_brief.get("toolPolicy") or {})
         if isinstance(item.get("toolPolicy") or task_brief.get("toolPolicy") or {}, dict)

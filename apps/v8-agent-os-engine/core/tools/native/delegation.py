@@ -37,7 +37,12 @@ from core.delegation_broker import (
     task_brief_query_text,
     task_brief_summary,
 )
-from core.engineering_capsule import derive_grandchild_engineering_task, engineering_capsule_mode
+from core.engineering_capsule import (
+    bind_engineering_task_workspace,
+    derive_grandchild_engineering_task,
+    engineering_capsule_mode,
+)
+from core.engineering_sandbox.delegation import prepare_delegated_engineering_workspace
 from core.tools.native.command import command_session_broker
 from core.runtime_episodes import (
     TERMINAL_EPISODE_STATES,
@@ -48,7 +53,7 @@ from core.runtime_episodes import (
 )
 from core.storage import StorageManager
 from core.time_truth import utc_now_iso
-from erc.runtime_context import get_runtime_context
+from erc.runtime_context import bind_runtime_context, get_runtime_context
 
 storage = StorageManager()
 
@@ -78,6 +83,7 @@ _PREFERRED_WORKER_AGENT_ALIASES = {
     "verification_engineer": "verification-engineer",
     "verification-engineer": "verification-engineer",
 }
+
 
 _DEPRECATED_DELEGATION_TARGET_IDS = {"project-planner"}
 
@@ -576,6 +582,7 @@ def _delegation_budget_block_payload(
     requested_count: int,
     used_nodes: int,
     tool_call_id: str,
+    retry_node: str = "supervisor",
 ) -> Command:
     max_children = int(policy.get("maxChildrenPerDelegation") or 0)
     max_concurrent = int(policy.get("maxConcurrentDelegations") or 0)
@@ -606,7 +613,7 @@ def _delegation_budget_block_payload(
         summary = "delegation_broker 已拦截：已超过 Subagent 递归预算或策略限制。"
 
     return Command(
-        goto="supervisor",
+        goto=retry_node or "supervisor",
         update={
             "messages": [
                 ToolMessage(
@@ -641,13 +648,12 @@ def _with_recursive_delegation_access(task_brief: dict[str, Any]) -> dict[str, A
         if str(item).strip()
     ]
     policy = _delegation_policy_from_task(normalized)
-    allow_child_delegation = bool(
+    policy_explicit = normalized.get("childDelegationPolicyExplicit")
+    allow_child_delegation = policy_explicit is not True or bool(
         normalized.get("allowChildDelegation")
         or normalized.get("allow_child_delegation")
-        or normalized.get("childDelegationBudget")
         or policy.get("allowChildDelegation")
         or policy.get("allow_child_delegation")
-        or policy.get("childDelegationBudget")
     )
     if allow_child_delegation and "delegation.recursive" not in runtime_access:
         runtime_access.append("delegation.recursive")
@@ -822,6 +828,67 @@ def _external_worker_status_from_result(worker_result: dict[str, Any] | None, *,
     if status in {"fail", "error"}:
         return "failed"
     return status
+
+
+def _finalize_external_worker_workspace(
+    *,
+    managed_workspace: dict[str, Any] | None,
+    worker_status: str,
+    run_id: str | None,
+    invocation_id: str,
+) -> dict[str, Any]:
+    managed = dict(managed_workspace or {})
+    worktree_id = str(managed.get("worktree_id") or managed.get("worktreeId") or "").strip()
+    if not worktree_id:
+        return {}
+    normalized_status = str(worker_status or "").strip().lower()
+    from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+    service = get_engineering_sandbox_service()
+    if normalized_status not in {"succeeded", "success", "ok", "completed", "failed", "marker_missing", "terminated"}:
+        return {}
+    if normalized_status not in {"succeeded", "success", "ok", "completed"}:
+        service.mark_task_workspace_failed(
+            worktree_id=worktree_id,
+            error_code=f"external_worker_{normalized_status or 'failed'}",
+        )
+        return {
+            "sandboxEvidence": {
+                "worktreeId": worktree_id,
+                "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+                "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+                "state": "failed",
+                "errorCode": f"external_worker_{normalized_status or 'failed'}",
+            }
+        }
+    change_set = service.finalize_task_workspace(
+        worktree_id=worktree_id,
+        commit_message=f"V8OS external worker {invocation_id}",
+    )
+    parent_merge = service.merge_child_change_set_to_parent(
+        child_worktree_id=worktree_id,
+        run_id=str(run_id or invocation_id),
+    )
+    result: dict[str, Any] = {
+        "gitChangeSet": change_set.as_dict(),
+        "sandboxEvidence": {
+            "worktreeId": worktree_id,
+            "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+            "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+            "state": "completed",
+        },
+    }
+    if parent_merge.get("status") == "merged_to_parent":
+        result["parentWorktreeMerge"] = parent_merge
+    elif run_id:
+        integration, integration_change_set = service.build_run_integration(
+            run_id=str(run_id),
+            invocation_id=worktree_id,
+            change_sets=[change_set.as_dict()],
+        )
+        result["integrationChangeSet"] = integration_change_set.as_dict()
+        result["integrationWorktreeId"] = integration.worktree_id
+    return result
 
 
 
@@ -1113,6 +1180,38 @@ def _delegation_missing_spec_tasks_command(*, tool_call_id: str, source: str) ->
     )
 
 
+def _grandchild_write_contract_block_payload(
+    *,
+    task_brief_ids: list[str],
+    tool_call_id: str,
+    retry_node: str,
+) -> Command:
+    return Command(
+        goto=retry_node or "supervisor",
+        update={
+            "messages": [
+                ToolMessage(
+                    content=_delegation_broker_payload(
+                        mode="dispatch",
+                        ok=False,
+                        summary=(
+                            "孙 Agent 没有继承父任务的写权限。本次任务请求复写父任务范围，"
+                            "因此不能把直接子 Agent 自己的实现职责下放到孙代。"
+                        ),
+                        recommended_next_action=(
+                            "直接子 Agent 先在自己的 worktree 完成写入，再只派发只读验证任务；"
+                            "只有父合同明确划分的严格子集 writeSet 才能授权孙代写入。"
+                        ),
+                        error="grandchild_write_authority_not_granted",
+                        blockedTaskBriefIds=task_brief_ids,
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        },
+    )
+
+
 @tool
 def delegation_broker(
     mode: str = "observe",
@@ -1139,7 +1238,7 @@ def delegation_broker(
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
     Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"allowlist","allowedTools":["read_native_file","write_native_file"]}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
-    Subagents may request child work only through their brokered path when `allow_child_delegation` and budget/briefs allow it; otherwise keep child/sun-agent work as explicit top-level tasks.
+    A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set `allow_child_delegation=false` on a task to forbid that path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
     Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
     """
     normalized_mode = str(mode or "observe").strip().lower()
@@ -1281,6 +1380,7 @@ def delegation_broker(
         if allow_child_delegation or child_delegation_budget or write_set_partitions_list:
             for task in normalized_tasks:
                 task["allowChildDelegation"] = bool(allow_child_delegation)
+                task["childDelegationPolicyExplicit"] = True
                 if child_delegation_budget:
                     task["childDelegationBudget"] = dict(child_delegation_budget)
                 if write_set_partitions_list:
@@ -1352,6 +1452,76 @@ def delegation_broker(
         is_recursive_dispatch = bool(parent_delegation_id or current_depth > 0)
         macro_task_count = len(macro_tasks)
         requested_count = len(normalized_tasks)
+        recursive_retry_node = (
+            str(caller.agent_id or "").strip()
+            if caller.is_direct_subagent and str(caller.agent_id or "").strip()
+            else "supervisor"
+        )
+        source_branch = (
+            dict(base_state.get("parallel_branch") or {})
+            if isinstance(base_state.get("parallel_branch"), dict)
+            else {}
+        )
+        source_child_budget = (
+            dict(source_branch.get("childDelegationBudget") or {})
+            if isinstance(source_branch.get("childDelegationBudget"), dict)
+            else {}
+        )
+        source_max_children = source_child_budget.get("maxChildren")
+        if caller.is_direct_subagent and source_max_children is not None:
+            effective_max_children = min(
+                int(recursive_policy["maxChildrenPerDelegation"]),
+                _safe_int_range(source_max_children, 1, 1, 50),
+            )
+            if requested_count > effective_max_children:
+                return _delegation_budget_block_payload(
+                    reason="max_children_per_delegation_exceeded",
+                    policy={
+                        **recursive_policy,
+                        "maxChildrenPerDelegation": effective_max_children,
+                    },
+                    depth=current_depth,
+                    requested_count=requested_count,
+                    used_nodes=used_node_count,
+                    tool_call_id=tool_call_id,
+                    retry_node=recursive_retry_node,
+                )
+        if caller.is_direct_subagent:
+            parent_task_brief = (
+                dict(inherited_context.get("taskBrief") or {})
+                if isinstance(inherited_context.get("taskBrief"), dict)
+                else {}
+            )
+            denied_write_tasks: list[str] = []
+            for index, task in enumerate(normalized_tasks):
+                write_intent = bool(
+                    engineering_capsule_mode(task) == "write"
+                    or task.get("writeRequired")
+                    or task.get("write_required")
+                    or task.get("writeSet")
+                    or task.get("write_set")
+                )
+                if not write_intent:
+                    continue
+                derived = (
+                    derive_grandchild_engineering_task(
+                        parent_task_brief,
+                        task,
+                        shell_dialect=default_shell_dialect(),
+                    )
+                    if parent_task_brief
+                    else {}
+                )
+                if not derived or engineering_capsule_mode(derived) != "write":
+                    denied_write_tasks.append(
+                        str(task.get("taskBriefId") or f"task-{index + 1}").strip()
+                    )
+            if denied_write_tasks:
+                return _grandchild_write_contract_block_payload(
+                    task_brief_ids=denied_write_tasks,
+                    tool_call_id=tool_call_id,
+                    retry_node=recursive_retry_node,
+                )
         if is_recursive_dispatch and not recursive_policy["enabled"]:
             return _delegation_budget_block_payload(
                 reason="recursive_delegation_disabled",
@@ -1360,6 +1530,7 @@ def delegation_broker(
                 requested_count=requested_count,
                 used_nodes=used_node_count,
                 tool_call_id=tool_call_id,
+                retry_node=recursive_retry_node,
             )
         if is_recursive_dispatch and current_depth >= int(recursive_policy["maxDelegationDepth"]):
             return _delegation_budget_block_payload(
@@ -1369,6 +1540,7 @@ def delegation_broker(
                 requested_count=requested_count,
                 used_nodes=used_node_count,
                 tool_call_id=tool_call_id,
+                retry_node=recursive_retry_node,
             )
         if is_recursive_dispatch and requested_count > int(recursive_policy["maxChildrenPerDelegation"]):
             return _delegation_budget_block_payload(
@@ -1378,6 +1550,7 @@ def delegation_broker(
                 requested_count=requested_count,
                 used_nodes=used_node_count,
                 tool_call_id=tool_call_id,
+                retry_node=recursive_retry_node,
             )
         if requested_count > int(recursive_policy["maxConcurrentDelegations"]):
             return _delegation_budget_block_payload(
@@ -1387,6 +1560,7 @@ def delegation_broker(
                 requested_count=requested_count,
                 used_nodes=used_node_count,
                 tool_call_id=tool_call_id,
+                retry_node=recursive_retry_node,
             )
         if is_recursive_dispatch and used_node_count + requested_count > int(recursive_policy["maxTotalDelegationNodes"]):
             return _delegation_budget_block_payload(
@@ -1396,6 +1570,7 @@ def delegation_broker(
                 requested_count=requested_count,
                 used_nodes=used_node_count,
                 tool_call_id=tool_call_id,
+                retry_node=recursive_retry_node,
             )
 
         invocation_id = f"delegation_{uuid.uuid4().hex[:12]}"
@@ -1614,6 +1789,86 @@ def delegation_broker(
                     task_brief_id=str(branch_task_brief.get("taskBriefId") or ""),
                     agent_id=target_id,
                 )
+                managed_workspace: dict[str, Any] | None = None
+                try:
+                    managed_workspace = prepare_delegated_engineering_workspace(
+                        base_state=base_state,
+                        task_brief=branch_task_brief,
+                        delegation_id=delegation_id_value,
+                        current_depth=current_depth,
+                        runtime_context=runtime_context,
+                    )
+                    if managed_workspace:
+                        branch_task_brief = bind_engineering_task_workspace(
+                            branch_task_brief,
+                            workspace_path=str(managed_workspace.get("workspace_path") or ""),
+                            original_workspace_path=str(
+                                managed_workspace.get("original_workspace_path") or ""
+                            ),
+                        )
+                        # The human instruction is built from the task brief.
+                        # Recompute it after worktree binding; otherwise the
+                        # worker receives a valid child lease but prose that
+                        # still points at the parent's checkout.
+                        task_query = task_brief_query_text(branch_task_brief) or str(
+                            branch_task_brief.get("goal") or ""
+                        ).strip()
+                        task_goal = (
+                            str(branch_task_brief.get("goal") or "").strip()
+                            or task_query
+                            or f"Task {index + 1}"
+                        )
+                except Exception as exc:
+                    error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+                    parallel_results.append(
+                        {
+                            "invocationId": invocation_id,
+                            "taskBriefId": str(branch_task_brief.get("taskBriefId") or f"{invocation_id}:{index}").strip(),
+                            "taskBrief": branch_task_brief,
+                            "taskGoal": task_goal,
+                            "agentId": agent_id,
+                            "agentName": agent_name,
+                            "delegationId": delegation_id_value,
+                            "lane": "subagent",
+                            "targetId": target_id,
+                            "targetLabel": agent_name,
+                            "branchIndex": index,
+                            "status": "error",
+                            "error": error_code,
+                            "localSelfCheck": "Managed worktree or native sandbox preparation failed before Agent execution.",
+                            "acceptanceHint": "Repair the repository/sandbox readiness issue, then retry this delegation.",
+                            "supervisorAcceptance": {
+                                "status": "pending",
+                                "requiredAction": ["retry", "ignore"],
+                            },
+                            "resultSchemaMatched": True,
+                        }
+                    )
+                    items.append(
+                        _delegation_compact_item(
+                            delegation_id=delegation_id_value,
+                            task_brief=task_brief,
+                            lane="subagent",
+                            target_id=target_id,
+                            target_label=agent_name,
+                            status="blocked",
+                            invocation_id=invocation_id,
+                            branch_index=index,
+                            trace_ref=_delegation_trace_ref(
+                                run_id=base_state.get("run_id"),
+                                invocation_id=invocation_id,
+                                branch_index=index,
+                            ),
+                            workset_dispatch_decision=workset_decision,
+                            engineering_capsule_attached=True,
+                            dispatch_blocked_reason=error_code,
+                            repair_suggestion="Ensure Git is ready and the native sandbox host is available, then retry.",
+                            registry_version=registry_version,
+                            registry_hash=registry_hash,
+                            error=error_code,
+                        )
+                    )
+                    continue
                 requested_plugin_references = list(branch_task_brief.get("pluginReferences") or [])
                 if requested_plugin_references:
                     from runtimes.plugin_manager.service import plugin_manager_service
@@ -1670,7 +1925,11 @@ def delegation_broker(
                         "registryHash": registry_hash,
                     }
                 )
+                if managed_workspace:
+                    branch_context.update(managed_workspace)
                 branch_state = dict(base_state)
+                if managed_workspace:
+                    branch_state.update(managed_workspace)
                 instruction_owner = (
                     str(local_agent.get("name") or caller.agent_id or "Parent Agent").strip()
                     if caller.is_direct_subagent
@@ -1690,23 +1949,37 @@ def delegation_broker(
                 branch_state["delegation_contexts"] = base_contexts + [branch_context]
                 branch_state["current_route_context"] = branch_context
                 delegation_policy = _delegation_policy_from_task(branch_task_brief)
-                explicit_child_policy = next(
-                    (
-                        value
-                        for value in (
-                            branch_task_brief.get("allowChildDelegation"),
-                            branch_task_brief.get("allow_child_delegation"),
-                            delegation_policy.get("allowChildDelegation"),
-                            delegation_policy.get("allow_child_delegation"),
-                        )
-                        if value is not None
-                    ),
-                    None,
+                policy_explicit = branch_task_brief.get("childDelegationPolicyExplicit")
+                explicit_child_policy = (
+                    next(
+                        (
+                            value
+                            for value in (
+                                branch_task_brief.get("allowChildDelegation"),
+                                branch_task_brief.get("allow_child_delegation"),
+                                delegation_policy.get("allowChildDelegation"),
+                                delegation_policy.get("allow_child_delegation"),
+                            )
+                            if value is not None
+                        ),
+                        None,
+                    )
+                    if policy_explicit is True
+                    else None
                 )
                 child_delegation_allowed = (
                     current_depth == 0
                     and (True if explicit_child_policy is None else bool(explicit_child_policy))
                 )
+                child_delegation_budget_for_branch = dict(
+                    branch_task_brief.get("childDelegationBudget")
+                    or branch_task_brief.get("child_delegation_budget")
+                    or delegation_policy.get("childDelegationBudget")
+                    or delegation_policy.get("child_delegation_budget")
+                    or {}
+                )
+                if child_delegation_allowed and not child_delegation_budget_for_branch:
+                    child_delegation_budget_for_branch = {"maxChildren": 1}
                 branch_state["parallel_branch"] = {
                     "invocationId": invocation_id,
                     "branchIndex": index,
@@ -1725,16 +1998,16 @@ def delegation_broker(
                     "lane": "subagent",
                     "acceptanceHint": _delegation_acceptance_hint(branch_task_brief.get("acceptanceContract")),
                     "allowChildDelegation": child_delegation_allowed,
-                    "childDelegationBudget": dict(delegation_policy.get("childDelegationBudget") or {}),
+                    "childDelegationBudget": child_delegation_budget_for_branch,
                     "writeSetPartitions": list(delegation_policy.get("writeSetPartitions") or []),
                     "registryVersion": registry_version,
                     "registryHash": registry_hash,
                     "initialMessageCount": len(base_messages) + 1,
                     "initialTodoCount": len(base_todos),
+                    **({"engineeringWorkspace": managed_workspace} if managed_workspace else {}),
                 }
                 sends.append(Send("parallel_delegate_task", branch_state))
-                items.append(
-                    _delegation_compact_item(
+                compact_item = _delegation_compact_item(
                         delegation_id=delegation_id_value,
                         task_brief=task_brief,
                         lane="subagent",
@@ -1756,14 +2029,61 @@ def delegation_broker(
                         registry_version=registry_version,
                         registry_hash=registry_hash,
                     )
-                )
+                if managed_workspace:
+                    compact_item["engineeringWorkspace"] = managed_workspace
+                items.append(compact_item)
                 continue
 
             if external_worker:
+                external_workspace: dict[str, Any] | None = None
+                external_seed = (
+                    f"external::{invocation_id}::{index}::"
+                    f"{str(task_brief.get('taskBriefId') or 'task')}::"
+                    f"{str(external_worker.get('id') or 'worker')}"
+                )
+                try:
+                    external_workspace = prepare_delegated_engineering_workspace(
+                        base_state=base_state,
+                        task_brief=task_brief,
+                        delegation_id=external_seed,
+                        current_depth=current_depth,
+                        runtime_context=runtime_context,
+                    )
+                except Exception as exc:
+                    error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+                    item = _delegation_compact_item(
+                        delegation_id=external_seed,
+                        task_brief=task_brief,
+                        lane="external_worker",
+                        target_id=str(external_worker.get("id") or ""),
+                        target_label=str(external_worker.get("name") or external_worker.get("id") or "external-worker"),
+                        status="blocked",
+                        invocation_id=invocation_id,
+                        branch_index=index,
+                        worker_type=str(external_worker.get("workerType") or "").strip() or None,
+                        trace_ref=_delegation_trace_ref(
+                            run_id=base_state.get("run_id"),
+                            invocation_id=invocation_id,
+                            branch_index=index,
+                        ),
+                        workset_dispatch_decision=workset_decision,
+                        engineering_capsule_attached=bool(workset_decision.get("engineeringCapsuleAttached")),
+                        registry_version=registry_version,
+                        registry_hash=registry_hash,
+                        error=error_code,
+                    )
+                    items.append(item)
+                    parallel_results.append(item)
+                    continue
+                execution_workspace_path = str(
+                    (external_workspace or {}).get("workspace_path")
+                    or base_state.get("workspace_path")
+                    or ""
+                ).strip()
                 rendered_command = render_external_worker_command(
                     descriptor=external_worker,
                     task_brief=task_brief,
-                    workspace_path=str(base_state.get("workspace_path") or ""),
+                    workspace_path=execution_workspace_path,
                     workspace_id=str(base_state.get("workspace_id") or ""),
                     project_id=str(base_state.get("project_id") or ""),
                 )
@@ -1800,12 +2120,21 @@ def delegation_broker(
                     parallel_results.append(item)
                     continue
 
-                raw_start_payload = _delegation_command_session_broker().func(
-                    mode="start",
-                    command=rendered_command,
-                    profile=external_worker_command_profile(external_worker),
-                    tool_call_id=tool_call_id,
-                )
+                external_runtime_context = {
+                    **runtime_context,
+                    **dict(external_workspace or {}),
+                    "runtime_kind": "delegation",
+                    "engineering_capsule_mode": "write",
+                    "managed_engineering_execution": True,
+                }
+                with bind_runtime_context(**external_runtime_context):
+                    raw_start_payload = _delegation_command_session_broker().func(
+                        mode="start",
+                        command=rendered_command,
+                        cwd=execution_workspace_path,
+                        profile=external_worker_command_profile(external_worker),
+                        tool_call_id=tool_call_id,
+                    )
                 start_payload = json.loads(str(raw_start_payload or "{}"))
                 command_id = str(start_payload.get("commandId") or start_payload.get("sessionId") or "").strip()
                 worker_result = parse_external_worker_result_block(
@@ -1814,7 +2143,7 @@ def delegation_broker(
                 )
                 worker_result = _normalize_external_worker_result_paths(
                     worker_result,
-                    workspace_path=str(base_state.get("workspace_path") or ""),
+                    workspace_path=execution_workspace_path,
                 )
                 worker_status = str(start_payload.get("state") or "running").strip() or "running"
                 if worker_result:
@@ -1825,6 +2154,19 @@ def delegation_broker(
                     command_id=command_id or f"pending-{uuid.uuid4().hex[:8]}",
                     task_brief_id=str(task_brief.get("taskBriefId") or ""),
                     worker_id=str(external_worker.get("id") or ""),
+                )
+                if external_workspace:
+                    from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+                    get_engineering_sandbox_service().associate_worktree_delegation(
+                        worktree_id=str(external_workspace.get("worktree_id") or ""),
+                        delegation_id=delegation_id_value,
+                    )
+                managed_completion = _finalize_external_worker_workspace(
+                    managed_workspace=external_workspace,
+                    worker_status=worker_status,
+                    run_id=str(base_state.get("run_id") or "").strip() or None,
+                    invocation_id=invocation_id,
                 )
                 worker_item = _delegation_compact_item(
                     delegation_id=delegation_id_value,
@@ -1867,6 +2209,9 @@ def delegation_broker(
                     registry_hash=registry_hash,
                     error=None if bool(start_payload.get("ok", True)) else str(start_payload.get("error") or "external_worker_start_failed"),
                 )
+                if external_workspace:
+                    worker_item["engineeringWorkspace"] = external_workspace
+                worker_item.update(managed_completion)
                 items.append(worker_item)
                 parallel_results.append(worker_item)
                 continue
@@ -1972,6 +2317,11 @@ def delegation_broker(
             status = str(item.get("status") or "").strip().lower()
             episode_state = "failed" if status in {"error", "blocked", "failed"} else "waiting"
             task_brief_value = task_briefs_by_id.get(str(item.get("taskBriefId") or "").strip(), {})
+            managed_workspace = (
+                dict(item.get("engineeringWorkspace") or {})
+                if isinstance(item.get("engineeringWorkspace"), dict)
+                else {}
+            )
             upstream_handoff_refs = [
                 str(ref or "").strip()
                 for ref in list(task_brief_value.get("upstreamHandoffRefs") or [])
@@ -1988,6 +2338,7 @@ def delegation_broker(
                         "targetCount": 1,
                         "workerBriefs": [task_brief_value],
                         **({"workspacePath": workspace_path} if workspace_path else {}),
+                        **({"engineeringWorkspace": managed_workspace} if managed_workspace else {}),
                     },
                     "handoffRefs": upstream_handoff_refs,
                 },
@@ -2006,6 +2357,7 @@ def delegation_broker(
                     "registryVersion": item.get("registryVersion") or registry_version,
                     "registryHash": item.get("registryHash") or registry_hash,
                     "ownerEpisodeId": runtime_owner_episode_id or None,
+                    **({"engineeringWorkspace": managed_workspace} if managed_workspace else {}),
                     "error": item.get("error"),
                 },
             )
@@ -2072,6 +2424,9 @@ def delegation_broker(
     )
     task_brief = normalize_task_brief({"taskBriefId": str(parsed.get("taskBriefId") or "").strip(), "goal": ""})
     command_id = str(parsed.get("commandId") or "").strip()
+    from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+    managed_workspace = get_engineering_sandbox_service().managed_workspace_for_delegation(delegation_id)
 
     if normalized_mode == "resume":
         followup_text = str(followup or "").strip()
@@ -2124,13 +2479,23 @@ def delegation_broker(
     )
     worker_result = _normalize_external_worker_result_paths(
         worker_result,
-        workspace_path=str(base_state.get("workspace_path") or ""),
+        workspace_path=str(
+            (managed_workspace or {}).get("workspace_path")
+            or base_state.get("workspace_path")
+            or ""
+        ),
     )
     worker_status = str(payload.get("state") or ("terminated" if normalized_mode == "interrupt" else "running")).strip() or "running"
     if worker_result:
         worker_status = _external_worker_status_from_result(worker_result, fallback="succeeded")
     elif worker_status in {"completed", "failed"}:
         worker_status = "marker_missing"
+    managed_completion = _finalize_external_worker_workspace(
+        managed_workspace=managed_workspace,
+        worker_status=worker_status,
+        run_id=str(base_state.get("run_id") or base_state.get("runId") or "").strip() or None,
+        invocation_id=str((managed_workspace or {}).get("worktree_id") or command_id or "external-worker"),
+    )
     worker_item = _delegation_compact_item(
         delegation_id=delegation_id,
         task_brief=task_brief,
@@ -2158,6 +2523,9 @@ def delegation_broker(
         result_schema_matched=bool(worker_result),
         error=None if bool(payload.get("ok", True)) else str(payload.get("error") or f"{normalized_mode}_failed"),
     )
+    if managed_workspace:
+        worker_item["engineeringWorkspace"] = managed_workspace
+    worker_item.update(managed_completion)
     return Command(
         goto="supervisor",
         update={

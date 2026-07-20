@@ -9,13 +9,17 @@ import re
 import uuid
 from typing import Any, Callable
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command, Send
 
 from core.database import db
 from core.context.delegation import build_delegation_context, latest_delegation_context
 from core.delegation_result_contract import build_delegation_result_contract
-from core.engineering_capsule import effective_engineering_capsule, engineering_capsule_mode
+from core.engineering_capsule import (
+    derive_grandchild_engineering_task,
+    effective_engineering_capsule,
+    engineering_capsule_mode,
+)
 from core.workspace_capability import build_workspace_binding
 from core.runtime_episodes import (
     append_handoff_ref,
@@ -149,9 +153,159 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
         "engineering_capsule_id": task_capsule.get("capsuleId"),
         "engineering_task_capsule": task_capsule or None,
         "allowed_write_paths": allowed_write_paths or None,
+        "original_workspace_path": (
+            state.get("original_workspace_path")
+            or state.get("originalWorkspacePath")
+            or route_context.get("original_workspace_path")
+            or route_context.get("originalWorkspacePath")
+        ),
+        "repository_root": state.get("repository_root") or route_context.get("repository_root"),
+        "worktree_root": state.get("worktree_root") or route_context.get("worktree_root"),
+        "worktree_id": state.get("worktree_id") or route_context.get("worktree_id"),
+        "sandbox_lease_id": state.get("sandbox_lease_id") or route_context.get("sandbox_lease_id"),
+        "sandbox_policy": state.get("sandbox_policy") or route_context.get("sandbox_policy"),
+        "sandbox_policy_digest": (
+            state.get("sandbox_policy_digest") or route_context.get("sandbox_policy_digest")
+        ),
+        "sandbox_policy_file": state.get("sandbox_policy_file") or route_context.get("sandbox_policy_file"),
+        "sandbox_capabilities": (
+            state.get("sandbox_capabilities") or route_context.get("sandbox_capabilities")
+        ),
+        "managed_engineering_execution": (
+            state.get("managed_engineering_execution")
+            or state.get("managedEngineeringExecution")
+            or route_context.get("managed_engineering_execution")
+            or route_context.get("managedEngineeringExecution")
+        ),
     }
+    managed_workspace = (
+        dict(branch.get("engineeringWorkspace") or {})
+        if isinstance(branch.get("engineeringWorkspace"), dict)
+        else {}
+    )
+    if managed_workspace:
+        context.update(managed_workspace)
+        context["runtime_kind"] = "subagent"
+        context["actor_role"] = "grandchild" if int(branch.get("delegationDepth") or 1) >= 2 else "direct_subagent"
     context["workspace_binding"] = build_workspace_binding(context, runtime_kind="subagent").as_dict()
     return {key: value for key, value in context.items() if value is not None and str(value).strip()}
+
+
+def _finalize_managed_branch_workspace(branch: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    managed = branch.get("engineeringWorkspace") if isinstance(branch.get("engineeringWorkspace"), dict) else {}
+    worktree_id = str(managed.get("worktree_id") or managed.get("worktreeId") or "").strip()
+    if not worktree_id:
+        return summary
+    status = str(summary.get("status") or "").strip().lower()
+    if status in {"waiting", "waiting_child", "waiting_child_delegation", "waiting_dependency"}:
+        return summary
+    from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+    sandbox_service = get_engineering_sandbox_service()
+    try:
+        change_set = sandbox_service.finalize_task_workspace(
+            worktree_id=worktree_id,
+            commit_message=(
+                "V8OS delegated task: "
+                f"{str(branch.get('taskBriefId') or branch.get('reason') or worktree_id).strip()[:120]}"
+            ),
+        )
+    except Exception as exc:
+        error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+        return {
+            **summary,
+            "status": "error",
+            "error": f"managed_worktree_finalize_failed:{error_code}",
+            "localSelfCheck": (
+                "The Agent returned, but its managed worktree failed write-set, size, or Git finalization checks. "
+                "Supervisor must repair or retry; do not accept the file result."
+            ),
+            "sandboxEvidence": {
+                "worktreeId": worktree_id,
+                "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+                "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+                "state": "failed",
+                "errorCode": error_code,
+            },
+        }
+    change_set_payload = change_set.as_dict()
+    parent_merge: dict[str, Any] | None = None
+    parent_worktree_id = str(
+        managed.get("parent_worktree_id") or managed.get("parentWorktreeId") or ""
+    ).strip()
+    if parent_worktree_id and change_set.status in {"candidate", "no_changes"}:
+        try:
+            parent_merge = sandbox_service.merge_child_change_set_to_parent(
+                child_worktree_id=worktree_id,
+                run_id=str(managed.get("run_id") or managed.get("runId") or branch.get("invocationId") or "nested"),
+            )
+        except Exception as exc:
+            error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+            return {
+                **summary,
+                "status": "error",
+                "error": f"managed_parent_merge_failed:{error_code}",
+                "gitChangeSet": change_set_payload,
+                "localSelfCheck": (
+                    "The grandchild change set is preserved, but it could not be merged back into the parent worktree. "
+                    "The parent must not report the child artifact as present."
+                ),
+                "sandboxEvidence": {
+                    "worktreeId": worktree_id,
+                    "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+                    "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+                    "state": "merge_failed",
+                    "errorCode": error_code,
+                },
+            }
+    artifact_refs = list(summary.get("artifactRefs") or [])
+    artifact_refs.append(
+        {
+            "kind": "git_changeset",
+            "ref": f"git://{change_set.repository_id}/{change_set.commit_id}",
+            "commitId": change_set.commit_id,
+            "changedPaths": list(change_set.changed_paths),
+        }
+    )
+    return {
+        **summary,
+        "gitChangeSet": change_set_payload,
+        **({"parentWorktreeMerge": parent_merge} if parent_merge else {}),
+        "artifactRefs": artifact_refs,
+        "sandboxEvidence": {
+            "worktreeId": worktree_id,
+            "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+            "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+            "capabilities": managed.get("sandbox_capabilities") or managed.get("sandboxCapabilities"),
+            "state": "completed",
+        },
+    }
+
+
+def _fail_managed_branch_workspace(branch: dict[str, Any], error_code: str) -> dict[str, Any]:
+    managed = branch.get("engineeringWorkspace") if isinstance(branch.get("engineeringWorkspace"), dict) else {}
+    worktree_id = str(managed.get("worktree_id") or managed.get("worktreeId") or "").strip()
+    if not worktree_id:
+        return {}
+    normalized_error = re.sub(r"[^a-z0-9._-]+", "_", str(error_code or "branch_failed").lower()).strip("_")
+    normalized_error = normalized_error[:120] or "branch_failed"
+    evidence = {
+        "worktreeId": worktree_id,
+        "leaseId": managed.get("sandbox_lease_id") or managed.get("sandboxLeaseId"),
+        "policyDigest": managed.get("sandbox_policy_digest") or managed.get("sandboxPolicyDigest"),
+        "state": "failed",
+        "errorCode": normalized_error,
+    }
+    try:
+        from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+        get_engineering_sandbox_service().mark_task_workspace_failed(
+            worktree_id=worktree_id,
+            error_code=normalized_error,
+        )
+    except Exception as exc:
+        evidence["stateTransitionError"] = str(getattr(exc, "code", None) or exc)[:240]
+    return {"sandboxEvidence": evidence}
 
 
 def _merge_state_update(state: dict[str, Any], update: dict[str, Any] | None) -> dict[str, Any]:
@@ -247,9 +401,51 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
             text,
         )
     if not match:
+        section_match = re.search(
+            r"(?im)^\s*#{1,6}\s*(?:(?:verification|execution|验收|验证)\s+)?"
+            r"(blockers?|blocked|failed|errors?|阻塞|失败)"
+            r"(?:\s*/\s*degraded\s+handoff)?\s*$",
+            text,
+        )
+        if section_match:
+            section_body = text[section_match.end() :]
+            next_heading = re.search(r"(?m)^\s*#{1,6}\s+", section_body)
+            if next_heading:
+                section_body = section_body[: next_heading.start()]
+            first_line = next(
+                (line.strip() for line in section_body.splitlines() if line.strip()),
+                "",
+            )
+            normalized_first_line = re.sub(r"^[\s>*_`~-]+", "", first_line).strip().lower()
+            explicitly_empty = bool(
+                re.match(
+                    r"^(?:none\b|n/?a\b|not\s+applicable\b|"
+                    r"no\s+(?:known\s+)?(?:blockers?|risks?|errors?)\b|"
+                    r"无(?:阻塞|风险|错误)?\b|暂无\b|没有\b|未发现\b)",
+                    normalized_first_line,
+                )
+            )
+            if first_line and not explicitly_empty:
+                match = section_match
+    if not match:
+        match = re.search(
+            r"(?im)^\s*(?:\*\*)?(阻断原因|阻塞原因)(?:\*\*)?\s*[:：]",
+            text,
+        )
+    if not match:
+        match = re.search(
+            r"(?im)^\s*#{1,6}\s*(?:verdict|结论|验收结论)\s*(?:[:：]\s*)?\n?\s*"
+            r"(?:\*\*)?(not\s+verified|failed|blocked|未通过|未验证|失败|阻塞)\b",
+            text,
+        )
+    if not match:
         return None
     normalized = str(match.group(1) or "").strip().lower()
-    status = "failed" if normalized in {"failed", "error", "失败"} else "blocked"
+    status = (
+        "failed"
+        if normalized in {"failed", "error", "errors", "not verified", "未通过", "未验证", "失败"}
+        else "blocked"
+    )
     known_error = next(
         (
             code
@@ -262,7 +458,11 @@ def _subagent_reported_terminal_failure(result_text: str) -> tuple[str, str] | N
             )
             if code in text.lower()
         ),
-        "subagent_reported_terminal_failure",
+        (
+            "subagent_reported_verification_failure"
+            if normalized in {"not verified", "未通过", "未验证"}
+            else "subagent_reported_terminal_failure"
+        ),
     )
     return status, known_error
 
@@ -857,6 +1057,84 @@ def _dedupe_child_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any
     return deduped
 
 
+def _fallback_child_delegation_request(
+    *,
+    branch: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Repair an incomplete nested dispatch without inventing new authority.
+
+    Some providers return the delegation ``Send`` boundary without preserving
+    the typed pending-child payload.  Both the in-graph and durable runner paths
+    must promote the same conservative, read-only mirror instead of turning the
+    direct Agent's valid request into a terminal blocker.
+    """
+
+    source_invocation_id = str(
+        summary.get("invocationId")
+        or branch.get("invocationId")
+        or uuid.uuid4().hex[:12]
+    ).strip()
+    source_delegation_id = str(
+        summary.get("delegationId") or branch.get("delegationId") or ""
+    ).strip()
+    child_invocation_id = f"{source_invocation_id}:child:{uuid.uuid4().hex[:8]}"
+    child_delegation_id = f"{source_delegation_id or source_invocation_id}:child"
+    task_goal = str(
+        summary.get("taskGoal")
+        or branch.get("reason")
+        or "Continue the child delegation requested by the subagent."
+    ).strip()
+    parent_task_brief = (
+        branch.get("taskBrief") if isinstance(branch.get("taskBrief"), dict) else {}
+    )
+    child_task_brief = derive_grandchild_engineering_task(
+        parent_task_brief,
+        {
+            "taskBriefId": f"{child_invocation_id}:brief",
+            "goal": f"Continue child delegation for: {task_goal}",
+            "readSet": list(parent_task_brief.get("writeSet") or []),
+            "expectedOutputs": ["Compact independent verification handoff for the parent Agent"],
+            "acceptanceContract": "Independently verify the parent result and return concrete evidence.",
+        },
+    )
+    child_branch = {
+        "invocationId": child_invocation_id,
+        "delegationId": child_delegation_id,
+        "taskBriefId": f"{child_invocation_id}:brief",
+        "reason": f"Continue child delegation for: {task_goal}",
+        "delegationDepth": int(branch.get("delegationDepth") or 0) + 1,
+        "runtimeAccess": ["delegation.recursive"],
+        "allowChildDelegation": False,
+        "taskBrief": child_task_brief,
+    }
+    return {
+        "requestId": f"fallback_child_{child_invocation_id}",
+        "createdAt": _now_iso(),
+        "sourceInvocationId": source_invocation_id,
+        "sourceDelegationId": source_delegation_id or None,
+        "sourceAgentId": summary.get("agentId") or branch.get("agentId"),
+        "sourceAgentName": summary.get("agentName") or branch.get("agentName"),
+        "childInvocationId": child_invocation_id,
+        "childDelegationId": child_delegation_id,
+        "childTaskBriefId": child_branch["taskBriefId"],
+        "childTaskGoal": child_branch["reason"],
+        "childTaskBrief": child_task_brief,
+        "childAgentId": child_branch.get("agentId"),
+        "childAgentName": child_branch.get("agentName"),
+        "childDepth": child_branch["delegationDepth"],
+        "fallbackReason": "incomplete_nested_delegation_payload",
+        "send": {
+            "node": "parallel_delegate_task",
+            "arg": {
+                "parallel_branch": child_branch,
+                "messages": [],
+                "todos": [],
+            },
+        },
+    }
+
+
 def _extract_child_delegation_requests(
     goto: Any,
     *,
@@ -1020,6 +1298,7 @@ async def _run_parallel_agent_branch(
     repeated_state_limit = 8
     seen_progress_states: dict[str, int] = {}
     repeat_sensitive_tool_limit = 2
+    repeat_tool_correction_used = False
     seen_tool_call_ids: set[str] = set()
     repeated_tool_signatures: dict[tuple[str, str], int] = {}
     expected_artifact_paths = _infer_expected_artifact_paths(branch, local_state)
@@ -1107,6 +1386,20 @@ async def _run_parallel_agent_branch(
                 source_agent_id=agent_id,
             )
             nested_count = len([item for item in result if isinstance(item, (Command, Send))])
+            if not child_requests and nested_count and bool(branch.get("allowChildDelegation")):
+                fallback_summary = {
+                    "invocationId": branch.get("invocationId"),
+                    "delegationId": branch.get("delegationId"),
+                    "taskGoal": branch.get("reason"),
+                    "agentId": agent_id,
+                    "agentName": branch.get("agentName") or agent_id,
+                }
+                child_requests = [
+                    _fallback_child_delegation_request(
+                        branch=branch,
+                        summary=fallback_summary,
+                    )
+                ]
             if child_requests:
                 _publish_parallel_progress(
                     progress_callback,
@@ -1229,6 +1522,7 @@ async def _run_parallel_agent_branch(
                 "localSelfCheck": "Subagent requested child delegation through delegation_broker. The durable router must schedule the returned Send instead of swallowing the Command goto.",
                 "acceptanceHint": "Wait for the brokered child delegation result before merging or judging this branch.",
             }, child_requests
+        repeated_tool_violation: tuple[str, str] | None = None
         for message in delta_messages_for_guard:
             for call in _tool_call_dicts_from_message(message):
                 signature = _repeat_sensitive_tool_call_signature(call)
@@ -1240,13 +1534,76 @@ async def _run_parallel_agent_branch(
                 seen_tool_call_ids.add(call_id)
                 repeated_tool_signatures[signature] = repeated_tool_signatures.get(signature, 0) + 1
                 if repeated_tool_signatures[signature] > repeat_sensitive_tool_limit:
-                    raise _parallel_branch_error(
-                        f"{agent_id} repeated the same tool purpose too many times: "
-                        f"{signature[0]} {signature[1][:180]}. "
-                        "Return a degraded/blocker handoff instead of retrying the same operation.",
-                        state=local_state,
-                        initial_message_count=initial_message_count,
+                    repeated_tool_violation = signature
+                    break
+            if repeated_tool_violation:
+                break
+        if repeated_tool_violation:
+            if repeat_tool_correction_used:
+                raise _parallel_branch_error(
+                    f"{agent_id} repeated the same tool purpose too many times after a discipline correction: "
+                    f"{repeated_tool_violation[0]} {repeated_tool_violation[1][:180]}.",
+                    state=local_state,
+                    initial_message_count=initial_message_count,
+                )
+            pending_calls = [
+                call
+                for message in list(result_update.get("messages") or [])
+                for call in _tool_call_dicts_from_message(message)
+            ]
+            if not pending_calls:
+                raise _parallel_branch_error(
+                    f"{agent_id} repeated the same tool purpose too many times: "
+                    f"{repeated_tool_violation[0]} {repeated_tool_violation[1][:180]}.",
+                    state=local_state,
+                    initial_message_count=initial_message_count,
+                )
+            repeat_tool_correction_used = True
+            correction_messages: list[Any] = []
+            for pending_call in pending_calls:
+                tool_name = str(pending_call.get("name") or "tool").strip() or "tool"
+                tool_call_id = str(pending_call.get("id") or "").strip()
+                if not tool_call_id:
+                    continue
+                correction_messages.append(
+                    ToolMessage(
+                        content=(
+                            "V8OS did not execute this call because the same evidence purpose has already "
+                            "been satisfied by earlier ToolMessages. Reuse the existing result and do not "
+                            "retry this tool purpose."
+                        ),
+                        name=tool_name,
+                        tool_call_id=tool_call_id,
+                        status="error",
                     )
+                )
+            next_action = (
+                "If independent child verification is still required, your next action is one complete "
+                "delegation_broker dispatch; otherwise return the final typed handoff now."
+                if bool(branch.get("allowChildDelegation"))
+                else "Return the final typed evidence handoff now."
+            )
+            correction_messages.append(
+                HumanMessage(
+                    content=(
+                        "[V8OS delegated execution discipline correction]\n"
+                        "The latest repeated tool calls were intentionally not executed. The required read or "
+                        "command evidence is already present in prior ToolMessages. Stop alternate encodings, "
+                        "extra probes, skill lookup, and unrelated network calls. Review the acceptance contract. "
+                        f"{next_action} If a required fact is genuinely absent, return one concrete blocker instead."
+                    ),
+                    additional_kwargs={"v8_governance_type": "delegated_execution_correction"},
+                )
+            )
+            local_state = _merge_state_update(local_state, {"messages": correction_messages})
+            _publish_parallel_progress(
+                progress_callback,
+                stage="discipline_corrected",
+                status="running",
+                summary=f"{branch.get('agentName') or agent_id} 已停止重复工具调用并进入结果收敛。",
+            )
+            current_node = agent_id
+            continue
         if expected_artifact_paths:
             next_snapshot = _artifact_progress_snapshot(expected_artifact_paths)
             missing_artifacts = [path for path in expected_artifact_paths if not path.exists()]
@@ -1279,6 +1636,19 @@ async def _run_parallel_agent_branch(
                 source_branch=branch,
                 source_agent_id=agent_id,
             )
+            if not child_requests and goto and bool(branch.get("allowChildDelegation")):
+                child_requests = [
+                    _fallback_child_delegation_request(
+                        branch=branch,
+                        summary={
+                            "invocationId": branch.get("invocationId"),
+                            "delegationId": branch.get("delegationId"),
+                            "taskGoal": branch.get("reason"),
+                            "agentId": agent_id,
+                            "agentName": branch.get("agentName") or agent_id,
+                        },
+                    )
+                ]
             if child_requests:
                 _publish_parallel_progress(
                     progress_callback,
@@ -1521,6 +1891,7 @@ def build_parallel_delegate_task_node(
                 agent_data,
                 progress_callback=_progress_callback,
             )
+            summary = _finalize_managed_branch_workspace(branch, summary)
             return Command(
                 goto="parallel_delegate_join",
                 update={
@@ -1530,6 +1901,10 @@ def build_parallel_delegate_task_node(
                 },
             )
         except Exception as exc:
+            sandbox_failure = _fail_managed_branch_workspace(
+                branch,
+                str(getattr(exc, "code", None) or exc or exc.__class__.__name__),
+            )
             _progress_callback(
                 {
                     "stage": "failed",
@@ -1557,6 +1932,7 @@ def build_parallel_delegate_task_node(
                             "error": str(exc).strip() or exc.__class__.__name__,
                             "compactTrace": str(getattr(exc, "compact_trace", "") or "")[:2400],
                             "toolsUsed": list(getattr(exc, "tools_used", []) or [])[:12],
+                            **sandbox_failure,
                             "localSelfCheck": "Subagent branch failed before supervisor acceptance.",
                             "acceptanceHint": branch.get("acceptanceHint") or "Supervisor must explicitly accept, retry, or ignore this delegated result.",
                             "completedAt": _now_iso(),
@@ -1886,6 +2262,51 @@ def build_parallel_delegate_join_node():
             or route_context.get("runId")
             or ""
         ).strip() or None
+        integration_context: dict[str, Any] = {}
+        candidate_results = [
+            item
+            for item in results
+            if str(item.get("status") or "").strip().lower() == "ok"
+            and isinstance(item.get("gitChangeSet"), dict)
+            and not isinstance(item.get("parentWorktreeMerge"), dict)
+            and int(item.get("delegationDepth") or 1) <= 1
+        ]
+        failed_results = [
+            item
+            for item in results
+            if str(item.get("status") or "").strip().lower() not in {"ok", "completed"}
+        ]
+        if run_id and candidate_results and not failed_results:
+            from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+            try:
+                integration_worktree, integration_change_set = (
+                    get_engineering_sandbox_service().build_run_integration(
+                        run_id=run_id,
+                        invocation_id=invocation_id,
+                        change_sets=[dict(item.get("gitChangeSet") or {}) for item in candidate_results],
+                    )
+                )
+                integration_context = {
+                    "workspace_path": integration_worktree.topology.worktree_workspace_root,
+                    "original_workspace_path": integration_worktree.topology.original_workspace_root,
+                    "repository_root": integration_worktree.topology.repository_root,
+                    "worktree_root": integration_worktree.topology.worktree_root,
+                    "worktree_id": integration_worktree.worktree_id,
+                    "managedIntegration": integration_change_set.as_dict(),
+                }
+                for item in candidate_results:
+                    item["integrationChangeSet"] = integration_change_set.as_dict()
+            except Exception as exc:
+                error_code = str(getattr(exc, "code", None) or str(exc) or exc.__class__.__name__).strip()
+                for item in candidate_results:
+                    item["status"] = "error"
+                    item["error"] = f"managed_integration_failed:{error_code}"
+                    item["localSelfCheck"] = (
+                        "The isolated task commit is preserved, but deterministic integration failed. "
+                        "Supervisor must repair the conflict before acceptance."
+                    )
+                    item["integrationEvidence"] = {"state": "blocked", "errorCode": error_code}
         handoff_refs: list[dict[str, Any]] = []
         handoff_contracts: list[dict[str, Any]] = []
         for item in results:
@@ -1958,9 +2379,15 @@ def build_parallel_delegate_join_node():
                             "handoffRefs": [item.get("handoffRefId") for item in handoff_refs],
                             "results": handoff_contracts,
                             "completedAt": _now_iso(),
-                        }
+                        },
+                        **integration_context,
                     },
                 ),
+                **({"workspace_path": integration_context.get("workspace_path")} if integration_context else {}),
+                **({"original_workspace_path": integration_context.get("original_workspace_path")} if integration_context else {}),
+                **({"repository_root": integration_context.get("repository_root")} if integration_context else {}),
+                **({"worktree_root": integration_context.get("worktree_root")} if integration_context else {}),
+                **({"worktree_id": integration_context.get("worktree_id")} if integration_context else {}),
             },
         )
 

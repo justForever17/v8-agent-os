@@ -104,6 +104,21 @@ class SupervisorAgentRunner:
                 ("resolvedScope", "resolvedScope"),
                 ("safety_approval_mode", "safety_approval_mode"),
                 ("safetyApprovalMode", "safetyApprovalMode"),
+                ("original_workspace_path", "original_workspace_path"),
+                ("originalWorkspacePath", "originalWorkspacePath"),
+                ("repository_root", "repository_root"),
+                ("repositoryRoot", "repositoryRoot"),
+                ("worktree_root", "worktree_root"),
+                ("worktreeRoot", "worktreeRoot"),
+                ("worktree_id", "worktree_id"),
+                ("worktreeId", "worktreeId"),
+                ("sandbox_lease_id", "sandbox_lease_id"),
+                ("sandboxLeaseId", "sandboxLeaseId"),
+                ("sandbox_policy", "sandbox_policy"),
+                ("sandbox_policy_digest", "sandbox_policy_digest"),
+                ("sandbox_policy_file", "sandbox_policy_file"),
+                ("sandbox_capabilities", "sandbox_capabilities"),
+                ("managed_engineering_execution", "managed_engineering_execution"),
             )
             for source_key, state_key in identity_pairs:
                 value = current_route_context.get(source_key)

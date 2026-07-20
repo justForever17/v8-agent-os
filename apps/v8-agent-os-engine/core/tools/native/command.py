@@ -153,14 +153,14 @@ def _engineering_command_scope_block(
     ).strip().lower()
     if capsule_mode == "write":
         return None
-    if capsule_mode == "verify" and not command_may_change_workspace(command):
+    if capsule_mode in {"read_only", "verify"} and not command_may_change_workspace(command):
         return None
     return {
         "ok": False,
         "kind": "engineering_capsule_required",
         "summary": (
-            "当前验证 Capsule 不允许执行可能修改工作区的命令。"
-            if capsule_mode == "verify"
+            "当前只读/验证 Capsule 不允许执行可能修改工作区的命令。"
+            if capsule_mode in {"read_only", "verify"}
             else "当前子 Agent 没有可执行 Engineering Capsule，命令工具保持只读关闭。"
         ),
         "operation": operation,
@@ -237,7 +237,38 @@ def _shell_command_argv(command: str, shell_dialect: str) -> list[str]:
     executable = shutil.which("bash" if dialect == "bash" else "sh")
     if not executable:
         raise ValueError(f"未找到 {dialect} shell。")
-    return [executable, "-lc" if dialect == "bash" else "-c", command]
+    if dialect == "bash":
+        return [executable, "--noprofile", "--norc", "-c", command]
+    return [executable, "-c", command]
+
+
+def _sandbox_launch(
+    runtime_context: dict[str, Any],
+    argv: list[str],
+) -> tuple[list[str], dict[str, str] | None]:
+    policy = runtime_context.get("sandbox_policy") or runtime_context.get("sandboxPolicy")
+    if not isinstance(policy, dict):
+        runtime_kind = str(
+            runtime_context.get("runtime_kind") or runtime_context.get("runtimeKind") or ""
+        ).strip().lower()
+        capsule_mode = str(
+            runtime_context.get("engineering_capsule_mode")
+            or runtime_context.get("engineeringCapsuleMode")
+            or ""
+        ).strip().lower()
+        managed_required = bool(
+            runtime_context.get("managed_engineering_execution")
+            or runtime_context.get("managedEngineeringExecution")
+            or runtime_kind == "engineering"
+            or capsule_mode in {"verify", "write"}
+        )
+        if managed_required:
+            raise RuntimeError("sandbox_lease_required_for_engineering_command")
+        return list(argv), None
+    from core.engineering_sandbox.service import get_engineering_sandbox_service
+
+    wrapped, environment = get_engineering_sandbox_service().wrap_runtime_command(runtime_context, argv)
+    return wrapped, environment
 
 
 def execute_governed_argv(
@@ -312,11 +343,13 @@ def execute_governed_argv(
         retry_limit=1,
     ) as envelope:
         try:
+            sandbox_argv, sandbox_env = _sandbox_launch(governed_context, normalized_argv)
             result = subprocess.run(
-                normalized_argv,
+                sandbox_argv,
                 shell=False,
                 capture_output=True,
                 cwd=resolved_cwd,
+                env=sandbox_env,
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired:
@@ -627,11 +660,16 @@ def execute_system_command(
         sync_deadline_ms = 90_000
         with ToolExecutionEnvelope(tool_name="run_system_command", family="command", deadline_ms=sync_deadline_ms, retry_limit=1) as envelope:
             try:
-                result = subprocess.run(
+                command_argv, command_env = _sandbox_launch(
+                    runtime_context,
                     _shell_command_argv(command, resolved_shell_dialect),
+                )
+                result = subprocess.run(
+                    command_argv,
                     shell=False,
                     capture_output=True,
                     cwd=resolved_cwd,
+                    env=command_env,
                     timeout=sync_deadline_ms / 1000,
                 )
             except subprocess.TimeoutExpired:
@@ -803,6 +841,7 @@ def _launch_background_command(
         profile_reason=profile_reason or interactive_reason or session_reason,
         cwd=resolved_cwd,
         shell_dialect=resolved_shell_dialect,
+        runtime_context=runtime_context,
     )
     bg_proc.command_id = cmd_id
     bg_proc.workspace_binding = workspace_preflight.get("binding")
@@ -2183,6 +2222,7 @@ class BackgroundProcess:
         profile_reason: str = "",
         cwd: str | None = None,
         shell_dialect: str = "auto",
+        runtime_context: dict[str, Any] | None = None,
     ):
         self.command = command
         self.cwd = str(cwd or os.getcwd())
@@ -2192,6 +2232,7 @@ class BackgroundProcess:
         self.profile = profile if profile in {"shell", "chat_cli"} else "shell"
         self.profile_reason = str(profile_reason or "")
         self.shell_dialect = _resolve_shell_dialect(command, shell_dialect)
+        self.runtime_context = dict(runtime_context or {})
         self.chat_cli_variant = _detect_chat_cli_variant(command) if self.profile == "chat_cli" else ""
         self.output_queue = queue.Queue()
         self.output_history = []
@@ -2243,19 +2284,33 @@ class BackgroundProcess:
             uses_winpty=bool(sys.platform == "win32" and HAS_WINPTY),
             shell_dialect=self.shell_dialect,
         )
+        posix_command_argv: list[str] | None = None
+        posix_command_env: dict[str, str] | None = None
+        if sys.platform != "win32":
+            posix_command_argv, posix_command_env = _sandbox_launch(
+                self.runtime_context,
+                _shell_command_argv(command, self.shell_dialect),
+            )
         
         if sys.platform == "win32" and HAS_WINPTY:
             self.pty_win = PTY(self.cols, self.rows)
             self.uses_tty = True
             if self.shell_dialect == "cmd":
-                shell_command = f'"{os.environ.get("COMSPEC") or "cmd.exe"}" /q /d'
+                shell_argv = [str(os.environ.get("COMSPEC") or "cmd.exe"), "/q", "/d"]
             elif self.shell_dialect == "pwsh":
-                shell_command = f'"{shutil.which("pwsh") or "pwsh"}" -NoLogo -NoProfile'
+                shell_argv = [str(shutil.which("pwsh") or "pwsh"), "-NoLogo", "-NoProfile"]
             elif self.shell_dialect == "powershell":
-                shell_command = f'"{shutil.which("powershell.exe") or "powershell.exe"}" -NoLogo -NoProfile -ExecutionPolicy Bypass'
+                shell_argv = [
+                    str(shutil.which("powershell.exe") or "powershell.exe"),
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                ]
             else:
-                shell_command = f'"{shutil.which("bash") or "bash"}" --noprofile --norc'
-            self.pty_win.spawn(shell_command)
+                shell_argv = [str(shutil.which("bash") or "bash"), "--noprofile", "--norc"]
+            shell_argv, _ = _sandbox_launch(self.runtime_context, shell_argv)
+            self.pty_win.spawn(subprocess.list2cmdline(shell_argv))
             time.sleep(0.5)
             _run_winpty_bootstrap(
                 self.pty_win,
@@ -2284,19 +2339,24 @@ class BackgroundProcess:
         elif sys.platform != "win32":
             pid, self.fd = pty.fork()
             if pid == 0:
-                child_env = dict(os.environ)
+                command_argv = list(posix_command_argv or ["sh", "-c", command])
+                child_env = dict(posix_command_env or os.environ)
                 child_env.update(self.terminal_env_overrides)
                 os.chdir(self.cwd)
-                os.execvpe("sh", ["sh", "-c", command], child_env)
+                os.execvpe(command_argv[0], command_argv, child_env)
             else:
                 self.proc = pid
                 self.uses_tty = True
         else:
             # Fallback for Windows without pywinpty
-            child_env = dict(os.environ)
+            command_argv, sandbox_env = _sandbox_launch(
+                self.runtime_context,
+                _shell_command_argv(command, self.shell_dialect),
+            )
+            child_env = dict(sandbox_env or os.environ)
             child_env.update(self.terminal_env_overrides)
             self.proc = subprocess.Popen(
-                _shell_command_argv(command, self.shell_dialect), shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                command_argv, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=child_env, cwd=self.cwd
             )
 

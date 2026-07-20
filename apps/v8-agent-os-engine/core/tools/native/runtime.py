@@ -2053,6 +2053,28 @@ def _append_runtime_episode(
         or route_context.get("workspacePath")
         or ""
     ).strip() or None
+    managed_engineering_context = {
+        key: runtime_context.get(key)
+        for key in (
+            "workspace_path",
+            "original_workspace_path",
+            "originalWorkspacePath",
+            "repository_root",
+            "repositoryRoot",
+            "worktree_root",
+            "worktreeRoot",
+            "worktree_id",
+            "worktreeId",
+            "sandbox_lease_id",
+            "sandboxLeaseId",
+            "sandbox_policy",
+            "sandbox_policy_digest",
+            "sandbox_policy_file",
+            "sandbox_capabilities",
+            "managed_engineering_execution",
+        )
+        if runtime_context.get(key) not in (None, "")
+    }
     bound_need = dict(need or {})
     if session_id:
         bound_need.setdefault("sessionId", session_id)
@@ -2068,6 +2090,24 @@ def _append_runtime_episode(
         bound_need.setdefault("workspace_path", workspace_path)
         inputs.setdefault("workspacePath", workspace_path)
         inputs.setdefault("workspace_path", workspace_path)
+    if managed_engineering_context.get("managed_engineering_execution"):
+        original_workspace_path = str(
+            managed_engineering_context.get("original_workspace_path")
+            or managed_engineering_context.get("originalWorkspacePath")
+            or ""
+        ).strip()
+        parent_worktree_id = str(
+            managed_engineering_context.get("worktree_id")
+            or managed_engineering_context.get("worktreeId")
+            or ""
+        ).strip()
+        inputs.setdefault("engineeringWorkspace", managed_engineering_context)
+        if original_workspace_path:
+            inputs.setdefault("originalWorkspacePath", original_workspace_path)
+            inputs.setdefault("original_workspace_path", original_workspace_path)
+        if parent_worktree_id:
+            inputs.setdefault("parentWorktreeId", parent_worktree_id)
+            inputs.setdefault("parent_worktree_id", parent_worktree_id)
     bound_need["inputs"] = inputs
     episode = build_runtime_episode(
         need=bound_need,

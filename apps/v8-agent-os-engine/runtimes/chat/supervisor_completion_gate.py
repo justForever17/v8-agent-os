@@ -341,6 +341,8 @@ def _existing_file_evidence(episode: Mapping[str, Any], handoffs: Iterable[Mappi
     keys = {
         "artifactRefs",
         "artifacts",
+        "changedPaths",
+        "changed_paths",
         "changedFiles",
         "changed_files",
         "touchedFiles",

@@ -20,7 +20,10 @@ GEMINI_GENERATE_CONTENT = "gemini.generate_content"
 _ENDPOINT_PATHS = {
     OPENAI_CHAT_COMPLETIONS: "chat/completions",
     OPENAI_RESPONSES: "responses",
-    ANTHROPIC_MESSAGES: "messages",
+    # The official Anthropic SDK owns the same versioned path internally.
+    # Keeping it explicit here makes the human-visible request preview match
+    # the URL that is actually sent on the wire.
+    ANTHROPIC_MESSAGES: "v1/messages",
     GEMINI_GENERATE_CONTENT: "models/{model}:generateContent",
 }
 

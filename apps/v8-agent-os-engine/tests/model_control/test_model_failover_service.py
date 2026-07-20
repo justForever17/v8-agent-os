@@ -160,6 +160,33 @@ def test_transient_error_retries_then_failovers_to_same_format_candidate(monkeyp
     assert built == [make_model_ref("p-openai-b", "backup")]
 
 
+def test_upstream_auth_pool_503_retries_same_model_instead_of_blaming_user_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = ModelFailoverService()
+    _patch_runtime_gates(monkeypatch, service)
+    primary = FakeLLM(
+        Exception(
+            "Error code: 503 - {'type':'error','error':{'type':'api_error',"
+            "'message':'auth_unavailable: no auth available (providers=antigravity)'}}"
+        ),
+        "ok",
+    )
+
+    result = service.invoke_with_failover(
+        config=_config(maxLocalRetries=1, maxTotalAttempts=2, maxFailoverSeconds=30),
+        base_llm_instance=primary,
+        messages=[],
+        tools=None,
+        role="supervisor",
+        preferred_model_id=make_model_ref("p-openai-a", "primary"),
+        build_model=lambda _model_id: FakeLLM("unused"),
+    )
+
+    assert result == "ok"
+    assert primary.calls == 2
+
+
 def test_invocation_config_is_forwarded_to_callback_events(monkeypatch: pytest.MonkeyPatch):
     service = ModelFailoverService()
     _patch_runtime_gates(monkeypatch, service)

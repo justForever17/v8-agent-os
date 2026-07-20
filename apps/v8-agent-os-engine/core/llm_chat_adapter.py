@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from typing import Any, AsyncIterator, Callable, Iterator, Mapping, Sequence
 
@@ -98,6 +99,28 @@ class BaseProviderSurface:
     def normalize_messages(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         normalized: list[BaseMessage] = []
         for message in messages:
+            if isinstance(message, AIMessage) and getattr(message, "tool_calls", None) and not self.supports_native_tools():
+                visible_text, _reasoning = extract_text_and_reasoning(message)
+                rendered_calls = [
+                    f"[Previously Executed Tool Request: {str(call.get('name') or 'tool')}]\n"
+                    f"{json.dumps(call.get('args') or {}, ensure_ascii=False, default=str)}"
+                    for call in list(message.tool_calls or [])
+                    if isinstance(call, Mapping)
+                ]
+                additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+                additional_kwargs.pop("tool_calls", None)
+                additional_kwargs.pop("function_call", None)
+                normalized.append(
+                    AIMessage(
+                        content="\n\n".join(
+                            part for part in [visible_text.strip(), *rendered_calls] if part
+                        ),
+                        additional_kwargs=additional_kwargs,
+                        response_metadata=dict(getattr(message, "response_metadata", {}) or {}),
+                        usage_metadata=getattr(message, "usage_metadata", None),
+                    )
+                )
+                continue
             if isinstance(message, ToolMessage) and not self.supports_native_tools():
                 rendered = _stringify_content(getattr(message, "content", ""))
                 tool_name = str(getattr(message, "name", "") or getattr(message, "tool_call_id", "") or "tool")
@@ -139,6 +162,29 @@ class OpenAICompatibleSurface(BaseProviderSurface):
 
 class AnthropicSurface(BaseProviderSurface):
     provider_standard = "anthropic"
+
+    def normalize_messages(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+        normalized = super().normalize_messages(messages)
+        system_messages = [message for message in normalized if isinstance(message, SystemMessage)]
+        if not system_messages:
+            return normalized
+
+        non_system_messages = [message for message in normalized if not isinstance(message, SystemMessage)]
+        if len(system_messages) == 1:
+            return [system_messages[0], *non_system_messages]
+
+        content_blocks: list[Any] = []
+        for message in system_messages:
+            content = message.content
+            if isinstance(content, list):
+                content_blocks.extend(deepcopy(content))
+            elif _stringify_content(content).strip():
+                content_blocks.append({"type": "text", "text": _stringify_content(content)})
+        merged_system = SystemMessage(
+            content=content_blocks,
+            additional_kwargs={"v8_system_message_count": len(system_messages)},
+        )
+        return [merged_system, *non_system_messages]
 
 
 class GeminiSurface(BaseProviderSurface):
@@ -307,16 +353,55 @@ class V8ChatModelAdapter(BaseChatModel):
 
     def _normalize_messages_for_provider(self, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         normalized = self._provider_surface.normalize_messages(messages)
-        if str(self._meta.get("wire_protocol") or self._meta.get("wireProtocol") or "").strip() != "openai.responses":
+        wire_protocol = str(self._meta.get("wire_protocol") or self._meta.get("wireProtocol") or "").strip()
+        is_anthropic_messages = wire_protocol == "anthropic.messages" or (
+            not wire_protocol and self.provider_standard == "anthropic"
+        )
+        if wire_protocol != "openai.responses" and not is_anthropic_messages:
             return normalized
 
+        if wire_protocol == "openai.responses" or self._provider_surface.supports_native_tools():
+            normalized = self._project_provider_tool_call_ids(normalized)
+        if is_anthropic_messages and self._provider_surface.supports_native_tools():
+            self._assert_anthropic_tool_result_contract(normalized)
+        return normalized
+
+    @staticmethod
+    def _project_content_tool_call_ids(
+        content: Any,
+        provider_id_by_canonical: Mapping[str, str],
+    ) -> Any:
+        if not isinstance(content, list):
+            return content
+        projected: list[Any] = []
+        for raw_block in content:
+            if not isinstance(raw_block, Mapping):
+                projected.append(raw_block)
+                continue
+            block = deepcopy(dict(raw_block))
+            block_type = str(block.get("type") or "").strip()
+            if block_type == "tool_use":
+                canonical_id = str(block.get("id") or "").strip()
+                provider_id = provider_id_by_canonical.get(canonical_id)
+                if provider_id:
+                    block["id"] = provider_id
+            elif block_type == "tool_result":
+                canonical_id = str(block.get("tool_use_id") or "").strip()
+                provider_id = provider_id_by_canonical.get(canonical_id)
+                if provider_id:
+                    block["tool_use_id"] = provider_id
+            projected.append(block)
+        return projected
+
+    @classmethod
+    def _project_provider_tool_call_ids(cls, messages: Sequence[BaseMessage]) -> list[BaseMessage]:
         # V8 owns stable canonical tool-call ids inside LangGraph/checkpoints,
-        # while Responses requires the provider-issued call id on the wire.
-        # Re-project the shadow id only at the provider boundary so a resumed
-        # tool call and its function_call_output remain a valid pair.
+        # while Responses and Anthropic Messages must continue with the exact
+        # provider-issued id. Re-project the shadow id only at the provider
+        # boundary so canonical state remains provider-neutral and resumable.
         provider_id_by_canonical: dict[str, str] = {}
         projected: list[BaseMessage] = []
-        for message in normalized:
+        for message in messages:
             if isinstance(message, AIMessage) and list(getattr(message, "tool_calls", None) or []):
                 clean_message = deepcopy(message)
                 clean_tool_calls: list[dict[str, Any]] = []
@@ -358,6 +443,10 @@ class V8ChatModelAdapter(BaseChatModel):
                         wire_calls.append(call)
                     additional_kwargs["tool_calls"] = wire_calls
                     clean_message.additional_kwargs = additional_kwargs
+                clean_message.content = cls._project_content_tool_call_ids(
+                    clean_message.content,
+                    provider_id_by_canonical,
+                )
                 projected.append(clean_message)
                 continue
 
@@ -369,8 +458,67 @@ class V8ChatModelAdapter(BaseChatModel):
                     clean_message.tool_call_id = provider_id
                     projected.append(clean_message)
                     continue
-            projected.append(message)
+            projected_content = cls._project_content_tool_call_ids(
+                getattr(message, "content", None),
+                provider_id_by_canonical,
+            )
+            if projected_content is not getattr(message, "content", None):
+                clean_message = deepcopy(message)
+                clean_message.content = projected_content
+                projected.append(clean_message)
+            else:
+                projected.append(message)
         return projected
+
+    @staticmethod
+    def _content_tool_result_ids(message: BaseMessage) -> set[str]:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            return set()
+        return {
+            str(block.get("tool_use_id") or "").strip()
+            for block in content
+            if isinstance(block, Mapping)
+            and str(block.get("type") or "").strip() == "tool_result"
+            and str(block.get("tool_use_id") or "").strip()
+        }
+
+    @classmethod
+    def _assert_anthropic_tool_result_contract(cls, messages: Sequence[BaseMessage]) -> None:
+        for index, message in enumerate(messages):
+            if not isinstance(message, AIMessage):
+                continue
+            expected_ids = {
+                str(tool_call.get("id") or "").strip()
+                for tool_call in list(getattr(message, "tool_calls", None) or [])
+                if str(tool_call.get("id") or "").strip()
+            }
+            if not expected_ids:
+                continue
+
+            result_ids: set[str] = set()
+            cursor = index + 1
+            while cursor < len(messages):
+                candidate = messages[cursor]
+                if isinstance(candidate, ToolMessage):
+                    tool_call_id = str(candidate.tool_call_id or "").strip()
+                    if tool_call_id:
+                        result_ids.add(tool_call_id)
+                    cursor += 1
+                    continue
+                content_result_ids = cls._content_tool_result_ids(candidate)
+                if content_result_ids:
+                    result_ids.update(content_result_ids)
+                    cursor += 1
+                    continue
+                break
+
+            missing_ids = sorted(expected_ids - result_ids)
+            if missing_ids:
+                raise ValueError(
+                    "Anthropic message contract rejected an incomplete tool turn: "
+                    f"missing immediate tool_result for {', '.join(missing_ids)}."
+                )
 
     def _get_base_model(self) -> Any:
         if self._base_model is None:
@@ -406,6 +554,7 @@ class V8ChatModelAdapter(BaseChatModel):
 
     def _decorate_message(self, message: Any, *, tool_mode: str | None = None, structured_mode: str | None = None) -> Any:
         normalized = sanitize_model_tool_calls(message, provider_standard=self.provider_standard)
+        normalized = self._enforce_bound_tool_surface(normalized)
         response_metadata = dict(getattr(normalized, "response_metadata", {}) or {})
         response_metadata["v8_provider_adapter"] = self.provider_adapter()
         response_metadata["v8_model_id"] = self.model_id
@@ -426,18 +575,102 @@ class V8ChatModelAdapter(BaseChatModel):
             normalized.response_metadata = response_metadata
         return normalized
 
+    def _bound_tool_names(self) -> set[str]:
+        names: set[str] = set()
+        for tool in list(self._bound_tools or []):
+            direct_name = ""
+            if isinstance(tool, Mapping):
+                function = tool.get("function") if isinstance(tool.get("function"), Mapping) else {}
+                direct_name = str(tool.get("name") or function.get("name") or "").strip()
+            else:
+                direct_name = str(getattr(tool, "name", "") or "").strip()
+            if direct_name:
+                names.add(direct_name)
+                continue
+            try:
+                schema = convert_to_openai_tool(tool)
+                function = schema.get("function") if isinstance(schema.get("function"), Mapping) else {}
+                schema_name = str(schema.get("name") or function.get("name") or "").strip()
+                if schema_name:
+                    names.add(schema_name)
+            except Exception:
+                continue
+        return names
+
+    def _enforce_bound_tool_surface(self, message: Any) -> Any:
+        """Drop provider-emitted calls that were never exposed for this invocation."""
+
+        if not self._bound_tools:
+            return message
+        allowed = self._bound_tool_names()
+        calls = list(getattr(message, "tool_calls", None) or [])
+        rejected = [
+            str(call.get("name") or "").strip()
+            for call in calls
+            if isinstance(call, Mapping) and str(call.get("name") or "").strip() not in allowed
+        ]
+        if not rejected:
+            return message
+        filtered = [
+            call
+            for call in calls
+            if isinstance(call, Mapping) and str(call.get("name") or "").strip() in allowed
+        ]
+        if hasattr(message, "tool_calls"):
+            message.tool_calls = filtered
+        additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+        raw_calls = list(additional_kwargs.get("tool_calls") or [])
+        if raw_calls:
+            def _raw_name(call: Any) -> str:
+                if not isinstance(call, Mapping):
+                    return ""
+                function = call.get("function") if isinstance(call.get("function"), Mapping) else {}
+                return str(call.get("name") or function.get("name") or "").strip()
+
+            additional_kwargs["tool_calls"] = [call for call in raw_calls if _raw_name(call) in allowed]
+        function_call = additional_kwargs.get("function_call")
+        if isinstance(function_call, Mapping) and str(function_call.get("name") or "").strip() not in allowed:
+            additional_kwargs.pop("function_call", None)
+        if hasattr(message, "additional_kwargs"):
+            message.additional_kwargs = additional_kwargs
+        response_metadata = dict(getattr(message, "response_metadata", {}) or {})
+        response_metadata["v8_rejected_unbound_tool_calls"] = list(dict.fromkeys(rejected))
+        if hasattr(message, "response_metadata"):
+            message.response_metadata = response_metadata
+        return message
+
     def _apply_prompt_emulated_tool_calls(self, message: Any, *, force: bool = False) -> Any:
         if not self._bound_tools or (self._provider_surface.supports_native_tools() and not force):
             return message
         content_text = _message_text(message)
+        legacy_match = re.fullmatch(
+            r"\s*\[Tool Call:\s*([A-Za-z0-9_.:-]+)\s*\]\s*(\{.*\})\s*",
+            content_text,
+            flags=re.DOTALL,
+        )
+        legacy_tool_name = ""
+        legacy_arguments: Any = None
+        if legacy_match:
+            legacy_tool_name = str(legacy_match.group(1) or "").strip()
+            try:
+                legacy_arguments = json.loads(legacy_match.group(2))
+            except Exception:
+                legacy_arguments = None
         try:
-            payload = _extract_json_payload(content_text)
+            payload = (
+                {"tool_name": legacy_tool_name, "arguments": legacy_arguments}
+                if legacy_tool_name and isinstance(legacy_arguments, Mapping)
+                else _extract_json_payload(content_text)
+            )
         except Exception:
             return self._decorate_message(message, tool_mode="prompt_emulated")
         if not isinstance(payload, Mapping):
             return self._decorate_message(message, tool_mode="prompt_emulated")
         tool_name = str(payload.get("tool_name") or payload.get("name") or "").strip()
         if not tool_name:
+            return self._decorate_message(message, tool_mode="prompt_emulated")
+        bound_tool_names = self._bound_tool_names()
+        if tool_name not in bound_tool_names:
             return self._decorate_message(message, tool_mode="prompt_emulated")
         arguments = payload.get("arguments") or payload.get("args") or {}
         normalized_calls = normalize_tool_calls(
@@ -538,12 +771,22 @@ class V8ChatModelAdapter(BaseChatModel):
             normalized = self._decorate_message(chunk)
             return normalized if isinstance(normalized, AIMessageChunk) else AIMessageChunk(content=_stringify_content(getattr(normalized, "content", "")))
         if isinstance(chunk, AIMessage):
+            chunk_tool_calls = [
+                {
+                    "name": str(call.get("name") or ""),
+                    "args": call.get("args") or {},
+                    "id": str(call.get("id") or ""),
+                    **({"type": call.get("type")} if call.get("type") else {}),
+                }
+                for call in list(chunk.tool_calls or [])
+                if isinstance(call, Mapping)
+            ]
             return AIMessageChunk(
                 content=chunk.content,
                 additional_kwargs=dict(chunk.additional_kwargs or {}),
                 response_metadata=dict(chunk.response_metadata or {}),
                 tool_call_chunks=list(getattr(chunk, "tool_call_chunks", []) or []),
-                tool_calls=list(chunk.tool_calls or []),
+                tool_calls=chunk_tool_calls,
                 usage_metadata=chunk.usage_metadata,
             )
         return AIMessageChunk(content=_stringify_content(chunk))
@@ -796,9 +1039,41 @@ class V8ChatModelAdapter(BaseChatModel):
 
     def _stream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> Iterator[ChatGenerationChunk]:
         normalized_messages = self._normalize_messages_for_provider(messages)
-        if self._bound_tools and not self._provider_surface.supports_native_tools():
+        prompt_emulated_tools = bool(self._bound_tools and not self._provider_surface.supports_native_tools())
+        if prompt_emulated_tools:
             normalized_messages = self._tool_prompt_messages(normalized_messages)
-        prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, streaming=True, **kwargs)
+        prepared = self._prepare_prompt_cache_request(
+            normalized_messages,
+            stop=stop,
+            streaming=not prompt_emulated_tools,
+            **kwargs,
+        )
+        if prompt_emulated_tools:
+            try:
+                response = prepared.cache_hit_message or self._get_base_model().invoke(
+                    prepared.messages,
+                    config=self._provider_internal_config(),
+                    stop=stop,
+                    **prepared.kwargs,
+                )
+                message = self._finalize_prompt_cache_response(
+                    self._coerce_ai_message(response, force_prompt_emulated_tools=True),
+                    prepared,
+                )
+                ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(message), prepared.diagnostics)
+                yield ChatGenerationChunk(
+                    message=ai_chunk,
+                    text=_message_text(ai_chunk),
+                    generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
+                )
+                return
+            except Exception as exc:
+                raise_as_v8_llm_error(
+                    exc,
+                    provider=self.provider_standard,
+                    model=self.model_id,
+                    details={"mode": "stream", "toolMode": "prompt_emulated"},
+                )
         try:
             for chunk in self._get_runtime_model().stream(
                 prepared.messages,
@@ -815,19 +1090,23 @@ class V8ChatModelAdapter(BaseChatModel):
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
-                    fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=True, **kwargs)
-                    for chunk in self._get_base_model().stream(
+                    fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=False, **kwargs)
+                    response = self._get_base_model().invoke(
                         fallback_prepared.messages,
                         config=self._provider_internal_config(),
                         stop=stop,
                         **fallback_prepared.kwargs,
-                    ):
-                        ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), fallback_prepared.diagnostics)
-                        yield ChatGenerationChunk(
-                            message=ai_chunk,
-                            text=_message_text(ai_chunk),
-                            generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
-                        )
+                    )
+                    message = self._finalize_prompt_cache_response(
+                        self._coerce_ai_message(response, force_prompt_emulated_tools=True),
+                        fallback_prepared,
+                    )
+                    ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(message), fallback_prepared.diagnostics)
+                    yield ChatGenerationChunk(
+                        message=ai_chunk,
+                        text=_message_text(ai_chunk),
+                        generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
+                    )
                     return
                 except Exception as fallback_exc:
                     raise_as_v8_llm_error(
@@ -840,9 +1119,41 @@ class V8ChatModelAdapter(BaseChatModel):
 
     async def _astream(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: Any | None = None, **kwargs: Any) -> AsyncIterator[ChatGenerationChunk]:
         normalized_messages = self._normalize_messages_for_provider(messages)
-        if self._bound_tools and not self._provider_surface.supports_native_tools():
+        prompt_emulated_tools = bool(self._bound_tools and not self._provider_surface.supports_native_tools())
+        if prompt_emulated_tools:
             normalized_messages = self._tool_prompt_messages(normalized_messages)
-        prepared = self._prepare_prompt_cache_request(normalized_messages, stop=stop, streaming=True, **kwargs)
+        prepared = self._prepare_prompt_cache_request(
+            normalized_messages,
+            stop=stop,
+            streaming=not prompt_emulated_tools,
+            **kwargs,
+        )
+        if prompt_emulated_tools:
+            try:
+                response = prepared.cache_hit_message or await self._get_base_model().ainvoke(
+                    prepared.messages,
+                    config=self._provider_internal_config(),
+                    stop=stop,
+                    **prepared.kwargs,
+                )
+                message = self._finalize_prompt_cache_response(
+                    self._coerce_ai_message(response, force_prompt_emulated_tools=True),
+                    prepared,
+                )
+                ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(message), prepared.diagnostics)
+                yield ChatGenerationChunk(
+                    message=ai_chunk,
+                    text=_message_text(ai_chunk),
+                    generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
+                )
+                return
+            except Exception as exc:
+                raise_as_v8_llm_error(
+                    exc,
+                    provider=self.provider_standard,
+                    model=self.model_id,
+                    details={"mode": "astream", "toolMode": "prompt_emulated"},
+                )
         try:
             async for chunk in self._get_runtime_model().astream(
                 prepared.messages,
@@ -859,19 +1170,23 @@ class V8ChatModelAdapter(BaseChatModel):
         except Exception as exc:
             if self._bound_tools and self._provider_surface.supports_native_tools() and self._should_fallback_prompt_tools(exc):
                 try:
-                    fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=True, **kwargs)
-                    async for chunk in self._get_base_model().astream(
+                    fallback_prepared = self._prepare_prompt_cache_request(self._tool_prompt_messages(normalized_messages), stop=stop, streaming=False, **kwargs)
+                    response = await self._get_base_model().ainvoke(
                         fallback_prepared.messages,
                         config=self._provider_internal_config(),
                         stop=stop,
                         **fallback_prepared.kwargs,
-                    ):
-                        ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(chunk), fallback_prepared.diagnostics)
-                        yield ChatGenerationChunk(
-                            message=ai_chunk,
-                            text=_message_text(ai_chunk),
-                            generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
-                        )
+                    )
+                    message = self._finalize_prompt_cache_response(
+                        self._coerce_ai_message(response, force_prompt_emulated_tools=True),
+                        fallback_prepared,
+                    )
+                    ai_chunk = self._decorate_prompt_cache_chunk(self._coerce_chunk(message), fallback_prepared.diagnostics)
+                    yield ChatGenerationChunk(
+                        message=ai_chunk,
+                        text=_message_text(ai_chunk),
+                        generation_info=dict(getattr(ai_chunk, "response_metadata", {}) or {}),
+                    )
                     return
                 except Exception as fallback_exc:
                     raise_as_v8_llm_error(

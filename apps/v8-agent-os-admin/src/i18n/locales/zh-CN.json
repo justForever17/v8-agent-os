@@ -1484,6 +1484,8 @@
   "app.admin.dashboard.model.hub.channel.label": "通道名称",
   "app.admin.dashboard.model.hub.channel.openai": "OpenAI 兼容",
   "app.admin.dashboard.model.hub.channel.anthropic": "Anthropic Messages",
+  "app.admin.dashboard.model.hub.channel.anthropicBaseUrlHelp": "填写服务根地址，不要以 /v1 结尾；Anthropic SDK 会自动请求 /v1/messages。",
+  "app.admin.dashboard.model.hub.channel.anthropicBaseUrlError": "Anthropic Messages 通道必须填写服务根地址，请移除 Base URL 末尾的 /v1。",
   "app.admin.dashboard.model.hub.channel.gemini": "Gemini GenerateContent",
   "app.admin.dashboard.model.hub.channel.comfyui": "ComfyUI 工作流",
   "app.admin.dashboard.model.hub.channel.noWireProtocol": "由专用适配器处理",

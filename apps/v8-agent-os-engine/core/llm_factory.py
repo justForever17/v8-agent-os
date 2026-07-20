@@ -1138,13 +1138,17 @@ class LLMFactory:
                 else "openai-compatible"
             )
         effective_capability_matrix = dict(meta.get("effective_capability_matrix") or {})
-        tool_calling_mode = "native" if bool(
-            effective_capability_matrix.get("supports_native_tools") or meta.get("supports_native_tools", meta.get("supportsTools", True))
-        ) else "prompt_emulated"
-        structured_output_mode = "native" if bool(
-            effective_capability_matrix.get("supports_native_structured_output")
-            or meta.get("supports_native_structured_output", meta.get("supportsStructuredOutput", True))
-        ) else "prompt_fallback"
+        supports_native_tools = effective_capability_matrix.get("supports_native_tools")
+        if supports_native_tools is None:
+            supports_native_tools = meta.get("supports_native_tools", meta.get("supportsTools", True))
+        supports_native_structured_output = effective_capability_matrix.get("supports_native_structured_output")
+        if supports_native_structured_output is None:
+            supports_native_structured_output = meta.get(
+                "supports_native_structured_output",
+                meta.get("supportsStructuredOutput", True),
+            )
+        tool_calling_mode = "native" if bool(supports_native_tools) else "prompt_emulated"
+        structured_output_mode = "native" if bool(supports_native_structured_output) else "prompt_fallback"
         stream_mode = "native" if bool(
             effective_capability_matrix.get("supports_streaming", True)
         ) else "unsupported"

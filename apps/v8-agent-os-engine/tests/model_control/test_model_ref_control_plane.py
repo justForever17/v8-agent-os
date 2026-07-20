@@ -1334,6 +1334,32 @@ def test_config_model_temperature_zero_is_not_sent_to_provider_kwargs():
     assert llm_factory._build_openai_kwargs("demo-model", meta, temperature=0)["temperature"] == 0
 
 
+def test_anthropic_sdk_uses_the_exact_user_configured_channel_base():
+    versioned_channel_meta = {
+        "api_key": "sk-test",
+        "base_url": "https://provider.example.test/v1",
+        "endpoint_binding": {
+            "wireProtocol": "anthropic.messages",
+            "requestUrlPreview": "https://provider.example.test/v1/messages",
+        },
+    }
+    prefixed_channel_meta = {
+        "api_key": "sk-test",
+        "base_url": "https://provider.example.test/anthropic",
+        "endpoint_binding": {
+            "wireProtocol": "anthropic.messages",
+            "requestUrlPreview": "https://provider.example.test/anthropic/v1/messages",
+        },
+    }
+
+    assert llm_factory._build_anthropic_kwargs("claude-test", versioned_channel_meta)["base_url"] == (
+        "https://provider.example.test/v1"
+    )
+    assert llm_factory._build_anthropic_kwargs("claude-test", prefixed_channel_meta)["base_url"] == (
+        "https://provider.example.test/anthropic"
+    )
+
+
 def test_explicit_create_for_role_temperature_zero_is_preserved(monkeypatch):
     monkeypatch.setattr(
         "core.llm_factory.model_control_plane.resolve_model_for_role",

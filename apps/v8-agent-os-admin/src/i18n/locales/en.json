@@ -1484,6 +1484,8 @@
   "app.admin.dashboard.model.hub.channel.label": "Channel name",
   "app.admin.dashboard.model.hub.channel.openai": "OpenAI-compatible",
   "app.admin.dashboard.model.hub.channel.anthropic": "Anthropic Messages",
+  "app.admin.dashboard.model.hub.channel.anthropicBaseUrlHelp": "Enter the service root without a trailing /v1. The Anthropic SDK requests /v1/messages automatically.",
+  "app.admin.dashboard.model.hub.channel.anthropicBaseUrlError": "Anthropic Messages requires the service root as its Base URL. Remove the trailing /v1.",
   "app.admin.dashboard.model.hub.channel.gemini": "Gemini GenerateContent",
   "app.admin.dashboard.model.hub.channel.comfyui": "ComfyUI workflow",
   "app.admin.dashboard.model.hub.channel.noWireProtocol": "Handled by a dedicated adapter",

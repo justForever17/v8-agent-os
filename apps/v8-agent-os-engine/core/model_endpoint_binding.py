@@ -58,6 +58,16 @@ def _relative_submit_path(base_url: Any, submit_path: Any) -> str:
     return submit
 
 
+def join_model_endpoint_url(base_url: Any, endpoint_path: Any) -> str:
+    """Join the user-visible channel base and canonical wire endpoint exactly."""
+
+    root = str(base_url or "").strip().rstrip("/")
+    path = _clean_relative_path(endpoint_path)
+    if not root or not path:
+        return root or path
+    return f"{root}/{path}"
+
+
 def _is_media_model(model_meta: Dict[str, Any]) -> bool:
     model_type = str(model_meta.get("type") or "").strip().upper()
     capability_class = str(model_meta.get("capabilityClass") or "").strip().lower()
@@ -193,7 +203,7 @@ def build_model_endpoint_binding(
         if base_url and api_version and not base_url.lower().endswith(f"/{api_version.lower()}")
         else base_url
     )
-    request_url = f"{request_base_url}/{endpoint_path}" if request_base_url and endpoint_path else request_base_url
+    request_url = join_model_endpoint_url(request_base_url, endpoint_path)
     persisted = bool(explicit)
     provenance = dict(explicit.get("provenance") or {})
     provenance.setdefault("source", source if persisted else "legacy_projection")
@@ -341,6 +351,7 @@ def public_models_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 __all__ = [
     "build_model_endpoint_binding",
+    "join_model_endpoint_url",
     "persist_model_endpoint_binding",
     "public_models_config",
 ]

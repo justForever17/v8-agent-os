@@ -121,7 +121,35 @@ def test_model_binding_selects_an_explicit_provider_channel_without_rewriting_ba
     assert binding["apiStandard"] == "anthropic"
     assert binding["wireProtocol"] == "anthropic.messages"
     assert binding["baseUrl"] == "https://api.example.test/anthropic"
-    assert binding["requestUrlPreview"] == "https://api.example.test/anthropic/messages"
+    assert binding["requestUrlPreview"] == "https://api.example.test/anthropic/v1/messages"
+
+
+def test_anthropic_endpoint_preview_exposes_version_already_in_channel_base_url():
+    provider = {
+        "api_standard": "openai",
+        "base_url": "https://api.example.test/v1",
+        "channels": [
+            {
+                "id": "anthropic",
+                "label": "Anthropic Messages",
+                "apiStandard": "anthropic",
+                "baseUrl": "https://api.example.test/v1",
+                "wireProtocols": ["anthropic.messages"],
+                "defaultWireProtocol": "anthropic.messages",
+            }
+        ],
+        "defaultChannelId": "anthropic",
+    }
+
+    binding = build_model_endpoint_binding(
+        "custom-provider",
+        "claude-opus-test",
+        provider,
+        {"type": "TEXT", "endpointBinding": {"channelId": "anthropic"}},
+    )
+
+    assert binding["endpointPath"] == "v1/messages"
+    assert binding["requestUrlPreview"] == "https://api.example.test/v1/v1/messages"
 
 
 def test_legacy_provider_projection_keeps_v1_and_does_not_infer_gemini_v1beta():

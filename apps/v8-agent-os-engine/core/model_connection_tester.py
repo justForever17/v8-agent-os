@@ -20,6 +20,7 @@ from core.llm_factory import (
 )
 from core.multimodal_payload_adapter import build_multimodal_content
 from core.model_control_plane import model_control_plane
+from core.model_endpoint_binding import join_model_endpoint_url
 from core.model_ref import make_model_ref
 from core.provider_compatibility import normalize_provider_error
 
@@ -118,14 +119,7 @@ class ModelConnectionTester:
         return f"{native_base}/{quote(normalized_model, safe='/')}:generateContent"
 
     def _build_anthropic_messages_endpoint(self, *, base_url: str) -> str:
-        root = str(base_url or "").strip().rstrip("/")
-        if root.endswith("/v1/messages"):
-            return root
-        if root.endswith("/messages"):
-            return root
-        if root.endswith("/v1"):
-            return f"{root}/messages"
-        return f"{root}/v1/messages" if root else ""
+        return join_model_endpoint_url(base_url, "v1/messages")
 
     def _should_probe_gemini_native_route(self, *, model_id: str, meta: Dict[str, Any]) -> bool:
         del model_id, meta

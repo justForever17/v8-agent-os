@@ -32,6 +32,20 @@ def test_connection_probe_uses_small_output_cap(monkeypatch):
     assert captured["streaming"] is False
 
 
+def test_anthropic_probe_endpoint_exposes_misconfigured_versioned_base_url():
+    tester = ModelConnectionTester()
+
+    assert tester._build_anthropic_messages_endpoint(base_url="https://provider.example.test") == (
+        "https://provider.example.test/v1/messages"
+    )
+    assert tester._build_anthropic_messages_endpoint(base_url="https://provider.example.test/v1") == (
+        "https://provider.example.test/v1/v1/messages"
+    )
+    assert tester._build_anthropic_messages_endpoint(base_url="https://provider.example.test/anthropic") == (
+        "https://provider.example.test/anthropic/v1/messages"
+    )
+
+
 def test_oauth_provider_connection_skips_deep_capability_suite(monkeypatch):
     tester = ModelConnectionTester()
     meta = {

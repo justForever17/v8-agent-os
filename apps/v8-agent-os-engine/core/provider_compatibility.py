@@ -65,7 +65,14 @@ def normalize_provider_error(exc: Exception, *, provider: str | None = None, mod
     retryable = False
     user_action = "请检查模型配置或稍后重试。"
 
-    if any(token in lower for token in ("401", "unauthorized", "invalid api key", "authentication", "auth", "invalid access token", "token expired", "oauth 凭据已过期", "oauth credential expired")):
+    if (
+        any(token in lower for token in ("auth_unavailable", "no auth available"))
+        and any(token in lower for token in ("503", "service unavailable", "temporarily unavailable"))
+    ):
+        code = "provider_unavailable"
+        retryable = True
+        user_action = "供应商认证资源暂时不可用，可稍后重试或切换同类模型。"
+    elif any(token in lower for token in ("401", "unauthorized", "invalid api key", "authentication", "auth", "invalid access token", "token expired", "oauth 凭据已过期", "oauth credential expired")):
         code = "auth_error"
         user_action = "请检查供应商 API Key / OAuth 凭据。"
     elif any(

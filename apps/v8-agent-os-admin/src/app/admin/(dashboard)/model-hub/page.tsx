@@ -867,6 +867,17 @@ export default function ModelHubPage() {
                 baseUrl: channel.baseUrl.trim().replace(/\/+$/, ""),
                 apiVersion: channel.apiVersion.trim().replace(/^\/+|\/+$/g, ""),
             }));
+            const invalidAnthropicChannel = normalizedChannels.find(
+                (channel) => channel.apiStandard === "anthropic" && /\/v1$/i.test(channel.baseUrl),
+            );
+            if (invalidAnthropicChannel) {
+                toast({
+                    variant: "destructive",
+                    title: t("app.admin.dashboard.model.hub.page.kd2b2caac"),
+                    description: t("app.admin.dashboard.model.hub.channel.anthropicBaseUrlError"),
+                });
+                return;
+            }
             const defaultChannel = normalizedChannels.find((channel) => channel.id === providerDefaultChannelId) || normalizedChannels[0];
             payload.channels = normalizedChannels;
             payload.defaultChannelId = defaultChannel?.id || "";
@@ -2594,6 +2605,11 @@ export default function ModelHubPage() {
                                             onChange={(event) => setProviderChannels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, baseUrl: event.target.value } : item))}
                                             placeholder={t("app.admin.dashboard.model.hub.catalog.customBaseUrlPlaceholder")}
                                         />
+                                        {channel.apiStandard === "anthropic" ? (
+                                            <p className={`md:col-span-2 text-xs ${/\/v1\/?$/i.test(channel.baseUrl.trim()) ? "text-destructive" : "text-muted-foreground"}`}>
+                                                {t("app.admin.dashboard.model.hub.channel.anthropicBaseUrlHelp")}
+                                            </p>
+                                        ) : null}
                                         {channel.apiStandard === "gemini" ? (
                                             <Input
                                                 className="md:col-span-2"

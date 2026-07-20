@@ -218,18 +218,6 @@ export const ADMIN_NAV_GROUPS: AdminNavGroup[] = [
     },
 ];
 
-export const ADMIN_REDIRECT_MAP: Record<string, string> = {
-    "/admin/models": "/admin/model-hub",
-    "/admin/settings": "/admin/system-base",
-    "/admin/safety": "/admin/safety-control",
-    "/admin/stability": "/admin/operations-center",
-    "/admin/projects": "/admin/projects-workspaces",
-    "/admin/system-misc": "/admin/system-base",
-    "/admin/agents": "/admin/subagents",
-    "/admin/engineering-runtime": "/admin/engineering-lane",
-    "/admin/research": "/admin/research-runtime",
-};
-
 const ALL_ITEMS = ADMIN_NAV_GROUPS.flatMap((group) => group.items);
 
 export function getAdminNavItem(pathname: string | null | undefined) {

@@ -1,13 +1,12 @@
 "use client";
 
 /* eslint-disable @next/next/no-img-element */
-import Link from "next/link";
 import { useMemo, useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Crown, Save, Loader2, ChevronDown, ChevronRight, Check, Play, Upload, X, Lock, Wrench } from "lucide-react";
+import { Crown, Save, Loader2, ChevronDown, ChevronRight, Check, Play, Upload, X, Lock, Wrench } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
@@ -123,7 +122,6 @@ export default function SupervisorPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const {
     toast
   } = useToast();
@@ -168,7 +166,7 @@ export default function SupervisorPage() {
     }
   };
   useEffect(() => {
-    Promise.all([fetch("/api/supervisor"), fetch("/api/models"), fetch("/api/mcp/tools"), fetch("/api/settings/vision-model"), fetch("/api/settings/default-agent-model")]).then(async ([supRes, modRes, mcpRes, visionRes, defaultModelRes]) => {
+    Promise.all([fetch("/api/supervisor"), fetch("/api/models"), fetch("/api/mcp/tools"), fetch("/api/settings/vision-model")]).then(async ([supRes, modRes, mcpRes, visionRes]) => {
       if (supRes.ok) {
         const data = await supRes.json();
         if (data.systemPrompt !== undefined) setSystemPrompt(data.systemPrompt);
@@ -192,10 +190,6 @@ export default function SupervisorPage() {
         const data = await visionRes.json();
         setVisionModelId(data.value || "__empty__");
         setVisionModelSource(typeof data.source === "string" ? data.source : null);
-      }
-      if (defaultModelRes.ok) {
-        const data = await defaultModelRes.json();
-        setDefaultModelId(typeof data.modelId === "string" && data.modelId ? data.modelId : null);
       }
       setIsLoading(false);
     }).catch(err => {

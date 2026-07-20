@@ -600,7 +600,7 @@ export default function ExtensionsPage() {
     {
       setLoading(false);
     }
-  }, [t]);
+  }, []);
   useEffect(() => {
     void loadData();
   }, [loadData]);

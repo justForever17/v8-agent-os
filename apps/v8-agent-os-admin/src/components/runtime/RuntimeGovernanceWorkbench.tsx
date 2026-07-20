@@ -217,18 +217,6 @@ function inferRunRuntime(run: RunRecord): string {
   if (typeof run.run_type === "string" && run.run_type.trim()) return run.run_type;
   return "chat";
 }
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-function asRecordArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item)) : [];
-}
-function asString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.map(item => asString(item)).filter(Boolean) : [];
-}
 function parseMemoryAuditDetails(value?: string) {
   if (!value) return {};
   try {

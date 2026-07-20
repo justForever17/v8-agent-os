@@ -27,10 +27,17 @@ const eslintConfig = defineConfig([
       ],
     },
   },
+  {
+    files: ["tests/**/*.cjs"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    ".next-codex-validation/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

@@ -591,7 +591,6 @@ export default function SafetyControlPage() {
             </div>;
   }
   const data = envelope.data;
-  const activePreset = PRESET_OPTIONS.find(item => item.key === preset) || PRESET_OPTIONS[0];
   return <AdminPageShell>
             <AdminPageHeader title="app.admin.dashboard.safety.control.page.k8f467cf5" description="app.admin.dashboard.safety.control.page.k65868ff2" actions={<div className="flex items-center gap-3">
                         <InlineSaveState saving={saving} saved={saved} />

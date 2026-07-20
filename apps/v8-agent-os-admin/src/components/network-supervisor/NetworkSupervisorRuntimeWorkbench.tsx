@@ -841,9 +841,10 @@ env:
         setLoading(true);
         setLoadError(null);
         try {
-            const [configRes, statusRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes, neighborTaskSettingsRes, neighborTasksRes] = await Promise.all([
+            const [configRes, statusRes, peersRes, tokenRes, neighborStatusRes, neighborCandidatesRes, neighborLinksRes, neighborTaskSettingsRes, neighborTasksRes] = await Promise.all([
                 fetch("/api/config-registry/network-supervisor-runtime", { cache: "no-store" }),
                 fetch("/api/network-supervisor/status", { cache: "no-store" }),
+                fetch("/api/network-supervisor/peers", { cache: "no-store" }),
                 fetch("/api/network-supervisor/openai/tokens", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/status", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/candidates", { cache: "no-store" }),
@@ -851,9 +852,10 @@ env:
                 fetch("/api/network-supervisor/neighbors/task-settings", { cache: "no-store" }),
                 fetch("/api/network-supervisor/neighbors/tasks?limit=20", { cache: "no-store" }),
             ]);
-            const [configData, statusData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData, neighborTaskSettingsData, neighborTasksData] = await Promise.all([
+            const [configData, statusData, peersData, tokenData, neighborStatusData, neighborCandidatesData, neighborLinksData, neighborTaskSettingsData, neighborTasksData] = await Promise.all([
                 configRes.json().catch(() => ({})),
                 statusRes.json().catch(() => ({})),
+                peersRes.json().catch(() => ({})),
                 tokenRes.json().catch(() => ({})),
                 neighborStatusRes.json().catch(() => ({})),
                 neighborCandidatesRes.json().catch(() => ({})),
@@ -865,6 +867,8 @@ env:
                 throw new Error(detail(configData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k8d2fb12f")));
             if (!statusRes.ok)
                 throw new Error(detail(statusData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5dcce62e")));
+            if (!peersRes.ok)
+                throw new Error(detail(peersData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.k5dcce62e")));
             if (!tokenRes.ok)
                 throw new Error(detail(tokenData, t("components.network.supervisor.NetworkSupervisorRuntimeWorkbench.openaiCompatTokensReadFailed")));
             if (!neighborStatusRes.ok)
@@ -881,6 +885,7 @@ env:
                 data?: Partial<RuntimeConfig>;
             }).data));
             setStatus(normalizeStatus(statusData));
+            setPeers(normalizePeers(peersData));
             setTokens(Array.isArray((tokenData as { items?: OpenAICompatToken[] }).items) ? (tokenData as { items: OpenAICompatToken[] }).items : []);
             setNeighborStatus((neighborStatusData && typeof neighborStatusData === "object" ? neighborStatusData : EMPTY_NEIGHBOR_STATUS) as NeighborStatus);
             setNeighborCandidates(Array.isArray((neighborCandidatesData as { items?: NeighborCandidate[] }).items) ? (neighborCandidatesData as { items: NeighborCandidate[] }).items : []);

@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 
 export function useDebugMode() {
-    const [debugMode, setDebugMode] = useState(false);
+    const [debugMode, setDebugMode] = useState(() => (
+        typeof window !== "undefined" && localStorage.getItem("v8-admin-debug-mode") === "true"
+    ));
 
     useEffect(() => {
-        setDebugMode(localStorage.getItem("v8-admin-debug-mode") === "true");
-
         const handleStorage = (e: StorageEvent) => {
             if (e.key === "v8-admin-debug-mode") {
                 setDebugMode(e.newValue === "true");

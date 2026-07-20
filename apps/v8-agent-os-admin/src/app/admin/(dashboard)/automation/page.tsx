@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Cable, Clock3 } from "lucide-react";
 
 import { useT } from "@/components/providers/LocaleProvider";
@@ -13,21 +13,13 @@ import { cn } from "@/lib/utils";
 function AutomationOverviewInner() {
     const t = useT();
     const searchParams = useSearchParams();
-    
-    // 初始化时优先读取 URL query，没有则默认为 "hooks"
+    const router = useRouter();
     const tabParam = searchParams.get("tab");
-    const initialTab = tabParam === "cron" ? "cron" : "hooks";
-    const [currentTab, setCurrentTab] = useState<"hooks" | "cron">(initialTab);
+    const currentTab: "hooks" | "cron" = tabParam === "cron" ? "cron" : "hooks";
     const [isVisible, setIsVisible] = useState(true);
-
-    // 当 URL 发生变化时同步更新 tab 状态
-    useEffect(() => {
-        if (tabParam === "cron") {
-            setCurrentTab("cron");
-        } else if (tabParam === "hooks") {
-            setCurrentTab("hooks");
-        }
-    }, [tabParam]);
+    const selectTab = (tab: "hooks" | "cron") => {
+        router.replace(`/admin/automation?tab=${tab}`, { scroll: false });
+    };
 
     // 复制与 chat-runtime 一致的滚动监听逻辑以控制浮动切换条显隐
     useEffect(() => {
@@ -101,7 +93,7 @@ function AutomationOverviewInner() {
 
                     <button
                         type="button"
-                        onClick={() => setCurrentTab("hooks")}
+                        onClick={() => selectTab("hooks")}
                         className={cn(
                             "relative z-10 px-5 py-2 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors duration-300",
                             currentTab === "hooks"
@@ -114,7 +106,7 @@ function AutomationOverviewInner() {
                     </button>
                     <button
                         type="button"
-                        onClick={() => setCurrentTab("cron")}
+                        onClick={() => selectTab("cron")}
                         className={cn(
                             "relative z-10 px-5 py-2 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors duration-300",
                             currentTab === "cron"

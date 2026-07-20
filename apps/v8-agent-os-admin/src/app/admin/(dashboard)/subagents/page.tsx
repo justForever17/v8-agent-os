@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- user-provided avatars may be data/blob URLs. */
+
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminHoverInfo } from "@/components/admin-shell/AdminHoverInfo";
 import { AvatarCropDialog } from "@/components/media/AvatarCropDialog";

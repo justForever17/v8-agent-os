@@ -36,6 +36,7 @@ def inject_surface_fixture(page: Page, include_workbench: bool) -> None:
             <p id="context-copy">Selectable context menu text</p>
             <textarea id="context-input">alpha beta</textarea>
             <a id="context-link" href="https://example.com/context">Context link</a>
+            <div id="context-status" data-v8-context-menu-ignore style="user-select:none">Runtime status</div>
             <div id="context-owned">Existing custom menu</div>
           `;
           const owned = root.querySelector('#context-owned');
@@ -153,6 +154,18 @@ def assert_common_surface(page: Page, include_workbench: bool) -> None:
 
     page.locator("#context-owned").click(button="right")
     assert page.locator("#context-owned").get_attribute("data-opened") == "true"
+    assert page.get_by_role("menu").count() == 0
+
+    status_prevented = page.evaluate(
+        """
+        () => {
+          const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 360, clientY: 130 });
+          document.querySelector('#context-status').dispatchEvent(event);
+          return event.defaultPrevented;
+        }
+        """
+    )
+    assert not status_prevented, "Status surfaces must keep the native non-menu behavior"
     assert page.get_by_role("menu").count() == 0
 
     if include_workbench:

@@ -38,12 +38,18 @@ const TEXT_SCOPE_SELECTOR = [
     "th",
     "dt",
     "dd",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
+].join(",");
+const NON_SELECTABLE_SURFACE_SELECTOR = [
+    "button",
+    "[role='button']",
+    "[role='menuitem']",
+    "[role='switch']",
+    "[role='checkbox']",
+    "[role='tab']",
+    "[role='status']",
+    "[role='progressbar']",
+    "[data-v8-context-menu-ignore]",
+    "[data-v8-context-nonselectable]",
 ].join(",");
 
 function textControlFromTarget(target: Element): TextControl | null {
@@ -82,12 +88,8 @@ function closestWorkbenchTrigger(target: Element) {
         ?.querySelector<HTMLElement>("[data-v8-context-open-workbench]") || null;
 }
 
-function hasDirectText(target: Element) {
-    return Array.from(target.childNodes).some((node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()));
-}
-
 function selectionScopeFromTarget(target: Element) {
-    return target.closest(TEXT_SCOPE_SELECTOR) || (hasDirectText(target) ? target : null);
+    return target.closest(TEXT_SCOPE_SELECTOR);
 }
 
 async function writeClipboard(value: string) {
@@ -208,6 +210,7 @@ export function AppContextMenu() {
             const target = event.target;
             const control = textControlFromTarget(target);
             const contentEditable = editableFromTarget(target);
+            if (!control && !contentEditable && target.closest(NON_SELECTABLE_SURFACE_SELECTOR)) return;
             const offsets = control ? selectionOffsets(control) : { start: null, end: null };
             const pageSelection = window.getSelection();
             const selectedText = control
@@ -219,8 +222,7 @@ export function AppContextMenu() {
             const link = target.closest<HTMLAnchorElement>("a[href]");
             const workbenchTrigger = closestWorkbenchTrigger(target);
             const selectionScope = selectionScopeFromTarget(target);
-            const blockedControl = target.closest("button, [role='button'], [role='menuitem'], [data-v8-context-menu-ignore]");
-            if (!control && !contentEditable && !selectedText && !link && !workbenchTrigger && (!selectionScope || blockedControl)) return;
+            if (!control && !contentEditable && !link && !workbenchTrigger && !selectionScope) return;
 
             event.preventDefault();
             const editable = Boolean(

@@ -57,7 +57,10 @@ export function SettingToggleCard({
     );
 
     return (
-        <div className={cn("flex items-center justify-between gap-4 rounded-xl border border-border bg-muted/35 p-4 shadow-none transition-colors hover:bg-muted/60", className)}>
+        <div
+            data-v8-context-menu-ignore
+            className={cn("flex select-none items-center justify-between gap-4 rounded-xl border border-border bg-muted/35 p-4 shadow-none transition-colors hover:bg-muted/60", className)}
+        >
             <div className="min-w-0 space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
                     {titleElement}

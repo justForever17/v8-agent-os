@@ -183,7 +183,7 @@ export function RuntimeDashboardCards() {
     }, [t, toast]);
 
     return (
-        <Card className="rounded-3xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
+        <Card data-v8-context-menu-ignore className="select-none rounded-3xl border-slate-200 bg-white/95 shadow-sm dark:border-border dark:bg-card">
             <CardHeader className="space-y-1 pb-4">
                 <CardTitle className="text-lg text-slate-900 dark:text-slate-100">{t("components.runtime.RuntimeDashboardCards.k67336fc2")}</CardTitle>
             </CardHeader>

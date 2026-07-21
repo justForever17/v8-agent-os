@@ -253,7 +253,7 @@ export default function DashboardPage() {
             ) : null}
 
             {/* Key Metrics */}
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+            <div data-v8-context-menu-ignore className="grid select-none grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
                 <Card>
                     <CardHeader>
                         <CardTitle>{t("app.admin.dashboard.page.kedf0b1c7")}</CardTitle>

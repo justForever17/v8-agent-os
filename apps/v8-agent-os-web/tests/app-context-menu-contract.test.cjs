@@ -17,6 +17,8 @@ test("web mounts the semantic desktop context menu without replacing custom menu
   assert.match(menu, /web\.contextMenu\.paste/);
   assert.match(menu, /web\.contextMenu\.selectAll/);
   assert.match(menu, /web\.contextMenu\.copyLink/);
+  assert.match(menu, /NON_SELECTABLE_SURFACE_SELECTOR/);
+  assert.doesNotMatch(menu, /hasDirectText/);
 });
 
 test("web workbench action is opt-in and limited to supported resource surfaces", () => {

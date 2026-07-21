@@ -16,6 +16,10 @@ test("admin mounts the semantic desktop context menu", () => {
   assert.match(menu, /admin\.contextMenu\.paste/);
   assert.match(menu, /admin\.contextMenu\.selectAll/);
   assert.match(menu, /admin\.contextMenu\.copyLink/);
+  assert.match(menu, /NON_SELECTABLE_SURFACE_SELECTOR/);
+  assert.doesNotMatch(menu, /hasDirectText/);
+  assert.match(read("src/components/admin-shell/SettingToggleCard.tsx"), /data-v8-context-menu-ignore/);
+  assert.match(read("src/app/admin/(dashboard)/page.tsx"), /data-v8-context-menu-ignore/);
 });
 
 test("admin does not advertise the Web-only workbench action", () => {

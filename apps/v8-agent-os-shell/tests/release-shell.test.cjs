@@ -306,6 +306,8 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(workflow, /Verify desktop runtime payload/);
   assert.match(workflow, /verify_desktop_release_runtime\.mjs/);
   assert.match(workflow, /Installed desktop smoke/);
+  assert.match(workflow, /Print desktop smoke service logs/);
+  assert.match(workflow, /\.v8-agent-os\\logs\\cli/);
   assert.match(workflow, /Upload desktop smoke diagnostics/);
   assert.match(workflow, /desktop-smoke-diagnostics/);
   assert.match(workflow, /RUNTIME_PROBE\.json/);
@@ -320,6 +322,8 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(runtimeProbe, /web\.standaloneServer/);
   assert.match(runtimeProbe, /installedSystemBrowser/);
   assert.match(runtimeProbe, /agentBrowser\.compatibleBrowser/);
+  assert.match(runtimeProbe, /engine\.importMain/);
+  assert.match(runtimeProbe, /V8OS_ENGINE_IMPORT_OK/);
   assert.match(runtimeProbe, /V8OS does not download one at runtime/);
   const requiredModulesBlock = runtimeProbe.slice(
     runtimeProbe.indexOf('const requiredModules'),
@@ -340,6 +344,13 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(installSmoke, /featurePackState/);
   assert.match(installSmoke, /failureStage/);
   assert.doesNotMatch(installSmoke, /stdout|stderr/);
+
+  const portablePython = fs.readFileSync(
+    path.join(repoRoot, 'scripts', 'desktop', 'prepare-windows-python-runtime.ps1'),
+    'utf8',
+  );
+  assert.match(portablePython, /\$updatedLines\.Insert\(1, "\.\."\)/);
+  assert.match(portablePython, /V8OS_ENGINE_IMPORT_OK/);
 
   const prepareRelease = fs.readFileSync(path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs'), 'utf8');
   assert.match(prepareRelease, /v8-os-\$\{product\}-v\$\{version\}/);

@@ -179,6 +179,20 @@ jobs:
           if (-not $shellExe) { throw "No unpacked Shell executable found in apps/v8-agent-os-shell/dist/release" }
           node apps/v8-agent-os-shell/tests/scripts/run_desktop_install_smoke.mjs --shell-exe "$($shellExe.FullName)"
 
+      - name: Print desktop smoke service logs
+        if: failure()
+        shell: pwsh
+        run: |
+          $logDir = Join-Path $env:USERPROFILE ".v8-agent-os\logs\cli"
+          if (Test-Path $logDir) {
+            Get-ChildItem $logDir -File -Filter "*.log" | ForEach-Object {
+              Write-Host "--- $($_.Name) (last 200 lines) ---"
+              Get-Content -LiteralPath $_.FullName -Tail 200
+            }
+          } else {
+            Write-Host "No CLI service logs were created at $logDir"
+          }
+
       - name: Cleanup desktop smoke processes
         if: always()
         shell: pwsh

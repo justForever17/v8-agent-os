@@ -220,7 +220,8 @@ def _replace_declaration(body: str, property_name: str, value: str) -> tuple[str
     )
     match = property_pattern.search(body)
     if match:
-        replacement = f"{match.group('prefix')}{property_name}: {value}{';' if match.group('suffix') or '\n' in body else ''}"
+        suffix = ";" if match.group("suffix") or "\n" in body else ""
+        replacement = f"{match.group('prefix')}{property_name}: {value}{suffix}"
         return body[: match.start()] + replacement + body[match.end() :], True
     multiline = "\n" in body
     if multiline:

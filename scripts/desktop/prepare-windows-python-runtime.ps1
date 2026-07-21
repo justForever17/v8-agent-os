@@ -168,9 +168,13 @@ if (-not $pthFile) {
 
 $pthLines = Get-Content -LiteralPath $pthFile.FullName
 $updatedLines = New-Object System.Collections.Generic.List[string]
+$hasEngineRoot = $false
 $hasSitePackages = $false
 $hasImportSite = $false
 foreach ($line in $pthLines) {
+  if ($line.Trim() -eq "..") {
+    $hasEngineRoot = $true
+  }
   if ($line.Trim() -eq "Lib\site-packages") {
     $hasSitePackages = $true
   }
@@ -183,6 +187,9 @@ foreach ($line in $pthLines) {
   } else {
     $updatedLines.Add($line)
   }
+}
+if (-not $hasEngineRoot) {
+  $updatedLines.Insert(1, "..")
 }
 if (-not $hasSitePackages) {
   $insertAt = [Math]::Max(0, $updatedLines.Count - 1)
@@ -211,6 +218,12 @@ if ($SkipPlaywrightBrowsers) {
 
 Invoke-Checked -FilePath $pythonExe -Arguments @("-V")
 Invoke-Checked -FilePath $pythonExe -Arguments @("-c", "import sys; print(sys.executable); assert 'hostedtoolcache' not in sys.executable.lower(); assert '.venv' not in sys.executable.lower()")
+$probeHome = Join-Path $workDir "engine-import-probe"
+New-Item -ItemType Directory -Force -Path $probeHome | Out-Null
+Invoke-Checked -FilePath $pythonExe -Arguments @("-X", "utf8", "-c", "import main; print('V8OS_ENGINE_IMPORT_OK')") -Environment @{
+  V8_AGENT_OS_HOME = $probeHome
+  V8_AGENT_OS_DISABLE_BYTECODE = "1"
+}
 
 Remove-Item -LiteralPath $getPipPath -Force -ErrorAction SilentlyContinue
 Write-Host "Portable Python runtime is ready."

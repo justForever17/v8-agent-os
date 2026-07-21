@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -166,6 +167,36 @@ print(json.dumps({"executable": sys.executable, "prefix": sys.prefix}, ensure_as
   }
 }
 
+function pythonEngineImportCheck(pythonExe, engineRoot) {
+  const probeHome = fs.mkdtempSync(path.join(os.tmpdir(), "v8os-engine-import-"));
+  try {
+    const result = spawnSync(
+      pythonExe,
+      ["-X", "utf8", "-c", "import main; print('V8OS_ENGINE_IMPORT_OK')"],
+      {
+        cwd: engineRoot,
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 120000,
+        env: {
+          ...process.env,
+          V8_AGENT_OS_HOME: probeHome,
+          V8_AGENT_OS_DISABLE_BYTECODE: "1",
+        },
+      },
+    );
+    const output = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
+    return {
+      ok: result.status === 0 && output.includes("V8OS_ENGINE_IMPORT_OK"),
+      status: result.status,
+      output: output.slice(-4000),
+      error: result.error?.message || "",
+    };
+  } finally {
+    fs.rmSync(probeHome, { recursive: true, force: true });
+  }
+}
+
 const engineRoot = path.join(repoRoot, "apps", "v8-agent-os-engine");
 const adminRoot = path.join(repoRoot, "apps", "v8-agent-os-admin");
 const webRoot = path.join(repoRoot, "apps", "v8-agent-os-web");
@@ -206,6 +237,9 @@ pushCheck(checks, "engine.noPackagedVenvPython", !exists(legacyVenvPython), {
 if (exists(pythonExe)) {
   const runtimeResult = pythonRuntimeCheck(pythonExe);
   pushCheck(checks, "engine.portablePythonExecutable", runtimeResult.ok, runtimeResult);
+
+  const engineImportResult = pythonEngineImportCheck(pythonExe, engineRoot);
+  pushCheck(checks, "engine.importMain", engineImportResult.ok, engineImportResult);
 
   const requiredModules = {
     playwright: "playwright",

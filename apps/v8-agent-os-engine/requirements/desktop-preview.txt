@@ -2,6 +2,7 @@
 
 edge_tts
 beautifulsoup4
+scrapling
 playwright
 yt-dlp
 jieba

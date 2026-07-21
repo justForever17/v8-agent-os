@@ -2,16 +2,16 @@
   "schema": 1,
   "products": {
     "phone": {
-      "version": "2026.07.22.1",
-      "channel": "preview",
-      "tag": "v8-os-phone-v2026.07.22.1",
-      "updatedAt": "2026-07-21T19:09:25.908Z"
-    },
-    "desktop": {
       "version": "2026.07.22.2",
       "channel": "preview",
-      "tag": "v8-os-desktop-v2026.07.22.2",
-      "updatedAt": "2026-07-21T19:19:54.412Z"
+      "tag": "v8-os-phone-v2026.07.22.2",
+      "updatedAt": "2026-07-21T20:14:47.479Z"
+    },
+    "desktop": {
+      "version": "2026.07.22.3",
+      "channel": "preview",
+      "tag": "v8-os-desktop-v2026.07.22.3",
+      "updatedAt": "2026-07-21T20:14:47.479Z"
     }
   }
 }

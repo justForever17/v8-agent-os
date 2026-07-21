@@ -1,7 +1,7 @@
 {
   "name": "v8-agent-os-shell",
   "private": true,
-  "version": "2026.7.22-2",
+  "version": "2026.7.22-3",
   "description": "V8 Agent OS desktop preview shell",
   "author": "V8 Agent OS",
   "repository": {

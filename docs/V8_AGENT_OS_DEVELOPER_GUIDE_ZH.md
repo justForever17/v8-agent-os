@@ -1,253 +1,322 @@
-# V8 Agent OS 开发者指南（项目级）
+# V8 Agent OS 开发者指南
 
-适用范围：
+本文面向需要跨 Engine、Admin、Web、Phone、Shell、Desktop Pet、CLI 与共享包定位问题或新增能力的贡献者。
 
-- `E:\Projects\v8chat\v8-agent-os`
-- `E:\Projects\v8chat\v8-agent-os-site`
+## 1. 当前总纲
 
-读者：
+V8OS 当前主线是：
 
-- 需要在 `engine / admin / phone / web / packages / bridge` 间定位问题的人
-- 需要新增 runtime 能力、治理能力或生态桥接能力的人
-- 需要理解当前主链和兼容边界的人
+> 桌面优先、Supervisor First、Runtime Grounded，把长期项目执行收成可治理、可恢复、可验证的产品闭环。
 
----
+优先级：
 
-## 1. 一句话总纲
+1. 当前用户意图与正确性；
+2. 权限边界和真实执行；
+3. 可恢复性与证据；
+4. Human Surface 的可理解性；
+5. 跨客户端契约一致性；
+6. 开发速度与兼容性。
 
-> V8 Agent OS 当前的核心任务不是继续堆聊天功能，而是把系统收成一台统一、可恢复、可观测、phone-first 的 runtime 机器。
+聊天 Planner 已物理删除。Memory、runtime hint、gate、插件目录提示都只能提供证据或护栏，不能建立第二个指挥层。
 
-固定价值排序：
+## 2. 仓库与产品面
 
-1. 正确性
-2. 可恢复性
-3. 可观测性
-4. runtime 一致性
-5. 兼容性
-6. 开发速度
+### 2.1 主产品仓
 
----
+`v8-agent-os` 包含：
 
-## 2. 多仓与 surface 角色
+- `apps/v8-agent-os-engine`：权威运行核心；
+- `apps/v8-agent-os-admin`：控制台与客户端 broker；
+- `apps/v8-agent-os-web`：桌面主聊天/工作区；
+- `apps/v8-agent-os-phone`：配对后的远程交互面；
+- `apps/v8-agent-os-shell`：Electron 桌面壳、托盘和本机控制；
+- `apps/v8-agent-os-desktop-pet`：受 Shell 管理的桌宠；
+- `apps/v8-agent-os-cli`：本机服务、预览、诊断和会话 CLI；
+- `packages/session-realtime`：共享实时/历史契约。
 
-### 2.1 多仓职责
+### 2.2 公开站点仓
 
-#### `v8-agent-os`
+`v8-agent-os-site` 只负责落地页、安装入口和公开叙事。它不得定义 runtime 真相，也不得把服务 bootstrap 误写成完整桌面安装器。
 
-主产品仓，包含：
+### 2.3 Surface 角色
 
-- `apps/v8-agent-os-engine`
-- `apps/v8-agent-os-admin`
-- `apps/v8-agent-os-phone`
-- `apps/v8-agent-os-web`
-- `packages/*`
+| Surface | 角色 | 不能做什么 |
+| --- | --- | --- |
+| Web | 桌面主聊天、任务、产物与工作台 | 直读 Engine DB、发明第二套 runtime state |
+| Admin | 配置、治理、诊断、API broker | 变成第二个聊天面、把 raw ID/JSON 当普通 UI |
+| Phone | 唯一远程 paired client | 冒充本机 trusted client |
+| Shell | 本机窗口、托盘、主题和桌宠控制 | 承载 runtime 业务真相 |
+| Desktop Pet | 会话状态伴随器 | 自建第二套托盘、会话或认证真相 |
+| Site | 公共产品说明 | 宣传未验证能力或内部实现细节 |
 
-#### `v8-agent-os-site`
-
-公开站、安装入口、对外叙事仓，不定义新的 runtime 真相。
-
-### 2.2 Surface 角色
-
-- `os-phone`：主远端交互面、主验收面
-- `os-web`：备用 surface，用于桌面调试、回归、排障
-- `admin`：控制与观测面
-- `engine`：唯一 authoritative producer
-
-这里要强调：
-
-> contract 可以对称，但产品角色不对称。
-
-`web` 与 `phone` 可以共用 shared contract，但当前主线体验与验收中心是 `phone`，不是“双主面”。
-
----
-
-## 3. 当前主链
+## 3. 权威链与 API 链
 
 ```mermaid
 flowchart LR
-  A["Engine\nAuthoritative Producer"] --> B["Admin\nBroker / Normalize / Proxy"]
-  B --> C["packages/session-realtime\nShared Contract"]
-  C --> D["CDC / Selectors"]
-  D --> E["os-phone"]
-  D --> F["os-web"]
+  Shell["Electron Shell"] --> Web["Web"]
+  Shell --> Admin["Admin"]
+  Phone["Paired Phone"] --> Admin
+  Web --> Admin
+  Admin --> Engine["Engine"]
+  Engine --> Contract["session-realtime"]
+  Contract --> Web
+  Contract --> Phone
 ```
 
-任何需要进入用户可见层的状态，都应该能沿这条链回溯：
+排查用户可见状态时按以下链路反查：
 
-1. `engine` 产出了什么 authoritative state
-2. `admin` 是否做了规范化、资源 broker、权限代理
-3. `packages/session-realtime` 如何解释 snapshot/realtime/history
-4. selector/CDC store 如何派生组件状态
-5. 组件最终如何显示
+1. Engine 是否产出正确 authoritative state/event；
+2. Admin 是否正确认证、代理并规范化资源引用；
+3. `session-realtime` 是否统一 snapshot/history/realtime；
+4. Web/Phone selector 是否只派生展示状态；
+5. 组件是否保留事件顺序和语义。
 
-如果一个字段只存在于页面局部 reducer，而无法回溯到 `engine -> admin -> shared contract`，它大概率不是主链字段。
+页面局部 reducer 不能成为会话运行真相。Web/Phone 也不能根据 focus、点击或本机时间重新判定远端 run 状态。
 
----
+## 4. Runtime 与支撑平面
 
-## 4. packages：共享契约层而不是边角目录
+主动执行能力：
 
-`E:\Projects\v8chat\v8-agent-os\packages` 当前最关键的是：
+- `chat` / Supervisor；
+- `engineering`；
+- `research`；
+- `creative_media`；
+- `computer_use`；
+- `rpa`；
+- delegation/subagent。
 
-- `packages/session-realtime`
+按需支撑能力：
 
-它负责：
+- `memory`；
+- `automation`；
+- `extensions`；
+- `plugin_manager`；
+- `network_supervisor`；
+- runtime/checkpoint/storage governance。
 
-1. realtime event taxonomy
-2. snapshot / history shared schema
-3. artifact / process / context reference 共享语义
-4. normalize / selector / CDC store 派生规则
+复杂执行真相位于 `runtime_episodes`、queue、lease 与 handoff。`route_context` 只保留兼容快照和紧凑 prompt 摘要。
 
-修改它时必须默认联动：
+Engineering episode 是持久执行、依赖、证明和恢复控制层，但不是 Supervisor 实施代码的强制入口。不要因为文本里出现“代码”就无条件绕行或阻止 Supervisor 直接工作。
 
-1. `apps/v8-agent-os-admin`
-2. `apps/v8-agent-os-phone`
-3. `apps/v8-agent-os-web`
+## 5. Engineering Kernel 与工作模式
 
-默认纪律：
+`core/engineering_kernel.py` 在协作角色开始工作前提供：
 
-1. 改源码
-2. `build`
-3. 如消费端锁定 tarball / packed 包，则同步 `pack`
-4. 重新安装消费端依赖
-5. 至少做一轮 `admin / phone / web` build 或 typecheck 验证
+- 当前绑定工作区；
+- workspace state digest；
+- OS、shell dialect 与命令语言；
+- actor role；
+- Supervisor `daily / engineering` 模式；
+- Engineering Task Capsule 摘要（如有）。
 
----
+因此：
 
-## 5. 当前主线 runtime family
+- 不再用 `workspace_broker` 重复发现工作区；
+- Supervisor 在两种模式下都可按需使用通用文件/命令工具；
+- Engineering 模式适合长期项目，但 delegation/runtime episode 仍是可选策略；
+- 非 Supervisor 在无 Capsule 时不得写文件或运行 shell，只能返回 blocker 或请求正确路由。
 
-当前纳入主聊天 / 主实时链的 family：
+命令 dialect 来自环境检测，不写死 Windows。工具描述、任务合同和实际执行必须使用同一 dialect。
 
-1. `chat`
-2. `automation`
-3. `extensions`
-4. `network_supervisor`
-5. `computer_use`
-6. `rpa`
+## 6. Actor、工具与委派合同
 
-当前不进入主聊天 realtime CDC 的 family：
+### 6.1 稳定角色
 
-1. `memory`
-2. `desktop_live`
+- Supervisor；
+- direct subagent；
+- grandchild；
+- runtime internal。
 
-这两类并不是不重要，而是它们属于不同 plane：
+角色由显式 `actorRole`、delegation identity 和 depth 解析；不能仅凭 runtime kind 把 Supervisor 误降为 subagent。
 
-- `memory`：底层长期记忆与维护面
-- `desktop_live`：手工驱动协作面
+### 6.2 工具边界
 
----
+| 工具/能力 | Supervisor | 直接子 Agent | 孙 Agent |
+| --- | --- | --- | --- |
+| `runtime_broker` | 是 | 否 | 否 |
+| `spec_broker` | Spec 激活时 | 否 | 否 |
+| `agent_broker` | 是 | 否 | 否 |
+| `delegation_broker` | 是 | 是 | 否 |
+| `request_peer_help` | 按 runtime access | 按 runtime access | 否 |
+| `plugin_broker` | 授权/查询 | 仅精确 grant 查询或向父级请求 | 仅精确 grant 查询 |
+| `plugin_cli` | 有效 grant 动态投影 | 有效精确 grant 动态投影 | 有效精确 grant 动态投影 |
 
-## 6. 配置与工作区真相
+手工委派必须使用注册 Agent 的精确 `targetAgentName`。`familyHint` 是匹配元数据，不是猜目标的权限。
 
-主配置真相：
+委派任务必须保留 taskBrief/delegation ID、父子 lineage、目标、状态、artifact refs、自检、验收提示、父级 acceptance 与缺失证据。父级必须显式 accept/retry/ignore；不能把子 Agent 原始回流压成一句话。
 
-- `~/.v8-agent-os/config.json`
+本地 delegation result 由图内 handoff 注入。Supervisor/父 Agent 禁止轮询状态来驱动主链；异常时发布降噪 progress 和紧凑执行轨迹。
 
-重点域：
+### 6.3 孙 Agent
 
-- `models`
-- `mcp`
-- `memory`
-- `supervisor`
-- `workspace`
-- `projects`
-- `safety`
-- `audio`
-- `runtimeRegistry`
-- `systemBase`
-- `extensions`
-- `computerUse`
+孙 Agent 是终止层：不能继续委派。默认派生 `verify` Capsule，独立读取和验证父级结果，不写临时报告文件。只有任务明确提出写入、且请求路径是父 `writeSet` 的严格真子集时，才能获得 write Capsule。
 
-独立关键文件：
+## 7. Managed Engineering Execution
 
-- `users.json`
-- `V8_AGENT_OS.md`
-- `state.db`
-- `checkpoints.db`
-- `plugin.json`
-- `computer_use.json`
-- `network_supervisor_secrets.json`
-- `network_supervisor_state.json`
+四层不能混为一个路径或权限位：
 
-迁移与排障时必须明确：
+| 层 | 负责 |
+| --- | --- |
+| Workspace | 用户项目身份、信任、scope 和可见文件 |
+| Git repository | diff、版本与 merge 真相 |
+| Managed worktree | 单个 run/task/delegation 的隔离 checkout |
+| Sandbox lease | 一次执行的进程、资源、环境、写集和证据策略 |
 
-- `~/.v8-agent-os` 是当前 canonical root
-- `~/.v8chat` 只是历史残留/迁移输入，不应继续当主链真相
+生命周期：
 
----
+1. V8OS 创建的空工作区可建立 baseline Git；现有非 Git 工作区需显式采用。
+2. dispatch 通过 alternate index 捕获 tracked/untracked 状态，不移动用户 `HEAD` 或 index。
+3. Supervisor、直接子 Agent、孙 Agent和外部 worker 的写入使用独立 worktree。
+4. 子 change set 合并到父 worktree；并列候选在 integration worktree 汇总。
+5. 只有通过验证的 Supervisor delivery 才把 patch 应用到原工作区。
+6. 已接受交付写入 `refs/v8os/delivered/...` 恢复引用并清理物理 checkout；失败/中断 worktree 保留为 recoverable。
 
-## 7. 资源、artifact 与 workspace 文件
+当前 enforcement 是 `partial`：跨平台具备进程树生命周期、资源限制、环境 allowlist、路径预检、不可变写集、Git diff 验证和 20 MiB 文件门禁，但没有硬文件系统 namespace 或硬离线网络 namespace。`offline_enforced` / `brokered` 在不支持的平台必须 fail closed。
 
-当前关于文件与资源的纪律：
+## 8. Canonical、实时与可见面
 
-1. 用户可见资源必须先资源化，再进入 surface
-2. `admin` 负责 broker / normalize / signed URL / reachable URL
-3. `phone/web` 不应从本地绝对路径猜资源真相
-4. main workspace 与 project workspace 需要走 scoped resolver
-5. `channel_delivery_stage` 不属于 main/project workspace plane
+`packages/session-realtime` 负责：
 
-主动分享工作区文件的推荐主链是：
+- event taxonomy；
+- snapshot/history/turn schema；
+- canonical node 与 card 语义；
+- live/history parity；
+- selector、normalize 与 CDC 派生。
 
-- `share_workspace_file`
+关键 invariant：
 
-它应被理解为：
+- assistant narrative 不包含 `<think>`；reasoning 只进入 reasoning node；
+- 有 structured nodes 时不再从 `content_text` 猜语义；
+- `turn-index` 是稳定导航真相；
+- governance、session coordination 和工具状态不能冒充 canonical user message；
+- 历史读取兼容修复不能改写原数据库版本和时间戳。
 
-- 会话内主动分享工具
-- 不是 artifact store 污染入口
-- 输出的是远程可消费 resource surface，而不是“把本地路径直接发给用户”
+Human Surface 只显示状态、结果、阻塞、风险、下一步和人类可读产物。raw payload、内部 ID、ledger、trace 和恢复元数据留在 Runtime Surface。
 
----
+## 9. 来源、产物和工作台
 
-## 8. 插件管理中心
+- 用户上传进入 source ledger，绑定 session/message，并在用户消息中展示。
+- Agent 写入、下载、Spec 与 Creative Media 输出进入 artifact ledger，绑定 session/run/tool lineage。
+- 工作区已有文件或手工复制文件不会被扫描后自动升级为 artifact；显式采用走治理 API。
+- 当前会话产物看板不得混入同工作区其他会话、整个目录或用户上传的重复卡片。
+- 资源预览走 scoped resolver 与 Admin broker，不向远程端发送裸绝对路径或 `file://`。
 
-插件是受治理的官方 CLI、Skill、MCP 和 UI 适配器组合，不是普通 Extensions 候选。任何插件改动都应联查 Engine `runtimes/plugin_manager`、Supervisor `plugin_broker`、Admin `/admin/plugins`、Web/Phone `@插件` 选择器，以及授权和安装事务表。
+UI Patch Workbench 是 Web 专属全尺寸工作台。一次修改必须完成 DOM 选择到源码映射、白名单属性 patch、diff、保存验证和精确 undo；不支持任意互联网页面、无法映射的生产压缩页面或“只改 inline style”的假保存。
 
-判定标准：没有有效 grant 时零插件能力；用户 `@插件` 与 Supervisor 最小 task grant 是两种受审入口；插件组件不进入普通预筛；Supervisor 不能自行安装、补配置、读取密钥或创建长期授权；子 Agent 授权不能扩大范围或向孙 Agent 传播；卸载遇到用户修改必须停止。
+## 10. 模型与 provider 合同
 
----
+模型控制面区分：
 
-## 9. 典型排查顺序
+- provider endpoint；
+- API channel/protocol；
+- provider-native model ID；
+- capability；
+- role binding。
 
-### 9.1 聊天显示不一致
+目录 JSON 是便利服务，不能覆盖用户真实配置。Anthropic/OpenAI 等 provider-native system、tool 与 reasoning 消息合同应保留；provider-hosted tools 必须经过当前绑定工具面和 schema allowlist，不能因供应商支持而自动扩权。
 
-优先顺序：
+媒体 provider/model route 与普通文本模型 ID 分离，Creative Media job 通过标准 facade 和模型 binding 解析。
 
-1. `engine` snapshot / runtime events
-2. `admin` normalize / proxy / resource broker
-3. `packages/session-realtime`
-4. `phone/web` CDC selector
-5. 组件自身渲染
+## 11. Plugin Manager 与 Extensions
 
-### 9.2 配置没生效
+普通 Extensions 与 Plugin Manager 分层：
 
-优先顺序：
+- Extensions 负责普通 Skill/MCP 候选、审查和预筛；
+- Plugin Manager 负责签名 catalog、组件策略、上机发现、持久安装事务、配置需求、凭据引用、授权和执行投影。
 
-1. `storage.py`
-2. `config_registry_routes.py`
-3. 本机 `~/.v8-agent-os/config.json`
-4. 独立配置文件
-5. 页面默认值与旧文案
+当前关键合同：
 
-### 9.3 插件问题
+1. catalog 带 key ID、revision/sequence、有效期、撤销列表和 digest；包版本/Skill commit 固定。
+2. 上机发现后台、只读、非阻塞；识别外部 CLI 和官方 Skill，但普通用户 MCP 只报告、不接管。
+3. 冲突 Skill 不覆盖；安装计划按平台选择最小组件组合并保留事务 journal、digest、幂等键和 receipt。
+4. MCP 初始化和插件发现不能阻塞 Engine 启动。
+5. Supervisor 只收到已安装插件的紧凑 catalog hint；它不加载 Skill body、MCP schema 或 CLI action。
+6. `plugin_cli` 从默认工具面移除，只在 active grant 投影受审 profile 后加入。
+7. `@插件` 与 Supervisor 最小 task grant 都是受治理入口；安装、补配置、secret 读取和持续 session grant 仍由用户控制。
+8. 直接子 Agent 只能获得明确组件子集；一层孙 Agent可获得更小子集，再往下拒绝。
+9. 每次调用重新校验 owner、session/run、delegation identity、manifest digest、组件和健康状态。
+10. CLI 只接受 `actionId + typed parameters`，禁止任意 argv/shell 字符串。
 
-优先检查 manifest 与官方来源、安装任务回滚记录、组件哈希与所有权、登录/Doctor 状态、当前授权来源与范围，最后检查 Web/Phone 的用户选择、Supervisor `plugin_broker` 决策和能力投影。
+## 12. Checkpoint 与存储治理
 
----
+Checkpoint：
 
-## 10. 当前固定结论
+- strict msgpack；
+- secure credential store 中的加密密钥；
+- 历史明文行原子加密/压缩；
+- plan/fork/replay 需审批；
+- 跨用户、跨权限 state patch、源状态漂移和 plugin grant 继承拒绝或失效。
 
-1. `os-phone` 是主远端交互与主验收面。
-2. `os-web` 保留，但定位为备用 surface。
-3. `admin` 是唯一对远端 surface 暴露的 broker。
-4. `engine` 是唯一 authoritative runtime producer。
-5. `packages/session-realtime` 是 `admin / phone / web` 的共享契约层。
-6. 兼容壳只保护外部行为，不应继续充当内部真相。
+Storage Retention：
 
----
+- 自动压力清理只处理可丢弃 storage class；
+- 用户转录、未接受 worktree、checkpoint 与交付证据受保护；
+- worktree 默认放在同卷隐藏目录，自定义根也必须同卷；
+- accepted worktree 及时清理，失败/中断 worktree 保留恢复语义。
 
-## 11. 推荐继续阅读
+有副作用的 prune/compact 先 dry-run，再执行，并记录可重放证据。
 
-1. [V8 Agent OS API 参考](./V8_AGENT_OS_API_REFERENCE_ZH.md)
-2. [V8 Agent OS 配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
-3. `docs/Govern/*`
-4. `docs/phone/*`
-5. `docs/computer/*`
+## 13. 配置与启动
+
+主配置真相是 `~/.v8-agent-os/config.json`；MCP、用户、Supervisor Markdown、state/checkpoint DB、Computer Use 和 Network Supervisor secret/state 有独立真相面。详细映射见[配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md)。
+
+本机命令：
+
+- `v8os start`：Engine + Admin + Web 服务，不打开 Shell；
+- `v8os preview`：构建缺失产物并启动完整桌面预览；
+- `v8os preview --rebuild`：停止当前源码树拥有的 Shell/Admin/Web/Engine 后重建并重启；
+- 裸 bootstrap：依赖准备与服务启动，不是桌面安装包。
+
+## 14. 排查顺序
+
+### 14.1 Agent 行为异常
+
+依次检查：
+
+1. 实际 actor role/delegation depth；
+2. 最终 system prompt 和 Engineering Kernel；
+3. 当前工具列表与每个工具描述；
+4. Capsule、plugin grant、runtime access；
+5. Spec/Memory/gate 动态注入；
+6. tool output 是否把 runtime 内部噪音投给 Agent；
+7. handoff 是否无损、是否被父级明确验收。
+
+不要先靠加一句 prompt 或固定失败文案掩盖权限链错误。
+
+### 14.2 页面状态不一致
+
+依次检查 Engine snapshot/event、Admin proxy、`session-realtime`、客户端 selector、组件。对比 live 与 history，而不是只修其中一条路径。
+
+### 14.3 插件问题
+
+依次检查签名 catalog、component policy、machine discovery、install journal/receipt、configuration requirement、credential ref、readiness、grant identity 和动态工具投影。
+
+### 14.4 工程写入问题
+
+依次检查 workspace trust、Git adoption、Capsule writeSet、worktree/lease、command preflight、change set、parent/integration merge 和 Supervisor delivery。
+
+## 15. 测试与交付门禁
+
+- Engine 测试地图：`apps/v8-agent-os-engine/tests/README.md`。
+- 改共享契约：构建/测试 `packages/session-realtime`，必要时重新 pack tgz，并验证 Admin/Web/Phone。
+- 改桌面壳、生产 Next、登录态、托盘、桌宠或 Engine 启动：必须额外跑 `v8os preview --rebuild`。
+- 改写入/安装/清理/恢复：必须有 dry-run、故障注入、重启恢复和 rollback 证据。
+- 真实 provider、联网调研、媒体生成和高成本 eval 只在显式 `--live` harness 中运行。
+- 重大改动比较基线；性能退化超过 10% 或错误率增加超过 0.1% 不交付。
+
+提交前至少执行：相关定向测试、`git diff --check`、工作树范围检查和可逆回滚检查。脏工作树只提交本轮文件，不吞并其他线路改动。
+
+## 16. 文档与公开叙事
+
+- README/快速开始写用户能执行的路径，不写内部交付报告。
+- API/开发者指南明确权威层、权限和失败边界，不把 mock 当真实验收。
+- Site 只宣传已提交且有代码/测试事实的能力。
+- Windows unsigned preview、Phone APK、TUI 未实现、轻量版长期规划等状态必须如实区分。
+- 服务 bootstrap 与 Electron Desktop Preview 是两种入口，任何公开页面都不能混写。
+
+继续阅读：
+
+- [API 参考](./V8_AGENT_OS_API_REFERENCE_ZH.md)
+- [配置指南](./V8_AGENT_OS_CONFIG_GUIDE_ZH.md)
+- [Managed Engineering Execution](../apps/v8-agent-os-engine/core/engineering_sandbox/README.md)
+- [Engine 测试地图](../apps/v8-agent-os-engine/tests/README.md)

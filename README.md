@@ -18,7 +18,7 @@
 
 V8 Agent OS is a local-first Agent OS for people who want AI to work inside real projects, not just answer one-off prompts. It brings chat, workspaces, model management, long-term memory, task orchestration, mobile access, artifacts, and a desktop companion into one governable product.
 
-At the center is the Supervisor: a user-facing coordinator that understands your goal, chooses whether to act directly or use a specialized mode, and checks the final result before handing it back to you.
+At the center is the Supervisor: a user-facing coordinator that can handle a short request in Daily mode, work directly on a longer project in Engineering mode, or delegate a bounded task to a specialist, then check the result before handing it back to you.
 
 ## Who It Is For
 
@@ -39,19 +39,25 @@ Phone is the remote interaction surface. It is used to follow active sessions, a
 
 ### Supervisor
 
-The Supervisor coordinates the work. It can handle simple tasks directly or route complex work into specialized modes such as coding, research, creative media, memory, or subagent collaboration.
+The Supervisor coordinates the work. Tools are projected from the current role, workspace, task contract, and grants instead of being exposed as one undifferentiated catalog.
 
 ### Specialized Modes
 
-- Coding Mode: project creation, code changes, tests, and delivery proof.
+- Coding Mode: the Supervisor can work directly on a long-running project, using Engineering episodes or subagents when isolation, parallel work, recovery, or independent proof is useful.
 - Research: source-backed search, evidence sorting, and research packs.
 - Creative Media: images, video, audio, music, and 3D assets.
 - Memory: preferences, knowledge, and long-running project context.
 - Desktop Companion: follows the active session, plays actions and speech, and can send voice or snapshots as attachments.
 
+### Governed Project Execution
+
+The Engineering Kernel provides the bound workspace, operating system, and command environment at the start of a task. Delegated writes use typed task contracts and managed worktrees. V8OS does not silently move your branch or commit on your behalf; only validated delivery applies a candidate patch back to the original workspace. The current cross-platform sandbox provides partial enforcement, not a kernel filesystem jail or a guaranteed offline network namespace.
+
+User uploads remain session sources. Files written or downloaded by governed Agent, Spec, or Creative Media tools become session artifacts. Existing workspace files do not become artifacts merely because the system discovers them.
+
 ### Plugin Manager
 
-Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signed catalog while keeping credentials behind opaque references. `@plugin` is a strong user hint, not the only entry: when a task clearly benefits from an installed, configured, healthy plugin, the Supervisor may create the smallest task-scoped grant and pass only a required component subset to a direct subagent. Installation, configuration, secret access, and lasting session grants remain user-controlled. The curated catalog includes official components such as GitHub, Figma, and the AMap CLI.
+Plugin Manager installs reviewed CLI, MCP, Skill, and UI components from a signed catalog while keeping credentials behind opaque references. `@plugin` is a strong user hint, not the only entry: when a task clearly benefits from an installed, configured, healthy plugin, the Supervisor may create the smallest task-scoped grant. A direct subagent may pass an explicitly smaller component subset to one grandchild layer, but no farther. Machine discovery is read-only and does not claim ordinary MCP configuration; the CLI executor appears only when an active grant projects a reviewed command profile. Installation, configuration, secret access, and lasting session grants remain user-controlled. The curated catalog includes official components such as GitHub, Figma, and the AMap CLI.
 
 ## Quick Start
 
@@ -72,7 +78,7 @@ For developers and early testers:
 .\v8os.cmd preview --rebuild
 ```
 
-This builds and starts the local desktop preview shell. You should see a V8OS desktop window rather than a set of development server pages.
+This rebuilds Admin, Web, and the native sandbox helper, stops preview processes owned by the current source tree, and then starts Engine, Admin, Web, and the desktop Shell. You should see a V8OS desktop window rather than a set of development server pages.
 
 ### Connect Phone
 
@@ -91,7 +97,7 @@ Phone is paired through the desktop control center. Once paired, it keeps a loca
 
 V8OS is local-first by default. Desktop Web, Admin, Shell, and the companion are trusted local clients. Phone is the remote client and uses pairing. Multi-device collaboration, third-party plugin authorization, and network connections are advanced surfaces and are kept separate from ordinary local use.
 
-User-facing surfaces should stay clean: status, results, risks, next steps, and artifacts. Internal scheduling data, raw model responses, audit records, and recovery metadata stay in diagnostics.
+User-facing surfaces should stay clean: status, results, risks, next steps, and artifacts. Internal scheduling data, raw model responses, audit records, and recovery metadata stay in diagnostics. Provider-native system, tool, and reasoning message contracts are preserved where supported, but provider-hosted tools cannot escape the session's bound tool and grant surface.
 
 ## Documentation
 

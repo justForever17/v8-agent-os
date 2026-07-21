@@ -4836,5 +4836,11 @@
   "app.admin.dashboard.projects.workspaces.page.engineering.partialHint": "The lightweight sandbox currently governs process trees, resources, environments, and change sets. Unsupported hard platform boundaries are reported as partial isolation, never presented as complete isolation.",
   "app.admin.dashboard.projects.workspaces.page.engineering.error.title": "Managed engineering space unavailable",
   "app.admin.dashboard.projects.workspaces.page.engineering.error.load": "Git, worktree, and sandbox status could not be loaded.",
-  "app.admin.dashboard.projects.workspaces.page.engineering.error.adopt": "The Git baseline for this project could not be initialized or adopted."
+  "app.admin.dashboard.projects.workspaces.page.engineering.error.adopt": "The Git baseline for this project could not be initialized or adopted.",
+  "admin.contextMenu.label": "Text actions",
+  "admin.contextMenu.cut": "Cut",
+  "admin.contextMenu.copy": "Copy",
+  "admin.contextMenu.paste": "Paste",
+  "admin.contextMenu.selectAll": "Select all",
+  "admin.contextMenu.copyLink": "Copy link"
 }

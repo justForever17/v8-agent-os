@@ -5,6 +5,7 @@ import "./globals.css";
 import "@v8/product-ui/styles.css";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
+import { AppContextMenu } from "@/components/ui/AppContextMenu";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
 import { warmDesktopLiveBridge } from "@/lib/server/desktop-live-bridge";
 import { resolveInitialProductTheme } from "@/lib/server/product-theme";
@@ -54,6 +55,7 @@ export default async function RootLayout({
             storageKey={PRODUCT_THEME_STORAGE_KEY}
             disableTransitionOnChange
           >
+            <AppContextMenu />
             <div className="min-h-screen flex flex-col">
               <main className="flex-1">{children}</main>
             </div>

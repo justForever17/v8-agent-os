@@ -34,7 +34,7 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
                             : <Link2 className="h-5 w-5" />;
 
     return (
-        <div className={cn("group my-1.5 flex min-h-11 items-center gap-2 rounded-[5px] border border-border/65 bg-background/70 px-2.5 py-1.5 transition-colors hover:border-primary/30", className)}>
+        <div data-v8-context-resource className={cn("group my-1.5 flex min-h-11 items-center gap-2 rounded-[5px] border border-border/65 bg-background/70 px-2.5 py-1.5 transition-colors hover:border-primary/30", className)}>
             <div className={cn(
                 "flex h-7 w-7 shrink-0 items-center justify-center rounded-[4px] border",
                 type === 'code' ? "bg-blue-100/50 text-blue-600 border-blue-200" :
@@ -56,6 +56,7 @@ export function ArtifactCard({ title, type, subtitle, className, onClick, onDown
             <div className="flex items-center gap-2">
                 {onClick && (
                     <Button
+                        data-v8-context-open-workbench
                         variant="outline"
                         size="sm"
                         className="hidden h-7 rounded-[4px] gap-1.5 px-2 text-[10px] text-muted-foreground hover:text-foreground sm:flex"

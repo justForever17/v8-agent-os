@@ -4836,5 +4836,11 @@
   "app.admin.dashboard.projects.workspaces.page.engineering.partialHint": "当前轻量沙箱已执行进程树、资源、环境和变更集治理；平台不支持的硬边界会明确标记为部分隔离，不会伪装为完全隔离。",
   "app.admin.dashboard.projects.workspaces.page.engineering.error.title": "受控工程空间不可用",
   "app.admin.dashboard.projects.workspaces.page.engineering.error.load": "无法读取 Git、工作树与沙箱状态。",
-  "app.admin.dashboard.projects.workspaces.page.engineering.error.adopt": "无法初始化或接管该项目的 Git 基线。"
+  "app.admin.dashboard.projects.workspaces.page.engineering.error.adopt": "无法初始化或接管该项目的 Git 基线。",
+  "admin.contextMenu.label": "文本操作",
+  "admin.contextMenu.cut": "剪切",
+  "admin.contextMenu.copy": "复制",
+  "admin.contextMenu.paste": "粘贴",
+  "admin.contextMenu.selectAll": "全选",
+  "admin.contextMenu.copyLink": "复制链接"
 }

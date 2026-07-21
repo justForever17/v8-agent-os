@@ -100,6 +100,7 @@ function SubagentReturnRow({ item, onOpen, nested = false }: { item: SubagentRet
     return (
         <div className={`${nested ? "ml-5 border-l border-border/45" : ""} border-b border-border/30 last:border-b-0`}>
             <button
+                data-v8-context-open-workbench
                 type="button"
                 onClick={() => onOpen(item)}
                 className="group flex min-h-11 w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
@@ -254,6 +255,7 @@ export function WorkspaceWorkbenchPanel({
                 {outputs.map((output) => (
                     <button
                         key={output.id}
+                        data-v8-context-open-workbench
                         type="button"
                         onClick={() => openOutput(output)}
                         className="group flex min-h-10 w-full items-center gap-2 border-b border-border/30 px-3 py-1.5 text-left text-[11px] last:border-b-0 hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"

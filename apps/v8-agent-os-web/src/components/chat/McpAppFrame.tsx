@@ -197,6 +197,7 @@ export const McpAppFrame = memo(function McpAppFrame({ mcpApp }: { mcpApp: McpAp
     const document = useMemo(() => createUiAppDocument(mcpApp), [mcpApp]);
     return (
         <button
+            data-v8-context-open-workbench
             type="button"
             onClick={() => openDocument(document, { activate: true, mode: "split" })}
             className="mt-1 flex h-9 w-full max-w-md items-center gap-2 rounded-[5px] border border-border/65 bg-background/70 px-2.5 text-left text-xs transition-colors hover:border-primary/35 hover:bg-muted/35 focus-visible:ring-2 focus-visible:ring-primary"

@@ -722,5 +722,12 @@
   "web.avatarCrop.zoomOut": "缩小图片",
   "web.avatarCrop.zoomIn": "放大图片",
   "web.avatarCrop.cancel": "取消",
-  "web.avatarCrop.confirm": "使用此裁剪"
+  "web.avatarCrop.confirm": "使用此裁剪",
+  "web.contextMenu.label": "文本操作",
+  "web.contextMenu.cut": "剪切",
+  "web.contextMenu.copy": "复制",
+  "web.contextMenu.paste": "粘贴",
+  "web.contextMenu.selectAll": "全选",
+  "web.contextMenu.copyLink": "复制链接",
+  "web.contextMenu.openInWorkbench": "在工作台查看"
 }

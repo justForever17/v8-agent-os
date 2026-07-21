@@ -722,5 +722,12 @@
   "web.avatarCrop.zoomOut": "Zoom out",
   "web.avatarCrop.zoomIn": "Zoom in",
   "web.avatarCrop.cancel": "Cancel",
-  "web.avatarCrop.confirm": "Use this crop"
+  "web.avatarCrop.confirm": "Use this crop",
+  "web.contextMenu.label": "Text actions",
+  "web.contextMenu.cut": "Cut",
+  "web.contextMenu.copy": "Copy",
+  "web.contextMenu.paste": "Paste",
+  "web.contextMenu.selectAll": "Select all",
+  "web.contextMenu.copyLink": "Copy link",
+  "web.contextMenu.openInWorkbench": "View in workbench"
 }

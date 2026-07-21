@@ -8,6 +8,7 @@ import { SessionProvider } from "@/components/providers/SessionProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { LocaleProvider } from "@/components/providers/LocaleProvider";
 import { PersonalizationProvider } from "@/components/providers/PersonalizationProvider";
+import { AppContextMenu } from "@/components/ui/AppContextMenu";
 import { LOCALE_COOKIE_NAME, resolveInitialLocale } from "@/lib/locale";
 import { buildPersonalizationBootstrapScript } from "@/lib/personalization";
 import { resolveInitialProductTheme } from "@/lib/server/product-theme";
@@ -63,6 +64,7 @@ export default async function RootLayout({
                             disableTransitionOnChange
                         >
                             <PersonalizationProvider>
+                                <AppContextMenu />
                                 <div className="relative z-0 flex h-dvh min-h-dvh flex-col overflow-hidden">
                                     <Topbar />
                                     <main className="flex min-h-0 flex-1 overflow-hidden">

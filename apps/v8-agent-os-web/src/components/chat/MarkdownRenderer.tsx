@@ -207,7 +207,7 @@ function DocumentLinkCard({
     });
     const icon = type === "model3d" ? <Box className="h-5 w-5" /> : <FileText className="h-5 w-5" />;
     return (
-        <div className="my-2 flex w-full max-w-sm items-center gap-3 rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
+        <div data-v8-context-resource className="my-2 flex w-full max-w-sm items-center gap-3 rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
             <div className={cn(
                 "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border",
                 type === "model3d"
@@ -226,6 +226,7 @@ function DocumentLinkCard({
             </div>
             <div className="flex shrink-0 items-center gap-1">
                 <button
+                    data-v8-context-open-workbench
                     type="button"
                     onClick={() => openDocument(document, { activate: true, mode: "split" })}
                     className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
@@ -409,6 +410,7 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "", surface = "me
             if (workspacePath) {
                 return (
                     <button
+                        data-v8-context-open-workbench
                         type="button"
                         onClick={() => void resolveAndOpenWorkspaceFile(workspacePath, { sessionId: sessionId || undefined }).catch((error) => console.warn("[Workbench] Failed to open workspace file", error))}
                         className="font-mono text-primary underline decoration-primary/35 underline-offset-2 hover:decoration-primary focus-visible:ring-2 focus-visible:ring-primary"

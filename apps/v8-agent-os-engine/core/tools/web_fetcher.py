@@ -26,6 +26,7 @@ from core.agent_browser_profile import (
     agent_browser_profile_allowed_for_url,
     agent_browser_profile_summary,
     configured_agent_browser_profile_dir,
+    debug_port_owned_by_profile,
 )
 from core.source_provider_registry import get_source_provider_capabilities, get_source_router_defaults
 from core.system_base import get_web_fetch_config
@@ -1761,6 +1762,7 @@ class WebPagePayload:
     agent_browser_profile_used: bool = False
     agent_browser_profile_host: str = ""
     agent_browser_profile_dir: str = ""
+    agent_browser_kind: str = ""
 
 
 def _enforce_safety_decision(decision, *, tool_call_id: str, question: str) -> tuple[bool, str | None]:
@@ -1873,6 +1875,10 @@ def _classify_web_fetch_failure(error: str, *, blocked: bool = False) -> str:
         return "tool_context_unavailable"
     if "agent_browser_profile_not_allowed" in lowered:
         return "agent_browser_profile_not_allowed"
+    if "agent_browser_profile_mismatch" in lowered:
+        return "agent_browser_profile_mismatch"
+    if "agent_browser_not_open" in lowered or "agent_browser_cdp_unavailable" in lowered:
+        return "agent_browser_not_open"
     if "needs_login" in lowered or "login_required" in lowered or "auth_required" in lowered:
         return "needs_login"
     return "web_fetch_failed"
@@ -2222,6 +2228,47 @@ def _auto_agent_browser_profile_allowed(url: str, mode: str) -> tuple[bool, str 
     return _agent_browser_profile_allowed(url)
 
 
+def _active_agent_browser_cdp_context() -> dict[str, str]:
+    runtime_config = storage.get_computer_use_config() or {}
+    browser_lane = dict(runtime_config.get("browserLane") or {})
+    proxy_port = int(browser_lane.get("proxyPort") or 3456)
+    target_port = max(9222, proxy_port + 100)
+    endpoint = f"http://127.0.0.1:{target_port}"
+    try:
+        response = requests.get(f"{endpoint}/json/version", timeout=1.0)
+        response.raise_for_status()
+        payload = dict(response.json() or {})
+    except Exception as exc:
+        raise RuntimeError(
+            "agent_browser_not_open: open Agent Browser in Admin and finish login before using its session."
+        ) from exc
+    product = " ".join(
+        [
+            str(payload.get("Browser") or ""),
+            str(payload.get("User-Agent") or payload.get("userAgent") or ""),
+        ]
+    ).lower()
+    if "edg/" in product or "edge/" in product:
+        browser_kind = "edge"
+    elif "chromium/" in product:
+        browser_kind = "chromium"
+    else:
+        browser_kind = "chrome"
+    websocket_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
+    if not websocket_url.startswith(("ws://", "wss://")):
+        raise RuntimeError("agent_browser_cdp_unavailable: browser did not publish a WebSocket debugger URL.")
+    profile_dir = configured_agent_browser_profile_dir(browser_kind)
+    if not debug_port_owned_by_profile(port=target_port, profile_dir=profile_dir):
+        raise RuntimeError(
+            "agent_browser_profile_mismatch: the CDP endpoint is not owned by the V8OS Agent Browser profile."
+        )
+    return {
+        "cdpUrl": websocket_url,
+        "browserKind": browser_kind,
+        "profileDir": str(profile_dir),
+    }
+
+
 def _provider_prefers_agent_browser_profile(provider: str) -> bool:
     return str(provider or "").strip().lower() in {"metaso", "baidu"}
 
@@ -2241,7 +2288,7 @@ def _agent_browser_profile_search_skip(provider: str, search_url: str) -> dict[s
         "reason": "agent_browser_profile_not_enabled_or_domain_not_allowlisted",
         "matchedHost": matched_host,
         "recommendedNextAction": (
-            "在 Admin / Desktop Automation 打开 Agent 专用浏览器登录该站点，"
+            "在 Admin / 深度调研打开 Agent 浏览器登录该站点，"
             "并启用 systemBase.webFetch.useAgentBrowserProfile 与域名 allowlist；否则使用其他公开搜索源。"
         ),
     }
@@ -2417,7 +2464,6 @@ def _build_fetch_options(
     referer_mode: WebRefererMode,
     referer_url: str,
     timeout_seconds: float,
-    agent_browser_profile_dir: str = "",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     extra_headers: dict[str, str] = {}
     static_headers: dict[str, str] = {}
@@ -2441,8 +2487,6 @@ def _build_fetch_options(
         "headless": headless,
         "timeout": max(1000, int(timeout_seconds * 1000)),
     }
-    if agent_browser_profile_dir:
-        browser["user_data_dir"] = agent_browser_profile_dir
     static = {
         **shared,
         "headers": static_headers or None,
@@ -2525,7 +2569,7 @@ def _fetch_with_scrapling_internal(
         fetcher, error = _try_import_dynamic_fetcher()
         if fetcher is None:
             raise RuntimeError(error or "动态 Fetcher 不可用。")
-        response = fetcher.fetch(url, **browser_fetch_options)
+        response = fetcher.fetch(url, **_effective_browser_fetch_options())
         return _build_payload(
             response=response,
             requested_url=url,
@@ -2542,13 +2586,14 @@ def _fetch_with_scrapling_internal(
             agent_browser_profile_used=bool(agent_browser_profile_dir),
             agent_browser_profile_host=agent_browser_profile_host,
             agent_browser_profile_dir=agent_browser_profile_dir,
+            agent_browser_kind=agent_browser_kind,
         )
 
     def _fetch_stealth() -> WebPagePayload:
         fetcher, error = _try_import_stealth_fetcher()
         if fetcher is None:
             raise RuntimeError(error or "Stealth Fetcher 不可用。")
-        response = fetcher.fetch(url, **browser_fetch_options)
+        response = fetcher.fetch(url, **_effective_browser_fetch_options())
         return _build_payload(
             response=response,
             requested_url=url,
@@ -2565,6 +2610,7 @@ def _fetch_with_scrapling_internal(
             agent_browser_profile_used=bool(agent_browser_profile_dir),
             agent_browser_profile_host=agent_browser_profile_host,
             agent_browser_profile_dir=agent_browser_profile_dir,
+            agent_browser_kind=agent_browser_kind,
         )
 
     def _fetch_reader() -> WebPagePayload:
@@ -2604,6 +2650,7 @@ def _fetch_with_scrapling_internal(
     per_mode_timeout = max(5.0, total_timeout / max(len(plans), 1))
     agent_browser_profile_dir = ""
     agent_browser_profile_host = ""
+    agent_browser_kind = ""
     if effective_agent_browser_profile:
         allowed, matched_host = _agent_browser_profile_allowed(url)
         if not allowed:
@@ -2612,15 +2659,24 @@ def _fetch_with_scrapling_internal(
                 " useAgentBrowserProfile=true requires systemBase.webFetch.useAgentBrowserProfile=true"
                 " and a matching agentBrowserProfileAllowlist domain."
             )
-        agent_browser_profile_dir = str(configured_agent_browser_profile_dir("chrome"))
         agent_browser_profile_host = matched_host or auto_matched_host or ""
     static_fetch_options, browser_fetch_options = _build_fetch_options(
         headless=headless,
         referer_mode=referer_mode,
         referer_url=referer_url,
         timeout_seconds=per_mode_timeout,
-        agent_browser_profile_dir=agent_browser_profile_dir,
     )
+
+    def _effective_browser_fetch_options() -> dict[str, Any]:
+        nonlocal agent_browser_profile_dir, agent_browser_kind
+        options = dict(browser_fetch_options)
+        if effective_agent_browser_profile:
+            context = _active_agent_browser_cdp_context()
+            agent_browser_profile_dir = context["profileDir"]
+            agent_browser_kind = context["browserKind"]
+            options["cdp_url"] = context["cdpUrl"]
+            options.pop("user_data_dir", None)
+        return options
 
     auto_degraded_pages: list[tuple[str, WebPagePayload, str]] = []
 
@@ -2937,6 +2993,7 @@ def _build_payload(
     agent_browser_profile_used: bool = False,
     agent_browser_profile_host: str = "",
     agent_browser_profile_dir: str = "",
+    agent_browser_kind: str = "",
 ) -> WebPagePayload:
     html = _safe_text(getattr(response, "html_content", "")) or _safe_text(getattr(response, "text", ""))
     final_url = _safe_text(getattr(response, "url", "")) or requested_url
@@ -2977,6 +3034,7 @@ def _build_payload(
         agent_browser_profile_used=agent_browser_profile_used,
         agent_browser_profile_host=agent_browser_profile_host,
         agent_browser_profile_dir=agent_browser_profile_dir,
+        agent_browser_kind=agent_browser_kind,
     )
 
 
@@ -3848,7 +3906,7 @@ def _render_page_summary(page: WebPagePayload) -> dict[str, Any]:
             {
                 "used": True,
                 "matchedHost": page.agent_browser_profile_host,
-                "profile": agent_browser_profile_summary("chrome", include_security_note=False),
+                "profile": agent_browser_profile_summary(page.agent_browser_kind or "auto", include_security_note=False),
             }
             if page.agent_browser_profile_used
             else {"used": False}
@@ -3891,8 +3949,12 @@ def _render_error_payload(
             "recommendedNextAction": (
                 "该 URL 当前不可达；不要等待 watchdog。请换可访问来源、改用 research_broker 多源调研，或把失败源标记为 unavailable。"
                 if failure_class == "network_timeout"
-                else "目标可能需要登录。请在 Admin / Desktop Automation 打开 Agent 专用浏览器完成登录；Admin 开启 Agent profile 且目标域名命中 allowlist 后，web/research 的浏览器读取路径会自动复用该登录态。"
+                else "目标可能需要登录。请在 Admin / 深度调研打开 Agent 浏览器完成登录；Admin 开启 Agent profile 且目标域名命中 allowlist 后，web/research 的浏览器读取路径会自动复用该登录态。"
                 if failure_class == "needs_login"
+                else "Agent 浏览器尚未打开。请在 Admin / 深度调研打开 Agent 浏览器并完成登录后重试。"
+                if failure_class == "agent_browser_not_open"
+                else "Agent 浏览器调试端口被其他浏览器占用。请关闭该调试浏览器或更换端口后重新打开 Agent 浏览器；V8OS 不会读取用户日常 profile。"
+                if failure_class == "agent_browser_profile_mismatch"
                 else "Agent 浏览器 profile 未启用或目标域名未命中 allowlist；请在 Admin / System Base 配置 useAgentBrowserProfile 与 allowlist，或改用无登录公开来源。"
                 if failure_class == "agent_browser_profile_not_allowed"
                 else "根据 failureClass 决定换源、缩小请求或停止该工具链。"
@@ -3923,13 +3985,13 @@ def _render_needs_login_payload(*, page: WebPagePayload, use_agent_browser_profi
                 {
                     "used": True,
                     "matchedHost": page.agent_browser_profile_host,
-                    "profile": agent_browser_profile_summary("chrome", include_security_note=False),
+                    "profile": agent_browser_profile_summary(page.agent_browser_kind or "auto", include_security_note=False),
                 }
                 if page.agent_browser_profile_used
                 else {"used": False}
             ),
             "retryable": True,
-            "recommendedNextAction": "请在 Admin / Desktop Automation 点击“打开 Agent 专用浏览器”并手动登录目标网站；登录后确认 systemBase.webFetch.useAgentBrowserProfile 已开启且目标域名在 agentBrowserProfileAllowlist 中，web/research 会在浏览器读取路径自动复用该登录态。",
+            "recommendedNextAction": "请在 Admin / 深度调研点击“打开 Agent 浏览器”并手动登录目标网站；登录后确认 systemBase.webFetch.useAgentBrowserProfile 已开启且目标域名在 agentBrowserProfileAllowlist 中，web/research 会通过同一 CDP 会话复用登录态。",
             "textPreview": text_preview,
         },
         ensure_ascii=False,
@@ -5541,7 +5603,7 @@ def web_search(
                     {
                         "used": True,
                         "matchedHost": payload.agent_browser_profile_host,
-                        "profile": agent_browser_profile_summary("chrome", include_security_note=False),
+                        "profile": agent_browser_profile_summary(payload.agent_browser_kind or "auto", include_security_note=False),
                     }
                     if payload.agent_browser_profile_used
                     else {"used": False}

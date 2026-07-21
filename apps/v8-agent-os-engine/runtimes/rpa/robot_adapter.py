@@ -9,7 +9,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.agent_browser_profile import configured_agent_browser_profile_dir, normalize_agent_browser_kind
+from core.agent_browser_profile import (
+    configured_agent_browser_profile_dir,
+    discover_system_agent_browser,
+    normalize_agent_browser_kind,
+)
 from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
 from runtimes.rpa.keyword_contract import bridge_keyword_issues, is_supported_bridge_use, keyword_name_for_use
 from runtimes.rpa.store import RPAScriptStore, rpa_script_store
@@ -206,7 +210,9 @@ class RobotFrameworkAdapter:
     def _browser_open_arguments(self, *, app_id: str, step: Dict[str, Any]) -> List[str]:
         params = dict(step.get("params") or {})
         browser_hint = params.get("browserKind") or params.get("browser_kind") or app_id
-        browser_kind = normalize_agent_browser_kind(str(browser_hint or "chrome"))
+        browser_kind = normalize_agent_browser_kind(str(browser_hint or "auto"))
+        if browser_kind == "auto":
+            browser_kind = str(discover_system_agent_browser().get("browserKind") or "chrome")
         browser_selection = "Edge" if browser_kind == "edge" else "Chrome"
         profile_dir = configured_agent_browser_profile_dir(browser_kind)
         return [

@@ -4,7 +4,11 @@ import hashlib
 import re
 from typing import Any, Dict, List, Optional
 
-from core.agent_browser_profile import configured_agent_browser_profile_dir, normalize_agent_browser_kind
+from core.agent_browser_profile import (
+    configured_agent_browser_profile_dir,
+    discover_system_agent_browser,
+    normalize_agent_browser_kind,
+)
 from core.multimodal_payload_adapter import utc_now_iso
 from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
 from runtimes.computer_use.trace_store import trace_store
@@ -531,7 +535,9 @@ class RPATraceCompiler:
     def _browser_open_arguments(self, *, app_id: str, step: Dict[str, Any]) -> List[str]:
         params = dict(step.get("params") or {})
         browser_hint = params.get("browserKind") or params.get("browser_kind") or app_id
-        browser_kind = normalize_agent_browser_kind(str(browser_hint or "chrome"))
+        browser_kind = normalize_agent_browser_kind(str(browser_hint or "auto"))
+        if browser_kind == "auto":
+            browser_kind = str(discover_system_agent_browser().get("browserKind") or "chrome")
         browser_selection = "Edge" if browser_kind == "edge" else "Chrome"
         profile_dir = configured_agent_browser_profile_dir(browser_kind)
         return [

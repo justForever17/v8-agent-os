@@ -184,6 +184,8 @@ def _compact_evidence(details: dict[str, Any]) -> dict[str, Any]:
         "helperScriptExists",
         "helperScriptPath",
         "playwrightAvailable",
+        "systemBrowserAvailable",
+        "systemBrowserKind",
     ]
     evidence = {key: details.get(key) for key in keys if key in details}
     notes = details.get("notes")
@@ -197,20 +199,27 @@ def _browser_lane_truth(browser_lane: dict[str, Any]) -> dict[str, Any]:
     helper_exists = bool(browser_lane.get("helperScriptExists"))
     node_available = bool(browser_lane.get("nodeAvailable"))
     playwright_available = bool(browser_lane.get("playwrightAvailable"))
+    system_browser_available = bool(browser_lane.get("systemBrowserAvailable"))
     enabled = bool(browser_lane.get("enabled"))
     connected = bool(browser_lane.get("connected"))
+    helper_health = dict(browser_lane.get("helperHealth") or {})
+    helper_health_status = str(helper_health.get("status") or "").strip().lower()
     if not node_available:
         status = "blocked_by_missing_node"
     elif helper_path and not helper_exists:
         status = "blocked_by_missing_helper"
     elif helper_exists and not playwright_available:
         status = "blocked_by_missing_playwright"
-    elif enabled and connected:
+    elif not system_browser_available:
+        status = "blocked_by_missing_system_browser"
+    elif helper_health_status == "profile_mismatch":
+        status = "blocked_by_profile_mismatch"
+    elif connected:
         status = "real_host_passed"
     elif enabled:
-        status = "theory_aligned"
+        status = "ready_to_launch"
     else:
-        status = "unsupported"
+        status = "agent_browser_available"
     return {
         "status": status,
         "enabled": enabled,
@@ -219,7 +228,10 @@ def _browser_lane_truth(browser_lane: dict[str, Any]) -> dict[str, Any]:
         "helperScriptExists": helper_exists,
         "helperScriptPath": helper_path or None,
         "playwrightAvailable": playwright_available,
+        "systemBrowserAvailable": system_browser_available,
+        "systemBrowserKind": browser_lane.get("systemBrowserKind"),
         "connected": connected,
+        "helperHealthStatus": helper_health_status or None,
         "profileMode": browser_lane.get("profileMode"),
         "profileRoot": browser_lane.get("profileRoot"),
         "defaultUserDataDir": browser_lane.get("defaultUserDataDir"),
@@ -229,6 +241,10 @@ def _browser_lane_truth(browser_lane: dict[str, Any]) -> dict[str, Any]:
             if status == "blocked_by_missing_helper"
             else "playwright module missing"
             if status == "blocked_by_missing_playwright"
+            else "No compatible system browser found; install Microsoft Edge, Google Chrome, or Chromium."
+            if status == "blocked_by_missing_system_browser"
+            else "The configured CDP port is occupied by a browser outside the V8OS Agent Browser profile."
+            if status == "blocked_by_profile_mismatch"
             else None
         ),
     }
@@ -318,6 +334,22 @@ def build_capability_truth(
                 "code": "browser_playwright_missing",
                 "summary": "Browser lane helper exists, but the Node Playwright dependency is not resolvable from the engine helper.",
                 "impact": "CDP/DOM browser tasks cannot run until Playwright is installed or exposed to the helper process",
+            }
+        )
+    if browser_truth["status"] == "blocked_by_missing_system_browser":
+        known_gaps.append(
+            {
+                "code": "compatible_system_browser_missing",
+                "summary": "Playwright is available, but no supported system browser was found.",
+                "impact": "Agent Browser and CDP/DOM browser tasks remain unavailable until Edge, Chrome, or Chromium is installed",
+            }
+        )
+    if browser_truth["status"] == "blocked_by_profile_mismatch":
+        known_gaps.append(
+            {
+                "code": "agent_browser_profile_mismatch",
+                "summary": "The configured CDP endpoint is not owned by the V8OS Agent Browser profile.",
+                "impact": "V8OS refuses to attach so the user's daily browser profile and login state remain isolated",
             }
         )
     if "macos" in platforms and not platforms["macos"].get("currentHost"):

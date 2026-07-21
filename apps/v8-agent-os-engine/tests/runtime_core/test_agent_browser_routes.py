@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+
+import psutil
 
 from api import computer_use_routes
 from api.models import ComputerUseAgentBrowserOpenPayload
+from core.agent_browser_profile import debug_port_owned_by_profile, discover_system_agent_browser
 from runtimes.computer_use.browser_automation import BrowserAutomationProvider, BrowserLaneDecision
+from runtimes.rpa.compiler import RPATraceCompiler
+from runtimes.rpa.robot_adapter import RobotFrameworkAdapter
 
 
-def test_shared_agent_browser_route_uses_one_canonical_chrome_profile(monkeypatch):
+def test_shared_agent_browser_route_uses_automatic_system_browser_selection(monkeypatch):
     calls: list[dict] = []
 
     class _BrowserProvider:
@@ -27,8 +33,8 @@ def test_shared_agent_browser_route_uses_one_canonical_chrome_profile(monkeypatc
     )
 
     assert result["ok"] is True
-    assert result["browserKind"] == "chrome"
-    assert calls == [{"browser_kind": "chrome", "url": "about:blank"}]
+    assert result["browserKind"] == "auto"
+    assert calls == [{"browser_kind": "auto", "url": "about:blank"}]
 
 
 def test_manual_agent_browser_profile_setup_is_not_gated_by_computer_use_lane(monkeypatch, tmp_path):
@@ -42,6 +48,11 @@ def test_manual_agent_browser_profile_setup_is_not_gated_by_computer_use_lane(mo
     monkeypatch.setattr(provider, "_probe_playwright_dependency", lambda: {"available": True})
     monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
     monkeypatch.setattr(provider, "_dedicated_user_data_dir", lambda _kind: tmp_path / "profile")
+    monkeypatch.setattr(
+        provider,
+        "discover_system_browser",
+        lambda _kind=None: {"available": True, "browserKind": "chrome", "executable": "chrome.exe"},
+    )
 
     unchanged_command, _, unchanged_metadata = provider.prepare_launch(
         app_id="chrome",
@@ -72,6 +83,8 @@ def test_manual_agent_browser_profile_setup_is_not_gated_by_computer_use_lane(mo
         ),
     )
     monkeypatch.setattr(provider, "open_tab", lambda **_kwargs: {"opened": True})
+    monkeypatch.setattr(provider, "_ensure_proxy", lambda **_kwargs: None)
+    monkeypatch.setattr(provider, "_health", lambda **_kwargs: {"connected": True})
     monkeypatch.setattr(
         provider,
         "agent_browser_profile_summary",
@@ -84,3 +97,140 @@ def test_manual_agent_browser_profile_setup_is_not_gated_by_computer_use_lane(mo
     assert result["browserKind"] == "chrome"
     assert result["profile"] == {"kind": "chrome", "persistent": True}
     assert provider.lane_capabilities()["browserLaneEnabled"] is False
+
+
+def test_windows_auto_selection_prefers_edge_then_chrome_then_chromium(monkeypatch):
+    provider = BrowserAutomationProvider()
+    monkeypatch.setattr("runtimes.computer_use.browser_automation.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        provider,
+        "_platform_browser_candidates",
+        lambda family: [[f"{family}.exe"]],
+    )
+    monkeypatch.setattr(
+        provider,
+        "_resolve_executable_command",
+        lambda command: command if command[0] == "edge.exe" else None,
+    )
+
+    probe = provider.discover_system_browser("auto")
+
+    assert probe["available"] is True
+    assert probe["browserKind"] == "edge"
+    assert probe["candidateOrder"] == ["edge", "chrome", "chromium"]
+
+
+def test_shared_system_browser_discovery_uses_the_same_windows_order(monkeypatch):
+    monkeypatch.setattr("core.agent_browser_profile.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "core.agent_browser_profile.system_agent_browser_candidates",
+        lambda kind, _system_name=None: [f"{kind}.exe"],
+    )
+    monkeypatch.setattr(
+        "core.agent_browser_profile.shutil.which",
+        lambda candidate: candidate if candidate == "edge.exe" else None,
+    )
+
+    probe = discover_system_agent_browser("auto")
+
+    assert probe["browserKind"] == "edge"
+    assert probe["candidateOrder"] == ["edge", "chrome", "chromium"]
+
+
+def test_agent_browser_reports_missing_compatible_browser_without_downloading(monkeypatch, tmp_path):
+    provider = BrowserAutomationProvider()
+    helper = tmp_path / "browser-helper.js"
+    helper.write_text("// smoke", encoding="utf-8")
+    monkeypatch.setattr(provider, "_node_path", "node")
+    monkeypatch.setattr(provider, "_helper_script_path", lambda: helper)
+    monkeypatch.setattr(provider, "_probe_playwright_dependency", lambda: {"available": True})
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
+    monkeypatch.setattr(
+        provider,
+        "discover_system_browser",
+        lambda _kind=None: {"available": False, "reason": "compatible_browser_missing"},
+    )
+
+    result = provider.open_agent_browser(browser_kind="auto", url="about:blank")
+
+    assert result["ok"] is False
+    assert result["failureClass"] == "compatible_browser_missing"
+    assert "不会自动下载浏览器" in result["recommendedNextAction"]
+
+
+def test_agent_browser_refuses_a_debug_port_owned_by_another_profile(monkeypatch, tmp_path):
+    provider = BrowserAutomationProvider()
+    helper = tmp_path / "browser-helper.js"
+    helper.write_text("// smoke", encoding="utf-8")
+    monkeypatch.setattr(provider, "_node_path", "node")
+    monkeypatch.setattr(provider, "_helper_script_path", lambda: helper)
+    monkeypatch.setattr(provider, "_probe_playwright_dependency", lambda: {"available": True})
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: True)
+    monkeypatch.setattr(provider, "_managed_agent_browser_kind_at_port", lambda _port: None)
+
+    result = provider.open_agent_browser(browser_kind="auto", url="about:blank")
+
+    assert result["ok"] is False
+    assert result["failureClass"] == "agent_browser_port_conflict"
+    assert "不会接管用户日常 profile" in result["recommendedNextAction"]
+
+
+def test_browser_discovery_does_not_scan_arbitrary_debug_ports(monkeypatch):
+    provider = BrowserAutomationProvider()
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: True)
+    monkeypatch.setattr(provider, "_devtools_active_port_files", lambda _kind: [])
+    monkeypatch.setattr(
+        "runtimes.computer_use.browser_automation.debug_port_owned_by_profile",
+        lambda **_kwargs: False,
+    )
+
+    assert provider._discover_existing_debug_port(app_id="agent_browser") is None
+
+
+def test_debug_port_ownership_requires_the_exact_v8os_profile_and_port(monkeypatch, tmp_path):
+    profile_dir = tmp_path / "edge"
+    listener = SimpleNamespace(
+        pid=42,
+        laddr=SimpleNamespace(port=9222),
+        status="LISTEN",
+    )
+
+    class _Process:
+        def cmdline(self):
+            return [
+                "msedge.exe",
+                "--remote-debugging-port=9222",
+                f"--user-data-dir={profile_dir}",
+            ]
+
+    monkeypatch.setattr(psutil, "net_connections", lambda **_kwargs: [listener])
+    monkeypatch.setattr(psutil, "Process", lambda _pid: _Process())
+
+    assert debug_port_owned_by_profile(port=9222, profile_dir=profile_dir) is True
+    assert debug_port_owned_by_profile(port=9222, profile_dir=tmp_path / "daily-profile") is False
+
+
+def test_rpa_auto_browser_arguments_resolve_the_installed_agent_browser(monkeypatch, tmp_path):
+    for module_name in ("runtimes.rpa.compiler", "runtimes.rpa.robot_adapter"):
+        monkeypatch.setattr(
+            f"{module_name}.discover_system_agent_browser",
+            lambda: {"available": True, "browserKind": "edge"},
+        )
+        monkeypatch.setattr(
+            f"{module_name}.configured_agent_browser_profile_dir",
+            lambda kind: tmp_path / kind,
+        )
+
+    step = {"params": {"browserKind": "auto", "url": "https://example.com"}}
+    compiler_args = RPATraceCompiler.__new__(RPATraceCompiler)._browser_open_arguments(
+        app_id="agent_browser",
+        step=step,
+    )
+    adapter_args = RobotFrameworkAdapter.__new__(RobotFrameworkAdapter)._browser_open_arguments(
+        app_id="agent_browser",
+        step=step,
+    )
+
+    for arguments in (compiler_args, adapter_args):
+        assert "browser_selection=Edge" in arguments
+        assert f"profile_path={tmp_path / 'edge'}" in arguments

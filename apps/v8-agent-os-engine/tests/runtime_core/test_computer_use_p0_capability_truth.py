@@ -103,6 +103,7 @@ def test_browser_availability_uses_short_cached_health_probe(monkeypatch):
     provider.configure({"browserLane": {"enabled": True, "connectTimeoutMs": 3000}})
     provider._node_path = None
     observed_timeouts = []
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
 
     def unavailable_health(*, timeout_seconds=None):
         observed_timeouts.append(timeout_seconds)
@@ -153,6 +154,41 @@ def test_capability_truth_flags_missing_playwright_separately():
     assert truth["browserLaneTruth"]["status"] == "blocked_by_missing_playwright"
     assert any(gap["code"] == "browser_playwright_missing" for gap in truth["knownGaps"])
     assert "platformParity" in truth
+
+
+def test_capability_truth_requires_a_compatible_system_browser():
+    truth = build_capability_truth(
+        capability_matrix={"currentPlatform": "windows", "platforms": {}},
+        browser_lane={
+            "enabled": True,
+            "nodeAvailable": True,
+            "helperScriptPath": "browser_cdp_proxy.mjs",
+            "helperScriptExists": True,
+            "playwrightAvailable": True,
+            "systemBrowserAvailable": False,
+        },
+    )
+
+    assert truth["browserLaneTruth"]["status"] == "blocked_by_missing_system_browser"
+    assert any(gap["code"] == "compatible_system_browser_missing" for gap in truth["knownGaps"])
+
+
+def test_capability_truth_blocks_a_cdp_endpoint_outside_the_v8os_profile():
+    truth = build_capability_truth(
+        capability_matrix={"currentPlatform": "windows", "platforms": {}},
+        browser_lane={
+            "enabled": True,
+            "nodeAvailable": True,
+            "helperScriptPath": "browser_cdp_proxy.mjs",
+            "helperScriptExists": True,
+            "playwrightAvailable": True,
+            "systemBrowserAvailable": True,
+            "helperHealth": {"connected": False, "status": "profile_mismatch"},
+        },
+    )
+
+    assert truth["browserLaneTruth"]["status"] == "blocked_by_profile_mismatch"
+    assert any(gap["code"] == "agent_browser_profile_mismatch" for gap in truth["knownGaps"])
 
 
 def test_github_star_playbook_seed_is_runtime_native_and_source_tracked():

@@ -17,9 +17,11 @@ import requests
 
 from core.agent_browser_profile import (
     agent_browser_profile_summary,
+    debug_port_owned_by_profile,
     default_agent_browser_profile_root,
     normalize_agent_browser_kind,
     resolve_agent_browser_profile_dir,
+    system_agent_browser_candidates,
 )
 from runtimes.computer_use.input_policy import looks_like_url
 
@@ -39,9 +41,10 @@ _DEFAULT_PROXY_PORT = 3456
 _DEFAULT_WINDOW_SIZE = "1600,1000"
 _AVAILABILITY_HEALTH_TIMEOUT_SECONDS = 0.25
 _AVAILABILITY_HEALTH_TTL_SECONDS = 2.0
-_GENERIC_BROWSER_APP_IDS = {"browser_checkout", "browser", "chromium"}
+_GENERIC_BROWSER_APP_IDS = {"agent_browser", "auto", "browser_checkout", "browser"}
 _CHROME_APP_IDS = {"chrome", "google_chrome", "google-chrome"}
 _EDGE_APP_IDS = {"edge", "msedge", "microsoft_edge", "microsoft-edge"}
+_CHROMIUM_APP_IDS = {"chromium"}
 _BROWSER_KIND_PROCESS_NAMES = {
     "chrome": ["chrome.exe", "chromium.exe"],
     "edge": ["msedge.exe"],
@@ -105,6 +108,7 @@ class BrowserLaneDecision:
     provider: str = "engine_managed_cdp"
     target_port: int | None = None
     managed_launch: bool = False
+    browser_kind: str | None = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -116,6 +120,7 @@ class BrowserLaneDecision:
             "provider": self.provider,
             "targetPort": self.target_port,
             "managedLaunch": self.managed_launch,
+            "browserKind": self.browser_kind,
         }
 
 
@@ -176,6 +181,8 @@ class BrowserAutomationProvider:
         helper_script = self._helper_script_path()
         helper_exists = helper_script.exists()
         playwright_probe = self._probe_playwright_dependency()
+        system_browser = self.discover_system_browser()
+        selected_kind = str(system_browser.get("browserKind") or "auto")
         return {
             "enabled": self._enabled,
             "mode": self._mode,
@@ -186,7 +193,11 @@ class BrowserAutomationProvider:
             "targetFamilies": list(self._target_families),
             "profileMode": self._profile_mode,
             "profileRoot": str(self._profile_root()),
-            "defaultUserDataDir": str(self._dedicated_user_data_dir("chrome")),
+            "defaultUserDataDir": str(self._dedicated_user_data_dir(selected_kind)),
+            "systemBrowserAvailable": bool(system_browser.get("available")),
+            "systemBrowserKind": system_browser.get("browserKind"),
+            "systemBrowserExecutable": system_browser.get("executable"),
+            "systemBrowserProbe": system_browser,
             "nodeAvailable": bool(self._node_path),
             "helperScriptPath": str(helper_script),
             "helperScriptExists": bool(helper_exists),
@@ -211,10 +222,35 @@ class BrowserAutomationProvider:
             ):
                 return dict(self._availability_health_cache)
 
-        if not self._enabled:
+        if self._is_debug_port_reachable(self._target_port):
+            browser_kind = self._managed_agent_browser_kind_at_port(self._target_port)
+            if not browser_kind:
+                health = {
+                    "connected": False,
+                    "status": "profile_mismatch",
+                }
+            else:
+                try:
+                    self._ensure_proxy(target_port=self._target_port)
+                    health = dict(
+                        self._health(
+                            timeout_seconds=min(
+                                _AVAILABILITY_HEALTH_TIMEOUT_SECONDS,
+                                max(0.05, self._connect_timeout_ms / 1000.0),
+                            )
+                        )
+                        or {}
+                    )
+                except Exception as exc:
+                    health = {
+                        "connected": False,
+                        "status": "cdp_attach_failed",
+                        "errorClass": exc.__class__.__name__,
+                    }
+        elif not self._enabled:
             health: Dict[str, Any] = {
                 "connected": False,
-                "status": "disabled",
+                "status": "not_running",
             }
         else:
             try:
@@ -243,8 +279,15 @@ class BrowserAutomationProvider:
         helper_script = self._helper_script_path()
         helper_exists = helper_script.exists()
         playwright_probe = self._probe_playwright_dependency()
+        system_browser = self.discover_system_browser()
         implemented = bool(self._node_path and helper_exists)
-        available = bool(self._enabled and self._node_path and helper_exists and playwright_probe.get("available"))
+        available = bool(
+            self._enabled
+            and self._node_path
+            and helper_exists
+            and playwright_probe.get("available")
+            and system_browser.get("available")
+        )
         return {
             "browserLaneImplemented": implemented,
             "supportsBrowserAutomation": available,
@@ -256,6 +299,9 @@ class BrowserAutomationProvider:
             "helperScriptExists": bool(helper_exists),
             "playwrightAvailable": bool(playwright_probe.get("available")),
             "playwrightProbe": playwright_probe,
+            "systemBrowserAvailable": bool(system_browser.get("available")),
+            "systemBrowserKind": system_browser.get("browserKind"),
+            "systemBrowserExecutable": system_browser.get("executable"),
             "profileMode": self._profile_mode,
             "profileRoot": str(self._profile_root()),
         }
@@ -339,6 +385,8 @@ class BrowserAutomationProvider:
             return "edge"
         if requested in _CHROME_APP_IDS:
             return "chrome"
+        if requested in _CHROMIUM_APP_IDS:
+            return "chromium"
         executable = ""
         if isinstance(command, list) and command:
             executable = command[0]
@@ -347,7 +395,9 @@ class BrowserAutomationProvider:
         name = _basename(executable)
         if "msedge" in name or name == "edge":
             return "edge"
-        if "chrome" in name or "chromium" in name:
+        if "chromium" in name:
+            return "chromium"
+        if "chrome" in name:
             return "chrome"
         return "chromium"
 
@@ -359,6 +409,10 @@ class BrowserAutomationProvider:
 
     def agent_browser_profile_summary(self, browser_kind: str | None = None) -> Dict[str, Any]:
         kind = normalize_agent_browser_kind(browser_kind)
+        if kind == "auto":
+            kind = self._browser_kind_from_debug_port(self._target_port) or str(
+                self.discover_system_browser().get("browserKind") or "chromium"
+            )
         payload = agent_browser_profile_summary(kind)
         payload.update(
             {
@@ -431,6 +485,16 @@ class BrowserAutomationProvider:
                 "profileMode": self._profile_mode,
                 "browserKind": kind,
             }
+        managed_kind = self._managed_agent_browser_kind_at_port(target_port)
+        if not managed_kind:
+            return {
+                "ok": False,
+                "status": "agent_browser_profile_mismatch",
+                "reason": "The configured CDP port is not owned by the V8OS Agent Browser profile.",
+                "recommendedNextAction": "Close the other debug browser or change the Agent Browser port, then open Agent Browser again.",
+                "targetPort": target_port,
+            }
+        kind = managed_kind
         try:
             self._ensure_proxy(target_port=target_port)
         except Exception as exc:
@@ -538,30 +602,7 @@ class BrowserAutomationProvider:
         return lowered.startswith("--user-data-dir=") or lowered.startswith("--profile-directory=")
 
     def _platform_browser_candidates(self, family: str) -> List[List[str]]:
-        system = platform.system().lower()
-        if system == "windows":
-            if family == "chrome":
-                return [
-                    [r"C:\Program Files\Google\Chrome\Application\chrome.exe"],
-                    [r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"],
-                    ["chrome.exe"],
-                ]
-            if family == "edge":
-                return [
-                    [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"],
-                    [r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"],
-                    ["msedge.exe"],
-                ]
-        if system == "darwin":
-            if family == "chrome":
-                return [[r"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]]
-            if family == "edge":
-                return [[r"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"]]
-        if family == "chrome":
-            return [["google-chrome"], ["google-chrome-stable"], ["chromium-browser"], ["chromium"]]
-        if family == "edge":
-            return [["microsoft-edge"], ["microsoft-edge-stable"]]
-        return []
+        return [[candidate] for candidate in system_agent_browser_candidates(family)]
 
     def _preferred_browser_kinds(self, *, app_id: str | None = None, app_name: str | None = None) -> List[str]:
         requested = {
@@ -572,35 +613,52 @@ class BrowserAutomationProvider:
             return ["chrome", "chromium", "edge"]
         if requested & _EDGE_APP_IDS:
             return ["edge", "chrome", "chromium"]
-        return ["chrome", "edge", "chromium"]
+        if requested & _CHROMIUM_APP_IDS:
+            return ["chromium", "chrome", "edge"]
+        if platform.system().lower() == "windows":
+            return ["edge", "chrome", "chromium"]
+        return ["chrome", "chromium", "edge"]
+
+    def discover_system_browser(self, browser_kind: str | None = None) -> Dict[str, Any]:
+        requested_kind = normalize_agent_browser_kind(browser_kind)
+        kinds = (
+            [requested_kind]
+            if requested_kind in {"chrome", "edge", "chromium"}
+            else self._preferred_browser_kinds(app_id="agent_browser", app_name="agent_browser")
+        )
+        for kind in kinds:
+            for candidate in self._platform_browser_candidates(kind):
+                resolved = self._resolve_executable_command(candidate)
+                if resolved:
+                    return {
+                        "available": True,
+                        "browserKind": kind,
+                        "executable": resolved[0],
+                        "candidateOrder": list(kinds),
+                    }
+        return {
+            "available": False,
+            "browserKind": None,
+            "executable": None,
+            "candidateOrder": list(kinds),
+            "reason": "compatible_browser_missing",
+        }
 
     def _devtools_active_port_files(self, browser_kind: str) -> List[Path]:
-        home = Path.home()
-        local_app_data = Path(os.environ.get("LOCALAPPDATA") or "")
-        system = platform.system().lower()
-        if system == "windows":
-            mapping = {
-                "chrome": [local_app_data / "Google/Chrome/User Data/DevToolsActivePort"],
-                "edge": [local_app_data / "Microsoft/Edge/User Data/DevToolsActivePort"],
-                "chromium": [local_app_data / "Chromium/User Data/DevToolsActivePort"],
-            }
-            return [path for path in mapping.get(browser_kind, []) if str(path)]
-        if system == "darwin":
-            mapping = {
-                "chrome": [home / "Library/Application Support/Google/Chrome/DevToolsActivePort"],
-                "edge": [home / "Library/Application Support/Microsoft Edge/DevToolsActivePort"],
-                "chromium": [home / "Library/Application Support/Chromium/DevToolsActivePort"],
-            }
-            return mapping.get(browser_kind, [])
-        mapping = {
-            "chrome": [home / ".config/google-chrome/DevToolsActivePort"],
-            "edge": [home / ".config/microsoft-edge/DevToolsActivePort"],
-            "chromium": [home / ".config/chromium/DevToolsActivePort"],
-        }
-        return mapping.get(browser_kind, [])
+        if browser_kind not in {"chrome", "edge", "chromium"}:
+            return []
+        return [self._dedicated_user_data_dir(browser_kind) / "DevToolsActivePort"]
 
     def _discover_existing_debug_port(self, *, app_id: str | None = None, app_name: str | None = None) -> int | None:
-        for browser_kind in self._preferred_browser_kinds(app_id=app_id, app_name=app_name):
+        browser_kinds = self._preferred_browser_kinds(app_id=app_id, app_name=app_name)
+        if self._is_debug_port_reachable(self._target_port):
+            for browser_kind in browser_kinds:
+                if debug_port_owned_by_profile(
+                    port=self._target_port,
+                    profile_dir=self._dedicated_user_data_dir(browser_kind),
+                ):
+                    return self._target_port
+        for browser_kind in browser_kinds:
             for file_path in self._devtools_active_port_files(browser_kind):
                 try:
                     lines = file_path.read_text(encoding="utf-8").strip().splitlines()
@@ -612,11 +670,55 @@ class BrowserAutomationProvider:
                     port = int(str(lines[0]).strip())
                 except Exception:
                     continue
-                if port > 0 and self._is_debug_port_reachable(port):
+                if (
+                    port > 0
+                    and self._is_debug_port_reachable(port)
+                    and debug_port_owned_by_profile(
+                        port=port,
+                        profile_dir=self._dedicated_user_data_dir(browser_kind),
+                    )
+                ):
                     return port
-        for port in [9222, 9229, 9333, self._target_port]:
-            if port and self._is_debug_port_reachable(port):
-                return int(port)
+        return None
+
+    def _browser_kind_from_debug_port(self, port: int | None) -> str | None:
+        if not port:
+            return None
+        try:
+            response = requests.get(
+                f"http://127.0.0.1:{int(port)}/json/version",
+                timeout=min(1.0, max(0.3, self._connect_timeout_ms / 1000.0)),
+            )
+            response.raise_for_status()
+            payload = dict(response.json() or {})
+        except Exception:
+            return None
+        product = " ".join(
+            [
+                str(payload.get("Browser") or ""),
+                str(payload.get("User-Agent") or payload.get("userAgent") or ""),
+            ]
+        ).lower()
+        if "edg/" in product or "edge/" in product:
+            return "edge"
+        if "chromium/" in product:
+            return "chromium"
+        if "chrome/" in product:
+            return "chrome"
+        return None
+
+    def _managed_agent_browser_kind_at_port(self, port: int | None) -> str | None:
+        if not port:
+            return None
+        detected = self._browser_kind_from_debug_port(port)
+        ordered = [detected] if detected else []
+        ordered.extend(kind for kind in ("edge", "chrome", "chromium") if kind != detected)
+        for kind in ordered:
+            if debug_port_owned_by_profile(
+                port=int(port),
+                profile_dir=self._dedicated_user_data_dir(kind),
+            ):
+                return kind
         return None
 
     def resolve_preferred_launch_command(
@@ -635,10 +737,10 @@ class BrowserAutomationProvider:
             preferred_families = ["chrome"]
         elif requested & _EDGE_APP_IDS:
             preferred_families = ["edge"]
+        elif requested & _CHROMIUM_APP_IDS:
+            preferred_families = ["chromium"]
         elif requested & _GENERIC_BROWSER_APP_IDS:
-            if launch_command:
-                return launch_command
-            preferred_families = ["chrome", "edge"]
+            preferred_families = self._preferred_browser_kinds(app_id=app_id, app_name=app_name)
         if not preferred_families:
             return launch_command
 
@@ -666,6 +768,8 @@ class BrowserAutomationProvider:
             return ["chrome.exe", "chromium.exe"]
         elif requested & _EDGE_APP_IDS:
             return ["msedge.exe"]
+        elif requested & _CHROMIUM_APP_IDS:
+            return ["chromium.exe"]
         else:
             browser_kinds = self._preferred_browser_kinds(app_id=app_id, app_name=app_name)
         ordered: List[str] = []
@@ -812,17 +916,34 @@ class BrowserAutomationProvider:
     ) -> BrowserLaneDecision | None:
         if not self._allow_managed_launch:
             return None
-        app_key = str(app_id or "browser_checkout").strip().lower() or "browser_checkout"
+        if self._is_debug_port_reachable(self._target_port):
+            existing_kind = self._managed_agent_browser_kind_at_port(self._target_port)
+            return BrowserLaneDecision(
+                enabled=True,
+                available=bool(existing_kind),
+                family="chromium",
+                reason=(
+                    "attached_existing_debug_browser"
+                    if existing_kind
+                    else "agent_browser_profile_mismatch"
+                ),
+                target_port=self._target_port,
+                managed_launch=False,
+                browser_kind=existing_kind,
+            )
+        requested_key = str(app_id or "agent_browser").strip().lower() or "agent_browser"
         launch_command = self.resolve_preferred_launch_command(
-            app_id=app_key,
+            app_id=requested_key,
             app_name=app_name or "browser",
             launch_command=None,
         )
         if not isinstance(launch_command, list) or not launch_command:
             return None
+        browser_kind = self._browser_kind_from_command(launch_command, app_id=None)
+        app_key = browser_kind
         try:
             prepared_command, prepared_env, metadata = self.prepare_launch(
-                app_id=app_key,
+                app_id=browser_kind,
                 launch_command=launch_command,
                 environment=None,
                 allow_when_disabled=allow_when_disabled,
@@ -848,7 +969,10 @@ class BrowserAutomationProvider:
             target_port = int((metadata or {}).get("browserTargetPort") or self._target_port)
             deadline = time.time() + max(5.0, self._connect_timeout_ms / 1000.0)
             while time.time() < deadline:
-                if self._is_debug_port_reachable(target_port):
+                if (
+                    self._is_debug_port_reachable(target_port)
+                    and self._managed_agent_browser_kind_at_port(target_port) == browser_kind
+                ):
                     managed_state = self._managed_launches.get(app_key)
                     if isinstance(managed_state, dict):
                         managed_state["headless"] = bool(headless)
@@ -859,6 +983,7 @@ class BrowserAutomationProvider:
                         reason="managed_debug_browser_started",
                         target_port=target_port,
                         managed_launch=True,
+                        browser_kind=browser_kind,
                     )
                 time.sleep(0.2)
         except Exception:
@@ -882,7 +1007,7 @@ class BrowserAutomationProvider:
     def prepare_workbench_browser(self, *, browser_kind: str | None = None) -> Dict[str, Any]:
         """Warm the dedicated Workbench browser without opening a page."""
 
-        kind = normalize_agent_browser_kind(browser_kind)
+        requested_kind = normalize_agent_browser_kind(browser_kind)
         if not self._enabled:
             raise RuntimeError("Computer Use browser lane is disabled")
         if not self._node_path:
@@ -897,6 +1022,12 @@ class BrowserAutomationProvider:
             managed_started = False
             external_window = False
             if not self._is_debug_port_reachable(target_port):
+                system_browser = self.discover_system_browser(requested_kind)
+                if not system_browser.get("available"):
+                    raise RuntimeError(
+                        "No compatible system browser was found. Install Microsoft Edge, Google Chrome, or Chromium, then retry."
+                    )
+                kind = str(system_browser.get("browserKind") or "chromium")
                 decision = self._start_managed_chromium_debug_browser(
                     app_id=kind,
                     app_name=kind,
@@ -907,6 +1038,11 @@ class BrowserAutomationProvider:
                 target_port = int(decision.target_port or target_port)
                 managed_started = True
             else:
+                kind = self._managed_agent_browser_kind_at_port(target_port) or ""
+                if not kind:
+                    raise RuntimeError(
+                        "The configured CDP port is occupied by a browser outside the V8OS Agent Browser profile."
+                    )
                 managed_state = self._managed_launches.get(kind) or {}
                 existing_headless = bool(managed_state.get("headless")) or self._debug_browser_is_headless(target_port)
                 external_window = not existing_headless
@@ -932,6 +1068,7 @@ class BrowserAutomationProvider:
         kind = normalize_agent_browser_kind(browser_kind)
         target_url = str(url or "").strip() or "about:blank"
         prepared = self.prepare_workbench_browser(browser_kind=kind)
+        kind = str(prepared.get("browserKind") or kind)
         target_port = int(prepared.get("targetPort") or self._target_port)
         managed_started = bool(prepared.get("managedStarted"))
         external_window = bool(prepared.get("externalWindow"))
@@ -953,7 +1090,7 @@ class BrowserAutomationProvider:
         }
 
     def open_agent_browser(self, *, browser_kind: str | None = None, url: str = "about:blank") -> Dict[str, Any]:
-        kind = normalize_agent_browser_kind(browser_kind)
+        requested_kind = normalize_agent_browser_kind(browser_kind)
         target_url = str(url or "").strip() or "about:blank"
         # Manual profile setup is a trusted Admin action, not an automated
         # Computer Use execution. Keep it available when the heavy browser
@@ -981,11 +1118,20 @@ class BrowserAutomationProvider:
                 "summary": "Playwright 依赖不可用，无法打开 Agent 浏览器。",
                 "recommendedNextAction": "安装 workspace 依赖或检查 Python/Node Playwright 驱动。",
             }
-        profile_dir = self._dedicated_user_data_dir(kind)
-        profile_dir.mkdir(parents=True, exist_ok=True)
         target_port = self._target_port
         managed_started = False
         if not self._is_debug_port_reachable(target_port):
+            system_browser = self.discover_system_browser(requested_kind)
+            if not system_browser.get("available"):
+                return {
+                    "ok": False,
+                    "failureClass": "compatible_browser_missing",
+                    "summary": "未找到可用于 Agent 浏览器的兼容浏览器。",
+                    "recommendedNextAction": "请安装 Microsoft Edge、Google Chrome 或 Chromium 后重试；V8OS 不会自动下载浏览器。",
+                }
+            kind = str(system_browser.get("browserKind") or "chromium")
+            profile_dir = self._dedicated_user_data_dir(kind)
+            profile_dir.mkdir(parents=True, exist_ok=True)
             decision = self._start_managed_chromium_debug_browser(
                 app_id=kind,
                 app_name=kind,
@@ -998,10 +1144,21 @@ class BrowserAutomationProvider:
                     "summary": "未能拉起 Agent 浏览器。",
                     "browserKind": kind,
                     "profile": self.agent_browser_profile_summary(kind),
-                    "recommendedNextAction": "确认 Chrome 或 Chromium 已安装，并检查 Agent 浏览器 profile 目录是否可写。",
+                    "recommendedNextAction": "检查兼容浏览器是否可启动，以及 V8OS Agent 浏览器 profile 目录是否可写。",
                 }
             target_port = int(decision.target_port or target_port)
             managed_started = True
+        else:
+            kind = self._managed_agent_browser_kind_at_port(target_port) or ""
+            if not kind:
+                return {
+                    "ok": False,
+                    "failureClass": "agent_browser_port_conflict",
+                    "summary": "Agent 浏览器端口已被其他浏览器占用。",
+                    "recommendedNextAction": "请关闭占用该调试端口的浏览器，或修改 Agent 浏览器端口后重试；V8OS 不会接管用户日常 profile。",
+                }
+            profile_dir = self._dedicated_user_data_dir(kind)
+            profile_dir.mkdir(parents=True, exist_ok=True)
         lane = BrowserLaneDecision(
             enabled=True,
             available=True,
@@ -1009,12 +1166,26 @@ class BrowserAutomationProvider:
             reason="agent_browser_profile_opened",
             target_port=target_port,
             managed_launch=managed_started,
+            browser_kind=kind,
         )
-        tab: Dict[str, Any] | None = None
         try:
+            self._ensure_proxy(target_port=target_port)
+            health = self._health()
+            if not health.get("connected"):
+                raise RuntimeError(str(health.get("error") or "Playwright could not attach to the Agent Browser CDP endpoint."))
             tab = self.open_tab(url=target_url, decision=lane)
-        except Exception:
-            tab = None
+        except Exception as exc:
+            self._invalidate_availability_health_cache()
+            return {
+                "ok": False,
+                "failureClass": "agent_browser_cdp_attach_failed",
+                "summary": "Agent 浏览器已启动，但自动化连接未建立。",
+                "browserKind": kind,
+                "profile": self.agent_browser_profile_summary(kind),
+                "recommendedNextAction": "关闭 Agent 浏览器后重试；若仍失败，请检查浏览器是否允许本机 CDP 连接。",
+                "detail": str(exc),
+            }
+        self._invalidate_availability_health_cache()
         return {
             "ok": True,
             "kind": "agent_browser_profile",
@@ -1071,6 +1242,7 @@ class BrowserAutomationProvider:
                 app_name=requested_app_name,
             )
             if discovered_port:
+                browser_kind = self._browser_kind_from_debug_port(discovered_port)
                 return BrowserLaneDecision(
                     enabled=True,
                     available=True,
@@ -1078,6 +1250,7 @@ class BrowserAutomationProvider:
                     reason="attached_existing_debug_browser",
                     target_port=discovered_port,
                     managed_launch=False,
+                    browser_kind=browser_kind,
                 )
             managed_decision = self._start_managed_chromium_debug_browser(
                 app_id=app_id or action_payload.get("app_id") or action_payload.get("resolved_app_id"),

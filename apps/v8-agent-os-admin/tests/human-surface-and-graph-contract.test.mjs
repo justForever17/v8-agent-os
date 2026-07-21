@@ -67,11 +67,14 @@ test("Agent Browser is configured from Research without exposing Chrome and Edge
     const browserPanel = read("src/components/research/AgentBrowserPanel.tsx");
     const desktopPage = read("src/app/admin/(dashboard)/desktop-automation/page.tsx");
     const browserRoute = read("src/app/api/agent-browser/open/route.ts");
+    const rpaWorkbench = read("src/components/rpa/RPAWorkbench.tsx");
 
     assert.match(researchPage, /AgentBrowserPanel/);
     assert.match(browserPanel, /\/api\/agent-browser\/open/);
     assert.match(browserPanel, /agentBrowser\.title/);
     assert.doesNotMatch(browserPanel, /openChrome|openEdge|browserKind/);
     assert.doesNotMatch(desktopPage, /openAgentBrowser|agentBrowser\.openChrome|agentBrowser\.openEdge/);
+    assert.doesNotMatch(rpaWorkbench, /browserKind:\s*[^\n]*["']chrome["']/);
+    assert.match(rpaWorkbench, /browserKind:\s*[^\n]*["']auto["']/);
     assert.match(browserRoute, /\/agent-browser\/open/);
 });

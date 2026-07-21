@@ -14,7 +14,15 @@ from core.delegation_broker import (
 from core.native_tools import command_session_broker, delegation_broker, run_system_command
 from core.source_provider_registry import get_source_provider_capabilities, get_source_provider_config_defaults, get_source_router_defaults
 from core.tools.s3_tools import s3_broker
-from core.tools.web_fetcher import _WEB_BROKER_CONTEXT_COUNTS, WebPagePayload, web_broker, web_extract, web_read, web_search
+from core.tools.web_fetcher import (
+    _WEB_BROKER_CONTEXT_COUNTS,
+    WebPagePayload,
+    _active_agent_browser_cdp_context,
+    web_broker,
+    web_extract,
+    web_read,
+    web_search,
+)
 from core.workspace_capability import WorkspaceBinding
 
 
@@ -52,6 +60,72 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertIn("globalPreferred", router_defaults)
         self.assertEqual(config_defaults["brave"]["authEnv"], "BRAVE_SEARCH_API_KEY")
         self.assertIn("enabled", config_defaults["duckduckgo"])
+
+    def test_agent_browser_cdp_context_detects_edge_and_dedicated_profile(self):
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "Browser": "Edg/140.0.0.0",
+                    "User-Agent": "Mozilla/5.0 Chrome/140.0.0.0 Edg/140.0.0.0",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/test",
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_dir = Path(temp_dir) / "edge"
+            profile_dir.mkdir(parents=True)
+            with patch(
+                "core.tools.web_fetcher.storage.get_computer_use_config",
+                return_value={"browserLane": {"proxyPort": 3456}},
+            ), patch(
+                "core.tools.web_fetcher.configured_agent_browser_profile_dir",
+                return_value=profile_dir,
+            ), patch(
+                "core.tools.web_fetcher.debug_port_owned_by_profile",
+                return_value=True,
+            ), patch("core.tools.web_fetcher.requests.get", return_value=_Response()):
+                context = _active_agent_browser_cdp_context()
+
+            self.assertEqual(context["browserKind"], "edge")
+            self.assertEqual(context["cdpUrl"], "ws://127.0.0.1:9222/devtools/browser/test")
+            self.assertEqual(Path(context["profileDir"]), profile_dir)
+
+    def test_agent_browser_cdp_context_rejects_a_non_v8os_profile(self):
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "Browser": "Edg/140.0.0.0",
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/test",
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profile_dir = Path(temp_dir) / "edge"
+            profile_dir.mkdir(parents=True)
+            with patch(
+                "core.tools.web_fetcher.storage.get_computer_use_config",
+                return_value={"browserLane": {"proxyPort": 3456}},
+            ), patch(
+                "core.tools.web_fetcher.configured_agent_browser_profile_dir",
+                return_value=profile_dir,
+            ), patch(
+                "core.tools.web_fetcher.debug_port_owned_by_profile",
+                return_value=False,
+            ), patch("core.tools.web_fetcher.requests.get", return_value=_Response()):
+                with self.assertRaisesRegex(RuntimeError, "agent_browser_profile_mismatch"):
+                    _active_agent_browser_cdp_context()
+
+    def test_agent_browser_cdp_context_requires_an_open_browser(self):
+        with patch(
+            "core.tools.web_fetcher.storage.get_computer_use_config",
+            return_value={"browserLane": {"proxyPort": 3456}},
+        ), patch("core.tools.web_fetcher.requests.get", side_effect=OSError("connection refused")):
+            with self.assertRaisesRegex(RuntimeError, "agent_browser_not_open"):
+                _active_agent_browser_cdp_context()
 
     def test_web_read_returns_clean_markdown_without_page_chrome(self):
         html = """
@@ -162,8 +236,12 @@ class WebAndS3BrokerTests(unittest.TestCase):
             "core.tools.web_fetcher.get_web_fetch_config",
             return_value={"useAgentBrowserProfile": True, "agentBrowserProfileAllowlist": ["example.com"]},
         ), patch(
-            "core.tools.web_fetcher.configured_agent_browser_profile_dir",
-            return_value="E:/tmp/v8-agent-browser-profile",
+            "core.tools.web_fetcher._active_agent_browser_cdp_context",
+            return_value={
+                "cdpUrl": "ws://127.0.0.1:9222/devtools/browser/test",
+                "browserKind": "edge",
+                "profileDir": "E:/tmp/v8-agent-browser-profile/edge",
+            },
         ), patch(
             "core.tools.web_fetcher._try_import_static_fetcher",
             return_value=(_StaticFetcher, None),
@@ -179,9 +257,11 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["fetchMode"], "dynamic")
         self.assertEqual(payload["attemptedModes"], ["static", "dynamic"])
-        self.assertEqual(captured_browser_kwargs["user_data_dir"], "E:/tmp/v8-agent-browser-profile")
+        self.assertEqual(captured_browser_kwargs["cdp_url"], "ws://127.0.0.1:9222/devtools/browser/test")
+        self.assertNotIn("user_data_dir", captured_browser_kwargs)
         self.assertTrue(payload["agentBrowserProfile"]["used"])
         self.assertEqual(payload["agentBrowserProfile"]["matchedHost"], "example.com")
+        self.assertEqual(payload["agentBrowserProfile"]["profile"]["browserKind"], "edge")
         self.assertIn("login-backed content", payload["text"])
 
     def test_web_read_baidu_baike_profile_prefers_summary_and_paragraphs(self):
@@ -244,7 +324,7 @@ class WebAndS3BrokerTests(unittest.TestCase):
 
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["failureClass"], "needs_login")
-        self.assertIn("Agent 专用浏览器", payload["recommendedNextAction"])
+        self.assertIn("Agent 浏览器", payload["recommendedNextAction"])
 
     def test_web_broker_fetch_mode_dispatches_to_unified_web_fetch(self):
         with patch(
@@ -428,7 +508,7 @@ class WebAndS3BrokerTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["failureClass"], "needs_agent_browser_login")
         self.assertEqual(payload["attemptedProviders"][0]["status"], "skipped")
-        self.assertIn("Agent 专用浏览器", payload["recommendedNextAction"])
+        self.assertIn("Agent 浏览器", payload["recommendedNextAction"])
 
     def test_web_search_source_router_prefers_cn_route_for_chinese_query(self):
         config = {

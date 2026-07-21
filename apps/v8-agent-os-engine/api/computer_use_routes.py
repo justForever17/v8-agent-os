@@ -34,7 +34,7 @@ def _computer_use_runtime():
     return computer_use_runtime
 
 
-def _open_agent_browser(*, browser_kind: str = "chrome", url: str = "about:blank") -> dict[str, Any]:
+def _open_agent_browser(*, browser_kind: str = "auto", url: str = "about:blank") -> dict[str, Any]:
     runtime = _computer_use_runtime()
     browser_automation = getattr(runtime, "browser_automation", None)
     if browser_automation is None:
@@ -110,10 +110,10 @@ async def get_computer_use_availability():
 @router.post("/agent-browser/open")
 async def open_agent_browser(payload: ComputerUseAgentBrowserOpenPayload):
     try:
-        # The product surface exposes one persistent Agent Browser. Chrome is
-        # canonical; the provider may resolve a Chromium-compatible binary on
-        # Linux, but callers do not create parallel Chrome/Edge profiles.
-        return _open_agent_browser(browser_kind="chrome", url=payload.url or "about:blank")
+        # The product surface exposes one Agent Browser. The provider chooses
+        # the installed Chromium-family implementation; callers never choose a
+        # Chrome/Edge branded surface.
+        return _open_agent_browser(browser_kind="auto", url=payload.url or "about:blank")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -142,7 +142,7 @@ async def create_workbench_browser_session(session_id: str, body: dict[str, Any]
             session_id=session_id,
             provider=provider,
             url=str(body.get("url") or "about:blank"),
-            browser_kind=str(body.get("browserKind") or "chrome"),
+            browser_kind=str(body.get("browserKind") or "auto"),
             focus_requested=bool(body.get("focusRequested", True)),
             user_initiated=bool(body.get("userInitiated", True)),
         )
@@ -162,7 +162,7 @@ async def prepare_workbench_browser(session_id: str, body: dict[str, Any] = Body
             raise RuntimeError("Computer Use browser automation provider is unavailable")
         result = await asyncio.to_thread(
             provider.prepare_workbench_browser,
-            browser_kind=str(body.get("browserKind") or "chrome"),
+            browser_kind=str(body.get("browserKind") or "auto"),
         )
         return {
             "ok": bool(result.get("ok")),

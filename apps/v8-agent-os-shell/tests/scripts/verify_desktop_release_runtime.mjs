@@ -82,6 +82,38 @@ function commandExists(command, args = ["--version"]) {
   };
 }
 
+function installedSystemBrowser() {
+  const candidates = process.platform === "win32"
+    ? [
+        ["edge", path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Microsoft", "Edge", "Application", "msedge.exe")],
+        ["edge", path.join(process.env.ProgramFiles || "C:\\Program Files", "Microsoft", "Edge", "Application", "msedge.exe")],
+        ["edge", path.join(process.env.LOCALAPPDATA || "", "Microsoft", "Edge", "Application", "msedge.exe")],
+        ["chrome", path.join(process.env.ProgramFiles || "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe")],
+        ["chrome", path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe")],
+        ["chromium", path.join(process.env.LOCALAPPDATA || "", "Chromium", "Application", "chrome.exe")],
+      ]
+    : process.platform === "darwin"
+      ? [
+          ["chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+          ["chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium"],
+          ["edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+        ]
+      : [
+          ["chrome", "google-chrome"],
+          ["chrome", "google-chrome-stable"],
+          ["chromium", "chromium-browser"],
+          ["chromium", "chromium"],
+          ["edge", "microsoft-edge"],
+          ["edge", "microsoft-edge-stable"],
+        ];
+  for (const [kind, executable] of candidates) {
+    if (path.isAbsolute(executable) ? exists(executable) : commandExists(executable).ok) {
+      return { available: true, kind, executable };
+    }
+  }
+  return { available: false, kind: null, executable: null };
+}
+
 function pythonModuleCheck(pythonExe, modules) {
   const script = `
 import importlib.util, json
@@ -210,9 +242,12 @@ const chromium = walkFor(browserRoot, (_fullPath, name) => {
   const normalized = name.toLowerCase();
   return normalized === "chrome.exe" || normalized === "headless_shell.exe" || normalized === "chrome";
 });
-pushOptionalCheck(checks, degraded, "playwright.chromiumBrowser", Boolean(chromium), {
-  path: chromium ? rel(chromium) : rel(browserRoot),
-  reason: "Chromium is intentionally omitted from the slim desktop preview package unless a full browser-automation build profile is used",
+const systemBrowser = installedSystemBrowser();
+pushOptionalCheck(checks, degraded, "agentBrowser.compatibleBrowser", Boolean(chromium) || systemBrowser.available, {
+  source: chromium ? "bundled" : systemBrowser.available ? "system" : "missing",
+  browserKind: systemBrowser.kind,
+  path: chromium ? rel(chromium) : systemBrowser.executable || rel(browserRoot),
+  reason: "No compatible browser was found. Install Microsoft Edge, Google Chrome, or Chromium; V8OS does not download one at runtime.",
 });
 
 const gitResult = commandExists("git");
@@ -237,7 +272,8 @@ const payload = {
   notes: [
     "Git is a required managed-engineering dependency; ffmpeg remains a degraded external capability until bundled by the installer.",
     "Hard checks cover portable Engine Python, the native sandbox host, production bundles, desktop pet bundle, and the slim preview Python runtime.",
-    "Browser automation, full RPA, realtime media, and heavy optional modules may be reported as degraded in unsigned preview builds.",
+    "Agent Browser uses an installed Edge, Chrome, or Chromium through CDP; no browser download is triggered at runtime.",
+    "Full RPA, realtime media, and heavy optional modules may be reported as degraded in unsigned preview builds.",
   ],
 };
 

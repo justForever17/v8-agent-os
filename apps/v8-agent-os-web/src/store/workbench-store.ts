@@ -339,7 +339,7 @@ export function ingestWorkbenchRuntimeEvent(value: unknown) {
     if (!source) return false;
     const normalizedDocument = normalizeWorkbenchDocument(source.document || source.workbenchDocument || source.workbench_document);
     if (!normalizedDocument) return false;
-    // Agent Browser owns a real external Chrome window. Workbench consumes
+    // Agent Browser owns a real external system-browser window. Workbench consumes
     // documents and governed app/canvas surfaces only; it must not turn the
     // browser screencast into a second, lower-fidelity interaction surface.
     if (normalizedDocument.kind === "browser") return true;

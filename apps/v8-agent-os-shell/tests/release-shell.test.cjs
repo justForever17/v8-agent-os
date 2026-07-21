@@ -187,6 +187,7 @@ test('desktop preview uses a slim portable Python release profile', () => {
   assert.match(runtimeScript, /Install desktop preview Engine requirements/);
   assert.match(runtimeScript, /--prefer-binary/);
   assert.match(runtimeScript, /DEGRADED\.txt/);
+  assert.match(runtimeScript, /discovers an installed Edge, Chrome, or Chromium at runtime/);
 
   const releaseRequirements = fs.readFileSync(
     path.join(repoRoot, 'apps', 'v8-agent-os-engine', 'requirements', 'desktop-preview.txt'),
@@ -295,6 +296,9 @@ test('desktop release uses current desktop tag namespace and runtime probes', ()
   assert.match(runtimeProbe, /standaloneServerFor/);
   assert.match(runtimeProbe, /admin\.standaloneServer/);
   assert.match(runtimeProbe, /web\.standaloneServer/);
+  assert.match(runtimeProbe, /installedSystemBrowser/);
+  assert.match(runtimeProbe, /agentBrowser\.compatibleBrowser/);
+  assert.match(runtimeProbe, /V8OS does not download one at runtime/);
   const requiredModulesBlock = runtimeProbe.slice(
     runtimeProbe.indexOf('const requiredModules'),
     runtimeProbe.indexOf('const optionalModules'),

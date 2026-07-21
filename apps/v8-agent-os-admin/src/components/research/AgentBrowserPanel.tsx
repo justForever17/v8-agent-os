@@ -13,13 +13,22 @@ type AgentBrowserResult = {
 };
 
 function responseSummary(payload: Record<string, unknown>, fallback: string) {
-    if (typeof payload.summary === "string" && payload.summary.trim()) return payload.summary.trim();
-    if (typeof payload.detail === "string" && payload.detail.trim()) return payload.detail.trim();
+    const summary = typeof payload.summary === "string" && payload.summary.trim()
+        ? payload.summary.trim()
+        : typeof payload.detail === "string" && payload.detail.trim()
+            ? payload.detail.trim()
+            : "";
+    const nextAction = payload.ok === false
+        && typeof payload.recommendedNextAction === "string"
+        && payload.recommendedNextAction.trim()
+        ? payload.recommendedNextAction.trim()
+        : "";
+    if (summary) return nextAction && nextAction !== summary ? `${summary} ${nextAction}` : summary;
     if (payload.detail && typeof payload.detail === "object" && !Array.isArray(payload.detail)) {
         const message = (payload.detail as Record<string, unknown>).message;
         if (typeof message === "string" && message.trim()) return message.trim();
     }
-    return fallback;
+    return nextAction || fallback;
 }
 
 export function AgentBrowserPanel() {

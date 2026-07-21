@@ -743,7 +743,7 @@ class RPARuntime:
         try:
             computer_use_runtime.browser_automation.configure(computer_use_runtime._computer_use_config())
             return computer_use_runtime.browser_automation.agent_browser_attach_context(
-                browser_kind=payload.get("browserKind") or payload.get("browser_kind") or "chrome",
+                browser_kind=payload.get("browserKind") or payload.get("browser_kind") or "auto",
                 target_id=payload.get("targetId") or payload.get("target_id"),
                 target_url=payload.get("targetUrl") or payload.get("target_url"),
                 open_mode=str(payload.get("openMode") or "reuse_current_tab"),

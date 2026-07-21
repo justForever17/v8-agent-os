@@ -201,8 +201,8 @@ Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "pip", "install"
 New-Item -ItemType Directory -Force -Path $BrowserDir | Out-Null
 if ($SkipPlaywrightBrowsers) {
   $markerPath = Join-Path $BrowserDir "DEGRADED.txt"
-  Set-Content -LiteralPath $markerPath -Value "Playwright browsers were intentionally skipped for the desktop preview build." -Encoding utf8
-  Write-Host "Skipping Playwright Chromium install for this release profile. Browser automation will be reported as degraded."
+  Set-Content -LiteralPath $markerPath -Value "Playwright browsers were intentionally skipped. V8OS discovers an installed Edge, Chrome, or Chromium at runtime." -Encoding utf8
+  Write-Host "Skipping Playwright Chromium install. Agent Browser will discover a compatible system browser at runtime."
 } else {
   Invoke-CheckedWithRetry -FilePath $pythonExe -Arguments @("-m", "playwright", "install", "chromium") -Description "Install Playwright Chromium" -Environment @{
     PLAYWRIGHT_BROWSERS_PATH = $BrowserDir

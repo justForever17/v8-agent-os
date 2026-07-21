@@ -1020,7 +1020,7 @@ export function RPAWorkbench() {
     label: selectedComputerAppLabel,
     stepId: selectedBuilderStep?.stepId || selectedDraftStepKey || undefined,
     selectedStepKey: selectedDraftStepKey || undefined,
-    browserKind: canvasTargetMode === "agent_browser" ? "chrome" : undefined,
+    browserKind: canvasTargetMode === "agent_browser" ? "auto" : undefined,
     ignoreAdminSurface: true,
     consoleTargetBlocked: targetLockLooksLikeAdmin
   }), [canvasTargetAppId, canvasTargetMode, selectedBuilderStep, selectedComputerAppLabel, selectedDraftStepKey, targetLockLooksLikeAdmin]);
@@ -1068,7 +1068,7 @@ export function RPAWorkbench() {
       selectedStepKey: selectedDraftStepKey,
       targetStepId: stepId,
       launchStepId: launchStep?.stepId,
-      browserKind: mode === "agent_browser" ? "chrome" : undefined,
+      browserKind: mode === "agent_browser" ? "auto" : undefined,
       window: targetWindow,
       ignoreAdminSurface: true,
       consoleTargetBlocked: /v8 agent os|v8 os|localhost:9528|127\.0\.0\.1:9528|admin/i.test([
@@ -1496,7 +1496,7 @@ export function RPAWorkbench() {
       name: recordingName.trim() || undefined,
       goal: recordingGoal.trim() || recordingName.trim() || selectedDraft?.goal || undefined,
       targetMode,
-      browserKind: targetMode === "agent_browser" ? "chrome" : undefined,
+      browserKind: targetMode === "agent_browser" ? "auto" : undefined,
       appId: targetAppId,
       activeApp: selectedComputerApp ? {
         appId: targetAppId,
@@ -1683,7 +1683,7 @@ export function RPAWorkbench() {
           targetLock: captureContext.targetLock,
           appId: captureContext.appId || "desktop",
           label: captureContext.label,
-          browserKind: captureContext.mode === "agent_browser" ? "chrome" : undefined,
+          browserKind: captureContext.mode === "agent_browser" ? "auto" : undefined,
           browserProfilePolicy: "agent_browser_only",
           openMode: "reuse_current_tab",
           captureMode: captureContext.mode === "agent_browser" ? "next_click" : "inspector_panel",
@@ -1728,7 +1728,7 @@ export function RPAWorkbench() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          browserKind: "chrome",
+          browserKind: "auto",
           url: "about:blank"
         })
       });

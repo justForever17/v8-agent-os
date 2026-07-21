@@ -286,7 +286,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                         </div>
 
                         <div
-                            data-testid="light-background-preview"
+                            data-testid="background-preview"
                             className="relative h-32 overflow-hidden rounded-xl border border-border/60 bg-muted/70 shadow-inner sm:h-36"
                             style={backgroundUrl && backgroundMediaType === "image" ? {
                                 backgroundImage: `linear-gradient(rgb(255 255 255 / 0.12), rgb(15 23 42 / 0.08)), url(${JSON.stringify(resolveLightBackgroundMediaSrc(backgroundUrl))})`,

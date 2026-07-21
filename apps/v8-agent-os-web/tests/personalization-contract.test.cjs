@@ -19,27 +19,27 @@ test("avatar upload uses durable client media and has a visual fallback", () => 
   assert.match(avatarProxy, /allowedKinds: \["avatar"\]/);
 });
 
-test("light wallpaper uses center cropping and never changes dark theme", () => {
+test("wallpaper uses center cropping with theme-specific light and dark surfaces", () => {
   const settings = read("src/components/settings/SettingsDialog.tsx");
   const provider = read("src/components/providers/PersonalizationProvider.tsx");
   const styles = read("src/app/globals.css");
   const sidebar = read("src/components/layout/Sidebar.tsx");
   const chatWindow = read("src/components/chat/ChatWindow.tsx");
 
-  assert.match(settings, /data-testid="light-background-preview"/);
+  assert.match(settings, /data-testid="background-preview"/);
   assert.match(settings, /backgroundSize: "cover"/);
   assert.match(provider, /root\.dataset\.v8Wallpaper = "active"/);
   assert.match(provider, /image\.onload/);
   assert.match(provider, /<video/);
   assert.match(provider, /muted=\{videoMuted\}/);
-  assert.match(provider, /resolvedTheme === "light"/);
+  assert.doesNotMatch(provider, /resolvedTheme/);
   assert.match(provider, /root\.style\.getPropertyValue\("--v8-wallpaper-image"\) !== cssValue/);
   assert.match(styles, /html\.light\[data-v8-wallpaper="active"\]/);
+  assert.match(styles, /html\.dark\[data-v8-wallpaper="active"\]/);
   assert.match(styles, /background-size: cover/);
   assert.match(styles, /\.v8-chat-viewport-surface/);
   assert.match(chatWindow, /v8-chat-viewport-surface/);
   assert.match(sidebar, /group\/sidebar relative z-20 hidden h-full/);
-  assert.doesNotMatch(styles, /html\.dark\[data-v8-wallpaper="active"\]/);
 });
 
 test("topbar sound control belongs only to an active MP4 wallpaper", () => {

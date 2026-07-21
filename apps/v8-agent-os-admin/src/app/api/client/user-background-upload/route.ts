@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
         const mediaType = rawUpload ? contentType : (file as File).type;
         const isVideo = VIDEO_TYPES.has(mediaType);
         if (!IMAGE_TYPES.has(mediaType) && !isVideo) {
-            return NextResponse.json({ error: "亮色背景仅支持 JPG、PNG、WEBP 和 MP4" }, { status: 400 });
+            return NextResponse.json({ error: "自定义背景仅支持 JPG、PNG、WEBP 和 MP4" }, { status: 400 });
         }
         const maxSize = isVideo ? MAX_VIDEO_SIZE_BYTES : MAX_IMAGE_SIZE_BYTES;
         const declaredSize = Number(req.headers.get("content-length") || 0);

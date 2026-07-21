@@ -299,8 +299,8 @@
     }
 }
 
-/* User wallpaper is a light-theme appearance variant. The image always keeps
-   its aspect ratio: window resizing crops from the center instead of stretching. */
+/* User wallpaper is shared by both color themes. Media always keeps its aspect
+   ratio: window resizing crops from the center instead of stretching. */
 .v8-personalization-wallpaper,
 .v8-personalization-wallpaper-overlay {
     display: none;
@@ -322,15 +322,15 @@
     transition: opacity 260ms ease-out;
 }
 
-html.light[data-v8-wallpaper="active"] body {
+html[data-v8-wallpaper="active"] body {
     background-color: transparent !important;
 }
 
-html.light[data-v8-wallpaper="active"] body::before {
+html[data-v8-wallpaper="active"] body::before {
     display: none;
 }
 
-html.light[data-v8-wallpaper="active"] .v8-personalization-wallpaper {
+html[data-v8-wallpaper="active"] .v8-personalization-wallpaper {
     display: block;
     z-index: -2;
     background-image: var(--v8-wallpaper-image);
@@ -339,19 +339,28 @@ html.light[data-v8-wallpaper="active"] .v8-personalization-wallpaper {
     background-size: cover;
 }
 
-html.light[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
+html[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
     display: block;
     z-index: -1;
+}
+
+html.light[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
     background:
         linear-gradient(115deg, rgb(248 250 252 / 0.48), rgb(248 250 252 / 0.2) 48%, rgb(248 250 252 / 0.4)),
         radial-gradient(circle at 50% 35%, rgb(255 255 255 / 0.08), rgb(15 23 42 / 0.12));
 }
 
-html.light[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] .v8-personalization-wallpaper-video {
+html.dark[data-v8-wallpaper="active"] .v8-personalization-wallpaper-overlay {
+    background:
+        linear-gradient(115deg, rgb(9 9 11 / 0.6), rgb(9 9 11 / 0.32) 48%, rgb(9 9 11 / 0.54)),
+        radial-gradient(circle at 50% 35%, rgb(255 255 255 / 0.04), rgb(0 0 0 / 0.2));
+}
+
+html[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] .v8-personalization-wallpaper-video {
     opacity: 1;
 }
 
-html.light[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] .v8-personalization-wallpaper {
+html[data-v8-wallpaper="active"][data-v8-wallpaper-kind="video"] .v8-personalization-wallpaper {
     display: none;
 }
 
@@ -398,7 +407,48 @@ html.light[data-v8-wallpaper="active"] .v8-product-topbar {
     backdrop-filter: blur(18px) saturate(1.08);
 }
 
-html.light[data-v8-wallpaper="active"] .v8-chat-viewport-surface {
+html.dark[data-v8-wallpaper="active"] :where(.bg-card, [class*="bg-card/"]) {
+    background-color: rgb(24 24 27 / 0.66) !important;
+}
+
+html.dark[data-v8-wallpaper="active"] :where(.bg-background, [class*="bg-background/"]) {
+    background-color: rgb(9 9 11 / 0.7) !important;
+}
+
+html.dark[data-v8-wallpaper="active"] :where(.bg-popover, [class*="bg-popover/"]) {
+    background-color: rgb(24 24 27 / 0.9) !important;
+    -webkit-backdrop-filter: blur(14px) saturate(1.08);
+    backdrop-filter: blur(14px) saturate(1.08);
+}
+
+html.dark[data-v8-wallpaper="active"] :where(.bg-slate-50, [class*="bg-slate-50/"], .bg-white, [class*="bg-white/"]) {
+    background-color: rgb(24 24 27 / 0.64) !important;
+}
+
+html.dark[data-v8-wallpaper="active"] .glass-panel {
+    background: linear-gradient(90deg, rgb(9 9 11 / 0.68) 0%, rgb(9 9 11 / 0.52) 74%, rgb(9 9 11 / 0.4) 100%) !important;
+    border-right-color: rgb(255 255 255 / 0.1) !important;
+    box-shadow: inset -1px 0 rgb(255 255 255 / 0.05);
+    -webkit-backdrop-filter: blur(20px) saturate(1.08);
+    backdrop-filter: blur(20px) saturate(1.08);
+}
+
+html.dark[data-v8-wallpaper="active"] .glass-card,
+html.dark[data-v8-wallpaper="active"] .v8-personalization-dialog {
+    background-color: rgb(24 24 27 / 0.82) !important;
+    border-color: rgb(255 255 255 / 0.14) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(1.06);
+    backdrop-filter: blur(16px) saturate(1.06);
+}
+
+html.dark[data-v8-wallpaper="active"] .v8-product-topbar {
+    background: linear-gradient(90deg, rgb(9 9 11 / 0.74), rgb(9 9 11 / 0.6));
+    border-bottom-color: rgb(255 255 255 / 0.12);
+    -webkit-backdrop-filter: blur(18px) saturate(1.08);
+    backdrop-filter: blur(18px) saturate(1.08);
+}
+
+html[data-v8-wallpaper="active"] .v8-chat-viewport-surface {
     background: transparent !important;
     border-color: transparent !important;
     box-shadow: none !important;
@@ -406,15 +456,21 @@ html.light[data-v8-wallpaper="active"] .v8-chat-viewport-surface {
     backdrop-filter: none !important;
 }
 
-html.light[data-v8-wallpaper="active"] .v8-workbench-surface,
-html.light[data-v8-wallpaper="active"] .v8-workbench-surface > [role="tabpanel"],
-html.light[data-v8-wallpaper="active"] .v8-workbench-surface > [role="tabpanel"] > :first-child {
+html[data-v8-wallpaper="active"] .v8-workbench-surface,
+html[data-v8-wallpaper="active"] .v8-workbench-surface > [role="tabpanel"],
+html[data-v8-wallpaper="active"] .v8-workbench-surface > [role="tabpanel"] > :first-child {
     background: transparent !important;
 }
 
 @media (prefers-reduced-transparency: reduce) {
     html.light[data-v8-wallpaper="active"] :where(.bg-card, [class*="bg-card/"], .bg-background, [class*="bg-background/"], .bg-popover, [class*="bg-popover/"], .bg-slate-50, [class*="bg-slate-50/"], .bg-white, [class*="bg-white/"]) {
         background-color: rgb(255 255 255 / 0.92) !important;
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+    }
+
+    html.dark[data-v8-wallpaper="active"] :where(.bg-card, [class*="bg-card/"], .bg-background, [class*="bg-background/"], .bg-popover, [class*="bg-popover/"], .bg-slate-50, [class*="bg-slate-50/"], .bg-white, [class*="bg-white/"]) {
+        background-color: rgb(24 24 27 / 0.94) !important;
         -webkit-backdrop-filter: none;
         backdrop-filter: none;
     }

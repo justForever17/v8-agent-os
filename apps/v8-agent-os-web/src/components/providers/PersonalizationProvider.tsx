@@ -1,7 +1,6 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { useProductTheme } from "@v8/product-ui";
 
 import { useClientProfile } from "@/hooks/use-client-profile";
 import {
@@ -45,7 +44,6 @@ export function useBackgroundVideoAudio() {
 
 export function PersonalizationProvider({ children }: { children: React.ReactNode }) {
     const { profile, canonicalLoaded } = useClientProfile();
-    const { resolvedTheme } = useProductTheme();
     const videoRef = useRef<HTMLVideoElement | null>(null);
     const [videoSrc, setVideoSrc] = useState("");
     const [videoReady, setVideoReady] = useState(false);
@@ -110,15 +108,9 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
         };
     }, [canonicalLoaded, profile?.appearance]);
 
-    useEffect(() => {
-        if (resolvedTheme !== "dark") return;
-        setVideoMuted(true);
-        if (videoRef.current) videoRef.current.muted = true;
-    }, [resolvedTheme]);
-
     const toggleMuted = useCallback(() => {
         const video = videoRef.current;
-        if (!video || !videoReady || resolvedTheme !== "light") return;
+        if (!video || !videoReady) return;
         setVideoMuted((current) => {
             const next = !current;
             video.muted = next;
@@ -131,13 +123,13 @@ export function PersonalizationProvider({ children }: { children: React.ReactNod
             }
             return next;
         });
-    }, [resolvedTheme, videoReady]);
+    }, [videoReady]);
 
     const backgroundVideoAudio = useMemo<BackgroundVideoAudioContextValue>(() => ({
-        available: Boolean(videoSrc && videoReady && resolvedTheme === "light"),
+        available: Boolean(videoSrc && videoReady),
         muted: videoMuted,
         toggleMuted,
-    }), [resolvedTheme, toggleMuted, videoMuted, videoReady, videoSrc]);
+    }), [toggleMuted, videoMuted, videoReady, videoSrc]);
 
     return (
         <BackgroundVideoAudioContext.Provider value={backgroundVideoAudio}>

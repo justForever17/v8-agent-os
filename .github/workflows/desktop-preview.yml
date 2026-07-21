@@ -66,7 +66,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout
@@ -202,7 +202,7 @@ jobs:
         continue-on-error: true
 
       - name: Collect desktop smoke diagnostics
-        if: always()
+        if: failure()
         shell: pwsh
         run: |
           $diag = "desktop-smoke-diagnostics"
@@ -217,7 +217,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload desktop smoke diagnostics
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: v8os-desktop-smoke-diagnostics
@@ -225,6 +225,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           compression-level: 0
+        continue-on-error: true
 
       - name: Normalize desktop artifact names
         shell: pwsh
@@ -266,6 +267,7 @@ jobs:
             --out "apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md"
 
       - name: Upload desktop preview artifacts
+        if: ${{ !startsWith(github.ref, 'refs/tags/v8-os-desktop-v') }}
         uses: actions/upload-artifact@v4
         with:
           name: v8os-desktop-preview-windows
@@ -278,28 +280,13 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-  create-release:
-    name: Publish desktop preview release
-    if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
-    needs: windows-preview
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download desktop preview artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: v8os-desktop-preview-windows
-          path: desktop-preview-artifacts
-
       - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v8-os-desktop-v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: false
-          body_path: desktop-preview-artifacts/RELEASE_NOTES.md
+          body_path: apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md
           files: |
-            desktop-preview-artifacts/*.exe
-            desktop-preview-artifacts/SHA256SUMS.txt
-            desktop-preview-artifacts/RUNTIME_PROBE.json
+            apps/v8-agent-os-shell/dist/release/*.exe
+            apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
+            apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json

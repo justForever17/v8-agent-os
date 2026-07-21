@@ -185,10 +185,22 @@ test('desktop workflow uses free-tier guardrails and keeps release permissions s
   assert.match(workflow, /node --test apps\/v8-agent-os-shell\/tests\/release-shell\.test\.cjs/);
   assert.match(workflow, /node --test apps\/v8-agent-os-admin\/tests\/feature-pack-ui-contract\.test\.cjs/);
   assert.match(workflow, /windows-preview:[\s\S]*if: github\.event_name == 'workflow_dispatch' \|\| startsWith\(github\.ref, 'refs\/tags\/v8-os-desktop-v'\)/);
-  assert.match(workflow, /create-release:[\s\S]*permissions:\s*\n\s+contents: write/);
-  assert.match(workflow, /actions\/download-artifact@v4/);
+  assert.match(workflow, /windows-preview:[\s\S]*permissions:\s*\n\s+contents: write/);
+  assert.match(workflow, /Create GitHub release[\s\S]*softprops\/action-gh-release@v2/);
+  assert.match(workflow, /Upload desktop preview artifacts\s*\n\s+if: \$\{\{ !startsWith/);
+  assert.match(workflow, /Upload desktop smoke diagnostics[\s\S]*continue-on-error: true/);
+  assert.doesNotMatch(workflow, /actions\/download-artifact@v4/);
   assert.match(workflow, /retention-days: 7/);
   assert.match(workflow, /compression-level: 0/);
+});
+
+test('phone tag releases bypass Actions artifact storage', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github', 'workflows', 'phone-build.yml'), 'utf8');
+  assert.match(workflow, /Upload APK artifact\s*\n\s+if: \$\{\{ !startsWith/);
+  assert.match(workflow, /Prepare phone release assets/);
+  assert.match(workflow, /Create GitHub release[\s\S]*softprops\/action-gh-release@v2/);
+  assert.match(workflow, /apps\/v8-agent-os-phone\/V8OS-Phone-\*-android-preview\.apk/);
+  assert.doesNotMatch(workflow, /actions\/download-artifact@v4/);
 });
 
 test('desktop preview uses a slim portable Python release profile', () => {

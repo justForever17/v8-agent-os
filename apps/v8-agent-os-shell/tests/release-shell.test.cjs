@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -85,20 +86,41 @@ test('electron launcher strips ELECTRON_RUN_AS_NODE before starting child Electr
   assert.match(launcherSource, /windowsHide:\s*true/);
 });
 
-test('desktop release config emits unsigned Windows installer and zip artifacts', () => {
+test('desktop release scripts keep preview installer-only and stable portable output', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(shellRoot, 'package.json'), 'utf8'));
-  assert.match(pkg.scripts['dist:win'], /--publish never/);
+  assert.equal(pkg.scripts['dist:win'], 'npm run dist:win:preview');
+  assert.match(pkg.scripts['dist:win:preview'], /--win nsis --publish never/);
+  assert.doesNotMatch(pkg.scripts['dist:win:preview'], /\bzip\b/);
+  assert.match(pkg.scripts['dist:win:stable'], /--win nsis zip --publish never/);
   assert.match(pkg.repository.url, /v8-agent-os\.git$/);
 
   const config = fs.readFileSync(path.join(shellRoot, 'electron-builder.yml'), 'utf8');
   assert.match(config, /target:\s*\n\s*- target: nsis/);
-  assert.match(config, /- target: zip/);
+  assert.doesNotMatch(config, /- target: zip/);
   assert.match(config, /icon: assets\/icon\.ico/);
   assert.match(config, /extraResources:/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-engine/);
   assert.match(config, /to: v8os\/apps\/v8-agent-os-web/);
   assert.match(config, /!\.next\/dev\/\*\*/);
   assert.match(config, /!native\/\*\*\/target\/\*\*/);
+});
+
+test('desktop release notes only advertise portable archives on stable', () => {
+  const generator = path.join(repoRoot, 'scripts', 'release', 'generate-release-notes.mjs');
+  const commonArgs = ['--product', 'desktop', '--version', '2026.07.22.1'];
+  const preview = execFileSync(process.execPath, [generator, ...commonArgs, '--channel', 'preview'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  const stable = execFileSync(process.execPath, [generator, ...commonArgs, '--channel', 'stable'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.match(preview, /win-x64-setup\.exe/);
+  assert.doesNotMatch(preview, /win-x64\.zip/);
+  assert.match(stable, /win-x64-setup\.exe/);
+  assert.match(stable, /win-x64\.zip/);
 });
 
 test('desktop workflow exists and publishes checksummed Windows artifacts', () => {
@@ -112,7 +134,9 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   assert.match(workflow, /build-sandbox-host\.mjs --force/);
   assert.match(workflow, /working-directory: packages\/session-realtime/);
   assert.match(workflow, /npm exec -- tsc --version/);
-  assert.match(workflow, /apps\/v8-agent-os-shell run dist:win/);
+  assert.match(workflow, /apps\/v8-agent-os-shell run dist:win:preview/);
+  assert.doesNotMatch(workflow, /dist\/release\/\*\.zip/);
+  assert.doesNotMatch(workflow, /desktop-preview-artifacts\/\*\.zip/);
   assert.match(workflow, /SHA256/);
 });
 
@@ -156,8 +180,8 @@ test('desktop preview uses a slim portable Python release profile', () => {
   );
   assert.match(runtimeScript, /\[string\]\$RequirementsPath/);
   assert.match(runtimeScript, /\[switch\]\$SkipPlaywrightBrowsers/);
-  assert.match(runtimeScript, /BeginOutputReadLine/);
-  assert.match(runtimeScript, /BeginErrorReadLine/);
+  assert.match(runtimeScript, /StandardOutput\.ReadToEndAsync\(\)/);
+  assert.match(runtimeScript, /StandardError\.ReadToEndAsync\(\)/);
   assert.match(runtimeScript, /Invoke-WebRequestWithRetry/);
   assert.match(runtimeScript, /Invoke-CheckedWithRetry/);
   assert.match(runtimeScript, /Install desktop preview Engine requirements/);

@@ -110,18 +110,22 @@ function assetSection(product, version, channel) {
 
   const desktopLabel = channel === "stable" ? "Windows 安装包" : "Windows unsigned preview 安装包";
   const desktopVersion = channel === "stable" ? version : `preview-${version}`;
-  const desktopZipLabel = channel === "stable" ? "免安装包" : "免安装预览包";
   const desktopChannelNote = channel === "stable"
     ? "请确认本次桌面包已完成 stable 门禁；签名、更新和校验信息应与发布资产同批提供。"
     : "当前桌面包未签名。Windows 可能显示安全确认；代码签名、SmartScreen 信誉和自动更新属于后续阶段。";
-  return [
+  const assets = [
     "- `V8-Agent-OS-" + desktopVersion + "-win-x64-setup.exe`：" + desktopLabel + "。",
-    "- `V8-Agent-OS-" + desktopVersion + "-win-x64.zip`：" + desktopZipLabel + "。",
+  ];
+  if (channel === "stable") {
+    assets.push("- `V8-Agent-OS-" + desktopVersion + "-win-x64.zip`：Windows 免安装包。");
+  }
+  assets.push(
     "- `SHA256SUMS.txt`：下载文件的 SHA256 校验信息。",
     "- `RUNTIME_PROBE.json`：本次桌面包内置运行时与功能依赖探针结果；若 Git/ffmpeg 等能力显示 degraded，请按探针结果理解实际可用范围。",
     "",
     desktopChannelNote,
-  ].join("\n");
+  );
+  return assets.join("\n");
 }
 
 function knownLimits(product, channel) {
@@ -167,7 +171,9 @@ ${assetSection(release.product, release.version, release.channel)}
 
 ${release.product === "phone"
   ? "下载 APK 后安装到 Android 设备；打开 Phone 后扫码配对到你的 V8OS 桌面/控制台。"
-  : "下载安装包或 zip 后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"}
+  : release.channel === "stable"
+    ? "下载安装包或免安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"
+    : "下载安装包后启动 V8 Agent OS。首次运行会启动本机服务并打开桌面 Shell。"}
 
 ## 已知限制
 

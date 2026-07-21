@@ -12,7 +12,9 @@
   "type": "commonjs",
   "scripts": {
     "electron:start": "node scripts/launch-shell.mjs",
-    "dist:win": "electron-builder --config electron-builder.yml --win nsis zip --publish never",
+    "dist:win": "npm run dist:win:preview",
+    "dist:win:preview": "electron-builder --config electron-builder.yml --win nsis --publish never",
+    "dist:win:stable": "electron-builder --config electron-builder.yml --win nsis zip --publish never",
     "test": "node --test tests/*.test.cjs"
   },
   "devDependencies": {

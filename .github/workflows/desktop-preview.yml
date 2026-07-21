@@ -169,7 +169,7 @@ jobs:
       - name: Build unsigned Windows desktop preview
         shell: pwsh
         timeout-minutes: 25
-        run: npm --prefix apps/v8-agent-os-shell run dist:win
+        run: npm --prefix apps/v8-agent-os-shell run dist:win:preview
 
       - name: Installed desktop smoke
         shell: pwsh
@@ -223,18 +223,15 @@ jobs:
             $releaseVersion = "preview-$env:GITHUB_RUN_NUMBER"
           }
           $exe = Get-ChildItem $outDir -File -Filter "*.exe" | Select-Object -First 1
-          $zip = Get-ChildItem $outDir -File -Filter "*.zip" | Select-Object -First 1
           if (-not $exe) { throw "No NSIS installer found in $outDir" }
-          if (-not $zip) { throw "No zip package found in $outDir" }
           Rename-Item -LiteralPath $exe.FullName -NewName "V8-Agent-OS-$releaseVersion-win-x64-setup.exe" -Force
-          Rename-Item -LiteralPath $zip.FullName -NewName "V8-Agent-OS-$releaseVersion-win-x64.zip" -Force
 
       - name: Generate SHA256 checksums
         shell: pwsh
         timeout-minutes: 3
         run: |
           $outDir = "apps/v8-agent-os-shell/dist/release"
-          $files = Get-ChildItem $outDir -File | Where-Object { $_.Extension -in ".exe", ".zip" }
+          $files = Get-ChildItem $outDir -File -Filter "*.exe"
           if (-not $files) { throw "No desktop preview artifacts found in $outDir" }
           $lines = foreach ($file in $files) {
             $hash = Get-FileHash $file.FullName -Algorithm SHA256
@@ -260,7 +257,6 @@ jobs:
           name: v8os-desktop-preview-windows
           path: |
             apps/v8-agent-os-shell/dist/release/*.exe
-            apps/v8-agent-os-shell/dist/release/*.zip
             apps/v8-agent-os-shell/dist/release/SHA256SUMS.txt
             apps/v8-agent-os-shell/dist/release/RUNTIME_PROBE.json
             apps/v8-agent-os-shell/dist/release/RELEASE_NOTES.md
@@ -291,6 +287,5 @@ jobs:
           body_path: desktop-preview-artifacts/RELEASE_NOTES.md
           files: |
             desktop-preview-artifacts/*.exe
-            desktop-preview-artifacts/*.zip
             desktop-preview-artifacts/SHA256SUMS.txt
             desktop-preview-artifacts/RUNTIME_PROBE.json

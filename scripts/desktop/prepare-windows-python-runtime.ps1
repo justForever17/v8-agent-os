@@ -37,22 +37,18 @@ function Invoke-Checked {
   }
   $process = [System.Diagnostics.Process]::new()
   $process.StartInfo = $psi
-  $process.add_OutputDataReceived({
-    param($sender, $eventArgs)
-    if ($eventArgs.Data) {
-      Write-Host $eventArgs.Data
-    }
-  })
-  $process.add_ErrorDataReceived({
-    param($sender, $eventArgs)
-    if ($eventArgs.Data) {
-      Write-Host $eventArgs.Data
-    }
-  })
   [void]$process.Start()
-  $process.BeginOutputReadLine()
-  $process.BeginErrorReadLine()
+  $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+  $stderrTask = $process.StandardError.ReadToEndAsync()
   $process.WaitForExit()
+  $stdout = $stdoutTask.GetAwaiter().GetResult()
+  $stderr = $stderrTask.GetAwaiter().GetResult()
+  if ($stdout) {
+    Write-Host $stdout.TrimEnd()
+  }
+  if ($stderr) {
+    Write-Host $stderr.TrimEnd()
+  }
   if ($process.ExitCode -ne 0) {
     throw "Command failed with exit code $($process.ExitCode): $FilePath $($Arguments -join ' ')"
   }

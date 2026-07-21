@@ -118,15 +118,55 @@ def _path_key(path: Path) -> str:
     return os.path.normcase(str(path.resolve(strict=False))).rstrip("\\/")
 
 
+def _is_path_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def _nearest_existing_ancestor(path: Path) -> Path:
+    candidate = path.resolve(strict=False)
+    while not candidate.exists() and candidate.parent != candidate:
+        candidate = candidate.parent
+    return candidate
+
+
+def _same_storage_volume(left: Path, right: Path) -> bool:
+    left_resolved = left.resolve(strict=False)
+    right_resolved = right.resolve(strict=False)
+    if os.name == "nt":
+        return left_resolved.drive.casefold() == right_resolved.drive.casefold()
+    try:
+        return _nearest_existing_ancestor(left_resolved).stat().st_dev == _nearest_existing_ancestor(right_resolved).stat().st_dev
+    except OSError:
+        return False
+
+
 def _repository_id(repository_root: Path, workspace_root: Path) -> str:
     topology_key = f"{_path_key(repository_root)}\n{_path_key(workspace_root)}"
     return f"repo_{hashlib.sha256(topology_key.encode('utf-8')).hexdigest()[:20]}"
 
 
 class ManagedGitService:
-    def __init__(self, *, home: Path | None = None, git_executable: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        home: Path | None = None,
+        git_executable: str | None = None,
+        worktree_placement: str = "same_volume",
+        worktrees_root: Path | str | None = None,
+    ) -> None:
         self.home = Path(home or V8_AGENT_OS_HOME).expanduser().resolve(strict=False)
+        # Kept as an allowed root for worktrees created before same-volume placement.
         self.worktrees_root = self.home / "worktrees"
+        self.worktree_placement = "same_volume"
+        self.custom_worktrees_root: Path | None = None
+        self.configure_worktree_storage(
+            placement=worktree_placement,
+            custom_root=worktrees_root,
+        )
         self.runtime_root = self.home / "runtime" / "managed-git"
         self.empty_hooks_root = self.runtime_root / "empty-hooks"
         self.index_root = self.runtime_root / "indexes"
@@ -135,6 +175,67 @@ class ManagedGitService:
             raise ManagedGitError("git_not_installed", "Git is required for managed engineering workspaces.")
         self.empty_hooks_root.mkdir(parents=True, exist_ok=True)
         self.index_root.mkdir(parents=True, exist_ok=True)
+
+    def configure_worktree_storage(
+        self,
+        *,
+        placement: str,
+        custom_root: Path | str | None = None,
+    ) -> None:
+        normalized = str(placement or "same_volume").strip().lower()
+        if normalized not in {"same_volume", "custom"}:
+            normalized = "same_volume"
+        resolved_custom: Path | None = None
+        if normalized == "custom":
+            token = str(custom_root or "").strip()
+            candidate = Path(token).expanduser() if token else None
+            if candidate is None or not candidate.is_absolute():
+                raise ManagedGitError(
+                    "managed_worktree_root_invalid",
+                    "The custom managed worktree root must be an absolute path.",
+                )
+            resolved_custom = candidate.resolve(strict=False)
+        self.worktree_placement = normalized
+        self.custom_worktrees_root = resolved_custom
+
+    def _same_volume_worktrees_root(self, repository: ManagedRepository) -> Path:
+        repository_root = Path(repository.topology.repository_root).expanduser().resolve(strict=False)
+        return (repository_root.parent / ".v8os-worktrees").resolve(strict=False)
+
+    def _worktrees_root_for(self, repository: ManagedRepository) -> Path:
+        if self.worktree_placement == "custom" and self.custom_worktrees_root is not None:
+            root = self.custom_worktrees_root
+        else:
+            root = self._same_volume_worktrees_root(repository)
+        repository_root = Path(repository.topology.repository_root).expanduser().resolve(strict=False)
+        try:
+            root.relative_to(repository_root)
+        except ValueError:
+            if not _same_storage_volume(root, repository_root):
+                raise ManagedGitError(
+                    "managed_worktree_root_cross_volume",
+                    "The managed worktree root must use the same storage volume as the source repository.",
+                    details={"worktreeRoot": str(root), "repositoryRoot": str(repository_root)},
+                )
+            return root
+        raise ManagedGitError(
+            "managed_worktree_root_inside_repository",
+            "The managed worktree root must be outside the source repository.",
+            details={"worktreeRoot": str(root), "repositoryRoot": str(repository_root)},
+        )
+
+    def _allowed_worktrees_roots(self, repository: ManagedRepository) -> tuple[Path, ...]:
+        roots = [self.worktrees_root.resolve(strict=False), self._same_volume_worktrees_root(repository)]
+        if self.custom_worktrees_root is not None:
+            roots.append(self.custom_worktrees_root.resolve(strict=False))
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            key = _path_key(root)
+            if key not in seen:
+                seen.add(key)
+                unique.append(root)
+        return tuple(unique)
 
     def _environment(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         environment = dict(os.environ)
@@ -643,15 +744,13 @@ class ManagedGitService:
         branch_name: str,
     ) -> None:
         root = Path(worktree_root).expanduser().resolve(strict=False)
-        managed_root = self.worktrees_root.resolve(strict=False)
-        try:
-            root.relative_to(managed_root)
-        except ValueError as exc:
+        managed_roots = self._allowed_worktrees_roots(repository)
+        if not any(_is_path_within(root, managed_root) for managed_root in managed_roots):
             raise ManagedGitError(
                 "worktree_cleanup_path_outside_managed_root",
                 "Refusing to remove a worktree outside V8OS-managed storage.",
-                details={"path": str(root), "managedRoot": str(managed_root)},
-            ) from exc
+                details={"path": str(root), "managedRoots": [str(item) for item in managed_roots]},
+            )
         repository_root = Path(repository.topology.repository_root)
         if root.exists():
             self.run(["worktree", "remove", "--force", str(root)], cwd=repository_root)
@@ -660,6 +759,26 @@ class ManagedGitService:
         normalized_branch = str(branch_name or "").strip()
         if normalized_branch.startswith("v8os/run/"):
             self.run(["branch", "-D", normalized_branch], cwd=repository_root, check=False)
+
+    def preserve_change_set_ref(
+        self,
+        repository: ManagedRepository,
+        *,
+        run_id: str,
+        worktree_id: str,
+        commit_id: str,
+    ) -> str:
+        commit = str(commit_id or "").strip()
+        if not commit:
+            raise ManagedGitError("change_set_commit_missing", "Cannot preserve an empty change-set commit.")
+        repository_root = Path(repository.topology.repository_root)
+        self.run(["cat-file", "-e", f"{commit}^{{commit}}"], cwd=repository_root)
+        recovery_ref = (
+            f"refs/v8os/delivered/{_safe_segment(run_id, fallback='run')}/"
+            f"{_safe_segment(worktree_id, fallback='worktree')}"
+        )
+        self.run(["update-ref", recovery_ref, commit], cwd=repository_root)
+        return recovery_ref
 
     def create_worktree(
         self,
@@ -678,7 +797,8 @@ class ManagedGitService:
         safe_run = _safe_segment(run_id, fallback="run")
         safe_namespace = _safe_segment(branch_namespace, fallback="task")
         branch_name = f"v8os/run/{safe_run}/{safe_namespace}-{safe_worktree}"
-        worktree_root = (self.worktrees_root / repository.repository_id / safe_run / safe_worktree).resolve(strict=False)
+        managed_root = self._worktrees_root_for(repository)
+        worktree_root = (managed_root / repository.repository_id / safe_run / safe_worktree).resolve(strict=False)
         if worktree_root.exists():
             raise ManagedGitError("worktree_path_exists", "The managed worktree path already exists.", details={"path": str(worktree_root)})
         worktree_root.parent.mkdir(parents=True, exist_ok=True)

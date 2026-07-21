@@ -431,6 +431,8 @@ def _build_engineering_lane_domain() -> dict[str, Any]:
         "warnings": [],
         "advancedFields": [
             "triggerMode",
+            "worktreePlacement",
+            "worktreeRoot",
             "contextPackBudget",
             "evidenceGraphEnabled",
             "codingExecutionContractEnabled",

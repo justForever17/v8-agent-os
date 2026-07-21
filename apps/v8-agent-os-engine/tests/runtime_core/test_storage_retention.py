@@ -69,14 +69,23 @@ def _patch_retention_paths(monkeypatch, root: Path) -> ObservabilityDatabaseMana
     return obs
 
 
-def _make_service(max_bytes: int) -> StorageRetentionService:
+def _make_service(log_budget_bytes: int) -> StorageRetentionService:
     service = StorageRetentionService()
     service.get_config = lambda: {
-        "version": 1,
+        "version": 2,
         "enabled": True,
-        "maxBytes": max_bytes,
-        "mode": "hard_rolling",
+        "policy": "disk_watermark",
         "protectUserVisibleTranscript": True,
+        "diskWatermarks": {
+            "warningRatio": 0.15,
+            "criticalRatio": 0.10,
+            "emergencyRatio": 0.05,
+            "emergencyFreeBytes": 2 * 1024 * 1024 * 1024,
+        },
+        "budgets": {
+            "logs": {"maxBytes": log_budget_bytes, "mode": "rolling"},
+            "checkpoints": {"maxBytes": 4 * 1024 * 1024 * 1024, "mode": "elastic"},
+        },
     }
     return service
 
@@ -92,14 +101,19 @@ def test_storage_retention_stats_separates_logs_from_checkpoints(monkeypatch):
         (log_root / "demo.log").write_text("hello", encoding="utf-8")
         service = StorageRetentionService()
         service.get_config = lambda: {
-            "version": 1,
+            "version": 2,
             "enabled": True,
-            "maxBytes": 5 * 1024 * 1024 * 1024,
-            "mode": "hard_rolling",
+            "policy": "disk_watermark",
             "protectUserVisibleTranscript": True,
+            "diskWatermarks": {
+                "warningRatio": 0.15,
+                "criticalRatio": 0.10,
+                "emergencyRatio": 0.05,
+                "emergencyFreeBytes": 2 * 1024 * 1024 * 1024,
+            },
             "budgets": {
-                "logs": {"maxBytes": 1024 * 1024 * 1024, "mode": "hard_rolling"},
-                "checkpoints": {"maxBytes": 4 * 1024 * 1024 * 1024, "mode": "hard_rolling"},
+                "logs": {"maxBytes": 1024 * 1024 * 1024, "mode": "rolling"},
+                "checkpoints": {"maxBytes": 4 * 1024 * 1024 * 1024, "mode": "elastic"},
             },
         }
 
@@ -108,6 +122,59 @@ def test_storage_retention_stats_separates_logs_from_checkpoints(monkeypatch):
         assert "checkpoints" in stats["budgetComponents"]
         assert stats["budgetComponents"]["logs"]["usedBytes"] < stats["budgetComponents"]["checkpoints"]["usedBytes"]
         assert stats["budgetComponents"]["checkpoints"]["usedBytes"] >= 2 * 1024 * 1024
+        assert stats["policy"] == "disk_watermark"
+        assert "maxBytes" not in stats
+        assert "overCapBytes" not in stats
+
+
+def test_startup_pressure_only_auto_applies_registry_disposable_plan(monkeypatch, tmp_path: Path) -> None:
+    _patch_retention_paths(monkeypatch, tmp_path)
+    service = _make_service(1024 * 1024 * 1024)
+    disk = {
+        "totalBytes": 1000,
+        "freeBytes": 80,
+        "freeRatio": 0.08,
+        "watermark": "critical",
+        "warningRatio": 0.15,
+        "criticalRatio": 0.10,
+        "emergencyRatio": 0.05,
+        "emergencyFreeBytes": 20,
+        "emergencySafeMode": False,
+    }
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(service, "_disk_health", lambda: disk)
+
+    def _build_plan(*, home: Path, pressure_bytes: int = 0, **_kwargs):
+        calls["home"] = home
+        calls["pressureBytes"] = pressure_bytes
+        return {
+            "planDigest": "pressure-plan",
+            "actions": [{"entryId": "cache", "path": str(tmp_path / "cache.bin"), "bytes": 70}],
+            "candidateBytes": 70,
+            "candidateFiles": 1,
+            "pressureTargetBytes": pressure_bytes,
+        }
+
+    monkeypatch.setattr(storage_retention_module.storage_registry_service, "build_cleanup_plan", _build_plan)
+    monkeypatch.setattr(
+        storage_retention_module.storage_registry_service,
+        "apply_cleanup_plan",
+        lambda **_kwargs: {"status": "completed", "removedFiles": 1, "removedBytes": 70},
+    )
+    monkeypatch.setattr(
+        service,
+        "_execute_retention",
+        lambda **kwargs: {"status": "dry_run", "registryPlanDigest": kwargs["registry_plan"]["planDigest"]},
+    )
+
+    result = service.startup_check()
+
+    assert calls["home"] == tmp_path
+    assert calls["pressureBytes"] == 70
+    assert result["status"] == "auto_cleaned"
+    assert result["automaticCleanup"]["scope"] == "derived_cache_test_owned_files"
+    assert result["automaticCleanup"]["triggerWatermark"] == "critical"
+    assert result["automaticCleanup"]["auditState"] == "recorded"
 
 
 def test_retention_migrates_legacy_logs_and_clears_state(monkeypatch):

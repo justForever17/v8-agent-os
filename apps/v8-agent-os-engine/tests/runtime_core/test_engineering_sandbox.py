@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -29,6 +30,55 @@ from graph.parallel_support import (
 )
 from core.delegation_broker import normalize_task_brief
 from core.engineering_capsule import derive_grandchild_engineering_task
+
+
+def _is_test_worktree(path: Path, managed_roots: list[Path]) -> bool:
+    resolved = path.resolve(strict=False)
+    return any(resolved.is_relative_to(root.resolve(strict=False)) for root in managed_roots)
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_test_managed_worktrees(tmp_path: Path):
+    yield
+
+    managed_roots = [path for path in tmp_path.rglob(".v8os-worktrees") if path.is_dir()]
+    if not managed_roots:
+        return
+
+    repository_roots = [git_dir.parent for git_dir in tmp_path.rglob(".git") if git_dir.is_dir()]
+    for repository_root in repository_roots:
+        listed = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=str(repository_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if listed.returncode != 0:
+            continue
+        for line in listed.stdout.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            worktree_root = Path(line.removeprefix("worktree ").strip())
+            if not _is_test_worktree(worktree_root, managed_roots):
+                continue
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree_root)],
+                cwd=str(repository_root),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=str(repository_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    for managed_root in managed_roots:
+        shutil.rmtree(managed_root, ignore_errors=True)
 
 
 def test_managed_git_retries_windows_dll_initialization_failure(monkeypatch, tmp_path: Path) -> None:
@@ -536,6 +586,41 @@ def test_git_init_creates_managed_baseline_and_blocks_large_files(tmp_path: Path
     assert error.value.code == "managed_git_large_file_blocked"
 
 
+def test_worktrees_default_to_hidden_root_on_repository_volume(tmp_path: Path) -> None:
+    service = _git_service(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hello\n", encoding="utf-8")
+    repository = service.ensure_repository(workspace, allow_initialize=True)
+
+    worktree = service.create_worktree(repository, worktree_id="task", run_id="run")
+    worktree_root = Path(str(worktree.topology.worktree_root))
+
+    assert worktree_root.is_relative_to(tmp_path / ".v8os-worktrees")
+    assert not worktree_root.is_relative_to(workspace)
+
+
+def test_custom_worktree_root_must_share_repository_volume(monkeypatch, tmp_path: Path) -> None:
+    from core.engineering_sandbox import git_service as git_service_module
+
+    custom_root = tmp_path / "custom-worktrees"
+    service = ManagedGitService(
+        home=tmp_path / "v8-home",
+        worktree_placement="custom",
+        worktrees_root=custom_root,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hello\n", encoding="utf-8")
+    repository = service.ensure_repository(workspace, allow_initialize=True)
+    monkeypatch.setattr(git_service_module, "_same_storage_volume", lambda _left, _right: False)
+
+    with pytest.raises(ManagedGitError) as error:
+        service.create_worktree(repository, worktree_id="task", run_id="run")
+
+    assert error.value.code == "managed_worktree_root_cross_volume"
+
+
 def test_explicit_adoption_completes_an_unborn_repository(tmp_path: Path) -> None:
     service = _git_service(tmp_path)
     workspace = tmp_path / "workspace"
@@ -634,6 +719,85 @@ def test_parallel_change_sets_merge_in_integration_worktree_then_promote(tmp_pat
     assert set(promoted) == {"one.txt", "two.txt"}
     assert (workspace / "one.txt").read_text(encoding="utf-8") == "one\n"
     assert (workspace / "two.txt").read_text(encoding="utf-8") == "two\n"
+
+
+def test_supervisor_acceptance_preserves_refs_and_removes_physical_worktrees(tmp_path: Path) -> None:
+    database = DatabaseManager(tmp_path / "state.db")
+    git = _git_service(tmp_path)
+    service = EngineeringSandboxService(home=tmp_path / "v8-home", git_service=git, database=database)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("base\n", encoding="utf-8")
+    service.ensure_project_repository(workspace_root=workspace, project_id="demo", allow_initialize=True)
+    prepared = service.prepare_task_workspace(
+        workspace_root=workspace,
+        project_id="demo",
+        session_id="session",
+        run_id="run",
+        delegation_id="delegation",
+        worktree_id="task",
+        write_set=("result.txt",),
+        actor_role="direct_subagent",
+        runtime_kind="engineering",
+        network_profile=SandboxNetworkProfile.NETWORKED_PARTIAL,
+    )
+    task_root = Path(str(prepared.worktree.topology.worktree_root))
+    Path(prepared.execution_workspace_root, "result.txt").write_text("done\n", encoding="utf-8")
+    change_set = service.finalize_task_workspace(worktree_id="task", commit_message="test: result")
+    integration, _combined = service.build_run_integration(
+        run_id="run",
+        invocation_id="supervisor",
+        change_sets=(change_set.as_dict(),),
+    )
+    integration_root = Path(str(integration.topology.worktree_root))
+
+    delivered = service.promote_run_integration(run_id="run")
+
+    assert delivered["status"] == "delivered"
+    assert delivered["cleanup"]["removed"] == 2
+    assert len(delivered["cleanup"]["preservedRefs"]) == 2
+    assert (workspace / "result.txt").read_text(encoding="utf-8") == "done\n"
+    assert not task_root.exists()
+    assert not integration_root.exists()
+    for recovery_ref in delivered["cleanup"]["preservedRefs"]:
+        git.run(["show-ref", "--verify", recovery_ref], cwd=workspace)
+    with database.get_connection() as conn:
+        states = {
+            str(row["worktree_id"]): str(row["state"])
+            for row in conn.execute(
+                "SELECT worktree_id, state FROM engineering_worktrees WHERE run_id = 'run'"
+            ).fetchall()
+        }
+    assert states["task"] == "cleaned"
+    assert states[integration.worktree_id] == "cleaned"
+
+    replay = service.promote_run_integration(run_id="run")
+
+    assert replay["status"] == "delivered"
+    assert replay["idempotent"] is True
+    assert replay["recoveryRef"]
+
+    direct = service.prepare_task_workspace(
+        workspace_root=workspace,
+        project_id="demo",
+        session_id="session",
+        run_id="direct-run",
+        delegation_id=None,
+        worktree_id="direct-task",
+        write_set=("direct.txt",),
+        actor_role="supervisor",
+        runtime_kind="engineering",
+        network_profile=SandboxNetworkProfile.NETWORKED_PARTIAL,
+    )
+    direct_root = Path(str(direct.worktree.topology.worktree_root))
+    Path(direct.execution_workspace_root, "direct.txt").write_text("accepted\n", encoding="utf-8")
+    service.finalize_task_workspace(worktree_id="direct-task", commit_message="test: direct")
+    service._update_worktree_state("direct-task", "delivered")  # pylint: disable=protected-access
+
+    direct_cleanup = service.cleanup_accepted_worktrees()
+
+    assert direct_cleanup["removed"] == 1
+    assert not direct_root.exists()
 
 
 def test_grandchild_snapshots_parent_worktree_and_merges_back(tmp_path: Path) -> None:
@@ -918,7 +1082,7 @@ subprocess.Popen([
     service.mark_task_workspace_failed(worktree_id="failed-task", error_code="test_failure")
     with database.get_connection() as conn:
         conn.execute(
-            "UPDATE engineering_worktrees SET updated_at = '2000-01-01T00:00:00+00:00' WHERE worktree_id = 'failed-task'"
+            "UPDATE engineering_worktrees SET state = 'cancelled', updated_at = '2000-01-01T00:00:00+00:00' WHERE worktree_id = 'failed-task'"
         )
         conn.commit()
     cleanup = service.cleanup_terminal_worktrees(older_than_days=1)

@@ -410,16 +410,22 @@ class SystemDoctorService:
             stats = storage_retention_service.build_stats()
             findings = list(stats.get("budgetFindings") or [])
             non_ok = [item for item in findings if item.get("severity") in {"warning", "error"}]
+            disk = dict(stats.get("disk") or {})
+            watermark = str(disk.get("watermark") or "healthy")
+            needs_attention = watermark != "healthy" or bool(non_ok)
             return [
                 _check(
-                    "ok" if not non_ok else "warning",
+                    "ok" if not needs_attention else "warning",
                     "storage.pressure",
                     "Storage pressure",
-                    "Storage budgets are within limits." if not non_ok else f"{len(non_ok)} storage budget(s) need attention.",
+                    "Disk headroom and storage classes are healthy."
+                    if not needs_attention
+                    else f"Disk watermark is {watermark}; {len(non_ok)} storage class budget(s) need attention.",
                     stats={
                         "totalGovernedBytes": stats.get("totalGovernedBytes"),
-                        "maxBytes": stats.get("maxBytes"),
-                        "overCapBytes": stats.get("overCapBytes"),
+                        "totalProductBytes": stats.get("totalProductBytes"),
+                        "storageClassTotals": stats.get("storageClassTotals"),
+                        "disk": disk,
                         "budgetFindings": findings,
                     },
                 )

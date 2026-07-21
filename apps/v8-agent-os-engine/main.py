@@ -341,11 +341,25 @@ async def lifespan(app: FastAPI):
         try:
             from core.engineering_sandbox.service import get_engineering_sandbox_service
 
-            cleanup = await asyncio.to_thread(
-                get_engineering_sandbox_service().cleanup_terminal_worktrees,
+            service = get_engineering_sandbox_service()
+            accepted_cleanup = await asyncio.to_thread(
+                service.cleanup_accepted_worktrees,
+                limit_runs=50,
+            )
+            aged_cleanup = await asyncio.to_thread(
+                service.cleanup_terminal_worktrees,
                 older_than_days=7,
                 limit=50,
             )
+            cleanup = {
+                "removed": int(accepted_cleanup.get("removed") or 0) + int(aged_cleanup.get("removed") or 0),
+                "accepted": accepted_cleanup,
+                "aged": aged_cleanup,
+                "failures": [
+                    *(accepted_cleanup.get("failures") or []),
+                    *(aged_cleanup.get("failures") or []),
+                ],
+            }
             if cleanup.get("removed") or cleanup.get("failures"):
                 print("[Engine] Managed engineering workspace cleanup completed.", cleanup)
         except Exception as exc:
@@ -390,6 +404,36 @@ async def lifespan(app: FastAPI):
             print(f"[Engine] Storage retention startup check failed (non-fatal): {exc}")
 
     app.state.storage_retention_startup_task = asyncio.create_task(_run_startup_retention_check())
+
+    async def _monitor_storage_pressure() -> None:
+        while True:
+            await asyncio.sleep(30 * 60)
+            try:
+                retention_config = storage.get_storage_retention_config()
+                if not retention_config.get("enabled", True):
+                    continue
+                disk = await asyncio.to_thread(storage_retention_service.disk_health)
+                if disk.get("watermark") == "healthy":
+                    continue
+                result = await asyncio.to_thread(storage_retention_service.startup_check)
+                cleanup = dict(result.get("automaticCleanup") or {})
+                if cleanup:
+                    print(
+                        "[Engine] Disk-watermark cleanup completed:",
+                        {
+                            "status": result.get("status"),
+                            "watermark": cleanup.get("triggerWatermark"),
+                            "removedFiles": cleanup.get("removedFiles"),
+                            "removedBytes": cleanup.get("removedBytes"),
+                            "failures": len(cleanup.get("failures") or []),
+                        },
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[Engine] Disk-watermark storage check failed (non-fatal): {exc}")
+
+    app.state.storage_pressure_monitor_task = asyncio.create_task(_monitor_storage_pressure())
 
     _ensure_plugin_manager_runtime_registered()
     if service_flags["mcp"]:
@@ -447,6 +491,13 @@ async def lifespan(app: FastAPI):
         retention_task.cancel()
         try:
             await retention_task
+        except asyncio.CancelledError:
+            pass
+    pressure_monitor_task = getattr(app.state, "storage_pressure_monitor_task", None)
+    if pressure_monitor_task and not pressure_monitor_task.done():
+        pressure_monitor_task.cancel()
+        try:
+            await pressure_monitor_task
         except asyncio.CancelledError:
             pass
     engineering_cleanup_task = getattr(app.state, "engineering_workspace_cleanup_task", None)

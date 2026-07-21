@@ -28,6 +28,8 @@ type DiagnosticsProviders = {
 type EngineeringLaneConfig = {
   enabled: boolean;
   triggerMode: "auto" | "force" | "off";
+  worktreePlacement: "same_volume" | "custom";
+  worktreeRoot: string;
   contextPackBudget: number;
   evidenceGraphEnabled: boolean;
   evidenceGraphBudget: number;
@@ -129,6 +131,8 @@ type EngineeringWorkflowCandidate = {
 const DEFAULT_CONFIG: EngineeringLaneConfig = {
   enabled: true,
   triggerMode: "auto",
+  worktreePlacement: "same_volume",
+  worktreeRoot: "",
   contextPackBudget: 48000,
   evidenceGraphEnabled: true,
   evidenceGraphBudget: 16000,
@@ -160,6 +164,11 @@ const WORKSET_GOVERNANCE_OPTIONS = [
 { value: "off", labelKey: "app.admin.dashboard.engineeringLane.worksetGovernance.off" }] as
 const;
 
+const WORKTREE_PLACEMENT_OPTIONS = [
+{ value: "same_volume", labelKey: "app.admin.dashboard.engineeringLane.worktreePlacement.sameVolume" },
+{ value: "custom", labelKey: "app.admin.dashboard.engineeringLane.worktreePlacement.custom" }] as
+const;
+
 function asConfig(value: unknown): EngineeringLaneConfig {
   const raw = (value && typeof value === "object" ? value : {}) as Partial<EngineeringLaneConfig>;
   const providers = (raw.diagnosticsProviders || {}) as Partial<DiagnosticsProviders>;
@@ -167,6 +176,11 @@ function asConfig(value: unknown): EngineeringLaneConfig {
     ...DEFAULT_CONFIG,
     ...raw,
     triggerMode: raw.triggerMode === "force" || raw.triggerMode === "off" ? raw.triggerMode : "auto",
+    worktreePlacement:
+    raw.worktreePlacement === "custom" ?
+    raw.worktreePlacement :
+    "same_volume",
+    worktreeRoot: String(raw.worktreeRoot || ""),
     proofCollectionScope:
     raw.proofCollectionScope === "force_only" || raw.proofCollectionScope === "off" ?
     raw.proofCollectionScope :
@@ -536,6 +550,28 @@ export default function EngineeringLanePage() {
                                         {t("app.admin.dashboard.engineeringLane.advancedConfigTitle")}
                                     </summary>
                                     <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <Label>{t("app.admin.dashboard.engineeringLane.worktreePlacement")}</Label>
+                                            <Select value={config.worktreePlacement} onValueChange={(value) => patchConfig({ worktreePlacement: value as EngineeringLaneConfig["worktreePlacement"], worktreeRoot: value === "custom" ? config.worktreeRoot : "" })}>
+                                                <SelectTrigger><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {WORKTREE_PLACEMENT_OPTIONS.map((option) =>
+                      <SelectItem key={option.value} value={option.value}>{t(option.labelKey)}</SelectItem>
+                      )}
+                                                </SelectContent>
+                                            </Select>
+                                            <p className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.engineeringLane.worktreePlacementHint")}</p>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <Label>{t("app.admin.dashboard.engineeringLane.worktreeRoot")}</Label>
+                                            <Input
+                        value={config.worktreeRoot}
+                        disabled={config.worktreePlacement !== "custom"}
+                        placeholder={t("app.admin.dashboard.engineeringLane.worktreeRootPlaceholder")}
+                        onChange={(event) => patchConfig({ worktreeRoot: event.target.value })} />
+
+                                            <p className="text-xs leading-5 text-muted-foreground">{t("app.admin.dashboard.engineeringLane.worktreeCleanupHint")}</p>
+                                        </div>
                                         <div className="space-y-2">
                                             <Label>{t("app.admin.dashboard.engineeringLane.contextBudget")}</Label>
                                             <Input type="number" value={config.contextPackBudget} onChange={(event) => patchConfig({ contextPackBudget: Number(event.target.value) })} />

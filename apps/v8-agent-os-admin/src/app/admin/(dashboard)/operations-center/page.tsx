@@ -75,7 +75,6 @@ type StorageRetentionPayload = {
       mode?: string;
     }>;
   };
-  maxBytes?: number;
   totalGovernedBytes?: number;
   totalProductBytes?: number | null;
   registeredStorageBytes?: number | null;
@@ -83,7 +82,6 @@ type StorageRetentionPayload = {
   physicalBytes?: number;
   logicalBytes?: number;
   reclaimableBytes?: number;
-  overCapBytes?: number;
   backupState?: string;
   recoverability?: string;
   disk?: {
@@ -393,6 +391,7 @@ function StorageRetentionPanel() {
     return ({
       hard_rolling: t("app.admin.dashboard.operations.storage.mode.automatic"),
       rolling: t("app.admin.dashboard.operations.storage.mode.rolling"),
+      elastic: t("app.admin.dashboard.operations.storage.mode.elastic"),
       manual_prune: t("app.admin.dashboard.operations.storage.mode.manual"),
       warn_only: t("app.admin.dashboard.operations.storage.mode.warningOnly")
     } as Record<string, string>)[mode] || t("app.admin.dashboard.operations.storage.mode.warningOnly");
@@ -489,7 +488,7 @@ function StorageRetentionPanel() {
                     <div className="mt-1 text-xs text-muted-foreground">{t("app.admin.dashboard.operations.storage.registry.freeSpace", { free: formatBytes(stats?.disk?.freeBytes), state: watermarkLabel(stats?.disk?.watermark) })}</div>
                 </div>
             </div>
-            {stats?.disk?.emergencySafeMode ? <StatusNotice title={t("app.admin.dashboard.operations.storage.lowSpaceTitle")} description={t("app.admin.dashboard.operations.storage.lowSpaceDescription", { free: formatBytes(stats.disk.freeBytes) })} tone="warning" /> : null}
+            {stats?.disk?.watermark && stats.disk.watermark !== "healthy" ? <StatusNotice title={t("app.admin.dashboard.operations.storage.lowSpaceTitle")} description={t("app.admin.dashboard.operations.storage.lowSpaceDescription", { free: formatBytes(stats.disk.freeBytes) })} tone="warning" /> : null}
             <div className="rounded-xl border border-border bg-card p-3">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -694,7 +693,7 @@ function ConfigMigrationPanel() {
     setLoading(true);
     setError(null);
     try {
-      const [planResponse, ledgerResponse] = await Promise.all([fetch("/api/config/migrations/plan?target=storage_retention_balanced", {
+      const [planResponse, ledgerResponse] = await Promise.all([fetch("/api/config/migrations/plan?target=storage_retention_disk_watermark", {
         cache: "no-store",
         credentials: "same-origin"
       }), fetch("/api/config/migrations", {
@@ -731,7 +730,7 @@ function ConfigMigrationPanel() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          target: "storage_retention_balanced",
+          target: "storage_retention_disk_watermark",
           reason: "admin_apply_storage_budget_defaults"
         })
       });
@@ -772,7 +771,7 @@ function ConfigMigrationPanel() {
                 </div> : null}
             {plan ? <div className="rounded-xl border border-border p-3 text-xs leading-5">
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="font-semibold text-foreground">{plan.target || "storage_retention_balanced"} · {plan.status}</div>
+                        <div className="font-semibold text-foreground">{plan.target || "storage_retention_disk_watermark"} · {plan.status}</div>
                         <div className={migrationReady ? "rounded-full bg-amber-50 px-2 py-1 font-medium text-amber-700" : "rounded-full bg-emerald-50 px-2 py-1 font-medium text-emerald-700"}>
                             {migrationReady ? t("app.admin.dashboard.operations.center.advanced.configMigration.ready") : t("app.admin.dashboard.operations.center.advanced.configMigration.noActionNeeded")}
                         </div>

@@ -10,6 +10,7 @@ import uuid
 from typing import Any, Iterable, Mapping, Sequence
 
 from core.database import db
+from core.storage import storage
 from core.v8_agent_os_paths import V8_AGENT_OS_HOME
 
 from .contracts import (
@@ -91,10 +92,25 @@ class EngineeringSandboxService:
         database: Any = db,
     ) -> None:
         self.home = Path(home or V8_AGENT_OS_HOME).expanduser().resolve(strict=False)
-        self.git = git_service or ManagedGitService(home=self.home)
+        self._git_service_uses_product_config = git_service is None
+        lane_config = storage.get_engineering_lane_config() if self._git_service_uses_product_config else {}
+        self.git = git_service or ManagedGitService(
+            home=self.home,
+            worktree_placement=str(lane_config.get("worktreePlacement") or "same_volume"),
+            worktrees_root=str(lane_config.get("worktreeRoot") or "") or None,
+        )
         self.database = database
         self.policy_root = self.home / "runtime" / "sandboxes"
         self._lock = threading.RLock()
+
+    def _sync_worktree_storage_config(self) -> None:
+        if not self._git_service_uses_product_config:
+            return
+        lane_config = storage.get_engineering_lane_config()
+        self.git.configure_worktree_storage(
+            placement=str(lane_config.get("worktreePlacement") or "same_volume"),
+            custom_root=str(lane_config.get("worktreeRoot") or "") or None,
+        )
 
     def ensure_project_repository(
         self,
@@ -103,6 +119,7 @@ class EngineeringSandboxService:
         project_id: str | None,
         allow_initialize: bool,
     ) -> ManagedRepository:
+        self._sync_worktree_storage_config()
         repository = self.git.ensure_repository(workspace_root, allow_initialize=allow_initialize)
         self._persist_repository(repository, project_id=project_id)
         return repository
@@ -708,13 +725,14 @@ class EngineeringSandboxService:
         if row is None or not str(row["change_set_json"] or "").strip():
             return {"ok": True, "status": "no_managed_changes", "changedPaths": []}
         payload = json.loads(str(row["change_set_json"]))
-        if str(row["state"] or "").strip() == "delivered":
+        if str(row["state"] or "").strip() in {"delivered", "cleaned"}:
             return {
                 "ok": True,
                 "status": "delivered",
                 "worktreeId": str(row["worktree_id"]),
                 "commitId": payload.get("commitId"),
                 "changedPaths": list(payload.get("changedPaths") or []),
+                "recoveryRef": payload.get("recoveryRef"),
                 "idempotent": True,
             }
         integration = GitChangeSetRef(
@@ -733,12 +751,14 @@ class EngineeringSandboxService:
             raise ManagedGitError("managed_repository_not_found", "The managed repository record is missing.")
         changed = self.git.apply_integration_to_workspace(repository, integration=integration, run_id=run_id)
         self._update_worktree_state(str(row["worktree_id"]), "delivered")
+        cleanup = self.cleanup_accepted_run_worktrees(run_id=run_id)
         return {
             "ok": True,
             "status": "delivered",
             "worktreeId": str(row["worktree_id"]),
             "commitId": integration.commit_id,
             "changedPaths": list(changed),
+            "cleanup": cleanup,
         }
 
     def record_run_integration_decision(self, *, run_id: str, decision: str) -> None:
@@ -892,10 +912,13 @@ class EngineeringSandboxService:
                 restored += 1
         return {"restored": restored, "expired": expired, "missing": missing}
 
-    def cleanup_terminal_worktrees(self, *, older_than_days: int = 7, limit: int = 100) -> dict[str, Any]:
-        cutoff = (_utc_now() - timedelta(days=max(1, int(older_than_days)))).isoformat()
-        terminal_states = ("delivered", "integrated", "merged_to_parent", "ignored", "failed", "blocked")
-        placeholders = ",".join("?" for _ in terminal_states)
+    def cleanup_accepted_run_worktrees(self, *, run_id: str) -> dict[str, Any]:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return {"removed": 0, "preservedRefs": [], "failures": []}
+        self._sync_worktree_storage_config()
+        accepted_states = ("delivered", "integrated", "merged_to_parent")
+        placeholders = ",".join("?" for _ in accepted_states)
         with self.database.get_connection() as conn:
             rows = conn.execute(
                 f"""
@@ -905,13 +928,51 @@ class EngineeringSandboxService:
                        repo.metadata_json
                 FROM engineering_worktrees wt
                 JOIN managed_git_repositories repo ON repo.repository_id = wt.repository_id
-                WHERE wt.state IN ({placeholders}) AND wt.updated_at < ?
-                ORDER BY wt.updated_at ASC LIMIT ?
+                WHERE wt.run_id = ? AND wt.state IN ({placeholders})
+                ORDER BY CASE wt.worktree_kind WHEN 'integration' THEN 1 ELSE 0 END, wt.created_at ASC
                 """,
-                (*terminal_states, cutoff, max(1, int(limit))),
+                (normalized_run_id, *accepted_states),
+            ).fetchall()
+        return self._cleanup_worktree_rows(rows, preserve_recovery_refs=True)
+
+    def cleanup_accepted_worktrees(self, *, limit_runs: int = 50) -> dict[str, Any]:
+        with self.database.get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT run_id
+                FROM engineering_worktrees
+                WHERE (
+                    state = 'delivered'
+                    OR (
+                        worktree_kind IN ('integration', 'supervisor_integration')
+                        AND state = 'cleaned'
+                    )
+                )
+                  AND COALESCE(run_id, '') <> ''
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (max(1, int(limit_runs)),),
             ).fetchall()
         removed = 0
+        preserved_refs: list[str] = []
+        failures: list[dict[str, str]] = []
+        for row in rows:
+            result = self.cleanup_accepted_run_worktrees(run_id=str(row["run_id"]))
+            removed += int(result.get("removed") or 0)
+            preserved_refs.extend(str(item) for item in result.get("preservedRefs") or [])
+            failures.extend(dict(item) for item in result.get("failures") or [])
+        return {"removed": removed, "preservedRefs": preserved_refs, "failures": failures[:20]}
+
+    def _cleanup_worktree_rows(
+        self,
+        rows: Sequence[Any],
+        *,
+        preserve_recovery_refs: bool,
+    ) -> dict[str, Any]:
+        removed = 0
         removed_policy_files = 0
+        preserved_refs: list[str] = []
         failures: list[dict[str, str]] = []
         for row in rows:
             metadata = json.loads(str(row["metadata_json"] or "{}"))
@@ -928,14 +989,27 @@ class EngineeringSandboxService:
                 initialized_by_v8os=bool(row["initialized_by_v8os"]),
                 warnings=tuple(metadata.get("warnings") or ()),
             )
+            worktree_id = str(row["worktree_id"])
             try:
-                lease_ids = self._lease_ids_for_worktree(str(row["worktree_id"]))
+                change_set = json.loads(str(row["change_set_json"] or "{}"))
+                commit_id = str(change_set.get("commitId") or "").strip()
+                if preserve_recovery_refs and commit_id:
+                    recovery_ref = self.git.preserve_change_set_ref(
+                        repository,
+                        run_id=str(row["run_id"] or "run"),
+                        worktree_id=worktree_id,
+                        commit_id=commit_id,
+                    )
+                    change_set["recoveryRef"] = recovery_ref
+                    self._update_change_set_payload(worktree_id, change_set)
+                    preserved_refs.append(recovery_ref)
+                lease_ids = self._lease_ids_for_worktree(worktree_id)
                 self.git.remove_managed_worktree(
                     repository,
                     worktree_root=str(row["worktree_root"]),
                     branch_name=str(row["branch_name"]),
                 )
-                self._update_worktree_state(str(row["worktree_id"]), "cleaned")
+                self._update_worktree_state(worktree_id, "cleaned")
                 for lease_id in lease_ids:
                     policy_file = self.policy_root / f"{lease_id}.json"
                     if policy_file.exists():
@@ -943,12 +1017,55 @@ class EngineeringSandboxService:
                         removed_policy_files += 1
                 removed += 1
             except Exception as exc:
-                failures.append(
-                    {
-                        "worktreeId": str(row["worktree_id"]),
-                        "error": str(getattr(exc, "code", None) or exc),
-                    }
+                failures.append({"worktreeId": worktree_id, "error": str(getattr(exc, "code", None) or exc)})
+        return {
+            "removed": removed,
+            "removedPolicyFiles": removed_policy_files,
+            "preservedRefs": preserved_refs,
+            "failures": failures[:20],
+        }
+
+    def _update_change_set_payload(self, worktree_id: str, payload: Mapping[str, Any]) -> None:
+        now = _utc_now_iso()
+
+        def _write() -> None:
+            with self.database.get_connection() as conn:
+                conn.execute(
+                    "UPDATE engineering_worktrees SET change_set_json = ?, updated_at = ? WHERE worktree_id = ?",
+                    (_json(dict(payload)), now, worktree_id),
                 )
+                conn.commit()
+
+        self.database._run_write_with_retry(_write)
+
+    def cleanup_terminal_worktrees(self, *, older_than_days: int = 7, limit: int = 100) -> dict[str, Any]:
+        self._sync_worktree_storage_config()
+        cutoff = (_utc_now() - timedelta(days=max(1, int(older_than_days)))).isoformat()
+        terminal_states = (
+            "delivered",
+            "integrated",
+            "merged_to_parent",
+            "ignored",
+            "failed",
+            "blocked",
+            "cancelled",
+        )
+        placeholders = ",".join("?" for _ in terminal_states)
+        with self.database.get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT wt.*, repo.original_workspace_root, repo.repository_root,
+                       repo.workspace_relative_path, repo.state AS repository_state,
+                       repo.head_commit, repo.default_branch, repo.initialized_by_v8os,
+                       repo.metadata_json
+                FROM engineering_worktrees wt
+                JOIN managed_git_repositories repo ON repo.repository_id = wt.repository_id
+                WHERE wt.state IN ({placeholders}) AND wt.updated_at < ?
+                ORDER BY wt.updated_at ASC LIMIT ?
+                """,
+                (*terminal_states, cutoff, max(1, int(limit))),
+            ).fetchall()
+        cleanup = self._cleanup_worktree_rows(rows, preserve_recovery_refs=True)
         stale_index_files = 0
         stale_index_cutoff = (_utc_now() - timedelta(days=1)).timestamp()
         for index_file in self.git.index_root.glob("*.index"):
@@ -959,10 +1076,8 @@ class EngineeringSandboxService:
             except OSError:
                 continue
         return {
-            "removed": removed,
-            "removedPolicyFiles": removed_policy_files,
+            **cleanup,
             "removedStaleIndexes": stale_index_files,
-            "failures": failures[:20],
         }
 
     @staticmethod
@@ -1329,7 +1444,7 @@ class EngineeringSandboxService:
                 FROM engineering_worktrees wt
                 JOIN managed_git_repositories repo ON repo.repository_id = wt.repository_id
                 WHERE wt.run_id = ? AND wt.worktree_kind IN ('integration', 'supervisor_integration')
-                  AND wt.state IN ('integration_candidate', 'delivered', 'retry_requested', 'ignored')
+                  AND wt.state IN ('integration_candidate', 'delivered', 'cleaned', 'retry_requested', 'ignored')
                 ORDER BY wt.created_at DESC LIMIT 1
                 """,
                 (run_id,),

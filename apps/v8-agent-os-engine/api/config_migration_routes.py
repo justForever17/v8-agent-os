@@ -19,7 +19,7 @@ async def list_config_migrations():
 
 
 @router.get("/plan")
-async def get_config_migration_plan(target: str = "storage_retention_balanced"):
+async def get_config_migration_plan(target: str = "storage_retention_disk_watermark"):
     try:
         return config_migration_service.build_plan(target=target)
     except Exception as exc:
@@ -31,7 +31,7 @@ async def apply_config_migration(payload: dict[str, Any] | None = Body(default=N
     try:
         data = payload or {}
         return config_migration_service.apply_plan(
-            target=str(data.get("target") or "storage_retention_balanced"),
+            target=str(data.get("target") or "storage_retention_disk_watermark"),
             reason=str(data.get("reason") or "admin_migration"),
         )
     except Exception as exc:

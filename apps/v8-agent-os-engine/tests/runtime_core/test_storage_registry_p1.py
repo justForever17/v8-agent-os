@@ -64,24 +64,54 @@ def test_registry_cleanup_only_removes_owned_expired_cache_and_test_files(tmp_pa
     assert old_longmem in planned_paths
     assert canonical not in planned_paths
     assert fresh_cache not in planned_paths
-    assert old_other_report not in planned_paths
+    assert old_other_report in planned_paths
     assert old_backup not in planned_paths
 
     result = service.apply_cleanup_plan(home=tmp_path, plan=plan)
 
     assert result["status"] == "completed"
-    assert result["removedFiles"] == 2
+    assert result["removedFiles"] == 3
     assert not old_cache.exists()
     assert not old_longmem.exists()
     assert canonical.exists()
     assert fresh_cache.exists()
-    assert old_other_report.exists()
+    assert not old_other_report.exists()
     assert old_backup.exists()
 
     refreshed = service.refresh_snapshot(home=tmp_path)
     by_id = {entry["id"]: entry for entry in refreshed["entries"]}
     assert by_id["backups"]["policyState"] == "review_required"
     assert by_id["backups"]["expiredFileCount"] == 1
+
+
+def test_disk_pressure_lru_only_selects_disposable_storage_classes(tmp_path: Path) -> None:
+    service = StorageRegistryService()
+    canonical = tmp_path / "state.db"
+    recoverable = tmp_path / "backups" / "latest.db"
+    oldest_cache = tmp_path / "cache" / "oldest.bin"
+    recent_test = tmp_path / "tmp" / "recent.bin"
+    _write(canonical, 101, age_days=365)
+    _write(recoverable, 211, age_days=365)
+    _write(oldest_cache, 307, age_days=2)
+    _write(recent_test, 401, age_days=1)
+
+    plan = service.build_cleanup_plan(home=tmp_path, pressure_bytes=500)
+    planned = {Path(action["path"]): action["reason"] for action in plan["actions"]}
+
+    assert planned[oldest_cache] == "disk_pressure_lru"
+    assert planned[recent_test] == "disk_pressure_lru"
+    assert canonical not in planned
+    assert recoverable not in planned
+    assert plan["pressureTargetBytes"] == 500
+    assert plan["pressureRemainingBytes"] == 0
+
+    result = service.apply_cleanup_plan(home=tmp_path, plan=plan)
+
+    assert result["status"] == "completed"
+    assert not oldest_cache.exists()
+    assert not recent_test.exists()
+    assert canonical.exists()
+    assert recoverable.exists()
 
 
 def test_snapshot_can_return_pending_contract_without_blocking_first_request(tmp_path: Path) -> None:

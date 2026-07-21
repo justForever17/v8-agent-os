@@ -117,10 +117,13 @@ def _connect(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 class StorageRetentionService:
-    """Central retention controller for V8OS observability and recoverability logs."""
+    """Disk-watermark governance for canonical, recoverable, and disposable storage."""
 
     def get_config(self) -> Dict[str, Any]:
         return storage.get_storage_retention_config()
+
+    def disk_health(self) -> Dict[str, Any]:
+        return self._disk_health()
 
     @staticmethod
     def _sqlite_payload_bytes(path: Path, tables: Optional[Iterable[str]] = None) -> int:
@@ -158,23 +161,57 @@ class StorageRetentionService:
     def _checkpoint_payload_bytes() -> int:
         return StorageRetentionService._sqlite_payload_bytes(CHECKPOINT_DB_PATH, ("checkpoints", "writes"))
 
-    @staticmethod
-    def _disk_health() -> Dict[str, Any]:
+    def _disk_health(self) -> Dict[str, Any]:
         V8_AGENT_OS_HOME.mkdir(parents=True, exist_ok=True)
         usage = shutil.disk_usage(V8_AGENT_OS_HOME)
         free_ratio = usage.free / max(1, usage.total)
-        emergency = usage.free < 2 * 1024 * 1024 * 1024 or free_ratio < 0.05
-        level = "emergency" if emergency else "critical" if free_ratio < 0.10 else "warning" if free_ratio < 0.15 else "healthy"
+        watermarks = dict(self.get_config().get("diskWatermarks") or {})
+        warning_ratio = float(watermarks.get("warningRatio") or 0.15)
+        critical_ratio = float(watermarks.get("criticalRatio") or 0.10)
+        emergency_ratio = float(watermarks.get("emergencyRatio") or 0.05)
+        emergency_free_bytes = int(watermarks.get("emergencyFreeBytes") or 2 * 1024 * 1024 * 1024)
+        emergency = usage.free < emergency_free_bytes or free_ratio < emergency_ratio
+        level = (
+            "emergency"
+            if emergency
+            else "critical"
+            if free_ratio < critical_ratio
+            else "warning"
+            if free_ratio < warning_ratio
+            else "healthy"
+        )
         return {
             "totalBytes": int(usage.total),
             "freeBytes": int(usage.free),
             "freeRatio": free_ratio,
             "watermark": level,
-            "warningRatio": 0.15,
-            "criticalRatio": 0.10,
-            "emergencyRatio": 0.05,
+            "warningRatio": warning_ratio,
+            "criticalRatio": critical_ratio,
+            "emergencyRatio": emergency_ratio,
+            "emergencyFreeBytes": emergency_free_bytes,
             "emergencySafeMode": emergency,
         }
+
+    @staticmethod
+    def _disk_pressure_reclaim_target(disk: Dict[str, Any]) -> int:
+        """Return the disposable bytes needed to leave the current pressure band."""
+
+        level = str(disk.get("watermark") or "healthy")
+        total = max(0, int(disk.get("totalBytes") or 0))
+        free = max(0, int(disk.get("freeBytes") or 0))
+        if level == "emergency":
+            target_ratio = float(disk.get("criticalRatio") or 0.10)
+            target_free = max(
+                int(total * target_ratio),
+                int(disk.get("emergencyFreeBytes") or 0),
+            )
+        elif level == "critical":
+            target_free = int(total * float(disk.get("warningRatio") or 0.15))
+        else:
+            # Warning pressure applies normal TTL/cap cleanup, but does not
+            # evict otherwise-fresh disposable data merely to chase a ratio.
+            return 0
+        return max(0, target_free - free)
 
     @staticmethod
     def _journal() -> Dict[str, Any]:
@@ -424,15 +461,17 @@ class StorageRetentionService:
                 "label": "Logs",
                 "usedBytes": self._structured_log_bytes(),
                 "maxBytes": int((budgets.get("logs") or {}).get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES),
-                "mode": str((budgets.get("logs") or {}).get("mode") or config.get("mode") or "hard_rolling"),
+                "mode": str((budgets.get("logs") or {}).get("mode") or "rolling"),
                 "autoPrune": True,
+                "classification": "derived",
             },
             "checkpoints": {
                 "label": "Checkpoints",
                 "usedBytes": checkpoint_logical,
                 "maxBytes": int((budgets.get("checkpoints") or {}).get("maxBytes") or DEFAULT_CHECKPOINT_BUDGET_BYTES),
-                "mode": str((budgets.get("checkpoints") or {}).get("mode") or config.get("mode") or "hard_rolling"),
+                "mode": "elastic",
                 "autoPrune": True,
+                "classification": "recoverable",
             },
             "rawEvidence": {
                 "label": "Raw evidence",
@@ -441,6 +480,7 @@ class StorageRetentionService:
                 "retentionDays": int((budgets.get("rawEvidence") or {}).get("retentionDays") or 30),
                 "mode": str((budgets.get("rawEvidence") or {}).get("mode") or "rolling"),
                 "autoPrune": False,
+                "classification": "derived",
             },
             "artifacts": {
                 "label": "Artifacts",
@@ -449,6 +489,7 @@ class StorageRetentionService:
                 "retentionDays": int((budgets.get("artifacts") or {}).get("retentionDays") or 60),
                 "mode": str((budgets.get("artifacts") or {}).get("mode") or "manual_prune"),
                 "autoPrune": False,
+                "classification": "canonical",
             },
             "screenshots": {
                 "label": "Screenshots",
@@ -457,6 +498,7 @@ class StorageRetentionService:
                 "retentionDays": int((budgets.get("screenshots") or {}).get("retentionDays") or 14),
                 "mode": str((budgets.get("screenshots") or {}).get("mode") or "rolling"),
                 "autoPrune": False,
+                "classification": "derived",
             },
             "vectorDb": {
                 "label": "Vector DB",
@@ -464,6 +506,7 @@ class StorageRetentionService:
                 "maxBytes": int((budgets.get("vectorDb") or {}).get("maxBytes") or 4 * 1024 * 1024 * 1024),
                 "mode": str((budgets.get("vectorDb") or {}).get("mode") or "warn_only"),
                 "autoPrune": False,
+                "classification": "derived",
             },
             "knowledgeTruth": {
                 "label": "Canonical knowledge",
@@ -471,6 +514,7 @@ class StorageRetentionService:
                 "maxBytes": int((budgets.get("knowledgeTruth") or {}).get("maxBytes") or 2 * 1024 * 1024 * 1024),
                 "mode": str((budgets.get("knowledgeTruth") or {}).get("mode") or "warn_only"),
                 "autoPrune": False,
+                "classification": "canonical",
             },
             "memoryAuxiliary": {
                 "label": "Memory auxiliary records",
@@ -478,12 +522,13 @@ class StorageRetentionService:
                 "maxBytes": int((budgets.get("memoryAuxiliary") or {}).get("maxBytes") or 2 * 1024 * 1024 * 1024),
                 "mode": str((budgets.get("memoryAuxiliary") or {}).get("mode") or "warn_only"),
                 "autoPrune": False,
+                "classification": "canonical",
             },
         }
         budget_findings = self._budget_findings(budget_components)
         return {
             "config": config,
-            "maxBytes": int(config.get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES + DEFAULT_CHECKPOINT_BUDGET_BYTES),
+            "policy": "disk_watermark",
             "totalGovernedBytes": total,
             "totalProductBytes": registry_snapshot.get("registeredBytes"),
             "registeredStorageBytes": registry_snapshot.get("registeredBytes"),
@@ -492,7 +537,6 @@ class StorageRetentionService:
             "logicalBytes": logical_total,
             "reclaimableBytes": max(0, total - logical_total - checkpoint_fragmentation)
             + max(checkpoint_fragmentation, checkpoint_safe_reclaimable),
-            "overCapBytes": max(0, total - int(config.get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES + DEFAULT_CHECKPOINT_BUDGET_BYTES)),
             "components": components,
             "budgets": budgets,
             "budgetComponents": budget_components,
@@ -516,7 +560,7 @@ class StorageRetentionService:
                 continue
             ratio = used / cap
             if ratio >= 1:
-                severity = "error" if item.get("autoPrune") else "warning"
+                severity = "error" if item.get("mode") in {"hard_rolling", "rolling"} and item.get("autoPrune") else "warning"
             elif ratio >= 0.8:
                 severity = "warning"
             else:
@@ -662,7 +706,8 @@ class StorageRetentionService:
         plan = self._execute_retention(dry_run=True, reason=reason)
         digest_payload = {
             "reason": reason,
-            "maxBytes": plan.get("maxBytes"),
+            "policy": plan.get("policy"),
+            "triggerWatermark": plan.get("triggerWatermark"),
             "beforeBytes": plan.get("beforeBytes"),
             "actions": plan.get("actions") or [],
         }
@@ -691,7 +736,10 @@ class StorageRetentionService:
             safe_actions.extend(self._prune_expired_response_cache(dry_run=False))
             safe_actions.extend(self._prune_observability_logs(dry_run=False))
             safe_actions.extend(self._prune_log_files(dry_run=False))
-            registry_plan = storage_registry_service.build_cleanup_plan(home=V8_AGENT_OS_HOME)
+            registry_plan = storage_registry_service.build_cleanup_plan(
+                home=V8_AGENT_OS_HOME,
+                pressure_bytes=self._disk_pressure_reclaim_target(disk_health),
+            )
             registry_result = storage_registry_service.apply_cleanup_plan(home=V8_AGENT_OS_HOME, plan=registry_plan)
             safe_actions.append({"action": "registry_safe_cleanup", **registry_result})
             journal.update({"state": "blocked", "backupState": "blocked_low_space", "disk": disk_health, "safeActions": safe_actions})
@@ -758,8 +806,74 @@ class StorageRetentionService:
         if journal.get("state") in {"applying", "verifying", "backup_preflight"}:
             journal.update({"state": "recovery_required", "updatedAt": _utc_now_iso()})
             self._write_journal(journal)
-        plan = self._execute_retention(dry_run=True, reason="engine_startup")
-        return {"status": "planned", "journal": journal, "plan": plan}
+        disk = self._disk_health()
+        pressure_target = self._disk_pressure_reclaim_target(disk)
+        registry_plan = storage_registry_service.build_cleanup_plan(
+            home=V8_AGENT_OS_HOME,
+            pressure_bytes=pressure_target,
+        )
+        plan = self._execute_retention(
+            dry_run=True,
+            reason="engine_startup",
+            registry_plan=registry_plan,
+        )
+        automatic_cleanup: Dict[str, Any] | None = None
+        if disk.get("watermark") != "healthy" and registry_plan.get("actions"):
+            automatic_cleanup = storage_registry_service.apply_cleanup_plan(
+                home=V8_AGENT_OS_HOME,
+                plan=registry_plan,
+            )
+            automatic_cleanup["scope"] = "derived_cache_test_owned_files"
+            automatic_cleanup["triggerWatermark"] = disk.get("watermark")
+            automatic_cleanup["diskAfter"] = self._disk_health()
+            try:
+                observability_db.add_retention_event(
+                    {
+                        "mode": "automatic_disk_pressure",
+                        "status": automatic_cleanup.get("status") or "unknown",
+                        "max_bytes": 0,
+                        "before_bytes": int(registry_plan.get("candidateBytes") or 0),
+                        "after_bytes": max(
+                            0,
+                            int(registry_plan.get("candidateBytes") or 0)
+                            - int(automatic_cleanup.get("removedBytes") or 0),
+                        ),
+                        "actions": [
+                            {
+                                "action": "registry_disk_pressure_cleanup",
+                                "removedFiles": int(automatic_cleanup.get("removedFiles") or 0),
+                                "removedBytes": int(automatic_cleanup.get("removedBytes") or 0),
+                                "failureCount": len(automatic_cleanup.get("failures") or []),
+                            }
+                        ],
+                        "metadata": {
+                            "policy": "disk_watermark",
+                            "triggerWatermark": disk.get("watermark"),
+                            "scope": automatic_cleanup["scope"],
+                            "planDigest": registry_plan.get("planDigest"),
+                            "diskFreeBeforeBytes": int(disk.get("freeBytes") or 0),
+                            "diskFreeAfterBytes": int(
+                                (automatic_cleanup.get("diskAfter") or {}).get("freeBytes") or 0
+                            ),
+                        },
+                    }
+                )
+                automatic_cleanup["auditState"] = "recorded"
+            except Exception as exc:
+                automatic_cleanup["auditState"] = "degraded"
+                automatic_cleanup["auditError"] = exc.__class__.__name__
+        return {
+            "status": (
+                "auto_cleaned"
+                if automatic_cleanup and automatic_cleanup.get("status") == "completed"
+                else "auto_cleanup_partial"
+                if automatic_cleanup
+                else "planned"
+            ),
+            "journal": journal,
+            "plan": plan,
+            "automaticCleanup": automatic_cleanup,
+        }
 
     @staticmethod
     def _quick_check(path: Path) -> str:
@@ -785,36 +899,43 @@ class StorageRetentionService:
         after = {str(path): _sqlite_family_size(path) for path in paths}
         return {"status": "completed", "before": before, "after": after, "backup": backup}
 
-    def _execute_retention(self, *, dry_run: bool, reason: str) -> Dict[str, Any]:
+    def _execute_retention(
+        self,
+        *,
+        dry_run: bool,
+        reason: str,
+        registry_plan: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         config = self.get_config()
         budgets = dict(config.get("budgets") or {})
         log_budget = int((budgets.get("logs") or {}).get("maxBytes") or DEFAULT_LOG_BUDGET_BYTES)
-        checkpoint_budget = int((budgets.get("checkpoints") or {}).get("maxBytes") or DEFAULT_CHECKPOINT_BUDGET_BYTES)
-        max_bytes = int(config.get("maxBytes") or log_budget + checkpoint_budget)
+        disk_health = self._disk_health()
         before = self._governed_logical_bytes()
         actions = self.migrate_legacy_logs(dry_run=dry_run)
-        if reason != "engine_startup":
-            registry_plan = storage_registry_service.build_cleanup_plan(home=V8_AGENT_OS_HOME)
-            if registry_plan.get("actions"):
-                if dry_run:
-                    actions.append(
-                        {
-                            "action": "registry_safe_cleanup",
-                            "dryRun": True,
-                            "candidateFiles": int(registry_plan.get("candidateFiles") or 0),
-                            "candidateBytes": int(registry_plan.get("candidateBytes") or 0),
-                            "planDigest": registry_plan.get("planDigest"),
-                            "entries": registry_plan.get("entries") or [],
-                        }
-                    )
-                else:
-                    actions.append(
-                        {
-                            "action": "registry_safe_cleanup",
-                            "dryRun": False,
-                            **storage_registry_service.apply_cleanup_plan(home=V8_AGENT_OS_HOME, plan=registry_plan),
-                        }
-                    )
+        registry_plan = registry_plan or storage_registry_service.build_cleanup_plan(
+            home=V8_AGENT_OS_HOME,
+            pressure_bytes=self._disk_pressure_reclaim_target(disk_health),
+        )
+        if registry_plan.get("actions"):
+            if dry_run:
+                actions.append(
+                    {
+                        "action": "registry_safe_cleanup",
+                        "dryRun": True,
+                        "candidateFiles": int(registry_plan.get("candidateFiles") or 0),
+                        "candidateBytes": int(registry_plan.get("candidateBytes") or 0),
+                        "planDigest": registry_plan.get("planDigest"),
+                        "entries": registry_plan.get("entries") or [],
+                    }
+                )
+            else:
+                actions.append(
+                    {
+                        "action": "registry_safe_cleanup",
+                        "dryRun": False,
+                        **storage_registry_service.apply_cleanup_plan(home=V8_AGENT_OS_HOME, plan=registry_plan),
+                    }
+                )
         log_total = self._structured_log_bytes()
         if log_total > log_budget:
             actions.extend(self._prune_expired_response_cache(dry_run=dry_run))
@@ -832,6 +953,16 @@ class StorageRetentionService:
                 if dry_run:
                     break
                 log_total = self._structured_log_bytes()
+        # Runtime snapshots are derived projections. Their per-session/type
+        # lifecycle is enforced independently of disk pressure.
+        runtime_snapshot_actions = self._prune_runtime_snapshots(dry_run=dry_run)
+        actions.extend(runtime_snapshot_actions)
+        if not dry_run:
+            for _ in range(20):
+                if not runtime_snapshot_actions:
+                    break
+                runtime_snapshot_actions = self._prune_runtime_snapshots(dry_run=False)
+                actions.extend(runtime_snapshot_actions)
         # Session/thread lifecycle retention is a safety invariant, not merely
         # a budget response. Run one complete dry-run plan or drain bounded
         # apply batches before checking whether additional budget pruning is
@@ -844,41 +975,17 @@ class StorageRetentionService:
                     break
                 checkpoint_actions = self._prune_old_checkpoints(dry_run=False)
                 actions.extend(checkpoint_actions)
-        checkpoint_total = self._checkpoint_payload_bytes()
-        while checkpoint_total > checkpoint_budget:
-            step_actions = self._prune_old_checkpoints(dry_run=dry_run)
-            if not step_actions:
-                break
-            actions.extend(step_actions)
-            if dry_run:
-                break
-            checkpoint_total = self._checkpoint_payload_bytes()
-        total = self._governed_logical_bytes()
-        for step in (
-            self._prune_observability_logs,
-            self._prune_runtime_snapshots,
-            self._prune_completed_runtime_events,
-            self._prune_old_checkpoints,
-            self._prune_log_files,
-        ):
-            while total > max_bytes:
-                step_actions = step(dry_run=dry_run)
-                if not step_actions:
-                    break
-                actions.extend(step_actions)
-                if dry_run:
-                    break
-                total = self._governed_logical_bytes()
         after = self._governed_logical_bytes()
-        status = "dry_run" if dry_run else ("over_cap" if after > max_bytes else "completed")
+        status = "dry_run" if dry_run else "completed"
         result = {
             "mode": "dry_run" if dry_run else "prune",
             "status": status,
             "reason": reason,
-            "maxBytes": max_bytes,
+            "policy": "disk_watermark",
+            "triggerWatermark": disk_health.get("watermark"),
+            "disk": disk_health,
             "beforeBytes": before,
             "afterBytes": after,
-            "overCapBytes": max(0, after - max_bytes),
             "actions": actions,
             "protected": {
                 "messages": True,
@@ -892,11 +999,15 @@ class StorageRetentionService:
                 {
                     "mode": "prune",
                     "status": status,
-                    "max_bytes": max_bytes,
+                    "max_bytes": 0,
                     "before_bytes": before,
                     "after_bytes": after,
                     "actions": actions,
-                    "metadata": {"reason": reason},
+                    "metadata": {
+                        "reason": reason,
+                        "policy": "disk_watermark",
+                        "triggerWatermark": disk_health.get("watermark"),
+                    },
                 }
             )
         return result

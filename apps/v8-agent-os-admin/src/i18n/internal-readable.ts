@@ -56,7 +56,7 @@ export const INTERNAL_READABLE = {
   k3fa02debcb: "默认按 OpenAI 兼容模式连接 Ollama，本地聊天模型可直接测试。",
   k408658f78d: "加载运行稳定性配置失败",
   k426e3712e7: "开发机动作：",
-  k42be496f31: "确认应用 storageRetention 均衡预算迁移？执行前会备份 config.json，可从 ledger 回滚。",
+  k42be496f31: "应用磁盘水位存储策略？执行前会备份 config.json，可从迁移记录回滚。",
   k44ce4434b6: "适用于本机 vLLM 服务，文本模型和 rerank 都走本地 HTTP provider。",
   k458914f447: "应用迁移",
   k45de6be9e3: "保存稳定性配置",

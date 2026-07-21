@@ -15,7 +15,7 @@ For a workspace inside a monorepo, the topology is preserved as:
 originalWorkspaceRoot = <repo>/apps/example
 repositoryRoot        = <repo>
 workspaceRelativePath = apps/example
-worktreeRoot          = ~/.v8-agent-os/worktrees/<repo>/<run>/<task>
+worktreeRoot          = <repository-parent>/.v8os-worktrees/<repo>/<run>/<task>
 executionWorkspace    = <worktreeRoot>/apps/example
 ```
 
@@ -29,7 +29,7 @@ The original workspace remains the authority root. A valid sandbox policy tempor
 4. Supervisor, direct child, grandchild and external worker writes run in separate managed worktrees. A sandbox lease is immutable and bound to one worktree, base commit, write set and network profile.
 5. A completed task becomes a candidate commit. Nested candidates merge into their parent worktree; sibling candidates are combined in a separate integration worktree.
 6. Only a validated Supervisor delivery decision applies the integration patch to the original workspace. V8OS does not silently commit or move the user's current branch.
-7. Terminal worktrees are retained for recovery and cleaned from V8OS-owned storage after the retention window.
+7. After Supervisor accepts delivery, V8OS writes a durable `refs/v8os/delivered/...` recovery ref and immediately removes the physical checkout. Unaccepted or interrupted worktrees remain recoverable and follow their lifecycle policy.
 
 Files over 20 MiB cannot enter a managed change set. During explicit adoption, pre-existing untracked files above that limit are recorded in `.git/info/exclude`; this does not delete or move them.
 

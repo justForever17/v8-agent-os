@@ -504,6 +504,8 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     "engineeringLane": {
         "enabled": True,
         "triggerMode": "auto",
+        "worktreePlacement": "same_volume",
+        "worktreeRoot": "",
         "contextPackBudget": 48000,
         "evidenceGraphEnabled": True,
         "evidenceGraphBudget": 16000,
@@ -693,19 +695,24 @@ STRUCTURED_CONFIG_DEFAULTS: dict[str, Any] = {
     },
     "runtimeStability": {"version": 1, "strictSupervisorDurability": True, "sessionLanePolicy": "queue"},
     "storageRetention": {
-        "version": 1,
+        "version": 2,
         "enabled": True,
-        "maxBytes": 5 * 1024 * 1024 * 1024,
-        "mode": "hard_rolling",
+        "policy": "disk_watermark",
         "protectUserVisibleTranscript": True,
+        "diskWatermarks": {
+            "warningRatio": 0.15,
+            "criticalRatio": 0.10,
+            "emergencyRatio": 0.05,
+            "emergencyFreeBytes": 2 * 1024 * 1024 * 1024,
+        },
         "budgets": {
             "logs": {
                 "maxBytes": 1 * 1024 * 1024 * 1024,
-                "mode": "hard_rolling",
+                "mode": "rolling",
             },
             "checkpoints": {
                 "maxBytes": 4 * 1024 * 1024 * 1024,
-                "mode": "hard_rolling",
+                "mode": "elastic",
             },
             "rawEvidence": {
                 "maxBytes": 2 * 1024 * 1024 * 1024,
@@ -2349,6 +2356,11 @@ class StorageManager:
         merged["worksetRiskMode"] = workset_mode if workset_mode in {"read_only", "soft_gate", "off"} else "read_only"
         governance_mode = str(merged.get("worksetGovernanceMode") or "observe_auto_block").strip().lower()
         merged["worksetGovernanceMode"] = governance_mode if governance_mode in {"observe_auto_block", "read_only", "soft_gate", "off"} else "observe_auto_block"
+        worktree_placement = str(merged.get("worktreePlacement") or "same_volume").strip().lower()
+        merged["worktreePlacement"] = worktree_placement if worktree_placement in {"same_volume", "custom"} else "same_volume"
+        merged["worktreeRoot"] = str(merged.get("worktreeRoot") or "").strip()
+        if merged["worktreePlacement"] != "custom":
+            merged["worktreeRoot"] = ""
         providers = merged.get("diagnosticsProviders") if isinstance(merged.get("diagnosticsProviders"), dict) else {}
         default_providers = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["diagnosticsProviders"]
         merged["diagnosticsProviders"] = {
@@ -2387,6 +2399,15 @@ class StorageManager:
         next_data["worksetRiskMode"] = workset_mode if workset_mode in {"read_only", "soft_gate", "off"} else "read_only"
         governance_mode = str(next_data.get("worksetGovernanceMode") or "observe_auto_block").strip().lower()
         next_data["worksetGovernanceMode"] = governance_mode if governance_mode in {"observe_auto_block", "read_only", "soft_gate", "off"} else "observe_auto_block"
+        worktree_placement = str(next_data.get("worktreePlacement") or "same_volume").strip().lower()
+        next_data["worktreePlacement"] = worktree_placement if worktree_placement in {"same_volume", "custom"} else "same_volume"
+        next_data["worktreeRoot"] = str(next_data.get("worktreeRoot") or "").strip()
+        if next_data["worktreePlacement"] == "custom":
+            custom_root = Path(next_data["worktreeRoot"]).expanduser()
+            if not next_data["worktreeRoot"] or not custom_root.is_absolute():
+                raise ValueError("Custom engineering worktree root must be an absolute path.")
+        else:
+            next_data["worktreeRoot"] = ""
         providers = next_data.get("diagnosticsProviders") if isinstance(next_data.get("diagnosticsProviders"), dict) else {}
         default_providers = STRUCTURED_CONFIG_DEFAULTS["engineeringLane"]["diagnosticsProviders"]
         next_data["diagnosticsProviders"] = {
@@ -2411,23 +2432,43 @@ class StorageManager:
 
     # --- Storage Retention Config Accessors ---
     def _normalize_storage_retention_config(self, data: Dict[str, Any] | None) -> Dict[str, Any]:
-        raw = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["storageRetention"], data if isinstance(data, dict) else {})
-        raw["version"] = 1
-        raw["enabled"] = bool(raw.get("enabled", True))
-        raw["mode"] = str(raw.get("mode") or "hard_rolling").strip() or "hard_rolling"
-        raw["protectUserVisibleTranscript"] = bool(raw.get("protectUserVisibleTranscript", True))
+        source = dict(data or {}) if isinstance(data, dict) else {}
+        merged = self._deep_merge(STRUCTURED_CONFIG_DEFAULTS["storageRetention"], source)
+        raw: Dict[str, Any] = {
+            "version": 2,
+            "enabled": bool(merged.get("enabled", True)),
+            "policy": "disk_watermark",
+            "protectUserVisibleTranscript": bool(merged.get("protectUserVisibleTranscript", True)),
+        }
+        default_watermarks = dict(STRUCTURED_CONFIG_DEFAULTS["storageRetention"].get("diskWatermarks") or {})
+        watermarks = self._deep_merge(
+            default_watermarks,
+            merged.get("diskWatermarks") if isinstance(merged.get("diskWatermarks"), dict) else {},
+        )
+
+        def _ratio(name: str, default: float) -> float:
+            try:
+                return max(0.001, min(0.50, float(watermarks.get(name) or default)))
+            except (TypeError, ValueError):
+                return default
+
+        warning_ratio = _ratio("warningRatio", 0.15)
+        critical_ratio = min(warning_ratio, _ratio("criticalRatio", 0.10))
+        emergency_ratio = min(critical_ratio, _ratio("emergencyRatio", 0.05))
         try:
-            max_bytes = int(raw.get("maxBytes") or 5 * 1024 * 1024 * 1024)
+            emergency_free_bytes = int(watermarks.get("emergencyFreeBytes") or 2 * 1024 * 1024 * 1024)
         except (TypeError, ValueError):
-            max_bytes = 5 * 1024 * 1024 * 1024
-        raw["maxBytes"] = max(50 * 1024 * 1024, max_bytes)
-        input_budgets = data.get("budgets") if isinstance(data, dict) and isinstance(data.get("budgets"), dict) else {}
+            emergency_free_bytes = 2 * 1024 * 1024 * 1024
+        raw["diskWatermarks"] = {
+            "warningRatio": warning_ratio,
+            "criticalRatio": critical_ratio,
+            "emergencyRatio": emergency_ratio,
+            "emergencyFreeBytes": max(512 * 1024 * 1024, emergency_free_bytes),
+        }
         budgets = self._deep_merge(
             STRUCTURED_CONFIG_DEFAULTS["storageRetention"].get("budgets") or {},
-            raw.get("budgets") if isinstance(raw.get("budgets"), dict) else {},
+            merged.get("budgets") if isinstance(merged.get("budgets"), dict) else {},
         )
-        if isinstance(data, dict) and "maxBytes" in data and not dict(input_budgets.get("logs") or {}).get("maxBytes"):
-            budgets["logs"] = {**dict(budgets.get("logs") or {}), "maxBytes": raw["maxBytes"]}
         normalized_budgets: Dict[str, Any] = {}
         minimum_budget_bytes = {
             "logs": 1 * 1024 * 1024 * 1024,
@@ -2447,13 +2488,12 @@ class StorageManager:
                     retention_days = int(default_budget.get("retentionDays") or 0)
                 budget["retentionDays"] = max(0, retention_days)
             budget["mode"] = str(budget.get("mode") or default_budget.get("mode") or "warn_only").strip() or "warn_only"
+            if key == "checkpoints":
+                budget["mode"] = "elastic"
+            elif key in {"artifacts", "knowledgeTruth", "memoryAuxiliary"}:
+                budget["mode"] = "manual_prune" if key == "artifacts" else "warn_only"
             normalized_budgets[key] = budget
         raw["budgets"] = normalized_budgets
-        raw["maxBytes"] = max(
-            int(raw.get("maxBytes") or 0),
-            int((normalized_budgets.get("logs") or {}).get("maxBytes") or 0)
-            + int((normalized_budgets.get("checkpoints") or {}).get("maxBytes") or 0),
-        )
         return raw
 
     def get_storage_retention_config(self) -> Dict[str, Any]:

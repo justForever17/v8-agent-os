@@ -52,9 +52,9 @@ class ConfigMigrationService:
         migrations = list(payload.get("migrations") or []) if isinstance(payload, dict) else []
         return {"ledgerPath": str(MIGRATION_LEDGER_PATH), "migrations": migrations}
 
-    def build_plan(self, *, target: str = "storage_retention_balanced") -> dict[str, Any]:
+    def build_plan(self, *, target: str = "storage_retention_disk_watermark") -> dict[str, Any]:
         raw_config = storage._read_raw_config_payload()  # pylint: disable=protected-access
-        if target != "storage_retention_balanced":
+        if target != "storage_retention_disk_watermark":
             return {
                 "target": target,
                 "status": "unsupported_target",
@@ -74,7 +74,7 @@ class ConfigMigrationService:
         return {
             "target": target,
             "status": "no_changes" if not changes else "ready",
-            "reason": "Apply balanced storage budgets while preserving existing log hard cap.",
+            "reason": "Replace the legacy total-size cap with disk-watermark and storage-class governance.",
             "runtimeImpact": ["operations", "observability", "storage_retention"],
             "reversible": True,
             "changes": changes,
@@ -82,7 +82,7 @@ class ConfigMigrationService:
             "after": desired,
         }
 
-    def apply_plan(self, *, target: str = "storage_retention_balanced", reason: str = "admin_migration") -> dict[str, Any]:
+    def apply_plan(self, *, target: str = "storage_retention_disk_watermark", reason: str = "admin_migration") -> dict[str, Any]:
         plan = self.build_plan(target=target)
         if plan.get("status") not in {"ready", "no_changes"}:
             return {"status": "skipped", "plan": plan}

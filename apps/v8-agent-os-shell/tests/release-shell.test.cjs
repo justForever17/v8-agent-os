@@ -111,10 +111,12 @@ test('desktop release notes only advertise portable archives on stable', () => {
   const preview = execFileSync(process.execPath, [generator, ...commonArgs, '--channel', 'preview'], {
     cwd: repoRoot,
     encoding: 'utf8',
+    env: { ...process.env, GITHUB_REF_NAME: 'main' },
   });
   const stable = execFileSync(process.execPath, [generator, ...commonArgs, '--channel', 'stable'], {
     cwd: repoRoot,
     encoding: 'utf8',
+    env: { ...process.env, GITHUB_REF_NAME: 'main' },
   });
 
   assert.match(preview, /win-x64-setup\.exe/);

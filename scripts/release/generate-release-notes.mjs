@@ -23,7 +23,8 @@ function parseArgs(argv) {
 }
 
 function inferRelease(args) {
-  const tag = args.tag || process.env.GITHUB_REF_NAME;
+  const environmentTag = String(process.env.GITHUB_REF_NAME || "").trim();
+  const tag = args.tag || (TAG_RE.test(environmentTag) ? environmentTag : "");
   let product = args.product;
   let version = args.version;
 

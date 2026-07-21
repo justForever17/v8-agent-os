@@ -230,6 +230,7 @@ def test_grandchild_fallback_projects_evidence_without_parent_topology_acceptanc
         "Successful command evidence with command, exit code, exact stdout, and stderr",
         "Compact independent verification handoff for the parent Agent",
     ]
+    assert child_task["toolPolicy"] == {"mode": "default"}
     assert child_task["context"]["verificationEvidenceContract"] == {
         "requiredReadPaths": ["src/result.py"],
         "requiredCommands": ["python src/result.py"],

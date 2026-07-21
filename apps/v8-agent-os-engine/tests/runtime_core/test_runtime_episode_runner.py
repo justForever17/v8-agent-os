@@ -2429,6 +2429,11 @@ def test_runtime_runner_reuses_broker_persisted_child_episode():
     children = db.list_runtime_episodes(parent_episode_id=parent_id, limit=20)
     assert [item["episodeId"] for item in children if item["episodeId"] == child_id] == [child_id]
     assert not any(item["source"] == "subagent" and item["episodeId"] != child_id for item in children)
+    persisted_child = db.get_runtime_episode(child_id)
+    assert persisted_child["rootEpisodeId"] == parent_id
+    persisted_brief = persisted_child["inputs"]["workerBriefs"][0]
+    assert persisted_brief["delegationDepth"] == 2
+    assert persisted_brief["agentName"].startswith("implementation-engineer · worker-")
 
 
 def test_broker_selected_local_episode_executes_without_redispatch(monkeypatch):
@@ -2627,6 +2632,64 @@ def test_persisted_direct_child_parent_equal_to_root_keeps_grandchild_authority(
     ]
 
 
+def test_persisted_grandchild_uses_explicit_depth_and_ephemeral_identity():
+    parent_id = "subagent::delegation_parent::0::task::implementation-engineer"
+    episode = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "delegation_broker",
+            "reason": "Verify one implementation result.",
+            "inputs": {
+                "workerBriefs": [
+                    {
+                        "taskBriefId": "grandchild-verification",
+                        "goal": "Read and execute the target file.",
+                        "delegationDepth": 2,
+                        "context": {
+                            "ephemeralMirror": {
+                                "agentId": "implementation-engineer::worker-01",
+                                "name": "Implementation Engineer · worker-01",
+                                "parentAgentName": "Implementation Engineer",
+                            }
+                        },
+                    }
+                ]
+            },
+        },
+        kind="delegation",
+        state="queued",
+        parent_episode_id=parent_id,
+        continuation_target="parallel_delegate_join",
+        extra={
+            "episodeId": "subagent::delegation_child::0::verify::implementation-engineer::worker-01",
+            "needId": "subagent::delegation_child::0::verify::implementation-engineer::worker-01",
+            "targetId": "implementation-engineer",
+            "targetLabel": "Implementation Engineer · worker-01",
+            "rootEpisodeId": parent_id,
+            "delegationDepth": 2,
+        },
+    )
+
+    command = RuntimeEpisodeRunner._broker_selected_local_episode_command(
+        episode,
+        worker_briefs=episode["inputs"]["workerBriefs"],
+        session_id="session-grandchild",
+        run_id="run-grandchild",
+        workspace_path=r"E:\Projects\v8chat\v8-agent-os",
+    )
+
+    assert command is not None
+    send = list(command.goto)[0]
+    branch = send.arg["parallel_branch"]
+    assert branch["delegationDepth"] == 2
+    assert branch["rootEpisodeId"] == parent_id
+    assert branch["allowChildDelegation"] is False
+    assert branch["agentName"] == "Implementation Engineer · worker-01"
+    assert branch["parentDelegationId"] == parent_id
+    assert send.arg["current_route_context"]["rootEpisodeId"] == parent_id
+    assert send.arg["current_route_context"]["runtimeToolGrants"] == []
+
+
 def test_failed_grandchild_delegation_unblocks_parent_episode_chain():
     parent = build_runtime_episode(
         need={"kind": "engineering", "source": "test", "reason": "parent waiting for delegation"},
@@ -2686,6 +2749,51 @@ def test_failed_grandchild_delegation_unblocks_parent_episode_chain():
     assert child_resume["childHandoffs"][0]["compactSummary"] == "grandchild worker failed with recoverable error"
     assert failed_parent["state"] == "failed"
     assert failed_parent["error_code"] == "child_episode_failed"
+
+
+def test_runtime_episode_upsert_inherits_and_preserves_durable_tree_root():
+    root = build_runtime_episode(
+        need={"kind": "engineering", "source": "test", "reason": "root"},
+        kind="engineering",
+        state="active",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(root, enqueue=False)
+    direct = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "direct child",
+            "parentEpisodeId": root["episodeId"],
+        },
+        kind="delegation",
+        state="active",
+        parent_episode_id=root["episodeId"],
+        continuation_target="runtime_episode_runner",
+        extra={"rootEpisodeId": root["episodeId"]},
+    )
+    db.upsert_runtime_episode_record(direct, enqueue=False)
+    grandchild = build_runtime_episode(
+        need={
+            "kind": "delegation",
+            "source": "test",
+            "reason": "grandchild",
+            "parentEpisodeId": direct["episodeId"],
+        },
+        kind="delegation",
+        state="active",
+        parent_episode_id=direct["episodeId"],
+        continuation_target="runtime_episode_runner",
+    )
+
+    first = db.upsert_runtime_episode_record(grandchild, enqueue=False)
+    assert first["rootEpisodeId"] == root["episodeId"]
+
+    second = db.upsert_runtime_episode_record(
+        {**grandchild, "state": "completed"},
+        enqueue=False,
+    )
+    assert second["rootEpisodeId"] == root["episodeId"]
 
 
 def test_child_delegation_budget_boundary_requeues_parent_without_failure():
@@ -3625,7 +3733,7 @@ def test_verification_contract_requires_successful_read_and_command_results():
     ]
 
 
-def test_verification_contract_parses_english_exact_stdout_without_treating_exactly_as_value():
+def test_verification_contract_parses_english_exact_stdout_without_treating_filler_as_value():
     from graph.parallel_support import _validate_required_verification_evidence
     from langchain_core.messages import AIMessage, ToolMessage
 
@@ -3636,7 +3744,16 @@ def test_verification_contract_parses_english_exact_stdout_without_treating_exac
             "acceptanceContract": [
                 "Read the final file with read_native_file: src/sandbox_live.py",
                 "Execute with run_system_command: python src/sandbox_live.py",
-                "The command stdout must equal exactly: sandbox-live-ok",
+                "The command stdout is exactly the string `sandbox-live-ok`.",
+                "运行 python src/sandbox_live.py 后 stdout 严格等于 'sandbox-live-ok'。",
+                "运行 python src/sandbox_live.py 的退出码为 0。",
+            ],
+            "expectedOutputs": [
+                "Verbatim full file text of src/sandbox_live.py (read via read_native_file, not shell cat/type)",
+                "Stdout captured (must equal 'sandbox-live-ok' with optional trailing newline, nothing else)",
+                "Stdout reported verbatim and confirmed equal to 'sandbox-live-ok' (trailing newline is acceptable)",
+                "执行 `python src/sandbox_live.py` 的命令原文",
+                "执行 `python src/sandbox_live.py` 的退出码（0 表示成功）",
             ],
             "engineeringTaskCapsule": {
                 "executionMode": "verify",
@@ -3662,6 +3779,48 @@ def test_verification_contract_parses_english_exact_stdout_without_treating_exac
             content="$ python src/sandbox_live.py\n<stdout>\nsandbox-live-ok\n</stdout>",
             name="run_system_command",
             tool_call_id="run-exact",
+        ),
+    ]
+
+    assert _validate_required_verification_evidence(branch=branch, delta_messages=messages) is None
+
+
+def test_verification_contract_normalizes_labeled_paths_and_running_command_prose():
+    from graph.parallel_support import _validate_required_verification_evidence
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    branch = {
+        "taskBrief": {
+            "readOnly": True,
+            "readSet": [
+                "target_file=src/sandbox_live.py",
+                "src/sandbox_live.py",
+                r"src\sandbox_live.py",
+            ],
+            "acceptanceContract": [
+                "Running `python src/sandbox_live.py` returns exit code 0.",
+                "stdout is exactly the byte sequence sandbox-live-ok (no trailing newline, no extra whitespace).",
+            ],
+        }
+    }
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "read-labeled", "name": "read_native_file", "args": {"path": "src/sandbox_live.py"}}],
+        ),
+        ToolMessage(
+            content="--- File: src/sandbox_live.py ---\nprint('sandbox-live-ok')",
+            name="read_native_file",
+            tool_call_id="read-labeled",
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "run-labeled", "name": "run_system_command", "args": {"command": "python src/sandbox_live.py"}}],
+        ),
+        ToolMessage(
+            content="$ python src/sandbox_live.py\n<stdout>\nsandbox-live-ok\n</stdout>",
+            name="run_system_command",
+            tool_call_id="run-labeled",
         ),
     ]
 

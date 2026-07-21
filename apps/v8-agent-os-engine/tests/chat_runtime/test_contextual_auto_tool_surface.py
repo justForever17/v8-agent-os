@@ -319,7 +319,7 @@ class ContextualAutoToolSurfaceTests(unittest.TestCase):
         self.assertEqual(resolved["taskBrief"]["delegationDepth"], 2)
         self.assertEqual(resolved["taskBrief"]["runtimeAccess"], [])
         self.assertIn(
-            "TERMINAL VERIFICATION IS CLOSED-WORLD",
+            "terminal depth-two shard",
             _format_delegated_task_contract(resolved["taskBrief"]),
         )
         filtered = _apply_task_tool_policy(

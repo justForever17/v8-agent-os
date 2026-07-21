@@ -98,6 +98,9 @@ def _submit(
                         "必须由 Engineering runtime 执行：先委派一个直接子 Agent 完成修复；"
                         f"{target_agent_instruction}"
                         "该子 Agent 必须再委派一个孙 Agent 对文件内容和实际运行结果做独立验证并回流证据。"
+                        "孙 Agent 必须是直接子 Agent 的临时镜像 worker，不得选择、冒充或持久化为另一个注册 Agent；"
+                        "验证角色只是能力要求，不是身份名称。验证时直接读取文件并运行 `python src/sandbox_live.py`，"
+                        "复用工具返回的命令、退出码、stdout 和 stderr 作为证据，不要创建临时取证文件或复杂重定向命令。"
                         "Supervisor 最后必须验收回流结果；不能用本地直接写入替代委派，也不能只给说明。"
                         "Supervisor 不得另外派一个平级验证任务来冒充孙 Agent；孙 Agent 的 parentEpisodeId 必须指向该直接子 Agent。"
                     ),

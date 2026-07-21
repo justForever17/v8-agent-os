@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from typing import Annotated, Any, Literal, Optional
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
@@ -277,6 +277,186 @@ _RUNTIME_ROUTE_DEFAULT_GROUPS: dict[str, list[str]] = {
 
 def _normalize_capability_kind(value: Any) -> str:
     return normalize_capability_kind(value)
+
+
+_READY_HANDOFF_STATES = {"ok", "ready", "success", "completed", "done"}
+
+
+def _handoff_runtime_kind(handoff: dict[str, Any]) -> str:
+    value = str(handoff.get("kind") or handoff.get("runtimeKind") or "").strip().lower()
+    for kind in ("engineering", "research", "creative_media", "computer_use", "rpa", "delegation"):
+        if kind in value:
+            return kind
+    if "subagent" in value:
+        return "delegation"
+    return ""
+
+
+def _walk_handoff_nodes(value: Any, *, depth: int = 0):
+    if depth > 8:
+        return
+    if isinstance(value, dict):
+        yield value
+        for key in ("delegationHandoff", "childHandoffs", "results"):
+            nested = value.get(key)
+            if isinstance(nested, dict):
+                yield from _walk_handoff_nodes(nested, depth=depth + 1)
+            elif isinstance(nested, list):
+                for item in nested:
+                    yield from _walk_handoff_nodes(item, depth=depth + 1)
+
+
+def _flatten_reference_values(value: Any) -> set[str]:
+    references: set[str] = set()
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            references.add(normalized)
+        return references
+    if isinstance(value, list):
+        for item in value:
+            references.update(_flatten_reference_values(item))
+        return references
+    if not isinstance(value, dict):
+        return references
+    for key in (
+        "ref",
+        "id",
+        "handoffRefId",
+        "handoffId",
+        "artifactId",
+        "producerEpisodeId",
+        "commitId",
+        "rawRef",
+        "detailRef",
+    ):
+        references.update(_flatten_reference_values(value.get(key)))
+    for key in ("refs", "artifactRefs", "proofRefs", "verificationRefs", "detailRefs"):
+        references.update(_flatten_reference_values(value.get(key)))
+    return references
+
+
+def _handoff_reference_values(handoff: dict[str, Any]) -> set[str]:
+    references: set[str] = set()
+    for node in _walk_handoff_nodes(handoff):
+        references.update(_flatten_reference_values(node))
+    return references
+
+
+def _handoff_has_complete_evidence(handoff: dict[str, Any]) -> bool:
+    for node in _walk_handoff_nodes(handoff):
+        status = str(node.get("status") or "").strip().lower()
+        if status not in _READY_HANDOFF_STATES:
+            continue
+        if node.get("error") or node.get("missingArtifactEvidence"):
+            continue
+        if list(node.get("blockers") or node.get("residualRisks") or []):
+            continue
+        verification_evidence = (
+            dict(node.get("verificationEvidence"))
+            if isinstance(node.get("verificationEvidence"), dict)
+            else {}
+        )
+        verification_passed = verification_evidence.get("passed") is True
+        if not verification_passed:
+            verification_passed = any(
+                isinstance(result, dict)
+                and (
+                    result.get("passed") is True
+                    or str(result.get("status") or "").strip().lower()
+                    in {"verified", "passed", "success", "completed"}
+                )
+                for result in list(node.get("verificationResults") or [])
+            )
+        if verification_passed or _flatten_reference_values(
+            [node.get("artifactRefs"), node.get("proofRefs"), node.get("verificationRefs")]
+        ):
+            return True
+    return False
+
+
+def _route_prior_reference_values(need: dict[str, Any]) -> set[str]:
+    inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
+    references: set[str] = set()
+    sources = [inputs]
+    sources.extend(
+        item for item in list(inputs.get("taskBriefs") or []) if isinstance(item, dict)
+    )
+    for source in sources:
+        context = source.get("context") if isinstance(source.get("context"), dict) else {}
+        for value in (source, context):
+            for key in ("priorRefs", "evidenceRefs", "artifactRefs", "proofRefs", "detailRefs"):
+                references.update(_flatten_reference_values(value.get(key)))
+    return references
+
+
+def _has_user_instruction_after_runtime_handoff(state: dict[str, Any]) -> bool:
+    for message in reversed(list(state.get("messages") or [])):
+        if not isinstance(message, HumanMessage):
+            continue
+        metadata = dict(getattr(message, "additional_kwargs", None) or {})
+        governance_type = str(metadata.get("v8_governance_type") or "").strip()
+        if governance_type == "runtime_handoff":
+            break
+        if not governance_type and str(getattr(message, "content", "") or "").strip():
+            return True
+    return False
+
+
+def _current_governed_handoff_reuse(
+    *,
+    state: dict[str, Any] | None,
+    need: dict[str, Any],
+    route_kind: str,
+) -> dict[str, Any] | None:
+    """Reuse same-run proof when a resumed Supervisor re-routes its own read-only check.
+
+    This is an idempotency boundary, not a permission boundary. A later user
+    instruction, a write task, missing proof, or contradictory handoff still
+    creates a new episode normally.
+    """
+
+    state = dict(state or {})
+    dispatch_status = dict(state.get("runtime_dispatch_status") or {})
+    if (
+        str(dispatch_status.get("mode") or "").strip() != "runtime_episode"
+        or str(dispatch_status.get("nextAction") or "").strip() != "resume_supervisor"
+        or str(dispatch_status.get("state") or "").strip() != "handoff_ready"
+        or _has_user_instruction_after_runtime_handoff(state)
+    ):
+        return None
+    inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
+    task_briefs = [item for item in list(inputs.get("taskBriefs") or []) if isinstance(item, dict)]
+    if not task_briefs or any(
+        not bool(item.get("readOnly"))
+        or bool(item.get("writeRequired"))
+        or bool(list(item.get("writeSet") or []))
+        for item in task_briefs
+    ):
+        return None
+    requested_refs = _route_prior_reference_values(need)
+    if not requested_refs:
+        return None
+    route_context = dict(state.get("current_route_context") or {})
+    for handoff in reversed(list(route_context.get("handoffRefs") or [])):
+        if not isinstance(handoff, dict):
+            continue
+        if _handoff_runtime_kind(handoff) != route_kind:
+            continue
+        if bool(handoff.get("requiresContinuation")):
+            continue
+        if str(handoff.get("status") or "").strip().lower() not in _READY_HANDOFF_STATES:
+            continue
+        handoff_refs = _handoff_reference_values(handoff)
+        matching_refs = sorted(requested_refs & handoff_refs)
+        if not matching_refs or not _handoff_has_complete_evidence(handoff):
+            continue
+        return {
+            "handoffRefId": str(handoff.get("handoffRefId") or handoff.get("handoffId") or "").strip(),
+            "producerEpisodeId": str(handoff.get("producerEpisodeId") or "").strip(),
+            "matchingRefs": matching_refs[:8],
+        }
+    return None
 
 
 def _capability_route_groups(
@@ -2428,6 +2608,59 @@ def runtime_broker(
                         "episodeCount": 0,
                         "nextAction": "repair_task_contract",
                     },
+                },
+            )
+        reused_handoff = _current_governed_handoff_reuse(
+            state=state,
+            need=need_payload,
+            route_kind=route_kind,
+        )
+        if reused_handoff:
+            updated_context = dict(route_context)
+            updated_context["runtimeHandoffReuse"] = {
+                "kind": route_kind,
+                "handoffRefId": reused_handoff.get("handoffRefId"),
+                "producerEpisodeId": reused_handoff.get("producerEpisodeId"),
+                "reason": "same_run_read_only_evidence_reuse",
+            }
+            _emit_runtime_episode_event(
+                "runtime.handoff.reused",
+                {
+                    "runtimeKind": route_kind,
+                    "handoffRefId": reused_handoff.get("handoffRefId"),
+                    "producerEpisodeId": reused_handoff.get("producerEpisodeId"),
+                    "reason": "same_run_read_only_evidence_reuse",
+                },
+            )
+            return Command(
+                goto="supervisor",
+                update={
+                    "messages": [
+                        ToolMessage(
+                            content=_runtime_broker_payload(
+                                mode=normalized_mode,
+                                ok=True,
+                                summary=(
+                                    "The current governed handoff already contains complete evidence for the "
+                                    "explicitly referenced read-only checks. No duplicate runtime episode was created."
+                                ),
+                                detail_level=detail_level,
+                                changed=[],
+                                detail_ref=str(reused_handoff.get("handoffRefId") or "") or None,
+                                route_brief_quality={
+                                    "status": "reused",
+                                    "reason": "current_governed_handoff_evidence",
+                                    "blocking": False,
+                                },
+                                next_action=(
+                                    "Use the existing typed handoff and record the Supervisor acceptance decision. "
+                                    "Route again only after a new user instruction or when evidence is missing or contradictory."
+                                ),
+                            ),
+                            tool_call_id=tool_call_id,
+                        )
+                    ],
+                    "current_route_context": updated_context,
                 },
             )
         requested_groups = _capability_route_groups(

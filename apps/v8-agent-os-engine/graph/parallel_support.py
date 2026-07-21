@@ -144,6 +144,11 @@ def _runtime_context_from_parallel_state(state: dict[str, Any], *, branch: dict[
         "delegation_id": branch.get("delegationId"),
         "delegation_depth": int(branch.get("delegationDepth") or 1),
         "parent_delegation_id": branch.get("parentDelegationId"),
+        "root_episode_id": (
+            branch.get("rootEpisodeId")
+            or route_context.get("rootEpisodeId")
+            or route_context.get("root_episode_id")
+        ),
         "subagent_id": branch.get("agentId"),
         "agent_id": branch.get("agentId"),
         "safety_approval_mode": (
@@ -766,6 +771,38 @@ def _verification_contract_sources(branch: dict[str, Any]) -> tuple[dict[str, An
     return task_brief, context, capsule
 
 
+def _verification_command_text(value: Any) -> str:
+    """Separate a declared command from the prose that describes its result."""
+
+    command = str(value or "").strip().strip("`'\"")
+    if not command:
+        return ""
+    result_boundary = re.search(
+        r"(?:"
+        r"\s*(?:后|的)(?=\s*(?:stdout|stderr|标准输出|标准错误|退出码|返回码))|"
+        r"\s+(?:and|then|where|with)\s+(?=(?:the\s+)?(?:command\s+)?(?:stdout|stderr|exit\s+code|return\s+code))|"
+        r"\s+(?=(?:stdout|stderr|exit\s+code|return\s+code)\b)"
+        r")",
+        command,
+        re.IGNORECASE,
+    )
+    if result_boundary:
+        command = command[: result_boundary.start()]
+    return command.strip().rstrip("。.!?").strip().strip("`'\"")
+
+
+def _verification_declared_path(value: Any) -> str:
+    """Normalize common task-brief labels without treating them as paths."""
+
+    text = str(value or "").strip().strip("`'\"")
+    labeled = re.match(
+        r"^(?:target[_ -]?file|source[_ -]?file|file|path|target)\s*[:=]\s*(.+)$",
+        text,
+        re.IGNORECASE,
+    )
+    return str(labeled.group(1) if labeled else text).strip().strip("`'\"")
+
+
 def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     task_brief, context, capsule = _verification_contract_sources(branch)
     explicit = next(
@@ -785,11 +822,17 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
         values = value if isinstance(value, (list, tuple, set)) else [value]
         return list(dict.fromkeys(str(item or "").strip() for item in values if str(item or "").strip()))
 
-    read_paths = _texts(
-        explicit.get("requiredReadPaths")
-        or capsule.get("mustRead")
-        or capsule.get("readSet")
-        or task_brief.get("readSet")
+    read_paths = list(
+        dict.fromkeys(
+            path
+            for item in _texts(
+                explicit.get("requiredReadPaths")
+                or capsule.get("mustRead")
+                or capsule.get("readSet")
+                or task_brief.get("readSet")
+            )
+            if (path := _verification_declared_path(item))
+        )
     )
     contract_values = (
         task_brief.get("acceptanceTiers"),
@@ -804,25 +847,61 @@ def _verification_expectations(branch: dict[str, Any]) -> dict[str, Any]:
     required_commands = _texts(explicit.get("requiredCommands"))
     if not required_commands:
         command_pattern = re.compile(
-            r"(?:执行|运行|execute|run)\s+(?:命令\s*)?[`'\"]?"
+            r"(?:执行|运行|execute|executing|run|running)\s+(?:命令\s*)?[`'\"]?"
             r"((?:python(?:3)?|pytest|npm|pnpm|yarn|npx|node|bun|deno|go|cargo|dotnet|gradle|mvn)\b"
-            r"[^，,；;\n\]\)\"']*)",
+            r"[^，,；;。\n\]\)）`\"']*)",
             re.IGNORECASE,
         )
         required_commands = list(
-            dict.fromkeys(match.group(1).strip().strip("`'") for match in command_pattern.finditer(contract_blob))
+            dict.fromkeys(
+                command
+                for match in command_pattern.finditer(contract_blob)
+                if (command := _verification_command_text(match.group(1)))
+            )
         )
     expected_stdout = _texts(explicit.get("expectedStdout"))
     if not expected_stdout:
-        stdout_pattern = re.compile(
-            r"stdout[^\n，,；;]{0,56}?(?:"
-            r"严格(?:等于|为)|精确(?:等于|为)|等于|为|"
-            r"(?:must\s+)?(?:strictly\s+|exactly\s+)?(?:equals?|is|be)"
-            r")\s*(?:exactly\s*)?[:=]?\s*[`'\"]?"
+        stdout_comparison = (
+            r"(?:严格(?:等于|为)|精确(?:等于|为)|等于|为|"
+            r"\b(?:"
+            r"(?:must\s+)(?:strictly\s+|exactly\s+)?equal|"
+            r"(?:strictly\s+|exactly\s+)?equal\s+to|"
+            r"(?:must\s+)?(?:strictly\s+|exactly\s+)?(?:equals|is|be)"
+            r")\b)"
+        )
+        stdout_filler = (
+            r"(?:(?:the\s+)?(?:(?:exact|literal)\s+)?"
+            r"(?:byte\s+sequence|string|text|value|literal|output)\s*)?"
+        )
+        quoted_stdout_pattern = re.compile(
+            r"\bstdout\b[^\n，,；;]{0,80}?"
+            + stdout_comparison
+            + r"\s*(?:exactly\s*)?[:=]?\s*"
+            + stdout_filler
+            + r"[:=]?\s*[`'\"]([^`'\"\r\n]+)[`'\"]",
+            re.IGNORECASE,
+        )
+        expected_stdout = list(
+            dict.fromkeys(match.group(1).strip() for match in quoted_stdout_pattern.finditer(contract_blob))
+        )
+    if not expected_stdout:
+        unquoted_stdout_pattern = re.compile(
+            r"\bstdout\b[^\n，,；;]{0,56}?(?:"
+            + stdout_comparison
+            + r")\s*(?:exactly\s*)?[:=]?\s*"
+            + stdout_filler
+            + r"[:=]?\s*"
             r"([A-Za-z0-9_.:/-]+)",
             re.IGNORECASE,
         )
-        expected_stdout = list(dict.fromkeys(match.group(1).strip() for match in stdout_pattern.finditer(contract_blob)))
+        grammar_fillers = {"the", "exact", "string", "text", "value", "literal", "output", "byte", "sequence"}
+        expected_stdout = list(
+            dict.fromkeys(
+                value
+                for match in unquoted_stdout_pattern.finditer(contract_blob)
+                if (value := match.group(1).strip()) and value.casefold() not in grammar_fillers
+            )
+        )
     expect_empty_stderr = bool(explicit.get("expectEmptyStderr")) or bool(
         re.search(r"stderr[^\n，,；;]{0,32}(?:为空|empty|blank|must\s+be\s+empty)", contract_blob, re.IGNORECASE)
     )
@@ -1595,10 +1674,10 @@ def _grandchild_verification_brief(
         child["acceptanceContract"] = {"must": focused_must}
     tool_policy = child.get("toolPolicy") if isinstance(child.get("toolPolicy"), dict) else {}
     if not tool_policy:
-        tool_policy = {
-            "mode": "allowlist",
-            "allowedTools": ["read_native_file", "run_system_command"],
-        }
+        # The evidence contract says what must be proven; it is not an
+        # authorization allowlist. Terminal workers keep the role's public
+        # toolbox and are expected to select only the relevant tools.
+        tool_policy = {"mode": "default"}
     child["toolPolicy"] = tool_policy
     child["allowedTools"] = list(tool_policy.get("allowedTools") or [])
     child["allowChildDelegation"] = False

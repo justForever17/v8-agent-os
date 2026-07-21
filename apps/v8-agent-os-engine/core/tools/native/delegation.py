@@ -37,6 +37,7 @@ from core.delegation_broker import (
     task_brief_query_text,
     task_brief_summary,
 )
+from core.database import db
 from core.engineering_capsule import (
     bind_engineering_task_workspace,
     derive_grandchild_engineering_task,
@@ -129,6 +130,48 @@ def _delegation_parent_episode_id(
         state = str(episode.get("state") or episode.get("status") or "").strip().lower()
         return "" if state in TERMINAL_EPISODE_STATES else active_episode_id
     return active_episode_id
+
+
+def _delegation_root_episode_id(
+    inherited_context: dict[str, Any],
+    *,
+    parent_episode_id: str,
+    runtime_owner_episode_id: str,
+) -> str:
+    """Project the existing tree root instead of making a child its own root."""
+
+    anchor_id = str(parent_episode_id or runtime_owner_episode_id or "").strip()
+    if not anchor_id:
+        return ""
+    runtime_context = get_runtime_context()
+    explicit_root_id = str(
+        inherited_context.get("rootEpisodeId")
+        or inherited_context.get("root_episode_id")
+        or runtime_context.get("rootEpisodeId")
+        or runtime_context.get("root_episode_id")
+        or ""
+    ).strip()
+    if explicit_root_id:
+        return explicit_root_id
+    for episode in list(inherited_context.get("capabilityEpisodes") or []):
+        if not isinstance(episode, dict):
+            continue
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "").strip()
+        if episode_id != anchor_id:
+            continue
+        return str(
+            episode.get("rootEpisodeId")
+            or episode.get("root_episode_id")
+            or anchor_id
+        ).strip()
+    durable_parent = db.get_runtime_episode(anchor_id)
+    if durable_parent:
+        return str(
+            durable_parent.get("rootEpisodeId")
+            or durable_parent.get("root_episode_id")
+            or anchor_id
+        ).strip()
+    return anchor_id
 
 
 def _apply_delegation_target_defaults(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1276,7 +1319,7 @@ def delegation_broker(
     """Dispatch, observe, resume, or interrupt real local subagent/external-worker tasks.
 
     Use this when independent specialist work is actually needed: parallel research, review, writing, implementation planning, or worker handoff. It is not a decorative "Agent Swarm" card. Do not tell ordinary users "delegation_broker"; tell users you are using 子代理/协作 worker.
-    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"allowlist","allowedTools":["read_native_file","write_native_file"]}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. Use `toolPolicy: {mode: 'none'}` for reasoning/writing-only work, or `toolPolicy: {mode: 'allowlist', allowedTools: [...]}` when the worker must receive an exact tool subset.
+    Before a manual Supervisor dispatch, call `agent_broker(mode='list')` or use the exact visible registry, then pass `targetAgentName` for every local task. familyHint is explanatory metadata, not permission to guess a worker. Copy this valid shape and replace values without changing JSON types: `tasks=[{"taskBriefId":"task-1","targetAgentName":"Implementation Engineer","goal":"Implement the requested focused change.","context":{"source":"current user turn"},"expectedOutputs":["Changed file and verification result"],"acceptanceContract":["Requested behavior is present","Focused verification passes"],"constraints":["Stay inside the assigned workspace scope"],"toolPolicy":{"mode":"default"}}]`. Never wrap a task inside `{taskBrief:{...}}`, never send `tasks={}`, and never mix `tasks` with the legacy `worker_briefs` alias. Each task must include: goal, useful context, expected output, acceptance criteria, constraints/boundaries, workspace/spec/evidence/detailRefs, and any allowed child-delegation budget. Do not dispatch vague ID-only tasks. `toolPolicy: {mode: 'default'}` keeps the role's public toolbox so the Agent can choose the smallest relevant subset. Use `mode: 'none'` only for injected-evidence reasoning with no tool work, and use an allowlist only when the task is intentionally closed-world or explicitly restricted; an acceptance contract is not itself a reason to narrow tools.
     Runtime-bound Research and Creative Media subagents receive their registered tools automatically after dispatch; do not call runtime_broker just to grant those groups. Custom subagents without bindings stay on baseline tools unless the task explicitly grants more.
     A direct subagent may use its brokered path for one grandchild by default. The direct subagent must complete its own assigned writes before delegating; the grandchild is normally an independent verifier and never inherits the parent's writeSet. Only an explicitly partitioned strict-subset writeSet may be delegated. Set task `requireChildDelegation=true` when the must-level acceptance contract itself requires that verifier; set `allow_child_delegation=false` to forbid the path, or provide `child_delegation_budget` to narrow the default. Grandchildren remain terminal and cannot delegate again.
     Local subagent results are injected by the graph; never poll them. Use `mode='observe'` or `mode='resume'` only for an explicit external_worker delegationId or one terminal diagnostic read. Supervisor still verifies and merges the result.
@@ -2356,6 +2399,11 @@ def delegation_broker(
             or ""
         ).strip()
         task_briefs_by_id = dict(effective_task_briefs_by_id)
+        episode_root_id = _delegation_root_episode_id(
+            inherited_context,
+            parent_episode_id=parent_delegation_id,
+            runtime_owner_episode_id=runtime_owner_episode_id,
+        )
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -2382,6 +2430,7 @@ def delegation_broker(
                     "source": "delegation_broker",
                     "reason": str(item.get("taskGoal") or item.get("targetLabel") or "delegated task"),
                     "parentEpisodeId": parent_delegation_id or runtime_owner_episode_id,
+                    "rootEpisodeId": episode_root_id,
                     "inputs": {
                         "targetCount": 1,
                         "workerBriefs": [task_brief_value],
@@ -2405,6 +2454,7 @@ def delegation_broker(
                     "registryVersion": item.get("registryVersion") or registry_version,
                     "registryHash": item.get("registryHash") or registry_hash,
                     "ownerEpisodeId": runtime_owner_episode_id or None,
+                    "rootEpisodeId": episode_root_id or None,
                     **({"engineeringWorkspace": managed_workspace} if managed_workspace else {}),
                     "error": item.get("error"),
                 },

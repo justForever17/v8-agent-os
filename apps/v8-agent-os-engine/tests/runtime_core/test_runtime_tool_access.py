@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from langchain_core.messages import HumanMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 import core.tools.native.delegation as native_delegation
@@ -47,6 +48,7 @@ from erc.capability_registry import CapabilityRegistry, RuntimePolicy, capabilit
 from graph.agent_factories import (
     _align_extension_route_to_task_tools,
     _build_atomic_worker_extension_route,
+    _format_collaboration_identity_contract,
     _format_delegated_task_contract,
     _preserve_direct_worker_extension_candidates,
     _select_contextual_subagent_native_tools,
@@ -486,6 +488,117 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert runtime_access_from_route_context(updated_context) == ["research.core"]
     assert updated_context["capabilityEpisodes"][-1]["kind"] == "research"
     assert updated_context["capabilityEpisodes"][-1]["state"] == "queued"
+    assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
+
+
+def _ready_engineering_handoff_state() -> dict:
+    artifact_ref = "git://repo_demo/commit_verified"
+    handoff = {
+        "handoffRefId": "handoff-engineering-ready",
+        "producerEpisodeId": "episode-engineering-ready",
+        "kind": "engineering_patch_bundle",
+        "status": "ready",
+        "artifactRefs": [{"kind": "git_changeset", "ref": artifact_ref, "accepted": True}],
+        "delegationHandoff": {
+            "results": [
+                {
+                    "status": "ok",
+                    "artifactRefs": [{"kind": "git_changeset", "ref": artifact_ref}],
+                    "verificationResults": [{"status": "verified", "passed": True}],
+                }
+            ]
+        },
+    }
+    return {
+        "runtime_dispatch_status": {
+            "mode": "runtime_episode",
+            "nextAction": "resume_supervisor",
+            "state": "handoff_ready",
+            "handoffCount": 1,
+        },
+        "current_route_context": {"handoffRefs": [handoff]},
+        "messages": [
+            HumanMessage(content="修复并验证目标文件。"),
+            HumanMessage(
+                content="[Runtime Episode Handoff Ready]",
+                additional_kwargs={"v8_governance_type": "runtime_handoff"},
+            ),
+        ],
+    }
+
+
+def _read_only_prior_handoff_need() -> dict:
+    return {
+        "kind": "engineering",
+        "source": "supervisor",
+        "reason": "Re-check the evidence already returned by the worker.",
+        "inputs": {
+            "taskBriefs": [
+                {
+                    "taskBriefId": "duplicate-read-only-verification",
+                    "goal": "Re-run the same read-only verification.",
+                    "context": {"priorRefs": ["git://repo_demo/commit_verified"]},
+                    "readOnly": True,
+                    "writeRequired": False,
+                    "writeSet": [],
+                    "expectedOutputs": ["Repeated verification output"],
+                    "acceptanceContract": ["The prior output is reproduced."],
+                }
+            ]
+        },
+    }
+
+
+def test_runtime_broker_reuses_current_governed_handoff_for_duplicate_read_only_check(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "enqueue_runtime_episode",
+        lambda *_args, **_kwargs: pytest.fail("duplicate verification must not enqueue a new episode"),
+    )
+    monkeypatch.setattr(native_runtime, "_emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+
+    command = runtime_broker.func(
+        mode="route",
+        need=_read_only_prior_handoff_need(),
+        state=_ready_engineering_handoff_state(),
+        tool_call_id="call-runtime-reuse-ready-handoff",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["ok"] is True
+    assert payload["changed"] == []
+    assert payload["routeBriefQuality"] == {
+        "status": "reused",
+        "reason": "current_governed_handoff_evidence",
+        "blocking": False,
+    }
+    assert "No duplicate runtime episode was created" in payload["summary"]
+    assert command.update["current_route_context"]["runtimeHandoffReuse"]["reason"] == (
+        "same_run_read_only_evidence_reuse"
+    )
+    assert "runtime_dispatch_status" not in command.update
+
+
+def test_runtime_broker_allows_explicit_later_user_reverification(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "enqueue_runtime_episode",
+        lambda episode, **_kwargs: {**episode, "state": "queued"},
+    )
+    monkeypatch.setattr(native_runtime, "_emit_runtime_episode_event", lambda *_args, **_kwargs: None)
+    state = _ready_engineering_handoff_state()
+    state["messages"].append(HumanMessage(content="请基于这份证据重新独立验证一次。"))
+
+    command = runtime_broker.func(
+        mode="route",
+        need=_read_only_prior_handoff_need(),
+        state=state,
+        tool_call_id="call-runtime-explicit-reverify",
+    )
+    payload = _tool_message_payload(command)
+
+    assert payload["episodeKind"] == "engineering"
+    assert payload["queuedEpisodeId"]
     assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
 
 
@@ -1927,6 +2040,7 @@ def test_runtime_episode_supervisor_can_dispatch_top_level_delegation(monkeypatc
             "capabilityEpisodes": [
                 {
                     "episodeId": "episode-engineering-runtime-dispatch",
+                    "rootEpisodeId": "episode-engineering-runtime-dispatch",
                     "kind": "engineering",
                     "state": "active",
                 }
@@ -1968,6 +2082,7 @@ def test_runtime_episode_supervisor_can_dispatch_top_level_delegation(monkeypatc
     assert branch["parentDelegationId"] is None
     assert branch["agentId"] == "implementation-engineer"
     assert episode["parentEpisodeId"] == "episode-engineering-runtime-dispatch"
+    assert episode["rootEpisodeId"] == "episode-engineering-runtime-dispatch"
     assert episode["ownerEpisodeId"] == "episode-engineering-runtime-dispatch"
 
 
@@ -2152,8 +2267,17 @@ def test_direct_subagent_dispatches_one_grandchild_and_grandchild_is_terminal(mo
         "safety_approval_mode": "reduced",
         "current_route_context": {
             "delegationId": "subagent::parent",
+            "activeCapabilityEpisodeId": "subagent::parent",
             "delegationDepth": 1,
             "delegationNodeCount": 1,
+            "capabilityEpisodes": [
+                {
+                    "episodeId": "subagent::parent",
+                    "rootEpisodeId": "episode-engineering-root",
+                    "kind": "delegation",
+                    "state": "active",
+                }
+            ],
             "taskBrief": {
                 "taskBriefId": "parent-task",
                 "goal": "Review the implementation and return evidence.",
@@ -2213,6 +2337,7 @@ def test_direct_subagent_dispatches_one_grandchild_and_grandchild_is_terminal(mo
     assert "delegation.recursive" not in branch["taskBrief"]["runtimeAccess"]
     assert "delegation_broker" not in branch["taskBrief"]["allowedTools"]
     durable_episode = command.update["current_route_context"]["capabilityEpisodes"][-1]
+    assert durable_episode["rootEpisodeId"] == "episode-engineering-root"
     durable_brief = durable_episode["inputs"]["workerBriefs"][0]
     assert durable_brief["delegationDepth"] == 2
     assert durable_brief["allowChildDelegation"] is False
@@ -2233,6 +2358,36 @@ def test_direct_subagent_dispatches_one_grandchild_and_grandchild_is_terminal(mo
             tool_call_id="call-grandchild-forbidden",
         )
     assert _tool_message_payload(terminal)["error"] == "delegation_depth_terminal"
+
+
+def test_delegation_root_uses_bound_runtime_context_when_state_projection_is_minimal():
+    with bind_runtime_context(root_episode_id="episode-engineering-root"):
+        root_id = native_delegation._delegation_root_episode_id(
+            {},
+            parent_episode_id="subagent::direct-parent",
+            runtime_owner_episode_id="",
+        )
+
+    assert root_id == "episode-engineering-root"
+
+
+def test_delegation_root_falls_back_to_durable_parent_lineage(monkeypatch):
+    monkeypatch.setattr(
+        native_delegation.db,
+        "get_runtime_episode",
+        lambda episode_id: {
+            "episodeId": episode_id,
+            "rootEpisodeId": "episode-engineering-root",
+        },
+    )
+
+    root_id = native_delegation._delegation_root_episode_id(
+        {},
+        parent_episode_id="subagent::direct-parent",
+        runtime_owner_episode_id="",
+    )
+
+    assert root_id == "episode-engineering-root"
 
 
 def test_windows_shell_syntax_violation_blocks_posix_mkdir(monkeypatch):
@@ -2433,8 +2588,44 @@ def test_subagent_prompt_explains_bounded_delegation_authority_without_false_mis
         {"taskBriefId": "task-3", "goal": "Review one result", "delegationDepth": 2},
     )
     assert "cannot create another delegation layer" in grandchild
-    assert "TERMINAL VERIFICATION IS CLOSED-WORLD" in grandchild
-    assert "do not fetch Skills" in grandchild
+    assert "terminal depth-two shard" in grandchild
+    assert "Select from the visible tools by relevance" in grandchild
+
+
+def test_grandchild_identity_contract_is_structural_and_tool_choice_is_task_driven():
+    identity = _format_collaboration_identity_contract(
+        actor_name="Implementation Engineer · worker-01",
+        task_brief={
+            "taskBriefId": "task-grandchild",
+            "delegationDepth": 2,
+            "context": {
+                "ephemeralMirror": {
+                    "name": "Implementation Engineer · worker-01",
+                    "parentAgentName": "Implementation Engineer",
+                }
+            },
+        },
+        delegation_depth=2,
+    )
+
+    assert "grandchild / terminal delegated worker" in identity
+    assert "Runtime identity: Implementation Engineer · worker-01" in identity
+    assert "Immediate parent: Implementation Engineer" in identity
+    assert "not a persistent registered Agent" in identity
+    assert "task prose describe desired capability only" in identity
+    assert "visible tools are a candidate toolbox, not a checklist" in identity
+
+    task_contract = _format_delegated_task_contract(
+        {
+            "taskBriefId": "task-grandchild",
+            "goal": "Verify one command result.",
+            "delegationDepth": 2,
+            "readOnly": True,
+            "toolPolicy": {"mode": "default"},
+        }
+    )
+    assert "use the command/file ToolMessage already returned in memory" in task_contract
+    assert "Do not redirect output or create temporary evidence" in task_contract
 
 
 def test_delegated_extension_route_matches_final_allowlisted_tools():
@@ -2525,7 +2716,7 @@ def test_atomic_worker_extension_route_skips_skill_and_mcp_candidates_entirely()
     assert route.selected_skill_names == []
     assert route.selected_skill_ids == []
     assert route.exposed_mcp_tool_names == []
-    assert route.candidate_summary["routingMode"] == "atomic_closed_world"
+    assert route.candidate_summary["routingMode"] == "atomic_task_direct"
     assert route.candidate_summary["skillsRoutingMode"] == "disabled_for_atomic_worker"
     assert route.candidate_summary["mcpRoutingMode"] == "disabled_for_atomic_worker"
 

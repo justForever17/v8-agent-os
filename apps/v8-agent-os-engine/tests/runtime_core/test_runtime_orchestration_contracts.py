@@ -462,6 +462,31 @@ def test_non_spec_required_write_without_file_cannot_complete(tmp_path) -> None:
     assert decision.reason == "required_write_files_missing"
 
 
+def test_non_spec_required_write_resolves_delivered_file_from_original_workspace(tmp_path) -> None:
+    original_workspace = tmp_path / "original"
+    original_workspace.mkdir()
+    (original_workspace / "result.md").write_text("done", encoding="utf-8")
+    episode = _required_write_episode(str(tmp_path / "cleaned-worktree"))
+    episode["inputs"]["originalWorkspacePath"] = str(original_workspace)
+
+    decision = evaluate_supervisor_completion(
+        episodes=[episode],
+        handoffs_by_episode={
+            "episode-write": [
+                {
+                    "status": "ready",
+                    "changedPaths": ["result.md"],
+                    "proofRefs": ["proof://verification"],
+                }
+            ]
+        },
+        final_text="Done",
+        spec_mode=False,
+    )
+
+    assert decision.action == "complete"
+
+
 def test_non_spec_readonly_engineering_family_delegation_does_not_require_written_file(tmp_path) -> None:
     episode = {
         "episodeId": "episode-readonly-delegation",

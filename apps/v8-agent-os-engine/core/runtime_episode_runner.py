@@ -3680,7 +3680,17 @@ class RuntimeEpisodeRunner:
                 or (not root_episode_id and parent_episode_id.startswith("subagent::"))
             )
         )
-        delegation_depth = 2 if recursive_parent else 1
+        try:
+            explicit_delegation_depth = int(
+                task_brief.get("delegationDepth")
+                or task_brief.get("delegation_depth")
+                or episode.get("delegationDepth")
+                or episode.get("delegation_depth")
+                or 0
+            )
+        except (TypeError, ValueError):
+            explicit_delegation_depth = 0
+        delegation_depth = min(2, max(1, explicit_delegation_depth)) if explicit_delegation_depth else (2 if recursive_parent else 1)
         task_goal = str(task_brief.get("goal") or episode.get("reason") or "Delegated task").strip()
         task_query = task_brief_query_text(task_brief) or task_goal
         delegation_policy = task_brief.get("delegationPolicy")
@@ -3724,14 +3734,21 @@ class RuntimeEpisodeRunner:
             "childDelegationBudget": child_budget,
             "runtimeAccess": task_runtime_access,
         }
-        target_label = str(episode.get("targetLabel") or target_id).strip() or target_id
         task_context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
         ephemeral_info = task_context.get("ephemeralMirror") if isinstance(task_context.get("ephemeralMirror"), dict) else {}
         ephemeral_agent_id = str(ephemeral_info.get("agentId") or task_brief.get("ephemeralAgentId") or "").strip()
         ephemeral_mirror = bool(ephemeral_info or task_brief.get("ephemeralMirror"))
+        target_label = str(
+            episode.get("targetLabel")
+            or episode.get("childAgentName")
+            or ephemeral_info.get("name")
+            or task_brief.get("ephemeralAgentName")
+            or target_id
+        ).strip() or target_id
         route_context = {
             "activeCapabilityEpisodeId": episode_id,
             "capabilityEpisodes": [episode],
+            "rootEpisodeId": root_episode_id or episode_id,
             "taskBrief": task_brief,
             "delegationId": episode_id,
             "delegationDepth": delegation_depth,
@@ -3772,6 +3789,7 @@ class RuntimeEpisodeRunner:
                 "taskBrief": task_brief,
                 "delegationId": episode_id,
                 "parentDelegationId": parent_episode_id or None,
+                "rootEpisodeId": root_episode_id or episode_id,
                 "delegationDepth": delegation_depth,
                 "lane": "subagent",
                 "acceptanceHint": str(
@@ -4020,7 +4038,11 @@ class RuntimeEpisodeRunner:
                     "delegationId": branch.get("delegationId"),
                     "parentDelegationId": branch.get("parentDelegationId"),
                     "delegationDepth": int(branch.get("delegationDepth") or 1),
-                    "parentEpisodeId": episode.get("episodeId") or episode.get("id"),
+                    "parentEpisodeId": (
+                        branch.get("parentDelegationId")
+                        or episode.get("parentEpisodeId")
+                        or episode.get("parent_episode_id")
+                    ),
                     "rootEpisodeId": episode.get("rootEpisodeId") or episode.get("root_episode_id") or episode.get("episodeId"),
                 }
                 fingerprint = json.dumps(compact, ensure_ascii=False, sort_keys=True, default=str)
@@ -4441,6 +4463,17 @@ class RuntimeEpisodeRunner:
         _set_default_text("brief", worker_brief.get("goal"), child_goal, "Continue the requested child delegation.")
         _set_default_text("agentId", request.get("childAgentId"), child_branch.get("agentId"))
         _set_default_text("agentName", request.get("childAgentName"), child_branch.get("agentName"))
+        try:
+            requested_depth = int(
+                worker_brief.get("delegationDepth")
+                or request.get("childDepth")
+                or child_branch.get("delegationDepth")
+                or 0
+            )
+        except (TypeError, ValueError):
+            requested_depth = 0
+        if requested_depth:
+            worker_brief["delegationDepth"] = min(2, max(1, requested_depth))
         if not worker_brief.get("runtimeAccess"):
             worker_brief["runtimeAccess"] = child_branch.get("runtimeAccess") or ["delegation.recursive"]
         worker_brief.setdefault("parentDelegationId", request.get("sourceDelegationId"))
@@ -4494,6 +4527,11 @@ class RuntimeEpisodeRunner:
             or parent_workspace.get("worktreeId")
             or ""
         ).strip() or None
+        parent_root_episode_id = str(
+            episode.get("rootEpisodeId")
+            or episode.get("root_episode_id")
+            or episode_id
+        ).strip() or episode_id
         parent_worker_briefs = normalize_task_briefs(
             inputs.get("workerBriefs")
             or inputs.get("worker_briefs")
@@ -4550,6 +4588,9 @@ class RuntimeEpisodeRunner:
                 "childAgentId": worker_brief.get("agentId") or item.get("childAgentId"),
                 "childAgentName": worker_brief.get("agentName") or item.get("childAgentName"),
                 "childDepth": item.get("childDepth"),
+                "delegationDepth": worker_brief.get("delegationDepth") or item.get("childDepth") or 2,
+                "targetLabel": worker_brief.get("agentName") or item.get("childAgentName"),
+                "rootEpisodeId": parent_root_episode_id,
             }
             repair_reason = worker_brief.get("mirrorRepairReason") or worker_brief.get("targetRepairReason")
             if repair_reason:

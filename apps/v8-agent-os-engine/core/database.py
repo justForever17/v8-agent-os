@@ -3449,7 +3449,9 @@ class DatabaseManager:
         resolved_session_id = str(session_id or episode.get("sessionId") or episode.get("session_id") or "").strip() or None
         resolved_run_id = str(run_id or episode.get("runId") or episode.get("run_id") or "").strip() or None
         parent_episode_id = str(episode.get("parentEpisodeId") or episode.get("parent_episode_id") or "").strip() or None
-        root_episode_id = str(episode.get("rootEpisodeId") or episode.get("root_episode_id") or parent_episode_id or episode_id).strip() or episode_id
+        explicit_root_episode_id = str(
+            episode.get("rootEpisodeId") or episode.get("root_episode_id") or ""
+        ).strip() or None
         source = str(episode.get("source") or (episode.get("need") or {}).get("source") or "").strip() or None
         reason = str(episode.get("reason") or (episode.get("need") or {}).get("reason") or "").strip() or None
         need = episode.get("need") if isinstance(episode.get("need"), dict) else {
@@ -3489,6 +3491,22 @@ class DatabaseManager:
 
         def _write():
             with self.get_connection() as conn:
+                root_episode_id = explicit_root_episode_id
+                if not root_episode_id:
+                    existing_root = conn.execute(
+                        "SELECT root_episode_id FROM runtime_episodes WHERE id = ?",
+                        (episode_id,),
+                    ).fetchone()
+                    if existing_root and str(existing_root["root_episode_id"] or "").strip():
+                        root_episode_id = str(existing_root["root_episode_id"]).strip()
+                if not root_episode_id and parent_episode_id:
+                    parent_root = conn.execute(
+                        "SELECT root_episode_id FROM runtime_episodes WHERE id = ?",
+                        (parent_episode_id,),
+                    ).fetchone()
+                    if parent_root and str(parent_root["root_episode_id"] or "").strip():
+                        root_episode_id = str(parent_root["root_episode_id"]).strip()
+                root_episode_id = root_episode_id or parent_episode_id or episode_id
                 conn.execute(
                     '''
                     INSERT INTO runtime_episodes (

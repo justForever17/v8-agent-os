@@ -329,8 +329,29 @@ def _looks_like_file_path(value: str) -> bool:
 
 def _existing_file_evidence(episode: Mapping[str, Any], handoffs: Iterable[Mapping[str, Any]]) -> list[str]:
     inputs = episode.get("inputs") if isinstance(episode.get("inputs"), Mapping) else {}
-    workspace = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip()
-    workspace_path = Path(workspace).resolve() if workspace else None
+    engineering_workspace = (
+        inputs.get("engineeringWorkspace")
+        if isinstance(inputs.get("engineeringWorkspace"), Mapping)
+        else {}
+    )
+    workspace_paths: list[Path] = []
+    for workspace in (
+        inputs.get("originalWorkspacePath"),
+        inputs.get("original_workspace_path"),
+        engineering_workspace.get("originalWorkspacePath"),
+        engineering_workspace.get("original_workspace_path"),
+        inputs.get("workspacePath"),
+        inputs.get("workspace_path"),
+    ):
+        text = str(workspace or "").strip()
+        if not text:
+            continue
+        try:
+            candidate = Path(text).resolve()
+        except Exception:
+            continue
+        if candidate not in workspace_paths:
+            workspace_paths.append(candidate)
     values: list[Any] = []
     keys = {
         "artifactRefs",
@@ -377,17 +398,18 @@ def _existing_file_evidence(episode: Mapping[str, Any], handoffs: Iterable[Mappi
             continue
         candidate_text = text
         if text.startswith("workspace://"):
-            if workspace_path is None:
+            if not workspace_paths:
                 continue
             candidate_text = text[len("workspace://") :].lstrip("/\\")
         elif text.startswith("file://"):
             candidate_text = text[7:]
         try:
             candidate = Path(candidate_text)
-            if not candidate.is_absolute() and workspace_path is not None:
-                candidate = workspace_path / candidate
-            if candidate.exists() and candidate.is_file():
-                evidence.append(str(candidate.resolve()))
+            candidates = [candidate] if candidate.is_absolute() else [root / candidate for root in workspace_paths]
+            for resolved_candidate in candidates:
+                if resolved_candidate.exists() and resolved_candidate.is_file():
+                    evidence.append(str(resolved_candidate.resolve()))
+                    break
         except Exception:
             continue
     return list(dict.fromkeys(evidence))[:32]

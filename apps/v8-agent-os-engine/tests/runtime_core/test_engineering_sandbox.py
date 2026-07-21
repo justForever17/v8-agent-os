@@ -1168,3 +1168,7 @@ def test_grandchild_verification_gets_separate_read_only_snapshot_of_parent_chan
     assert child["sandbox_policy"]["actor_role"] == "grandchild"
     assert child["sandbox_policy"]["execution_mode"] == "read"
     assert Path(child["workspace_path"], "result.txt").read_text(encoding="utf-8") == "parent-change\n"
+    assert any(
+        "Do not create temporary evidence" in item
+        for item in verification_brief["behaviorScope"]
+    )

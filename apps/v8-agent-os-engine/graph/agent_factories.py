@@ -338,8 +338,9 @@ def _preserve_direct_worker_extension_candidates(
 
     A task allowlist bounds native execution authority. It must not silently
     erase the Skill/MCP shortlist that helps a direct subagent choose a better
-    method. Depth-two disposable workers are intentionally atomic and remain
-    closed-world. Explicit ``none`` and forbidden tool entries still win.
+    method. Depth-two disposable workers skip extension prefiltering because
+    they execute one already-routed atomic shard. Explicit ``none`` and
+    forbidden tool entries still win.
     """
 
     if int(delegation_depth or 0) >= 2:
@@ -379,11 +380,12 @@ def _preserve_direct_worker_extension_candidates(
 
 
 def _build_atomic_worker_extension_route(tools: list[Any]) -> ExtensionRouteBundle:
-    """Return the closed extension surface used by terminal delegated workers.
+    """Return the direct task tool surface used by terminal delegated workers.
 
-    A disposable grandchild is an atomic execution unit.  Running the normal
-    Extensions prefilter for it would both spend routing budget and leak Skill
-    or MCP suggestions that are outside the parent-owned task contract.
+    A disposable grandchild is an atomic execution unit. Running the normal
+    Extensions prefilter would repeat the parent's routing work and add
+    unrelated suggestions. The baseline and task-authorized tools remain
+    available for the worker to select by relevance.
     """
 
     return ExtensionRouteBundle(
@@ -394,8 +396,8 @@ def _build_atomic_worker_extension_route(tools: list[Any]) -> ExtensionRouteBund
         skill_root_descriptors=[],
         exposed_mcp_tool_names=[],
         candidate_summary={
-            "mode": "atomic_closed_world",
-            "routingMode": "atomic_closed_world",
+            "mode": "atomic_task_direct",
+            "routingMode": "atomic_task_direct",
             "skillsRoutingMode": "disabled_for_atomic_worker",
             "mcpRoutingMode": "disabled_for_atomic_worker",
             "selectedSkills": [],
@@ -684,6 +686,62 @@ def _artifact_write_discipline_lines(task_brief: dict | None) -> list[str]:
     return lines
 
 
+def _format_collaboration_identity_contract(
+    *,
+    actor_name: str,
+    task_brief: dict | None,
+    delegation_depth: int | None = None,
+) -> str:
+    task = dict(task_brief or {})
+    try:
+        depth = max(1, int(delegation_depth or task.get("delegationDepth") or 1))
+    except (TypeError, ValueError):
+        depth = 1
+    context = task.get("context") if isinstance(task.get("context"), dict) else {}
+    mirror = context.get("ephemeralMirror") if isinstance(context.get("ephemeralMirror"), dict) else {}
+    effective_name = str(
+        actor_name
+        or mirror.get("name")
+        or task.get("ephemeralAgentName")
+        or "delegated worker"
+    ).strip()
+    parent_name = str(
+        mirror.get("parentAgentName")
+        or task.get("ephemeralParentAgentName")
+        or ("Supervisor" if depth <= 1 else "direct parent subagent")
+    ).strip()
+
+    lines = ["", "<collaboration_identity>"]
+    if depth >= 2:
+        lines.extend(
+            [
+                "Structural role: grandchild / terminal delegated worker (delegation depth 2 of 2).",
+                f"Runtime identity: {effective_name}. Immediate parent: {parent_name}.",
+                "You are an ephemeral execution mirror owned by the immediate parent, not the Supervisor, not a persistent registered Agent, and not a sibling specialist.",
+                "Names or specialist roles mentioned in task prose describe desired capability only; they do not override this structural identity.",
+                "Complete the exact atomic shard and return concrete evidence to the immediate parent. Do not address the user directly and do not create another delegation layer.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Structural role: direct subagent (delegation depth 1 of 2).",
+                f"Runtime identity: {effective_name}. Immediate parent: Supervisor/runtime coordinator.",
+                "You are the registered specialist responsible for this task brief. Keep sibling scopes separate and return a typed handoff to the parent.",
+                "When the task materially benefits from one independent shard and delegation_broker is visible, you may create one terminal grandchild layer; you remain responsible for integrating its evidence.",
+            ]
+        )
+    lines.extend(
+        [
+            "Tool selection: visible tools are a candidate toolbox, not a checklist. Choose the smallest relevant subset that proves the acceptance contract; do not probe unrelated tools or mistake optional Skill/MCP suggestions for mandatory instructions.",
+            "If a required capability is genuinely absent, report the concrete missing capability and affected acceptance item instead of changing your identity or broadening the task.",
+            "</collaboration_identity>",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _format_delegated_task_contract(task_brief: dict | None) -> str:
     if not isinstance(task_brief, dict):
         return ""
@@ -727,6 +785,11 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
             lines.append("- Tool discipline: only the explicit allowlist is available; do not report other tools as missing.")
         else:
             lines.append("- Tool discipline: call a granted tool only when it is necessary for this task's acceptance contract; do not probe unrelated capabilities.")
+        if bool(task_brief.get("readOnly") or task_brief.get("read_only")):
+            lines.append(
+                "- Read-only evidence discipline: use the command/file ToolMessage already returned in memory. "
+                "Do not redirect output or create temporary evidence, stdout/stderr capture, log, or report files."
+            )
         lines.append(
             "- Evidence sufficiency: once prior ToolMessages directly prove an acceptance item, reuse that evidence. Do not recapture the same file or command result through alternate encodings; stop probing and return the typed handoff (or dispatch the one required child) promptly."
         )
@@ -815,7 +878,7 @@ def _format_delegated_task_contract(task_brief: dict | None) -> str:
                 )
             if delegation_depth >= 2:
                 lines.append(
-                    "- TERMINAL VERIFICATION IS CLOSED-WORLD: the tools allowed by this task brief are the complete tool surface. Execute the acceptance steps literally; do not fetch Skills, probe MCP/extensions, request another Agent, or emit tool arguments as prose/JSON."
+                    "- This is a terminal depth-two shard. Select from the visible tools by relevance, execute the acceptance steps, and return evidence to the immediate parent without requesting another Agent."
                 )
         context = task_brief.get("context") if isinstance(task_brief.get("context"), dict) else {}
         active_collaborators = [
@@ -1016,6 +1079,7 @@ def _build_agent_system_bundle(
     env_context: str,
     active_plan_context: str = "",
     delegated_plan_context: str = "",
+    collaboration_identity_context: str = "",
     route_prompt_addition: str = "",
 ) -> dict[str, object]:
     parts: list[dict[str, str]] = [
@@ -1024,6 +1088,12 @@ def _build_agent_system_bundle(
             "stable_static",
             f"<system_persona>\nYou are a specialized agent named {agent_name}.\n{agent_system_prompt}\n</system_persona>\n\n",
             scope="persona",
+        ),
+        _agent_prompt_part(
+            "subagent.collaboration_identity",
+            "dynamic",
+            collaboration_identity_context,
+            scope="collaboration_identity",
         ),
         _agent_prompt_part(
             "subagent.delegated_agent_operating_charter",
@@ -1051,6 +1121,7 @@ def _build_agent_system_content(
     env_context: str,
     active_plan_context: str = "",
     delegated_plan_context: str = "",
+    collaboration_identity_context: str = "",
     route_prompt_addition: str = "",
 ) -> str:
     return str(
@@ -1060,6 +1131,7 @@ def _build_agent_system_content(
             env_context=env_context,
             active_plan_context=active_plan_context,
             delegated_plan_context=delegated_plan_context,
+            collaboration_identity_context=collaboration_identity_context,
             route_prompt_addition=route_prompt_addition,
         )["content"]
     )
@@ -1408,12 +1480,18 @@ def build_agent_node(
             finally:
                 extensions_runtime_service.reset_execution_context(route_context_token)
 
+            collaboration_identity_context = _format_collaboration_identity_contract(
+                actor_name=effective_agent_name,
+                task_brief=delegated_task_brief,
+                delegation_depth=delegation_depth,
+            )
             system_bundle = _build_agent_system_bundle(
                 agent_name=effective_agent_name,
                 agent_system_prompt=effective_agent_system_prompt,
                 env_context=env_context,
                 active_plan_context=active_plan_context,
                 delegated_plan_context=delegated_plan_context,
+                collaboration_identity_context=collaboration_identity_context,
                 route_prompt_addition=route_bundle.prompt_addition,
             )
             sys_msg = SystemMessage(
@@ -1509,6 +1587,10 @@ def build_agent_node(
                     subagent_id=agent_id,
                     delegation_id=inherited_route_context.get("delegationId"),
                     delegation_depth=inherited_route_context.get("delegationDepth"),
+                    root_episode_id=(
+                        inherited_route_context.get("rootEpisodeId")
+                        or inherited_route_context.get("root_episode_id")
+                    ),
                     safety_approval_mode=(
                         state.get("safety_approval_mode")
                         or inherited_route_context.get("safety_approval_mode")
@@ -1710,6 +1792,10 @@ def build_reviewer_node(
                 agent_id=agent_id,
                 subagent_id=agent_id,
                 delegation_id=(state.get("current_route_context") or {}).get("delegationId"),
+                root_episode_id=(
+                    (state.get("current_route_context") or {}).get("rootEpisodeId")
+                    or (state.get("current_route_context") or {}).get("root_episode_id")
+                ),
             ):
                 response = robust_invoke(
                     agent_specific_llm,

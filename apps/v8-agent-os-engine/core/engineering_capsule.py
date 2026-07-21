@@ -440,6 +440,18 @@ def derive_grandchild_engineering_task(
         ]
     )
     child["writeSet"] = requested_child_write_set if explicit_subset else []
+    if not explicit_subset:
+        child["behaviorScope"] = _unique_text(
+            [
+                *_values(child.get("behaviorScope")),
+                *_values(child.get("constraints")),
+                (
+                    "Read-only verification must reuse in-memory ToolMessage results. "
+                    "Do not create temporary evidence, stdout/stderr capture, log, or report files, "
+                    "and do not use shell output redirection."
+                ),
+            ]
+        )
     if not list(child.get("expectedOutputs") or []):
         child["expectedOutputs"] = ["Compact evidence handoff for the parent task"]
     if child.get("acceptanceContract") in (None, "", [], {}):
@@ -460,7 +472,10 @@ def derive_grandchild_engineering_task(
     child_context["artifactWriteDiscipline"] = (
         "This disposable grandchild may write only the explicit strict-subset partition in its writeSet. It receives no other parent write authority."
         if explicit_subset
-        else "This grandchild receives engineering facts and acceptance criteria but no inherited write authority. Return evidence to the parent."
+        else (
+            "This grandchild receives engineering facts and acceptance criteria but no inherited write authority. "
+            "Return in-memory ToolMessage evidence to the parent; do not create temporary capture or report files."
+        )
     )
     child["context"] = child_context
     child["engineeringTaskCapsule"] = {

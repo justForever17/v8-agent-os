@@ -221,6 +221,7 @@ class RuntimeProjectionContractTests(unittest.TestCase):
                 "payload": {
                     "message_id": "msg_user_audio",
                     "content": "",
+                    "images": ["/api/workspace/files/.v8/uploads/voice.mp3"],
                     "attachments": [
                         {
                             "name": "voice.mp3",
@@ -241,6 +242,7 @@ class RuntimeProjectionContractTests(unittest.TestCase):
 
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["content"], "")
+        self.assertEqual(messages[0]["images"], [])
         self.assertEqual(messages[0]["metadata"]["attachments"][0]["name"], "voice.mp3")
 
 

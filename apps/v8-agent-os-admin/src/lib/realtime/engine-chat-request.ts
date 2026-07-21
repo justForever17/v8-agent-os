@@ -19,13 +19,21 @@ function toAttachmentList(value: unknown, fallbackFileUrls: string[] = []) {
         : [];
     const normalized = attachments.map((item) => ({
         id: typeof item.id === "string" ? item.id : undefined,
+        sourceId: typeof item.sourceId === "string" ? item.sourceId : typeof item.source_id === "string" ? item.source_id : undefined,
+        sourceKind: typeof item.sourceKind === "string" ? item.sourceKind : typeof item.source_kind === "string" ? item.source_kind : undefined,
+        resourceRole: typeof item.resourceRole === "string" ? item.resourceRole : typeof item.resource_role === "string" ? item.resource_role : undefined,
         name: typeof item.name === "string" ? item.name : undefined,
         url: typeof item.url === "string" ? item.url : undefined,
         publicUrl: typeof item.publicUrl === "string" ? item.publicUrl : undefined,
+        previewUrl: typeof item.previewUrl === "string" ? item.previewUrl : undefined,
         workspacePath: typeof item.workspacePath === "string" ? item.workspacePath : undefined,
+        workspaceRelativePath: typeof item.workspaceRelativePath === "string" ? item.workspaceRelativePath : undefined,
         mimeType: typeof item.mimeType === "string" ? item.mimeType : typeof item.type === "string" ? item.type : undefined,
+        mediaKind: typeof item.mediaKind === "string" ? item.mediaKind : undefined,
         size: typeof item.size === "number" ? item.size : undefined,
         source: typeof item.source === "string" ? item.source : "client_upload",
+        resourceRef: item.resourceRef && typeof item.resourceRef === "object" ? item.resourceRef as JsonRecord : undefined,
+        metadata: item.metadata && typeof item.metadata === "object" ? item.metadata as JsonRecord : undefined,
     })).filter((item) => item.url || item.publicUrl || item.workspacePath);
     const seen = new Set<string>();
     const deduped = [];
@@ -68,9 +76,11 @@ export function buildEngineChatRequestPayload(payload: unknown, userEmail: strin
     const dataFileUrls = Array.isArray(data.fileUrls) ? data.fileUrls : [];
     const fileUrls = [...dataFileUrls, ...rootFileUrls]
         .filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-    const attachments = toAttachmentList(root.attachments, fileUrls)
-        .concat(toAttachmentList(data.attachments, []));
-    const dedupedAttachments = toAttachmentList(attachments, fileUrls);
+    const explicitAttachments = [
+        ...(Array.isArray(data.attachments) ? data.attachments : []),
+        ...(Array.isArray(root.attachments) ? root.attachments : []),
+    ];
+    const dedupedAttachments = toAttachmentList(explicitAttachments, fileUrls);
     const provider = data.provider;
     const modelName = data.model;
     const agentId = root.agentId;

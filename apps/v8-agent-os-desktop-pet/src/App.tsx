@@ -537,6 +537,8 @@ If the user uploaded an image representation (which represents what you 'see' th
   const v8SeenActivityIdsRef = useRef<Set<string>>(new Set());
   const v8LastAudioUrlRef = useRef('');
   const v8LastSnapshotAudioPlayedRef = useRef(false);
+  const v8LatestAssistantIdentityRef = useRef<Map<string, string>>(new Map());
+  const v8PendingAssistantBaselineRef = useRef<Map<string, string>>(new Map());
   const v8SpokenAssistantKeysRef = useRef<Set<string>>(new Set());
   const reusableAudioPhrasesRef = useRef<Set<string>>(new Set(readReusableAudioPhrases()));
 
@@ -758,7 +760,9 @@ If the user uploaded an image representation (which represents what you 'see' th
     const snapshot = await client.getRealtimeSnapshot(conversationId);
     v8LastSnapshotAudioPlayedRef.current = false;
     const audioUrl = findLatestAudioUrl(snapshot);
-    if (audioUrl && audioUrl !== v8LastAudioUrlRef.current) {
+    const shouldPlayVoiceArtifact = settingsRef.current.eventVoiceMode === 'voice_tag'
+      && settingsRef.current.speakVoiceTags !== false;
+    if (shouldPlayVoiceArtifact && audioUrl && audioUrl !== v8LastAudioUrlRef.current) {
       v8LastAudioUrlRef.current = audioUrl;
       v8LastSnapshotAudioPlayedRef.current = playDirectAudio(audioUrl);
     }
@@ -766,7 +770,11 @@ If the user uploaded an image representation (which represents what you 'see' th
     const desktopMessages = extractDesktopMessages(snapshot);
     if (desktopMessages.length) {
       setMessages(desktopMessages.map(toCyberMessage));
+      const latestAssistant = [...desktopMessages].reverse().find((message) => message.role === 'assistant');
       const assistantText = latestAssistantText(desktopMessages);
+      v8LatestAssistantIdentityRef.current.set(conversationId, latestAssistant
+        ? `${latestAssistant.id}:${latestAssistant.createdAt}:${latestAssistant.content}`
+        : '');
       if (assistantText) {
         setEmotion('talking');
       }
@@ -776,7 +784,11 @@ If the user uploaded an image representation (which represents what you 'see' th
     const detailMessages = extractDesktopMessages(detail);
     if (detailMessages.length) {
       setMessages(detailMessages.map(toCyberMessage));
+      const latestAssistant = [...detailMessages].reverse().find((message) => message.role === 'assistant');
       const assistantText = latestAssistantText(detailMessages);
+      v8LatestAssistantIdentityRef.current.set(conversationId, latestAssistant
+        ? `${latestAssistant.id}:${latestAssistant.createdAt}:${latestAssistant.content}`
+        : '');
       if (assistantText) {
         setEmotion('talking');
       }
@@ -1254,6 +1266,28 @@ If the user uploaded an image representation (which represents what you 'see' th
     return true;
   };
 
+  const syncAndSpeakLatestAssistant = async (conversationId: string) => {
+    const retryDelays = [0, 180, 420, 800];
+    const baseline = v8PendingAssistantBaselineRef.current.get(conversationId) || '';
+    let audioPlayed = false;
+    for (const delay of retryDelays) {
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      const latestText = await syncV8Snapshot(conversationId);
+      audioPlayed = audioPlayed || v8LastSnapshotAudioPlayedRef.current;
+      const latestIdentity = v8LatestAssistantIdentityRef.current.get(conversationId) || '';
+      if (!latestText || (baseline && latestIdentity === baseline)) {
+        continue;
+      }
+      v8PendingAssistantBaselineRef.current.delete(conversationId);
+      if (audioPlayed || speakAssistantReply(latestText)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const speakStandardWebSpeech = (text: string) => {
     if (!('speechSynthesis' in window)) return;
     const utterance = new SpeechSynthesisUtterance(text);
@@ -1576,8 +1610,8 @@ If the user uploaded an image representation (which represents what you 'see' th
       url: fileUrl,
       publicUrl: String(uploadRes.publicUrl || uploadRes.url || fileUrl),
       name: String(uploadRes.name || file.name),
-      mimeType,
-      size: audioBlob.size,
+      mimeType: String(uploadRes.type || mimeType),
+      size: Number(uploadRes.size || audioBlob.size),
       mediaKind: 'audio',
       source: 'desktop_pet_voice',
     }];
@@ -1618,6 +1652,10 @@ If the user uploaded an image representation (which represents what you 'see' th
         timestamp: nowLabel(),
       },
     ]);
+    v8PendingAssistantBaselineRef.current.set(
+      conversationId,
+      v8LatestAssistantIdentityRef.current.get(conversationId) || '',
+    );
     await client.submitMessage({
       conversationId,
       content: '',
@@ -1835,6 +1873,10 @@ If the user uploaded an image representation (which represents what you 'see' th
         throw new Error('当前会话仍在运行，暂不能发送新的消息');
       }
       setV8Status('已发送到 V8OS Supervisor');
+      v8PendingAssistantBaselineRef.current.set(
+        conversationId,
+        v8LatestAssistantIdentityRef.current.get(conversationId) || '',
+      );
       await client.submitMessage({
         conversationId,
         content: capturedImageBase64
@@ -1949,30 +1991,29 @@ If the user uploaded an image representation (which represents what you 'see' th
             if (eventName === 'ping') return;
 
             const activity = buildActivityFromRealtimeEvent(rawPayload);
+            const terminalRunEvent = isTerminalRunEvent(eventName, rawPayload);
             if (activity) {
               applyV8EventRules([activity]);
-              if (isTerminalRunEvent(eventName, rawPayload)) {
-                setPetSessionState('attached_idle');
-                setVoiceStatus('当前会话已结束，可再次点击录音');
-                void refreshV8Lists();
-                void syncV8Snapshot(conversationId)
-                  .then((latestText) => {
-                    if (latestText) {
-                      speakAssistantReply(latestText, { audioAlreadyPlayed: v8LastSnapshotAudioPlayedRef.current });
-                    }
-                  })
-                  .catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
-              } else if (petSessionStateRef.current !== 'recording' && petSessionStateRef.current !== 'sending_audio') {
+              if (!terminalRunEvent && petSessionStateRef.current !== 'recording' && petSessionStateRef.current !== 'sending_audio') {
                 setPetSessionState('listening_running');
                 setVoiceStatus('当前会话运行中，正在监听事件');
               }
+            }
+            if (terminalRunEvent) {
+              setPetSessionState('attached_idle');
+              setVoiceStatus('当前会话已结束，可再次点击录音');
+              void refreshV8Lists();
+              void syncAndSpeakLatestAssistant(conversationId)
+                .catch((error) => setV8Error(error?.message || 'V8OS 快照同步失败'));
             }
 
             const data = rawPayload?.data || {};
             // Auto-play audio if V8OS returned an audio buffer
             const directAudioUrl = findLatestAudioUrl(rawPayload);
             const audioData = directAudioUrl || data?.audio || rawPayload?.audio || data?.voiceData;
-            if (audioData) {
+            const shouldPlayVoiceArtifact = settingsRef.current.eventVoiceMode === 'voice_tag'
+              && settingsRef.current.speakVoiceTags !== false;
+            if (shouldPlayVoiceArtifact && audioData) {
               if (typeof audioData === 'string') {
                 if (audioData.startsWith('data:audio') || audioData.startsWith('http')) {
                   if (directAudioUrl) v8LastAudioUrlRef.current = directAudioUrl;

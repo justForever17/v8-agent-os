@@ -624,6 +624,28 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
             attachments = [dict(item) for item in list(payload.get("attachments") or []) if isinstance(item, dict)]
             if attachments and not metadata.get("attachments"):
                 metadata["attachments"] = attachments
+            audio_refs: set[str] = set()
+            for attachment in attachments:
+                declared_kind = str(attachment.get("mediaKind") or attachment.get("media_kind") or "").strip().lower()
+                declared_mime = str(attachment.get("mimeType") or attachment.get("mime_type") or attachment.get("type") or "").strip().lower()
+                explicitly_visual = declared_kind in {"image", "video"} or declared_mime.startswith(("image/", "video/"))
+                probe = str(attachment.get("name") or "").strip().lower()
+                is_audio = not explicitly_visual and (
+                    declared_kind == "audio"
+                    or declared_mime.startswith("audio/")
+                    or bool(re.search(r"\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#\s].*)?$", probe))
+                )
+                if not is_audio:
+                    continue
+                for key in ("previewUrl", "preview_url", "publicUrl", "public_url", "url", "workspacePath", "workspace_path"):
+                    value = str(attachment.get(key) or "").strip().lower()
+                    if value:
+                        audio_refs.add(value)
+            message_images = [
+                value
+                for value in list(payload.get("images") or [])
+                if str(value or "").strip().lower() not in audio_refs
+            ]
             messages.append(
                 {
                     "id": payload.get("message_id") or event.get("event_id"),
@@ -632,7 +654,7 @@ def project_chat_messages_from_events(events: List[Dict[str, Any]]) -> List[Dict
                     "content": payload.get("content", ""),
                     "parts": [{"type": "text", "content": payload.get("content", "")}],
                     "timestamp": _event_timestamp_ms(event),
-                    "images": payload.get("images") or [],
+                    "images": message_images,
                     "artifacts": [],
                     "metadata": metadata,
                 }

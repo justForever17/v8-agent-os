@@ -346,6 +346,12 @@ function extractMessageAttachments(message: Message): MessageAttachmentRecord[] 
 }
 
 function isAudioAttachmentRecord(item: MessageAttachmentRecord) {
+    if (item.mediaKind === "image" || item.mediaKind === "video" || item.mimeType.startsWith("image/") || item.mimeType.startsWith("video/")) {
+        return false;
+    }
+    if (item.mediaKind === "audio" || item.mimeType.startsWith("audio/")) {
+        return true;
+    }
     const probe = (() => {
         try {
             return decodeURIComponent(`${item.name} ${item.url}`);
@@ -353,9 +359,7 @@ function isAudioAttachmentRecord(item: MessageAttachmentRecord) {
             return `${item.name} ${item.url}`;
         }
     })();
-    return item.mediaKind === "audio"
-        || item.mimeType.startsWith("audio/")
-        || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#\s].*)?$/i.test(probe);
+    return /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#\s].*)?$/i.test(probe);
 }
 
 function isVisualAttachmentRecord(item: MessageAttachmentRecord) {
@@ -439,6 +443,10 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
         () => attachmentRecords.filter((item) => !isAudioAttachmentRecord(item) && isVisualAttachmentRecord(item)).map((item) => item.url),
         [attachmentRecords],
     );
+    const audioAttachmentUrls = useMemo(
+        () => new Set(audioAttachments.map((item) => item.url.toLowerCase())),
+        [audioAttachments],
+    );
 
     const handleCopy = (content: string) => {
         navigator.clipboard.writeText(content);
@@ -463,8 +471,8 @@ function ChatMessageComponent({ message, processes = [], isLoading, onDelete, is
                 }
                 return resolveAdminResourceUrl("web", undefined, coerceAdminResourceRef(raw)) || raw.replace(/^\/api\/client\b/i, "/api");
             })
-            .filter(Boolean),
-        [message.images, visualAttachmentUrls],
+            .filter((value) => Boolean(value) && !audioAttachmentUrls.has(value.toLowerCase())),
+        [audioAttachmentUrls, message.images, visualAttachmentUrls],
     );
     const mediaItems: MediaItem[] = useMemo(() => {
         return imagesArray.map((url) => {

@@ -260,6 +260,116 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function recordedAttachmentUrl(attachment: Record<string, unknown>): string {
+  return firstNonEmptyString(
+    attachment.previewUrl,
+    attachment.publicUrl,
+    attachment.url,
+    attachment.workspacePath,
+    attachment.workspaceRelativePath,
+  );
+}
+
+function recordedAttachmentIsAudio(attachment: Record<string, unknown>): boolean {
+  const declaredKind = String(attachment.mediaKind || attachment.previewKind || attachment.kind || "").toLowerCase();
+  const declaredMime = String(attachment.mimeType || attachment.type || "").toLowerCase();
+  if (declaredKind === "image" || declaredKind === "video" || declaredMime.startsWith("image/") || declaredMime.startsWith("video/")) {
+    return false;
+  }
+  if (declaredKind === "audio" || declaredMime.startsWith("audio/")) {
+    return true;
+  }
+  const probe = [
+    attachment.name,
+    recordedAttachmentUrl(attachment),
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  return /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#\s].*)?$/i.test(probe);
+}
+
+function buildRecordedUserMessage(
+  event: SessionStreamUiEvent,
+  eventData: Record<string, unknown>,
+): SessionStreamMessage {
+  const timelineFields = eventTimelineFields(event);
+  const clientMessageId = firstNonEmptyString(eventData.clientMessageId, eventData.client_message_id);
+  const messageId = firstNonEmptyString(
+    event.message_id,
+    eventData.message_id,
+    eventData.messageId,
+    clientMessageId,
+    event.event_id,
+    buildSessionRuntimeEventIdentity(event),
+  );
+  const content = firstNonEmptyString(eventData.content, event.content);
+  const attachments = Array.isArray(eventData.attachments)
+    ? eventData.attachments.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  const audioUrls = new Set(
+    attachments
+      .filter(recordedAttachmentIsAudio)
+      .map(recordedAttachmentUrl)
+      .filter(Boolean)
+      .map((value) => value.toLowerCase()),
+  );
+  const images = (Array.isArray(eventData.images) ? eventData.images : [])
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && !audioUrls.has(value.toLowerCase()));
+  const metadata = {
+    ...asRecord(eventData.metadata),
+    ...(clientMessageId ? { clientMessageId } : {}),
+    ...(attachments.length ? { attachments } : {}),
+    transcriptVersion: event.transcript_version,
+  };
+  const nodes: SessionStreamTimelineNode[] = [];
+  if (content) {
+    nodes.push({
+      id: event.node_id || `${messageId}:narrative`,
+      kind: "narrative",
+      role: "user",
+      content,
+      agentType: "user",
+      ...timelineFields,
+    });
+  }
+  attachments.forEach((attachment, index) => {
+    const attachmentId = firstNonEmptyString(attachment.id, attachment.sourceId, attachment.source_id, `${messageId}:attachment:${index}`);
+    const name = firstNonEmptyString(attachment.name, `attachment-${index + 1}`);
+    const mimeType = firstNonEmptyString(attachment.mimeType, attachment.type);
+    const mediaKind = firstNonEmptyString(attachment.mediaKind, mimeType.split("/", 1)[0], "file");
+    nodes.push({
+      id: `${messageId}:source:${attachmentId}`,
+      kind: "artifact",
+      agentType: "user",
+      artifact: {
+        ...attachment,
+        id: attachmentId,
+        sourceId: firstNonEmptyString(attachment.sourceId, attachment.source_id, attachment.id) || undefined,
+        resourceRole: "source",
+        kind: mediaKind,
+        title: name,
+        displayLabel: name,
+        previewUrl: firstNonEmptyString(attachment.previewUrl, attachment.publicUrl, attachment.url) || undefined,
+        externalUrl: firstNonEmptyString(attachment.publicUrl, attachment.url) || undefined,
+        sourcePath: firstNonEmptyString(attachment.workspaceRelativePath, attachment.workspacePath, attachment.url) || undefined,
+        mimeType: mimeType || undefined,
+      },
+      ...timelineFields,
+    });
+  });
+  return {
+    id: messageId,
+    role: "user",
+    content,
+    runId: timelineFields.runId,
+    timestamp: timelineFields.timestamp,
+    agentType: "user",
+    nodes,
+    images,
+    artifacts: [],
+    metadata,
+  };
+}
+
 function firstNonEmptyString(...values: unknown[]): string {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) {
@@ -973,6 +1083,33 @@ export function applyRealtimeEventToMessages<TMessage extends SessionStreamMessa
     },
   });
 
+  if (event.type === "custom_event" && event.name === "message_user_recorded") {
+    const recorded = buildRecordedUserMessage(event, eventData) as TMessage;
+    const clientMessageId = String(recorded.metadata?.clientMessageId || "").trim();
+    const existingIndex = localMessages.findIndex((message) => (
+      String(message.id || "").trim() === recorded.id
+      || (clientMessageId && String(message.metadata?.clientMessageId || "").trim() === clientMessageId)
+    ));
+    if (existingIndex >= 0) {
+      const existing = localMessages[existingIndex];
+      localMessages[existingIndex] = {
+        ...existing,
+        ...recorded,
+        renderKey: existing.renderKey,
+        metadata: {
+          ...(existing.metadata || {}),
+          ...(recorded.metadata || {}),
+        },
+      } as TMessage;
+    } else {
+      localMessages.push(recorded);
+    }
+    return {
+      currentAiMsg: undefined,
+      activeAgentProfile: nextActiveAgentProfile,
+    };
+  }
+
   const ensureCurrent = () => {
     const explicitMessage = findMessageById(localMessages, event.message_id);
     if (explicitMessage) {
@@ -1563,6 +1700,10 @@ export function shouldAuthoritativelyRefreshOnRuntimeEvent(
   }
 
   if (event.type === "done" || event.type === "agent_start" || event.type === "error") {
+    return true;
+  }
+
+  if (event.type === "custom_event" && event.name === "message_user_recorded") {
     return true;
   }
 

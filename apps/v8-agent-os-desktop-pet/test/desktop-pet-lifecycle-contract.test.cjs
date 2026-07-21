@@ -64,3 +64,18 @@ test('desktop pet event rules use structured event ids and keep legacy text read
   assert.match(appSource, /expandLegacyDesktopPetEvents/);
   assert.doesNotMatch(appSource, /haystack\.includes\(candidate\.match/);
 });
+
+test('desktop pet terminal events retry the authoritative snapshot before system TTS', () => {
+  const appSource = fs.readFileSync(path.join(petRoot, 'src', 'App.tsx'), 'utf8');
+
+  assert.match(appSource, /const retryDelays = \[0, 180, 420, 800\]/);
+  assert.match(appSource, /v8PendingAssistantBaselineRef\.current\.get\(conversationId\)/);
+  assert.match(appSource, /baseline && latestIdentity === baseline/);
+  assert.match(appSource, /audioPlayed = audioPlayed \|\| v8LastSnapshotAudioPlayedRef\.current/);
+  assert.match(appSource, /const terminalRunEvent = isTerminalRunEvent\(eventName, rawPayload\)/);
+  assert.match(appSource, /if \(terminalRunEvent\)[\s\S]{0,420}syncAndSpeakLatestAssistant\(conversationId\)/);
+  assert.match(appSource, /mode === 'voice_tag'[\s\S]{0,320}else[\s\S]{0,220}stripVoiceTagMarkup\(text\)/);
+  assert.match(appSource, /const shouldPlayVoiceArtifact = settingsRef\.current\.eventVoiceMode === 'voice_tag'/);
+  assert.match(appSource, /if \(shouldPlayVoiceArtifact && audioUrl/);
+  assert.match(appSource, /if \(shouldPlayVoiceArtifact && audioData\)/);
+});

@@ -1101,7 +1101,7 @@ class ChatRuntime:
                     invoke_payload = {key: value for key, value in invoke_payload.items() if value not in (None, "", [], {})}
                     attachment_runtime_context = {
                         **self._runtime_context_kwargs(chat_run),
-                        "source_id": str(attachment.get("sourceId") or attachment.get("source_id") or "").strip() or None,
+                        "source_id": str(attachment.get("sourceId") or attachment.get("source_id") or attachment.get("id") or "").strip() or None,
                     }
                     with bind_runtime_context(**attachment_runtime_context):
                         output = await asyncio.to_thread(vision_media_analyzer.invoke, invoke_payload)

@@ -3,6 +3,8 @@ import asyncio
 import logging
 import mimetypes
 import re
+import shutil
+import subprocess
 import threading
 import uuid
 import time
@@ -39,6 +41,8 @@ from runtimes.chat.runtime import chat_runtime
 
 router = APIRouter()
 _UPLOAD_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._ -]+")
+_VOICE_UPLOAD_SOURCE_KINDS = {"web_voice", "phone_voice", "desktop_pet_voice"}
+_VOICE_UPLOAD_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm"}
 logger = logging.getLogger("v8chat.chat_realtime")
 _BACKGROUND_CHAT_FIRST_EVENT_TIMEOUT_SECONDS = 90.0
 
@@ -668,6 +672,56 @@ def _normalize_upload_source_kind(value: str) -> str:
     return normalized if normalized in allowed else "client_upload"
 
 
+def _normalized_voice_filename(filename: str) -> str:
+    stem = Path(str(filename or "voice")).stem.strip() or "voice"
+    return _safe_upload_filename(f"{stem}.mp3")
+
+
+def _is_voice_upload(filename: str, content_type: str) -> bool:
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    return mime.startswith("audio/") or Path(str(filename or "")).suffix.lower() in _VOICE_UPLOAD_EXTENSIONS
+
+
+def _transcode_voice_upload_to_mp3(source: Path, target: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("本机未找到 ffmpeg，无法把语音规范化为 MP3。")
+    partial = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.partial.mp3")
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(source),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                "64k",
+                str(partial),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        if result.returncode != 0 or not partial.exists() or partial.stat().st_size <= 0:
+            detail = str(result.stderr or "").strip().splitlines()
+            reason = (detail[-1] if detail else "ffmpeg 未生成有效 MP3")[-360:]
+            raise RuntimeError(f"语音转码失败：{reason}")
+        partial.replace(target)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
 @router.post("/chat/upload")
 async def chat_upload(request: Request):
     form = await request.form()
@@ -676,6 +730,8 @@ async def chat_upload(request: Request):
         raise HTTPException(status_code=400, detail="缺少上传文件。")
 
     filename = _safe_upload_filename(getattr(upload, "filename", "") or None)
+    original_filename = filename
+    original_content_type = str(getattr(upload, "content_type", "") or "").strip() or mimetypes.guess_type(filename)[0] or "application/octet-stream"
     session_id = _form_text(form, "sessionId", "session_id", "conversationId", "conversation_id")
     workspace_id = _form_text(form, "workspaceId", "workspace_id")
     workspace_path = _form_text(form, "workspacePath", "workspace_path")
@@ -717,6 +773,11 @@ async def chat_upload(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="上传目录越过当前工作区边界，已拒绝。") from exc
 
+    normalize_voice = source_kind in _VOICE_UPLOAD_SOURCE_KINDS
+    if normalize_voice and not _is_voice_upload(original_filename, original_content_type):
+        raise HTTPException(status_code=415, detail="语音录制入口只接受音频内容。")
+    if normalize_voice:
+        filename = _normalized_voice_filename(filename)
     unique_filename = f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}-{filename}"
     target = (resolved_upload_dir / unique_filename).resolve(strict=False)
     try:
@@ -727,7 +788,23 @@ async def chat_upload(request: Request):
     content = await upload.read()
     if not isinstance(content, (bytes, bytearray)):
         raise HTTPException(status_code=400, detail="上传文件内容不可读取。")
-    await run_in_threadpool(target.write_bytes, bytes(content))
+    if normalize_voice:
+        source_suffix = Path(original_filename).suffix or mimetypes.guess_extension(original_content_type) or ".audio"
+        staging = (resolved_upload_dir / f".{uuid.uuid4().hex}.voice-source{source_suffix}").resolve(strict=False)
+        try:
+            staging.relative_to(workspace_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="语音暂存目标越过当前工作区边界，已拒绝。") from exc
+        try:
+            await run_in_threadpool(staging.write_bytes, bytes(content))
+            await run_in_threadpool(_transcode_voice_upload_to_mp3, staging, target)
+        except RuntimeError as exc:
+            target.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finally:
+            staging.unlink(missing_ok=True)
+    else:
+        await run_in_threadpool(target.write_bytes, bytes(content))
     mark_workspace_state_stale(
         {
             "runtime_kind": "chat",
@@ -741,7 +818,8 @@ async def chat_upload(request: Request):
     )
 
     workspace_relative_path = target.relative_to(workspace_root).as_posix()
-    content_type = str(getattr(upload, "content_type", "") or "").strip() or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    content_type = "audio/mpeg" if normalize_voice else original_content_type
+    byte_size = int(target.stat().st_size)
     resource_ref = build_workspace_resource_ref(
         workspace_relative_path=workspace_relative_path,
         path_plane="workspace_download",
@@ -768,8 +846,13 @@ async def chat_upload(request: Request):
             preview_url=admin_path,
             resource_ref=resource_ref,
             metadata={
-                "byteSize": len(content),
+                "byteSize": byte_size,
                 "workspaceBinding": binding.as_dict(),
+                **({
+                    "originalFileName": original_filename,
+                    "originalMimeType": original_content_type,
+                    "normalizedFormat": "mp3",
+                } if normalize_voice else {}),
             },
         )
     return {
@@ -788,13 +871,18 @@ async def chat_upload(request: Request):
         "workspaceId": binding.workspace_id or None,
         "projectId": binding.project_id or None,
         "type": content_type,
-        "size": len(content),
+        "size": byte_size,
         "createdAt": utc_now_iso(),
         "resourceRef": resource_ref,
         "metadata": {
             "sessionId": session_id or None,
             "source": source_kind,
             "workspaceBinding": binding.as_dict(),
+            **({
+                "originalFileName": original_filename,
+                "originalMimeType": original_content_type,
+                "normalizedFormat": "mp3",
+            } if normalize_voice else {}),
         },
     }
 

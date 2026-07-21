@@ -167,15 +167,21 @@ class ChatAttachment(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: Optional[str] = None
+    source_id: Optional[str] = Field(default=None, alias="sourceId")
+    source_kind: Optional[str] = Field(default=None, alias="sourceKind")
+    resource_role: Optional[str] = Field(default=None, alias="resourceRole")
     name: Optional[str] = None
     url: Optional[str] = None
     public_url: Optional[str] = Field(default=None, alias="publicUrl")
+    preview_url: Optional[str] = Field(default=None, alias="previewUrl")
     workspace_path: Optional[str] = Field(default=None, alias="workspacePath")
     workspace_relative_path: Optional[str] = Field(default=None, alias="workspaceRelativePath")
     mime_type: Optional[str] = Field(default=None, alias="mimeType")
+    media_kind: Optional[str] = Field(default=None, alias="mediaKind")
     size: Optional[int] = None
     source: Optional[str] = None
     resource_ref: Optional[Dict[str, Any]] = Field(default=None, alias="resourceRef")
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ChatRequestData(BaseModel):

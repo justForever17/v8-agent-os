@@ -416,6 +416,14 @@ function isUploadedVisualFile(file: UploadedWorkspaceFile) {
         || /\.(png|jpe?g|webp|gif|bmp|heic|heif|mp4|mov|m4v|webm|mkv|avi)$/i.test(name);
 }
 
+function isRecordedAudioAttachment(item: Record<string, unknown>) {
+    const name = String(item.name || item.url || item.publicUrl || item.workspacePath || "").toLowerCase();
+    const type = String(item.mimeType || item.mime_type || item.type || "").toLowerCase();
+    const kind = String(item.mediaKind || item.previewKind || item.kind || "").toLowerCase();
+    if (kind === "image" || kind === "video" || type.startsWith("image/") || type.startsWith("video/")) return false;
+    return kind === "audio" || type.startsWith("audio/") || /\.(mp3|m4a|wav|ogg|opus|aac|flac|webm)(?:[?#].*)?$/i.test(name);
+}
+
 const SPEC_COMMAND_DEFS: Array<Pick<CommandPresetSummary, "name" | "specCommandAction"> & { summaryKey: string }> = [
     { name: "spec new", summaryKey: "src.screens.chatscreen.spec_command_new_summary", specCommandAction: "new" },
     { name: "spec continue", summaryKey: "src.screens.chatscreen.spec_command_continue_summary", specCommandAction: "continue" },
@@ -686,6 +694,7 @@ function normalizeAcceptedUserMessage(raw: unknown, fallback: ChatMessage): Chat
     ).trim();
     const attachments = Array.isArray(metadata.attachments) ? metadata.attachments as Array<Record<string, unknown>> : [];
     const images = attachments
+        .filter((item) => !isRecordedAudioAttachment(item))
         .map((item) => String(item.publicUrl || item.url || "").trim())
         .filter(Boolean);
     const nodes = Array.isArray(record.nodes) ? record.nodes as PhoneUiTimelineNode[] : fallback.nodes || [];

@@ -14,6 +14,12 @@ import {
 import { normalizeRealtimeEvent } from "@/lib/realtime";
 import { clearLegacyWebConversationCache } from "@/lib/web-conversation-cache";
 import {
+    deriveComposerRunActivity,
+    isRecognizedRunStatus,
+    runStatusAllowsInterrupt,
+    terminalRunStatusFromTopic,
+} from "@/lib/chat/run-activity";
+import {
     buildRuntimeStageModel,
     buildRuntimeTimelineEntryFromEvent,
     mergeRuntimeTimeline,
@@ -1280,15 +1286,35 @@ export default function ChatClient() {
                 return;
             }
             const data = await res.json().catch(() => ({}));
-            setRunEntries(Array.isArray(data?.runs) ? data.runs : []);
+            const runs = Array.isArray(data?.runs) ? data.runs as RunRecordView[] : [];
+            setRunEntries(runs);
+            const latestRun = runs[0];
+            const latestStatus = String(latestRun?.status || "").trim().toLowerCase();
+            if (latestRun?.id && isRecognizedRunStatus(latestStatus)) {
+                setSessionProjection((current) => current ? {
+                    ...current,
+                    runtimeStatus: latestStatus,
+                    currentRun: {
+                        ...(current.currentRun || {}),
+                        ...latestRun,
+                    },
+                    controls: {
+                        ...(current.controls || {}),
+                        runId: latestRun.id,
+                        workflowStatus: latestStatus,
+                        canInterrupt: runStatusAllowsInterrupt(latestStatus),
+                    },
+                } : current);
+                patchConversationSummary(conversationId, { status: latestStatus });
+            }
         } catch (error) {
             console.warn("[ChatClient] Failed to load runs:", error);
             setRunEntries([]);
         }
-    }, []);
+    }, [patchConversationSummary]);
 
     // Initialize Hook
-    const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval } = useLangGraphStream({
+    const { messages, isLoading, sendMessage, stop, setMessages, sendToolOutput, resolveApproval, dispatchRunCommand } = useLangGraphStream({
         apiEndpoint: `/api/chat`,
         onFinish: () => {
             refreshConversations();
@@ -1404,23 +1430,15 @@ export default function ChatClient() {
         }
     }, [patchConversationSummary, supervisorWorkMode, updateConversationPresentation]);
     const activeConversationRunning = useMemo(() => {
-        if (isLoading) return true;
         const activeConversation = conversations.find((item) => (item.sessionId || item.id) === activeConversationId);
-        const activeStatuses = ["running", "queued", "pending", "starting", "streaming", "waiting_input", "waiting_approval", "waiting_external_tool", "paused"];
-        const terminalStatuses = ["idle", "completed", "failed", "cancelled", "recoverable_failed", "degraded", "interrupted"];
-        const observedStatuses = [
-            activeConversation?.status,
-            sessionProjection?.runtimeStatus,
-            currentRun?.status,
-        ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
-        if (observedStatuses.some((status) => activeStatuses.includes(status))) {
-            return true;
-        }
-        if (observedStatuses.length > 0 && observedStatuses.every((status) => terminalStatuses.includes(status))) {
-            return false;
-        }
-        return isLoading;
-    }, [activeConversationId, conversations, currentRun?.status, isLoading, sessionProjection?.runtimeStatus]);
+        return deriveComposerRunActivity({
+            localStreamActive: isLoading,
+            runtimeStatus: sessionProjection?.runtimeStatus,
+            currentRunStatus: currentRun?.status,
+            workflowStatus: sessionProjection?.controls?.workflowStatus || sessionProjection?.workflow?.status,
+            conversationStatus: activeConversation?.status,
+        });
+    }, [activeConversationId, conversations, currentRun?.status, isLoading, sessionProjection?.controls?.workflowStatus, sessionProjection?.runtimeStatus, sessionProjection?.workflow?.status]);
     const askUserPendingProjection = useMemo(
         () => (sessionProjection?.askUserInteractions || []).find((item) => String(item.status || "pending").toLowerCase() === "pending") || null,
         [sessionProjection?.askUserInteractions],
@@ -1433,6 +1451,27 @@ export default function ChatClient() {
     const governancePendingApprovalId = String(governancePendingApproval?.id || "").trim();
     const hasAskUserPending = Boolean(askUserApprovalId || askUserToolCallId);
     const projectionRunId = (sessionProjection?.controls?.runId || sessionProjection?.currentRun?.id || sessionProjection?.workflow?.rootRunId) ?? undefined;
+    const canInterruptProjectedRun = Boolean(
+        activeConversationRunning
+        && projectionRunId
+        && sessionProjection?.controls?.canInterrupt,
+    );
+    const handleStopActiveRun = useCallback(() => {
+        if (isLoading) {
+            stop();
+        }
+        if (!projectionRunId || !sessionProjection?.controls?.canInterrupt) {
+            return;
+        }
+        void dispatchRunCommand(projectionRunId, "interrupt", "web_composer_interrupt")
+            .then(() => {
+                const conversationId = activeConversationIdRef.current;
+                if (conversationId) void loadRuns(conversationId);
+            })
+            .catch((error) => {
+                console.warn("[ChatClient] Failed to interrupt active run:", error);
+            });
+    }, [dispatchRunCommand, isLoading, loadRuns, projectionRunId, sessionProjection?.controls?.canInterrupt, stop]);
     const effectiveStatus = hasAskUserPending
         ? "waiting_input"
         : governancePendingApprovalId || currentRun?.status === "waiting_approval"
@@ -2676,6 +2715,23 @@ export default function ChatClient() {
             }
             return;
         }
+        const terminalRunStatus = terminalRunStatusFromTopic(normalizedEvent.topic, normalizedEvent.data);
+        if (terminalRunStatus) {
+            setSessionProjection((current) => current ? {
+                ...current,
+                runtimeStatus: terminalRunStatus,
+                currentRun: current.currentRun ? {
+                    ...current.currentRun,
+                    status: terminalRunStatus,
+                } : current.currentRun,
+                controls: current.controls ? {
+                    ...current.controls,
+                    canInterrupt: false,
+                    workflowStatus: terminalRunStatus,
+                } : current.controls,
+            } : current);
+            patchConversationSummary(conversationId, { status: terminalRunStatus });
+        }
         const isHumanGuidanceEvent =
             normalizedEvent.name === "human_guidance"
             || String(normalizedEvent.topic || "").startsWith("human_guidance.");
@@ -2858,7 +2914,7 @@ export default function ChatClient() {
         } else {
             runtimeFlushTimerRef.current = setTimeout(flush, 16);
         }
-    }, [applyAskUserPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, setMessages, upsertQueuedMessage]);
+    }, [applyAskUserPendingApproval, clearApprovalState, isLocalStreamActive, loadRuns, patchConversationSummary, setMessages, upsertQueuedMessage]);
 
     useEffect(() => {
         const streamLatencyStats = streamLatencyStatsRef.current;
@@ -3177,6 +3233,7 @@ export default function ChatClient() {
         }
 
         const eventSource = new EventSource(`/api/realtime/sessions/${activeConversationId}/stream`);
+        let snapshotHistoryFallbackRequested = false;
 
         const handleSnapshot = (event: MessageEvent) => {
             try {
@@ -3218,6 +3275,11 @@ export default function ChatClient() {
                         nestedSnapshot.messages,
                         Number(snapshotRecord.latestSeq || nestedSnapshot.latest_seq || 0),
                     );
+                } else if (!localStreamActive && !snapshotHistoryFallbackRequested) {
+                    snapshotHistoryFallbackRequested = true;
+                    void loadConversationHistory(activeConversationId).catch((error) => {
+                        console.warn("[ChatClient] Snapshot history hydration failed:", error);
+                    });
                 }
             } catch (error) {
                 console.warn("[ChatClient] Failed to parse snapshot SSE payload:", error);
@@ -3238,6 +3300,7 @@ export default function ChatClient() {
                 void loadConversationHistory(activeConversationId).catch((error) => {
                     console.warn("[ChatClient] Realtime resync failed:", error);
                 });
+                void loadRuns(activeConversationId);
             }
         };
 
@@ -3251,7 +3314,7 @@ export default function ChatClient() {
             eventSource.removeEventListener("error", handleError as EventListener);
             eventSource.close();
         };
-    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory]);
+    }, [activeConversationId, applyProjectedSnapshot, applyQueuedMessagesSnapshot, applyRemoteRuntimeEvent, applySessionProcessSurface, isLocalStreamActive, loadConversationHistory, loadRuns]);
 
     useEffect(() => {
         if (!activeConversationId) {
@@ -3580,8 +3643,8 @@ export default function ChatClient() {
                                     onVoiceAudioMessage={handleVoiceAudioMessage}
                                     isLoading={isLoading}
                                     sessionRunning={activeConversationRunning}
-                                    canStopRun={isLoading}
-                                    onStop={stop}
+                                    canStopRun={isLoading || canInterruptProjectedRun}
+                                    onStop={handleStopActiveRun}
                                     selectedAgentName={t("web.generated.675df2e7c7")}
                                     shellClassName="w-full"
                                     reasoningEffortControl={supervisorReasoningEffortControl}

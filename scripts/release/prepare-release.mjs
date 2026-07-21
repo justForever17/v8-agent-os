@@ -126,6 +126,48 @@ function validatePhoneTgzIntegrity() {
   return { ok: true, message: `Phone local tarball integrity OK: ${relative(ROOT, tarballPath)}` };
 }
 
+function validateDesktopTgzIntegrity() {
+  const appRoots = [
+    resolve(ROOT, "apps/v8-agent-os-admin"),
+    resolve(ROOT, "apps/v8-agent-os-web"),
+    resolve(ROOT, "apps/v8-agent-os-desktop-pet"),
+  ];
+  const verified = [];
+  for (const appRoot of appRoots) {
+    const lockPath = resolve(appRoot, "package-lock.json");
+    const lock = readJson(lockPath);
+    for (const [packagePath, entry] of Object.entries(lock.packages || {})) {
+      const resolved = String(entry?.resolved || "");
+      if (!resolved.startsWith("file:") || !resolved.endsWith(".tgz")) continue;
+      if (!entry.integrity) {
+        return { ok: false, message: `${relative(ROOT, lockPath)} has no integrity for ${packagePath}.` };
+      }
+      const tarballPath = resolve(appRoot, resolved.replace(/^file:/, ""));
+      if (!existsSync(tarballPath)) {
+        return { ok: false, message: `Desktop local tarball is missing: ${relative(ROOT, tarballPath)}` };
+      }
+      const actual = sha512Integrity(tarballPath);
+      if (actual !== entry.integrity) {
+        return {
+          ok: false,
+          message: [
+            `Desktop local tarball integrity mismatch for ${packagePath}.`,
+            `lockfile: ${relative(ROOT, lockPath)}`,
+            `expected: ${entry.integrity}`,
+            `actual:   ${actual}`,
+            `tarball:  ${relative(ROOT, tarballPath)}`,
+          ].join("\n"),
+        };
+      }
+      verified.push(`${relative(ROOT, lockPath)}:${packagePath}`);
+    }
+  }
+  return {
+    ok: true,
+    message: `Desktop local tarball integrity OK: ${verified.join(", ")}`,
+  };
+}
+
 function updatePhoneVersion(version) {
   const semver = toSemver(version);
   const packagePath = resolve(ROOT, "apps/v8-agent-os-phone/package.json");
@@ -242,7 +284,7 @@ function main() {
 
   const integrity = product === "phone"
     ? validatePhoneTgzIntegrity()
-    : { ok: true, message: "Desktop release has no Phone local tarball integrity check." };
+    : validateDesktopTgzIntegrity();
   if (!integrity.ok) {
     throw new Error(integrity.message);
   }

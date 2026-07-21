@@ -125,6 +125,26 @@ test('desktop release notes only advertise portable archives on stable', () => {
   assert.match(stable, /win-x64\.zip/);
 });
 
+test('desktop release preparation verifies every packed workspace tarball', () => {
+  const prepare = path.join(repoRoot, 'scripts', 'release', 'prepare-release.mjs');
+  const output = execFileSync(process.execPath, [
+    prepare,
+    '--product',
+    'desktop',
+    '--version',
+    '2099.01.01.1',
+    '--channel',
+    'preview',
+  ], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.match(output, /Desktop local tarball integrity OK/);
+  assert.match(output, /@v8\/product-ui/);
+  assert.match(output, /@v8\/session-realtime/);
+});
+
 test('desktop workflow exists and publishes checksummed Windows artifacts', () => {
   const workflowPath = path.join(repoRoot, '.github', 'workflows', 'desktop-preview.yml');
   assert.equal(fs.existsSync(workflowPath), true);

@@ -8,10 +8,10 @@
       "updatedAt": "2026-07-21T19:09:25.908Z"
     },
     "desktop": {
-      "version": "2026.07.22.1",
+      "version": "2026.07.22.2",
       "channel": "preview",
-      "tag": "v8-os-desktop-v2026.07.22.1",
-      "updatedAt": "2026-07-21T19:09:25.908Z"
+      "tag": "v8-os-desktop-v2026.07.22.2",
+      "updatedAt": "2026-07-21T19:19:54.412Z"
     }
   }
 }

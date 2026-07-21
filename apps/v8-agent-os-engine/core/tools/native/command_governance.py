@@ -178,6 +178,10 @@ def _windows_shell_syntax_violation_payload(
     if not stripped:
         return None
     lowered = stripped.lower()
+    # Braces inside quoted text are literal in both PowerShell and POSIX
+    # shells. PowerShell format strings such as "{0,-32}" must not be
+    # mistaken for POSIX brace expansion.
+    unquoted = re.sub(r'"(?:`.|[^"\r\n])*"|\'(?:\'\'|[^\'\r\n])*\'', "", stripped)
     dialect = str(shell_dialect or "auto").strip().lower()
     violations: list[str] = []
     suggestions: list[str] = []
@@ -185,7 +189,7 @@ def _windows_shell_syntax_violation_payload(
         violations.append("mkdir_-p")
         suggestions.append("PowerShell: New-Item -ItemType Directory -Force <path>")
         suggestions.append("Prefer write_native_file for project files; it creates parent directories safely.")
-    if dialect != "bash" and re.search(r"\{[^{}\r\n,]+,[^{}\r\n]+\}", stripped):
+    if dialect != "bash" and re.search(r"\{[^{}\r\n,]+,[^{}\r\n]+\}", unquoted):
         violations.append("brace_expansion")
         suggestions.append("PowerShell: create each directory explicitly or use an array piped to New-Item.")
     if dialect != "bash" and re.search(r"(^|[;&|]\s*)ls\s+-[A-Za-z]*[la][A-Za-z]*(?:\s|$)", stripped):

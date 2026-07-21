@@ -27,6 +27,7 @@ from core.v8_agent_os_paths import (
 )
 
 from .catalog import RESOURCE_ROOT, plugin_catalog_service
+from .cli_auth import CliBrowserAuthAdapter, browser_auth_adapter, open_system_browser
 from .requirements import (
     compile_plugin_requirements,
     discover_requirement_sources,
@@ -132,6 +133,7 @@ class PluginManagerService:
         ] | None = None
         self._catalog_installation_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
         self._skills_inventory_cache: tuple[float, dict[str, Any]] | None = None
+        self._cli_auth_states: dict[tuple[str, str], dict[str, Any]] = {}
         self._credential_store = credential_store or credential_ref_store
         self._ensure_plugin_schema()
         self.reconcile_install_jobs()
@@ -392,7 +394,27 @@ class PluginManagerService:
                         continue
             except (ImportError, OSError):
                 pass
-        return os.pathsep.join(item for item in paths if item)
+        entries: list[str] = []
+        seen: set[str] = set()
+        for value in paths:
+            for item in str(value or "").split(os.pathsep):
+                expanded = os.path.expandvars(item.strip().strip('"'))
+                if not expanded:
+                    continue
+                key = os.path.normcase(os.path.normpath(expanded))
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(expanded)
+        return os.pathsep.join(entries)
+
+    def _refresh_process_cli_path(self) -> str:
+        """Make CLIs installed after Engine launch visible to governed commands."""
+
+        search_path = self._cli_search_path()
+        if search_path:
+            os.environ["PATH"] = search_path
+        return search_path
 
     def _discover_cli_commands(self, profile: CliProfile) -> dict[str, str]:
         search_path = self._cli_search_path()
@@ -581,6 +603,8 @@ class PluginManagerService:
         projected_plugins: list[dict[str, Any]] = []
         for manifest in catalog.plugins:
             policy = self._component_policy(manifest)
+            active_skill_count = sum(max(1, len(item.skillNames)) for item in policy["skills"])
+            declared_skill_count = sum(max(1, len(item.skillNames)) for item in manifest.skills)
             projected_plugins.append(
                 {
                     **manifest.model_dump(mode="json"),
@@ -588,14 +612,14 @@ class PluginManagerService:
                     "catalogRevision": catalog.revision,
                     "componentCounts": {
                         "cli": len(policy["cliProfiles"]),
-                        "skills": len(policy["skills"]),
+                        "skills": active_skill_count,
                         "mcp": len(policy["mcpServers"]),
                         "uiAdapters": len(manifest.uiAdapters),
                         "providerAdapters": len(manifest.providerAdapters),
                     },
                     "declaredComponentCounts": {
                         "cli": len(manifest.cliProfiles),
-                        "skills": len(manifest.skills),
+                        "skills": declared_skill_count,
                         "mcp": len(manifest.mcpServers),
                         "uiAdapters": len(manifest.uiAdapters),
                         "providerAdapters": len(manifest.providerAdapters),
@@ -907,6 +931,118 @@ class PluginManagerService:
         )
         return components
 
+    def _plugin_usage_preview(self, manifest: PluginManifest) -> dict[str, Any]:
+        """Load bounded usage hints only after a named plugin status request."""
+
+        self._refresh_process_cli_path()
+        policy = self._component_policy(manifest)
+        active_ids = self._active_installed_component_ids(manifest)
+        component_rows = {
+            str(item.get("component_id") or ""): item
+            for item in self._component_rows(manifest.id)
+        }
+        cli_items: list[dict[str, Any]] = []
+        for profile in policy["cliProfiles"]:
+            if profile.id not in active_ids:
+                continue
+            help_spec = self._effective_cli_spec(
+                manifest,
+                profile,
+                CommandSpec(argv=[profile.commands[0], "--help"], timeoutSeconds=15),
+            )
+            result = self._execute_spec(manifest, help_spec)
+            help_text = str(result.get("stdoutTail") or result.get("stderrTail") or "").strip()
+            help_text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", help_text)
+            cli_items.append(
+                {
+                    "componentId": profile.id,
+                    "command": profile.commands[0],
+                    "help": help_text[:3000],
+                    "available": result.get("returnCode") == 0,
+                }
+            )
+
+        skill_items: list[dict[str, str]] = []
+        extension_skills: list[dict[str, Any]] = []
+        try:
+            from runtimes.extensions.runtime import extensions_runtime_service
+
+            extension_skills = extensions_runtime_service.list_skills(
+                force_refresh=False,
+                prefer_cached_ready_inventory=True,
+                include_scoped=False,
+            )
+        except Exception:
+            extension_skills = []
+        extensions_by_root = {
+            str(Path(str(item.get("skillRoot") or item.get("path") or "")).resolve()).lower(): item
+            for item in extension_skills
+            if str(item.get("skillRoot") or item.get("path") or "").strip()
+        }
+        for skill in policy["skills"]:
+            if skill.id not in active_ids:
+                continue
+            row = component_rows.get(skill.id) or {}
+            metadata = _loads(row.get("metadata_json"), {})
+            installed_roots = [
+                Path(str(path))
+                for path in list(metadata.get("skillPaths") or [])
+                if str(path).strip()
+            ]
+            entries_by_root = {
+                str(root.resolve()).lower(): extensions_by_root.get(str(root.resolve()).lower())
+                for root in installed_roots
+            }
+            matched_entries = [entry for entry in entries_by_root.values() if isinstance(entry, dict)]
+            if matched_entries:
+                for entry in matched_entries:
+                    skill_items.append(
+                        {
+                            "componentId": skill.id,
+                            "name": str(entry.get("skillName") or entry.get("name") or "").strip(),
+                            "summary": str(entry.get("description") or "").strip()[:500],
+                        }
+                    )
+            else:
+                skill_items.extend(
+                    {"componentId": skill.id, "name": name, "summary": ""}
+                    for name in list(skill.skillNames or [skill.targetDirectory])
+                )
+
+        mcp_items: list[dict[str, str]] = []
+        selected_servers = {
+            server.serverName: server
+            for server in policy["mcpServers"]
+            if server.id in active_ids
+        }
+        if selected_servers:
+            try:
+                from runtimes.extensions.runtime import extensions_runtime_service
+
+                for tool_ref in extensions_runtime_service.get_mcp_tools():
+                    metadata = dict(getattr(tool_ref, "metadata", None) or {})
+                    server_name = str(metadata.get("server_name") or "").strip()
+                    server = selected_servers.get(server_name)
+                    tool_name = str(getattr(tool_ref, "name", "") or "").strip()
+                    if server is None or tool_name not in set(server.allowedTools):
+                        continue
+                    mcp_items.append(
+                        {
+                            "componentId": server.id,
+                            "name": tool_name,
+                            "summary": str(getattr(tool_ref, "description", "") or "").strip()[:500],
+                        }
+                    )
+            except Exception:
+                mcp_items = []
+
+        return {
+            "transport": policy["transport"],
+            "cli": cli_items,
+            "skills": skill_items,
+            "mcpTools": mcp_items,
+        }
+
     def supervisor_catalog(
         self,
         *,
@@ -940,13 +1076,33 @@ class PluginManagerService:
                         "skippedComponentIds": component_policy["skippedComponentIds"],
                     },
                     "configurationUrl": readiness["configurationUrl"],
+                    **({"usage": self._plugin_usage_preview(manifest)} if normalized_id else {}),
                 }
             )
+        named_usage = (
+            dict(items[0].get("usage") or {})
+            if normalized_id and items and isinstance(items[0].get("usage"), dict)
+            else {}
+        )
+        if named_usage.get("cli"):
+            next_action = (
+                "Use the listed CLI command through run_system_command; an available CLI does not need a plugin grant. "
+                "Component IDs are grant identifiers, never Skill or MCP tool names. Only authorize a matching Skill/MCP "
+                "component when its full instructions or tool projection is actually needed, then use the listed runtime name."
+            )
+        elif normalized_id:
+            next_action = (
+                "Component IDs are grant identifiers, never Skill or MCP tool names. Authorize only the smallest matching "
+                "Skill/MCP component, then use the listed runtime name."
+            )
+        else:
+            next_action = "Use status with a plugin_id to load its on-demand CLI help, Skill metadata, or MCP tool metadata."
         return {
             "mode": "status" if normalized_id else "list",
             "items": items,
             "count": len(items),
             "policy": "@插件是强提示；Supervisor 只能为当前 run 授权已就绪插件的最小组件集合。",
+            "nextAction": next_action,
         }
 
     def supervisor_availability_prompt(self) -> str:
@@ -977,7 +1133,8 @@ class PluginManagerService:
                 "[Plugin Catalog]",
                 "Curated plugins are optional, on-demand capabilities. This inventory bypasses generic Skill/MCP prefiltering.",
                 "Plugin Skills are portable instructions; upstream references to a particular agent host do not make them host-exclusive.",
-                "Call plugin_broker(status) before authorizing a minimal task grant; no Skill body, MCP schema, or CLI action is loaded by this hint.",
+                "Call plugin_broker(status) to load the exact on-demand route; no Skill body, MCP schema, or CLI help is loaded by this hint.",
+                "If status reports an available CLI, use that command through run_system_command without creating a plugin grant. Component IDs are grant identifiers, not Skill or MCP tool names; authorize only when full Skill/MCP projection or delegation actually needs it.",
                 *lines,
                 "[/Plugin Catalog]",
             ]
@@ -1061,6 +1218,11 @@ class PluginManagerService:
                 oauth_state = server_config.get("x-v8-oauth") if isinstance(server_config.get("x-v8-oauth"), dict) else {}
                 oauth_ref = str(oauth_state.get("secretRef") or "").strip()
                 configured = bool(oauth_ref) and self._credential_store.status(oauth_ref).configured
+            elif requirement.kind == "cli_login":
+                configured = self.cli_login_status(
+                    manifest.id,
+                    component_id=str(requirement.componentId or ""),
+                )["status"] == "connected"
             elif binding:
                 configured = self._credential_store.status(str(binding.get("secret_ref") or "")).configured
             elif requirement.kind not in {"secret", "oauth"}:
@@ -1206,6 +1368,216 @@ class PluginManagerService:
             "componentId": selected.id,
             "serverName": selected.serverName,
             "status": "connecting",
+        }
+
+    def _cli_browser_auth_contract(
+        self,
+        plugin_id: str,
+        *,
+        component_id: str,
+    ) -> tuple[PluginManifest, CliProfile, CliBrowserAuthAdapter]:
+        manifest = self._manifest(plugin_id)
+        if manifest.id not in self._installation_rows():
+            raise PluginManagerError("请先安装插件", code="plugin_not_installed", status_code=409)
+        normalized_component = str(component_id or "").strip()
+        profile = next((item for item in manifest.cliProfiles if item.id == normalized_component), None)
+        adapter = browser_auth_adapter(manifest, profile) if profile else None
+        if profile is None or profile.login is None or adapter is None:
+            raise PluginManagerError(
+                "插件没有受支持的 CLI 浏览器登录入口",
+                code="plugin_cli_browser_login_not_found",
+                status_code=404,
+            )
+        if profile.id not in self._active_installed_component_ids(manifest):
+            raise PluginManagerError("CLI 组件尚未登记", code="plugin_cli_not_installed", status_code=409)
+        return manifest, profile, adapter
+
+    def _cli_auth_environment(self, adapter: CliBrowserAuthAdapter) -> dict[str, str]:
+        environment = {
+            **os.environ,
+            "PATH": f"{self._bin_root()}{os.pathsep}{self._cli_search_path()}",
+            "NO_COLOR": "1",
+            "GH_PROMPT_DISABLED": "1",
+        }
+        for name in adapter.clear_environment:
+            environment.pop(name, None)
+        return environment
+
+    def _run_cli_auth_status(
+        self,
+        manifest: PluginManifest,
+        profile: CliProfile,
+        adapter: CliBrowserAuthAdapter,
+    ) -> bool:
+        spec = self._effective_cli_spec(
+            manifest,
+            profile,
+            CommandSpec(argv=adapter.status_argv(profile), timeoutSeconds=15),
+        )
+        try:
+            completed = subprocess.run(
+                self._expand_argv(manifest, spec),
+                cwd=spec.cwd or None,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=spec.timeoutSeconds,
+                env=self._cli_auth_environment(adapter),
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
+
+    def start_cli_login(self, plugin_id: str, *, component_id: str) -> dict[str, Any]:
+        manifest, profile, adapter = self._cli_browser_auth_contract(
+            plugin_id,
+            component_id=component_id,
+        )
+        key = (manifest.id, profile.id)
+        started_at = utc_now_iso()
+        with self._cache_lock:
+            current = self._cli_auth_states.get(key) or {}
+            process = current.get("process")
+            if process is not None and process.poll() is None:
+                return {
+                    "pluginId": manifest.id,
+                    "componentId": profile.id,
+                    "status": "waiting_for_browser",
+                    "authorizationUrl": adapter.browser_url,
+                    "browserOpened": bool(current.get("browserOpened")),
+                }
+            if str(current.get("status") or "") == "connecting":
+                return {
+                    "pluginId": manifest.id,
+                    "componentId": profile.id,
+                    "status": "connecting",
+                    "authorizationUrl": adapter.browser_url,
+                    "browserOpened": False,
+                }
+            self._cli_auth_states[key] = {
+                "status": "connecting",
+                "startedAt": started_at,
+                "browserOpened": False,
+            }
+        if self._run_cli_auth_status(manifest, profile, adapter):
+            with self._cache_lock:
+                self._cli_auth_states[key] = {
+                    "status": "connected",
+                    "startedAt": started_at,
+                    "browserOpened": False,
+                }
+            return {
+                "pluginId": manifest.id,
+                "componentId": profile.id,
+                "status": "connected",
+                "authorizationUrl": adapter.browser_url,
+                "browserOpened": False,
+            }
+
+        login_spec = self._effective_cli_spec(
+            manifest,
+            profile,
+            profile.login.model_copy(update={"argv": adapter.login_argv(profile)}),
+        )
+        popen_kwargs: dict[str, Any] = {
+            "cwd": login_spec.cwd or None,
+            "shell": False,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "env": self._cli_auth_environment(adapter),
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            process = subprocess.Popen(self._expand_argv(manifest, login_spec), **popen_kwargs)
+        except (FileNotFoundError, OSError) as exc:
+            with self._cache_lock:
+                self._cli_auth_states[key] = {
+                    "status": "failed",
+                    "startedAt": started_at,
+                    "browserOpened": False,
+                }
+            raise PluginManagerError(
+                "无法启动 CLI 浏览器登录",
+                code="plugin_cli_browser_login_start_failed",
+                status_code=409,
+            ) from exc
+        with self._cache_lock:
+            self._cli_auth_states[key] = {
+                "process": process,
+                "status": "waiting_for_browser",
+                "startedAt": started_at,
+                "browserOpened": False,
+            }
+        browser_opened = open_system_browser(adapter.browser_url)
+        with self._cache_lock:
+            self._cli_auth_states[key]["browserOpened"] = browser_opened
+        self._event(manifest.id, "cli_login_started", "pending", details={"componentId": profile.id})
+        return {
+            "pluginId": manifest.id,
+            "componentId": profile.id,
+            "status": "waiting_for_browser",
+            "authorizationUrl": adapter.browser_url,
+            "browserOpened": browser_opened,
+        }
+
+    def cli_login_status(self, plugin_id: str, *, component_id: str) -> dict[str, Any]:
+        manifest, profile, adapter = self._cli_browser_auth_contract(
+            plugin_id,
+            component_id=component_id,
+        )
+        key = (manifest.id, profile.id)
+        with self._cache_lock:
+            state = dict(self._cli_auth_states.get(key) or {})
+        process = state.get("process")
+        if process is not None and process.poll() is None:
+            status = "waiting_for_browser"
+        elif self._run_cli_auth_status(manifest, profile, adapter):
+            status = "connected"
+        elif process is not None:
+            status = "failed"
+        else:
+            status = str(state.get("status") or "idle")
+        if status != state.get("status") or (process is not None and process.poll() is not None):
+            with self._cache_lock:
+                self._cli_auth_states[key] = {
+                    "status": status,
+                    "startedAt": state.get("startedAt"),
+                }
+        return {
+            "pluginId": manifest.id,
+            "componentId": profile.id,
+            "status": status,
+            "error": "CLI 登录未完成，请重试。" if status == "failed" else None,
+            "authorizationUrl": adapter.browser_url,
+        }
+
+    def cancel_cli_login(self, plugin_id: str, *, component_id: str) -> dict[str, Any]:
+        manifest, profile, adapter = self._cli_browser_auth_contract(
+            plugin_id,
+            component_id=component_id,
+        )
+        key = (manifest.id, profile.id)
+        with self._cache_lock:
+            state = dict(self._cli_auth_states.get(key) or {})
+        process = state.get("process")
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        with self._cache_lock:
+            self._cli_auth_states[key] = {"status": "cancelled", "startedAt": state.get("startedAt")}
+        self._event(manifest.id, "cli_login_cancelled", "cancelled", details={"componentId": profile.id})
+        return {
+            "pluginId": manifest.id,
+            "componentId": profile.id,
+            "status": "cancelled",
+            "authorizationUrl": adapter.browser_url,
         }
 
     def refresh_configuration_status(self, plugin_id: str) -> dict[str, Any]:

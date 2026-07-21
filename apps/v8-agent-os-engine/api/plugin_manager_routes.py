@@ -153,6 +153,42 @@ async def cancel_plugin_oauth(plugin_id: str, payload: dict[str, Any] = Body(def
         _raise(exc)
 
 
+@router.post("/{plugin_id}/cli-login/start")
+async def start_plugin_cli_login(plugin_id: str, payload: dict[str, Any] = Body(default={})):
+    try:
+        return await asyncio.to_thread(
+            plugin_manager_service.start_cli_login,
+            plugin_id,
+            component_id=str(payload.get("componentId") or "").strip(),
+        )
+    except PluginManagerError as exc:
+        _raise(exc)
+
+
+@router.get("/{plugin_id}/cli-login/status")
+async def get_plugin_cli_login_status(plugin_id: str, componentId: str = Query(default="")):
+    try:
+        return await asyncio.to_thread(
+            plugin_manager_service.cli_login_status,
+            plugin_id,
+            component_id=str(componentId or "").strip(),
+        )
+    except PluginManagerError as exc:
+        _raise(exc)
+
+
+@router.post("/{plugin_id}/cli-login/cancel")
+async def cancel_plugin_cli_login(plugin_id: str, payload: dict[str, Any] = Body(default={})):
+    try:
+        return await asyncio.to_thread(
+            plugin_manager_service.cancel_cli_login,
+            plugin_id,
+            component_id=str(payload.get("componentId") or "").strip(),
+        )
+    except PluginManagerError as exc:
+        _raise(exc)
+
+
 @router.get("/installed")
 async def get_installed():
     return plugin_manager_service.list_installed()

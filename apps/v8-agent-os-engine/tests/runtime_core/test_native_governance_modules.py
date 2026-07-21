@@ -35,6 +35,18 @@ def test_command_governance_detects_interactive_and_session_preferred_commands()
         assert payload is None
 
 
+def test_powershell_format_placeholders_are_not_posix_brace_expansion(monkeypatch) -> None:
+    import core.tools.native.command_governance as command_governance
+
+    monkeypatch.setattr(command_governance.sys, "platform", "win32")
+    payload = command_governance._windows_shell_syntax_violation_payload(
+        'Write-Host ("{0,-32} {1,-10} {2}" -f "NAME", "VISIBILITY", "URL")',
+        shell_dialect="powershell",
+    )
+
+    assert payload is None
+
+
 def test_workspace_governance_scoped_patch_line_range_and_anchor() -> None:
     from core.tools.native.workspace_governance import _apply_scoped_text_patch
 

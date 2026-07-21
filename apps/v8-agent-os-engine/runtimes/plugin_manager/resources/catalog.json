@@ -1,9 +1,9 @@
 {
   "schemaVersion": "v8.plugin.catalog.v1",
-  "revision": 7,
-  "sequence": 7,
-  "keyId": "v8os-plugin-catalog-2026-07-r4",
-  "generatedAt": "2026-07-21T16:30:00Z",
+  "revision": 8,
+  "sequence": 8,
+  "keyId": "v8os-plugin-catalog-2026-07-r5",
+  "generatedAt": "2026-07-21T12:56:22Z",
   "expiresAt": "2027-07-11T00:00:00Z",
   "revocations": [],
   "plugins": [
@@ -2700,40 +2700,48 @@
     {
       "schemaVersion": "v8.plugin.v1",
       "id": "office-suite",
-      "displayName": "日常办公",
-      "version": "1",
-      "publisher": "Jezweb / V8OS 精选",
+      "displayName": "基础日常包",
+      "version": "2",
+      "publisher": "Anthropic / V8OS 精选",
       "category": "办公与文档",
-      "description": "按需创建和编辑 Word、Excel、PDF 与 PowerPoint 文件，不常驻启动 MCP server。",
+      "description": "精选 7 个 Anthropic 官方 Skill，覆盖协作文档、Word、Excel、PDF、PowerPoint、MCP 与 Skill 创建；按需加载，不常驻启动 MCP server。",
       "officialDomains": [
         "github.com",
         "skills.sh"
       ],
       "officialOrganizations": [
-        "jezweb"
+        "anthropics"
       ],
       "officialLinks": {
-        "homepage": "https://www.skills.sh/jezweb/claude-skills/office",
-        "documentation": "https://www.skills.sh/jezweb/claude-skills/office",
-        "repository": "https://github.com/jezweb/claude-skills"
+        "homepage": "https://skills.sh/anthropics/skills",
+        "documentation": "https://github.com/anthropics/skills/tree/main/skills",
+        "repository": "https://github.com/anthropics/skills"
       },
       "brand": {
         "file": "logos/office-suite.svg",
         "source": "v8os://plugin-assets/office-suite",
-        "license": "V8OS original icon; bundled Skill remains MIT licensed by its upstream author",
+        "license": "V8OS original icon; bundled Skills retain their upstream per-Skill license terms",
         "sha256": "ed36fdd2394e4d420a5df28d8ab6c6c9a916758507d08bc94422b65b327ef2e7"
       },
       "cliProfiles": [],
       "skills": [
         {
-          "id": "office-documents-skill",
+          "id": "anthropic-daily-skills",
           "sourceKind": "git",
-          "repository": "https://github.com/jezweb/claude-skills",
-          "path": "skills/office",
-          "revision": "10a1f16679a5aab8e0c2f4d04e8560402f34d04b",
-          "officialOrganization": "jezweb",
+          "repository": "https://github.com/anthropics/skills",
+          "path": "skills",
+          "revision": "fa0fa64bdc967915dc8399e803be67759e1e62b8",
+          "officialOrganization": "anthropics",
           "targetDirectory": "v8-plugin-office-suite",
-          "skillNames": ["office"]
+          "skillNames": [
+            "doc-coauthoring",
+            "docx",
+            "mcp-builder",
+            "pdf",
+            "pptx",
+            "skill-creator",
+            "xlsx"
+          ]
         }
       ],
       "mcpServers": [],
@@ -2765,16 +2773,21 @@
         ]
       },
       "capabilities": [
+        "协作文档规划与联合撰写",
         "Word 文档创建与编辑",
         "Excel 表格、公式与数据导出",
         "PDF 创建与表单处理",
-        "PowerPoint 演示稿生成"
+        "PowerPoint 演示稿生成",
+        "MCP server 设计与实现",
+        "可复用 Skill 创建与评测"
       ],
       "artifacts": [
         "DOCX 文档",
         "XLSX/CSV 表格",
         "PDF 文件",
-        "PPTX 演示稿"
+        "PPTX 演示稿",
+        "MCP server 工程",
+        "Skill 包"
       ]
     }
   ]

@@ -16,9 +16,13 @@ async def plugin_broker(
     """Discover, inspect, request, or authorize governed plugins.
 
     ``@插件`` is a strong user hint, not the only authorization path. Use
-    ``list`` to inspect installed/available plugin components, ``status`` for a
-    named plugin, and ``authorize`` to create the smallest task-scoped grant
-    needed by the current run. This tool never installs plugins, changes
+    ``list`` to inspect installed/available plugin components and ``status`` for
+    a named plugin. A named status returns bounded CLI help plus the real Skill
+    and MCP names/descriptions from their registered metadata. If it reports an
+    available CLI, call that command through ``run_system_command`` without a
+    plugin grant. Component IDs are grant identifiers, never Skill or MCP tool
+    names. Use ``authorize`` only for the smallest Skill/MCP projection or
+    delegated component set actually needed by the current run. This tool never installs plugins, changes
     configuration, reads secrets, or creates session-scoped grants. Supervisor
     may authorize. Direct children and grandchildren may inspect only grants
     bound to their exact delegation identity, or return a structured request to

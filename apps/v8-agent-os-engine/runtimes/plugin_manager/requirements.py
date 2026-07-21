@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from .cli_auth import browser_auth_adapter
 from .schema import PluginConfigRequirement, PluginManifest
 
 
@@ -106,7 +107,8 @@ def compile_plugin_requirements(
 
     Explicit signed-manifest requirements win. Legacy ``authFields`` are treated as
     authoritative manifest requirements. Template placeholders are authoritative
-    MCP schema requirements. CLI login availability is only a non-blocking hint.
+    MCP schema requirements. CLI browser login is exposed only through a reviewed
+    adapter and remains an optional, non-blocking configuration action.
     """
 
     result: dict[str, PluginConfigRequirement] = {}
@@ -137,17 +139,17 @@ def compile_plugin_requirements(
     for profile in manifest.cliProfiles:
         for item in profile.configRequirements:
             add(item.model_copy(update={"componentId": item.componentId or profile.id}))
-        if profile.login and not profile.configRequirements:
+        if profile.login and not profile.configRequirements and browser_auth_adapter(manifest, profile):
             add(
                 PluginConfigRequirement(
                     id=f"{profile.id}.cli.login",
-                    kind="oauth",
+                    kind="cli_login",
                     required=False,
-                    source="hint",
-                    confidence="hint",
+                    source="cli_adapter",
+                    confidence="reviewed",
                     labelKey="plugins.config.cliLogin",
                     helpKey="plugins.configHelp.cliLogin",
-                    target="oauth",
+                    target="arg",
                     componentId=profile.id,
                 )
             )

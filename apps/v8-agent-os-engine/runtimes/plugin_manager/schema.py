@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 ComponentType = Literal["cli", "skill", "mcp", "ui_adapter", "provider_adapter"]
-ConfigRequirementKind = Literal["secret", "text", "url", "enum", "boolean", "oauth", "file"]
+ConfigRequirementKind = Literal["secret", "text", "url", "enum", "boolean", "oauth", "cli_login", "file"]
 ConfigRequirementSource = Literal["manifest", "mcp_schema", "cli_adapter", "hint"]
 ConfigRequirementConfidence = Literal["authoritative", "reviewed", "hint"]
 

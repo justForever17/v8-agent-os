@@ -6005,13 +6005,30 @@ class ChatRuntime:
         text = str(value or "").strip()
         if not text:
             return
-        trimmed, was_truncated = cls._trim_preview_text(text, limit=limit)
+        effective_limit = limit
+        structured_summary = ""
+        if tag == "stdout" and len(text) <= 5000 and text[:1] in {"[", "{"}:
+            try:
+                structured = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                structured = None
+            if isinstance(structured, (list, dict)):
+                # execute_system_command already bounds keyOutput at 5,000 chars.
+                # Preserve a complete compact JSON result instead of truncating it
+                # a second time in the chat projection and forcing another tool call.
+                effective_limit = 5000
+                item_count = len(structured)
+                item_label = "items" if isinstance(structured, list) else "keys"
+                structured_summary = f"[complete structured stdout: {item_count} {item_label}]"
+        trimmed, was_truncated = cls._trim_preview_text(text, limit=effective_limit)
         lines.append(f"<{tag}>")
         lines.append(trimmed)
         lines.append(f"</{tag}>")
         if truncated or was_truncated:
             suffix = f"; rawRef={raw_ref}" if raw_ref else ""
             lines.append(f"[{tag} truncated{suffix}]")
+        elif structured_summary:
+            lines.append(structured_summary)
 
     @staticmethod
     def _strip_command_echo_from_stream(command: str, value: Any) -> str:

@@ -209,13 +209,13 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
 
     def test_plugin_owned_skill_bypasses_generic_prefilter_until_granted(self):
         service = ExtensionsRuntimeService()
-        skill_root = str((Path.home() / ".agents" / "skills" / "v8-plugin-office-suite").resolve())
+        skill_root = str((Path.home() / ".agents" / "skills" / "docx").resolve())
         inventory = {
             "items": [
                 {
-                    "name": "office",
-                    "skillName": "office",
-                    "skillId": "office-documents-skill",
+                    "name": "docx",
+                    "skillName": "docx",
+                    "skillId": "anthropic-daily-skills:docx",
                     "skillRoot": skill_root,
                     "path": skill_root,
                     "description": "Create DOCX, XLSX, PDF, and PPTX artifacts.",
@@ -249,18 +249,18 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
                 return service.build_contextual_route(user_query="create a quarterly report", available_tools=[])
 
         without_grant = build({"grants": [], "skills": [], "mcpTools": [], "cliProfiles": [], "uiAdapters": []})
-        self.assertNotIn("office", without_grant.selected_skill_names)
+        self.assertNotIn("docx", without_grant.selected_skill_names)
 
         with_grant = build(
             {
                 "grants": [{"pluginId": "office-suite"}],
-                "skills": [{"targetDirectory": "v8-plugin-office-suite"}],
+                "skills": [{"targetDirectory": "v8-plugin-office-suite", "installedRoots": [skill_root]}],
                 "mcpTools": [],
                 "cliProfiles": [],
                 "uiAdapters": [],
             }
         )
-        self.assertIn("office", with_grant.selected_skill_names)
+        self.assertIn("docx", with_grant.selected_skill_names)
 
     def test_video_skill_selection_uses_all_skill_name_description_candidates(self):
         service = ExtensionsRuntimeService()

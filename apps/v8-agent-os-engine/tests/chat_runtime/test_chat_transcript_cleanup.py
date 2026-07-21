@@ -913,6 +913,30 @@ class ChatTranscriptCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[stdout truncated", compacted)
         self.assertNotIn('"status"', compacted)
 
+    def test_run_system_command_preserves_complete_bounded_json_output(self):
+        rows = [
+            {
+                "name": f"repository-{index:02d}",
+                "visibility": "PUBLIC",
+                "url": f"https://example.test/repository-{index:02d}",
+            }
+            for index in range(25)
+        ]
+        compacted = self.runtime._compact_tool_result_value(
+            "run_system_command",
+            {
+                "ok": True,
+                "kind": "command_result",
+                "command": "example-cli list --json",
+                "keyOutput": json.dumps(rows),
+            },
+        )
+
+        self.assertIn("repository-00", compacted)
+        self.assertIn("repository-24", compacted)
+        self.assertIn("[complete structured stdout: 25 items]", compacted)
+        self.assertNotIn("[stdout truncated", compacted)
+
     def test_runtime_broker_result_does_not_persist_full_route_context(self):
         compacted = self.runtime._compact_tool_result_value(
             "runtime_broker",

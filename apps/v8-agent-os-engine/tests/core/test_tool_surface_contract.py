@@ -42,6 +42,64 @@ def test_tool_surface_generic_json_preserves_refs_and_next_action_without_raw_js
     assert result.response_metadata["v8_tool_output_budget"]["semanticTruncationStrategy"] == "decision_summary_surface"
 
 
+def test_plugin_status_surface_keeps_on_demand_cli_help_and_real_extension_summaries():
+    message = ToolMessage(
+        content=json.dumps(
+            {
+                "ok": True,
+                "mode": "status",
+                "items": [
+                    {
+                        "pluginId": "github",
+                        "name": "GitHub CLI",
+                        "status": "ready",
+                        "authorized": False,
+                        "components": [
+                            {"id": "gh", "type": "cli"},
+                            {"id": "github-cli-skill", "type": "skill"},
+                        ],
+                        "usage": {
+                            "transport": "cli",
+                            "cli": [
+                                {
+                                    "componentId": "gh",
+                                    "command": "gh",
+                                    "help": "Work seamlessly with GitHub from the command line.",
+                                    "available": True,
+                                }
+                            ],
+                            "skills": [
+                                {
+                                    "componentId": "github-cli-skill",
+                                    "name": "gh",
+                                    "summary": "Official GitHub CLI usage patterns.",
+                                }
+                            ],
+                            "mcpTools": [],
+                        },
+                    }
+                ],
+                "nextAction": "Use run_system_command for the CLI.",
+            },
+            ensure_ascii=False,
+        ),
+        tool_call_id="call-plugin-status",
+        name="plugin_broker",
+    )
+
+    result = apply_tool_surface_budget(message, {"agentVisibleBudget": 4000})
+    rendered = str(result.content)
+
+    assert "Command: gh" in rendered
+    assert "without a plugin grant" in rendered
+    assert "Work seamlessly with GitHub" in rendered
+    assert "Grant component IDs (not runtime names)" in rendered
+    assert "Skill name=gh; grant component=github-cli-skill" in rendered
+    assert "Official GitHub CLI usage patterns." in rendered
+    assert "run_system_command" in rendered
+    assert not rendered.lstrip().startswith("{")
+
+
 def test_tool_observation_detail_json_is_readable_without_recursive_raw_ref():
     message = ToolMessage(
         content=json.dumps(

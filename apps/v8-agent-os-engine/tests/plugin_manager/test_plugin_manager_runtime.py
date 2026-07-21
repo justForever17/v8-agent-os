@@ -91,16 +91,21 @@ def _mark_ready(service: PluginManagerService, plugin_id: str) -> None:
             ownership=profile.ownership,
         )
     for skill in policy["skills"]:
-        skill_root = service_module.AGENT_SKILLS_ROOT / skill.targetDirectory
-        skill_root.mkdir(parents=True, exist_ok=True)
-        (skill_root / "SKILL.md").write_text("---\nname: test-plugin-skill\n---\n", encoding="utf-8")
+        skill_names = list(skill.skillNames) or [skill.targetDirectory]
+        skill_roots = []
+        for skill_name in skill_names:
+            skill_root = service_module.AGENT_SKILLS_ROOT / skill_name
+            skill_root.mkdir(parents=True, exist_ok=True)
+            (skill_root / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n", encoding="utf-8")
+            skill_roots.append(str(skill_root))
         service._register_component(
             manifest.id,
             skill.id,
             "skill",
-            owned_path=str(skill_root),
+            owned_path=skill_roots[0],
             source_url=skill.repository,
             source_version=skill.revision,
+            metadata={"skillNames": skill_names, "skillPaths": skill_roots},
         )
     if policy["mcpServers"]:
         service._install_mcp_components(manifest, policy["mcpServers"])
@@ -161,6 +166,23 @@ def test_builtin_catalog_has_17_signed_curated_plugins(runtime) -> None:
         for server in plugin.mcpServers
     )
 
+    office = next(plugin for plugin in catalog.plugins if plugin.id == "office-suite")
+    assert office.displayName == "基础日常包"
+    assert office.publisher == "Anthropic / V8OS 精选"
+    assert office.skills[0].skillNames == [
+        "doc-coauthoring",
+        "docx",
+        "mcp-builder",
+        "pdf",
+        "pptx",
+        "skill-creator",
+        "xlsx",
+    ]
+
+    projected_office = next(item for item in service.list_catalog()["plugins"] if item["id"] == "office-suite")
+    assert projected_office["componentCounts"]["skills"] == 7
+    assert projected_office["declaredComponentCounts"]["skills"] == 7
+
 
 def test_component_policy_prefers_cli_then_mcp_then_skill_only(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _, _ = runtime
@@ -180,7 +202,7 @@ def test_component_policy_prefers_cli_then_mcp_then_skill_only(runtime, monkeypa
     assert office_plan["componentPolicy"]["transport"] == "skill_only"
     assert office_plan["steps"]["cli"] == []
     assert office_plan["steps"]["mcp"] == []
-    assert [item["id"] for item in office_plan["steps"]["skills"]] == ["office-documents-skill"]
+    assert [item["id"] for item in office_plan["steps"]["skills"]] == ["anthropic-daily-skills"]
 
 
 def test_machine_discovery_adopts_existing_cli_and_official_skill_without_claiming_user_mcp(
@@ -292,16 +314,17 @@ def test_reviewed_official_skills_are_mandatory_cli_companions(runtime, monkeypa
         assert skill_id in {item["id"] for item in plan["steps"]["skills"]}
 
 
-def test_office_plugin_is_pinned_skill_only_and_advertises_artifacts_on_demand(runtime) -> None:
+def test_daily_bundle_is_pinned_skill_only_and_advertises_artifacts_on_demand(runtime) -> None:
     service, _, _ = runtime
     manifest = service._manifest("office-suite")
     skill = manifest.skills[0]
 
     assert manifest.cliProfiles == []
     assert manifest.mcpServers == []
-    assert skill.repository == "https://github.com/jezweb/claude-skills"
-    assert skill.path == "skills/office"
-    assert skill.revision == "10a1f16679a5aab8e0c2f4d04e8560402f34d04b"
+    assert skill.repository == "https://github.com/anthropics/skills"
+    assert skill.path == "skills"
+    assert skill.revision == "fa0fa64bdc967915dc8399e803be67759e1e62b8"
+    assert len(skill.skillNames) == 7
     assert service.supervisor_availability_prompt() == ""
 
     _mark_ready(service, "office-suite")
@@ -310,16 +333,60 @@ def test_office_plugin_is_pinned_skill_only_and_advertises_artifacts_on_demand(r
     assert "office-suite (ready)" in prompt
     assert "DOCX" in prompt and "XLSX/CSV" in prompt and "PDF" in prompt and "PPTX" in prompt
     assert "plugin_broker(status)" in prompt
+    assert "without creating a plugin grant" in prompt
+    assert "Component IDs are grant identifiers" in prompt
     assert "SKILL.md" not in prompt
     assert "npm install" not in prompt
 
     healthy = asyncio.run(service.doctor("office-suite", persist=False))
     assert healthy["ok"] is True
-    skill_root = service_module.AGENT_SKILLS_ROOT / skill.targetDirectory
-    (skill_root / "SKILL.md").unlink()
+    missing_skill_root = service_module.AGENT_SKILLS_ROOT / skill.skillNames[-1]
+    (missing_skill_root / "SKILL.md").unlink()
     unhealthy = asyncio.run(service.doctor("office-suite", persist=False))
     assert unhealthy["ok"] is False
     assert unhealthy["checks"][0]["kind"] == "skill-file"
+
+
+def test_daily_bundle_discovers_each_official_skill_and_reports_partial_completion(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("office-suite")
+    skill = manifest.skills[0]
+    detected_names = skill.skillNames[:2]
+    items = []
+    lock_entries = {}
+    for name in detected_names:
+        skill_root = service_module.AGENT_SKILLS_ROOT / name
+        skill_root.mkdir(parents=True, exist_ok=True)
+        (skill_root / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        items.append({"name": name, "path": str(skill_root), "scope": "global", "agents": ["Codex"]})
+        lock_entries[name] = {
+            "sourceUrl": "https://github.com/anthropics/skills.git",
+            "skillPath": f"skills/{name}/SKILL.md",
+        }
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": items,
+            "lockEntries": lock_entries,
+            "error": "",
+        },
+    )
+
+    discovery = service.discover_machine_components("office-suite", force=True)
+    item = discovery["skills"][0]
+
+    assert item["componentId"] == "anthropic-daily-skills"
+    assert item["state"] == "partial"
+    assert item["action"] == "complete"
+    assert item["expectedNames"] == skill.skillNames
+    assert item["detectedNames"] == detected_names
+    assert item["missingNames"] == skill.skillNames[2:]
 
 
 def test_amap_cli_contract_is_pinned_typed_and_openclaw_free(runtime) -> None:
@@ -667,6 +734,82 @@ def test_cli_requires_exact_grant_and_structured_manifest_action(runtime) -> Non
             run_id="r1",
         ))
     assert denied.value.code == "plugin_cli_action_unsupported"
+
+
+def test_named_plugin_status_reuses_extension_metadata_and_loads_cli_help_on_demand(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "github")
+    skill_root = service_module.AGENT_SKILLS_ROOT / "gh"
+    from runtimes.extensions.runtime import extensions_runtime_service
+
+    monkeypatch.setattr(
+        extensions_runtime_service,
+        "list_skills",
+        lambda **_kwargs: [
+            {
+                "skillRoot": str(skill_root),
+                "skillName": "gh",
+                "description": "Official GitHub CLI usage patterns.",
+            }
+        ],
+    )
+    help_calls: list[list[str]] = []
+
+    def fake_execute(_manifest, spec, **_kwargs):
+        help_calls.append(list(spec.argv))
+        return {
+            "returnCode": 0,
+            "stdoutTail": "Work seamlessly with GitHub from the command line.",
+            "stderrTail": "",
+            "durationMs": 1,
+        }
+
+    monkeypatch.setattr(service, "_execute_spec", fake_execute)
+    refreshed_path = str(service_module.AGENT_SKILLS_ROOT.parent / "cli-bin")
+    monkeypatch.setattr(service, "_cli_search_path", lambda: refreshed_path)
+
+    payload = service.supervisor_catalog(plugin_id="github", session_id="s1", run_id="r1")
+    usage = payload["items"][0]["usage"]
+
+    assert help_calls and help_calls[0][-1] == "--help"
+    assert usage["transport"] == "cli"
+    assert usage["cli"] == [
+        {
+            "componentId": "gh",
+            "command": "gh",
+            "help": "Work seamlessly with GitHub from the command line.",
+            "available": True,
+        }
+    ]
+    assert usage["skills"] == [
+        {
+            "componentId": "github-cli-skill",
+            "name": "gh",
+            "summary": "Official GitHub CLI usage patterns.",
+        }
+    ]
+    assert usage["mcpTools"] == []
+    assert "run_system_command" in payload["nextAction"]
+    assert "does not need a plugin grant" in payload["nextAction"]
+    assert service_module.os.environ["PATH"] == refreshed_path
+
+
+def test_plugin_catalog_list_does_not_probe_cli_help(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "github")
+    monkeypatch.setattr(
+        service,
+        "_execute_spec",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("list mode must stay lightweight")),
+    )
+
+    payload = service.supervisor_catalog()
+
+    assert any(item["pluginId"] == "github" for item in payload["items"])
+    assert all("usage" not in item for item in payload["items"])
 
 
 def test_failed_install_rolls_back_owned_state(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1038,6 +1181,120 @@ def test_oauth_requirement_cannot_be_manually_filled_and_uses_oauth_ref(runtime)
     assert "secretRef" not in configured["requirements"][0]
 
 
+def test_github_cli_login_uses_reviewed_browser_adapter_instead_of_mcp_oauth(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "github")
+    monkeypatch.setattr(service, "_run_cli_auth_status", lambda *_args: False)
+    requirements = service.configuration_requirements("github")["requirements"]
+    assert [(item["kind"], item["componentId"]) for item in requirements] == [("cli_login", "gh")]
+
+    with pytest.raises(PluginManagerError) as oauth_error:
+        service.prepare_oauth("github", component_id="gh")
+    assert oauth_error.value.code == "plugin_oauth_component_not_found"
+
+    captured: dict = {}
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setenv("GH_TOKEN", "temporary-token-must-not-reach-login")
+    monkeypatch.setenv("GITHUB_TOKEN", "temporary-token-must-not-reach-login")
+    opened_urls: list[str] = []
+    monkeypatch.setattr(
+        service_module,
+        "open_system_browser",
+        lambda url: opened_urls.append(url) or True,
+    )
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(service_module.subprocess, "Popen", fake_popen)
+    started = service.start_cli_login("github", component_id="gh")
+    assert started["status"] == "waiting_for_browser"
+    assert started["browserOpened"] is True
+    assert started["authorizationUrl"] == "https://github.com/login/device"
+    assert captured["argv"][-6:] == [
+        "--web",
+        "--clipboard",
+        "--hostname",
+        "github.com",
+        "--git-protocol",
+        "https",
+    ]
+    assert "GH_TOKEN" not in captured["kwargs"]["env"]
+    assert "GITHUB_TOKEN" not in captured["kwargs"]["env"]
+    assert captured["kwargs"]["shell"] is False
+    repeated = service.start_cli_login("github", component_id="gh")
+    assert repeated["status"] == "waiting_for_browser"
+    assert repeated["browserOpened"] is True
+    assert opened_urls == ["https://github.com/login/device"]
+    assert service.cli_login_status("github", component_id="gh")["status"] == "waiting_for_browser"
+    assert service.cancel_cli_login("github", component_id="gh")["status"] == "cancelled"
+
+
+def test_github_cli_login_does_not_reopen_browser_when_credential_store_is_ready(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "github")
+    monkeypatch.setattr(service, "_run_cli_auth_status", lambda *_args: True)
+    monkeypatch.setattr(
+        service_module,
+        "open_system_browser",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("browser must not open for an authenticated CLI")),
+    )
+    monkeypatch.setattr(
+        service_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("browser login must not restart")),
+    )
+    assert service.start_cli_login("github", component_id="gh")["status"] == "connected"
+
+
+def test_github_cli_login_coalesces_a_concurrent_start(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _, _ = runtime
+    _mark_ready(service, "github")
+    service._cli_auth_states[("github", "gh")] = {
+        "status": "connecting",
+        "startedAt": "2026-07-21T00:00:00Z",
+        "browserOpened": False,
+    }
+    monkeypatch.setattr(
+        service_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("concurrent start must not spawn another CLI")),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "open_system_browser",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("concurrent start must not open another tab")),
+    )
+
+    result = service.start_cli_login("github", component_id="gh")
+
+    assert result["status"] == "connecting"
+    assert result["browserOpened"] is False
+
+
 def test_restart_reconcile_never_replays_external_install(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _, _ = runtime
     plan = service.build_install_plan("github")
@@ -1284,6 +1541,61 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
     assert all(kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0" for _, kwargs in calls)
     assert not any("clone" in command or "--branch" in command for command in commands)
     assert (service_module.AGENT_SKILLS_ROOT / "bailian-cli" / "SKILL.md").is_file()
+
+
+def test_daily_bundle_installs_all_seven_skills_in_one_reviewed_cli_transaction(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("office-suite")
+    skill = manifest.skills[0].model_dump(mode="json")
+    names = list(skill["skillNames"])
+    inventory = {"ok": True, "tool": service_module.SKILLS_CLI_PACKAGE, "items": [], "lockEntries": {}, "error": ""}
+    cli_arguments: list[str] = []
+    registered: dict = {}
+
+    def fake_git_step(argv, **_kwargs):
+        command = [str(item) for item in argv]
+        if command[:2] == ["git", "init"]:
+            source_root = Path(command[2]) / skill["path"]
+            for name in names:
+                skill_root = source_root / name
+                skill_root.mkdir(parents=True, exist_ok=True)
+                (skill_root / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        return {
+            "returnCode": 0,
+            "stdoutTail": skill["revision"] if command[-2:] == ["rev-parse", "HEAD"] else "",
+            "stderrTail": "",
+        }
+
+    def fake_skills_cli(arguments, **_kwargs):
+        cli_arguments.extend(str(item) for item in arguments)
+        items = []
+        for name in names:
+            target = service_module.AGENT_SKILLS_ROOT / name
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+            items.append({"name": name, "path": str(target), "scope": "global", "agents": ["Codex"]})
+        inventory["items"] = items
+        return {"returnCode": 0, "stdoutTail": "installed", "stderrTail": ""}
+
+    def fake_register(_plugin_id, component_id, component_type, **kwargs):
+        registered.update(kwargs)
+        return {"id": component_id, "type": component_type}
+
+    monkeypatch.setattr(service, "_run_skill_git_step", fake_git_step)
+    monkeypatch.setattr(service, "_skills_cli_inventory", lambda force=False: copy.deepcopy(inventory))
+    monkeypatch.setattr(service, "_run_skills_cli", fake_skills_cli)
+    monkeypatch.setattr(service, "_register_component", fake_register)
+
+    components = service._install_skill_component(manifest, skill)
+
+    assert components == [{"id": "anthropic-daily-skills", "type": "skill"}]
+    assert cli_arguments[-(len(names) + 1):] == ["--skill", *names]
+    assert registered["metadata"]["skillNames"] == names
+    assert len(registered["metadata"]["skillPaths"]) == 7
+    assert registered["metadata"]["managedSkillNames"] == names
 
 
 def test_managed_cli_skill_is_projected_as_generic_skill_resource(

@@ -677,15 +677,59 @@ def _render_plugin_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
                 continue
             name = item.get("name") or item.get("pluginId") or "plugin"
             status = item.get("status") or "unknown"
-            authorized = "authorized" if item.get("authorized") else "not granted"
-            lines.append(f"- {_short_text(name, 80)}: {_short_text(status, 40)}, {authorized}")
+            usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+            cli_available = any(
+                isinstance(cli_item, dict) and bool(cli_item.get("available"))
+                for cli_item in list(usage.get("cli") or [])
+            )
+            if item.get("authorized"):
+                grant_status = "task grant active"
+            elif cli_available:
+                grant_status = "no task grant; listed CLI is directly usable"
+            else:
+                grant_status = "no task grant"
+            lines.append(f"- {_short_text(name, 80)}: {_short_text(status, 40)}, {grant_status}")
             components = [
-                str(component.get("id") or "").strip()
+                f"{str(component.get('id') or '').strip()} [{str(component.get('type') or 'component').strip()}]"
                 for component in list(item.get("components") or [])
                 if isinstance(component, dict) and str(component.get("id") or "").strip()
             ]
             if components:
-                lines.append(f"  Components: {_short_text(', '.join(components[:8]), 220)}")
+                lines.append(f"  Grant component IDs (not runtime names): {_short_text(', '.join(components[:8]), 300)}")
+            cli_items = list(usage.get("cli") or [])
+            if cli_items:
+                lines.append("  CLI usage:")
+                for cli_item in cli_items[:3]:
+                    if not isinstance(cli_item, dict):
+                        continue
+                    command = _short_text(cli_item.get("command") or cli_item.get("componentId") or "CLI", 80)
+                    availability = "available; call through run_system_command without a plugin grant" if cli_item.get("available") else "unavailable"
+                    lines.append(f"  - Command: {command} ({availability})")
+                    help_text = str(cli_item.get("help") or "").strip()
+                    if help_text:
+                        lines.append(_content_excerpt(help_text, 1800))
+            skill_items = list(usage.get("skills") or [])
+            if skill_items:
+                lines.append("  Companion Skills:")
+                for skill_item in skill_items[:12]:
+                    if not isinstance(skill_item, dict):
+                        continue
+                    skill_name = _short_text(skill_item.get("name") or "Skill", 100)
+                    component_id = _short_text(skill_item.get("componentId") or "", 100)
+                    skill_summary = _short_text(skill_item.get("summary") or "", 300)
+                    grant_hint = f"; grant component={component_id}" if component_id else ""
+                    lines.append(f"  - Skill name={skill_name}{grant_hint}" + (f": {skill_summary}" if skill_summary else ""))
+            mcp_items = list(usage.get("mcpTools") or [])
+            if mcp_items:
+                lines.append("  MCP tools:")
+                for mcp_item in mcp_items[:16]:
+                    if not isinstance(mcp_item, dict):
+                        continue
+                    tool_name = _short_text(mcp_item.get("name") or "MCP tool", 100)
+                    component_id = _short_text(mcp_item.get("componentId") or "", 100)
+                    tool_summary = _short_text(mcp_item.get("summary") or "", 300)
+                    grant_hint = f"; grant component={component_id}" if component_id else ""
+                    lines.append(f"  - Tool name={tool_name}{grant_hint}" + (f": {tool_summary}" if tool_summary else ""))
         if len(items) > 8:
             lines.append(f"- … {len(items) - 8} more; use status with plugin_id")
     grant = payload.get("grant") if isinstance(payload.get("grant"), dict) else {}

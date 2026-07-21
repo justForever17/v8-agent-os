@@ -65,7 +65,8 @@ type MachineDiscovery = {
     summary: { detected: number; needsCompletion: number; conflicts: number; ordinaryMcp: number };
 };
 
-type RequirementKind = "secret" | "text" | "url" | "enum" | "boolean" | "oauth" | "file";
+type RequirementKind = "secret" | "text" | "url" | "enum" | "boolean" | "oauth" | "cli_login" | "file";
+const FEATURED_PLUGIN_ORDER = ["office-suite"] as const;
 type Requirement = {
     id: string;
     kind: RequirementKind;
@@ -105,11 +106,11 @@ type Job = {
 };
 type Grant = { grantId: string; pluginId: string; scope: "task" | "session"; sessionId: string; runId?: string; componentIds: string[]; granteeType: string; granteeId: string };
 type PluginEvent = { id: string; plugin_id?: string; event_type: string; status: string; created_at: string };
-type OAuthState = { componentId: string; status: string; error?: string };
+type AuthorizationFlowState = { componentId: string; status: string; flow: "mcp_oauth" | "cli_login"; authorizationUrl?: string; browserOpened?: boolean; error?: string };
 type Tab = "store" | "installed" | "grants" | "jobs" | "logs";
 
 const TERMINAL_JOBS = new Set(["planned", "ready", "rolled_back", "rollback_failed", "external_reconciliation_required", "failed", "completed"]);
-const ACTIVE_OAUTH = new Set(["connecting", "waiting_for_browser", "exchanging_token"]);
+const ACTIVE_AUTHORIZATION = new Set(["connecting", "waiting_for_browser", "exchanging_token"]);
 const TABS: Array<{ id: Tab; labelKey: string }> = [
     { id: "store", labelKey: "components.plugins.PluginManagerWorkbench.tab.store" },
     { id: "installed", labelKey: "components.plugins.PluginManagerWorkbench.tab.installed" },
@@ -148,7 +149,7 @@ export function PluginManagerWorkbench() {
     const [events, setEvents] = useState<PluginEvent[]>([]);
     const [requirements, setRequirements] = useState<RequirementResponse | null>(null);
     const [values, setValues] = useState<Record<string, string | boolean>>({});
-    const [oauth, setOauth] = useState<OAuthState | null>(null);
+    const [authorization, setAuthorization] = useState<AuthorizationFlowState | null>(null);
     const [tab, setTab] = useState<Tab>("store");
     const [query, setQuery] = useState("");
     const [selectedId, setSelectedId] = useState("");
@@ -171,7 +172,10 @@ export function PluginManagerWorkbench() {
             setGrants(grantsData.items || []);
             setJobs(jobsData.items || []);
             setEvents(eventsData.items || []);
-            setSelectedId((current) => current || (catalogData.plugins || []).find((item) => item.id === requestedPluginId)?.id || catalogData.plugins?.[0]?.id || "");
+            const initialPlugin = (catalogData.plugins || []).find((item) => item.id === requestedPluginId)
+                || FEATURED_PLUGIN_ORDER.map((id) => (catalogData.plugins || []).find((item) => item.id === id)).find(Boolean)
+                || catalogData.plugins?.[0];
+            setSelectedId((current) => current || initialPlugin?.id || "");
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : t("components.plugins.PluginManagerWorkbench.error.load"));
         }
@@ -196,7 +200,7 @@ export function PluginManagerWorkbench() {
     useEffect(() => { void load(); }, [load]);
     useEffect(() => {
         setValues({});
-        setOauth(null);
+        setAuthorization(null);
         setMachineDiscovery(null);
         void loadMachineDiscovery(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
         if (!selectedInstalled) {
@@ -211,27 +215,35 @@ export function PluginManagerWorkbench() {
         return () => window.clearInterval(timer);
     }, [jobs, load]);
     useEffect(() => {
-        if (!oauth || !ACTIVE_OAUTH.has(oauth.status) || !selectedId) return;
+        if (!authorization || !ACTIVE_AUTHORIZATION.has(authorization.status) || !selectedId) return;
         const timer = window.setInterval(async () => {
             try {
-                const state = await jsonRequest<OAuthState>(`/api/plugins/${selectedId}/oauth/status?componentId=${encodeURIComponent(oauth.componentId)}`);
-                setOauth(state);
+                const endpoint = authorization.flow === "cli_login" ? "cli-login" : "oauth";
+                const state = await jsonRequest<Omit<AuthorizationFlowState, "flow">>(`/api/plugins/${selectedId}/${endpoint}/status?componentId=${encodeURIComponent(authorization.componentId)}`);
+                setAuthorization({ ...state, flow: authorization.flow });
                 if (state.status === "connected") {
                     await loadRequirements(selectedId);
                     await load();
                 }
             } catch (nextError) {
-                setOauth((current) => current ? { ...current, status: "failed", error: nextError instanceof Error ? nextError.message : String(nextError) } : current);
+                setAuthorization((current) => current ? { ...current, status: "failed", error: nextError instanceof Error ? nextError.message : String(nextError) } : current);
             }
         }, 1000);
         return () => window.clearInterval(timer);
-    }, [load, loadRequirements, oauth, selectedId]);
+    }, [authorization, load, loadRequirements, selectedId]);
 
     const visiblePlugins = useMemo(() => {
         const needle = query.trim().toLowerCase();
         return plugins.filter((plugin) => {
             if (tab === "installed" && !plugin.installation.installed) return false;
             return !needle || [plugin.displayName, plugin.publisher, plugin.category, plugin.description, ...plugin.capabilities].join(" ").toLowerCase().includes(needle);
+        }).sort((left, right) => {
+            const leftPriority = FEATURED_PLUGIN_ORDER.indexOf(left.id as (typeof FEATURED_PLUGIN_ORDER)[number]);
+            const rightPriority = FEATURED_PLUGIN_ORDER.indexOf(right.id as (typeof FEATURED_PLUGIN_ORDER)[number]);
+            if (leftPriority === rightPriority) return 0;
+            if (leftPriority < 0) return 1;
+            if (rightPriority < 0) return -1;
+            return leftPriority - rightPriority;
         });
     }, [plugins, query, tab]);
     const selected = plugins.find((plugin) => plugin.id === selectedId) || visiblePlugins[0];
@@ -299,17 +311,25 @@ export function PluginManagerWorkbench() {
     });
 
     const startOAuth = (plugin: Plugin, requirement: Requirement) => runAction(`oauth:${requirement.id}`, async () => {
-        const state = await jsonRequest<OAuthState>(`/api/plugins/${plugin.id}/oauth/start`, {
+        const state = await jsonRequest<Omit<AuthorizationFlowState, "flow">>(`/api/plugins/${plugin.id}/oauth/start`, {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ componentId: requirement.componentId }),
         });
-        setOauth({ ...state, componentId: requirement.componentId || state.componentId });
+        setAuthorization({ ...state, componentId: requirement.componentId || state.componentId, flow: "mcp_oauth" });
+    });
+
+    const startCliLogin = (plugin: Plugin, requirement: Requirement) => runAction(`cli-login:${requirement.id}`, async () => {
+        const state = await jsonRequest<Omit<AuthorizationFlowState, "flow">>(`/api/plugins/${plugin.id}/cli-login/start`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ componentId: requirement.componentId }),
+        });
+        setAuthorization({ ...state, componentId: requirement.componentId || state.componentId, flow: "cli_login" });
     });
 
     const cancelOAuth = (plugin: Plugin, componentId: string) => runAction(`oauth-cancel:${componentId}`, async () => {
-        await jsonRequest(`/api/plugins/${plugin.id}/oauth/cancel`, {
+        const endpoint = authorization?.flow === "cli_login" ? "cli-login" : "oauth";
+        await jsonRequest(`/api/plugins/${plugin.id}/${endpoint}/cancel`, {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ componentId }),
         });
-        setOauth({ componentId, status: "cancelled" });
+        setAuthorization((current) => current ? { ...current, componentId, status: "cancelled" } : null);
     });
 
     const doctor = (plugin: Plugin) => runAction(`doctor:${plugin.id}`, async () => {
@@ -362,12 +382,14 @@ export function PluginManagerWorkbench() {
                     <aside className="bg-muted/[0.14] p-4">
                         {selected ? <div className="space-y-5">
                             <div className="flex items-start gap-3"><Image src={`/api/plugins/${selected.id}/logo`} alt="" width={40} height={40} unoptimized className="size-10 object-contain" /><div className="min-w-0 flex-1"><h2 className="text-base font-semibold">{selected.displayName}</h2><p className="mt-1 text-sm leading-5 text-muted-foreground">{selected.description}</p></div></div>
-                            <div className="grid grid-cols-5 border-y border-border/60 py-3 text-center">{[["CLI", selected.componentCounts.cli], ["Skill", selected.componentCounts.skills], ["MCP", selected.componentCounts.mcp], ["UI", selected.componentCounts.uiAdapters], ["Adapter", selected.componentCounts.providerAdapters || 0]].map(([label, count]) => <div key={String(label)} className="border-r border-border/50 last:border-0"><div className="text-sm font-medium">{count}</div><div className="text-[11px] text-muted-foreground">{label}</div></div>)}</div>
+                            <div className="flex border-y border-border/60 py-3 text-center">{[["CLI", selected.componentCounts.cli], ["Skill", selected.componentCounts.skills], ["MCP", selected.componentCounts.mcp], ["UI", selected.componentCounts.uiAdapters], ["Adapter", selected.componentCounts.providerAdapters || 0]].filter(([, count]) => Number(count) > 0).map(([label, count]) => <div key={String(label)} className="min-w-0 flex-1 border-r border-border/50 last:border-0"><div className="text-sm font-medium">{count}</div><div className="text-[11px] text-muted-foreground">{label}</div></div>)}</div>
                             {machineDiscovery?.pluginId === selected.id ? <div className="space-y-2 border border-border/70 bg-background p-3">
                                 <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.machine.title")}</h3><p className="mt-0.5 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.description")}</p></div><Button type="button" variant="ghost" size="sm" className="min-h-9 rounded-md" onClick={() => void loadMachineDiscovery(selected.id, true)} disabled={Boolean(busy)}><RefreshCw className="mr-1.5 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.refresh")}</Button></div>
                                 <div className="divide-y divide-border/55 border-y border-border/55">
                                     {[...machineDiscovery.cli.map((item) => ({ kind: "CLI", item })), ...machineDiscovery.skills.map((item) => ({ kind: "Skill", item }))].map(({ kind, item }) => {
-                                        const names = kind === "CLI" ? item.commands || [] : [...(item.detectedNames || []), ...(item.missingNames || [])];
+                                        const names = kind === "CLI"
+                                            ? item.commands || []
+                                            : [...new Set([...(item.detectedNames || []), ...(item.missingNames || []), ...(item.conflicts || [])])];
                                         return <div key={`${kind}-${item.componentId}`} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="min-w-0 truncate"><span className="font-medium">{kind}</span>{names.length ? <span className="text-muted-foreground"> · {names.join("、")}</span> : null}</span><span className={cn("shrink-0", item.state === "conflict" ? "text-destructive" : item.state === "detected" || item.state === "registered" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>{t(`components.plugins.PluginManagerWorkbench.machine.state.${item.state}`)}</span></div>;
                                     })}
                                     {machineDiscovery.ordinaryMcp.map((item) => <div key={item.componentId} className="py-2 text-xs"><div className="flex items-center justify-between gap-3"><span className="font-medium">MCP · {item.serverName}</span><span className="text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcp")}</span></div><p className="mt-1 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcpHelp")}</p></div>)}
@@ -378,7 +400,7 @@ export function PluginManagerWorkbench() {
 
                             {selected.installation.installed && requirements?.pluginId === selected.id ? <div className="space-y-3 border-t border-border/60 pt-4">
                                 <div className="flex items-center justify-between gap-2"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.configuration.title")}</h3><p className="text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.description")}</p></div><Button variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => void detect(selected)} disabled={Boolean(busy)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configuration.detect")}</Button></div>
-                                {requirements.requirements.map((requirement) => <RequirementField key={requirement.id} requirement={requirement} value={values[requirement.id]} oauth={oauth} busy={busy} onChange={(value) => setValues((current) => ({ ...current, [requirement.id]: value }))} onImport={(sourceId) => void importExisting(selected, requirement, sourceId)} onOAuth={() => void startOAuth(selected, requirement)} onCancelOAuth={() => void cancelOAuth(selected, requirement.componentId || "")} t={t} />)}
+                                {requirements.requirements.map((requirement) => <RequirementField key={requirement.id} requirement={requirement} value={values[requirement.id]} authorization={authorization} busy={busy} onChange={(value) => setValues((current) => ({ ...current, [requirement.id]: value }))} onImport={(sourceId) => void importExisting(selected, requirement, sourceId)} onOAuth={() => void startOAuth(selected, requirement)} onCliLogin={() => void startCliLogin(selected, requirement)} onCancelAuthorization={() => void cancelOAuth(selected, requirement.componentId || "")} t={t} />)}
                                 {!requirements.requirements.length ? <div className="border border-border/70 bg-background p-3 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.none")} <a href={selected.officialLinks.documentation} target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">{t("components.plugins.PluginManagerWorkbench.officialDocs")}</a></div> : null}
                             </div> : null}
 
@@ -404,7 +426,7 @@ export function PluginManagerWorkbench() {
     );
 }
 
-function RequirementField({ requirement, value, oauth, busy, onChange, onImport, onOAuth, onCancelOAuth, t }: { requirement: Requirement; value?: string | boolean; oauth: OAuthState | null; busy: string; onChange: (value: string | boolean) => void; onImport: (sourceId: string) => void; onOAuth: () => void; onCancelOAuth: () => void; t: ReturnType<typeof useT> }) {
+function RequirementField({ requirement, value, authorization, busy, onChange, onImport, onOAuth, onCliLogin, onCancelAuthorization, t }: { requirement: Requirement; value?: string | boolean; authorization: AuthorizationFlowState | null; busy: string; onChange: (value: string | boolean) => void; onImport: (sourceId: string) => void; onOAuth: () => void; onCliLogin: () => void; onCancelAuthorization: () => void; t: ReturnType<typeof useT> }) {
     const id = `plugin-config-${requirement.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
     const translatedLabel = requirement.labelKey ? t(requirement.labelKey) : "";
     const label = translatedLabel && translatedLabel !== requirement.labelKey
@@ -415,11 +437,11 @@ function RequirementField({ requirement, value, oauth, busy, onChange, onImport,
     const source = `${t(`components.plugins.PluginManagerWorkbench.configuration.source.${requirement.source}`)} · ${t(`components.plugins.PluginManagerWorkbench.configuration.confidence.${requirement.confidence}`)}`;
     const status = t(`components.plugins.PluginManagerWorkbench.configuration.status.${requirement.status}`);
     const importSource = requirement.discovery?.find((item) => item.present)?.sourceId;
-    const oauthForField = oauth?.componentId === requirement.componentId ? oauth : null;
+    const authorizationForField = authorization?.componentId === requirement.componentId ? authorization : null;
     return <div className="rounded-md border border-border/70 bg-background p-3">
         <div className="mb-2 flex flex-wrap items-center gap-2"><label htmlFor={id} className="text-sm font-medium">{label}{requirement.required ? <span className="ml-1 text-destructive">*</span> : null}</label><span className={cn("rounded-full border px-2 py-0.5 text-[10px]", requirement.status === "configured" ? "border-emerald-500/30 text-emerald-700 dark:text-emerald-300" : "border-border text-muted-foreground")}>{status}</span><span className="text-[10px] text-muted-foreground">{source}</span></div>
         {help ? <p className="mb-2 text-xs leading-5 text-muted-foreground">{help}</p> : null}
-        {requirement.kind === "oauth" ? <div className="flex flex-wrap items-center gap-2"><Button id={id} type="button" size="sm" className="min-h-10 rounded-md" onClick={onOAuth} disabled={Boolean(busy) || requirement.configured}><ShieldCheck className="mr-2 size-3.5" />{requirement.configured ? t("components.plugins.PluginManagerWorkbench.configuration.authorized") : t("components.plugins.PluginManagerWorkbench.configuration.authorize")}</Button>{oauthForField && ACTIVE_OAUTH.has(oauthForField.status) ? <Button type="button" size="sm" variant="outline" className="min-h-10 rounded-md" onClick={onCancelOAuth}><Loader2 className="mr-2 size-3.5 animate-spin" />{oauthForField.status} · {t("components.plugins.PluginManagerWorkbench.configuration.cancel")}</Button> : null}{oauthForField?.error ? <span className="text-xs text-destructive">{oauthForField.error}</span> : null}</div>
+        {requirement.kind === "oauth" || requirement.kind === "cli_login" ? <div className="flex flex-wrap items-center gap-2"><Button id={id} type="button" size="sm" className="min-h-10 rounded-md" onClick={requirement.kind === "cli_login" ? onCliLogin : onOAuth} disabled={Boolean(busy) || requirement.configured}><ShieldCheck className="mr-2 size-3.5" />{requirement.configured ? t("components.plugins.PluginManagerWorkbench.configuration.authorized") : t(requirement.kind === "cli_login" ? "components.plugins.PluginManagerWorkbench.configuration.cliLogin" : "components.plugins.PluginManagerWorkbench.configuration.authorize")}</Button>{authorizationForField && ACTIVE_AUTHORIZATION.has(authorizationForField.status) ? <Button type="button" size="sm" variant="outline" className="min-h-10 rounded-md" onClick={onCancelAuthorization}><Loader2 className="mr-2 size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.configuration.waitingForBrowser")} · {t("components.plugins.PluginManagerWorkbench.configuration.cancel")}</Button> : null}{authorizationForField?.authorizationUrl && ACTIVE_AUTHORIZATION.has(authorizationForField.status) ? <a href={authorizationForField.authorizationUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium hover:bg-muted"><ExternalLink className="size-3.5" />{t("components.plugins.PluginManagerWorkbench.configuration.openAuthorizationPage")}</a> : null}{requirement.kind === "cli_login" && authorizationForField && ACTIVE_AUTHORIZATION.has(authorizationForField.status) ? <span className="basis-full text-xs leading-5 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.deviceCodeClipboard")}</span> : null}{authorizationForField?.error ? <span className="text-xs text-destructive">{authorizationForField.error}</span> : null}</div>
         : requirement.kind === "boolean" ? <label htmlFor={id} className="flex min-h-10 items-center gap-2 text-sm"><input id={id} type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} className="size-4 accent-primary" />{t("components.plugins.PluginManagerWorkbench.configuration.enabled")}</label>
         : requirement.kind === "enum" ? <select id={id} value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} className="min-h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="">{t("components.plugins.PluginManagerWorkbench.configuration.select")}</option>{(requirement.options || []).map((option) => <option key={option} value={option}>{option}</option>)}</select>
         : <Input id={id} type={requirement.kind === "secret" ? "password" : requirement.kind === "url" ? "url" : "text"} autoComplete="off" value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} placeholder={requirement.configured && requirement.kind === "secret" ? t("components.plugins.PluginManagerWorkbench.configuration.secretConfigured") : ""} className="h-10 rounded-md" />}

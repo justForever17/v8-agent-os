@@ -47,6 +47,24 @@ type Plugin = {
     installation: InstallState;
 };
 
+type MachineComponent = {
+    componentId: string;
+    state: "registered" | "detected" | "partial" | "missing" | "unknown" | "conflict";
+    action: "keep" | "adopt" | "complete" | "install" | "review";
+    commands?: string[];
+    detectedNames?: string[];
+    missingNames?: string[];
+    conflicts?: string[];
+};
+type MachineDiscovery = {
+    pluginId: string;
+    skillsCli: { available: boolean; package: string; error?: string };
+    cli: MachineComponent[];
+    skills: MachineComponent[];
+    ordinaryMcp: Array<{ componentId: string; serverName: string; enabled: boolean; managedBy: "extensions_runtime" }>;
+    summary: { detected: number; needsCompletion: number; conflicts: number; ordinaryMcp: number };
+};
+
 type RequirementKind = "secret" | "text" | "url" | "enum" | "boolean" | "oauth" | "file";
 type Requirement = {
     id: string;
@@ -76,7 +94,11 @@ type Job = {
     plan?: {
         approvalRequired?: boolean;
         sideEffects?: string[];
-        steps?: { cli?: Array<{ argv: string[]; requiresElevation?: boolean; mayRestart?: boolean }> };
+        machineDiscovery?: MachineDiscovery;
+        steps?: {
+            cli?: Array<{ componentId: string; action?: string; requiresElevation?: boolean; mayRestart?: boolean }>;
+            skills?: Array<{ id: string; action?: string; detectedNames?: string[]; missingNames?: string[] }>;
+        };
     };
     error?: string;
     createdAt?: string;
@@ -134,6 +156,7 @@ export function PluginManagerWorkbench() {
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const [previewJob, setPreviewJob] = useState<Job | null>(null);
+    const [machineDiscovery, setMachineDiscovery] = useState<MachineDiscovery | null>(null);
 
     const load = useCallback(async (refresh = false) => {
         setError("");
@@ -159,6 +182,13 @@ export function PluginManagerWorkbench() {
         const data = await jsonRequest<RequirementResponse>(`/api/plugins/${pluginId}/configuration-requirements`);
         setRequirements(data);
     }, []);
+    const loadMachineDiscovery = useCallback(async (pluginId: string, refresh = false) => {
+        if (!pluginId) return;
+        const data = await jsonRequest<MachineDiscovery>(
+            `/api/plugins/${pluginId}/machine-discovery${refresh ? "?refresh=true" : ""}`,
+        );
+        setMachineDiscovery(data);
+    }, []);
     const selectedInstalled = Boolean(
         plugins.find((item) => item.id === selectedId)?.installation.installed,
     );
@@ -167,12 +197,14 @@ export function PluginManagerWorkbench() {
     useEffect(() => {
         setValues({});
         setOauth(null);
+        setMachineDiscovery(null);
+        void loadMachineDiscovery(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
         if (!selectedInstalled) {
             setRequirements(null);
             return;
         }
         void loadRequirements(selectedId).catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)));
-    }, [loadRequirements, selectedId, selectedInstalled]);
+    }, [loadMachineDiscovery, loadRequirements, selectedId, selectedInstalled]);
     useEffect(() => {
         if (!jobs.some((job) => !TERMINAL_JOBS.has(job.state))) return;
         const timer = window.setInterval(() => void load(), 1500);
@@ -218,16 +250,25 @@ export function PluginManagerWorkbench() {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dryRun: true }),
         });
         setPreviewJob(job);
+        setMachineDiscovery(job.plan?.machineDiscovery || machineDiscovery);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.planReady"));
         await load();
     });
 
     const executeInstall = (plugin: Plugin) => runAction(`install:${plugin.id}`, async () => {
-        if (!previewJob?.planDigest || previewJob.pluginId !== plugin.id) throw new Error(t("components.plugins.PluginManagerWorkbench.error.planRequired"));
+        const planJob = await jsonRequest<Job>(`/api/plugins/${plugin.id}/install`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dryRun: true }),
+        });
+        if (!planJob.planDigest) throw new Error(t("components.plugins.PluginManagerWorkbench.error.planRequired"));
+        setPreviewJob(planJob);
+        setMachineDiscovery(planJob.plan?.machineDiscovery || null);
+        if (planJob.plan?.approvalRequired && !window.confirm(t("components.plugins.PluginManagerWorkbench.confirm.systemInstall", { name: plugin.displayName }))) return;
         const job = await jsonRequest<Job>(`/api/plugins/${plugin.id}/install`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ dryRun: false, approved: true, planDigest: previewJob.planDigest, idempotencyKey: crypto.randomUUID() }),
+            body: JSON.stringify({ dryRun: false, approved: true, planDigest: planJob.planDigest, idempotencyKey: crypto.randomUUID() }),
         });
         setPreviewJob(job);
         setNotice(t("components.plugins.PluginManagerWorkbench.notice.installQueued"));
@@ -322,17 +363,29 @@ export function PluginManagerWorkbench() {
                         {selected ? <div className="space-y-5">
                             <div className="flex items-start gap-3"><Image src={`/api/plugins/${selected.id}/logo`} alt="" width={40} height={40} unoptimized className="size-10 object-contain" /><div className="min-w-0 flex-1"><h2 className="text-base font-semibold">{selected.displayName}</h2><p className="mt-1 text-sm leading-5 text-muted-foreground">{selected.description}</p></div></div>
                             <div className="grid grid-cols-5 border-y border-border/60 py-3 text-center">{[["CLI", selected.componentCounts.cli], ["Skill", selected.componentCounts.skills], ["MCP", selected.componentCounts.mcp], ["UI", selected.componentCounts.uiAdapters], ["Adapter", selected.componentCounts.providerAdapters || 0]].map(([label, count]) => <div key={String(label)} className="border-r border-border/50 last:border-0"><div className="text-sm font-medium">{count}</div><div className="text-[11px] text-muted-foreground">{label}</div></div>)}</div>
+                            {machineDiscovery?.pluginId === selected.id ? <div className="space-y-2 border border-border/70 bg-background p-3">
+                                <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.machine.title")}</h3><p className="mt-0.5 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.description")}</p></div><Button type="button" variant="ghost" size="sm" className="min-h-9 rounded-md" onClick={() => void loadMachineDiscovery(selected.id, true)} disabled={Boolean(busy)}><RefreshCw className="mr-1.5 size-3.5" />{t("components.plugins.PluginManagerWorkbench.machine.refresh")}</Button></div>
+                                <div className="divide-y divide-border/55 border-y border-border/55">
+                                    {[...machineDiscovery.cli.map((item) => ({ kind: "CLI", item })), ...machineDiscovery.skills.map((item) => ({ kind: "Skill", item }))].map(({ kind, item }) => {
+                                        const names = kind === "CLI" ? item.commands || [] : [...(item.detectedNames || []), ...(item.missingNames || [])];
+                                        return <div key={`${kind}-${item.componentId}`} className="flex items-center justify-between gap-3 py-2 text-xs"><span className="min-w-0 truncate"><span className="font-medium">{kind}</span>{names.length ? <span className="text-muted-foreground"> · {names.join("、")}</span> : null}</span><span className={cn("shrink-0", item.state === "conflict" ? "text-destructive" : item.state === "detected" || item.state === "registered" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>{t(`components.plugins.PluginManagerWorkbench.machine.state.${item.state}`)}</span></div>;
+                                    })}
+                                    {machineDiscovery.ordinaryMcp.map((item) => <div key={item.componentId} className="py-2 text-xs"><div className="flex items-center justify-between gap-3"><span className="font-medium">MCP · {item.serverName}</span><span className="text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcp")}</span></div><p className="mt-1 text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.machine.ordinaryMcpHelp")}</p></div>)}
+                                </div>
+                                {!machineDiscovery.skillsCli.available ? <p className="text-xs text-destructive">{t("components.plugins.PluginManagerWorkbench.machine.skillsUnavailable")}</p> : null}
+                            </div> : <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" />{t("components.plugins.PluginManagerWorkbench.machine.loading")}</div>}
                             <div><h3 className="mb-2 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.capabilities")}</h3><div className="flex flex-wrap gap-1.5">{selected.capabilities.map((item) => <span key={item} className="border border-border/70 bg-background px-2 py-1 text-xs">{item}</span>)}</div></div>
 
-                            {selected.installation.installed && requirements?.pluginId === selected.id && requirements.requirements.length ? <div className="space-y-3 border-t border-border/60 pt-4">
+                            {selected.installation.installed && requirements?.pluginId === selected.id ? <div className="space-y-3 border-t border-border/60 pt-4">
                                 <div className="flex items-center justify-between gap-2"><div><h3 className="text-sm font-medium">{t("components.plugins.PluginManagerWorkbench.configuration.title")}</h3><p className="text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.description")}</p></div><Button variant="outline" size="sm" className="min-h-10 rounded-md" onClick={() => void detect(selected)} disabled={Boolean(busy)}><RefreshCw className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configuration.detect")}</Button></div>
                                 {requirements.requirements.map((requirement) => <RequirementField key={requirement.id} requirement={requirement} value={values[requirement.id]} oauth={oauth} busy={busy} onChange={(value) => setValues((current) => ({ ...current, [requirement.id]: value }))} onImport={(sourceId) => void importExisting(selected, requirement, sourceId)} onOAuth={() => void startOAuth(selected, requirement)} onCancelOAuth={() => void cancelOAuth(selected, requirement.componentId || "")} t={t} />)}
+                                {!requirements.requirements.length ? <div className="border border-border/70 bg-background p-3 text-xs text-muted-foreground">{t("components.plugins.PluginManagerWorkbench.configuration.none")} <a href={selected.officialLinks.documentation} target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">{t("components.plugins.PluginManagerWorkbench.officialDocs")}</a></div> : null}
                             </div> : null}
 
-                            {previewJob?.pluginId === selected.id && previewJob.plan ? <div className="border border-border/70 bg-background p-3 text-xs"><div className="mb-2 font-medium">{t("components.plugins.PluginManagerWorkbench.dryRunPlan")}</div>{(previewJob.plan.steps?.cli || []).map((step, index) => <code key={index} className="block break-all border-t border-border/50 py-2 text-[11px] text-muted-foreground">{step.argv.join(" ")}</code>)}<div className="mt-2 text-muted-foreground">{previewJob.plan.approvalRequired ? t("components.plugins.PluginManagerWorkbench.systemApprovalRequired") : t("components.plugins.PluginManagerWorkbench.managedInstall")}</div><TechnicalReferenceDetails className="mt-3" items={[{ label: t("components.common.traceReference"), value: previewJob.planDigest }]} /></div> : null}
+                            {previewJob?.pluginId === selected.id && previewJob.plan ? <div className="border border-border/70 bg-background p-3 text-xs"><div className="mb-2 font-medium">{t("components.plugins.PluginManagerWorkbench.dryRunPlan")}</div><div className="divide-y divide-border/50 border-y border-border/50">{(previewJob.plan.steps?.cli || []).map((step) => <div key={step.componentId} className="flex items-center justify-between gap-3 py-2"><span>CLI</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}{(previewJob.plan.steps?.skills || []).map((step) => <div key={step.id} className="flex items-center justify-between gap-3 py-2"><span>Skill</span><span className="text-muted-foreground">{t(`components.plugins.PluginManagerWorkbench.machine.action.${step.action || "install"}`)}</span></div>)}</div><div className="mt-2 text-muted-foreground">{previewJob.plan.approvalRequired ? t("components.plugins.PluginManagerWorkbench.systemApprovalRequired") : t("components.plugins.PluginManagerWorkbench.managedInstall")}</div><TechnicalReferenceDetails className="mt-3" items={[{ label: t("components.common.traceReference"), value: previewJob.planDigest }]} /></div> : null}
 
                             <div className="flex flex-wrap gap-2 border-t border-border/60 pt-4">
-                                {!selected.installation.installed ? <><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void previewInstall(selected)} disabled={Boolean(busy)}>{busy === `plan:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Activity className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.preflight")}</Button><Button size="sm" className="min-h-10 rounded-md" onClick={() => void executeInstall(selected)} disabled={Boolean(busy) || previewJob?.pluginId !== selected.id || !previewJob.planDigest}>{busy === `install:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Download className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.install")}</Button></> : <><Button size="sm" className="min-h-10 rounded-md" onClick={() => void configure(selected)} disabled={Boolean(busy) || !Object.keys(values).length}><Settings2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configure")}</Button><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void doctor(selected)} disabled={Boolean(busy)}><Activity className="mr-2 size-3.5" />Doctor</Button><Button size="sm" variant="ghost" className="min-h-10 rounded-md text-destructive hover:text-destructive" onClick={() => void uninstall(selected)} disabled={Boolean(busy)}><Trash2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.uninstall")}</Button></>}
+                                {!selected.installation.installed ? <><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void previewInstall(selected)} disabled={Boolean(busy)}>{busy === `plan:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Activity className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.preflight")}</Button><Button size="sm" className="min-h-10 rounded-md" onClick={() => void executeInstall(selected)} disabled={Boolean(busy) || Boolean(machineDiscovery?.summary.conflicts)}>{busy === `install:${selected.id}` ? <Loader2 className="mr-2 size-3.5 animate-spin" /> : <Download className="mr-2 size-3.5" />}{t("components.plugins.PluginManagerWorkbench.complete")}</Button></> : <><Button size="sm" className="min-h-10 rounded-md" onClick={() => void configure(selected)} disabled={Boolean(busy) || !Object.keys(values).length}><Settings2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.configure")}</Button><Button size="sm" variant="outline" className="min-h-10 rounded-md" onClick={() => void doctor(selected)} disabled={Boolean(busy)}><Activity className="mr-2 size-3.5" />Doctor</Button><Button size="sm" variant="ghost" className="min-h-10 rounded-md text-destructive hover:text-destructive" onClick={() => void uninstall(selected)} disabled={Boolean(busy)}><Trash2 className="mr-2 size-3.5" />{t("components.plugins.PluginManagerWorkbench.uninstall")}</Button></>}
                                 <a href={selected.officialLinks.documentation} target="_blank" rel="noreferrer" className="ml-auto inline-flex min-h-10 items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground">{t("components.plugins.PluginManagerWorkbench.officialDocs")}<ExternalLink className="size-3" /></a>
                             </div>
                         </div> : null}

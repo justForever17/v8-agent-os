@@ -119,7 +119,7 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     "web_search",
 }
 RAW_WEB_INTERNAL_TOOL_NAMES = {"web_fetch", "web_read", "web_extract", "web_search"}
-SUBAGENT_PLUGIN_TOOL_NAMES = {"plugin_broker", "plugin_cli"}
+SUBAGENT_PLUGIN_TOOL_NAMES = {"plugin_broker"}
 
 RUNTIME_MANAGED_TOOL_PREFIXES = ("computer_use_", "rpa_", "creative_media_")
 FEATURE_PACK_GATED_RUNTIME_KINDS = {"computer_use", "desktop_live", "rpa"}
@@ -501,6 +501,10 @@ def filter_visible_tools_for_actor(
         if name == "agent_broker":
             if actor_identity.is_supervisor:
                 visible.append(tool_ref)
+            continue
+        if name == "plugin_cli":
+            # The Extensions route adds this executor only after an active
+            # task grant projects at least one reviewed CLI profile.
             continue
         if name in SUBAGENT_PLUGIN_TOOL_NAMES:
             visible.append(tool_ref)

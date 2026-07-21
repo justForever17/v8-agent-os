@@ -36,6 +36,8 @@ from .schema import CliAction, CliProfile, CommandSpec, PluginConfigRequirement,
 
 
 AGENT_SKILLS_ROOT = Path.home() / ".agents" / "skills"
+SKILLS_CLI_PACKAGE = "skills@1.5.19"
+SKILLS_CLI_CACHE_SECONDS = 30.0
 SECRET_KEY_RE = re.compile(r"(token|secret|password|api[_-]?key|authorization|credential)", re.I)
 SAFE_COMPONENT_ID_RE = re.compile(r"^[a-zA-Z0-9_.:-]{1,160}$")
 CODE_OWNED_PROVIDER_ADAPTERS = {
@@ -129,6 +131,7 @@ class PluginManagerService:
             tuple[dict[str, Any], ...],
         ] | None = None
         self._catalog_installation_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+        self._skills_inventory_cache: tuple[float, dict[str, Any]] | None = None
         self._credential_store = credential_store or credential_ref_store
         self._ensure_plugin_schema()
         self.reconcile_install_jobs()
@@ -250,6 +253,310 @@ class PluginManagerService:
         with self._cache_lock:
             self._catalog_installation_cache = None
 
+    def _invalidate_skills_inventory_cache(self) -> None:
+        with self._cache_lock:
+            self._skills_inventory_cache = None
+
+    @staticmethod
+    def _run_skills_cli(
+        arguments: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout_seconds: int = 300,
+    ) -> dict[str, Any]:
+        executable = shutil.which("npx") or shutil.which("npx.cmd")
+        if not executable:
+            return {
+                "returnCode": 127,
+                "stdoutTail": "",
+                "stderrTail": "npx is not installed",
+            }
+        environment = dict(os.environ)
+        environment.update({"CI": "1", "NO_COLOR": "1", "FORCE_COLOR": "0"})
+        try:
+            completed = subprocess.run(
+                [executable, "--yes", SKILLS_CLI_PACKAGE, *arguments],
+                cwd=str(cwd) if cwd else None,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_seconds,
+                check=False,
+            )
+            return {
+                "returnCode": int(completed.returncode),
+                "stdoutTail": str(completed.stdout or "")[-1000000:],
+                "stderrTail": str(completed.stderr or "")[-8000:],
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "returnCode": 124,
+                "stdoutTail": "",
+                "stderrTail": "skills CLI timed out",
+            }
+        except OSError as exc:
+            return {
+                "returnCode": 127,
+                "stdoutTail": "",
+                "stderrTail": str(exc),
+            }
+
+    @staticmethod
+    def _repository_identity(value: str) -> str:
+        normalized = str(value or "").strip().replace("\\", "/").rstrip("/")
+        if normalized.endswith(".git"):
+            normalized = normalized[:-4]
+        marker = "github.com/"
+        if marker in normalized.lower():
+            normalized = normalized[normalized.lower().index(marker) + len(marker):]
+        return normalized.lower().strip("/")
+
+    def _skills_cli_inventory(self, *, force: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._skills_inventory_cache
+            if not force and cached is not None and now - cached[0] <= SKILLS_CLI_CACHE_SECONDS:
+                return cached[1]
+
+        result = self._run_skills_cli(["list", "--global", "--json"], timeout_seconds=30)
+        items: list[dict[str, Any]] = []
+        error = ""
+        if result["returnCode"] == 0:
+            stdout = str(result.get("stdoutTail") or "").strip()
+            try:
+                payload = json.loads(stdout[stdout.index("["):])
+                if isinstance(payload, list):
+                    items = [dict(item) for item in payload if isinstance(item, dict)]
+            except (ValueError, json.JSONDecodeError, TypeError) as exc:
+                error = f"skills CLI returned invalid inventory: {exc}"
+        else:
+            error = str(result.get("stderrTail") or result.get("stdoutTail") or "skills CLI failed").strip()
+
+        lock_entries: dict[str, dict[str, Any]] = {}
+        lock_path = AGENT_SKILLS_ROOT.parent / ".skill-lock.json"
+        try:
+            lock_payload = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else {}
+            lock_entries = {
+                str(name): dict(item)
+                for name, item in dict(lock_payload.get("skills") or {}).items()
+                if isinstance(item, dict)
+            }
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            lock_entries = {}
+
+        inventory = {
+            "ok": not error,
+            "tool": SKILLS_CLI_PACKAGE,
+            "items": items,
+            "lockEntries": lock_entries,
+            "error": error,
+        }
+        with self._cache_lock:
+            self._skills_inventory_cache = (now, inventory)
+        return inventory
+
+    def _skill_source_matches(self, lock_entry: dict[str, Any], skill: Any) -> bool:
+        source_kind = skill.get("sourceKind") if isinstance(skill, dict) else skill.sourceKind
+        repository = skill.get("repository") if isinstance(skill, dict) else skill.repository
+        source_path = skill.get("path") if isinstance(skill, dict) else skill.path
+        if not lock_entry or str(source_kind or "git") != "git":
+            return False
+        expected_repository = self._repository_identity(str(repository or ""))
+        actual_repository = self._repository_identity(
+            str(lock_entry.get("sourceUrl") or lock_entry.get("source") or "")
+        )
+        if not expected_repository or actual_repository != expected_repository:
+            return False
+        installed_path = str(lock_entry.get("skillPath") or "").replace("\\", "/").strip("/")
+        expected_path = str(source_path or "").replace("\\", "/").strip("/")
+        return installed_path == f"{expected_path}/SKILL.md" or installed_path.startswith(f"{expected_path}/")
+
+    @staticmethod
+    def _cli_search_path() -> str:
+        paths = [str(os.environ.get("PATH") or "")]
+        if os.name == "nt":
+            try:
+                import winreg
+
+                for hive, key_path in (
+                    (winreg.HKEY_CURRENT_USER, "Environment"),
+                    (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                ):
+                    try:
+                        with winreg.OpenKey(hive, key_path) as key:
+                            value, _ = winreg.QueryValueEx(key, "Path")
+                            paths.append(str(value or ""))
+                    except OSError:
+                        continue
+            except (ImportError, OSError):
+                pass
+        return os.pathsep.join(item for item in paths if item)
+
+    def _discover_cli_commands(self, profile: CliProfile) -> dict[str, str]:
+        search_path = self._cli_search_path()
+        return {
+            command: str(path)
+            for command in profile.commands
+            if (path := shutil.which(command, path=search_path))
+        }
+
+    def discover_machine_components(self, plugin_id: str, *, force: bool = False) -> dict[str, Any]:
+        manifest = self._manifest(plugin_id)
+        policy = self._component_policy(manifest)
+        component_rows = {
+            str(item.get("component_id") or ""): item
+            for item in self._component_rows(manifest.id)
+            if str(item.get("state") or "") == "installed"
+        }
+
+        cli_items: list[dict[str, Any]] = []
+        for profile in policy["cliProfiles"]:
+            detected_commands = self._discover_cli_commands(profile)
+            registered = profile.id in component_rows
+            state = "registered" if registered else "detected" if detected_commands else "missing"
+            cli_items.append(
+                {
+                    "componentId": profile.id,
+                    "state": state,
+                    "action": "keep" if registered else "adopt" if detected_commands else "install",
+                    "commands": list(profile.commands),
+                    "detectedCommands": detected_commands,
+                    "ownership": "plugin" if registered else "external" if detected_commands else profile.ownership,
+                }
+            )
+
+        skills_inventory = self._skills_cli_inventory(force=force) if policy["skills"] else {
+            "ok": True,
+            "tool": SKILLS_CLI_PACKAGE,
+            "items": [],
+            "lockEntries": {},
+            "error": "",
+        }
+        inventory_by_name = {
+            str(item.get("name") or ""): item
+            for item in list(skills_inventory.get("items") or [])
+            if str(item.get("name") or "").strip()
+        }
+        lock_entries = dict(skills_inventory.get("lockEntries") or {})
+        skill_items: list[dict[str, Any]] = []
+        for skill in policy["skills"]:
+            expected_names = list(skill.skillNames)
+            if expected_names:
+                candidate_names = expected_names
+            else:
+                candidate_names = sorted(
+                    name
+                    for name, entry in lock_entries.items()
+                    if self._skill_source_matches(entry, skill)
+                )
+            detected_names: list[str] = []
+            conflicts: list[str] = []
+            paths: list[str] = []
+            for name in candidate_names:
+                installed = inventory_by_name.get(name)
+                if not installed:
+                    continue
+                if self._skill_source_matches(lock_entries.get(name) or {}, skill):
+                    detected_names.append(name)
+                    path = str(installed.get("path") or "").strip()
+                    if path:
+                        paths.append(path)
+                elif name in expected_names:
+                    conflicts.append(name)
+            missing_names = [name for name in expected_names if name not in detected_names and name not in conflicts]
+            registered = skill.id in component_rows
+            if registered:
+                state = "registered"
+                action = "keep"
+            elif conflicts:
+                state = "conflict"
+                action = "review"
+            elif expected_names and not missing_names:
+                state = "detected"
+                action = "adopt"
+            elif detected_names:
+                state = "partial"
+                action = "complete"
+            else:
+                state = "missing" if skills_inventory.get("ok") else "unknown"
+                action = "install" if skills_inventory.get("ok") else "review"
+            skill_items.append(
+                {
+                    "componentId": skill.id,
+                    "state": state,
+                    "action": action,
+                    "expectedNames": expected_names,
+                    "detectedNames": detected_names,
+                    "missingNames": missing_names,
+                    "conflicts": conflicts,
+                    "paths": paths,
+                    "installer": SKILLS_CLI_PACKAGE,
+                }
+            )
+
+        mcp_config = dict(storage.get_mcp_config().get("mcpServers") or {})
+        ordinary_mcp: list[dict[str, Any]] = []
+        for server in manifest.mcpServers:
+            config = dict(mcp_config.get(server.serverName) or {})
+            if not config or str(config.get("x-v8-plugin-owner") or "") == manifest.id:
+                continue
+            ordinary_mcp.append(
+                {
+                    "componentId": server.id,
+                    "serverName": server.serverName,
+                    "enabled": not bool(config.get("disabled", False)),
+                    "managedBy": "extensions_runtime",
+                    "note": "User-managed MCP configuration is not owned or modified by Plugin Manager.",
+                }
+            )
+
+        conflicts = sum(1 for item in skill_items if item["state"] == "conflict")
+        missing = sum(1 for item in [*cli_items, *skill_items] if item["state"] in {"missing", "partial", "unknown"})
+        detected = sum(1 for item in [*cli_items, *skill_items] if item["state"] in {"registered", "detected"})
+        return {
+            "pluginId": manifest.id,
+            "skillsCli": {
+                "available": bool(skills_inventory.get("ok")),
+                "package": SKILLS_CLI_PACKAGE,
+                "error": str(skills_inventory.get("error") or ""),
+            },
+            "cli": cli_items,
+            "skills": skill_items,
+            "ordinaryMcp": ordinary_mcp,
+            "summary": {
+                "detected": detected,
+                "needsCompletion": missing,
+                "conflicts": conflicts,
+                "ordinaryMcp": len(ordinary_mcp),
+            },
+        }
+
+    def warm_machine_discovery(self) -> dict[str, Any]:
+        """Warm local-only component discovery without installing or mutating anything."""
+
+        catalog = plugin_catalog_service.load()
+        completed: list[str] = []
+        failures: list[dict[str, str]] = []
+        for manifest in catalog.plugins:
+            try:
+                self.discover_machine_components(manifest.id)
+                completed.append(manifest.id)
+            except Exception as exc:
+                failures.append(
+                    {
+                        "pluginId": manifest.id,
+                        "error": str(exc).strip() or exc.__class__.__name__,
+                    }
+                )
+        return {
+            "status": "ready" if not failures else "degraded",
+            "checked": len(completed),
+            "failed": failures,
+            "sideEffects": "none",
+        }
+
     def _catalog_installation_rows(self) -> dict[str, dict[str, Any]]:
         now = time.monotonic()
         with self._cache_lock:
@@ -271,23 +578,41 @@ class PluginManagerService:
             if cached is not None and cached[0] == cache_key:
                 return cached[1], cached[2]
 
-        plugins = tuple(
-            {
-                **manifest.model_dump(mode="json"),
-                "manifestDigest": self._manifest_digest(manifest),
-                "catalogRevision": catalog.revision,
-                "componentCounts": {
-                    "cli": len(manifest.cliProfiles),
-                    "skills": len(manifest.skills),
-                    "mcp": len(manifest.mcpServers),
-                    "uiAdapters": len(manifest.uiAdapters),
-                    "providerAdapters": len(manifest.providerAdapters),
-                },
-                "grantRequired": True,
-                "brandAssetUrl": f"/v1/api/plugins/{manifest.id}/logo",
-            }
-            for manifest in catalog.plugins
-        )
+        projected_plugins: list[dict[str, Any]] = []
+        for manifest in catalog.plugins:
+            policy = self._component_policy(manifest)
+            projected_plugins.append(
+                {
+                    **manifest.model_dump(mode="json"),
+                    "manifestDigest": self._manifest_digest(manifest),
+                    "catalogRevision": catalog.revision,
+                    "componentCounts": {
+                        "cli": len(policy["cliProfiles"]),
+                        "skills": len(policy["skills"]),
+                        "mcp": len(policy["mcpServers"]),
+                        "uiAdapters": len(manifest.uiAdapters),
+                        "providerAdapters": len(manifest.providerAdapters),
+                    },
+                    "declaredComponentCounts": {
+                        "cli": len(manifest.cliProfiles),
+                        "skills": len(manifest.skills),
+                        "mcp": len(manifest.mcpServers),
+                        "uiAdapters": len(manifest.uiAdapters),
+                        "providerAdapters": len(manifest.providerAdapters),
+                    },
+                    "componentPolicy": {
+                        "mode": "official_cli_first",
+                        "transport": policy["transport"],
+                        "installable": policy["installable"],
+                        "blockingReasons": list(policy["blockingReasons"]),
+                        "selectedComponentIds": sorted(policy["activeComponentIds"]),
+                        "skippedComponentIds": list(policy["skippedComponentIds"]),
+                    },
+                    "grantRequired": True,
+                    "brandAssetUrl": f"/v1/api/plugins/{manifest.id}/logo",
+                }
+            )
+        plugins = tuple(projected_plugins)
         snapshot = plugin_catalog_service.snapshot()
         with self._cache_lock:
             self._catalog_projection_cache = (cache_key, snapshot, plugins)
@@ -342,6 +667,82 @@ class PluginManagerService:
         if not manifest:
             raise PluginManagerError(f"未知插件：{plugin_id}", code="plugin_not_found", status_code=404)
         return manifest
+
+    @staticmethod
+    def _component_policy(manifest: PluginManifest, *, platform_name: str | None = None) -> dict[str, Any]:
+        """Resolve the one installable transport without loading every integration.
+
+        Curated plugins prefer an official CLI on the current platform. An
+        official MCP server is selected only when no usable CLI exists. Skills
+        remain companions to either transport and are never replaced by MCP.
+        """
+
+        current_platform = str(platform_name or _platform_name()).strip().lower()
+        selected_cli = [profile for profile in manifest.cliProfiles if current_platform in profile.platforms]
+        if selected_cli:
+            selected_mcp = []
+            transport = "cli"
+        elif manifest.mcpServers:
+            selected_mcp = list(manifest.mcpServers)
+            transport = "mcp_platform_fallback" if manifest.cliProfiles else "mcp"
+        else:
+            selected_mcp = []
+            transport = "skill_only" if manifest.skills else "none"
+
+        selected_cli_ids = {item.id for item in selected_cli}
+        selected_mcp_ids = {item.id for item in selected_mcp}
+        selected_skills = []
+        blocked_skills = []
+        for skill in manifest.skills:
+            if skill.sourceKind == "managed_cli" and str(skill.sourceComponentId or "") not in selected_cli_ids:
+                blocked_skills.append(skill.id)
+                continue
+            selected_skills.append(skill)
+
+        blocking_reasons: list[str] = []
+        if manifest.cliProfiles and not selected_cli and not selected_mcp:
+            blocking_reasons.append(f"no supported official CLI or MCP transport for {current_platform}")
+        if blocked_skills:
+            blocking_reasons.append(
+                "required companion Skills depend on an unavailable managed CLI: " + ", ".join(sorted(blocked_skills))
+            )
+
+        active_component_ids = {
+            *[item.id for item in selected_cli],
+            *[item.id for item in selected_skills],
+            *[item.id for item in selected_mcp],
+            *[item.id for item in manifest.uiAdapters],
+            *[item.id for item in manifest.providerAdapters],
+        }
+        return {
+            "platform": current_platform,
+            "transport": transport,
+            "installable": not blocking_reasons,
+            "blockingReasons": blocking_reasons,
+            "cliProfiles": selected_cli,
+            "skills": selected_skills,
+            "mcpServers": selected_mcp,
+            "activeComponentIds": active_component_ids,
+            "skippedComponentIds": sorted(
+                {
+                    *[item.id for item in manifest.cliProfiles if item.id not in selected_cli_ids],
+                    *[item.id for item in manifest.mcpServers if item.id not in selected_mcp_ids],
+                    *blocked_skills,
+                }
+            ),
+        }
+
+    def _active_installed_component_ids(self, manifest: PluginManifest) -> set[str]:
+        policy = self._component_policy(manifest)
+        installed_ids = {str(item.get("component_id") or "") for item in self._component_rows(manifest.id)}
+        return set(policy["activeComponentIds"]).intersection(installed_ids)
+
+    def _requirement_component_ids(self, manifest: PluginManifest) -> set[str]:
+        policy_ids = set(self._component_policy(manifest)["activeComponentIds"])
+        if manifest.id not in self._installation_rows():
+            return policy_ids
+        installed_ids = self._active_installed_component_ids(manifest)
+        return installed_ids or policy_ids
 
     def _plugin_root(self, plugin_id: str) -> Path:
         config = storage.get_plugin_manager_config()
@@ -420,12 +821,25 @@ class PluginManagerService:
         items = []
         for plugin_id, row in sorted(installations.items()):
             manifest = plugin_catalog_service.get(plugin_id)
+            component_rows = self._component_rows(plugin_id)
+            active_component_ids = self._active_installed_component_ids(manifest) if manifest else set()
             items.append(
                 {
                     "pluginId": plugin_id,
                     "displayName": manifest.displayName if manifest else plugin_id,
                     **self._installation_payload(row),
-                    "components": [self._component_payload(item) for item in self._component_rows(plugin_id)],
+                    "components": [
+                        self._component_payload(item)
+                        for item in component_rows
+                        if not manifest or str(item.get("component_id") or "") in active_component_ids
+                    ],
+                    "inactiveComponentCount": len(
+                        [
+                            item
+                            for item in component_rows
+                            if manifest and str(item.get("component_id") or "") not in active_component_ids
+                        ]
+                    ),
                 }
             )
         return {"items": items, "count": len(items)}
@@ -463,8 +877,8 @@ class PluginManagerService:
             )
         return {"runtime": self.runtime_descriptor(), "plugins": items}
 
-    @staticmethod
-    def _grantable_components(manifest: PluginManifest) -> list[dict[str, Any]]:
+    def _grantable_components(self, manifest: PluginManifest) -> list[dict[str, Any]]:
+        active_ids = self._active_installed_component_ids(manifest)
         components: list[dict[str, Any]] = []
         components.extend(
             {
@@ -473,8 +887,9 @@ class PluginManagerService:
                 "actions": [action.id for action in item.actions],
             }
             for item in manifest.cliProfiles
+            if item.id in active_ids
         )
-        components.extend({"id": item.id, "type": "skill"} for item in manifest.skills)
+        components.extend({"id": item.id, "type": "skill"} for item in manifest.skills if item.id in active_ids)
         components.extend(
             {
                 "id": item.id,
@@ -482,9 +897,14 @@ class PluginManagerService:
                 "tools": list(item.allowedTools),
             }
             for item in manifest.mcpServers
+            if item.id in active_ids
         )
-        components.extend({"id": item.id, "type": "ui_adapter"} for item in manifest.uiAdapters)
-        components.extend({"id": item.id, "type": "provider_adapter"} for item in manifest.providerAdapters)
+        components.extend({"id": item.id, "type": "ui_adapter"} for item in manifest.uiAdapters if item.id in active_ids)
+        components.extend(
+            {"id": item.id, "type": "provider_adapter"}
+            for item in manifest.providerAdapters
+            if item.id in active_ids
+        )
         return components
 
     def supervisor_catalog(
@@ -499,6 +919,7 @@ class PluginManagerService:
         items: list[dict[str, Any]] = []
         for manifest in manifests:
             readiness = self.readiness_status(manifest.id)
+            component_policy = self._component_policy(manifest)
             authorization = (
                 self.authorization_status(manifest.id, session_id=session_id, run_id=run_id)
                 if session_id
@@ -514,6 +935,10 @@ class PluginManagerService:
                     "ready": readiness["ready"],
                     "authorized": bool(authorization.get("authorized")),
                     "components": self._grantable_components(manifest),
+                    "componentPolicy": {
+                        "transport": component_policy["transport"],
+                        "skippedComponentIds": component_policy["skippedComponentIds"],
+                    },
                     "configurationUrl": readiness["configurationUrl"],
                 }
             )
@@ -523,6 +948,40 @@ class PluginManagerService:
             "count": len(items),
             "policy": "@插件是强提示；Supervisor 只能为当前 run 授权已就绪插件的最小组件集合。",
         }
+
+    def supervisor_availability_prompt(self) -> str:
+        """Render a small, independent catalog hint for the Supervisor.
+
+        This is intentionally not an Extensions shortlist. It advertises only
+        installed plugins and never expands Skill bodies, MCP tool schemas, or
+        CLI action definitions before plugin_broker is called.
+        """
+
+        installations = self._installation_rows()
+        lines: list[str] = []
+        for manifest in plugin_catalog_service.load().plugins:
+            install = self._installation_payload(installations.get(manifest.id))
+            if not install["installed"]:
+                continue
+            readiness = self.readiness_status(manifest.id)
+            capability_text = "; ".join(str(item).strip() for item in manifest.capabilities if str(item).strip())
+            artifact_text = "; ".join(str(item).strip() for item in manifest.artifacts if str(item).strip())
+            status = str(readiness.get("status") or "invalid")
+            summary = capability_text or manifest.description
+            artifacts = artifact_text or "typed results and artifact references declared by the plugin"
+            lines.append(f"- {manifest.id} ({status}): {summary} -> {artifacts}")
+        if not lines:
+            return ""
+        return "\n".join(
+            [
+                "[Plugin Catalog]",
+                "Curated plugins are optional, on-demand capabilities. This inventory bypasses generic Skill/MCP prefiltering.",
+                "Plugin Skills are portable instructions; upstream references to a particular agent host do not make them host-exclusive.",
+                "Call plugin_broker(status) before authorizing a minimal task grant; no Skill body, MCP schema, or CLI action is loaded by this hint.",
+                *lines,
+                "[/Plugin Catalog]",
+            ]
+        )
 
     def authorize_for_supervisor(
         self,
@@ -593,7 +1052,8 @@ class PluginManagerService:
         mcp_servers = dict(storage.get_mcp_config().get("mcpServers") or {})
         server_by_component = {server.id: dict(mcp_servers.get(server.serverName) or {}) for server in manifest.mcpServers}
         items: list[dict[str, Any]] = []
-        for requirement in compile_plugin_requirements(manifest):
+        active_component_ids = self._requirement_component_ids(manifest)
+        for requirement in compile_plugin_requirements(manifest, component_ids=active_component_ids):
             binding = bindings.get(requirement.id)
             configured = False
             server_config = server_by_component.get(str(requirement.componentId or ""), {})
@@ -647,7 +1107,14 @@ class PluginManagerService:
     ) -> dict[str, Any]:
         manifest = self._manifest(plugin_id)
         requirement = next(
-            (item for item in compile_plugin_requirements(manifest) if item.id == requirement_id),
+            (
+                item
+                for item in compile_plugin_requirements(
+                    manifest,
+                    component_ids=self._requirement_component_ids(manifest),
+                )
+                if item.id == requirement_id
+            ),
             None,
         )
         if requirement is None:
@@ -679,7 +1146,10 @@ class PluginManagerService:
             raise PluginManagerError("请先安装插件", code="plugin_not_installed", status_code=409)
         oauth_components = {
             str(item.componentId or "")
-            for item in compile_plugin_requirements(manifest)
+            for item in compile_plugin_requirements(
+                manifest,
+                component_ids=self._requirement_component_ids(manifest),
+            )
             if item.kind == "oauth"
         }
         selected = next(
@@ -837,21 +1307,37 @@ class PluginManagerService:
     def build_install_plan(self, plugin_id: str) -> dict[str, Any]:
         manifest = self._manifest(plugin_id)
         current_platform = _platform_name()
+        component_policy = self._component_policy(manifest, platform_name=current_platform)
+        machine_discovery = self.discover_machine_components(manifest.id)
+        discovered_cli = {
+            str(item.get("componentId") or ""): item
+            for item in list(machine_discovery.get("cli") or [])
+        }
+        discovered_skills = {
+            str(item.get("componentId") or ""): item
+            for item in list(machine_discovery.get("skills") or [])
+        }
         cli_steps = []
         approval_classes = set(manifest.governance.approvalClasses)
-        for profile in manifest.cliProfiles:
-            supported = current_platform in profile.platforms
+        for profile in component_policy["cliProfiles"]:
             argv = self._expand_argv(manifest, profile.install)
+            discovery = dict(discovered_cli.get(profile.id) or {})
+            action = str(discovery.get("action") or "install")
             approval_required = bool(
-                profile.ownership == "external"
-                or profile.install.requiresElevation
-                or profile.install.mayRestart
-                or "system-install" in approval_classes
+                action == "install"
+                and (
+                    profile.ownership == "external"
+                    or profile.install.requiresElevation
+                    or profile.install.mayRestart
+                    or "system-install" in approval_classes
+                )
             )
             cli_steps.append(
                 {
                     "componentId": profile.id,
-                    "supported": supported,
+                    "action": action,
+                    "detectedCommands": dict(discovery.get("detectedCommands") or {}),
+                    "supported": True,
                     "ownership": profile.ownership,
                     "argv": argv,
                     "estimatedDownloadMb": profile.install.estimatedDownloadMb,
@@ -860,6 +1346,30 @@ class PluginManagerService:
                     "approvalRequired": approval_required,
                 }
             )
+        skill_steps = []
+        for skill in component_policy["skills"]:
+            discovery = dict(discovered_skills.get(skill.id) or {})
+            skill_steps.append(
+                {
+                    **skill.model_dump(mode="json"),
+                    "action": str(discovery.get("action") or "install"),
+                    "state": str(discovery.get("state") or "missing"),
+                    "detectedNames": list(discovery.get("detectedNames") or []),
+                    "missingNames": list(discovery.get("missingNames") or []),
+                    "conflicts": list(discovery.get("conflicts") or []),
+                    "paths": list(discovery.get("paths") or []),
+                }
+            )
+
+        blocking_reasons = list(component_policy["blockingReasons"])
+        if component_policy["skills"] and not bool((machine_discovery.get("skillsCli") or {}).get("available")):
+            blocking_reasons.append("skills_cli_unavailable")
+        if any(item.get("state") == "conflict" for item in skill_steps):
+            blocking_reasons.append("skill_name_conflict")
+        selected_mcp_names = {item.serverName for item in component_policy["mcpServers"]}
+        if any(item.get("serverName") in selected_mcp_names for item in machine_discovery.get("ordinaryMcp") or []):
+            blocking_reasons.append("ordinary_mcp_name_conflict")
+        installable = bool(component_policy["installable"] and not blocking_reasons)
         plan = {
             "pluginId": manifest.id,
             "displayName": manifest.displayName,
@@ -872,12 +1382,22 @@ class PluginManagerService:
             "steps": {
                 "preflight": True,
                 "cli": cli_steps,
-                "skills": [item.model_dump(mode="json") for item in manifest.skills],
-                "mcp": [item.model_dump(mode="json") for item in manifest.mcpServers],
+                "skills": skill_steps,
+                "mcp": [item.model_dump(mode="json") for item in component_policy["mcpServers"]],
                 "uiAdapters": [item.model_dump(mode="json") for item in manifest.uiAdapters],
                 "providerAdapters": [item.model_dump(mode="json") for item in manifest.providerAdapters],
                 "health": list(manifest.governance.healthChecks),
             },
+            "componentPolicy": {
+                "mode": "official_cli_first",
+                "transport": component_policy["transport"],
+                "installable": installable,
+                "blockingReasons": blocking_reasons,
+                "selectedComponentIds": sorted(component_policy["activeComponentIds"]),
+                "skippedComponentIds": list(component_policy["skippedComponentIds"]),
+            },
+            "machineDiscovery": machine_discovery,
+            "installable": installable,
             "approvalRequired": any(item["approvalRequired"] for item in cli_steps),
             "sideEffects": list(manifest.governance.sideEffects),
             "paidOperations": manifest.governance.paidOperations,
@@ -899,6 +1419,12 @@ class PluginManagerService:
         expected_digest = str(plan["planDigest"])
         normalized_digest = str(plan_digest or "").strip()
         normalized_idempotency = str(idempotency_key or "").strip() or None
+        if not dry_run and not bool(plan.get("installable")):
+            raise PluginManagerError(
+                "当前平台没有可安装的官方插件组件：" + "; ".join(plan["componentPolicy"]["blockingReasons"]),
+                code="plugin_components_unavailable",
+                status_code=409,
+            )
         if not dry_run and (not approved or normalized_digest != expected_digest):
             raise PluginManagerError(
                 "安装必须批准当前 dry-run 计划，且 planDigest 必须完全匹配。",
@@ -1152,6 +1678,14 @@ class PluginManagerService:
             if str(job.get("planDigest") or "") != str(current_plan.get("planDigest") or ""):
                 self._finish_job(job_id, state="failed", result={}, error="approved plan digest no longer matches catalog")
                 return self.get_install_job(job_id)
+            component_policy = self._component_policy(manifest)
+            selected_cli_profiles = list(component_policy["cliProfiles"])
+            selected_skills = list(component_policy["skills"])
+            selected_mcp_servers = list(component_policy["mcpServers"])
+            cli_plan_steps = {
+                str(item.get("componentId") or ""): dict(item)
+                for item in list((current_plan.get("steps") or {}).get("cli") or [])
+            }
             root = self._plugin_root(manifest.id)
             staging = root.parent / ".staging" / job_id
             backup = root.parent / ".staging" / f"{job_id}.previous"
@@ -1191,13 +1725,27 @@ class PluginManagerService:
                     manifest,
                     state="installing",
                     health={"ok": False, "online": False, "checks": []},
-                    external=any(profile.ownership == "external" for profile in manifest.cliProfiles),
+                    external=any(profile.ownership == "external" for profile in selected_cli_profiles),
                 )
-                profile_results: list[tuple[CliProfile, dict[str, Any]]] = []
-                for profile in manifest.cliProfiles:
-                    if _platform_name() not in profile.platforms:
-                        continue
-                    if profile.ownership == "external":
+                profile_results: list[tuple[CliProfile, dict[str, Any], str, dict[str, str]]] = []
+                for profile in selected_cli_profiles:
+                    step = dict(cli_plan_steps.get(profile.id) or {})
+                    action = str(step.get("action") or "install")
+                    detected_commands = {
+                        str(name): str(path)
+                        for name, path in dict(step.get("detectedCommands") or {}).items()
+                        if str(name).strip() and str(path).strip()
+                    }
+                    if action in {"adopt", "keep"}:
+                        version_spec = profile.version
+                        detected_executable = str(detected_commands.get(profile.commands[0]) or "").strip()
+                        if detected_executable:
+                            version_argv = list(version_spec.argv)
+                            if version_argv:
+                                version_argv[0] = detected_executable
+                            version_spec = version_spec.model_copy(update={"argv": version_argv})
+                        result = await asyncio.to_thread(self._execute_spec, manifest, version_spec)
+                    elif profile.ownership == "external":
                         external_started = True
                         if profile.install.requiresElevation:
                             self._set_job_state(job_id, "waiting_for_elevation", step_type="external_elevation")
@@ -1217,11 +1765,21 @@ class PluginManagerService:
                             f"CLI 安装失败：{profile.id}: {result['stderrTail'] or result['stdoutTail']}",
                             code="cli_install_failed",
                         )
-                    profile_results.append((profile, result))
+                    if action == "install" and profile.ownership == "external":
+                        detected_commands = self._discover_cli_commands(profile)
+                        if not detected_commands:
+                            raise PluginManagerError(
+                                f"系统安装器已结束，但尚未能定位 CLI：{profile.commands[0]}",
+                                code="external_cli_reconciliation_required",
+                            )
+                    profile_results.append((profile, result, action, detected_commands))
 
                 self._set_job_state(job_id, "validating", step_type="pre_commit_validation")
                 self._set_job_state(job_id, "committing", step_type="atomic_commit")
-                if any(profile.ownership == "managed" for profile, _ in profile_results):
+                if any(
+                    profile.ownership == "managed" and action == "install"
+                    for profile, _, action, _ in profile_results
+                ):
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     if backup.exists():
                         shutil.rmtree(backup)
@@ -1229,10 +1787,20 @@ class PluginManagerService:
                         root.replace(backup)
                     staging.replace(root)
 
-                for profile, result in profile_results:
-                    created_components.append(self._register_cli_component(manifest, profile, result))
-                    created_components.extend(self._ensure_cli_shims(manifest, profile))
-                for skill in manifest.skills:
+                for profile, result, action, detected_commands in profile_results:
+                    commands_for_registration = detected_commands or None
+                    created_components.append(
+                        self._register_cli_component(
+                            manifest,
+                            profile,
+                            result,
+                            adopted_commands=commands_for_registration,
+                            adopted=action == "adopt",
+                        )
+                    )
+                    if action == "install":
+                        created_components.extend(self._ensure_cli_shims(manifest, profile))
+                for skill in selected_skills:
                     created_components.extend(
                         await asyncio.to_thread(
                             self._install_skill_component,
@@ -1240,8 +1808,8 @@ class PluginManagerService:
                             skill.model_dump(mode="json"),
                         )
                     )
-                if manifest.mcpServers:
-                    created_components.extend(self._install_mcp_components(manifest))
+                if selected_mcp_servers:
+                    created_components.extend(self._install_mcp_components(manifest, selected_mcp_servers))
                 for adapter in manifest.uiAdapters:
                     created_components.append(
                         self._register_component(
@@ -1264,8 +1832,11 @@ class PluginManagerService:
                     )
 
                 health = await self.doctor(manifest.id, persist=False)
-                external = any(profile.ownership == "external" for profile in manifest.cliProfiles)
-                install_state = "installed" if health["ok"] or not manifest.cliProfiles else "degraded"
+                external = any(
+                    profile.ownership == "external" or action in {"adopt", "keep"}
+                    for profile, _, action, _ in profile_results
+                )
+                install_state = "installed" if health["ok"] or not selected_cli_profiles else "degraded"
                 receipt = {
                     "manifestDigest": self._manifest_digest(manifest),
                     "catalogRevision": plugin_catalog_service.load().revision,
@@ -1273,7 +1844,13 @@ class PluginManagerService:
                     "committedAt": utc_now_iso(),
                 }
                 self._upsert_installation(manifest, state=install_state, health=health, external=external, receipt=receipt)
-                result = {"ok": True, "state": install_state, "components": created_components, "health": health, "receipt": receipt}
+                result = {
+                    "ok": True,
+                    "state": install_state,
+                    "components": created_components,
+                    "health": health,
+                    "receipt": receipt,
+                }
                 self._finish_job(job_id, state="ready", result=result)
                 self._append_job_step(job_id, "complete", "ready", {"state": install_state})
                 if backup.exists():
@@ -1428,18 +2005,59 @@ class PluginManagerService:
                 "durationMs": spec.timeoutSeconds * 1000,
             }
 
-    def _register_cli_component(self, manifest: PluginManifest, profile: CliProfile, result: dict[str, Any]) -> dict[str, Any]:
+    def _register_cli_component(
+        self,
+        manifest: PluginManifest,
+        profile: CliProfile,
+        result: dict[str, Any],
+        *,
+        adopted_commands: dict[str, str] | None = None,
+        adopted: bool = False,
+    ) -> dict[str, Any]:
         root = self._plugin_root(manifest.id)
+        detected = dict(adopted_commands or {})
         return self._register_component(
             manifest.id,
             profile.id,
             "cli",
-            owned_path=str(root) if profile.ownership == "managed" else "",
+            owned_path=str(root) if profile.ownership == "managed" and not detected else "",
             source_url=manifest.officialLinks.documentation,
             source_version=manifest.version,
-            ownership=profile.ownership,
-            metadata={"commands": profile.commands, "installResult": _redact(result)},
+            ownership="external" if detected else profile.ownership,
+            metadata={
+                "commands": profile.commands,
+                "detectedCommands": detected,
+                "adopted": adopted,
+                "declaredOwnership": profile.ownership,
+                "installResult": _redact(result),
+            },
         )
+
+    def _effective_cli_spec(
+        self,
+        manifest: PluginManifest,
+        profile: CliProfile,
+        spec: CommandSpec,
+    ) -> CommandSpec:
+        row = next(
+            (
+                item
+                for item in self._component_rows(manifest.id)
+                if str(item.get("component_id") or "") == profile.id
+            ),
+            None,
+        )
+        metadata = _loads((row or {}).get("metadata_json"), {})
+        detected_commands = dict(metadata.get("detectedCommands") or {})
+        executable = str(detected_commands.get(profile.commands[0]) or "").strip()
+        if not executable:
+            return spec
+        argv = list(spec.argv)
+        if argv:
+            first = str(argv[0])
+            if first in profile.commands or "{pluginBin}" in first or Path(first).stem.lower() == profile.commands[0].lower():
+                argv[0] = executable
+        return spec.model_copy(update={"argv": argv})
 
     def _ensure_cli_shims(self, manifest: PluginManifest, profile: CliProfile) -> list[dict[str, Any]]:
         if profile.ownership != "managed":
@@ -1509,123 +2127,195 @@ class PluginManagerService:
             raise PluginManagerError(f"Skill Git 操作失败：{detail[-2000:]}", code="skill_install_failed")
         return result
 
+    @staticmethod
+    def _skill_names_from_source(source_root: Path) -> list[str]:
+        names: list[str] = []
+        skill_files = [source_root] if source_root.is_file() else sorted(source_root.rglob("SKILL.md"))
+        for skill_file in skill_files:
+            if skill_file.is_dir() or skill_file.name.lower() != "skill.md":
+                continue
+            try:
+                text = skill_file.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                continue
+            frontmatter = text.split("---", 2)[1] if text.startswith("---") and text.count("---") >= 2 else ""
+            match = re.search(r"(?m)^name:\s*['\"]?([^'\"\r\n]+)", frontmatter)
+            name = str(match.group(1) if match else skill_file.parent.name).strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
     def _install_skill_component(self, manifest: PluginManifest, skill: dict[str, Any]) -> list[dict[str, Any]]:
         source_kind = str(skill.get("sourceKind") or "git").strip().lower()
+        temp_root: Path | None = None
         if source_kind == "managed_cli":
-            return self._install_managed_cli_skill_component(manifest, skill)
+            source_component_id = str(skill.get("sourceComponentId") or "").strip()
+            source_profile = next(
+                (
+                    profile
+                    for profile in manifest.cliProfiles
+                    if profile.id == source_component_id and profile.ownership == "managed"
+                ),
+                None,
+            )
+            if source_profile is None:
+                raise PluginManagerError("Skill 来源未绑定到受管 CLI 组件", code="skill_source_component_invalid")
+            plugin_root = self._plugin_root(manifest.id).resolve()
+            source_root = (plugin_root / str(skill["path"])).resolve()
+            if plugin_root != source_root and plugin_root not in source_root.parents:
+                raise PluginManagerError("受管 CLI Skill 路径越界", code="skill_path_invalid")
+        else:
+            temp_root = Path(tempfile.mkdtemp(prefix=f"v8-plugin-{manifest.id}-"))
+            try:
+                repo_root = temp_root / "repo"
+                revision = str(skill["revision"])
+                self._run_skill_git_step(["git", "init", str(repo_root)])
+                self._run_skill_git_step(
+                    ["git", "-C", str(repo_root), "remote", "add", "origin", str(skill["repository"])]
+                )
+                for attempt in range(3):
+                    try:
+                        self._run_skill_git_step(
+                            ["git", "-C", str(repo_root), "fetch", "--depth", "1", "--no-tags", "origin", revision]
+                        )
+                        break
+                    except PluginManagerError:
+                        if attempt == 2:
+                            raise
+                        time.sleep(0.5 * (attempt + 1))
+                self._run_skill_git_step(["git", "-C", str(repo_root), "checkout", "--detach", "FETCH_HEAD"])
+                verified = self._run_skill_git_step(["git", "-C", str(repo_root), "rev-parse", "HEAD"])
+                if str(verified.get("stdoutTail") or "").strip().lower() != revision.lower():
+                    raise PluginManagerError("Skill Git 提交校验失败", code="skill_revision_mismatch")
+                source_root = (repo_root / str(skill["path"])).resolve()
+                if repo_root.resolve() not in source_root.parents:
+                    raise PluginManagerError("官方 Skill 路径越界", code="skill_path_invalid")
+            except Exception:
+                shutil.rmtree(temp_root, ignore_errors=True)
+                raise
 
-        temp_root = Path(tempfile.mkdtemp(prefix=f"v8-plugin-{manifest.id}-"))
         try:
-            repo_root = temp_root / "repo"
-            revision = str(skill["revision"])
-            self._run_skill_git_step(["git", "init", str(repo_root)])
-            self._run_skill_git_step(
-                ["git", "-C", str(repo_root), "remote", "add", "origin", str(skill["repository"])]
-            )
-            self._run_skill_git_step(
-                ["git", "-C", str(repo_root), "fetch", "--depth", "1", "--no-tags", "origin", revision]
-            )
-            self._run_skill_git_step(["git", "-C", str(repo_root), "checkout", "--detach", "FETCH_HEAD"])
-            verified = self._run_skill_git_step(["git", "-C", str(repo_root), "rev-parse", "HEAD"])
-            if str(verified.get("stdoutTail") or "").strip().lower() != revision.lower():
-                raise PluginManagerError("Skill Git 提交校验失败", code="skill_revision_mismatch")
-            source_root = (repo_root / skill["path"]).resolve()
-            if repo_root.resolve() not in source_root.parents or not source_root.exists():
-                raise PluginManagerError("官方 Skill 路径不存在或越界", code="skill_path_invalid")
-            target_root = AGENT_SKILLS_ROOT / skill["targetDirectory"]
-            if target_root.exists():
+            if not source_root.exists():
+                raise PluginManagerError("官方 Skill 路径不存在", code="skill_path_invalid")
+            source_names = self._skill_names_from_source(source_root)
+            declared_names = [str(item) for item in list(skill.get("skillNames") or []) if str(item).strip()]
+            if declared_names and not set(declared_names).issubset(source_names):
+                raise PluginManagerError("签名目录中的 Skill 名称与官方来源不一致", code="skill_name_mismatch")
+            selected_names = declared_names or source_names
+            if not selected_names:
+                raise PluginManagerError("官方来源中没有可安装的 SKILL.md", code="skill_source_empty")
+
+            before = self._skills_cli_inventory(force=True)
+            if not before.get("ok"):
                 raise PluginManagerError(
-                    f"Skill 目标目录已存在：{target_root}",
-                    code="skill_target_exists",
+                    str(before.get("error") or "skills CLI inventory failed"),
+                    code="skills_cli_unavailable",
+                    status_code=503,
+                )
+            inventory_by_name = {
+                str(item.get("name") or ""): item
+                for item in list(before.get("items") or [])
+                if str(item.get("name") or "").strip()
+            }
+            lock_entries = dict(before.get("lockEntries") or {})
+            adopted_names: list[str] = []
+            adopted_paths: list[str] = []
+            conflicts: list[str] = []
+            for name in selected_names:
+                installed = inventory_by_name.get(name)
+                if not installed:
+                    continue
+                if source_kind == "git" and self._skill_source_matches(lock_entries.get(name) or {}, skill):
+                    adopted_names.append(name)
+                    path = str(installed.get("path") or "").strip()
+                    if path:
+                        adopted_paths.append(path)
+                else:
+                    conflicts.append(name)
+            if conflicts:
+                raise PluginManagerError(
+                    "同名 Skill 已由其他来源安装：" + ", ".join(conflicts),
+                    code="skill_name_conflict",
                     status_code=409,
                 )
-            shutil.copytree(source_root, target_root)
+
+            missing_names = [name for name in selected_names if name not in adopted_names]
+            if missing_names:
+                install_result = self._run_skills_cli(
+                    [
+                        "add",
+                        str(source_root),
+                        "--global",
+                        "--agent",
+                        "codex",
+                        "--copy",
+                        "--yes",
+                        "--skill",
+                        *missing_names,
+                    ],
+                    timeout_seconds=600,
+                )
+                if install_result["returnCode"] != 0:
+                    raise PluginManagerError(
+                        str(install_result.get("stderrTail") or install_result.get("stdoutTail") or "skills CLI failed")[-2000:],
+                        code="skill_install_failed",
+                    )
+                self._invalidate_skills_inventory_cache()
+            after = self._skills_cli_inventory(force=True)
+            after_by_name = {
+                str(item.get("name") or ""): item
+                for item in list(after.get("items") or [])
+                if str(item.get("name") or "").strip()
+            }
+            missing_after = [name for name in selected_names if name not in after_by_name]
+            if missing_after:
+                raise PluginManagerError(
+                    "skills CLI 未登记预期 Skill：" + ", ".join(missing_after),
+                    code="skill_install_incomplete",
+                )
+            managed_paths = [str(after_by_name[name].get("path") or "") for name in missing_names]
+            skill_paths = [*adopted_paths, *[item for item in managed_paths if item]]
+            ownership = "skills_cli" if missing_names else "external"
             return [
                 self._register_component(
                     manifest.id,
-                    skill["id"],
+                    str(skill["id"]),
                     "skill",
-                    owned_path=str(target_root),
-                    source_url=skill["repository"],
-                    source_version=skill["revision"],
-                    metadata={"officialOrganization": skill["officialOrganization"], "sourcePath": skill["path"]},
+                    owned_path=managed_paths[0] if managed_paths else adopted_paths[0] if adopted_paths else "",
+                    source_url=str(skill["repository"]),
+                    source_version=str(skill["revision"]),
+                    ownership=ownership,
+                    metadata={
+                        "officialOrganization": skill["officialOrganization"],
+                        "sourceKind": source_kind,
+                        "sourceComponentId": str(skill.get("sourceComponentId") or ""),
+                        "sourcePath": skill["path"],
+                        "installer": SKILLS_CLI_PACKAGE,
+                        "skillNames": selected_names,
+                        "skillPaths": skill_paths,
+                        "managedSkillNames": missing_names,
+                        "adoptedSkillNames": adopted_names,
+                    },
                 )
             ]
         finally:
-            shutil.rmtree(temp_root, ignore_errors=True)
+            if temp_root is not None:
+                shutil.rmtree(temp_root, ignore_errors=True)
 
-    def _install_managed_cli_skill_component(
+    def _install_mcp_components(
         self,
         manifest: PluginManifest,
-        skill: dict[str, Any],
+        selected_servers: Iterable[Any] | None = None,
     ) -> list[dict[str, Any]]:
-        source_component_id = str(skill.get("sourceComponentId") or "").strip()
-        source_profile = next(
-            (
-                profile
-                for profile in manifest.cliProfiles
-                if profile.id == source_component_id and profile.ownership == "managed"
-            ),
-            None,
-        )
-        if source_profile is None:
-            raise PluginManagerError(
-                "Skill 来源未绑定到受管 CLI 组件",
-                code="skill_source_component_invalid",
-            )
-
-        plugin_root = self._plugin_root(manifest.id).resolve()
-        source_root = (plugin_root / str(skill["path"])).resolve()
-        if plugin_root != source_root and plugin_root not in source_root.parents:
-            raise PluginManagerError("受管 CLI Skill 路径越界", code="skill_path_invalid")
-        if not source_root.exists():
-            raise PluginManagerError("受管 CLI 包未提供声明的 Skill", code="skill_path_invalid")
-
-        target_root = AGENT_SKILLS_ROOT / str(skill["targetDirectory"])
-        if target_root.exists():
-            raise PluginManagerError(
-                f"Skill 目标目录已存在：{target_root}",
-                code="skill_target_exists",
-                status_code=409,
-            )
-        staging_target = target_root.with_name(f".{target_root.name}.staging-{uuid.uuid4().hex}")
-        try:
-            if source_root.is_dir():
-                shutil.copytree(source_root, staging_target)
-            else:
-                staging_target.mkdir(parents=True, exist_ok=False)
-                target_name = "SKILL.md" if source_root.name.lower() == "skill.md" else source_root.name
-                shutil.copy2(source_root, staging_target / target_name)
-            staging_target.replace(target_root)
-        except Exception:
-            if staging_target.exists():
-                shutil.rmtree(staging_target, ignore_errors=True)
-            if target_root.exists():
-                shutil.rmtree(target_root, ignore_errors=True)
-            raise
-
-        return [
-            self._register_component(
-                manifest.id,
-                str(skill["id"]),
-                "skill",
-                owned_path=str(target_root),
-                source_url=str(skill["repository"]),
-                source_version=str(skill["revision"]),
-                metadata={
-                    "officialOrganization": skill["officialOrganization"],
-                    "sourceKind": "managed_cli",
-                    "sourceComponentId": source_component_id,
-                    "sourcePath": skill["path"],
-                },
-            )
-        ]
-
-    def _install_mcp_components(self, manifest: PluginManifest) -> list[dict[str, Any]]:
         payload = storage.get_mcp_config()
         servers = dict(payload.get("mcpServers") or {})
         rows = []
-        for server in manifest.mcpServers:
+        effective_servers = (
+            list(selected_servers)
+            if selected_servers is not None
+            else list(self._component_policy(manifest)["mcpServers"])
+        )
+        for server in effective_servers:
             if server.serverName in servers and str((servers[server.serverName] or {}).get("x-v8-plugin-owner") or "") != manifest.id:
                 raise PluginManagerError(
                     f"MCP server 名称已被用户配置占用：{server.serverName}",
@@ -1723,7 +2413,14 @@ class PluginManagerService:
             )
             conn.commit()
         self._invalidate_ownership_cache()
-        return {"id": component_id, "type": component_type, "path": owned_path or None, "sha256": digest or None}
+        return {
+            "id": component_id,
+            "type": component_type,
+            "path": owned_path or None,
+            "sha256": digest or None,
+            "ownership": ownership,
+            "metadata": dict(metadata or {}),
+        }
 
     def _upsert_installation(
         self,
@@ -1737,7 +2434,10 @@ class PluginManagerService:
         now = utc_now_iso()
         required_configuration = [
             item
-            for item in compile_plugin_requirements(manifest)
+            for item in compile_plugin_requirements(
+                manifest,
+                component_ids=self._component_policy(manifest)["activeComponentIds"],
+            )
             if item.required and item.confidence != "hint"
         ]
         auto_configured = 0 if required_configuration else 1
@@ -1802,10 +2502,34 @@ class PluginManagerService:
             )
             conn.commit()
 
+    def _remove_skills_cli_names(self, names: Iterable[str]) -> dict[str, Any]:
+        selected = sorted({str(name).strip() for name in names if str(name).strip()})
+        if not selected:
+            return {"ok": True, "removed": [], "error": ""}
+        result = self._run_skills_cli(
+            ["remove", *selected, "--global", "--yes"],
+            timeout_seconds=300,
+        )
+        self._invalidate_skills_inventory_cache()
+        return {
+            "ok": result["returnCode"] == 0,
+            "removed": selected if result["returnCode"] == 0 else [],
+            "error": str(result.get("stderrTail") or result.get("stdoutTail") or "")[-2000:],
+        }
+
     def _rollback(self, manifest: PluginManifest, snapshot: dict[str, Any], components: list[dict[str, Any]]) -> dict[str, Any]:
         removed = []
         errors = []
         for component in reversed(components):
+            metadata = dict(component.get("metadata") or {})
+            managed_skill_names = list(metadata.get("managedSkillNames") or [])
+            if component.get("type") == "skill" and managed_skill_names:
+                removal = self._remove_skills_cli_names(managed_skill_names)
+                if removal["ok"]:
+                    removed.extend(f"skill:{name}" for name in removal["removed"])
+                else:
+                    errors.append(f"skills CLI rollback: {removal['error']}")
+                continue
             path_text = str(component.get("path") or "").strip()
             if not path_text:
                 continue
@@ -1912,7 +2636,10 @@ class PluginManagerService:
         installation = self._installation_rows().get(manifest.id)
         if not installation:
             raise PluginManagerError("请先安装插件", code="plugin_not_installed", status_code=409)
-        requirements = compile_plugin_requirements(manifest)
+        requirements = compile_plugin_requirements(
+            manifest,
+            component_ids=self._requirement_component_ids(manifest),
+        )
         by_component: dict[str, list[PluginConfigRequirement]] = {}
         for requirement in requirements:
             by_component.setdefault(str(requirement.componentId or ""), []).append(requirement)
@@ -1920,7 +2647,9 @@ class PluginManagerService:
         manager_config = storage.get_plugin_manager_config()
         all_plugin_values = dict(manager_config.get("pluginConfigValues") or {})
         plugin_values = dict(all_plugin_values.get(manifest.id) or {})
-        mcp_component_ids = {item.id for item in manifest.mcpServers}
+        active_component_ids = self._requirement_component_ids(manifest)
+        selected_mcp_servers = [item for item in manifest.mcpServers if item.id in active_component_ids]
+        mcp_component_ids = {item.id for item in selected_mcp_servers}
         changed_non_mcp_components: set[str] = set()
         for requirement in requirements:
             raw_value = values.get(requirement.id)
@@ -1970,7 +2699,7 @@ class PluginManagerService:
         servers = dict(payload.get("mcpServers") or {})
         configured_components: list[str] = sorted(item for item in changed_non_mcp_components if item)
         bindings = self._credential_bindings(manifest.id)
-        for server in manifest.mcpServers:
+        for server in selected_mcp_servers:
             current = dict(servers.get(server.serverName) or self._expand_template(manifest, server.configTemplate))
             env = dict(current.get("env") or {})
             headers = dict(current.get("headers") or {})
@@ -2054,11 +2783,13 @@ class PluginManagerService:
 
     async def doctor(self, plugin_id: str, *, persist: bool = True) -> dict[str, Any]:
         manifest = self._manifest(plugin_id)
+        active_component_ids = self._active_installed_component_ids(manifest)
         checks = []
         for profile in manifest.cliProfiles:
-            if _platform_name() not in profile.platforms:
+            if profile.id not in active_component_ids:
                 continue
-            result = await asyncio.to_thread(self._execute_spec, manifest, profile.version)
+            version_spec = self._effective_cli_spec(manifest, profile, profile.version)
+            result = await asyncio.to_thread(self._execute_spec, manifest, version_spec)
             checks.append(
                 {
                     "componentId": profile.id,
@@ -2067,7 +2798,34 @@ class PluginManagerService:
                     "summary": (result["stdoutTail"] or result["stderrTail"])[-500:],
                 }
             )
-        if manifest.mcpServers:
+        component_rows = {
+            str(item.get("component_id") or ""): item
+            for item in self._component_rows(manifest.id)
+        }
+        for skill in manifest.skills:
+            if skill.id not in active_component_ids:
+                continue
+            row = component_rows.get(skill.id) or {}
+            owned_path = str(row.get("owned_path") or "").strip()
+            metadata = _loads(row.get("metadata_json"), {})
+            skill_paths = [str(item) for item in list(metadata.get("skillPaths") or []) if str(item).strip()]
+            if not skill_paths and owned_path:
+                skill_paths = [owned_path]
+            present = bool(skill_paths) and all((Path(item) / "SKILL.md").is_file() for item in skill_paths)
+            checks.append(
+                {
+                    "componentId": skill.id,
+                    "kind": "skill-file",
+                    "ok": present,
+                    "summary": (
+                        f"{len(skill_paths)} Skill package(s) are installed"
+                        if present
+                        else "One or more SKILL.md files are missing"
+                    ),
+                }
+            )
+        selected_mcp_servers = [server for server in manifest.mcpServers if server.id in active_component_ids]
+        if selected_mcp_servers:
             payload = storage.get_mcp_config()
             servers = dict(payload.get("mcpServers") or {})
             try:
@@ -2076,7 +2834,7 @@ class PluginManagerService:
                 runtime_status = dict(mcp_manager.get_status() or {})
             except Exception:
                 runtime_status = {}
-            for server in manifest.mcpServers:
+            for server in selected_mcp_servers:
                 config = dict(servers.get(server.serverName) or {})
                 enabled = bool(config) and not bool(config.get("disabled", True))
                 connection_state = str((runtime_status.get(server.serverName) or {}).get("status") or "unknown")
@@ -2089,7 +2847,7 @@ class PluginManagerService:
                         "summary": f"enabled={enabled}; connection={connection_state}",
                     }
                 )
-        if manifest.uiAdapters:
+        if any(item.id in active_component_ids for item in manifest.uiAdapters):
             checks.append({"componentId": "ui-adapters", "kind": "ui-adapter", "ok": True, "summary": "registered"})
         ok = all(item["ok"] for item in checks) if checks else True
         online = any(item["ok"] for item in checks) if checks else True
@@ -2141,6 +2899,33 @@ class PluginManagerService:
                 status_code=409,
             )
         removed = []
+        referenced_skill_names: set[str] = set()
+        for other in self._component_rows():
+            if str(other.get("plugin_id") or "") == manifest.id or other.get("component_type") != "skill":
+                continue
+            referenced_skill_names.update(
+                str(name)
+                for name in list(_loads(other.get("metadata_json"), {}).get("skillNames") or [])
+                if str(name).strip()
+            )
+        managed_skill_names: set[str] = set()
+        for item in components:
+            if item.get("component_type") != "skill" or item.get("ownership") != "skills_cli":
+                continue
+            managed_skill_names.update(
+                str(name)
+                for name in list(_loads(item.get("metadata_json"), {}).get("managedSkillNames") or [])
+                if str(name).strip() and str(name) not in referenced_skill_names
+            )
+        if managed_skill_names:
+            skill_removal = self._remove_skills_cli_names(managed_skill_names)
+            if not skill_removal["ok"] and not force:
+                raise PluginManagerError(
+                    f"skills CLI 未能安全移除插件 Skill：{skill_removal['error']}",
+                    code="skill_uninstall_failed",
+                    status_code=409,
+                )
+            removed.extend(f"skill:{name}" for name in skill_removal["removed"])
         for item in reversed(components):
             if item.get("ownership") != "managed":
                 continue
@@ -2184,6 +2969,7 @@ class PluginManagerService:
             storage.save_plugin_manager_config(manager_config)
         with db.get_connection() as conn:
             conn.execute("DELETE FROM plugin_installations WHERE plugin_id=?", (manifest.id,))
+            conn.execute("DELETE FROM plugin_components WHERE plugin_id=?", (manifest.id,))
             conn.execute(
                 "UPDATE plugin_grants SET state='invalidated', revoked_at=?, terminal_reason='plugin_uninstalled' WHERE plugin_id=? AND state='active'",
                 (utc_now_iso(), manifest.id),
@@ -2194,6 +2980,7 @@ class PluginManagerService:
         self._invalidate_catalog_installation_cache()
         self._invalidate_ownership_cache()
         self._invalidate_grant_cache()
+        self._invalidate_skills_inventory_cache()
         self._event(manifest.id, "uninstalled", "ok", details={"removed": removed, "externalComponentsRetained": [item["component_id"] for item in components if item.get("ownership") == "external"]})
         self._refresh_extensions()
         return {
@@ -2251,13 +3038,7 @@ class PluginManagerService:
                 code="plugin_not_ready",
                 status_code=409,
             )
-        declared = {
-            *[item.id for item in manifest.cliProfiles],
-            *[item.id for item in manifest.skills],
-            *[item.id for item in manifest.mcpServers],
-            *[item.id for item in manifest.uiAdapters],
-            *[item.id for item in manifest.providerAdapters],
-        }
+        declared = self._active_installed_component_ids(manifest)
         requested = [str(item).strip() for item in list(component_ids or []) if str(item).strip()]
         if not requested:
             raise PluginManagerError(
@@ -2267,7 +3048,7 @@ class PluginManagerService:
             )
         selected = requested
         if not set(selected).issubset(declared):
-            raise PluginManagerError("授权包含未声明组件", code="grant_component_invalid")
+            raise PluginManagerError("授权包含未安装或已被 CLI 优先策略排除的组件", code="grant_component_invalid")
         if grantee_type == "subagent":
             normalized_delegation_id = str(delegation_id or "").strip()
             try:
@@ -2573,6 +3354,12 @@ class PluginManagerService:
         if component_id not in set(_loads(row.get("component_ids_json"), [])):
             raise PluginManagerError("插件组件未获授权", code="plugin_grant_component_denied", status_code=403)
         manifest = self._manifest(plugin_id)
+        if component_id not in self._active_installed_component_ids(manifest):
+            raise PluginManagerError(
+                "插件组件未安装或已被当前 CLI 优先策略排除",
+                code="plugin_component_not_active",
+                status_code=409,
+            )
         current_digest = self._manifest_digest(manifest)
         if manifest_digest and str(manifest_digest) != str(row.get("manifest_digest") or ""):
             raise PluginManagerError("工具投影与授权清单不匹配", code="plugin_grant_projection_stale", status_code=403)
@@ -2814,12 +3601,29 @@ class PluginManagerService:
         cli_entries: list[dict[str, Any]] = []
         adapters: list[dict[str, Any]] = []
         provider_adapters: list[dict[str, Any]] = []
+        component_rows_by_plugin: dict[str, dict[str, dict[str, Any]]] = {}
         for grant in grants:
             manifest = self._manifest(grant["pluginId"])
-            components = set(grant["componentIds"])
+            components = set(grant["componentIds"]).intersection(self._active_installed_component_ids(manifest))
+            component_rows = component_rows_by_plugin.setdefault(
+                manifest.id,
+                {
+                    str(item.get("component_id") or ""): item
+                    for item in self._component_rows(manifest.id)
+                },
+            )
             for skill in manifest.skills:
                 if skill.id in components:
-                    skills.append({"pluginId": manifest.id, "grantId": grant["grantId"], **skill.model_dump(mode="json")})
+                    row = component_rows.get(skill.id) or {}
+                    metadata = _loads(row.get("metadata_json"), {})
+                    skills.append(
+                        {
+                            "pluginId": manifest.id,
+                            "grantId": grant["grantId"],
+                            **skill.model_dump(mode="json"),
+                            "installedRoots": list(metadata.get("skillPaths") or []),
+                        }
+                    )
             for profile in manifest.cliProfiles:
                 if profile.id in components:
                     cli_entries.append({"pluginId": manifest.id, "pluginName": manifest.displayName, "grantId": grant["grantId"], **profile.model_dump(mode="json")})
@@ -2930,6 +3734,7 @@ class PluginManagerService:
             action_spec = self._build_cli_action_spec(manifest, profile, action, supplied)
         if action_spec is None:
             raise PluginManagerError(f"CLI 不支持动作：{normalized_action}", code="plugin_cli_action_unsupported")
+        action_spec = self._effective_cli_spec(manifest, profile, action_spec)
         command_preview = subprocess.list2cmdline(self._expand_argv(manifest, action_spec))
         from core.tools.native.tool_governance import _enforce_safety_decision
         from erc.runtime_context import get_runtime_context
@@ -2995,7 +3800,16 @@ class PluginManagerService:
                 f"CLI 动作缺少参数：{', '.join(missing)}",
                 code="plugin_cli_parameter_missing",
             )
-        executable = str(self._bin_root() / f"{profile.commands[0]}.cmd") if profile.ownership == "managed" else profile.commands[0]
+        default_executable = (
+            str(self._bin_root() / f"{profile.commands[0]}.cmd")
+            if profile.ownership == "managed"
+            else profile.commands[0]
+        )
+        executable = self._effective_cli_spec(
+            manifest,
+            profile,
+            CommandSpec(argv=[default_executable]),
+        ).argv[0]
         template = list(action.argv or [executable, action.id])
         if template and template[0] in profile.commands:
             template[0] = executable
@@ -3071,6 +3885,12 @@ class PluginManagerService:
         for item in self._component_rows():
             if item.get("component_type") == "skill" and item.get("owned_path"):
                 roots.add(str(Path(str(item["owned_path"])).resolve()))
+                metadata = _loads(item.get("metadata_json"), {})
+                roots.update(
+                    str(Path(str(path)).resolve())
+                    for path in list(metadata.get("skillPaths") or [])
+                    if str(path).strip()
+                )
             elif item.get("component_type") == "mcp":
                 name = str(_loads(item.get("metadata_json"), {}).get("serverName") or "").strip()
                 if name:

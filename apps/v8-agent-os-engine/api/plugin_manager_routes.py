@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -224,6 +225,18 @@ async def get_authorization_status(
 @router.get("/{plugin_id}/readiness")
 async def get_plugin_readiness(plugin_id: str):
     return plugin_manager_service.readiness_status(plugin_id)
+
+
+@router.get("/{plugin_id}/machine-discovery")
+async def get_plugin_machine_discovery(plugin_id: str, refresh: bool = Query(default=False)):
+    try:
+        return await asyncio.to_thread(
+            plugin_manager_service.discover_machine_components,
+            plugin_id,
+            force=refresh,
+        )
+    except PluginManagerError as exc:
+        _raise(exc)
 
 
 @router.get("/{plugin_id}/logo")

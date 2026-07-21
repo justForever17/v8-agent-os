@@ -208,7 +208,7 @@ def test_common_default_tool_package_matches_product_contract():
     )
 
 
-def test_collaboration_tree_receives_common_and_plugin_tools_with_bounded_delegation():
+def test_collaboration_tree_receives_plugin_broker_but_not_ungranted_plugin_executor():
     tool_names = list(BASELINE_SYSTEM_TOOL_NAME_ORDER) + [
         "ask_user",
         "agent_broker",
@@ -251,10 +251,11 @@ def test_collaboration_tree_receives_common_and_plugin_tools_with_bounded_delega
     assert common.issubset(supervisor)
     assert common.issubset(direct_child)
     assert common.issubset(grandchild)
-    assert {"ask_user", "runtime_broker", "agent_broker", "delegation_broker", "plugin_broker", "plugin_cli"}.issubset(supervisor)
-    assert {"delegation_broker", "plugin_broker", "plugin_cli"}.issubset(direct_child)
+    assert {"ask_user", "runtime_broker", "agent_broker", "delegation_broker", "plugin_broker"}.issubset(supervisor)
+    assert {"delegation_broker", "plugin_broker"}.issubset(direct_child)
     assert "delegation_broker" not in grandchild
-    assert {"plugin_broker", "plugin_cli"}.issubset(grandchild)
+    assert "plugin_broker" in grandchild
+    assert "plugin_cli" not in supervisor | direct_child | grandchild
     assert "ask_user" not in direct_child | grandchild
     assert "agent_broker" not in direct_child | grandchild
     assert "runtime_broker" not in direct_child | grandchild

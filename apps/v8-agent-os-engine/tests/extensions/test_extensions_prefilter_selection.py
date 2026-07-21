@@ -160,6 +160,7 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         service = ExtensionsRuntimeService()
         ordinary = _FakeTool("query-docs", "Documentation lookup", "context7")
         privileged = _FakeTool("get_design_context", "Read Figma design context", "figma")
+        cli_executor = _FakeTool("plugin_cli", "Run an authorized plugin CLI action", "")
         policy = {
             "enabled": False,
             "available": False,
@@ -183,9 +184,10 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         ):
             without_grant = service.build_contextual_route(
                 user_query="Figma design context documentation",
-                available_tools=[ordinary, privileged],
+                available_tools=[ordinary, privileged, cli_executor],
             )
         self.assertNotIn("get_design_context", {tool.name for tool in without_grant.filtered_tools})
+        self.assertNotIn("plugin_cli", {tool.name for tool in without_grant.filtered_tools})
 
         with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
             service, "_resolve_skill_inventory", return_value={"items": [], "rootDescriptors": []}
@@ -196,13 +198,69 @@ class ExtensionsPrefilterSelectionTests(unittest.TestCase):
         ), patch.object(
             plugin_manager_service,
             "projection_for",
-            return_value={"grants": [{"pluginId": "figma"}], "skills": [], "mcpTools": [privileged], "cliProfiles": [], "uiAdapters": []},
+            return_value={"grants": [{"pluginId": "figma"}], "skills": [], "mcpTools": [privileged], "cliProfiles": [{"id": "gh"}], "uiAdapters": []},
         ):
             with_grant = service.build_contextual_route(
                 user_query="Figma design context documentation",
-                available_tools=[ordinary, privileged],
+                available_tools=[ordinary, privileged, cli_executor],
             )
         self.assertIn("get_design_context", {tool.name for tool in with_grant.filtered_tools})
+        self.assertIn("plugin_cli", {tool.name for tool in with_grant.filtered_tools})
+
+    def test_plugin_owned_skill_bypasses_generic_prefilter_until_granted(self):
+        service = ExtensionsRuntimeService()
+        skill_root = str((Path.home() / ".agents" / "skills" / "v8-plugin-office-suite").resolve())
+        inventory = {
+            "items": [
+                {
+                    "name": "office",
+                    "skillName": "office",
+                    "skillId": "office-documents-skill",
+                    "skillRoot": skill_root,
+                    "path": skill_root,
+                    "description": "Create DOCX, XLSX, PDF, and PPTX artifacts.",
+                }
+            ],
+            "rootDescriptors": [],
+        }
+        policy = {
+            "enabled": False,
+            "available": False,
+            "mode": "lexical",
+            "modelId": None,
+            "role": None,
+            "reason": "disabled",
+            "skills": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+            "mcp": {"stage1TopK": 20, "llmEnabled": False, "stage2TopK": 5},
+        }
+
+        def build(projection):
+            with patch.object(service, "_resolve_prefilter_policy", return_value=policy), patch.object(
+                service, "_resolve_skill_inventory", return_value=inventory
+            ), patch.object(
+                service,
+                "_resolve_event_context",
+                return_value={"session_id": "s1", "run_id": "r1", "runtime_kind": "chat", "agent_id": "supervisor"},
+            ), patch.object(
+                plugin_manager_service, "plugin_owned_components", return_value=({skill_root}, set())
+            ), patch.object(
+                plugin_manager_service, "projection_for", return_value=projection
+            ):
+                return service.build_contextual_route(user_query="create a quarterly report", available_tools=[])
+
+        without_grant = build({"grants": [], "skills": [], "mcpTools": [], "cliProfiles": [], "uiAdapters": []})
+        self.assertNotIn("office", without_grant.selected_skill_names)
+
+        with_grant = build(
+            {
+                "grants": [{"pluginId": "office-suite"}],
+                "skills": [{"targetDirectory": "v8-plugin-office-suite"}],
+                "mcpTools": [],
+                "cliProfiles": [],
+                "uiAdapters": [],
+            }
+        )
+        self.assertIn("office", with_grant.selected_skill_names)
 
     def test_video_skill_selection_uses_all_skill_name_description_candidates(self):
         service = ExtensionsRuntimeService()

@@ -3479,7 +3479,11 @@ class ExtensionsRuntimeService:
             for tool in available_tools
             if _is_mcp_tool(tool) and _mcp_tool_server_name(tool) not in plugin_owned_mcp_servers
         ]
-        base_tools = [tool for tool in available_tools if not _is_mcp_tool(tool)]
+        base_tools = [
+            tool
+            for tool in available_tools
+            if not _is_mcp_tool(tool) and _tool_name(tool) != "plugin_cli"
+        ]
         mcp_server_map: dict[str, list[Any]] = {}
         for tool in mcp_tools:
             server_name = _mcp_tool_server_name(tool)
@@ -3818,11 +3822,19 @@ class ExtensionsRuntimeService:
                         break
                 selected_skills = merged_skills
 
-        plugin_skill_roots = {
-            str((Path.home() / ".agents" / "skills" / str(item.get("targetDirectory") or "")).resolve())
-            for item in list(plugin_projection.get("skills") or [])
-            if str(item.get("targetDirectory") or "").strip()
-        }
+        plugin_skill_roots: set[str] = set()
+        for item in list(plugin_projection.get("skills") or []):
+            installed_roots = [
+                str(Path(str(root)).resolve())
+                for root in list(item.get("installedRoots") or [])
+                if str(root).strip()
+            ]
+            if installed_roots:
+                plugin_skill_roots.update(installed_roots)
+                continue
+            target_directory = str(item.get("targetDirectory") or "").strip()
+            if target_directory:
+                plugin_skill_roots.add(str((Path.home() / ".agents" / "skills" / target_directory).resolve()))
         if plugin_skill_roots:
             selected_keys = {
                 str(item.get("skillId") or item.get("skillRoot") or item.get("path") or "").strip()

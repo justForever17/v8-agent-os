@@ -44,9 +44,47 @@ function findStandaloneServer() {
   return candidates.find((candidate) => fs.existsSync(candidate)) || "";
 }
 
+function repairWindowsDirectorySymlinks(root) {
+  if (process.platform !== "win32" || !fs.existsSync(root)) return 0;
+  const stack = [root];
+  let repaired = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(candidate);
+        continue;
+      }
+      if (!entry.isSymbolicLink()) continue;
+      try {
+        const target = path.resolve(path.dirname(candidate), fs.readlinkSync(candidate));
+        if (!fs.statSync(target).isDirectory() || fs.existsSync(candidate)) continue;
+        fs.rmSync(candidate, { force: true });
+        fs.symlinkSync(target, candidate, "junction");
+        repaired += 1;
+      } catch {
+        // Leave unrelated or externally-managed links untouched. Node will
+        // report a precise module error if one of those links is unusable.
+      }
+    }
+  }
+  return repaired;
+}
+
 function stageStandaloneAssets(serverPath) {
   if (!serverPath) return;
   const standaloneAppRoot = path.dirname(serverPath);
+  const repairedLinks = repairWindowsDirectorySymlinks(path.join(standaloneAppRoot, "node_modules"));
+  if (repairedLinks > 0) {
+    console.log(`[V8OS] Repaired ${repairedLinks} Windows standalone directory link(s).`);
+  }
   const assets = [
     [path.join(appDir, ".next", "static"), path.join(standaloneAppRoot, ".next", "static")],
     [path.join(appDir, "public"), path.join(standaloneAppRoot, "public")],

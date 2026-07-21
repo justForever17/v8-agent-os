@@ -97,7 +97,11 @@ def _walk_template(component_id: str, value: Any, path: tuple[str, ...] = ()) ->
         )
 
 
-def compile_plugin_requirements(manifest: PluginManifest) -> list[PluginConfigRequirement]:
+def compile_plugin_requirements(
+    manifest: PluginManifest,
+    *,
+    component_ids: Iterable[str] | None = None,
+) -> list[PluginConfigRequirement]:
     """Compile one deterministic configuration contract without reading credentials.
 
     Explicit signed-manifest requirements win. Legacy ``authFields`` are treated as
@@ -150,7 +154,15 @@ def compile_plugin_requirements(manifest: PluginManifest) -> list[PluginConfigRe
     for adapter in manifest.providerAdapters:
         for item in adapter.configRequirements:
             add(item.model_copy(update={"componentId": item.componentId or adapter.id}))
-    return sorted(result.values(), key=lambda item: (item.componentId or "", item.id))
+    selected_components = {
+        str(item).strip()
+        for item in list(component_ids or [])
+        if str(item).strip()
+    }
+    values = list(result.values())
+    if component_ids is not None:
+        values = [item for item in values if str(item.componentId or "") in selected_components]
+    return sorted(values, key=lambda item: (item.componentId or "", item.id))
 
 
 @dataclass(frozen=True, slots=True)

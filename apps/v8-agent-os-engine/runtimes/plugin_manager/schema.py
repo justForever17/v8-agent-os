@@ -137,6 +137,7 @@ class SkillComponent(StrictModel):
     revision: str
     officialOrganization: str
     targetDirectory: str
+    skillNames: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_source_contract(self) -> "SkillComponent":
@@ -150,6 +151,10 @@ class SkillComponent(StrictModel):
             raise ValueError("managed CLI skill requires sourceComponentId")
         if self.sourceKind == "git" and self.sourceComponentId:
             raise ValueError("git skill must not declare sourceComponentId")
+        normalized_names = [str(item or "").strip() for item in self.skillNames]
+        if any(not item for item in normalized_names) or len(normalized_names) != len(set(normalized_names)):
+            raise ValueError("skillNames must contain unique non-empty names")
+        self.skillNames = normalized_names
         return self
 
 
@@ -229,6 +234,7 @@ class PluginManifest(StrictModel):
     providerAdapters: list[ProviderAdapterComponent] = Field(default_factory=list)
     governance: Governance
     capabilities: list[str] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod

@@ -215,7 +215,7 @@ def _select_contextual_subagent_native_tools(filtered_native_tools: list, runtim
     collaboration_tools = [
         tool_ref
         for tool_ref in list(filtered_native_tools or [])
-        if str(getattr(tool_ref, "name", "") or "").strip() in {"delegation_broker", "plugin_broker", "plugin_cli"}
+        if str(getattr(tool_ref, "name", "") or "").strip() in {"delegation_broker", "plugin_broker"}
     ]
     granted_runtime_tool_names = runtime_tool_names_for_groups(runtime_access)
     granted_runtime_tools = [

@@ -716,6 +716,7 @@ def build_supervisor_system_content(
     supervisor_tools: list,
     memory_runtime,
     extension_prompt_addition: str = "",
+    plugin_catalog_prompt_addition: str = "",
     reflex_prompt_addition: str = "",
     gate_prompt_addition: str = "",
 ):
@@ -1430,6 +1431,7 @@ def build_supervisor_system_content(
         _prompt_part("runtime_reflex", "dynamic", reflex_prompt_addition, scope="runtime_reflex"),
         _prompt_part("runtime_gate", "dynamic", gate_prompt_addition, scope="runtime_gate"),
         _prompt_part("plugin.authorization_resolution", "dynamic", _plugin_authorization_context(), scope="extensions"),
+        _prompt_part("plugin.catalog_hint", "dynamic", plugin_catalog_prompt_addition, scope="plugin_catalog"),
         _prompt_part("extensions.candidate_status", "dynamic", extension_prompt_addition, scope="extensions"),
         _prompt_part("group_moderation", "dynamic", group_moderation_directive, scope="group_moderation"),
     ]

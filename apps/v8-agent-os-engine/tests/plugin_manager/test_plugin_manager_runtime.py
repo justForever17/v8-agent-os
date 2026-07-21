@@ -54,23 +54,81 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[PluginMana
     monkeypatch.setattr(service_module, "PLUGIN_MANAGER_BIN_ROOT", tmp_path / "bin")
     monkeypatch.setattr(service_module, "PLUGIN_MANAGER_LOG_ROOT", tmp_path / "logs")
     monkeypatch.setattr(service_module, "AGENT_SKILLS_ROOT", tmp_path / "skills")
+    monkeypatch.setattr(service_module.shutil, "which", lambda _command, path=None: None)
     test_db.create_or_update_session("s1", "Plugin test", user_id="user-1")
     service = PluginManagerService(credential_store=CredentialRefStore(MemoryCredentialBackend()))
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": [],
+            "lockEntries": {},
+            "error": "",
+        },
+    )
     monkeypatch.setattr(service, "_refresh_extensions", lambda: None)
     return service, test_db, test_storage
 
 
 def _mark_ready(service: PluginManagerService, plugin_id: str) -> None:
     manifest = service._manifest(plugin_id)
-    for requirement in compile_plugin_requirements(manifest):
-        if requirement.required and requirement.kind in {"secret", "oauth"}:
-            service._bind_credential(manifest, requirement, f"test-{requirement.id}")
+    policy = service._component_policy(manifest)
     service._upsert_installation(
         manifest,
         state="installed",
         health={"ok": True, "online": True, "checks": []},
         external=False,
     )
+    for profile in policy["cliProfiles"]:
+        service._register_component(
+            manifest.id,
+            profile.id,
+            "cli",
+            source_url=manifest.officialLinks.documentation,
+            source_version=manifest.version,
+            ownership=profile.ownership,
+        )
+    for skill in policy["skills"]:
+        skill_root = service_module.AGENT_SKILLS_ROOT / skill.targetDirectory
+        skill_root.mkdir(parents=True, exist_ok=True)
+        (skill_root / "SKILL.md").write_text("---\nname: test-plugin-skill\n---\n", encoding="utf-8")
+        service._register_component(
+            manifest.id,
+            skill.id,
+            "skill",
+            owned_path=str(skill_root),
+            source_url=skill.repository,
+            source_version=skill.revision,
+        )
+    if policy["mcpServers"]:
+        service._install_mcp_components(manifest, policy["mcpServers"])
+    for adapter in manifest.uiAdapters:
+        service._register_component(manifest.id, adapter.id, "ui_adapter")
+    for adapter in manifest.providerAdapters:
+        service._register_component(manifest.id, adapter.id, "provider_adapter")
+    for requirement in compile_plugin_requirements(
+        manifest,
+        component_ids=policy["activeComponentIds"],
+    ):
+        if requirement.required and requirement.kind in {"secret", "oauth"}:
+            secret_ref = service._bind_credential(manifest, requirement, f"test-{requirement.id}")
+            if requirement.kind == "oauth":
+                server = next(
+                    (item for item in policy["mcpServers"] if item.id == requirement.componentId),
+                    None,
+                )
+                if server is not None:
+                    mcp_payload = service_module.storage.get_mcp_config()
+                    server_config = dict((mcp_payload.get("mcpServers") or {}).get(server.serverName) or {})
+                    server_config["x-v8-oauth"] = {
+                        "secretRef": secret_ref,
+                        "pluginId": manifest.id,
+                        "componentId": server.id,
+                    }
+                    mcp_payload.setdefault("mcpServers", {})[server.serverName] = server_config
+                    service_module.storage.save_mcp_config(mcp_payload)
     with service_module.db.get_connection() as conn:
         conn.execute(
             "UPDATE plugin_installations SET configured=1, online=1 WHERE plugin_id=?",
@@ -79,17 +137,18 @@ def _mark_ready(service: PluginManagerService, plugin_id: str) -> None:
         conn.commit()
 
 
-def test_builtin_catalog_has_16_signed_official_plugins(runtime) -> None:
+def test_builtin_catalog_has_17_signed_curated_plugins(runtime) -> None:
     service, _, _ = runtime
     catalog = plugin_catalog_service.load()
     assert catalog.revision >= 1
-    assert len(catalog.plugins) == 16
-    assert len({plugin.id for plugin in catalog.plugins}) == 16
+    assert len(catalog.plugins) == 17
+    assert len({plugin.id for plugin in catalog.plugins}) == 17
     assert {plugin.id for plugin in catalog.plugins} == {
         "aliyun-bailian", "volcengine", "lark", "cloudflare", "supabase",
         "vercel", "google-workspace", "github", "aws", "wordpress",
-        "azure", "figma", "hyperframes", "stripe", "docker", "amap",
+        "azure", "figma", "hyperframes", "stripe", "docker", "amap", "office-suite",
     }
+    assert all(plugin.artifacts for plugin in catalog.plugins)
     assert all(service.verify_brand_asset(plugin)["ok"] for plugin in catalog.plugins)
     assert all(
         skill.officialOrganization.lower() in {item.lower() for item in plugin.officialOrganizations}
@@ -101,6 +160,166 @@ def test_builtin_catalog_has_16_signed_official_plugins(runtime) -> None:
         for plugin in catalog.plugins
         for server in plugin.mcpServers
     )
+
+
+def test_component_policy_prefers_cli_then_mcp_then_skill_only(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _, _ = runtime
+    monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
+
+    github_plan = service.build_install_plan("github")
+    assert github_plan["componentPolicy"]["transport"] == "cli"
+    assert [item["componentId"] for item in github_plan["steps"]["cli"]] == ["gh"]
+    assert github_plan["steps"]["mcp"] == []
+    assert "github-mcp" in github_plan["componentPolicy"]["skippedComponentIds"]
+
+    figma_plan = service.build_install_plan("figma")
+    assert figma_plan["componentPolicy"]["transport"] == "mcp"
+    assert [item["id"] for item in figma_plan["steps"]["mcp"]] == ["figma-remote-mcp"]
+
+    office_plan = service.build_install_plan("office-suite")
+    assert office_plan["componentPolicy"]["transport"] == "skill_only"
+    assert office_plan["steps"]["cli"] == []
+    assert office_plan["steps"]["mcp"] == []
+    assert [item["id"] for item in office_plan["steps"]["skills"]] == ["office-documents-skill"]
+
+
+def test_machine_discovery_adopts_existing_cli_and_official_skill_without_claiming_user_mcp(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, test_storage = runtime
+    monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
+    monkeypatch.setattr(
+        service,
+        "_discover_cli_commands",
+        lambda profile: {"gh": "C:/Program Files/GitHub CLI/gh.exe"} if profile.id == "gh" else {},
+    )
+    skill_root = service_module.AGENT_SKILLS_ROOT / "gh"
+    skill_root.mkdir(parents=True, exist_ok=True)
+    (skill_root / "SKILL.md").write_text("---\nname: gh\n---\n", encoding="utf-8")
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": [{"name": "gh", "path": str(skill_root), "scope": "global", "agents": ["Codex"]}],
+            "lockEntries": {
+                "gh": {
+                    "source": "cli/cli",
+                    "sourceUrl": "https://github.com/cli/cli.git",
+                    "skillPath": "skills/gh/SKILL.md",
+                }
+            },
+            "error": "",
+        },
+    )
+    test_storage.mcp_config["mcpServers"]["github"] = {
+        "command": "docker",
+        "args": ["run", "github-mcp"],
+        "disabled": False,
+    }
+
+    discovery = service.discover_machine_components("github", force=True)
+    assert discovery["cli"][0]["action"] == "adopt"
+    assert discovery["skills"][0]["action"] == "adopt"
+    assert discovery["ordinaryMcp"] == [
+        {
+            "componentId": "github-mcp",
+            "serverName": "github",
+            "enabled": True,
+            "managedBy": "extensions_runtime",
+            "note": "User-managed MCP configuration is not owned or modified by Plugin Manager.",
+        }
+    ]
+
+    plan = service.build_install_plan("github")
+    assert plan["installable"] is True
+    assert plan["approvalRequired"] is False
+    assert plan["steps"]["cli"][0]["action"] == "adopt"
+    assert plan["steps"]["skills"][0]["action"] == "adopt"
+    assert plan["steps"]["mcp"] == []
+    assert test_storage.mcp_config["mcpServers"]["github"]["disabled"] is False
+    assert "x-v8-plugin-owner" not in test_storage.mcp_config["mcpServers"]["github"]
+
+
+def test_machine_discovery_surfaces_skill_name_conflict_instead_of_overwriting(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _, _ = runtime
+    monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
+    skill_root = service_module.AGENT_SKILLS_ROOT / "gh"
+    skill_root.mkdir(parents=True, exist_ok=True)
+    (skill_root / "SKILL.md").write_text("---\nname: gh\n---\n", encoding="utf-8")
+    monkeypatch.setattr(
+        service,
+        "_skills_cli_inventory",
+        lambda force=False: {
+            "ok": True,
+            "tool": service_module.SKILLS_CLI_PACKAGE,
+            "items": [{"name": "gh", "path": str(skill_root), "scope": "global", "agents": ["Codex"]}],
+            "lockEntries": {
+                "gh": {
+                    "source": "someone/other-gh-skill",
+                    "sourceUrl": "https://github.com/someone/other-gh-skill.git",
+                    "skillPath": "SKILL.md",
+                }
+            },
+            "error": "",
+        },
+    )
+
+    discovery = service.discover_machine_components("github")
+    assert discovery["skills"][0]["state"] == "conflict"
+    plan = service.build_install_plan("github")
+    assert plan["installable"] is False
+    assert "skill_name_conflict" in plan["componentPolicy"]["blockingReasons"]
+
+
+def test_reviewed_official_skills_are_mandatory_cli_companions(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, _, _ = runtime
+    monkeypatch.setattr(service_module, "_platform_name", lambda: "windows")
+    expected = {
+        "cloudflare": "cloudflare-wrangler-skill",
+        "supabase": "supabase-official-skill",
+        "vercel": "vercel-cli-skill",
+        "github": "github-cli-skill",
+        "aws": "aws-sign-in-skill",
+        "wordpress": "wordpress-wpcli-skill",
+    }
+    for plugin_id, skill_id in expected.items():
+        plan = service.build_install_plan(plugin_id)
+        assert plan["componentPolicy"]["transport"] == "cli"
+        assert plan["steps"]["mcp"] == []
+        assert skill_id in {item["id"] for item in plan["steps"]["skills"]}
+
+
+def test_office_plugin_is_pinned_skill_only_and_advertises_artifacts_on_demand(runtime) -> None:
+    service, _, _ = runtime
+    manifest = service._manifest("office-suite")
+    skill = manifest.skills[0]
+
+    assert manifest.cliProfiles == []
+    assert manifest.mcpServers == []
+    assert skill.repository == "https://github.com/jezweb/claude-skills"
+    assert skill.path == "skills/office"
+    assert skill.revision == "10a1f16679a5aab8e0c2f4d04e8560402f34d04b"
+    assert service.supervisor_availability_prompt() == ""
+
+    _mark_ready(service, "office-suite")
+    prompt = service.supervisor_availability_prompt()
+    assert "[Plugin Catalog]" in prompt
+    assert "office-suite (ready)" in prompt
+    assert "DOCX" in prompt and "XLSX/CSV" in prompt and "PDF" in prompt and "PPTX" in prompt
+    assert "plugin_broker(status)" in prompt
+    assert "SKILL.md" not in prompt
+    assert "npm install" not in prompt
+
+    healthy = asyncio.run(service.doctor("office-suite", persist=False))
+    assert healthy["ok"] is True
+    skill_root = service_module.AGENT_SKILLS_ROOT / skill.targetDirectory
+    (skill_root / "SKILL.md").unlink()
+    unhealthy = asyncio.run(service.doctor("office-suite", persist=False))
+    assert unhealthy["ok"] is False
+    assert unhealthy["checks"][0]["kind"] == "skill-file"
 
 
 def test_amap_cli_contract_is_pinned_typed_and_openclaw_free(runtime) -> None:
@@ -543,47 +762,55 @@ def test_managed_download_verifies_hash_before_commit(runtime, monkeypatch: pyte
     assert not target.exists()
 
 
-def test_configuration_requirements_store_secret_refs_without_plaintext(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_configuration_requirements_store_secret_refs_without_plaintext(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _, test_storage = runtime
-    manifest = service._manifest("github")
+    manifest = service._manifest("amap")
     service._upsert_installation(
         manifest,
         state="installed",
         health={"ok": True, "online": True, "checks": []},
         external=False,
     )
-    service._install_mcp_components(manifest)
-    before = service.configuration_requirements("github")
-    requirement = next(item for item in before["requirements"] if item["kind"] == "secret")
-    assert requirement["status"] == "missing"
-    assert "secretRef" not in requirement
+    service._register_component(
+        manifest.id,
+        "amap-gui-cli",
+        "cli",
+        source_url=manifest.officialLinks.documentation,
+        source_version=manifest.version,
+    )
+    before = service.configuration_requirements("amap")
+    requirements = [item for item in before["requirements"] if item["kind"] == "secret"]
+    assert len(requirements) == 2
+    assert all(item["status"] == "missing" and "secretRef" not in item for item in requirements)
 
     secret = "github-secret-must-never-leak"
-    result = asyncio.run(service.configure("github", {requirement["id"]: secret}))
+    values = {item["id"]: f"{secret}-{index}" for index, item in enumerate(requirements)}
+    result = asyncio.run(service.configure("amap", values))
     assert result["configuration"]["configured"] is True
-    serialized = __import__("json").dumps(test_storage.mcp_config)
+    serialized = __import__("json").dumps({"mcp": test_storage.mcp_config, "plugin": test_storage.plugin_config})
     assert secret not in serialized
-    server = test_storage.mcp_config["mcpServers"]["github"]
-    assert server["x-v8-credential-refs"][requirement["id"]]["secretRef"].startswith("cred:v8-plugin:")
+    bindings = service._credential_bindings("amap")
+    assert all(bindings[item["id"]]["secret_ref"].startswith("cred:v8-plugin:") for item in requirements)
+    requirement = requirements[0]
 
-    monkeypatch.setenv("GITHUB_PERSONAL_ACCESS_TOKEN", "explicit-import-secret")
-    detected = service.detect_configuration_sources("github")
+    monkeypatch.setenv(str(requirement["targetName"]), "explicit-import-secret")
+    detected = service.detect_configuration_sources("amap")
     detected_requirement = next(item for item in detected["requirements"] if item["id"] == requirement["id"])
     assert detected_requirement["availableForImport"] is True
     imported = asyncio.run(
         service.import_configuration_source(
-            "github",
+            "amap",
             requirement_id=requirement["id"],
-            source_id="env:GITHUB_PERSONAL_ACCESS_TOKEN",
+            source_id=f"env:{requirement['targetName']}",
         )
     )
     assert imported == {
         "ok": True,
-        "pluginId": "github",
+        "pluginId": "amap",
         "requirementId": requirement["id"],
         "status": "configured",
     }
-    assert "explicit-import-secret" not in __import__("json").dumps(service.list_events(plugin_id="github"))
+    assert "explicit-import-secret" not in __import__("json").dumps(service.list_events(plugin_id="amap"))
 
 
 def test_install_plan_digest_idempotency_and_step_journal(runtime) -> None:
@@ -677,6 +904,24 @@ def test_run_install_job_is_single_claim_and_external_installer_runs_once(runtim
     monkeypatch.setattr(service, "_execute_spec", execute)
     monkeypatch.setattr(service, "_execute_elevated_spec", execute)
     monkeypatch.setattr(service, "doctor", doctor)
+    monkeypatch.setattr(
+        service,
+        "_install_skill_component",
+        lambda manifest, skill: [
+            service._register_component(
+                manifest.id,
+                str(skill["id"]),
+                "skill",
+                source_url=str(skill["repository"]),
+                source_version=str(skill["revision"]),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_cli_commands",
+        lambda _profile: {"gh": "C:/Program Files/GitHub CLI/gh.exe"} if calls else {},
+    )
     plan = service.build_install_plan("github")
     job = service.create_install_job(
         "github",
@@ -958,14 +1203,14 @@ def test_structured_cli_action_rejects_unknown_and_extra_parameters(runtime) -> 
 
 def test_projection_never_exposes_raw_mcp_tool(runtime, monkeypatch: pytest.MonkeyPatch) -> None:
     service, _, _ = runtime
-    _mark_ready(service, "github")
-    monkeypatch.setattr(service._manifest("github").mcpServers[0], "allowedTools", ["get_repository"])
+    _mark_ready(service, "figma")
+    monkeypatch.setattr(service._manifest("figma").mcpServers[0], "allowedTools", ["get_repository"])
     service.create_grant(
-        plugin_id="github",
+        plugin_id="figma",
         scope="task",
         session_id="s1",
         run_id="r1",
-        component_ids=["github-mcp"],
+        component_ids=["figma-remote-mcp"],
     )
 
     @tool
@@ -973,7 +1218,7 @@ def test_projection_never_exposes_raw_mcp_tool(runtime, monkeypatch: pytest.Monk
         """Read a repository."""
         return name
 
-    get_repository.metadata = {"server_name": "github"}
+    get_repository.metadata = {"server_name": "figma"}
     from runtimes.extensions.mcp.client import mcp_manager
 
     monkeypatch.setattr(mcp_manager, "get_tools", lambda: [get_repository])
@@ -981,7 +1226,7 @@ def test_projection_never_exposes_raw_mcp_tool(runtime, monkeypatch: pytest.Monk
     assert len(projection["mcpTools"]) == 1
     guarded = projection["mcpTools"][0]
     assert guarded is not get_repository
-    assert guarded.name == "plugin__github__get_repository"
+    assert guarded.name == "plugin__figma__get_repository"
     assert guarded.metadata["plugin_grant_id"]
 
 
@@ -997,12 +1242,24 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
         if command[:2] == ["git", "init"]:
             source_root = Path(command[2]) / skill["path"]
             source_root.mkdir(parents=True, exist_ok=True)
-            (source_root / "SKILL.md").write_text("# official skill\n", encoding="utf-8")
+            (source_root / "SKILL.md").write_text("---\nname: bailian-cli\n---\n# official skill\n", encoding="utf-8")
         if command[-2:] == ["rev-parse", "HEAD"]:
             kwargs["stdout"].write((skill["revision"] + "\n").encode("utf-8"))
         return type("Completed", (), {"returncode": 0})()
 
     monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+    inventory = {"ok": True, "tool": service_module.SKILLS_CLI_PACKAGE, "items": [], "lockEntries": {}, "error": ""}
+
+    def fake_skills_cli(arguments, **_kwargs):
+        assert arguments[:2] == ["add", arguments[1]]
+        target = service_module.AGENT_SKILLS_ROOT / "bailian-cli"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text("---\nname: bailian-cli\n---\n", encoding="utf-8")
+        inventory["items"] = [{"name": "bailian-cli", "path": str(target), "scope": "global", "agents": ["Codex"]}]
+        return {"returnCode": 0, "stdoutTail": "installed", "stderrTail": ""}
+
+    monkeypatch.setattr(service, "_skills_cli_inventory", lambda force=False: copy.deepcopy(inventory))
+    monkeypatch.setattr(service, "_run_skills_cli", fake_skills_cli)
     monkeypatch.setattr(
         service,
         "_register_component",
@@ -1026,7 +1283,7 @@ def test_skill_install_fetches_and_verifies_exact_commit(runtime, monkeypatch: p
     assert all(kwargs["shell"] is False for _, kwargs in calls)
     assert all(kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0" for _, kwargs in calls)
     assert not any("clone" in command or "--branch" in command for command in commands)
-    assert (service_module.AGENT_SKILLS_ROOT / skill["targetDirectory"] / "SKILL.md").is_file()
+    assert (service_module.AGENT_SKILLS_ROOT / "bailian-cli" / "SKILL.md").is_file()
 
 
 def test_managed_cli_skill_is_projected_as_generic_skill_resource(
@@ -1038,8 +1295,9 @@ def test_managed_cli_skill_is_projected_as_generic_skill_resource(
     skill = manifest.skills[0].model_dump(mode="json")
     source = service._plugin_root(manifest.id) / skill["path"]
     source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text("# AMap Map CLI\n\nGeneric agent usage guidance.\n", encoding="utf-8")
+    source.write_text("---\nname: amap-map-cli\n---\n# AMap Map CLI\n", encoding="utf-8")
     captured: dict = {}
+    inventory = {"ok": True, "tool": service_module.SKILLS_CLI_PACKAGE, "items": [], "lockEntries": {}, "error": ""}
 
     def register(_plugin_id, component_id, component_type, **kwargs):
         captured.update(kwargs)
@@ -1051,22 +1309,27 @@ def test_managed_cli_skill_is_projected_as_generic_skill_resource(
         "_run_skill_git_step",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("managed CLI Skill must not call Git")),
     )
+    def fake_skills_cli(_arguments, **_kwargs):
+        target = service_module.AGENT_SKILLS_ROOT / "amap-map-cli"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        inventory["items"] = [{"name": "amap-map-cli", "path": str(target), "scope": "global", "agents": ["Codex"]}]
+        return {"returnCode": 0, "stdoutTail": "installed", "stderrTail": ""}
+    monkeypatch.setattr(service, "_skills_cli_inventory", lambda force=False: copy.deepcopy(inventory))
+    monkeypatch.setattr(service, "_run_skills_cli", fake_skills_cli)
 
     components = service._install_skill_component(manifest, skill)
 
     target = service_module.AGENT_SKILLS_ROOT / "amap-map-cli" / "SKILL.md"
     assert components == [{"id": "amap-map-cli-skill", "type": "skill"}]
-    assert target.read_text(encoding="utf-8").startswith("# AMap Map CLI")
+    assert "# AMap Map CLI" in target.read_text(encoding="utf-8")
     assert captured["source_version"] == "1.0.3"
-    assert captured["metadata"] == {
-        "officialOrganization": "amap",
-        "sourceKind": "managed_cli",
-        "sourceComponentId": "amap-gui-cli",
-        "sourcePath": "node_modules/@amap-lbs/amap-gui/SKILL.md",
-    }
+    assert captured["ownership"] == "skills_cli"
+    assert captured["metadata"]["installer"] == service_module.SKILLS_CLI_PACKAGE
+    assert captured["metadata"]["managedSkillNames"] == ["amap-map-cli"]
 
 
-def test_managed_cli_skill_copy_failure_leaves_no_partial_projection(
+def test_managed_cli_skills_cli_failure_leaves_no_partial_projection(
     runtime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1075,18 +1338,38 @@ def test_managed_cli_skill_copy_failure_leaves_no_partial_projection(
     skill = manifest.skills[0].model_dump(mode="json")
     source = service._plugin_root(manifest.id) / skill["path"]
     source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text("# AMap Map CLI\n", encoding="utf-8")
+    source.write_text("---\nname: amap-map-cli\n---\n# AMap Map CLI\n", encoding="utf-8")
     monkeypatch.setattr(
-        service_module.shutil,
-        "copy2",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("synthetic copy failure")),
+        service,
+        "_run_skills_cli",
+        lambda *_args, **_kwargs: {"returnCode": 1, "stdoutTail": "", "stderrTail": "synthetic skills failure"},
     )
 
-    with pytest.raises(OSError, match="synthetic copy failure"):
+    with pytest.raises(PluginManagerError, match="synthetic skills failure") as failure:
         service._install_skill_component(manifest, skill)
 
+    assert failure.value.code == "skill_install_failed"
     assert not (service_module.AGENT_SKILLS_ROOT / "amap-map-cli").exists()
-    assert list(service_module.AGENT_SKILLS_ROOT.glob(".amap-map-cli.staging-*")) == []
+
+
+def test_skills_cli_removal_deletes_the_global_canonical_skill(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    captured: dict[str, object] = {}
+
+    def fake_skills_cli(arguments, **kwargs):
+        captured["arguments"] = list(arguments)
+        captured["timeout"] = kwargs.get("timeout_seconds")
+        return {"returnCode": 0, "stdoutTail": "", "stderrTail": ""}
+
+    monkeypatch.setattr(service, "_run_skills_cli", fake_skills_cli)
+    result = service._remove_skills_cli_names(["gh"])
+
+    assert result == {"ok": True, "removed": ["gh"], "error": ""}
+    assert captured["arguments"] == ["remove", "gh", "--global", "--yes"]
+    assert captured["timeout"] == 300
 
 
 @pytest.mark.parametrize("failed_step", ["fetch", "checkout"])

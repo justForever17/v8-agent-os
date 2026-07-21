@@ -1,9 +1,9 @@
 {
   "schemaVersion": "v8.plugin.catalog.v1",
-  "revision": 5,
-  "sequence": 5,
-  "keyId": "v8os-plugin-catalog-2026-07-r3",
-  "generatedAt": "2026-07-11T12:30:00Z",
+  "revision": 7,
+  "sequence": 7,
+  "keyId": "v8os-plugin-catalog-2026-07-r4",
+  "generatedAt": "2026-07-21T16:30:00Z",
   "expiresAt": "2027-07-11T00:00:00Z",
   "revocations": [],
   "plugins": [
@@ -121,7 +121,8 @@
           "path": "skills",
           "revision": "6e095a6ce58eea9a2e25d31f1b05571071b0d41e",
           "officialOrganization": "modelstudioai",
-          "targetDirectory": "bailian-official"
+          "targetDirectory": "bailian-official",
+          "skillNames": ["bailian-cli"]
         }
       ],
       "mcpServers": [
@@ -206,6 +207,10 @@
         "视频换人",
         "风格重绘",
         "供应商视频编辑"
+      ],
+      "artifacts": [
+        "模型与应用配置结果",
+        "媒体生成任务与产物引用"
       ]
     },
     {
@@ -319,6 +324,9 @@
       },
       "capabilities": [
         "火山引擎资源管理"
+      ],
+      "artifacts": [
+        "云资源状态与操作结果"
       ]
     },
     {
@@ -446,6 +454,9 @@
       },
       "capabilities": [
         "飞书文档、消息、审批与开放平台操作"
+      ],
+      "artifacts": [
+        "飞书文档、消息与审批结果"
       ]
     },
     {
@@ -455,7 +466,7 @@
       "version": "1",
       "publisher": "Cloudflare",
       "category": "云与边缘",
-      "description": "Workers、Pages、D1、R2 等 Cloudflare 开发与部署。",
+      "description": "Cloudflare 官方 Wrangler CLI 与可移植 Skill，用于 Workers、Pages、D1、R2 等开发和部署。",
       "officialDomains": [
         "cloudflare.com"
       ],
@@ -541,7 +552,18 @@
           "outputProtocol": "json"
         }
       ],
-      "skills": [],
+      "skills": [
+        {
+          "id": "cloudflare-wrangler-skill",
+          "sourceKind": "git",
+          "repository": "https://github.com/cloudflare/skills",
+          "path": "skills/wrangler",
+          "revision": "70215303d44a81a0db3219428f4825b604fc6061",
+          "officialOrganization": "cloudflare",
+          "targetDirectory": "v8-plugin-cloudflare-wrangler",
+          "skillNames": ["wrangler"]
+        }
+      ],
       "mcpServers": [
         {
           "id": "cloudflare-mcp",
@@ -594,6 +616,9 @@
       "capabilities": [
         "Workers/Pages 开发部署",
         "Cloudflare 资源管理"
+      ],
+      "artifacts": [
+        "部署记录、访问地址与资源状态"
       ]
     },
     {
@@ -603,7 +628,7 @@
       "version": "1",
       "publisher": "Supabase",
       "category": "数据库与后端",
-      "description": "Supabase 本地开发、迁移、函数与官方 MCP。",
+      "description": "Supabase 官方 CLI 与可移植 Skill，用于本地开发、迁移、函数与项目。",
       "officialDomains": [
         "supabase.com"
       ],
@@ -689,7 +714,18 @@
           "outputProtocol": "json"
         }
       ],
-      "skills": [],
+      "skills": [
+        {
+          "id": "supabase-official-skill",
+          "sourceKind": "git",
+          "repository": "https://github.com/supabase/agent-skills",
+          "path": "skills/supabase",
+          "revision": "1ad9aaeb49caafd9e95c0a91116f71890eebbc53",
+          "officialOrganization": "supabase",
+          "targetDirectory": "v8-plugin-supabase",
+          "skillNames": ["supabase"]
+        }
+      ],
       "mcpServers": [
         {
           "id": "supabase-mcp",
@@ -763,6 +799,9 @@
         "数据库迁移",
         "Edge Functions",
         "项目管理"
+      ],
+      "artifacts": [
+        "迁移文件、函数部署与项目状态"
       ]
     },
     {
@@ -772,12 +811,13 @@
       "version": "1",
       "publisher": "Vercel",
       "category": "部署与托管",
-      "description": "Vercel 项目、环境、日志与部署。",
+      "description": "Vercel 官方 CLI 与可移植 Skill，用于项目、环境、日志与部署。",
       "officialDomains": [
         "vercel.com"
       ],
       "officialOrganizations": [
-        "vercel"
+        "vercel",
+        "vercel-labs"
       ],
       "officialLinks": {
         "homepage": "https://vercel.com/",
@@ -857,7 +897,18 @@
           "outputProtocol": "json"
         }
       ],
-      "skills": [],
+      "skills": [
+        {
+          "id": "vercel-cli-skill",
+          "sourceKind": "git",
+          "repository": "https://github.com/vercel-labs/agent-skills",
+          "path": "skills/vercel-cli-with-tokens",
+          "revision": "4559f18a20c1691c744b4395194290db6a0df5e9",
+          "officialOrganization": "vercel-labs",
+          "targetDirectory": "v8-plugin-vercel-cli",
+          "skillNames": ["vercel-cli-with-tokens"]
+        }
+      ],
       "mcpServers": [
         {
           "id": "vercel-mcp",
@@ -908,6 +959,9 @@
         "项目部署",
         "环境变量与日志",
         "域名管理"
+      ],
+      "artifacts": [
+        "部署记录、预览地址与日志摘要"
       ]
     },
     {
@@ -1049,6 +1103,9 @@
       },
       "capabilities": [
         "Gmail、Drive、Docs、Sheets、Calendar 与 Workspace 管理"
+      ],
+      "artifacts": [
+        "邮件、云端文档、表格与日历事件"
       ]
     },
     {
@@ -1058,7 +1115,7 @@
       "version": "1",
       "publisher": "GitHub",
       "category": "开发协作",
-      "description": "GitHub 仓库、Issue、Pull Request、Actions 与官方 MCP。",
+      "description": "GitHub 官方 CLI 与可移植 Skill，用于仓库、Issue、Pull Request 与 Actions。",
       "officialDomains": [
         "github.com",
         "githubusercontent.com",
@@ -1140,7 +1197,18 @@
           "outputProtocol": "json"
         }
       ],
-      "skills": [],
+      "skills": [
+        {
+          "id": "github-cli-skill",
+          "sourceKind": "git",
+          "repository": "https://github.com/cli/cli",
+          "path": "skills/gh",
+          "revision": "4007349ce6e4e8fdcbe9a39517d4b7a8fad7efa3",
+          "officialOrganization": "cli",
+          "targetDirectory": "v8-plugin-github-cli",
+          "skillNames": ["gh"]
+        }
+      ],
       "mcpServers": [
         {
           "id": "github-mcp",
@@ -1199,6 +1267,9 @@
       },
       "capabilities": [
         "仓库、Issue、PR、Actions 与 Release 管理"
+      ],
+      "artifacts": [
+        "提交、Issue、Pull Request、工作流与发布记录"
       ]
     },
     {
@@ -1208,7 +1279,7 @@
       "version": "1",
       "publisher": "Amazon Web Services",
       "category": "云平台",
-      "description": "AWS 官方 CLI v2 与 AWS Labs MCP Servers。",
+      "description": "AWS 官方 CLI v2 与登录 Skill，用于账户认证和云资源管理。",
       "officialDomains": [
         "amazon.com",
         "amazonaws.com",
@@ -1290,7 +1361,18 @@
           "outputProtocol": "json"
         }
       ],
-      "skills": [],
+      "skills": [
+        {
+          "id": "aws-sign-in-skill",
+          "sourceKind": "git",
+          "repository": "https://github.com/aws/agent-toolkit-for-aws",
+          "path": "skills/core-skills/signing-in-to-aws",
+          "revision": "493b45323dd3163fb561792b9e091de3d4966709",
+          "officialOrganization": "aws",
+          "targetDirectory": "v8-plugin-aws-sign-in",
+          "skillNames": ["signing-in-to-aws"]
+        }
+      ],
       "mcpServers": [
         {
           "id": "aws-mcp-servers",
@@ -1347,6 +1429,9 @@
       },
       "capabilities": [
         "AWS 账户与云资源管理"
+      ],
+      "artifacts": [
+        "云资源状态与操作结果"
       ]
     },
     {
@@ -1356,7 +1441,7 @@
       "version": "1",
       "publisher": "WordPress",
       "category": "内容管理",
-      "description": "WordPress 官方命令行与官方 MCP Adapter。",
+      "description": "WP-CLI 与 WordPress 官方运维 Skill，用于内容、扩展、用户与数据库管理。",
       "officialDomains": [
         "wordpress.org"
       ],
@@ -1431,7 +1516,18 @@
           "outputProtocol": "json"
         }
       ],
-      "skills": [],
+      "skills": [
+        {
+          "id": "wordpress-wpcli-skill",
+          "sourceKind": "git",
+          "repository": "https://github.com/wordpress/agent-skills",
+          "path": "skills/wp-wpcli-and-ops",
+          "revision": "c212346296ce49e72d928b93e49dbfcbb34aaa3d",
+          "officialOrganization": "wordpress",
+          "targetDirectory": "v8-plugin-wordpress-wpcli",
+          "skillNames": ["wp-wpcli-and-ops"]
+        }
+      ],
       "mcpServers": [
         {
           "id": "wordpress-mcp-adapter",
@@ -1485,6 +1581,9 @@
       },
       "capabilities": [
         "WordPress 内容、插件、主题、用户与数据库管理"
+      ],
+      "artifacts": [
+        "站点内容、配置与运维结果"
       ]
     },
     {
@@ -1494,7 +1593,7 @@
       "version": "1",
       "publisher": "Microsoft",
       "category": "云平台",
-      "description": "Microsoft Azure 官方 CLI 与 MCP。",
+      "description": "通过 Microsoft Azure 官方 CLI 管理资源与部署。",
       "officialDomains": [
         "microsoft.com",
         "azure.com",
@@ -1633,6 +1732,9 @@
       },
       "capabilities": [
         "Azure 账户、资源与部署管理"
+      ],
+      "artifacts": [
+        "云资源状态与部署结果"
       ]
     },
     {
@@ -1747,6 +1849,9 @@
         "设计上下文读取",
         "通过官方 MCP 修改画布",
         "外部 Figma 完整编辑"
+      ],
+      "artifacts": [
+        "Figma 画布视图引用与设计上下文"
       ]
     },
     {
@@ -1871,6 +1976,9 @@
         "程序化视频与动效",
         "字幕与视觉模板",
         "渲染产物"
+      ],
+      "artifacts": [
+        "视频、动效、字幕与渲染文件"
       ]
     },
     {
@@ -1880,7 +1988,7 @@
       "version": "1",
       "publisher": "Stripe",
       "category": "支付与商业",
-      "description": "Stripe 官方 CLI、Agent Skills 与 MCP。",
+      "description": "Stripe 官方 CLI 与可移植 Skills，用于支付开发和事件调试。",
       "officialDomains": [
         "stripe.com"
       ],
@@ -2015,6 +2123,9 @@
       },
       "capabilities": [
         "支付开发、Webhook、本地事件、Stripe API 与最佳实践"
+      ],
+      "artifacts": [
+        "支付对象、Webhook 事件与调试结果"
       ]
     },
     {
@@ -2024,7 +2135,7 @@
       "version": "1",
       "publisher": "Docker",
       "category": "开发基础设施",
-      "description": "Docker CLI/Desktop 状态与官方 MCP Catalog/Toolkit。",
+      "description": "通过 Docker CLI 管理容器、镜像、Compose 与 Desktop 状态。",
       "officialDomains": [
         "docker.com",
         "docker.io"
@@ -2175,6 +2286,9 @@
       },
       "capabilities": [
         "容器、镜像、Compose、Docker Desktop 与 MCP Catalog"
+      ],
+      "artifacts": [
+        "镜像、容器、Compose 状态与运行日志"
       ]
     },
     {
@@ -2537,7 +2651,8 @@
           "path": "node_modules/@amap-lbs/amap-gui/SKILL.md",
           "revision": "1.0.3",
           "officialOrganization": "amap",
-          "targetDirectory": "amap-map-cli"
+          "targetDirectory": "amap-map-cli",
+          "skillNames": ["amap-map-cli"]
         }
       ],
       "mcpServers": [],
@@ -2577,6 +2692,89 @@
         "驾车、步行、骑行与公交路线规划",
         "关键词与周边 POI 搜索",
         "最近一次地图交互事件读取"
+      ],
+      "artifacts": [
+        "地图状态、路线方案、POI 列表与交互事件"
+      ]
+    },
+    {
+      "schemaVersion": "v8.plugin.v1",
+      "id": "office-suite",
+      "displayName": "日常办公",
+      "version": "1",
+      "publisher": "Jezweb / V8OS 精选",
+      "category": "办公与文档",
+      "description": "按需创建和编辑 Word、Excel、PDF 与 PowerPoint 文件，不常驻启动 MCP server。",
+      "officialDomains": [
+        "github.com",
+        "skills.sh"
+      ],
+      "officialOrganizations": [
+        "jezweb"
+      ],
+      "officialLinks": {
+        "homepage": "https://www.skills.sh/jezweb/claude-skills/office",
+        "documentation": "https://www.skills.sh/jezweb/claude-skills/office",
+        "repository": "https://github.com/jezweb/claude-skills"
+      },
+      "brand": {
+        "file": "logos/office-suite.svg",
+        "source": "v8os://plugin-assets/office-suite",
+        "license": "V8OS original icon; bundled Skill remains MIT licensed by its upstream author",
+        "sha256": "ed36fdd2394e4d420a5df28d8ab6c6c9a916758507d08bc94422b65b327ef2e7"
+      },
+      "cliProfiles": [],
+      "skills": [
+        {
+          "id": "office-documents-skill",
+          "sourceKind": "git",
+          "repository": "https://github.com/jezweb/claude-skills",
+          "path": "skills/office",
+          "revision": "10a1f16679a5aab8e0c2f4d04e8560402f34d04b",
+          "officialOrganization": "jezweb",
+          "targetDirectory": "v8-plugin-office-suite",
+          "skillNames": ["office"]
+        }
+      ],
+      "mcpServers": [],
+      "uiAdapters": [],
+      "providerAdapters": [],
+      "governance": {
+        "permissions": [
+          "workspace-read",
+          "workspace-write",
+          "process-execution"
+        ],
+        "sideEffects": [
+          "create-or-update-office-files",
+          "workspace-local-dependency-install-when-missing"
+        ],
+        "paidOperations": false,
+        "networkRequired": true,
+        "workspaceAccess": "write",
+        "approvalClasses": [
+          "workspace-write",
+          "dependency-install"
+        ],
+        "healthChecks": [
+          "skill-available"
+        ],
+        "outputProtocols": [
+          "artifact_ref",
+          "text"
+        ]
+      },
+      "capabilities": [
+        "Word 文档创建与编辑",
+        "Excel 表格、公式与数据导出",
+        "PDF 创建与表单处理",
+        "PowerPoint 演示稿生成"
+      ],
+      "artifacts": [
+        "DOCX 文档",
+        "XLSX/CSV 表格",
+        "PDF 文件",
+        "PPTX 演示稿"
       ]
     }
   ]

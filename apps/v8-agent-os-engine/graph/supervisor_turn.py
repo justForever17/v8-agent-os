@@ -1986,6 +1986,13 @@ def execute_supervisor_turn(
         )
         reflex_prompt_addition = render_reflex_prompt_addition(reflex_decision)
         gate_prompt_addition = render_gate_prompt_addition(gate_decision)
+        plugin_catalog_prompt_addition = ""
+        try:
+            from runtimes.plugin_manager.service import plugin_manager_service
+
+            plugin_catalog_prompt_addition = plugin_manager_service.supervisor_availability_prompt()
+        except Exception:
+            plugin_catalog_prompt_addition = ""
 
         prompt_started_at = time.perf_counter()
         context_bundle = build_supervisor_system_content(
@@ -2000,6 +2007,7 @@ def execute_supervisor_turn(
             supervisor_tools=filtered_supervisor_tools,
             memory_runtime=memory_runtime,
             extension_prompt_addition=route_bundle.prompt_addition,
+            plugin_catalog_prompt_addition=plugin_catalog_prompt_addition,
             reflex_prompt_addition=reflex_prompt_addition,
             gate_prompt_addition=gate_prompt_addition,
         )

@@ -1,5 +1,5 @@
 import { memo, useMemo } from "react";
-import { Linking, StyleSheet, Text, View } from "react-native";
+import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { MediaPlayer, ImagePreview } from "@/src/components/chat/MediaRenderers";
 import {
@@ -273,10 +273,26 @@ function parseMarkdownTable(lines: string[]) {
     const rows = lines.slice(2)
         .filter((line) => line.includes("|"))
         .map((line) => splitTableCells(line));
-    if (!headers.length || !rows.length) {
+    if (!headers.length) {
         return null;
     }
-    return { headers, rows };
+    const columnWidths = headers.map((header, columnIndex) => {
+        const values = [header, ...rows.map((row) => row[columnIndex] || "")];
+        const widest = values.reduce((width, value) => {
+            const visualWidth = Array.from(value).reduce(
+                (total, character) => total + (/^[\x00-\x7F]$/.test(character) ? 7 : 13),
+                0,
+            );
+            return Math.max(width, visualWidth);
+        }, 0);
+        return Math.max(112, Math.min(960, widest + spacing.sm * 2));
+    });
+    return {
+        headers,
+        rows,
+        columnWidths,
+        width: columnWidths.reduce((total, width) => total + width, 0),
+    };
 }
 
 function resolveMedia(line: string, adminBaseUrl: string) {
@@ -328,10 +344,9 @@ function resolveMedia(line: string, adminBaseUrl: string) {
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { content: string }) {
     const { adminBaseUrl } = useAppSession();
     const { colors } = useUiPrefs();
-    const paragraphs = useMemo(
-        () => String(content || "").split(/\n{2,}/).map((item) => item.trim()).filter(Boolean),
-        [content],
-    );
+    const paragraphs = useMemo(() => String(content || "")
+        .replace(/\r\n?/g, "\n")
+        .split("\n\n"), [content]);
 
     const renderInlineTokens = (tokens: InlineToken[]) => tokens.map((token, tokenIndex) => {
         if (token.type === "link") {
@@ -410,6 +425,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
     return (
         <View style={styles.stack}>
             {paragraphs.map((paragraph, index) => {
+                if (!paragraph) {
+                    return <View key={`${index}:blank-line`} style={styles.blankLine} />;
+                }
                 const media = resolveMedia(paragraph, adminBaseUrl);
                 if (media?.kind === "image") {
                     return <ImagePreview key={`${index}:${media.href}`} src={media.href} alt={media.label} candidates={media.candidates} />;
@@ -424,38 +442,75 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { co
                     return (
                         <View
                             key={`${index}:table:${paragraph.slice(0, 16)}`}
-                            style={[styles.table, { borderColor: colors.border }]}
+                            style={[styles.tableFrame, { borderColor: colors.border }]}
                         >
-                            <View style={[styles.tableRow, styles.tableHeaderRow, { borderBottomColor: colors.border, backgroundColor: colors.surface }]}>
-                                {table.headers.map((header, cellIndex) => (
-                                    <Text
-                                        key={`header:${cellIndex}`}
-                                        selectable
-                                        style={[styles.tableHeaderCell, { color: colors.text }]}
-                                    >
-                                        {renderInlineTokens(tokenizeInline(header))}
-                                    </Text>
-                                ))}
-                            </View>
-                            {table.rows.map((row, rowIndex) => (
-                                <View
-                                    key={`row:${rowIndex}`}
-                                    style={[
-                                        styles.tableRow,
-                                        rowIndex < table.rows.length - 1 ? { borderBottomColor: colors.border } : null,
-                                    ]}
+                            <ScrollView
+                                horizontal
+                                nestedScrollEnabled
+                                showsHorizontalScrollIndicator={false}
+                                contentContainerStyle={{ minWidth: "100%" }}
+                            >
+                                <ScrollView
+                                    nestedScrollEnabled
+                                    showsVerticalScrollIndicator={false}
+                                    style={styles.tableVerticalViewport}
+                                    contentContainerStyle={{ width: table.width }}
                                 >
-                                    {table.headers.map((_, cellIndex) => (
-                                        <Text
-                                            key={`cell:${rowIndex}:${cellIndex}`}
-                                            selectable
-                                            style={[styles.tableCell, { color: colors.text }]}
-                                        >
-                                            {renderInlineTokens(tokenizeInline(row[cellIndex] || ""))}
-                                        </Text>
-                                    ))}
-                                </View>
-                            ))}
+                                    <View style={[styles.table, { width: table.width }]}>
+                                        <View style={[styles.tableRow, styles.tableHeaderRow, { borderBottomColor: colors.border, backgroundColor: colors.surface }]}>
+                                            {table.headers.map((header, cellIndex) => (
+                                                <Text
+                                                    key={`header:${cellIndex}`}
+                                                    selectable
+                                                    numberOfLines={1}
+                                                    style={[
+                                                        styles.tableHeaderCell,
+                                                        {
+                                                            color: colors.text,
+                                                            width: table.columnWidths[cellIndex],
+                                                            borderRightColor: colors.border,
+                                                            borderRightWidth: cellIndex < table.headers.length - 1 ? StyleSheet.hairlineWidth : 0,
+                                                        },
+                                                    ]}
+                                                >
+                                                    {renderInlineTokens(tokenizeInline(header))}
+                                                </Text>
+                                            ))}
+                                        </View>
+                                        {table.rows.map((row, rowIndex) => (
+                                            <View
+                                                key={`row:${rowIndex}`}
+                                                style={[
+                                                    styles.tableRow,
+                                                    {
+                                                        borderBottomColor: colors.border,
+                                                        borderBottomWidth: rowIndex < table.rows.length - 1 ? StyleSheet.hairlineWidth : 0,
+                                                    },
+                                                ]}
+                                            >
+                                                {table.headers.map((_, cellIndex) => (
+                                                    <Text
+                                                        key={`cell:${rowIndex}:${cellIndex}`}
+                                                        selectable
+                                                        numberOfLines={1}
+                                                        style={[
+                                                            styles.tableCell,
+                                                            {
+                                                                color: colors.text,
+                                                                width: table.columnWidths[cellIndex],
+                                                                borderRightColor: colors.border,
+                                                                borderRightWidth: cellIndex < table.headers.length - 1 ? StyleSheet.hairlineWidth : 0,
+                                                            },
+                                                        ]}
+                                                    >
+                                                        {renderInlineTokens(tokenizeInline(row[cellIndex] || ""))}
+                                                    </Text>
+                                                ))}
+                                            </View>
+                                        ))}
+                                    </View>
+                                </ScrollView>
+                            </ScrollView>
                         </View>
                     );
                 }
@@ -552,6 +607,9 @@ const styles = StyleSheet.create({
     paragraph: {
         gap: spacing.xs,
     },
+    blankLine: {
+        height: 10,
+    },
     text: {
         fontSize: 14,
         lineHeight: 21,
@@ -603,21 +661,25 @@ const styles = StyleSheet.create({
         width: "100%",
         opacity: 0.75,
     },
-    table: {
+    tableFrame: {
         width: "100%",
         borderWidth: StyleSheet.hairlineWidth,
         borderRadius: 10,
         overflow: "hidden",
     },
+    tableVerticalViewport: {
+        maxHeight: 320,
+    },
+    table: {
+        minWidth: "100%",
+    },
     tableRow: {
         flexDirection: "row",
-        borderBottomWidth: StyleSheet.hairlineWidth,
     },
     tableHeaderRow: {
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
     tableHeaderCell: {
-        flex: 1,
         fontSize: 12,
         fontWeight: "800",
         lineHeight: 18,
@@ -625,7 +687,6 @@ const styles = StyleSheet.create({
         paddingVertical: 7,
     },
     tableCell: {
-        flex: 1,
         fontSize: 12,
         lineHeight: 18,
         paddingHorizontal: spacing.sm,

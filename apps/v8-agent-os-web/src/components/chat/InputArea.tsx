@@ -363,6 +363,7 @@ export function InputArea({
     const [files, setFiles] = React.useState<File[]>([]);
     const [uploadedSources, setUploadedSources] = React.useState<UploadedSourceDescriptor[]>([]);
     const [uploading, setUploading] = React.useState(false);
+    const [isFileDragActive, setIsFileDragActive] = React.useState(false);
     const [isRecording, setIsRecording] = React.useState(false);
     const [isTranscribing, setIsTranscribing] = React.useState(false);
     const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -377,6 +378,7 @@ export function InputArea({
     const audioChunksRef = React.useRef<Float32Array[]>([]);
     const sampleRateRef = React.useRef(16000);
     const inlineNoticeTimerRef = React.useRef<number | null>(null);
+    const fileDragDepthRef = React.useRef(0);
 
     const composerReferences = React.useMemo<ComposerInlineReference[]>(() => [
         ...(selectedCommandPreset ? [{
@@ -872,34 +874,79 @@ export function InputArea({
         }
     };
 
-    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files) {
-            const newFiles = Array.from(e.target.files);
-            if (files.length + newFiles.length > 14) {
-                showInlineNotice("error", t("web.generated.ee75d524b0"));
-                return;
-            }
-            setFiles((prev) => [...prev, ...newFiles]);
-
-            setUploading(true);
-            try {
-                const uploadPromises = newFiles.map(async (file) => {
-                    const formData = new FormData();
-                    formData.append('file', file);
-                    appendUploadScope(formData, uploadScope, "web_upload");
-                    const res = await fetch(`/api/upload`, { method: 'POST', body: formData });
-                    if (!res.ok) throw new Error("Failed to upload file");
-                    return await res.json() as UploadedSourceDescriptor;
-                });
-                const uploaded = await Promise.all(uploadPromises);
-                setUploadedSources((prev) => [...prev, ...uploaded]);
-            } catch (error) {
-                console.error('Upload failed:', error);
-                showInlineNotice("error", t("web.generated.a0608c519e"));
-            } finally {
-                setUploading(false);
-            }
+    const uploadFiles = React.useCallback(async (newFiles: File[]) => {
+        if (newFiles.length === 0 || uploading) return;
+        if (files.length + newFiles.length > 14) {
+            showInlineNotice("error", t("web.generated.ee75d524b0"));
+            return;
         }
+        setFiles((prev) => [...prev, ...newFiles]);
+        setUploading(true);
+        try {
+            const uploadPromises = newFiles.map(async (file) => {
+                const formData = new FormData();
+                formData.append('file', file);
+                appendUploadScope(formData, uploadScope, "web_upload");
+                const res = await fetch(`/api/upload`, { method: 'POST', body: formData });
+                if (!res.ok) throw new Error("Failed to upload file");
+                return await res.json() as UploadedSourceDescriptor;
+            });
+            const uploaded = await Promise.all(uploadPromises);
+            setUploadedSources((prev) => [...prev, ...uploaded]);
+        } catch (error) {
+            console.error('Upload failed:', error);
+            showInlineNotice("error", t("web.generated.a0608c519e"));
+        } finally {
+            setUploading(false);
+        }
+    }, [files.length, showInlineNotice, t, uploadScope, uploading]);
+
+    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const selectedFiles = Array.from(event.target.files || []);
+        event.target.value = "";
+        void uploadFiles(selectedFiles);
+    };
+
+    const hasDraggedFiles = React.useCallback((event: React.DragEvent<HTMLFormElement>) => (
+        Array.from(event.dataTransfer.types || []).includes("Files")
+    ), []);
+
+    const resetFileDragState = React.useCallback(() => {
+        fileDragDepthRef.current = 0;
+        setIsFileDragActive(false);
+    }, []);
+
+    const handleFileDragEnter = (event: React.DragEvent<HTMLFormElement>) => {
+        if (!hasDraggedFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        fileDragDepthRef.current += 1;
+        event.dataTransfer.dropEffect = "copy";
+        setIsFileDragActive(true);
+    };
+
+    const handleFileDragOver = (event: React.DragEvent<HTMLFormElement>) => {
+        if (!hasDraggedFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "copy";
+    };
+
+    const handleFileDragLeave = (event: React.DragEvent<HTMLFormElement>) => {
+        if (!hasDraggedFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+        if (fileDragDepthRef.current === 0) setIsFileDragActive(false);
+    };
+
+    const handleFileDrop = (event: React.DragEvent<HTMLFormElement>) => {
+        if (!hasDraggedFiles(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const droppedFiles = Array.from(event.dataTransfer.files || []);
+        resetFileDragState();
+        void uploadFiles(droppedFiles);
     };
 
     const removeFile = (index: number) => {
@@ -1159,6 +1206,12 @@ export function InputArea({
 
     return (
         <form
+            data-file-drop-active={isFileDragActive ? "true" : "false"}
+            onDragEnter={handleFileDragEnter}
+            onDragOver={handleFileDragOver}
+            onDragLeave={handleFileDragLeave}
+            onDrop={handleFileDrop}
+            onDragEnd={resetFileDragState}
             onSubmit={async (e) => {
                 if (selectedCommandPreset?.memoryAction === "session_extraction") {
                     e.preventDefault();
@@ -1283,7 +1336,8 @@ export function InputArea({
                 isFocused 
                     ? "bg-stone-50/95 dark:bg-stone-900/90 shadow-[0_8px_32px_rgba(0,0,0,0.06)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.3)] border-orange-500/30 dark:border-amber-500/30" 
                     : "bg-stone-50/60 dark:bg-stone-900/50 backdrop-blur-xl hover:bg-stone-50/80 hover:dark:bg-stone-900/70 border-stone-200/60 dark:border-stone-800/60",
-                specModeEnabled && "border-red-500/55 shadow-[0_0_0_1px_rgba(239,68,68,0.26),0_0_28px_rgba(248,113,113,0.24)] animate-pulse"
+                specModeEnabled && "border-red-500/55 shadow-[0_0_0_1px_rgba(239,68,68,0.26),0_0_28px_rgba(248,113,113,0.24)] animate-pulse",
+                isFileDragActive && "border-primary/70 bg-primary/[0.04] ring-2 ring-primary/20",
             )}
             style={{ backdropFilter: 'blur(16px) saturate(120%)' }}
         >

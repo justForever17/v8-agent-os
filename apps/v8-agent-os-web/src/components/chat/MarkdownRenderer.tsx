@@ -390,19 +390,31 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "", surface = "me
         p: ({ children }: ComponentPropsWithoutRef<'p'>) => (
             surface === "document"
                 ? <p className="whitespace-pre-wrap">{children}</p>
-                : <div className="mb-2 last:mb-0">{children}</div>
+                : <div className="mb-2 whitespace-pre-wrap last:mb-0">{children}</div>
         ),
-        table: ({ children }: ComponentPropsWithoutRef<'table'>) => surface === "document" ? (
-            <div className="my-4 w-full overflow-x-auto rounded-xl border border-border/70 bg-card/60">
-                <table className="m-0 w-max min-w-full border-collapse text-left text-xs">{children}</table>
+        table: ({ children }: ComponentPropsWithoutRef<'table'>) => (
+            <div
+                data-markdown-table-viewport
+                className={cn(
+                    "custom-scrollbar w-full overflow-auto overscroll-contain rounded-lg border border-border/70 bg-card/60",
+                    surface === "document" ? "my-4 max-h-[70vh]" : "my-3 max-h-80",
+                )}
+            >
+                <table className="m-0 w-max min-w-full border-collapse text-left text-xs [&_tbody_tr:last-child_td]:border-b-0">
+                    {children}
+                </table>
             </div>
-        ) : <table>{children}</table>,
-        th: ({ children }: ComponentPropsWithoutRef<'th'>) => surface === "document"
-            ? <th className="whitespace-nowrap border-b border-border bg-muted/55 px-3 py-2 align-top font-semibold text-foreground">{children}</th>
-            : <th>{children}</th>,
-        td: ({ children }: ComponentPropsWithoutRef<'td'>) => surface === "document"
-            ? <td className="whitespace-nowrap border-b border-border/60 px-3 py-2 align-top last:border-b-0">{children}</td>
-            : <td>{children}</td>,
+        ),
+        th: ({ children }: ComponentPropsWithoutRef<'th'>) => (
+            <th className="sticky top-0 z-[1] whitespace-nowrap border-b border-r border-border bg-muted px-3 py-2 align-top font-semibold text-foreground last:border-r-0">
+                {children}
+            </th>
+        ),
+        td: ({ children }: ComponentPropsWithoutRef<'td'>) => (
+            <td className="whitespace-nowrap border-b border-r border-border/60 px-3 py-2 align-top last:border-r-0">
+                {children}
+            </td>
+        ),
         code: CodeBlock,
         a: ({ href, children }: ComponentPropsWithoutRef<'a'>) => {
             if (!href) return <>{children}</>;
@@ -479,7 +491,7 @@ export const MarkdownRenderer = memo(({ content, searchQuery = "", surface = "me
             layout={surface !== "document"}
             className={cn(
                 "prose dark:prose-invert max-w-none text-sm break-words w-full leading-relaxed my-1",
-                surface === "document" ? "prose-sm overflow-visible" : "overflow-x-auto",
+                surface === "document" ? "prose-sm overflow-visible" : "overflow-visible",
             )}
         >
             <ReactMarkdown

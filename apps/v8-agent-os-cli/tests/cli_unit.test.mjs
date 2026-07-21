@@ -189,11 +189,11 @@ test("preview build logs are written to CLI logs", () => {
   assert.match(logs.err, /web\.build\.err\.log$/);
 });
 
-test("preview rebuild restarts shell, Next servers, and Engine before verification", () => {
+test("preview rebuild restarts shell and adopts verified Next/Engine port owners before verification", () => {
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: true }), ["shell", "admin", "web", "engine"]);
   assert.deepEqual(previewRebuildStopComponentIds({ rebuild: false }), []);
   const previewSource = fs.readFileSync(path.join(cliRoot, "src", "preview_commands.mjs"), "utf8");
-  assert.match(previewSource, /stopVerifiedPortOwners:\s*\["engine"\]/);
+  assert.match(previewSource, /stopVerifiedPortOwners:\s*\["admin", "web", "engine"\]/);
 });
 
 test("preview rebuild adopts only a verified current-repo Engine port owner", () => {

@@ -175,6 +175,32 @@ def test_agent_browser_refuses_a_debug_port_owned_by_another_profile(monkeypatch
     assert "不会接管用户日常 profile" in result["recommendedNextAction"]
 
 
+def test_agent_browser_proxy_waits_until_playwright_is_connected(monkeypatch):
+    provider = BrowserAutomationProvider()
+    provider._connect_timeout_ms = 100
+    provider._proxy_process = SimpleNamespace(poll=lambda: None)
+    health_results = iter(
+        [
+            {"connected": False, "error": "starting"},
+            {"connected": False, "error": "attaching"},
+            {"connected": True},
+        ]
+    )
+    health_calls: list[float | None] = []
+
+    def _health(*, timeout_seconds=None):
+        health_calls.append(timeout_seconds)
+        return next(health_results)
+
+    monkeypatch.setattr(provider, "_health", _health)
+    monkeypatch.setattr("runtimes.computer_use.browser_automation.time.sleep", lambda _seconds: None)
+
+    provider._ensure_proxy(target_port=9222, startup_timeout_seconds=1.0)
+
+    assert len(health_calls) == 3
+    assert all(timeout is not None and timeout <= 1.0 for timeout in health_calls)
+
+
 def test_browser_discovery_does_not_scan_arbitrary_debug_ports(monkeypatch):
     provider = BrowserAutomationProvider()
     monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: True)

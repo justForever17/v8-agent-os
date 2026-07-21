@@ -41,6 +41,7 @@ _DEFAULT_PROXY_PORT = 3456
 _DEFAULT_WINDOW_SIZE = "1600,1000"
 _AVAILABILITY_HEALTH_TIMEOUT_SECONDS = 0.25
 _AVAILABILITY_HEALTH_TTL_SECONDS = 2.0
+_AGENT_BROWSER_COLD_START_TIMEOUT_SECONDS = 20.0
 _GENERIC_BROWSER_APP_IDS = {"agent_browser", "auto", "browser_checkout", "browser"}
 _CHROME_APP_IDS = {"chrome", "google_chrome", "google-chrome"}
 _EDGE_APP_IDS = {"edge", "msedge", "microsoft_edge", "microsoft-edge"}
@@ -496,7 +497,13 @@ class BrowserAutomationProvider:
             }
         kind = managed_kind
         try:
-            self._ensure_proxy(target_port=target_port)
+            self._ensure_proxy(
+                target_port=target_port,
+                startup_timeout_seconds=max(
+                    _AGENT_BROWSER_COLD_START_TIMEOUT_SECONDS,
+                    (self._connect_timeout_ms / 1000.0) * 3,
+                ),
+            )
         except Exception as exc:
             return {
                 "ok": False,
@@ -1169,7 +1176,13 @@ class BrowserAutomationProvider:
             browser_kind=kind,
         )
         try:
-            self._ensure_proxy(target_port=target_port)
+            self._ensure_proxy(
+                target_port=target_port,
+                startup_timeout_seconds=max(
+                    _AGENT_BROWSER_COLD_START_TIMEOUT_SECONDS,
+                    (self._connect_timeout_ms / 1000.0) * 3,
+                ),
+            )
             health = self._health()
             if not health.get("connected"):
                 raise RuntimeError(str(health.get("error") or "Playwright could not attach to the Agent Browser CDP endpoint."))
@@ -1330,38 +1343,60 @@ class BrowserAutomationProvider:
         response.raise_for_status()
         return dict(response.json() or {})
 
-    def _ensure_proxy(self, *, target_port: int | None = None) -> None:
+    def _ensure_proxy(
+        self,
+        *,
+        target_port: int | None = None,
+        startup_timeout_seconds: float | None = None,
+    ) -> None:
         with self._lock:
-            if self._proxy_process is not None and self._proxy_process.poll() is None:
-                return
-            script_path = self._helper_script_path()
-            node_path = self._node_path
-            if not node_path:
-                raise RuntimeError("当前环境缺少 node，无法启用 browser automation lane。")
-            if not script_path.exists():
-                raise RuntimeError(f"browser automation helper 缺失：{script_path}")
-            env = os.environ.copy()
-            env["CDP_PROXY_PORT"] = str(self._proxy_port)
-            env["V8_ENGINE_PARENT_PID"] = str(os.getpid())
-            if target_port:
-                env["CDP_TARGET_PORT"] = str(target_port)
-            driver_package = self._resolve_playwright_driver_package()
-            if driver_package:
-                env["PLAYWRIGHT_DRIVER_PACKAGE"] = str(driver_package)
-            self._proxy_process = subprocess.Popen(
-                [node_path, str(script_path)],
-                cwd=str(script_path.parent),
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-        deadline = time.time() + (self._connect_timeout_ms / 1000.0)
+            proxy_running = self._proxy_process is not None and self._proxy_process.poll() is None
+            if not proxy_running:
+                script_path = self._helper_script_path()
+                node_path = self._node_path
+                if not node_path:
+                    raise RuntimeError("当前环境缺少 node，无法启用 browser automation lane。")
+                if not script_path.exists():
+                    raise RuntimeError(f"browser automation helper 缺失：{script_path}")
+                env = os.environ.copy()
+                env["CDP_PROXY_PORT"] = str(self._proxy_port)
+                env["V8_ENGINE_PARENT_PID"] = str(os.getpid())
+                if target_port:
+                    env["CDP_TARGET_PORT"] = str(target_port)
+                driver_package = self._resolve_playwright_driver_package()
+                if driver_package:
+                    env["PLAYWRIGHT_DRIVER_PACKAGE"] = str(driver_package)
+                self._proxy_process = subprocess.Popen(
+                    [node_path, str(script_path)],
+                    cwd=str(script_path.parent),
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+        timeout_seconds = max(
+            self._connect_timeout_ms / 1000.0,
+            float(startup_timeout_seconds or 0.0),
+        )
+        deadline = time.monotonic() + timeout_seconds
         last_error: Exception | None = None
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
+            proxy_process = self._proxy_process
+            if proxy_process is None or proxy_process.poll() is not None:
+                raise RuntimeError("browser automation helper 启动后提前退出。")
+            remaining = max(0.05, deadline - time.monotonic())
             try:
-                self._health()
-                return
+                health = self._health(
+                    timeout_seconds=min(
+                        max(1.0, self._connect_timeout_ms / 1000.0),
+                        remaining,
+                    )
+                )
+                if health.get("connected"):
+                    return
+                last_error = RuntimeError(
+                    str(health.get("error") or "Playwright 尚未连接 Agent 浏览器 CDP。")
+                )
             except Exception as exc:
                 last_error = exc
                 time.sleep(0.12)

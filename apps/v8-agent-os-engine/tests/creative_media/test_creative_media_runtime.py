@@ -616,6 +616,22 @@ def test_seedance_recipe_prompt_keeps_multimodal_reference_roles(monkeypatch):
     assert "Seedance 2.0 reference discipline" in prompt
 
 
+def test_image_recipe_persists_a_named_quality_profile(monkeypatch):
+    compiler, _fake = _compiler_with_fake_storage(monkeypatch)
+
+    cutout = compiler.compile_recipe(
+        {"modality": "image", "assetRole": "transparent_cutout", "prompt": "isolated product cutout"}
+    )
+    character = compiler.compile_recipe(
+        {"modality": "image", "assetRole": "character_reference", "prompt": "character turnaround"}
+    )
+
+    assert cutout["qualityProfile"] == "transparent_cutout"
+    assert cutout["qualityThresholds"]["requireAlpha"] is True
+    assert character["qualityProfile"] == "character_reference"
+    assert character["qualityThresholds"]["maxReferenceAreaDelta"] == 0.18
+
+
 def test_prompt_policy_defaults_to_english_and_rewrites_protected_ip():
     policy = prepare_provider_prompt_policy("生成钢铁侠海报，标题必须显示「未来战甲」", modality="image")
 
@@ -1546,7 +1562,15 @@ def test_project_scope_is_persisted_in_recipe_asset_and_artifact(monkeypatch, tm
     monkeypatch.setattr("runtimes.creative_media.runtime.artifact_store.record_artifact", fake_record_artifact)
     artifact = creative_media_runtime._record_local_artifact(
         file_path=output_path,
-        job={"jobId": "cm_project", "modality": "image", "projectId": "project-smoke", "workspaceId": "workspace-smoke", "workspacePath": workspace_path},
+        job={
+            "jobId": "cm_project",
+            "modality": "image",
+            "sessionId": "session-smoke",
+            "runId": "run-smoke",
+            "projectId": "project-smoke",
+            "workspaceId": "workspace-smoke",
+            "workspacePath": workspace_path,
+        },
         kind="image",
         mime_type="image/png",
         metadata={"provider": "fake"},
@@ -1559,6 +1583,8 @@ def test_project_scope_is_persisted_in_recipe_asset_and_artifact(monkeypatch, tm
     assert captured["metadata"]["projectId"] == "project-smoke"
     assert captured["metadata"]["workspaceId"] == "workspace-smoke"
     assert captured["metadata"]["workspacePath"] == workspace_path
+    assert captured["session_id"] == "session-smoke"
+    assert captured["run_id"] == "run-smoke"
 
 
 def test_image_recipe_compilation_preserves_hard_requirements(monkeypatch):
@@ -1862,7 +1888,98 @@ def test_p4_quality_cost_and_safety_stores_are_written(monkeypatch, tmp_path: Pa
     )
     creative_media_runtime._record_terminal_job_observations(job)
 
-    assert job["qualityStatus"] in {"passed", "warning"}
+    assert job["qualityStatus"] == "review_required"
+    quality_jobs = fake.payloads["creative_media/quality_jobs.json"]["qualityJobs"]
+    quality_job = next(iter(quality_jobs.values()))
+    assert quality_job["requiredFeaturePackId"] == "creative_media_image_analysis"
     assert "creative_media/quality_jobs.json" in fake.payloads
     assert "creative_media/cost_ledger.json" in fake.payloads
     assert "creative_media/safety_events.json" in fake.payloads
+
+
+def test_quality_auto_repair_stops_after_two_attempts(monkeypatch, tmp_path: Path):
+    fake = FakeJsonStorage()
+    fake.base_dir = tmp_path
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    source = tmp_path / "opaque.png"
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (100, 100), "white")
+    ImageDraw.Draw(image).rectangle((20, 20, 79, 79), fill="navy")
+    image.save(source)
+    attempts = []
+
+    def unchanged_repair(artifacts, *, owner, attempt):
+        attempts.append(attempt)
+        return artifacts
+
+    monkeypatch.setattr(creative_media_runtime, "_repair_quality_artifacts", unchanged_repair)
+    quality = creative_media_runtime.create_quality_job(
+        {
+            "jobId": "quality-cap",
+            "modality": "image",
+            "artifactId": "opaque-artifact",
+            "sourcePath": str(source),
+            "qualityProfile": "transparent_cutout",
+            "autoRepair": True,
+            "maxRepairAttempts": 99,
+        }
+    )
+
+    assert attempts == [1, 2]
+    assert len(quality["repairAttempts"]) == 2
+    assert quality["status"] == "repairable"
+
+
+def test_quality_job_resolves_facade_artifact_ids(monkeypatch, tmp_path: Path):
+    fake = FakeJsonStorage()
+    fake.base_dir = tmp_path
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    source = tmp_path / "cutout.png"
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    ImageDraw.Draw(image).rectangle((20, 20, 79, 79), fill=(30, 60, 120, 255))
+    image.save(source)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.db.get_runtime_artifact",
+        lambda artifact_id: {"source_path": str(source)} if artifact_id == "artifact-from-facade" else {},
+    )
+
+    quality = creative_media_runtime.create_quality_job(
+        {
+            "artifactIds": ["artifact-from-facade"],
+            "qualityProfile": "transparent_cutout",
+        }
+    )
+
+    assert "no_artifacts" not in quality["failures"]
+    assert any(check["name"] == "image_subject_analysis" for check in quality["checks"])
+
+
+def test_quality_job_does_not_ignore_an_unavailable_reference(monkeypatch, tmp_path: Path):
+    fake = FakeJsonStorage()
+    fake.base_dir = tmp_path
+    monkeypatch.setattr("runtimes.creative_media.runtime.storage", fake)
+    source = tmp_path / "candidate.png"
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    ImageDraw.Draw(image).rectangle((20, 20, 79, 79), fill=(30, 60, 120, 255))
+    image.save(source)
+    monkeypatch.setattr(
+        "runtimes.creative_media.runtime.db.get_runtime_artifact",
+        lambda artifact_id: {"source_path": str(source)} if artifact_id == "candidate" else {},
+    )
+
+    quality = creative_media_runtime.create_quality_job(
+        {
+            "artifactIds": ["candidate"],
+            "referenceArtifactId": "missing-reference",
+            "qualityProfile": "character_reference",
+        }
+    )
+
+    assert quality["status"] == "review_required"
+    comparison = next(check for check in quality["checks"] if check["name"] == "image_subject_analysis")["comparison"]
+    assert comparison["referenceStatus"] == "review_required"

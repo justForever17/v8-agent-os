@@ -330,25 +330,27 @@ def _creative_media_quality_job_summary(job: Any) -> dict[str, Any]:
         return {}
     return _agent_compact_dict(
         {
-            "qualityJobId": job.get("qualityJobId"),
-            "jobId": job.get("jobId"),
-            "renderJobId": job.get("renderJobId"),
+            "detailRef": job.get("qualityJobId"),
             "status": job.get("status"),
+            "qualityProfile": job.get("qualityProfile"),
             "checks": [
                 _agent_compact_dict(
                     {
                         "name": item.get("name"),
                         "ok": item.get("ok"),
-                        "reason": _agent_preview_text(item.get("reason"), limit=220),
-                        "path": item.get("path"),
+                        "qualityState": item.get("qualityState"),
+                        "violations": _agent_limited_list(item.get("violations"), limit=6),
+                        "warnings": _agent_limited_list(item.get("warnings"), limit=6),
                     }
                 )
                 for item in list(job.get("checks") or [])[:8]
                 if isinstance(item, dict)
             ],
             "summary": _agent_preview_text(job.get("summary") or job.get("reason"), limit=360),
-            "createdAt": job.get("createdAt"),
-            "updatedAt": job.get("updatedAt"),
+            "repairAttemptCount": len(list(job.get("repairAttempts") or [])),
+            "repairArtifactRefs": _agent_limited_list(job.get("repairArtifactRefs"), limit=6),
+            "requiredFeaturePackId": job.get("requiredFeaturePackId"),
+            "nextAction": dict(job.get("retryRecommendation") or {}).get("action"),
         }
     )
 

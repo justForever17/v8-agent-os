@@ -1,0 +1,17 @@
+{
+  "id": "creative_media_image_analysis",
+  "version": "1.0.0",
+  "license": {
+    "name": "Apache-2.0",
+    "source": "https://github.com/xuebinqin/DIS"
+  },
+  "assets": [
+    {
+      "id": "isnet_general_use",
+      "target": "isnet-general-use.onnx",
+      "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
+      "size": 178648008,
+      "sha256": "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a"
+    }
+  ]
+}

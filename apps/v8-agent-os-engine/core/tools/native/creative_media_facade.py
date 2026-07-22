@@ -12,6 +12,7 @@ from erc.runtime_context import get_runtime_context
 _MISSING = object()
 _ID_FIELDS = {
     "artifactId",
+    "candidateArtifactId",
     "characterBibleId",
     "editPlanId",
     "jobId",
@@ -20,6 +21,7 @@ _ID_FIELDS = {
     "productionPackId",
     "providerAdapterId",
     "qualityJobId",
+    "referenceArtifactId",
     "recipeId",
     "renderJobId",
 }
@@ -46,6 +48,7 @@ _LIST_FIELDS = {
 }
 _BOOL_FIELDS = {
     "aigcWatermark",
+    "autoRepair",
     "dryRun",
     "execute",
     "generateAudio",
@@ -56,7 +59,7 @@ _BOOL_FIELDS = {
     "wait",
     "watermark",
 }
-_INT_FIELDS = {"fps", "height", "limit", "maxLayers", "n", "sampleRate", "seed", "width"}
+_INT_FIELDS = {"fps", "height", "limit", "maxLayers", "maxRepairAttempts", "n", "sampleRate", "seed", "width"}
 _DICT_FIELDS = {"canvas", "metadata", "pronunciationDict", "providerLock", "qa", "retryRequest", "sampleApproval", "stages", "voiceSetting"}
 _FLOAT_FIELDS = {
     "costLimit",
@@ -126,6 +129,7 @@ _GENERATION_FIELDS = frozenset(
         "providerId",
         "providerAdapterId",
         "qualityTier",
+        "qualityProfile",
         "referenceAssetIds",
         "referenceAudioUrl",
         "referenceImageUrl",
@@ -227,7 +231,17 @@ _RENDER_FIELDS = frozenset(
     {"editPlanId", "execute", "outputFormat", "outputPath", "planId", "renderProfile", "title"}
 )
 _QUALITY_FIELDS = frozenset(
-    {"artifactIds", "artifacts", "jobId", "requiredKinds", "title"}
+    {
+        "artifactIds",
+        "artifacts",
+        "autoRepair",
+        "jobId",
+        "maxRepairAttempts",
+        "qualityProfile",
+        "referenceArtifactId",
+        "requiredKinds",
+        "title",
+    }
 )
 _PSD_COMPOSE_FIELDS = frozenset({"canvas", "dryRun", "layers", "name", "outputPath", "title"})
 
@@ -496,6 +510,25 @@ CREATIVE_MEDIA_ACTION_REGISTRY: dict[str, dict[str, CreativeMediaActionSpec]] = 
                 ("path", "path", ""),
                 ("artifact_id", "artifactId", ""),
                 ("expected_background", "expectedBackground", "auto"),
+            ),
+        ),
+        "image_compare": _spec(
+            "quality", "image_compare", "psd", "creative_media_image_compare",
+            allowed={
+                "candidateArtifactId",
+                "candidatePath",
+                "qualityProfile",
+                "referenceArtifactId",
+                "referencePath",
+            },
+            any_of=({"referenceArtifactId", "referencePath"}, {"candidateArtifactId", "candidatePath"}),
+            output_kind="image_comparison",
+            args=(
+                ("reference_path", "referencePath", ""),
+                ("reference_artifact_id", "referenceArtifactId", ""),
+                ("candidate_path", "candidatePath", ""),
+                ("candidate_artifact_id", "candidateArtifactId", ""),
+                ("quality_profile", "qualityProfile", "character_reference"),
             ),
         ),
         "psd_export_preview": _spec(
@@ -1068,6 +1101,7 @@ def creative_media_quality(
         "cost_ledger",
         "safety_events",
         "alpha_inspect",
+        "image_compare",
         "psd_export_preview",
     ] = "qa_check",
     request: dict[str, Any] | None = None,

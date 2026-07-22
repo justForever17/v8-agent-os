@@ -7,6 +7,7 @@ from core.runtime_tool_access import RUNTIME_TOOL_GROUPS, filter_visible_tools_f
 from core.supervisor_tool_policy import build_supervisor_tool_policy_snapshot
 from core.tool_surface import _render_creative_media_surface
 from core.tools.native import creative_media_facade as facade
+from core.tools.native.creative_media import _creative_media_quality_job_summary
 from core.tools.native.creative_media_facade import (
     CREATIVE_MEDIA_ACTION_REGISTRY,
     CREATIVE_MEDIA_FACADE_TOOLS,
@@ -266,6 +267,27 @@ def test_facade_normalizes_internal_failure(monkeypatch) -> None:
     assert result["status"] == "failed"
     assert result["error"] == {"code": "provider_failed", "message": "provider unavailable"}
     assert result["detailRef"] == "toolobs://provider-failure"
+
+
+def test_quality_agent_surface_keeps_evidence_without_runtime_noise() -> None:
+    summary = _creative_media_quality_job_summary(
+        {
+            "qualityJobId": "cm_quality_internal",
+            "jobId": "cm_job_internal",
+            "status": "review_required",
+            "qualityProfile": "product_packshot",
+            "summary": "复杂背景需要图像分析增强包。",
+            "requiredFeaturePackId": "creative_media_image_analysis",
+            "retryRecommendation": {"action": "manual_review"},
+            "providerResponse": {"raw": "must not leak"},
+        }
+    )
+
+    assert summary["detailRef"] == "cm_quality_internal"
+    assert summary["status"] == "review_required"
+    assert summary["nextAction"] == "manual_review"
+    assert "jobId" not in summary
+    assert "providerResponse" not in summary
 
 
 def test_supplier_adapter_never_falls_back_without_plugin_grant(monkeypatch) -> None:

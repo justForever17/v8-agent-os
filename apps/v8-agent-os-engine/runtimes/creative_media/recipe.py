@@ -770,6 +770,26 @@ class CreativeRecipeCompiler:
             "characterBibleIds": character_bible_ids,
             "keyframeIds": keyframe_ids,
         }
+        quality_profile = _clean_str(request.get("qualityProfile") or request.get("quality_profile"))
+        if modality == "image":
+            from runtimes.creative_media.image_analysis import QUALITY_PROFILES
+
+            if quality_profile not in QUALITY_PROFILES:
+                asset_role = _clean_str(request.get("assetRole") or request.get("asset_role")).lower()
+                if any(marker in asset_role for marker in ("cutout", "layer", "transparent")):
+                    quality_profile = "transparent_cutout"
+                elif "icon" in asset_role:
+                    quality_profile = "ui_icon"
+                elif any(marker in asset_role for marker in ("character", "reference")):
+                    quality_profile = "character_reference"
+                elif any(marker in asset_role for marker in ("product", "packshot")):
+                    quality_profile = "product_packshot"
+                else:
+                    quality_profile = "storyboard_frame"
+            quality_thresholds = deepcopy(QUALITY_PROFILES[quality_profile])
+        else:
+            quality_profile = quality_profile or "default"
+            quality_thresholds = {}
         return {
             "recipeId": _clean_str(request.get("recipeId") or request.get("id")) or f"cm_recipe_{uuid.uuid4().hex}",
             **_scope_fields(request),
@@ -780,6 +800,8 @@ class CreativeRecipeCompiler:
             "source": "creative_media_recipe_compiler",
             "executionStatus": "compiled",
             "hardRequirements": hard_requirements,
+            "qualityProfile": quality_profile,
+            "qualityThresholds": quality_thresholds,
             "softEnhancements": [],
             "controls": {
                 "ratio": ratio,

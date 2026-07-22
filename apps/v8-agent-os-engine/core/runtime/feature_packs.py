@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,8 @@ class FeaturePackDefinition:
     runtime_families: tuple[str, ...]
     requirements_file: str
     probe_modules: tuple[str, ...]
+    asset_manifest_file: str | None = None
+    python_path_priority: str = "prepend"
 
 
 FEATURE_PACK_DEFINITIONS: tuple[FeaturePackDefinition, ...] = (
@@ -62,6 +65,19 @@ FEATURE_PACK_DEFINITIONS: tuple[FeaturePackDefinition, ...] = (
         requirements_file="local-asr-ocr.txt",
         probe_modules=("faster_whisper", "paddleocr"),
     ),
+    FeaturePackDefinition(
+        id="creative_media_image_analysis",
+        product_name="图像分析增强包",
+        short_name="图像分析",
+        description="为多媒体创作提供本地主体分割、透明度核验和跨图构图比较。",
+        hover="安装后可离线复用已验签的 IS-Net 模型；仅在复杂不透明背景需要主体分割时使用。",
+        recommended_order=4,
+        runtime_families=(),
+        requirements_file="creative-media-image-analysis.txt",
+        probe_modules=("onnxruntime",),
+        asset_manifest_file="creative-media-image-analysis.manifest.json",
+        python_path_priority="fallback",
+    ),
 )
 
 FEATURE_PACK_BY_ID = {definition.id: definition for definition in FEATURE_PACK_DEFINITIONS}
@@ -81,6 +97,52 @@ def feature_pack_requirements_path(pack_id: str) -> Path:
     return Path(__file__).resolve().parents[2] / "requirements" / "feature-packs" / definition.requirements_file
 
 
+def feature_pack_asset_manifest_path(pack_id: str) -> Path | None:
+    definition = FEATURE_PACK_BY_ID[str(pack_id)]
+    if not definition.asset_manifest_file:
+        return None
+    return Path(__file__).resolve().parents[2] / "requirements" / "feature-packs" / definition.asset_manifest_file
+
+
+def load_feature_pack_asset_manifest(pack_id: str) -> dict[str, Any] | None:
+    path = feature_pack_asset_manifest_path(pack_id)
+    if path is None or not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return dict(payload) if isinstance(payload, dict) else None
+
+
+def feature_pack_asset_root(pack_id: str, target_dir: str | Path | None = None) -> Path:
+    target = Path(target_dir or feature_pack_target_dir(pack_id)).expanduser()
+    return target.parent / "models"
+
+
+def resolve_feature_pack_asset(pack_id: str, asset_id: str) -> Path | None:
+    from core.storage import storage
+
+    registry = storage.get_runtime_registry_config()
+    configured = normalize_feature_pack_config(registry.get("featurePacks")).get(str(pack_id)) or {}
+    if configured.get("status") != "installed":
+        return None
+    manifest = load_feature_pack_asset_manifest(pack_id) or {}
+    asset = next(
+        (item for item in list(manifest.get("assets") or []) if str(item.get("id") or "") == str(asset_id)),
+        None,
+    )
+    if not isinstance(asset, dict):
+        return None
+    relative_target = str(asset.get("target") or "").strip()
+    if not relative_target:
+        return None
+    root = Path(str(configured.get("assetRoot") or feature_pack_asset_root(pack_id, configured.get("targetDir")))).expanduser()
+    resolved = (root / relative_target).resolve(strict=False)
+    try:
+        resolved.relative_to(root.resolve(strict=False))
+    except ValueError:
+        return None
+    return resolved if resolved.is_file() else None
+
+
 def normalize_feature_pack_config(value: Any) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     source = value if isinstance(value, dict) else {}
@@ -98,6 +160,9 @@ def normalize_feature_pack_config(value: Any) -> dict[str, dict[str, Any]]:
             "lastError": str(raw_payload.get("lastError") or "").strip() or None,
             "updatedAt": str(raw_payload.get("updatedAt") or "").strip() or None,
             "restartRequired": bool(raw_payload.get("restartRequired", status == "installed")),
+            "version": str(raw_payload.get("version") or "").strip() or None,
+            "assetRoot": str(raw_payload.get("assetRoot") or "").strip() or None,
+            "receiptRef": str(raw_payload.get("receiptRef") or "").strip() or None,
         }
     return result
 
@@ -122,6 +187,7 @@ def apply_feature_pack_python_paths(runtime_registry: dict[str, Any] | None = No
     registry = runtime_registry if isinstance(runtime_registry, dict) else {}
     feature_packs = normalize_feature_pack_config(registry.get("featurePacks"))
     added: list[str] = []
+    definitions = {definition.id: definition for definition in FEATURE_PACK_DEFINITIONS}
     for pack_id, pack_state in feature_packs.items():
         if str(pack_state.get("status") or "") != "installed":
             continue
@@ -130,7 +196,10 @@ def apply_feature_pack_python_paths(runtime_registry: dict[str, Any] | None = No
             continue
         target_text = str(target)
         if target_text not in sys.path:
-            sys.path.insert(0, target_text)
+            if definitions.get(pack_id) and definitions[pack_id].python_path_priority == "fallback":
+                sys.path.append(target_text)
+            else:
+                sys.path.insert(0, target_text)
             added.append(target_text)
     return added
 
@@ -153,10 +222,19 @@ def build_feature_pack_statuses(
         target_dir = Path(str(configured.get("targetDir") or feature_pack_target_dir(definition.id))).expanduser()
         configured_status = str(configured.get("status") or "not_installed")
         legacy_runtime_match = bool(set(definition.runtime_families) & legacy_families)
-        probe_match = _has_probe_modules(definition)
+        probe_match = _has_probe_modules(definition) if not definition.asset_manifest_file else False
         target_exists = target_dir.exists()
+        asset_manifest = load_feature_pack_asset_manifest(definition.id)
+        asset_root = Path(str(configured.get("assetRoot") or feature_pack_asset_root(definition.id, target_dir))).expanduser()
+        assets_exist = True
+        if asset_manifest:
+            assets_exist = all(
+                (asset_root / str(item.get("target") or "")).is_file()
+                for item in list(asset_manifest.get("assets") or [])
+                if isinstance(item, dict)
+            )
         installed = (
-            (configured_status == "installed" and target_exists)
+            (configured_status == "installed" and target_exists and assets_exist)
             or legacy_runtime_match
             or probe_match
         )
@@ -181,7 +259,11 @@ def build_feature_pack_statuses(
                 "recommendedOrder": definition.recommended_order,
                 "runtimeFamilies": list(definition.runtime_families),
                 "requirementsFile": str(feature_pack_requirements_path(definition.id)),
+                "assetManifestFile": str(feature_pack_asset_manifest_path(definition.id) or "") or None,
                 "targetDir": str(target_dir),
+                "assetRoot": str(configured.get("assetRoot") or asset_root) if asset_manifest else None,
+                "version": configured.get("version") or (asset_manifest or {}).get("version"),
+                "receiptRef": configured.get("receiptRef"),
                 "status": status,
                 "installed": status == "installed",
                 "installPlatform": install_platform,

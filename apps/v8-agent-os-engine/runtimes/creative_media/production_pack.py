@@ -364,55 +364,74 @@ def _ffprobe_metadata(path: Path) -> dict[str, Any]:
 
 def run_artifact_qa(request: dict[str, Any] | None) -> dict[str, Any]:
     payload = dict(request or {})
-    artifacts = _as_list(payload.get("artifacts") or payload.get("files"), limit=32)
-    checks: list[dict[str, Any]] = []
-    present_kinds: set[str] = set()
-    for item in artifacts:
+    artifacts = []
+    surface_checks = []
+    for item in _as_list(payload.get("artifacts") or payload.get("files"), limit=32):
         if isinstance(item, str):
-            item = {"path": item}
-        if not isinstance(item, dict):
+            normalized = {"sourcePath": item}
+            artifacts.append(normalized)
+        elif isinstance(item, dict):
+            normalized = dict(item)
+            normalized["sourcePath"] = str(
+                normalized.get("sourcePath") or normalized.get("path") or normalized.get("localPath") or ""
+            ).strip()
+            artifacts.append(normalized)
+        else:
             continue
-        path_text = str(item.get("path") or item.get("localPath") or "").strip()
-        kind = str(item.get("kind") or item.get("modality") or "").strip().lower()
-        path = Path(path_text) if path_text else None
-        exists = bool(path and path.exists())
-        if kind:
-            present_kinds.add(kind)
-        suffix = path.suffix.lower() if path else ""
-        metadata: dict[str, Any] = {}
-        if exists and suffix in {".mp3", ".wav", ".m4a", ".ogg", ".mp4", ".mov", ".webm", ".mkv"}:
-            metadata = _ffprobe_metadata(path)
-        checks.append(
+        source_path = str(normalized.get("sourcePath") or "")
+        path = Path(source_path) if source_path else None
+        surface_checks.append(
             {
-                "title": _text(item.get("title") or item.get("artifactId") or path_text or "artifact", limit=160),
-                "kind": kind or suffix.lstrip(".") or "file",
-                "path": path_text,
-                "exists": exists,
-                "sizeBytes": path.stat().st_size if exists and path else 0,
-                "metadata": metadata,
+                "title": _text(normalized.get("title") or normalized.get("artifactId") or source_path or "artifact", limit=160),
+                "kind": str(normalized.get("kind") or normalized.get("modality") or (path.suffix.lstrip(".") if path else "file")),
+                "path": source_path,
+                "exists": bool(path and path.is_file()),
+                "sizeBytes": path.stat().st_size if path and path.is_file() else 0,
             }
         )
-    required = [str(item).strip().lower() for item in _as_list(payload.get("requiredKinds"), limit=16)]
-    missing_required = [item for item in required if item and item not in present_kinds]
-    subtitles = _as_list(payload.get("subtitles"), limit=12)
     subtitle_checks = []
-    for item in subtitles:
+    for item in _as_list(payload.get("subtitles"), limit=12):
         path_text = str(item.get("path") if isinstance(item, dict) else item).strip()
         path = Path(path_text) if path_text else None
-        subtitle_checks.append({"path": path_text, "exists": bool(path and path.exists())})
+        subtitle_checks.append({"path": path_text, "exists": bool(path and path.is_file())})
+    from runtimes.creative_media.runtime import creative_media_runtime
+
+    quality_job = creative_media_runtime.create_quality_job(
+        {
+            **payload,
+            "artifacts": artifacts,
+            "autoRepair": bool(payload.get("autoRepair", False)),
+        }
+    )
     return {
-        "qaReportId": _safe_id("cm_qa", payload),
-        "checks": checks,
+        "qaReportId": quality_job.get("qualityJobId"),
+        "status": quality_job.get("status"),
+        "summary": quality_job.get("summary"),
+        "qualityProfile": quality_job.get("qualityProfile"),
+        "checks": surface_checks,
+        "qualityChecks": list(quality_job.get("checks") or []),
         "subtitleChecks": subtitle_checks,
-        "missingRequiredKinds": missing_required,
-        "passed": bool(checks) and not missing_required and all(item.get("exists") for item in checks),
+        "missingRequiredKinds": next(
+            (
+                list(item.get("missingKinds") or [])
+                for item in list(quality_job.get("checks") or [])
+                if item.get("name") == "required_artifact_kinds"
+            ),
+            [],
+        ),
+        "warnings": list(quality_job.get("warnings") or []),
+        "failures": list(quality_job.get("failures") or []),
+        "repairAttempts": list(quality_job.get("repairAttempts") or []),
+        "requiredFeaturePackId": quality_job.get("requiredFeaturePackId"),
+        "passed": quality_job.get("status") == "passed",
     }
 
 
 def artifact_qa_markdown(report: dict[str, Any]) -> str:
     lines = [
         "## Creative Media QA",
-        f"结果：{'通过' if report.get('passed') else '需要处理'} (`{report.get('qaReportId')}`)",
+        f"结果：{'通过' if report.get('passed') else '需要处理'}",
+        f"- {report.get('summary') or '质量检查已完成。'}",
         "",
         "### 产物检查",
     ]
@@ -421,21 +440,27 @@ def artifact_qa_markdown(report: dict[str, Any]) -> str:
         lines.append("- 没有提供产物。")
     for item in checks:
         status = "存在" if item.get("exists") else "缺失"
-        size = item.get("sizeBytes") or 0
-        lines.append(f"- {item.get('title')}: {status}, {item.get('kind')}, {size} bytes")
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        if metadata.get("metadataStatus") == "ok":
-            duration = _text(metadata.get("duration"), limit=40)
-            resolution = "x".join(str(metadata.get(key)) for key in ("width", "height") if metadata.get(key))
-            details = []
-            if duration:
-                details.append(f"时长 {duration}s")
-            if resolution:
-                details.append(f"分辨率 {resolution}")
-            details.append("含音频" if metadata.get("hasAudio") else "无音频流")
-            lines.append("  - " + "；".join(details))
-        elif metadata:
-            lines.append(f"  - 元数据：{metadata.get('metadataStatus')}")
+        lines.append(f"- {item.get('title')}: {status}, {item.get('kind')}, {item.get('sizeBytes') or 0} bytes")
+    quality_checks = _as_list(report.get("qualityChecks"), limit=32)
+    if quality_checks:
+        lines.extend(["", "### 质量门禁"])
+    for item in quality_checks:
+        state = "通过" if item.get("ok") else "需处理"
+        label = item.get("name") or "检查项"
+        lines.append(f"- {label}: {state}")
+        if item.get("name") == "image_subject_analysis":
+            subject = dict(item.get("subject") or {})
+            lines.append(
+                f"  - 主体占比 {subject.get('areaRatio', '—')}；位置 {subject.get('centroid', '—')}；裁切 {subject.get('touchesEdges') or '无'}"
+            )
+        elif item.get("name") == "media_duration_positive":
+            lines.append(f"  - 时长 {item.get('durationSeconds', '—')}s")
+        elif item.get("name") == "video_dimensions":
+            lines.append(f"  - 分辨率 {item.get('width', '—')}x{item.get('height', '—')}")
+        elif item.get("name") == "audio_stream_present":
+            lines.append(f"  - {'含音频流' if item.get('ok') else '缺少音频流'}")
+    if report.get("requiredFeaturePackId"):
+        lines.extend(["", "### 需要能力增强", "- 安装图像分析增强包后可在本机完成复杂背景主体分割。"])
     missing = _as_list(report.get("missingRequiredKinds"), limit=8)
     if missing:
         lines.extend(["", "### 缺失关键产物"])

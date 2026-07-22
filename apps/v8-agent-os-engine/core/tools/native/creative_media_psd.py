@@ -6,15 +6,17 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
-from PIL import Image, ImageColor, ImageStat
+from PIL import Image, ImageColor
 
 from core.artifact_store import artifact_store
 from core.database import db
 from core.workspace_capability import build_workspace_binding, resolve_workspace_tool_path
 from erc.runtime_context import get_runtime_context
+from runtimes.creative_media.image_analysis import analyze_image, compare_images, evaluate_quality_profile
 
 __all__ = [
     "creative_media_alpha_inspect",
+    "creative_media_image_compare",
     "creative_media_psd_inspect",
     "creative_media_psd_export_preview",
     "creative_media_psd_compose_template",
@@ -144,69 +146,6 @@ def _open_preview_image(source: Path) -> Image.Image:
     return Image.open(source).convert("RGBA")
 
 
-def _alpha_report(image: Image.Image, *, expected_background: str = "auto") -> dict[str, Any]:
-    rgba = image.convert("RGBA")
-    alpha = rgba.getchannel("A")
-    stat = ImageStat.Stat(alpha)
-    extrema = alpha.getextrema()
-    total = max(1, rgba.width * rgba.height)
-    histogram = alpha.histogram()
-    transparent = int(histogram[0])
-    opaque = int(histogram[255])
-    translucent = total - transparent - opaque
-
-    corner_size = max(1, min(16, rgba.width // 8 or 1, rgba.height // 8 or 1))
-    corner_boxes = [
-        (0, 0, corner_size, corner_size),
-        (rgba.width - corner_size, 0, rgba.width, corner_size),
-        (0, rgba.height - corner_size, corner_size, rgba.height),
-        (rgba.width - corner_size, rgba.height - corner_size, rgba.width, rgba.height),
-    ]
-    corner_colors: list[tuple[int, int, int]] = []
-    for box in corner_boxes:
-        crop = rgba.crop(box).convert("RGB")
-        mean = tuple(int(round(item)) for item in ImageStat.Stat(crop).mean[:3])
-        corner_colors.append(mean)
-
-    solid_corner = max(
-        abs(color[0] - corner_colors[0][0]) + abs(color[1] - corner_colors[0][1]) + abs(color[2] - corner_colors[0][2])
-        for color in corner_colors
-    ) <= 18
-    background_hint = "unknown"
-    bg = str(expected_background or "auto").strip()
-    if bg and bg.lower() not in {"auto", "unknown"}:
-        target = _hex_to_rgba(bg, (0, 0, 0, 255))[:3]
-        distance = min(
-            abs(color[0] - target[0]) + abs(color[1] - target[1]) + abs(color[2] - target[2])
-            for color in corner_colors
-        )
-        background_hint = "expected_chroma_key_match" if distance <= 36 else "expected_background_not_detected"
-    elif solid_corner and transparent == 0:
-        color = corner_colors[0]
-        background_hint = f"solid_background_rgb({color[0]},{color[1]},{color[2]})"
-    elif transparent:
-        background_hint = "true_alpha_present"
-
-    if transparent > 0 and opaque > 0:
-        status = "true_alpha"
-    elif transparent == 0 and solid_corner:
-        status = "likely_fake_transparency_or_solid_background"
-    else:
-        status = "needs_review"
-
-    return {
-        "status": status,
-        "size": f"{rgba.width}x{rgba.height}",
-        "alphaMin": int(extrema[0]),
-        "alphaMax": int(extrema[1]),
-        "alphaMean": round(float(stat.mean[0]), 2),
-        "transparentPixels": transparent,
-        "translucentPixels": translucent,
-        "opaquePixels": opaque,
-        "backgroundHint": background_hint,
-    }
-
-
 def _markdown_kv(title: str, rows: list[tuple[str, Any]], *, status: str | None = None, next_items: list[str] | None = None) -> str:
     lines = [f"### {title}", ""]
     if status:
@@ -261,8 +200,7 @@ def creative_media_alpha_inspect(path: str = "", artifact_id: str = "", expected
             next_action="Generate or provide the asset first, then run alpha inspection again.",
         )
     try:
-        image = _open_preview_image(source)
-        report = _alpha_report(image, expected_background=expected_background)
+        report = analyze_image(source)
     except Exception as exc:
         return _compact_error(
             "Creative Media Alpha Inspect",
@@ -270,22 +208,78 @@ def creative_media_alpha_inspect(path: str = "", artifact_id: str = "", expected
             next_action="If this is a PSD, install psd-tools or export a PNG preview first.",
         )
     next_items = []
-    if report["status"] != "true_alpha":
-        next_items.append("Use background cleanup or request the image model to regenerate on #00FFCC/#FF00CC/#00FF00.")
+    alpha = dict(report.get("alpha") or {})
+    subject = dict(report.get("subject") or {})
+    if report.get("requiredFeaturePackId"):
+        next_items.append("Install the 图像分析增强包, then rerun this inspection for complex opaque backgrounds.")
+    elif alpha.get("status") != "true_alpha":
+        next_items.append("Use non-destructive background cleanup or regenerate the asset with a real alpha channel.")
     else:
         next_items.append("This asset can be used as a PSD layer source.")
     return _markdown_kv(
         "Creative Media Alpha Inspect",
         [
             ("source", label),
-            ("size", report["size"]),
-            ("alpha", f"min {report['alphaMin']} / max {report['alphaMax']} / mean {report['alphaMean']}"),
-            ("transparent pixels", report["transparentPixels"]),
-            ("translucent pixels", report["translucentPixels"]),
-            ("background", report["backgroundHint"]),
+            ("size", f"{report.get('width')}x{report.get('height')}"),
+            ("alpha", alpha.get("status")),
+            ("transparent pixels", alpha.get("transparentPixels")),
+            ("translucent pixels", alpha.get("translucentPixels")),
+            ("subject mask", subject.get("maskSource")),
+            ("subject area", subject.get("areaRatio")),
+            ("subject bounds", subject.get("bbox")),
+            ("edge clipping", subject.get("touchesEdges")),
         ],
-        status=str(report["status"]),
+        status=str(alpha.get("status") or report.get("status") or "review_required"),
         next_items=next_items,
+    )
+
+
+@tool
+def creative_media_image_compare(
+    reference_path: str = "",
+    reference_artifact_id: str = "",
+    candidate_path: str = "",
+    candidate_artifact_id: str = "",
+    quality_profile: str = "character_reference",
+) -> str:
+    """Compare subject scale, position, margins, clipping, and alpha coverage across two images."""
+
+    reference, reference_label, reference_error, _ = _resolve_input_path(
+        path=reference_path,
+        artifact_id=reference_artifact_id,
+    )
+    candidate, candidate_label, candidate_error, _ = _resolve_input_path(
+        path=candidate_path,
+        artifact_id=candidate_artifact_id,
+    )
+    if reference_error or reference is None:
+        return _compact_error("Creative Media Image Compare", reference_error or "Reference image was not resolved.")
+    if candidate_error or candidate is None:
+        return _compact_error("Creative Media Image Compare", candidate_error or "Candidate image was not resolved.")
+    try:
+        result = compare_images(reference, candidate)
+        comparison = dict(result.get("comparison") or {})
+        evaluation = evaluate_quality_profile(
+            dict(result.get("candidate") or {}),
+            quality_profile,
+            comparison=comparison,
+        )
+    except Exception as exc:
+        return _compact_error("Creative Media Image Compare", f"Image comparison failed: {exc}")
+    return _markdown_kv(
+        "Creative Media Image Compare",
+        [
+            ("reference", reference_label),
+            ("candidate", candidate_label),
+            ("profile", evaluation.get("profile")),
+            ("subject scale delta", comparison.get("areaRatioDelta")),
+            ("subject position shift", comparison.get("centerShift")),
+            ("bounding box overlap", comparison.get("bboxIoU")),
+            ("clipping", comparison.get("clippingChange")),
+            ("violations", evaluation.get("violations")),
+        ],
+        status=str(evaluation.get("status") or "review_required"),
+        next_items=["Use the comparison evidence to preserve subject scale and composition in the next generation."],
     )
 
 

@@ -45,6 +45,13 @@ from .catalog import (
 )
 from .recipe import creative_recipe_compiler
 from .recipe import prepare_provider_prompt_policy
+from .image_analysis import (
+    QUALITY_PROFILES,
+    analyze_image,
+    compare_image_analyses,
+    create_transparent_derivative,
+    evaluate_quality_profile,
+)
 
 
 JOB_STORE_FILE = "creative_media/jobs.json"
@@ -1944,6 +1951,8 @@ class CreativeMediaRuntime:
         return artifact_store.record_artifact(
             artifact_kind=kind,
             mime_type=mime_type,
+            session_id=str(metadata.get("sessionId") or "") or None,
+            run_id=str(metadata.get("runId") or "") or None,
             title=file_path.name,
             source_path=str(file_path),
             metadata={
@@ -2183,24 +2192,147 @@ class CreativeMediaRuntime:
         artifact_refs = list(payload.get("artifacts") or ((job or {}).get("artifacts") or []))
         if not artifact_refs and payload.get("artifactId"):
             artifact_refs = [{"artifactId": payload.get("artifactId"), "sourcePath": payload.get("sourcePath")}]
-        checks: list[dict[str, Any]] = []
-        warnings: list[str] = []
-        failures: list[str] = []
-        for artifact in artifact_refs:
-            if not isinstance(artifact, dict):
-                continue
-            checks.extend(self._quality_checks_for_artifact(artifact, job or payload, warnings=warnings, failures=failures))
         if not artifact_refs:
-            failures.append("no_artifacts")
-            checks.append({"name": "artifact_present", "ok": False})
-        status = "failed" if failures else "warning" if warnings else "passed"
+            artifact_refs = [
+                {"artifactId": artifact_id}
+                for artifact_id in list(payload.get("artifactIds") or [])
+                if str(artifact_id or "").strip()
+            ]
+        owner = dict(job or payload)
+        request_payload = dict(owner.get("request") or owner)
+        quality_profile = str(
+            payload.get("qualityProfile")
+            or payload.get("quality_profile")
+            or request_payload.get("qualityProfile")
+            or request_payload.get("quality_profile")
+            or "storyboard_frame"
+        ).strip()
+        reference_report = self._quality_reference_report(payload)
+        required_kinds = {
+            str(item or "").strip().lower()
+            for item in list(payload.get("requiredKinds") or [])
+            if str(item or "").strip()
+        }
+
+        def run_checks(refs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+            next_checks: list[dict[str, Any]] = []
+            next_warnings: list[str] = []
+            next_failures: list[str] = []
+            for artifact in refs:
+                if not isinstance(artifact, dict):
+                    continue
+                next_checks.extend(
+                    self._quality_checks_for_artifact(
+                        artifact,
+                        owner,
+                        warnings=next_warnings,
+                        failures=next_failures,
+                        quality_profile=quality_profile,
+                        reference_report=reference_report,
+                    )
+                )
+            if required_kinds:
+                present_kinds: set[str] = set()
+                for artifact in refs:
+                    explicit_kind = str(artifact.get("kind") or artifact.get("modality") or "").strip().lower()
+                    if explicit_kind:
+                        present_kinds.add(explicit_kind)
+                    source_path = str(artifact.get("sourcePath") or artifact.get("source_path") or artifact.get("path") or "")
+                    suffix = Path(source_path).suffix.lower()
+                    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".psd"}:
+                        present_kinds.add("image")
+                    elif suffix in VIDEO_EXTENSIONS:
+                        present_kinds.add("video")
+                    elif suffix in AUDIO_EXTENSIONS:
+                        present_kinds.add("audio")
+                missing_kinds = sorted(required_kinds - present_kinds)
+                next_checks.append(
+                    {
+                        "name": "required_artifact_kinds",
+                        "ok": not missing_kinds,
+                        "requiredKinds": sorted(required_kinds),
+                        "missingKinds": missing_kinds,
+                    }
+                )
+                next_failures.extend(f"missing_required_kind:{kind}" for kind in missing_kinds)
+            if not refs:
+                next_failures.append("no_artifacts")
+                next_checks.append({"name": "artifact_present", "ok": False})
+            return next_checks, next_warnings, next_failures
+
+        normalized_refs = [dict(item) for item in artifact_refs if isinstance(item, dict)]
+        checks, warnings, failures = run_checks(normalized_refs)
+        state_values = [
+            str(check.get("qualityState") or "")
+            for check in checks
+            if str(check.get("qualityState") or "")
+        ]
+        status = (
+            "failed"
+            if failures
+            else "repairable"
+            if "repairable" in state_values
+            else "review_required"
+            if "review_required" in state_values
+            else "warning"
+            if warnings
+            else "passed"
+        )
+        auto_repair = bool(payload.get("autoRepair", payload.get("auto", False)))
+        max_repair_attempts = max(0, min(int(payload.get("maxRepairAttempts") or 2), 2))
+        repair_attempts: list[dict[str, Any]] = []
+        repaired_refs = normalized_refs
+        while status == "repairable" and auto_repair and len(repair_attempts) < max_repair_attempts:
+            repaired = self._repair_quality_artifacts(
+                repaired_refs,
+                owner=owner,
+                attempt=len(repair_attempts) + 1,
+            )
+            if not repaired:
+                break
+            repaired_refs = repaired
+            repair_attempts.append(
+                {
+                    "attempt": len(repair_attempts) + 1,
+                    "action": "create_transparent_derivative",
+                    "artifactRefs": [item.get("artifactId") for item in repaired_refs if item.get("artifactId")],
+                    "createdAt": utc_now_iso(),
+                }
+            )
+            checks, warnings, failures = run_checks(repaired_refs)
+            state_values = [str(check.get("qualityState") or "") for check in checks if check.get("qualityState")]
+            status = (
+                "failed"
+                if failures
+                else "repairable"
+                if "repairable" in state_values
+                else "review_required"
+                if "review_required" in state_values
+                else "warning"
+                if warnings
+                else "passed"
+            )
+        required_feature_pack = next(
+            (
+                check.get("requiredFeaturePackId")
+                for check in checks
+                if check.get("requiredFeaturePackId")
+            ),
+            None,
+        )
         quality_job = {
             "qualityJobId": quality_job_id,
             "jobId": job_id,
             "status": status,
+            **self._scope_fields(payload, owner),
+            "qualityProfile": quality_profile,
             "checks": checks,
             "warnings": warnings,
             "failures": failures,
+            "repairAttempts": repair_attempts,
+            "repairArtifactRefs": [item.get("artifactId") for item in repaired_refs if item.get("artifactId")],
+            "requiredFeaturePackId": required_feature_pack,
+            "summary": self._quality_human_summary(status, quality_profile, checks, failures, warnings),
             "retryRecommendation": self._retry_recommendation(status=status, failures=failures, warnings=warnings, job=job or payload),
             "createdAt": utc_now_iso(),
         }
@@ -2209,6 +2341,86 @@ class CreativeMediaRuntime:
         values[quality_job_id] = quality_job
         self._write_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs", values)
         return quality_job
+
+    def _quality_reference_report(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        artifact_id = str(payload.get("referenceArtifactId") or payload.get("reference_artifact_id") or "").strip()
+        if not artifact_id:
+            return None
+        path = self._artifact_source_path(artifact_id)
+        if not path or not Path(path).is_file():
+            return {
+                "status": "review_required",
+                "sourceFingerprint": None,
+                "subject": {},
+                "alpha": {},
+                "requiredFeaturePackId": None,
+                "diagnostics": {"reason": "reference_artifact_unavailable"},
+            }
+        try:
+            return analyze_image(path)
+        except Exception:
+            return {
+                "status": "review_required",
+                "sourceFingerprint": None,
+                "subject": {},
+                "alpha": {},
+                "requiredFeaturePackId": None,
+                "diagnostics": {"reason": "reference_analysis_failed"},
+            }
+
+    def _repair_quality_artifacts(
+        self,
+        artifacts: list[dict[str, Any]],
+        *,
+        owner: dict[str, Any],
+        attempt: int,
+    ) -> list[dict[str, Any]]:
+        repaired: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
+            if not path and artifact.get("artifactId"):
+                path = self._artifact_source_path(str(artifact.get("artifactId") or ""))
+            source = Path(path).expanduser() if path else None
+            if source is None or not source.is_file() or source.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".psd"}:
+                return []
+            target = self._output_path(owner, f"quality-repair-{attempt}", ".png")
+            try:
+                derivative = create_transparent_derivative(source, target)
+                recorded = self._record_local_artifact(
+                    file_path=target,
+                    job=owner,
+                    kind="image",
+                    mime_type="image/png",
+                    metadata={
+                        "origin": "quality_repair",
+                        "repairAttempt": attempt,
+                        "sourceArtifactId": artifact.get("artifactId"),
+                        "sourceFingerprint": (derivative.get("sourceReport") or {}).get("sourceFingerprint"),
+                    },
+                )
+                repaired.append(recorded)
+            except Exception:
+                return []
+        return repaired
+
+    def _quality_human_summary(
+        self,
+        status: str,
+        quality_profile: str,
+        checks: list[dict[str, Any]],
+        failures: list[str],
+        warnings: list[str],
+    ) -> str:
+        image_check = next((item for item in checks if item.get("name") == "image_subject_analysis"), {})
+        subject = dict(image_check.get("subject") or {})
+        if status == "passed":
+            return f"图像已通过 {quality_profile} 质量门禁；主体占比 {subject.get('areaRatio', '—')}，未发现需要处理的裁切或透明度问题。"
+        if status == "repairable":
+            return "检测到可安全修复的透明度问题；可生成非破坏性 PNG 衍生文件，原文件保持不变。"
+        if status == "review_required":
+            return "复杂背景无法由基础规则可靠分离，需要安装图像分析增强包或交由用户复核。"
+        reasons = [*failures, *warnings]
+        return f"质量门禁未通过：{', '.join(reasons[:4]) or '需要人工复核'}。"
 
     def get_quality_job(self, quality_job_id: str) -> dict[str, Any] | None:
         return dict((self._read_versioned_store(QUALITY_JOB_STORE_FILE, "qualityJobs").get("qualityJobs") or {}).get(str(quality_job_id)) or {}) or None
@@ -2220,7 +2432,16 @@ class CreativeMediaRuntime:
         result.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
         return result
 
-    def _quality_checks_for_artifact(self, artifact: dict[str, Any], owner: dict[str, Any], *, warnings: list[str], failures: list[str]) -> list[dict[str, Any]]:
+    def _quality_checks_for_artifact(
+        self,
+        artifact: dict[str, Any],
+        owner: dict[str, Any],
+        *,
+        warnings: list[str],
+        failures: list[str],
+        quality_profile: str = "storyboard_frame",
+        reference_report: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         path = str(artifact.get("sourcePath") or artifact.get("source_path") or "").strip()
         if not path and artifact.get("artifactId"):
@@ -2236,8 +2457,17 @@ class CreativeMediaRuntime:
             failures.append("artifact_empty")
         kind = str(artifact.get("kind") or owner.get("modality") or "").lower()
         suffix = Path(path).suffix.lower()
-        if kind == "image" or suffix in {".png", ".jpg", ".jpeg", ".webp"}:
-            checks.extend(self._quality_image_checks(path, owner, warnings=warnings, failures=failures))
+        if kind == "image" or suffix in {".png", ".jpg", ".jpeg", ".webp", ".psd"}:
+            checks.extend(
+                self._quality_image_checks(
+                    path,
+                    owner,
+                    warnings=warnings,
+                    failures=failures,
+                    quality_profile=quality_profile,
+                    reference_report=reference_report,
+                )
+            )
         elif kind in {"video", "audio"} or suffix in VIDEO_EXTENSIONS or suffix in AUDIO_EXTENSIONS:
             checks.extend(self._quality_media_probe_checks(path, owner, warnings=warnings, failures=failures, kind=kind or ("video" if suffix in VIDEO_EXTENSIONS else "audio")))
         elif suffix == ".srt":
@@ -2248,7 +2478,16 @@ class CreativeMediaRuntime:
                 warnings.append("subtitle_timeline_missing")
         return checks
 
-    def _quality_image_checks(self, path: str, owner: dict[str, Any], *, warnings: list[str], failures: list[str]) -> list[dict[str, Any]]:
+    def _quality_image_checks(
+        self,
+        path: str,
+        owner: dict[str, Any],
+        *,
+        warnings: list[str],
+        failures: list[str],
+        quality_profile: str = "storyboard_frame",
+        reference_report: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
         try:
             from PIL import Image
@@ -2265,6 +2504,29 @@ class CreativeMediaRuntime:
                 checks.append({"name": "image_aspect_ratio", "ok": ok, "expected": expected_ratio, "actual": round(actual, 3)})
                 if not ok:
                     warnings.append("image_aspect_ratio_mismatch")
+            analysis = analyze_image(path)
+            comparison = compare_image_analyses(reference_report, analysis) if reference_report else None
+            evaluation = evaluate_quality_profile(analysis, quality_profile, comparison=comparison)
+            checks.append(
+                {
+                    "name": "image_subject_analysis",
+                    "ok": evaluation.get("status") == "passed",
+                    "qualityState": evaluation.get("status"),
+                    "qualityProfile": evaluation.get("profile"),
+                    "alpha": analysis.get("alpha"),
+                    "subject": analysis.get("subject"),
+                    "comparison": comparison,
+                    "violations": evaluation.get("violations"),
+                    "warnings": evaluation.get("warnings"),
+                    "requiredFeaturePackId": evaluation.get("requiredFeaturePackId"),
+                    "analysisVersion": analysis.get("analyzerVersion"),
+                    "sourceFingerprint": analysis.get("sourceFingerprint"),
+                }
+            )
+            if evaluation.get("status") == "failed":
+                failures.extend(str(item) for item in list(evaluation.get("violations") or []))
+            elif evaluation.get("status") == "review_required":
+                warnings.extend(str(item) for item in list(evaluation.get("warnings") or []) if item)
         except Exception as exc:
             checks.append({"name": "image_metadata_readable", "ok": False, "error": _exception_summary(exc)})
             warnings.append("image_metadata_unavailable")
@@ -2325,6 +2587,10 @@ class CreativeMediaRuntime:
     def _retry_recommendation(self, *, status: str, failures: list[str], warnings: list[str], job: dict[str, Any]) -> dict[str, Any]:
         if status == "passed":
             return {"action": "accept", "reason": "quality gates passed"}
+        if status == "repairable":
+            return {"action": "create_non_destructive_derivative", "reason": "a deterministic local repair is available"}
+        if status == "review_required":
+            return {"action": "manual_review", "reason": "the local analyzer cannot make a reliable determination"}
         if "artifact_not_openable" in failures or "ffprobe_failed" in failures:
             return {"action": "retry_same_operation", "reason": "artifact fetch or media probe failed"}
         if "duration_mismatch" in warnings:
@@ -2359,6 +2625,8 @@ class CreativeMediaRuntime:
     def _scope_fields(self, request: dict[str, Any], fallback: dict[str, Any] | None = None) -> dict[str, str]:
         fallback = fallback or {}
         scope = {
+            "sessionId": str(request.get("sessionId") or request.get("session_id") or fallback.get("sessionId") or "").strip(),
+            "runId": str(request.get("runId") or request.get("run_id") or fallback.get("runId") or "").strip(),
             "projectId": str(request.get("projectId") or request.get("project_id") or fallback.get("projectId") or "").strip(),
             "workspaceId": str(request.get("workspaceId") or request.get("workspace_id") or fallback.get("workspaceId") or "").strip(),
             "workspacePath": str(request.get("workspacePath") or request.get("workspace_path") or fallback.get("workspacePath") or "").strip(),
@@ -2473,6 +2741,22 @@ class CreativeMediaRuntime:
     def _new_job(self, *, modality: str, adapter: str, request: dict[str, Any]) -> dict[str, Any]:
         now = utc_now_iso()
         operation_kind = str(request.get("operationKind") or request.get("operation_kind") or self._operation_kind_for_request(modality, request)).strip()
+        normalized_request = dict(request)
+        if modality == "image":
+            quality_profile = str(request.get("qualityProfile") or request.get("quality_profile") or "").strip()
+            if quality_profile not in QUALITY_PROFILES:
+                asset_role = str(request.get("assetRole") or request.get("asset_role") or "").strip().lower()
+                if any(marker in asset_role for marker in ("cutout", "layer", "transparent")):
+                    quality_profile = "transparent_cutout"
+                elif "icon" in asset_role:
+                    quality_profile = "ui_icon"
+                elif any(marker in asset_role for marker in ("character", "reference")):
+                    quality_profile = "character_reference"
+                elif any(marker in asset_role for marker in ("product", "packshot")):
+                    quality_profile = "product_packshot"
+                else:
+                    quality_profile = "storyboard_frame"
+            normalized_request["qualityProfile"] = quality_profile
         return {
             "jobId": f"cm_{uuid.uuid4().hex}",
             **self._scope_fields(request),
@@ -2480,7 +2764,7 @@ class CreativeMediaRuntime:
             "adapter": adapter,
             "operationKind": operation_kind,
             "status": "queued",
-            "request": _jsonable_request(request),
+            "request": _jsonable_request(normalized_request),
             "providerTaskId": None,
             "providerRequestHash": None,
             "fallbackAttempts": [],
@@ -4243,6 +4527,8 @@ class CreativeMediaRuntime:
         artifact = artifact_store.record_artifact(
             artifact_kind=kind,
             mime_type=mime_type,
+            session_id=str(job.get("sessionId") or "") or None,
+            run_id=str(job.get("runId") or "") or None,
             title=file_path.name,
             source_path=str(file_path),
             metadata={

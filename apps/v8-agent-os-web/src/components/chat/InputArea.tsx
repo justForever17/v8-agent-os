@@ -379,6 +379,7 @@ export function InputArea({
     const fileInputRef = React.useRef<HTMLInputElement>(null);
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
     const inputMirrorRef = React.useRef<HTMLDivElement>(null);
+    const reasoningEffortMenuRef = React.useRef<HTMLDivElement>(null);
     const [selectionRange, setSelectionRange] = React.useState({ start: input.length, end: input.length });
     const mediaStreamRef = React.useRef<MediaStream | null>(null);
     const audioContextRef = React.useRef<AudioContext | null>(null);
@@ -468,16 +469,30 @@ export function InputArea({
         return levels.includes("auto") ? levels : ["auto", ...levels];
     }, [reasoningEffortControl?.levels]);
     const reasoningEffortVisible = Boolean(reasoningEffortControl?.visible && reasoningEffortLevels.length > 1);
-    const reasoningEffortLabels = React.useMemo<Record<ReasoningEffortLevel, string>>(() => ({
-            auto: t("web.generated.ad302baaf1"),
-            none: "None",
-            minimal: "Minimal",
-            low: t("web.generated.1638d14b43"),
-            medium: t("web.generated.5ea71d390a"),
-            high: t("web.generated.29b755916c"),
-            xhigh: "X-High",
-            max: "Max",
-    }), [t]);
+    React.useEffect(() => {
+        if (!reasoningEffortOpen) return;
+
+        const handlePointerDown = (event: PointerEvent) => {
+            const target = event.target;
+            if (target instanceof Node && !reasoningEffortMenuRef.current?.contains(target)) {
+                setReasoningEffortOpen(false);
+            }
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") setReasoningEffortOpen(false);
+        };
+
+        document.addEventListener("pointerdown", handlePointerDown);
+        document.addEventListener("keydown", handleKeyDown);
+        return () => {
+            document.removeEventListener("pointerdown", handlePointerDown);
+            document.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [reasoningEffortOpen]);
+
+    React.useEffect(() => {
+        if (!reasoningEffortVisible) setReasoningEffortOpen(false);
+    }, [reasoningEffortVisible]);
     const specCommandPresets = React.useMemo<CommandPresetSummary[]>(() => ([
         { name: "spec new", summary: t("web.composer.spec.new"), specCommandAction: "new" },
         { name: "spec continue", summary: t("web.composer.spec.continue"), specCommandAction: "continue" },
@@ -1681,7 +1696,7 @@ export function InputArea({
                             </DropdownMenuContent>
                         </DropdownMenu>
                         {reasoningEffortVisible ? (
-                            <div className="relative">
+                            <div ref={reasoningEffortMenuRef} className="relative">
                                 <button
                                     type="button"
                                     onClick={() => setReasoningEffortOpen((current) => !current)}
@@ -1698,16 +1713,14 @@ export function InputArea({
                                     <Gauge className="h-4 w-4" aria-hidden="true" />
                                 </button>
                                 {reasoningEffortOpen ? (
-                                    <div className="absolute bottom-full left-0 z-50 mb-2 w-[min(352px,calc(100vw-32px))]">
+                                    <div className="absolute bottom-full left-0 z-50 mb-2 w-[min(316px,calc(100vw-24px))]">
                                         <ReasoningEffortControl
                                             levels={reasoningEffortLevels}
                                             value={reasoningEffort}
                                             label={t("web.chat.reasoningEffort.label")}
-                                            fasterLabel={t("web.chat.reasoningEffort.faster")}
-                                            smarterLabel={t("web.chat.reasoningEffort.smarter")}
                                             helpLabel={t("web.generated.9d1e18be56")}
                                             ariaLabel={t("web.generated.9d1e18be56")}
-                                            labelFormatter={(level) => reasoningEffortLabels[level as ReasoningEffortLevel] || level}
+                                            labelFormatter={(level) => String(level || "auto").trim().toLowerCase()}
                                             onValueCommit={(level) => onReasoningEffortChange?.(level as ReasoningEffortLevel)}
                                         />
                                     </div>

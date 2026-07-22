@@ -641,10 +641,10 @@
 }
 
 .v8-reasoning-effort--panel {
-  width: 352px;
+  width: 316px;
   max-width: 100%;
-  height: 116px;
-  padding: 19px 19px 15px;
+  height: 78px;
+  padding: 13px 14px 10px;
   overflow: hidden;
   border: 1px solid var(--v8-reasoning-card-edge);
   border-radius: 15px;
@@ -667,7 +667,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 16px;
+  height: 15px;
 }
 
 .v8-reasoning-effort__label {
@@ -675,7 +675,7 @@
   align-items: baseline;
   min-width: 0;
   gap: 6px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: -0.02em;
   white-space: nowrap;
@@ -730,21 +730,10 @@
   opacity: 0.82;
 }
 
-.v8-reasoning-effort__axis {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 14px;
-  color: var(--v8-reasoning-foreground);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: -0.015em;
-}
-
 .v8-reasoning-effort__rail {
   position: relative;
-  height: 28px;
-  margin-top: 8px;
+  height: 26px;
+  margin-top: 14px;
   overflow: hidden;
   border: 1px solid var(--v8-reasoning-rail-edge);
   border-radius: 8px;
@@ -838,8 +827,8 @@
   top: 50%;
   left: var(--v8-reasoning-position);
   z-index: 4;
-  width: 25px;
-  height: 25px;
+  width: 23px;
+  height: 23px;
   padding: 0;
   border: 0;
   border-radius: 6px;

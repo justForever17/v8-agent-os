@@ -13,7 +13,7 @@ import {
   type RefObject,
 } from "react";
 
-const PANEL_THUMB_INSET = 12.5;
+const PANEL_THUMB_INSET = 11.5;
 const TRACK_THUMB_INSET = 9;
 const FILL_DELAY_MS = 55;
 const FILL_DURATION_MS = 980;
@@ -29,8 +29,6 @@ export type ReasoningEffortControlProps = {
   disabled?: boolean;
   variant?: ReasoningEffortControlVariant;
   label?: string;
-  fasterLabel?: string;
-  smarterLabel?: string;
   helpLabel?: string;
   ariaLabel?: string;
   labelFormatter?: (level: string) => string;
@@ -275,8 +273,6 @@ export function ReasoningEffortControl({
   disabled = false,
   variant = "panel",
   label = "Effort",
-  fasterLabel = "Faster",
-  smarterLabel = "Smarter",
   helpLabel,
   ariaLabel = label,
   labelFormatter = (level) => level,
@@ -482,10 +478,6 @@ export function ReasoningEffortControl({
               </span>
             </div>
             <span className="v8-reasoning-effort__help" title={helpLabel || ariaLabel} aria-hidden="true">?</span>
-          </div>
-          <div className="v8-reasoning-effort__axis" aria-hidden="true">
-            <span>{fasterLabel}</span>
-            <span>{smarterLabel}</span>
           </div>
           {rail}
         </>

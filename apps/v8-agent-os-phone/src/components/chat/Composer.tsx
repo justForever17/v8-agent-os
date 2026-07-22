@@ -346,16 +346,6 @@ export const Composer = memo(function Composer({
     );
     const commandColor = themeMode === "dark" ? "#C4B5FD" : "#7C3AED";
     const mentionColor = themeMode === "dark" ? "#FDBA74" : "#F97316";
-    const reasoningEffortLabelMap: Record<ReasoningEffortLevel, string> = {
-        auto: t("src.components.chat.composer.reasoning_effort_auto"),
-        none: "None",
-        minimal: "Minimal",
-        low: t("src.components.chat.composer.reasoning_effort_low"),
-        medium: t("src.components.chat.composer.reasoning_effort_medium"),
-        high: t("src.components.chat.composer.reasoning_effort_high"),
-        xhigh: "X-High",
-        max: "Max",
-    };
     const safetyApprovalOptions: Array<{
         mode: SafetyApprovalMode;
         title: string;
@@ -741,7 +731,7 @@ export const Composer = memo(function Composer({
                     style={[
                         styles.reasoningEffortPopover,
                         {
-                            width: Math.min(352, Math.max(288, windowWidth - 24)),
+                            width: Math.min(316, Math.max(276, windowWidth - 24)),
                             marginBottom: Math.max(safeAreaInsets.bottom + 78, 92),
                         },
                     ]}
@@ -755,10 +745,8 @@ export const Composer = memo(function Composer({
                         colors={colors}
                         themeMode={themeMode}
                         label={t("src.components.chat.composer.reasoning_effort_label")}
-                        fasterLabel={t("src.components.chat.composer.reasoning_effort_faster")}
-                        smarterLabel={t("src.components.chat.composer.reasoning_effort_smarter")}
                         ariaLabel={t("src.components.chat.composer.reasoning_effort")}
-                        labelFormatter={(level) => reasoningEffortLabelMap[level] || level}
+                        labelFormatter={(level) => String(level || "auto").trim().toLowerCase()}
                     />
                 </View>
             </View>

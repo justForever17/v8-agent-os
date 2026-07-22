@@ -13,10 +13,10 @@ import Animated, {
 
 import type { ThemeColors, ThemeMode } from "@/src/theme/tokens";
 
-const PANEL_WIDTH = 352;
-const PANEL_HEIGHT = 116;
-const RAIL_HEIGHT = 28;
-const THUMB_SIZE = 25;
+const PANEL_WIDTH = 316;
+const PANEL_HEIGHT = 78;
+const RAIL_HEIGHT = 26;
+const THUMB_SIZE = 23;
 
 function stopForIndex(index: number, count: number) {
     if (count <= 1) return 0;
@@ -115,8 +115,6 @@ export type PhoneReasoningEffortControlProps<Level extends string> = {
     colors: ThemeColors;
     themeMode: ThemeMode;
     label: string;
-    fasterLabel: string;
-    smarterLabel: string;
     ariaLabel: string;
     labelFormatter: (level: Level) => string;
     disabled?: boolean;
@@ -129,8 +127,6 @@ export function PhoneReasoningEffortControl<Level extends string>({
     colors,
     themeMode,
     label,
-    fasterLabel,
-    smarterLabel,
     ariaLabel,
     labelFormatter,
     disabled = false,
@@ -330,10 +326,6 @@ export function PhoneReasoningEffortControl<Level extends string>({
                     <Text style={[styles.helpText, { color: colors.text }]}>?</Text>
                 </View>
             </View>
-            <View style={styles.axis}>
-                <Text style={[styles.axisText, { color: colors.text }]}>{fasterLabel}</Text>
-                <Text style={[styles.axisText, { color: colors.text }]}>{smarterLabel}</Text>
-            </View>
             <View
                 style={[styles.rail, { backgroundColor: railBackground, borderColor: railEdge }]}
                 onLayout={handleLayout}
@@ -406,9 +398,9 @@ const styles = StyleSheet.create({
         width: "100%",
         maxWidth: PANEL_WIDTH,
         height: PANEL_HEIGHT,
-        paddingHorizontal: 19,
-        paddingTop: 19,
-        paddingBottom: 15,
+        paddingHorizontal: 14,
+        paddingTop: 13,
+        paddingBottom: 10,
         borderWidth: 1,
         borderRadius: 15,
         overflow: "hidden",
@@ -419,7 +411,7 @@ const styles = StyleSheet.create({
         elevation: 16,
     },
     head: {
-        height: 16,
+        height: 15,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
@@ -431,22 +423,22 @@ const styles = StyleSheet.create({
         gap: 6,
     },
     title: {
-        fontSize: 14,
-        lineHeight: 16,
+        fontSize: 13,
+        lineHeight: 15,
         fontWeight: "700",
         letterSpacing: -0.28,
     },
     valueSlot: {
         position: "relative",
         minWidth: 62,
-        height: 16,
+        height: 15,
     },
     value: {
         position: "absolute",
         left: 0,
         top: 0,
-        fontSize: 14,
-        lineHeight: 16,
+        fontSize: 13,
+        lineHeight: 15,
         fontWeight: "700",
         letterSpacing: -0.28,
     },
@@ -467,22 +459,10 @@ const styles = StyleSheet.create({
         lineHeight: 11,
         fontWeight: "700",
     },
-    axis: {
-        marginTop: 14,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-    },
-    axisText: {
-        fontSize: 12,
-        lineHeight: 14,
-        fontWeight: "700",
-        letterSpacing: -0.18,
-    },
     rail: {
         position: "relative",
         height: RAIL_HEIGHT,
-        marginTop: 8,
+        marginTop: 14,
         overflow: "hidden",
         borderWidth: 1,
         borderRadius: 8,

@@ -103,7 +103,7 @@ def _dedupe_tools(tools: list) -> list:
 
 
 def _exclude_supervisor_only_tools(tools: list) -> list:
-    excluded = {"delegation_broker"}
+    excluded = {"delegation_broker", "config_broker", "mcp_server_config"}
     return [
         tool_ref
         for tool_ref in list(tools or [])

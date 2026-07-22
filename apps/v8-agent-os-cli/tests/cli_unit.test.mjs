@@ -319,7 +319,7 @@ test("doctor fallback returns local checks without requiring engine", async () =
   assert.ok(result.checks.some((check) => check.id === "config.json"));
 });
 
-test("mcp install payload builds stdio config", () => {
+test("mcp install payload builds stdio config without inline secrets", () => {
   const payload = buildMcpInstallPayload([
     "sqlite",
     "--type",
@@ -330,8 +330,6 @@ test("mcp install payload builds stdio config", () => {
     "-y",
     "--arg",
     "@modelcontextprotocol/server-sqlite",
-    "--env",
-    "FOO=bar",
   ]);
   assert.deepEqual(payload, {
     mcpServers: {
@@ -339,25 +337,33 @@ test("mcp install payload builds stdio config", () => {
         type: "stdio",
         command: "npx",
         args: ["-y", "@modelcontextprotocol/server-sqlite"],
-        env: { FOO: "bar" },
       },
     },
   });
 });
 
-test("mcp install payload builds http config", () => {
+test("mcp install payload builds http config without inline secrets", () => {
   const payload = buildMcpInstallPayload([
     "remote",
     "--type",
     "http",
     "--url",
     "http://127.0.0.1:3000/mcp",
-    "--header",
-    "Authorization=Bearer token",
   ]);
   assert.equal(payload.mcpServers.remote.type, "http");
   assert.equal(payload.mcpServers.remote.url, "http://127.0.0.1:3000/mcp");
-  assert.equal(payload.mcpServers.remote.headers.Authorization, "Bearer token");
+  assert.equal(payload.mcpServers.remote.headers, undefined);
+});
+
+test("mcp install payload rejects secrets in process arguments", () => {
+  assert.throws(
+    () => buildMcpInstallPayload(["remote", "--type", "http", "--url", "https://example.test/mcp", "--header", "Authorization=secret"]),
+    /secure action card/,
+  );
+  assert.throws(
+    () => buildMcpInstallPayload(["remote", "--type", "stdio", "--command", "npx", "--arg", "--token=secret"]),
+    /secure action card/,
+  );
 });
 
 test("model role extractor accepts registry payload shape", () => {

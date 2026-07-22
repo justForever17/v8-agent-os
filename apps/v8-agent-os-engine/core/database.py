@@ -1472,10 +1472,60 @@ class DatabaseManager:
                     created_at TEXT NOT NULL
                 )
             ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS config_broker_transactions (
+                    id TEXT PRIMARY KEY,
+                    target_kind TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    owner_id TEXT,
+                    session_id TEXT,
+                    run_id TEXT,
+                    plan_digest TEXT NOT NULL,
+                    before_json TEXT,
+                    proposed_json TEXT NOT NULL,
+                    validation_json TEXT,
+                    result_json TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    committed_at TEXT,
+                    rolled_back_at TEXT
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS ui_action_requests (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    owner_id TEXT,
+                    session_id TEXT,
+                    run_id TEXT,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    target_label TEXT,
+                    fields_json TEXT NOT NULL,
+                    handler_type TEXT NOT NULL,
+                    handler_ref TEXT NOT NULL,
+                    result_json TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    submitted_at TEXT
+                )
+            ''')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_components_plugin ON plugin_components (plugin_id, component_type)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_jobs_plugin ON plugin_install_jobs (plugin_id, created_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_grants_session ON plugin_grants (session_id, run_id, revoked_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_plugin_events_plugin ON plugin_events (plugin_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_config_broker_transactions_target ON config_broker_transactions (target_kind, target_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_config_broker_transactions_session ON config_broker_transactions (session_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_ui_action_requests_session ON ui_action_requests (session_id, created_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_ui_action_requests_expires ON ui_action_requests (state, expires_at)')
             
             # Simple Schema Migration (Adding missing columns if upgrading)
             try:

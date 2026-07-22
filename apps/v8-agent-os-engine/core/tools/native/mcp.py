@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import warnings
 from typing import Any
 
 from langchain_core.tools import tool
@@ -12,8 +14,16 @@ from core.mcp_config_service import (
     mcp_runtime_status_snapshot,
     remove_mcp_server_config,
 )
+from core.config_broker_service import ConfigBrokerError, config_broker_service
+from erc.runtime_context import get_runtime_context
 
-__all__ = ["mcp_server_config"]
+__all__ = ["config_broker", "mcp_server_config"]
+
+
+_SECRET_ARG_RE = re.compile(
+    r"(?i)^(?:--?)?(?:api[-_]?key|access[-_]?token|token|secret|password|authorization|cookie)(?:=|:|$)"
+)
+_SECRET_ENV_ASSIGNMENT_RE = re.compile(r"(?i)^[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|COOKIE)\s*=")
 
 
 def _coerce_string_list(value: Any) -> list[str]:
@@ -33,6 +43,17 @@ def _coerce_string_list(value: Any) -> list[str]:
             pass
         return [line.strip() for line in text.splitlines() if line.strip()]
     return [str(value).strip()] if str(value).strip() else []
+
+
+def _reject_secret_bearing_args(values: list[str]) -> None:
+    for value in values:
+        normalized = str(value or "").strip()
+        if _SECRET_ARG_RE.search(normalized) or _SECRET_ENV_ASSIGNMENT_RE.search(normalized):
+            raise ConfigBrokerError(
+                "commandArgs 不能携带凭据；请声明 credentialRequirements 并使用安全动作卡。",
+                code="config_secret_in_command_args",
+                status_code=422,
+            )
 
 
 def _coerce_mapping(value: Any) -> dict[str, str]:
@@ -61,6 +82,180 @@ def _coerce_mapping(value: Any) -> dict[str, str]:
                 result[normalized_key] = item.strip()
         return result
     return {}
+
+
+def _coerce_boolean_mapping(value: Any) -> dict[str, bool]:
+    if value in (None, "", {}):
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            value = {}
+    if not isinstance(value, dict):
+        return {}
+    return {str(key).strip(): bool(item) for key, item in value.items() if str(key).strip()}
+
+
+def _runtime_identity() -> tuple[str, str, str]:
+    context = dict(get_runtime_context() or {})
+    return (
+        str(context.get("user_id") or context.get("userId") or "").strip(),
+        str(context.get("session_id") or context.get("sessionId") or "").strip(),
+        str(context.get("run_id") or context.get("runId") or "").strip(),
+    )
+
+
+@tool
+def config_broker(
+    mode: str,
+    category: str = "",
+    query: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    provider_id: str = "",
+    provider_name: str = "",
+    model_id: str = "",
+    model_ref: str = "",
+    base_url: str = "",
+    api_standard: str = "openai",
+    model_type: str = "TEXT",
+    context_window: int | None = None,
+    max_tokens: int | None = None,
+    capabilities: Any = None,
+    evidence_refs: list[str] | None = None,
+    credential_required: bool = True,
+    role: str = "",
+    transaction_id: str = "",
+    plan_digest: str = "",
+    mcp_name: str = "",
+    mcp_type: str = "",
+    command: str = "",
+    command_args: Any = None,
+    url: str = "",
+    disabled: bool = False,
+    credential_requirements: list[dict[str, Any]] | None = None,
+) -> str:
+    """Inspect and change model/MCP configuration through one recoverable control plane.
+
+    Supervisor only. Use `models` to list models by category, `role_matrix` to
+    inspect model consumers, and `recommend` before changing a role. Use
+    `agent:<agent-id>` as the role when inspecting or updating one registered
+    Subagent; grandchild agents inherit and have no independent model binding.
+    `model_prepare` with researched facts and evidence refs, then `commit` with
+    the returned transaction_id and plan_digest. Web research is accepted as
+    reviewed evidence; it is not silently promoted above a user's saved facts.
+    Never pass API keys, tokens, cookies, env values or authorization headers to
+    this tool. When a credential is required, `model_prepare` or
+    `mcp_prepare_install` returns a one-time UI:// action card for the user.
+
+    MCP modes are `mcp_list`, `mcp_status`, `mcp_prepare_install` and
+    `mcp_prepare_remove`. Configuration commits are durable and expose
+    `status`/`rollback`. Doctor validates model facts, Safety checks the exact
+    credential target, and the transaction service alone commits or restores.
+    """
+
+    normalized_mode = str(mode or "").strip().lower()
+    owner_id, session_id, run_id = _runtime_identity()
+    try:
+        if normalized_mode in {"models", "model_list", "inventory"}:
+            payload = config_broker_service.inventory(category=category, query=query, limit=limit, offset=offset)
+        elif normalized_mode == "role_matrix":
+            payload = config_broker_service.role_matrix()
+        elif normalized_mode == "recommend":
+            payload = config_broker_service.recommend(role=role, limit=limit)
+        elif normalized_mode == "model_prepare":
+            payload = config_broker_service.prepare_model(
+                provider_id=provider_id,
+                model_id=model_id,
+                provider_name=provider_name,
+                base_url=base_url,
+                api_standard=api_standard,
+                model_type=model_type,
+                context_window=context_window,
+                max_tokens=max_tokens,
+                capabilities=_coerce_boolean_mapping(capabilities),
+                evidence_refs=evidence_refs,
+                credential_required=credential_required,
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+            )
+        elif normalized_mode == "role_prepare":
+            payload = config_broker_service.prepare_role_assignment(
+                role=role,
+                model_ref=model_ref,
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+            )
+        elif normalized_mode == "commit":
+            transaction = config_broker_service.get_transaction(transaction_id, owner_id=owner_id)
+            if not plan_digest or str(transaction.get("planDigest") or "") != str(plan_digest).strip():
+                raise ConfigBrokerError("提交需要匹配当前事务的 planDigest。", code="config_plan_digest_mismatch", status_code=409)
+            payload = config_broker_service.commit(transaction_id, owner_id=owner_id)
+        elif normalized_mode == "status":
+            payload = {"ok": True, "mode": "status", **config_broker_service.get_transaction(transaction_id, owner_id=owner_id)}
+        elif normalized_mode == "rollback":
+            payload = config_broker_service.rollback(transaction_id, owner_id=owner_id)
+        elif normalized_mode == "mcp_list":
+            payload = config_broker_service.mcp_list()
+        elif normalized_mode == "mcp_status":
+            payload = config_broker_service.mcp_status()
+        elif normalized_mode == "mcp_prepare_install":
+            server: dict[str, Any] = {"type": str(mcp_type or "").strip().lower(), "disabled": bool(disabled)}
+            if command:
+                server["command"] = str(command).strip()
+            args = _coerce_string_list(command_args)
+            _reject_secret_bearing_args(args)
+            if args:
+                server["args"] = args
+            if url:
+                server["url"] = str(url).strip()
+            payload = config_broker_service.prepare_mcp(
+                operation="install",
+                name=mcp_name,
+                server=server,
+                credential_requirements=credential_requirements,
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+            )
+        elif normalized_mode == "mcp_prepare_remove":
+            payload = config_broker_service.prepare_mcp(
+                operation="remove",
+                name=mcp_name,
+                server=None,
+                credential_requirements=None,
+                owner_id=owner_id,
+                session_id=session_id,
+                run_id=run_id,
+            )
+        else:
+            raise ConfigBrokerError("不支持的 config_broker mode。", code="config_broker_mode_invalid")
+        return json.dumps(payload, ensure_ascii=False)
+    except ConfigBrokerError as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "mode": normalized_mode,
+                "state": "blocked",
+                "summary": str(exc),
+                "error": {"code": exc.code, "message": str(exc)},
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "mode": normalized_mode,
+                "state": "failed",
+                "summary": "配置控制面执行失败。",
+                "error": {"code": "config_broker_failed", "message": str(exc)},
+            },
+            ensure_ascii=False,
+        )
 
 
 def _server_payload(
@@ -164,6 +359,7 @@ def mcp_server_config(
 
     `env` and `headers` may be JSON objects or newline `KEY=value` text. Installing a server only changes MCP config and requests an Extensions refresh; it does not grant permission to bypass runtime gates.
     """
+    warnings.warn("mcp_server_config is deprecated; use config_broker", DeprecationWarning, stacklevel=2)
     normalized_mode = str(mode or "").strip().lower()
     try:
         if normalized_mode == "mcp_list":

@@ -16,7 +16,14 @@ export type AdminModelSelectOption = {
   type?: string;
   capabilityClass?: string | null;
   contextWindow?: number | null;
+  maxTokens?: number | null;
   capabilities?: Record<string, boolean> | string[] | null;
+  eligibility?: {
+    status?: string;
+    selectable?: boolean;
+    shortLabel?: string;
+    reasons?: Array<{ code?: string; message?: string }>;
+  } | null;
   provider?: {
     id?: string;
     name?: string | null;
@@ -46,10 +53,14 @@ function isTextGenerationOption(model: AdminModelSelectOption): boolean {
   return true;
 }
 function contextWindowInvalidReason(model: AdminModelSelectOption, minimum: number): string {
+  if (model.eligibility && model.eligibility.selectable === false) {
+    return String(model.eligibility.shortLabel || model.eligibility.reasons?.[0]?.message || "Model configuration is incomplete");
+  }
   if (!isTextGenerationOption(model)) return "";
   const contextWindow = typeof model.contextWindow === "number" ? model.contextWindow : null;
   if (!contextWindow) return "Context window is not configured; this model cannot be used for long-context text roles";
   if (contextWindow < minimum) return `context window ${contextWindow} < ${minimum}`;
+  if (!model.maxTokens) return "Maximum output tokens are not configured";
   return "";
 }
 function modelOptionIcon(model: AdminModelSelectOption): string | null {

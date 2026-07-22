@@ -267,6 +267,8 @@ def test_supervisor_default_surface_hides_runtime_groups_but_keeps_broker_and_co
         _tool("runtime_broker"),
         _tool("agent_broker"),
         _tool("delegation_broker"),
+        _tool("config_broker"),
+        _tool("mcp_server_config"),
         _tool("spec_broker"),
         _tool("read_native_file"),
         _tool("run_system_command"),
@@ -2511,6 +2513,8 @@ def test_subagent_default_surface_hides_supervisor_only_and_runtime_tools():
     assert "ask_user" not in names
     assert "runtime_broker" not in names
     assert "delegation_broker" in names
+    assert "config_broker" not in names
+    assert "mcp_server_config" not in names
     assert "s3_broker" not in names
     assert "http_request" in names
     assert "delegate_network_task" not in names

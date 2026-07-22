@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 
-
-TEXT_CAPABILITY_CLASSES = {"chat_general", "chat_reasoning", "chat_tool_calling", "vision_multimodal"}
-RETRIEVAL_CAPABILITY_CLASSES = {"embedding", "reranker"}
-MEDIA_TYPES = {"MEDIA", "IMAGE", "VIDEO", "AUDIO", "VOICE", "MUSIC", "WORKFLOW", "MODEL3D"}
-LONG_CONTEXT_MIN_TOKENS = 262_144
+from core.model_eligibility import evaluate_model_eligibility, model_kind
 
 
 def _safe_int(value: Any) -> int | None:
@@ -19,23 +15,10 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
-def _model_kind(model: Dict[str, Any]) -> str:
-    model_type = str(model.get("type") or "").upper()
-    capability_class = str(model.get("capabilityClass") or "").strip()
-    capabilities = dict(model.get("capabilities") or {})
-    if model_type in MEDIA_TYPES or capability_class == "media_generation":
-        return "media"
-    if model_type == "EMBEDDING" or capability_class == "embedding" or capabilities.get("embedding"):
-        return "embedding"
-    if model_type in {"RERANK", "RERANKER"} or capability_class == "reranker" or capabilities.get("rerank"):
-        return "rerank"
-    return "text_generation"
-
-
 def diagnose_model_role(model: Dict[str, Any], *, role: str | None = None) -> Dict[str, Any]:
     """Return role suitability diagnostics without mutating model config."""
     role_name = str(role or "").strip() or "unassigned"
-    kind = _model_kind(model)
+    kind = model_kind(model)
     context_window = _safe_int(model.get("contextWindow"))
     max_tokens = _safe_int(model.get("maxTokens"))
     observed_input = _safe_int(model.get("observedInputTokenLimit"))
@@ -91,28 +74,9 @@ def diagnose_model_role(model: Dict[str, Any], *, role: str | None = None) -> Di
             "notes": ["maxTokens is not required for embedding/rerank models"],
         }
 
-    if not context_window:
-        issues.append(
-            {
-                "code": "missing_context_window",
-                "message": "Text generation model is missing contextWindow.",
-            }
-        )
-    elif context_window < LONG_CONTEXT_MIN_TOKENS:
-        issues.append(
-            {
-                "code": "below_min_context_window",
-                "message": f"Text generation runtime roles require at least {LONG_CONTEXT_MIN_TOKENS} context tokens.",
-                "configured": context_window,
-            }
-        )
-    if not max_tokens:
-        warnings.append(
-            {
-                "code": "missing_max_output_tokens",
-                "message": "maxTokens is missing; output budget may be conservative.",
-            }
-        )
+    eligibility = evaluate_model_eligibility(model, role=role_name)
+    issues.extend(dict(item) for item in eligibility.get("reasons") or [])
+    warnings.extend(dict(item) for item in eligibility.get("warnings") or [])
     if role_name in {"supervisor", "subagent", "summary"} and not caps.get("streaming"):
         warnings.append(
             {
@@ -123,12 +87,13 @@ def diagnose_model_role(model: Dict[str, Any], *, role: str | None = None) -> Di
     return {
         "role": role_name,
         "modelKind": kind,
-        "ok": not issues,
-        "blocking": bool(issues),
+        "ok": bool(eligibility.get("selectable")),
+        "blocking": bool(eligibility.get("blocking")),
         "issues": issues,
         "warnings": warnings,
         "effectiveInputLimit": context_window,
         "notes": [],
+        "eligibility": eligibility,
     }
 
 

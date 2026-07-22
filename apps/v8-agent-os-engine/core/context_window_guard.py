@@ -3,31 +3,13 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable
 
 from core.llm_factory import llm_factory
+from core.model_eligibility import evaluate_model_eligibility, model_kind
 from core.storage import storage
 
 
 MIN_TEXT_CONTEXT_WINDOW_TOKENS = 262_144
 DEFAULT_UNKNOWN_CONTEXT_WINDOW_TOKENS = 32_000
 
-_NON_TEXT_MODEL_TYPES = {
-    "IMAGE",
-    "VIDEO",
-    "VOICE",
-    "MUSIC",
-    "MODEL3D",
-    "WORKFLOW",
-    "EMBEDDING",
-    "RERANK",
-    "VECTOR",
-}
-_NON_TEXT_CAPABILITY_CLASSES = {
-    "media_generation",
-    "embedding",
-    "reranker",
-    "rerank",
-    "workflow",
-    "model3d",
-}
 _NON_TEXT_ROLES = {
     "embedding",
     "reranker",
@@ -62,19 +44,12 @@ def is_text_generation_model_ref(model_ref: str, *, role: str | None = None) -> 
         return False
     meta = _model_meta(model_ref)
     model_record = dict(meta.get("model_record") or {})
-    model_type = str(model_record.get("type") or "").upper()
-    capability_class = str(
-        meta.get("capability_class") or model_record.get("capabilityClass") or ""
-    ).strip().lower()
-    if model_type in _NON_TEXT_MODEL_TYPES:
-        return False
-    if capability_class in _NON_TEXT_CAPABILITY_CLASSES:
-        return False
-    capabilities = dict(meta.get("capabilities") or model_record.get("capabilities") or {})
-    if any(bool(capabilities.get(key)) for key in ("embedding", "rerank", "image", "video", "voice", "music", "workflow", "model3d")):
-        if not any(bool(capabilities.get(key)) for key in ("chat", "text", "reasoning", "toolCalling", "vision", "multimodal")):
-            return False
-    return True
+    materialized = {
+        **model_record,
+        "capabilityClass": meta.get("capability_class") or model_record.get("capabilityClass"),
+        "capabilities": meta.get("capabilities") or model_record.get("capabilities") or {},
+    }
+    return model_kind(materialized) == "text_generation"
 
 
 def _participant(
@@ -216,17 +191,29 @@ def validate_text_role_model_window(role: str, model_ref: str) -> Dict[str, Any]
     )
     if not participant:
         return {"ok": True, "reason": "not_text_generation"}
-    if participant.get("valid"):
-        return {"ok": True, "participant": participant}
-    reason = str(participant.get("reason") or "missing_context_window")
+    meta = _model_meta(model_ref)
+    model_record = {
+        **dict(meta.get("model_record") or {}),
+        "capabilityClass": meta.get("capability_class") or dict(meta.get("model_record") or {}).get("capabilityClass"),
+        "capabilities": meta.get("capabilities") or dict(meta.get("model_record") or {}).get("capabilities") or {},
+    }
+    eligibility = evaluate_model_eligibility(model_record, role=role_key)
+    if eligibility.get("selectable"):
+        return {"ok": True, "participant": participant, "eligibility": eligibility}
+    reason = str(((eligibility.get("reasons") or [{}])[0]).get("code") or participant.get("reason") or "missing_context_window")
     return {
         "ok": False,
         "reason": reason,
         "participant": participant,
+        "eligibility": eligibility,
         "minimumRequiredContextWindowTokens": minimum_required,
         "message": (
             f"模型 {model_ref} 未配置上下文窗口，不能用于长上下文文本生成角色。"
             if reason == "missing_context_window"
-            else f"模型 {model_ref} 上下文窗口低于 {minimum_required} tokens，不能用于当前文本生成角色。"
+            else (
+                f"模型 {model_ref} 未配置最大输出 tokens，不能用于当前文本生成角色。"
+                if reason == "missing_max_output_tokens"
+                else f"模型 {model_ref} 上下文窗口低于 {minimum_required} tokens，不能用于当前文本生成角色。"
+            )
         ),
     }

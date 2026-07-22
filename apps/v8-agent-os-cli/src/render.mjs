@@ -74,6 +74,16 @@ export function renderMcpStatus(result) {
 export function renderModelRoles(result) {
   console.log(`Model roles (${result.source})`);
   const roles = result.roles || {};
+  if (Array.isArray(roles)) {
+    if (!roles.length) {
+      console.log("- none");
+      return;
+    }
+    for (const item of roles) {
+      console.log(`- ${item.label || item.role}: ${item.modelRef || item.model || "unbound"} [${item.status || item.binding || "unknown"}]`);
+    }
+    return;
+  }
   const entries = Object.entries(roles).sort(([a], [b]) => a.localeCompare(b));
   if (!entries.length) {
     console.log("- none");

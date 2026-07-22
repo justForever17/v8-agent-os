@@ -1,6 +1,6 @@
 import { memo, useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import { buildClientToolSurface, type AdminProcessRef, type McpAppViewRef } from "@v8/session-realtime";
+import { buildClientToolSurface, normalizeV8ActionRequest, type AdminProcessRef, type McpAppViewRef } from "@v8/session-realtime";
 
 import { GenericToolTraceCard } from "@/src/components/chat/GenericToolTraceCard";
 import { MessageBlockItem } from "@/src/components/chat/MessageBlockItem";
@@ -85,6 +85,7 @@ function extractMcpAppRef(...values: unknown[]): McpAppViewRef | null {
             thumbnailUrl: String(record.thumbnailUrl || record.thumbnail_url || "").trim() || undefined,
             presentation: record.presentation && typeof record.presentation === "object" ? record.presentation as McpAppViewRef["presentation"] : undefined,
             allowedFrameOrigins: Array.isArray(record.allowedFrameOrigins) ? record.allowedFrameOrigins.map((item) => String(item || "")).filter(Boolean) : undefined,
+            actionRequest: normalizeV8ActionRequest(record.actionRequest ?? record.action_request),
         };
     }
     return null;

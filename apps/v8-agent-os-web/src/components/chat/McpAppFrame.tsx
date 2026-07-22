@@ -1,8 +1,8 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, LayoutPanelTop, Maximize2, RefreshCw } from "lucide-react";
-import type { McpAppViewRef } from "@v8/session-realtime";
+import { AlertCircle, Check, ExternalLink, KeyRound, LayoutPanelTop, Maximize2, RefreshCw, ShieldCheck } from "lucide-react";
+import type { McpAppViewRef, V8ActionRequestRef } from "@v8/session-realtime";
 
 import { createUiAppDocument } from "@/lib/workbench";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -104,6 +104,122 @@ function FigmaCanvasRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
     );
 }
 
+function V8ActionRequestCard({ initial }: { initial: V8ActionRequestRef }) {
+    const t = useT();
+    const [action, setAction] = useState(initial);
+    const [values, setValues] = useState<Record<string, string>>({});
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+
+    useEffect(() => {
+        let cancelled = false;
+        void fetch(`/api/ui-actions/${encodeURIComponent(initial.actionRequestId)}`, {
+            cache: "no-store",
+            headers: { "x-v8-session-id": initial.sessionId },
+        })
+            .then(async (response) => {
+                const payload = await response.json().catch(() => ({})) as V8ActionRequestRef & { detail?: unknown };
+                if (!response.ok) throw new Error(String((payload as Record<string, unknown>).detail || response.statusText));
+                if (!cancelled) setAction(payload);
+            })
+            .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+        return () => { cancelled = true; };
+    }, [initial.actionRequestId]);
+
+    const submit = async () => {
+        setBusy(true);
+        setError("");
+        try {
+            const response = await fetch(`/api/ui-actions/${encodeURIComponent(action.actionRequestId)}/submit`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-v8-session-id": action.sessionId },
+                body: JSON.stringify({ values }),
+            });
+            const payload = await response.json().catch(() => ({})) as V8ActionRequestRef & { detail?: { message?: string } | string };
+            if (!response.ok) {
+                const detail = payload.detail;
+                throw new Error(typeof detail === "string" ? detail : detail?.message || response.statusText);
+            }
+            setAction(payload);
+            setValues({});
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const terminal = action.state !== "pending";
+    const ActionIcon = action.state === "submitted" ? Check : action.kind === "secret_input" ? KeyRound : ShieldCheck;
+    return (
+        <section className="mt-1 w-full max-w-md rounded-[6px] border border-border/70 bg-background px-3 py-2.5 shadow-sm" aria-label={action.title}>
+            <div className="flex items-start gap-2.5">
+                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] bg-primary/10 text-primary">
+                    <ActionIcon className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-foreground">{action.title}</div>
+                    {action.description ? <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{action.description}</p> : null}
+                    {action.targetLabel ? <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={action.targetLabel}>{action.targetLabel}</p> : null}
+                </div>
+            </div>
+            {!terminal ? (
+                <div className="mt-2.5 space-y-2">
+                    {(action.fields || []).map((field) => (
+                        <label key={field.id} className="block space-y-1 text-xs font-medium text-foreground">
+                            <span>{field.label}</span>
+                            {field.kind === "choice" ? (
+                                <select
+                                    value={values[field.id] || ""}
+                                    onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                                    required={field.required}
+                                    className="h-9 w-full rounded-[5px] border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                                >
+                                    <option value="" />
+                                    {(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}
+                                </select>
+                            ) : field.kind === "boolean" ? (
+                                <input
+                                    type="checkbox"
+                                    checked={values[field.id] === "true"}
+                                    onChange={(event) => setValues((current) => ({ ...current, [field.id]: String(event.target.checked) }))}
+                                    className="h-4 w-4 accent-primary"
+                                />
+                            ) : (
+                                <input
+                                    type={field.kind === "secret" ? "password" : "text"}
+                                    value={values[field.id] || ""}
+                                    onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}
+                                    autoComplete={field.autocomplete || "off"}
+                                    required={field.required}
+                                    className="h-9 w-full rounded-[5px] border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                                />
+                            )}
+                            {field.help ? <span className="block font-normal text-muted-foreground">{field.help}</span> : null}
+                        </label>
+                    ))}
+                    <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void submit()}
+                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[5px] bg-primary px-3 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        {busy ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                        {t("web.uiAction.save")}
+                    </button>
+                </div>
+            ) : (
+                <p className="mt-2 text-xs text-muted-foreground">
+                    {action.state === "submitted" ? t("web.uiAction.saved") : t("web.uiAction.unavailable")}
+                </p>
+            )}
+            {error || action.error?.message ? (
+                <p className="mt-2 flex items-start gap-1.5 text-xs leading-5 text-destructive"><AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{error || action.error?.message}</p>
+            ) : null}
+        </section>
+    );
+}
+
 export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
     const t = useT();
     const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -191,7 +307,7 @@ export function McpAppRenderer({ mcpApp }: { mcpApp: McpAppViewRef }) {
     return <iframe ref={frameRef} title={mcpApp.title || `MCP App ${mcpApp.appInstanceId}`} className="h-full w-full border-0 bg-transparent" sandbox="allow-scripts allow-forms allow-popups" srcDoc={srcDoc} />;
 }
 
-export const McpAppFrame = memo(function McpAppFrame({ mcpApp }: { mcpApp: McpAppViewRef }) {
+function McpAppWorkbenchButton({ mcpApp }: { mcpApp: McpAppViewRef }) {
     const t = useT();
     const openDocument = useWorkbenchStore((state) => state.openDocument);
     const document = useMemo(() => createUiAppDocument(mcpApp), [mcpApp]);
@@ -208,4 +324,11 @@ export const McpAppFrame = memo(function McpAppFrame({ mcpApp }: { mcpApp: McpAp
             <Maximize2 className="h-3.5 w-3.5 text-muted-foreground" />
         </button>
     );
+}
+
+export const McpAppFrame = memo(function McpAppFrame({ mcpApp }: { mcpApp: McpAppViewRef }) {
+    if (mcpApp.renderer === "v8_action" && mcpApp.actionRequest) {
+        return <V8ActionRequestCard initial={mcpApp.actionRequest} />;
+    }
+    return <McpAppWorkbenchButton mcpApp={mcpApp} />;
 });

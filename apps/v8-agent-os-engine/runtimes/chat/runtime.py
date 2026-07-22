@@ -6769,6 +6769,25 @@ class ChatRuntime:
     ) -> dict[str, Any] | None:
         from runtimes.plugin_manager.guarded_tools import resolve_plugin_tool_alias
 
+        if str(tool_name or "").strip() == "config_broker":
+            candidate = self._coerce_json_like_value(to_jsonable(output))
+            action = dict(candidate.get("uiAction") or {}) if isinstance(candidate, dict) else {}
+            action_id = str(action.get("actionRequestId") or "").strip()
+            if action_id:
+                return {
+                    "appInstanceId": action_id,
+                    "serverName": "v8os-action",
+                    "resourceUri": f"ui://v8os/actions/{action_id}",
+                    "toolInvocationId": tool_invocation_id,
+                    "sessionId": chat_run.session_id,
+                    "runId": chat_run.active_run_id,
+                    "renderer": "v8_action",
+                    "title": str(action.get("title") or "需要你的操作"),
+                    "presentation": {"web": "inline", "phone": "inline"},
+                    "status": str(action.get("state") or "pending"),
+                    "actionRequest": action,
+                }
+
         alias = resolve_plugin_tool_alias(tool_name)
         original_tool_name = str((alias or {}).get("originalToolName") or tool_name or "").strip()
         registry_entry = mcp_manager.find_app_for_tool(tool_name=original_tool_name)
@@ -7597,7 +7616,7 @@ class ChatRuntime:
                 tool_invocation_id=str(tool_call_id or ""),
                 output=output,
             )
-            if mcp_app_payload:
+            if mcp_app_payload and mcp_app_payload.get("renderer") != "v8_action":
                 try:
                     from core.workbench_events import emit_workbench_document_event
 

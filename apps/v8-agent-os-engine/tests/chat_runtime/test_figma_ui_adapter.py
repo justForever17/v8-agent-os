@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 from unittest.mock import patch
 
 from langchain_core.tools import tool
@@ -102,3 +103,30 @@ def test_runtime_validated_figma_grant_becomes_privileged_ui_canvas_payload() ->
     assert payload["allowedFrameOrigins"] == ["https://www.figma.com"]
     assert payload["fileKey"] == "FigmaKey"
     assert payload["nodeId"] == "1-2"
+
+
+def test_config_broker_action_is_projected_as_first_party_ui_action() -> None:
+    runtime = ChatRuntime()
+    chat_run = SimpleNamespace(session_id="session-1", active_run_id="run-1")
+    action = {
+        "actionRequestId": "ui_action_1",
+        "sessionId": "session-1",
+        "kind": "secret_input",
+        "state": "pending",
+        "title": "Connect provider",
+        "fields": [{"id": "apiKey", "kind": "secret", "label": "API Key", "required": True}],
+        "expiresAt": "2026-07-22T12:00:00Z",
+    }
+
+    payload = runtime._build_mcp_app_payload(
+        chat_run=chat_run,
+        tool_name="config_broker",
+        tool_invocation_id="tool-1",
+        output=json.dumps({"ok": True, "uiAction": action}),
+    )
+
+    assert payload is not None
+    assert payload["renderer"] == "v8_action"
+    assert payload["resourceUri"] == "ui://v8os/actions/ui_action_1"
+    assert payload["actionRequest"] == action
+    assert payload["serverName"] == "v8os-action"

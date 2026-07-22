@@ -732,5 +732,8 @@
   "web.contextMenu.paste": "Paste",
   "web.contextMenu.selectAll": "Select all",
   "web.contextMenu.copyLink": "Copy link",
-  "web.contextMenu.openInWorkbench": "View in workbench"
+  "web.contextMenu.openInWorkbench": "View in workbench",
+  "web.uiAction.save": "Save",
+  "web.uiAction.saved": "Saved securely and configuration completed.",
+  "web.uiAction.unavailable": "This action expired or did not complete."
 }

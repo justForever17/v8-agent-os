@@ -8,10 +8,12 @@ import {
   listMcpServers,
   mcpStatus,
   modelRoleDoctor,
+  modelInventory,
   modelRoles,
   phonePairingManifest,
   phonePairingSummary,
   removeMcpServer,
+  recommendModel,
   setModelRole,
 } from "./config_commands.mjs";
 import { runDoctor } from "./doctor.mjs";
@@ -60,7 +62,7 @@ Usage:
   v8os doctor [--json]
   v8os config list|get <domain> [--json]
   v8os config mcp list|status|install|remove [--json]
-  v8os config models doctor|roles|set-role <role> <modelRef> [--json]
+  v8os config models list|doctor|roles|recommend|set-role [--category type] [--query text] [--json]
   v8os config phone show|manifest [--json]
   v8os repair [--dry-run|--yes] [--json]
   v8os logs
@@ -161,6 +163,16 @@ async function commandConfig(args) {
   }
   if (sub === "models" && args[1] === "doctor") {
     printJson(await modelRoleDoctor());
+    return;
+  }
+  if (sub === "models" && args[1] === "list") {
+    const result = await modelInventory({ category: optionValue(args, "--category"), query: optionValue(args, "--query"), limit: Number(optionValue(args, "--limit", "20")) });
+    printJson(result);
+    return;
+  }
+  if (sub === "models" && args[1] === "recommend") {
+    const result = await recommendModel(args[2], Number(optionValue(args, "--limit", "5")));
+    printJson(result);
     return;
   }
   if (sub === "models" && args[1] === "roles") {

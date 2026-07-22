@@ -5,6 +5,7 @@ import type {
   SessionRuntimeId,
   SessionRuntimeScope,
   SessionRuntimeVisibility,
+  V8ActionRequestRef,
 } from "./contract.js";
 import { findRuntimeEventTaxonomyEntry } from "./event-taxonomy.js";
 import { getRuntimeRegistryEntry, normalizeRuntimeId } from "./runtime-registry.js";
@@ -876,6 +877,53 @@ function normalizeDisplayStatus(value: unknown) {
   return normalized.toLowerCase() === "unknown" ? undefined : normalized;
 }
 
+export function normalizeV8ActionRequest(value: unknown): V8ActionRequestRef | undefined {
+  const record = asRecord(value);
+  const actionRequestId = pickFirstString(record.actionRequestId, record.action_request_id);
+  const sessionId = pickFirstString(record.sessionId, record.session_id);
+  const kind = pickFirstString(record.kind) as V8ActionRequestRef["kind"] | undefined;
+  const state = pickFirstString(record.state) as V8ActionRequestRef["state"] | undefined;
+  const title = pickFirstString(record.title);
+  const expiresAt = pickFirstString(record.expiresAt, record.expires_at);
+  const validKinds = new Set(["secret_input", "user_presence", "unlock_required", "computer_use_handoff", "rpa_handoff"]);
+  const validStates = new Set(["pending", "submitted", "expired", "cancelled", "failed"]);
+  if (!actionRequestId || !sessionId || !kind || !validKinds.has(kind) || !state || !validStates.has(state) || !title || !expiresAt) return undefined;
+  const error = asRecord(record.error);
+  return {
+    actionRequestId,
+    sessionId,
+    kind,
+    state,
+    title,
+    description: pickFirstString(record.description),
+    targetLabel: pickFirstString(record.targetLabel, record.target_label),
+    fields: Array.isArray(record.fields)
+      ? record.fields.flatMap((item) => {
+          const field = asRecord(item);
+          const id = pickFirstString(field.id);
+          const fieldKind = pickFirstString(field.kind) as "secret" | "text" | "boolean" | "choice" | undefined;
+          const label = pickFirstString(field.label);
+          if (!id || !fieldKind || !["secret", "text", "boolean", "choice"].includes(fieldKind) || !label) return [];
+          return [{
+            id,
+            kind: fieldKind,
+            label,
+            help: pickFirstString(field.help) || null,
+            required: Boolean(field.required),
+            options: Array.isArray(field.options) ? field.options.map((option) => String(option || "")).filter(Boolean) : [],
+            autocomplete: pickFirstString(field.autocomplete),
+          }];
+        })
+      : [],
+    submitLabel: pickFirstString(record.submitLabel, record.submit_label),
+    expiresAt,
+    result: asRecord(record.result),
+    error: Object.keys(error).length
+      ? { code: pickFirstString(error.code), message: pickFirstString(error.message) }
+      : null,
+  };
+}
+
 function extractMcpAppRef(...values: unknown[]) {
   for (const value of values) {
     const record = asRecord(value);
@@ -884,6 +932,7 @@ function extractMcpAppRef(...values: unknown[]) {
     if (!appInstanceId || !resourceUri) {
       continue;
     }
+    const actionRequest = normalizeV8ActionRequest(record.actionRequest ?? record.action_request);
     return {
       appInstanceId,
       serverName: pickFirstString(record.serverName, record.server_name),
@@ -903,6 +952,7 @@ function extractMcpAppRef(...values: unknown[]) {
       allowedFrameOrigins: Array.isArray(record.allowedFrameOrigins)
         ? record.allowedFrameOrigins.map((item) => String(item || "")).filter(Boolean)
         : [],
+      actionRequest,
     };
   }
   return undefined;

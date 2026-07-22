@@ -749,6 +749,90 @@ def _render_plugin_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
+def _render_config_broker_surface(payload: dict[str, Any], raw_ref: str) -> str:
+    mode = _short_text(payload.get("mode") or "status", 40)
+    lines = [f"Configuration control ({mode})"]
+    if payload.get("summary"):
+        lines.append(_short_text(payload.get("summary"), 320))
+    if payload.get("state"):
+        lines.append(f"State: {_short_text(payload.get('state'), 60)}")
+    if payload.get("transactionId"):
+        lines.append(f"Transaction: {_short_text(payload.get('transactionId'), 100)}")
+    if payload.get("planDigest"):
+        lines.append(f"Plan digest: {_short_text(payload.get('planDigest'), 80)}")
+    groups = payload.get("groups") if isinstance(payload.get("groups"), list) else []
+    if groups:
+        lines.append(
+            "Categories: "
+            + ", ".join(
+                f"{_short_text(item.get('category'), 30)}={int(item.get('count') or 0)}"
+                for item in groups
+                if isinstance(item, dict)
+            )
+        )
+    models = payload.get("models") if isinstance(payload.get("models"), list) else []
+    if models:
+        lines.append("Models:")
+        for item in models[:12]:
+            if not isinstance(item, dict):
+                continue
+            default = " [default]" if item.get("defaultCategories") else ""
+            roles = ", ".join(str(role) for role in list(item.get("assignedRoles") or [])[:4])
+            role_suffix = f"; roles={roles}" if roles else ""
+            lines.append(
+                f"- {_short_text(item.get('modelId') or item.get('modelRef'), 100)}"
+                f" ({_short_text(item.get('providerName') or item.get('providerId'), 70)}): "
+                f"{_short_text(item.get('statusLabel') or item.get('status'), 70)}{default}{role_suffix}"
+            )
+        if int(payload.get("total") or len(models)) > len(models):
+            lines.append(f"- … use offset to read the remaining {int(payload.get('total') or 0) - len(models)} model(s)")
+    roles = payload.get("roles") if isinstance(payload.get("roles"), list) else []
+    if roles:
+        lines.append("Model consumers:")
+        for item in roles[:20]:
+            if isinstance(item, dict):
+                lines.append(
+                    f"- {_short_text(item.get('label') or item.get('role'), 90)}: "
+                    f"{_short_text(item.get('model') or 'unbound', 100)} "
+                    f"[{_short_text(item.get('status') or item.get('binding'), 50)}]"
+                )
+    agents = payload.get("agents") if isinstance(payload.get("agents"), list) else []
+    if agents:
+        lines.append("Subagent model bindings:")
+        for item in agents[:20]:
+            if isinstance(item, dict):
+                lines.append(
+                    f"- {_short_text(item.get('label') or item.get('agentId'), 90)}: "
+                    f"{_short_text(item.get('model') or 'inherited / unbound', 100)} "
+                    f"[{_short_text(item.get('status') or item.get('binding'), 50)}]"
+                )
+    candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
+    if candidates:
+        lines.append("Recommended candidates:")
+        for item in candidates[:8]:
+            if isinstance(item, dict):
+                lines.append(
+                    f"- {_short_text(item.get('modelRef'), 130)}: "
+                    f"{_short_text(item.get('reason') or item.get('status'), 180)}"
+                )
+    ui_action = payload.get("uiAction") if isinstance(payload.get("uiAction"), dict) else {}
+    if ui_action:
+        lines.append(
+            "User action required: "
+            + _short_text(ui_action.get("title") or ui_action.get("kind") or "complete the secure action card", 180)
+        )
+        lines.append("Do not ask for or repeat the credential in chat or tool arguments.")
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    if error:
+        lines.append(f"Blocked: {_short_text(error.get('message') or error.get('code'), 240)}")
+    if payload.get("requiredFacts"):
+        lines.append("Required model facts: " + ", ".join(str(item) for item in list(payload.get("requiredFacts") or [])))
+    if payload.get("nextAction"):
+        lines.append(f"Next: {_short_text(payload.get('nextAction'), 260)}")
+    lines.extend(_surface_ref_lines(raw_ref, payload.get("detailTool"), include_raw=True))
+    return "\n".join(line for line in lines if line).strip()
+
+
 def _render_session_context_surface(payload: dict[str, Any], raw_ref: str, *, budget: int) -> str:
     if payload.get("ok") is False:
         lines = ["Session context takeover failed"]
@@ -2099,6 +2183,8 @@ def _decision_agent_visible_surface(
     renderer_result: str | None = None
     if tool_name == "runtime_broker":
         renderer_result = _render_runtime_broker_surface(payload, raw_ref)
+    elif tool_name == "config_broker":
+        renderer_result = _render_config_broker_surface(payload, raw_ref)
     elif tool_name == "plugin_broker":
         renderer_result = _render_plugin_broker_surface(payload, raw_ref)
     elif tool_name == "session_context_broker":

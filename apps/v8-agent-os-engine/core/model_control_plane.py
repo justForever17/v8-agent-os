@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from core.model_capability_matrix import normalize_capability_metadata
 from core.model_budget_service import model_budget_service
 from core.model_role_doctor import diagnose_model_role
+from core.model_eligibility import evaluate_model_eligibility
 from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata, resolve_thinking_control_for_metadata
 from core.provider_runtime_profiles import runtime_readiness_for_provider
 from core.provider_health_service import provider_health_service
@@ -51,6 +52,8 @@ DEFAULT_ROLE_MAP = {
     "default": "",
     "supervisor": "",
     "subagent": "",
+    "channel": "",
+    "safety_review": "",
     "summary": "",
     "extraction": "",
     "vision": "",
@@ -92,6 +95,25 @@ def normalize_config_temperature(value: Any) -> Optional[float]:
     if parsed <= 0:
         return None
     return max(min(parsed, 2.0), 0.05)
+
+
+def _fact_provenance_for_patch(model_patch: Dict[str, Any], source: str) -> Dict[str, Any]:
+    patch = dict(model_patch or {})
+    existing = dict(patch.get("factProvenance") or {})
+    normalized_source = str(source or "manual").strip().lower() or "manual"
+    if normalized_source == "manual":
+        provenance = {"source": "user_confirmed", "confidence": "authoritative"}
+    elif normalized_source in {"web_research", "agent_research", "research"}:
+        provenance = {"source": "web_research", "confidence": "reviewed"}
+    elif normalized_source in {"online", "provider", "provider_probe"}:
+        provenance = {"source": "provider_metadata", "confidence": "reviewed"}
+    else:
+        provenance = {"source": normalized_source, "confidence": "hint"}
+    for key in ("contextWindow", "maxTokens", "type", "capabilities", "capabilityClass"):
+        if key in patch and patch.get(key) not in (None, "", {}):
+            existing[key] = {**provenance, **dict(existing.get(key) or {})}
+    patch["factProvenance"] = existing
+    return patch
 
 
 def _role_doctor_for_missing_binding(role_key: str, binding_state: str) -> Dict[str, Any]:
@@ -200,6 +222,8 @@ ROLE_DEFAULT_CATEGORY_MAP = {
     "default": "text_generation",
     "supervisor": "text_generation",
     "subagent": "text_generation",
+    "channel": "text_generation",
+    "safety_review": "text_generation",
     "summary": "text_generation",
     "extraction": "text_generation",
     "extensions_prefilter": "text_generation",
@@ -229,6 +253,18 @@ ROLE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "subagent": {
         "label": "默认 Subagent 模型",
         "description": "本地子代理默认继承的模型绑定；单个 agent 显式绑定仍优先。",
+        "group": "system",
+        "capabilityClasses": CHAT_CAPABILITY_CLASSES,
+    },
+    "channel": {
+        "label": "渠道回复",
+        "description": "外部渠道消息的理解、编排与回复。",
+        "group": "system",
+        "capabilityClasses": CHAT_CAPABILITY_CLASSES,
+    },
+    "safety_review": {
+        "label": "安全复核",
+        "description": "需要模型参与时的安全语义复核。",
         "group": "system",
         "capabilityClasses": CHAT_CAPABILITY_CLASSES,
     },
@@ -924,6 +960,41 @@ class ModelControlPlane:
             raw = migrated
         return self._materialize_provider_credentials(self.normalize_config(raw))
 
+    def get_storage_safe_config(self) -> Dict[str, Any]:
+        """Return a rollback-safe snapshot and secure legacy in-file keys.
+
+        This only migrates credentials already owned by V8OS in models.json. It
+        never scans or imports credentials from third-party tools.
+        """
+
+        with self._mutation_lock:
+            normalized = self.normalize_config(storage.get_models_config())
+            changed = False
+            for provider_id, provider_data in dict(normalized.get("providers") or {}).items():
+                if not isinstance(provider_data, dict):
+                    continue
+                provider_meta = dict(provider_data.get("provider") or {})
+                raw_key = str(provider_meta.get("api_key") or provider_meta.get("apiKey") or "").strip()
+                if not raw_key or raw_key.startswith("oauth:"):
+                    continue
+                existing_ref = str(provider_meta.get("credentialRef") or provider_meta.get("credential_ref") or "").strip()
+                reference = self._credential_store.put(
+                    raw_key,
+                    reference=existing_ref if existing_ref.startswith("cred:v8-model:") else None,
+                    namespace="model",
+                )
+                provider_meta.pop("api_key", None)
+                provider_meta.pop("apiKey", None)
+                provider_meta["credentialRef"] = reference
+                provider_meta["credentialSource"] = "os_credential_store"
+                provider_data["provider"] = provider_meta
+                normalized["providers"][provider_id] = provider_data
+                changed = True
+            safe = self._storage_safe_config(normalized)
+            if changed:
+                storage.save_models_config(safe)
+            return safe
+
     def save_config(self, data: Dict[str, Any]) -> Dict[str, Any]:
         normalized = self.normalize_config(data)
         storage.save_models_config(self._storage_safe_config(normalized))
@@ -1006,11 +1077,12 @@ class ModelControlPlane:
             source_container = dict(providers.get(source_provider_key) or {})
             source_models = dict(source_container.get("models") or {})
             existing_model = dict(source_models.get(source_model_key) or {})
+            annotated_patch = _fact_provenance_for_patch(dict(model_patch or {}), source)
             next_model = persist_model_endpoint_binding(
                 normalized_provider_id,
                 normalized_model_id,
                 target_provider,
-                {**existing_model, **dict(model_patch or {})},
+                {**existing_model, **annotated_patch},
                 source=source,
             )
             target_models = {} if replace_provider_models else dict(target.get("models") or {})
@@ -1069,11 +1141,12 @@ class ModelControlPlane:
             }
             validate_provider_channels(provider_meta)
             models = {} if replace_provider_models else dict(existing.get("models") or {})
+            annotated_patch = _fact_provenance_for_patch(dict(model_patch or {}), source)
             next_model = persist_model_endpoint_binding(
                 normalized_provider_id,
                 normalized_model_id,
                 provider_meta,
-                {**dict(models.get(normalized_model_id) or {}), **dict(model_patch or {})},
+                {**dict(models.get(normalized_model_id) or {}), **annotated_patch},
                 source=source,
             )
             models[normalized_model_id] = next_model
@@ -1168,12 +1241,14 @@ class ModelControlPlane:
         normalized = config or self.get_config()
         definitions = deepcopy(ROLE_DEFINITIONS)
         for role_key in (normalized.get("roles") or {}).keys():
+            if role_key == "planner":
+                continue
             if role_key not in definitions:
                 definitions[role_key] = {
                     "label": role_key.replace("_", " ").title(),
-                    "description": "扩展角色，当前未声明固定能力约束。",
+                    "description": "扩展角色，默认使用通用聊天能力约束。",
                     "group": "extension",
-                    "capabilityClasses": [],
+                    "capabilityClasses": list(CHAT_CAPABILITY_CLASSES),
                 }
         return definitions
 
@@ -1589,6 +1664,8 @@ class ModelControlPlane:
                     "priority": model_meta.get("priority"),
                     "stabilityTier": model_meta.get("stabilityTier"),
                     "isEnabled": bool(model_meta.get("isEnabled", True)),
+                    "runtimeReady": bool(model_meta.get("runtimeReady", True)),
+                    "factProvenance": dict(model_meta.get("factProvenance") or {}),
                     "capabilities": capabilities,
                     "capabilityClass": model_meta.get("capabilityClass") or "chat_general",
                     "capabilityTags": [
@@ -1597,6 +1674,7 @@ class ModelControlPlane:
                     "assignedRoles": assigned_roles_by_model.get(model_ref, []),
                     "defaultCategories": default_categories_by_model.get(model_ref, []),
                 }
+                model_row["eligibility"] = evaluate_model_eligibility(model_row, role="model_hub")
                 model_row["roleDoctor"] = diagnose_model_role(model_row, role="model_hub")
                 models.append(model_row)
         return sorted(models, key=lambda item: (item["providerName"].lower(), item["modelId"].lower()))

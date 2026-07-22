@@ -105,7 +105,12 @@ class ProviderHealthService:
             is_enabled = bool(provider_meta.get("is_enabled", True))
             api_standard = str(provider_meta.get("api_standard") or "openai").lower()
             provider_type = str(provider_meta.get("type") or "API").upper()
-            has_auth = bool(provider_meta.get("api_key")) or provider_type == "LOCAL"
+            has_auth = bool(
+                provider_meta.get("api_key")
+                or provider_meta.get("credentialRef")
+                or provider_meta.get("credential_ref")
+                or provider_meta.get("oauth_ref")
+            ) or provider_type == "LOCAL"
             has_base_url = bool(provider_meta.get("base_url")) or api_standard in {"openai", "anthropic", "google", "gemini"}
             local_capability_probe = None
             if provider_type == "LOCAL":

@@ -18,6 +18,7 @@ FALLBACK_NATIVE_TOOL_NAMES = {
     "session_context_broker",
     "session_message_broker",
     "plugin_broker",
+    "config_broker",
     "rpa_list_robot_scripts",
     "rpa_run_draft",
     "rpa_run_existing_flow",

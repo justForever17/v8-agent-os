@@ -916,5 +916,8 @@
   "src.components.ui.avatarcropmodal.zoom_out": "缩小图片",
   "src.components.ui.avatarcropmodal.zoom_in": "放大图片",
   "src.components.ui.avatarcropmodal.cancel": "取消",
-  "src.components.ui.avatarcropmodal.use_crop": "使用此区域"
+  "src.components.ui.avatarcropmodal.use_crop": "使用此区域",
+  "src.components.chat.ui_action.save": "保存",
+  "src.components.chat.ui_action.saved": "已安全保存并完成配置。",
+  "src.components.chat.ui_action.unavailable": "这个操作已失效或未完成。"
 }

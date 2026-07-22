@@ -352,6 +352,43 @@ export type PluginReferenceSelection = {
   name?: string;
 };
 
+export type V8ActionRequestKind =
+  | "secret_input"
+  | "user_presence"
+  | "unlock_required"
+  | "computer_use_handoff"
+  | "rpa_handoff";
+
+export type V8ActionRequestState =
+  | "pending"
+  | "submitted"
+  | "expired"
+  | "cancelled"
+  | "failed";
+
+export type V8ActionRequestRef = {
+  actionRequestId: string;
+  sessionId: string;
+  kind: V8ActionRequestKind;
+  state: V8ActionRequestState;
+  title: string;
+  description?: string;
+  targetLabel?: string;
+  fields?: Array<{
+    id: string;
+    kind: "secret" | "text" | "boolean" | "choice";
+    label: string;
+    help?: string | null;
+    required: boolean;
+    options?: string[];
+    autocomplete?: string;
+  }>;
+  submitLabel?: string;
+  expiresAt: string;
+  result?: Record<string, unknown>;
+  error?: { code?: string; message?: string } | null;
+};
+
 export type McpAppViewRef = {
   appInstanceId: string;
   serverName?: string;
@@ -376,6 +413,7 @@ export type McpAppViewRef = {
     phone?: "inline" | "modal";
   };
   allowedFrameOrigins?: string[];
+  actionRequest?: V8ActionRequestRef;
 };
 
 export type WorkbenchMode = "closed" | "split" | "focus";

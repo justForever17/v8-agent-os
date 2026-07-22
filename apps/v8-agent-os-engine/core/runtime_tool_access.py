@@ -109,6 +109,8 @@ SUBAGENT_ALWAYS_HIDDEN_TOOL_NAMES = {
     "spec_broker",
     "session_message_broker",
     "session_context_broker",
+    "config_broker",
+    "mcp_server_config",
     "write_todos",
     "update_todo",
     "s3_broker",

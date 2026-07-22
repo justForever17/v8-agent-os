@@ -45,6 +45,8 @@ from core.tools.research_ledger import (
     restore_experience_pack,
     search_experience_packs_with_options,
 )
+from core.ui_action_requests import UiActionRequestError, ui_action_request_service
+from core.config_broker_service import ConfigBrokerError, config_broker_service
 from runtimes.extensions.mcp.client import mcp_manager
 
 
@@ -1010,6 +1012,134 @@ async def get_models_config():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _ui_action_owner(request: Request) -> str:
+    owner = str(request.headers.get("x-v8-agent-os-user-email") or "").strip()
+    if not owner:
+        raise HTTPException(status_code=401, detail="ui_action_auth_required")
+    return owner
+
+
+def _ui_action_session(request: Request) -> str:
+    session_id = str(request.headers.get("x-v8-session-id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=401, detail="ui_action_session_required")
+    return session_id
+
+
+@router.get("/ui/actions/{action_id}")
+async def get_ui_action(action_id: str, request: Request):
+    try:
+        return ui_action_request_service.public(
+            action_id,
+            owner_id=_ui_action_owner(request),
+            session_id=_ui_action_session(request),
+        )
+    except UiActionRequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/ui/actions/{action_id}/submit")
+async def submit_ui_action(action_id: str, request: Request, data: dict = Body(...)):
+    try:
+        values = data.get("values") if isinstance(data.get("values"), dict) else {}
+        return ui_action_request_service.submit(
+            action_id,
+            values=values,
+            owner_id=_ui_action_owner(request),
+            session_id=_ui_action_session(request),
+        )
+    except UiActionRequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+def _config_actor(request: Request) -> str:
+    return str(request.headers.get("x-v8-agent-os-user-email") or "local-cli").strip() or "local-cli"
+
+
+@router.get("/config-broker/models")
+async def config_broker_models(
+    category: str = Query(default=""),
+    query: str = Query(default=""),
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+):
+    return config_broker_service.inventory(category=category, query=query, limit=limit, offset=offset)
+
+
+@router.get("/config-broker/roles")
+async def config_broker_roles():
+    return config_broker_service.role_matrix()
+
+
+@router.get("/config-broker/recommend")
+async def config_broker_recommend(role: str = Query(...), limit: int = Query(default=5, ge=1, le=10)):
+    try:
+        return config_broker_service.recommend(role=role, limit=limit)
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/config-broker/roles/prepare")
+async def config_broker_prepare_role(request: Request, data: dict = Body(...)):
+    try:
+        return config_broker_service.prepare_role_assignment(
+            role=str(data.get("role") or ""),
+            model_ref=str(data.get("modelRef") or data.get("model_ref") or ""),
+            owner_id=_config_actor(request),
+            session_id=str(data.get("sessionId") or ""),
+            run_id=str(data.get("runId") or ""),
+        )
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/config-broker/mcp/prepare")
+async def config_broker_prepare_mcp(request: Request, data: dict = Body(...)):
+    try:
+        return config_broker_service.prepare_mcp(
+            operation=str(data.get("operation") or "install"),
+            name=str(data.get("name") or ""),
+            server=dict(data.get("server") or {}) if isinstance(data.get("server"), dict) else None,
+            credential_requirements=(
+                [dict(item) for item in data.get("credentialRequirements") or [] if isinstance(item, dict)]
+                if isinstance(data.get("credentialRequirements"), list)
+                else None
+            ),
+            owner_id=_config_actor(request),
+            session_id=str(data.get("sessionId") or ""),
+            run_id=str(data.get("runId") or ""),
+        )
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.get("/config-broker/transactions/{transaction_id}")
+async def config_broker_transaction(transaction_id: str, request: Request):
+    try:
+        return config_broker_service.get_transaction(transaction_id, owner_id=_config_actor(request))
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/config-broker/transactions/{transaction_id}/commit")
+async def config_broker_commit(transaction_id: str, request: Request, data: dict = Body(...)):
+    try:
+        transaction = config_broker_service.get_transaction(transaction_id, owner_id=_config_actor(request))
+        if str(data.get("planDigest") or "").strip() != str(transaction.get("planDigest") or ""):
+            raise ConfigBrokerError("planDigest 不匹配。", code="config_plan_digest_mismatch", status_code=409)
+        return config_broker_service.commit(transaction_id, owner_id=_config_actor(request))
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/config-broker/transactions/{transaction_id}/rollback")
+async def config_broker_rollback(transaction_id: str, request: Request):
+    try:
+        return config_broker_service.rollback(transaction_id, owner_id=_config_actor(request))
+    except ConfigBrokerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
 @router.post("/models", deprecated=True)
 async def save_models_config(data: dict = Body(...)):
     try:
@@ -1052,7 +1182,23 @@ async def get_model_control_plane():
 async def get_public_models_config():
     """Return the human/admin-facing model contract without credentials."""
     try:
-        return model_control_plane.get_public_config()
+        config = model_control_plane.get_config()
+        public_config = model_control_plane.get_public_config(config)
+        computed = {
+            str(item.get("modelRef") or ""): item
+            for item in model_control_plane.list_models(config)
+        }
+        for provider_id, provider_data in dict(public_config.get("providers") or {}).items():
+            if not isinstance(provider_data, dict):
+                continue
+            for model_id, model_meta in dict(provider_data.get("models") or {}).items():
+                if not isinstance(model_meta, dict):
+                    continue
+                row = computed.get(make_model_ref(str(provider_id), str(model_id))) or {}
+                model_meta["eligibility"] = dict(row.get("eligibility") or {})
+                model_meta["roleDoctor"] = dict(row.get("roleDoctor") or {})
+                model_meta["factProvenance"] = dict(row.get("factProvenance") or {})
+        return public_config
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

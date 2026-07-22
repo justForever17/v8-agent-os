@@ -1,9 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Modal, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import WebView from "react-native-webview";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { McpAppViewRef } from "@v8/session-realtime";
+import type { McpAppViewRef, V8ActionRequestRef } from "@v8/session-realtime";
 
 import { useAppSession } from "@/src/providers/app-session";
 import { useUiPrefs } from "@/src/providers/ui-prefs";
@@ -91,6 +91,122 @@ function FigmaCanvasModal({ mcpApp }: { mcpApp: McpAppViewRef }) {
     );
 }
 
+function V8ActionRequestCard({ initial }: { initial: V8ActionRequestRef }) {
+    const { authorizedFetch } = useAppSession();
+    const { colors, t } = useUiPrefs();
+    const [action, setAction] = useState(initial);
+    const [values, setValues] = useState<Record<string, string>>({});
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+
+    useEffect(() => {
+        let cancelled = false;
+        void authorizedFetch(`/api/client/ui-actions/${encodeURIComponent(initial.actionRequestId)}`, {
+            headers: { "x-v8-session-id": initial.sessionId },
+        })
+            .then(async (response) => {
+                const payload = await response.json();
+                if (!response.ok) throw new Error(String(payload?.detail?.message || payload?.detail || response.statusText));
+                if (!cancelled) setAction(payload as V8ActionRequestRef);
+            })
+            .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+        return () => { cancelled = true; };
+    }, [authorizedFetch, initial.actionRequestId]);
+
+    const submit = async () => {
+        setBusy(true);
+        setError("");
+        try {
+            const response = await authorizedFetch(`/api/client/ui-actions/${encodeURIComponent(action.actionRequestId)}/submit`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-v8-session-id": action.sessionId },
+                body: JSON.stringify({ values }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(String(payload?.detail?.message || payload?.detail || response.statusText));
+            setAction(payload as V8ActionRequestRef);
+            setValues({});
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const terminal = action.state !== "pending";
+    return (
+        <View style={[styles.actionCard, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+            <View style={styles.actionTitleRow}>
+                <View style={[styles.actionIcon, { backgroundColor: `${colors.primary}18` }]}>
+                    <MaterialCommunityIcons name={action.state === "submitted" ? "check" : action.kind === "secret_input" ? "key-outline" : "shield-check-outline"} size={18} color={colors.primary} />
+                </View>
+                <View style={styles.actionHeading}>
+                    <Text style={[styles.actionTitle, { color: colors.text }]}>{action.title}</Text>
+                    {action.description ? <Text style={[styles.actionDescription, { color: colors.textMuted }]}>{action.description}</Text> : null}
+                    {action.targetLabel ? <Text style={[styles.actionTarget, { color: colors.textSoft }]} numberOfLines={1}>{action.targetLabel}</Text> : null}
+                </View>
+            </View>
+            {!terminal ? (
+                <View style={styles.actionFields}>
+                    {(action.fields || []).map((field) => (
+                        <View key={field.id} style={styles.actionField}>
+                            <Text style={[styles.actionLabel, { color: colors.text }]}>{field.label}</Text>
+                            {field.kind === "choice" ? (
+                                <View style={styles.actionChoices}>
+                                    {(field.options || []).map((option) => {
+                                        const selected = values[field.id] === option;
+                                        return (
+                                            <Pressable
+                                                key={option}
+                                                onPress={() => setValues((current) => ({ ...current, [field.id]: option }))}
+                                                style={[styles.actionChoice, { borderColor: selected ? colors.primary : colors.border, backgroundColor: selected ? `${colors.primary}18` : colors.background }]}
+                                            >
+                                                <Text style={{ color: colors.text }}>{option}</Text>
+                                            </Pressable>
+                                        );
+                                    })}
+                                </View>
+                            ) : field.kind === "boolean" ? (
+                                <Pressable
+                                    onPress={() => setValues((current) => ({ ...current, [field.id]: String(current[field.id] !== "true") }))}
+                                    style={[styles.actionBoolean, { borderColor: colors.border, backgroundColor: colors.background }]}
+                                >
+                                    <MaterialCommunityIcons name={values[field.id] === "true" ? "checkbox-marked" : "checkbox-blank-outline"} size={22} color={colors.primary} />
+                                    <Text style={{ color: colors.text }}>{values[field.id] === "true" ? "On" : "Off"}</Text>
+                                </Pressable>
+                            ) : (
+                                <TextInput
+                                    value={values[field.id] || ""}
+                                    onChangeText={(value) => setValues((current) => ({ ...current, [field.id]: value }))}
+                                    secureTextEntry={field.kind === "secret"}
+                                    autoCapitalize="none"
+                                    autoCorrect={false}
+                                    style={[styles.actionInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
+                                />
+                            )}
+                        </View>
+                    ))}
+                    <Pressable
+                        disabled={busy}
+                        onPress={() => void submit()}
+                        style={[styles.actionSubmit, { backgroundColor: colors.primary, opacity: busy ? 0.55 : 1 }]}
+                        accessibilityRole="button"
+                        accessibilityLabel={t("src.components.chat.ui_action.save")}
+                    >
+                        {busy ? <ActivityIndicator size="small" color="#FFFFFF" /> : <MaterialCommunityIcons name="check" size={17} color="#FFFFFF" />}
+                        <Text style={[styles.actionSubmitText, { color: "#FFFFFF" }]}>{t("src.components.chat.ui_action.save")}</Text>
+                    </Pressable>
+                </View>
+            ) : (
+                <Text style={[styles.actionState, { color: colors.textMuted }]}>
+                    {action.state === "submitted" ? t("src.components.chat.ui_action.saved") : t("src.components.chat.ui_action.unavailable")}
+                </Text>
+            )}
+            {error || action.error?.message ? <Text style={[styles.error, { color: colors.danger || "#DC2626" }]}>{error || action.error?.message}</Text> : null}
+        </View>
+    );
+}
+
 export const McpAppWebView = memo(function McpAppWebView({ mcpApp }: { mcpApp: McpAppViewRef }) {
     const { authorizedFetch } = useAppSession();
     const { colors, t } = useUiPrefs();
@@ -100,7 +216,7 @@ export const McpAppWebView = memo(function McpAppWebView({ mcpApp }: { mcpApp: M
     const [collapsed, setCollapsed] = useState(false);
 
     useEffect(() => {
-        if (mcpApp.renderer === "figma") return;
+        if (mcpApp.renderer === "figma" || mcpApp.renderer === "v8_action") return;
         let cancelled = false;
         async function loadResource() {
             setError(""); setHtml("");
@@ -131,6 +247,7 @@ export const McpAppWebView = memo(function McpAppWebView({ mcpApp }: { mcpApp: M
     };
 
     if (mcpApp.renderer === "figma") return <FigmaCanvasModal mcpApp={mcpApp} />;
+    if (mcpApp.renderer === "v8_action" && mcpApp.actionRequest) return <V8ActionRequestCard initial={mcpApp.actionRequest} />;
 
     return (
         <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
@@ -153,6 +270,23 @@ const styles = StyleSheet.create({
     webview: { flex: 1, backgroundColor: "transparent" },
     loading: { flex: 1, alignItems: "center", justifyContent: "center" },
     error: { padding: 12, fontSize: 11, lineHeight: 17 },
+    actionCard: { width: "100%", borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: 12, marginTop: 4, gap: 10 },
+    actionTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+    actionIcon: { width: 32, height: 32, borderRadius: 6, alignItems: "center", justifyContent: "center" },
+    actionHeading: { flex: 1, minWidth: 0, gap: 3 },
+    actionTitle: { fontSize: 14, fontWeight: "700" },
+    actionDescription: { fontSize: 12, lineHeight: 18 },
+    actionTarget: { fontSize: 10, fontFamily: "monospace" },
+    actionFields: { gap: 10 },
+    actionField: { gap: 5 },
+    actionLabel: { fontSize: 12, fontWeight: "600" },
+    actionInput: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 12, fontSize: 14 },
+    actionChoices: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+    actionChoice: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 12, alignItems: "center", justifyContent: "center" },
+    actionBoolean: { minHeight: 44, alignSelf: "flex-start", borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 8 },
+    actionSubmit: { minHeight: 44, alignSelf: "flex-start", borderRadius: 5, paddingHorizontal: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+    actionSubmitText: { fontSize: 13, fontWeight: "700" },
+    actionState: { fontSize: 12, lineHeight: 18 },
     figmaSummary: { width: "100%", borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: 8, marginTop: 4, flexDirection: "row", alignItems: "center", gap: 10 },
     figmaSummaryText: { flex: 1, minWidth: 0, gap: 3 },
     figmaMark: { width: 8, height: 8, backgroundColor: "#A259FF" },

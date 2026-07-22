@@ -44,6 +44,20 @@ def test_global_planner_role_and_lane_are_removed():
     assert all(item["key"] != "planner_lane" for item in MODULE_DEFINITIONS)
 
 
+def test_role_projection_ignores_historical_planner_and_constrains_active_dynamic_roles():
+    definitions = model_control_plane.get_role_definitions(
+        {"roles": {"planner": "provider::old", "custom_worker": "provider::current"}}
+    )
+
+    assert "planner" not in definitions
+    assert definitions["custom_worker"]["capabilityClasses"] == [
+        "chat_general",
+        "chat_tool_calling",
+        "chat_reasoning",
+        "vision_multimodal",
+    ]
+
+
 def test_duplicate_naked_model_id_is_ambiguous_but_model_ref_is_exact():
     config = model_control_plane.normalize_config(
         {

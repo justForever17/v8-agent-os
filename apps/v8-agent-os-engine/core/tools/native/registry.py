@@ -29,7 +29,7 @@ _TOOL_FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("conversation_history", ("session_context_broker",)),
     ("conversation_coordination", ("session_message_broker",)),
-    ("extensions", ("mcp_server_config", "plugin_broker")),
+    ("extensions", ("config_broker", "plugin_broker")),
     ("spec", ("spec_broker",)),
     (
         "system_session",

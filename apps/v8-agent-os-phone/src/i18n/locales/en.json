@@ -916,5 +916,8 @@
   "src.components.ui.avatarcropmodal.zoom_out": "Zoom out",
   "src.components.ui.avatarcropmodal.zoom_in": "Zoom in",
   "src.components.ui.avatarcropmodal.cancel": "Cancel",
-  "src.components.ui.avatarcropmodal.use_crop": "Use this crop"
+  "src.components.ui.avatarcropmodal.use_crop": "Use this crop",
+  "src.components.chat.ui_action.save": "Save",
+  "src.components.chat.ui_action.saved": "Saved securely and configuration completed.",
+  "src.components.chat.ui_action.unavailable": "This action expired or did not complete."
 }

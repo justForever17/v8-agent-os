@@ -23,6 +23,15 @@ export type AdminModelRecord = {
     type: string;
     contextWindow: number | null;
     maxTokens: number | null;
+    capabilityClass?: string | null;
+    capabilities?: Record<string, boolean> | null;
+    eligibility?: {
+        status?: string;
+        selectable?: boolean;
+        shortLabel?: string;
+        reasons?: Array<{ code?: string; message?: string }>;
+        requiredFacts?: string[];
+    } | null;
     rerankApiFlavor: string;
     thinkingControl?: Record<string, unknown> | null;
     reasoningEffortControl?: Record<string, unknown> | null;
@@ -93,6 +102,13 @@ export function mapEngineModel(
         type: String(modelMeta.type || "TEXT"),
         contextWindow: asNullableNumber(modelMeta.contextWindow),
         maxTokens: asNullableNumber(modelMeta.maxTokens),
+        capabilityClass: String(modelMeta.capabilityClass || "") || null,
+        capabilities: modelMeta.capabilities && typeof modelMeta.capabilities === "object"
+            ? modelMeta.capabilities as Record<string, boolean>
+            : null,
+        eligibility: modelMeta.eligibility && typeof modelMeta.eligibility === "object"
+            ? modelMeta.eligibility as AdminModelRecord["eligibility"]
+            : null,
         rerankApiFlavor: String(modelMeta.rerank_api_flavor || modelMeta.rerankApiFlavor || ""),
         thinkingControl: modelMeta.thinkingControl && typeof modelMeta.thinkingControl === "object"
             ? modelMeta.thinkingControl as Record<string, unknown>

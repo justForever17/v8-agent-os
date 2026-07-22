@@ -732,5 +732,8 @@
   "web.contextMenu.paste": "粘贴",
   "web.contextMenu.selectAll": "全选",
   "web.contextMenu.copyLink": "复制链接",
-  "web.contextMenu.openInWorkbench": "在工作台查看"
+  "web.contextMenu.openInWorkbench": "在工作台查看",
+  "web.uiAction.save": "保存",
+  "web.uiAction.saved": "已安全保存并完成配置。",
+  "web.uiAction.unavailable": "这个操作已失效或未完成。"
 }

@@ -3,7 +3,7 @@
 import { useT } from "@/components/providers/LocaleProvider";
 import React from 'react';
 import { motion } from 'framer-motion';
-import { buildClientToolSurface, type AdminProcessRef } from '@v8/session-realtime';
+import { buildClientToolSurface, normalizeV8ActionRequest, type AdminProcessRef } from '@v8/session-realtime';
 import { UiTimelineNode, UiExecutionNode } from '@/store/chat-types';
 import { ThinkingCard } from './ThinkingCard';
 import { McpAppFrame } from './McpAppFrame';
@@ -153,6 +153,7 @@ function extractMcpAppRef(...values: unknown[]) {
             nodeId: String(record.nodeId || record.node_id || "").trim() || undefined,
             presentation: record.presentation && typeof record.presentation === "object" ? record.presentation as { web?: "inline" | "edge_to_edge"; phone?: "inline" | "modal" } : undefined,
             allowedFrameOrigins: Array.isArray(record.allowedFrameOrigins) ? record.allowedFrameOrigins.map((item) => String(item || "")).filter(Boolean) : undefined,
+            actionRequest: normalizeV8ActionRequest(record.actionRequest ?? record.action_request),
         };
     }
     return null;

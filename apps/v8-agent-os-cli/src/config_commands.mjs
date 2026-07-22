@@ -98,17 +98,10 @@ function optionValues(args, name) {
   return values;
 }
 
-function keyValueObject(values) {
-  const result = {};
-  for (const value of values) {
-    const separator = value.indexOf("=");
-    if (separator <= 0) throw new Error(`Expected KEY=VALUE, got ${value}`);
-    const key = value.slice(0, separator).trim();
-    const raw = value.slice(separator + 1);
-    if (!key) throw new Error(`Expected KEY=VALUE, got ${value}`);
-    result[key] = raw;
-  }
-  return result;
+function containsCredentialArgument(value) {
+  const normalized = String(value || "").trim();
+  return /^(?:--?)?(?:api[-_]?key|access[-_]?token|token|secret|password|authorization|cookie)(?:=|:|$)/i.test(normalized)
+    || /^[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|COOKIE)\s*=/i.test(normalized);
 }
 
 export function buildMcpInstallPayload(args) {
@@ -123,15 +116,14 @@ export function buildMcpInstallPayload(args) {
     if (!command) throw new Error("stdio MCP install requires --command");
     server.command = command;
     const commandArgs = optionValues(args, "--arg");
+    if (commandArgs.some(containsCredentialArgument)) throw new Error("Do not pass credentials through --arg; use the Web/Phone secure action card");
     if (commandArgs.length) server.args = commandArgs;
-    const env = keyValueObject(optionValues(args, "--env"));
-    if (Object.keys(env).length) server.env = env;
+    if (optionValues(args, "--env").length) throw new Error("Do not pass MCP secrets with --env KEY=VALUE; use the Web/Phone secure action card");
   } else {
     const url = optionValue(args, "--url");
     if (!url) throw new Error(`${type} MCP install requires --url`);
     server.url = url;
-    const headers = keyValueObject(optionValues(args, "--header"));
-    if (Object.keys(headers).length) server.headers = headers;
+    if (optionValues(args, "--header").length) throw new Error("Do not pass MCP secrets with --header KEY=VALUE; use the Web/Phone secure action card");
   }
   if (args.includes("--disabled")) server.disabled = true;
   return { mcpServers: { [name]: server } };
@@ -140,8 +132,18 @@ export function buildMcpInstallPayload(args) {
 export async function installMcpServer(args) {
   const payload = buildMcpInstallPayload(args);
   try {
-    const data = await engineRequest("/v1/mcp/config", { method: "POST", body: payload, timeoutMs: 8000 });
-    return { source: "engine", payload: data, installed: Object.keys(payload.mcpServers) };
+    const name = Object.keys(payload.mcpServers)[0];
+    const prepared = await engineRequest("/v1/config-broker/mcp/prepare", {
+      method: "POST",
+      body: { operation: "install", name, server: payload.mcpServers[name] },
+      timeoutMs: 8000,
+    });
+    const committed = await engineRequest(`/v1/config-broker/transactions/${encodeURIComponent(prepared.transactionId)}/commit`, {
+      method: "POST",
+      body: { planDigest: prepared.planDigest },
+      timeoutMs: 10000,
+    });
+    return { source: "engine", payload: committed, installed: [name], transactionId: prepared.transactionId };
   } catch (error) {
     throw new Error(`MCP install 需要 Engine 在线并执行现有校验：${error.message}`);
   }
@@ -151,8 +153,17 @@ export async function removeMcpServer(name) {
   const normalized = String(name || "").trim();
   if (!normalized) throw new Error("mcp remove requires a server name");
   try {
-    const data = await engineRequest(`/v1/mcp/config/${encodeURIComponent(normalized)}`, { method: "DELETE", timeoutMs: 8000 });
-    return { source: "engine", payload: data, removed: normalized };
+    const prepared = await engineRequest("/v1/config-broker/mcp/prepare", {
+      method: "POST",
+      body: { operation: "remove", name: normalized },
+      timeoutMs: 8000,
+    });
+    const committed = await engineRequest(`/v1/config-broker/transactions/${encodeURIComponent(prepared.transactionId)}/commit`, {
+      method: "POST",
+      body: { planDigest: prepared.planDigest },
+      timeoutMs: 10000,
+    });
+    return { source: "engine", payload: committed, removed: normalized, transactionId: prepared.transactionId };
   } catch (error) {
     throw new Error(`MCP remove 需要 Engine 在线并执行现有校验：${error.message}`);
   }
@@ -184,23 +195,42 @@ export function extractModelRoles(payload) {
 }
 
 export async function modelRoles() {
-  const result = await getConfigDomain("models");
-  return { source: result.source, roles: extractModelRoles(result) };
+  try {
+    return { source: "engine", roles: (await engineRequest("/v1/config-broker/roles", { timeoutMs: 5000 })).roles || [] };
+  } catch {
+    const result = await getConfigDomain("models");
+    return { source: result.source, roles: extractModelRoles(result) };
+  }
 }
 
 export async function setModelRole(role, modelRef) {
   const normalizedRole = String(role || "").trim();
   const normalizedModelRef = String(modelRef || "").trim();
   if (!normalizedRole || !normalizedModelRef) throw new Error("models set-role requires <role> <modelRef>");
-  const domain = await engineRequest("/v1/config-registry/models", { timeoutMs: 5000 });
-  const data = { ...(domain?.data || {}) };
-  data.roles = { ...(data.roles || {}), [normalizedRole]: normalizedModelRef };
-  const saved = await engineRequest("/v1/config-registry/models", {
+  const prepared = await engineRequest("/v1/config-broker/roles/prepare", {
     method: "POST",
-    body: { data },
+    body: { role: normalizedRole, modelRef: normalizedModelRef },
     timeoutMs: 8000,
   });
-  return { source: "engine", role: normalizedRole, modelRef: normalizedModelRef, payload: saved };
+  const saved = await engineRequest(`/v1/config-broker/transactions/${encodeURIComponent(prepared.transactionId)}/commit`, {
+    method: "POST",
+    body: { planDigest: prepared.planDigest },
+    timeoutMs: 8000,
+  });
+  return { source: "engine", role: normalizedRole, modelRef: normalizedModelRef, transactionId: prepared.transactionId, payload: saved };
+}
+
+export async function modelInventory({ category = "", query = "", limit = 20 } = {}) {
+  const params = new URLSearchParams();
+  if (category) params.set("category", category);
+  if (query) params.set("query", query);
+  params.set("limit", String(limit));
+  return { source: "engine", payload: await engineRequest(`/v1/config-broker/models?${params.toString()}`, { timeoutMs: 5000 }) };
+}
+
+export async function recommendModel(role, limit = 5) {
+  const params = new URLSearchParams({ role: String(role || ""), limit: String(limit) });
+  return { source: "engine", payload: await engineRequest(`/v1/config-broker/recommend?${params.toString()}`, { timeoutMs: 5000 }) };
 }
 
 export async function phonePairingSummary() {

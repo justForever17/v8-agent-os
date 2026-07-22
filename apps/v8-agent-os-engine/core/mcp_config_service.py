@@ -93,7 +93,7 @@ def validate_mcp_server_map(config: dict[str, Any]) -> dict[str, dict[str, Any]]
     return normalized
 
 
-def _request_inventory_refresh(reason: str) -> None:
+def request_mcp_inventory_refresh(reason: str) -> None:
     try:
         extensions_runtime_service.request_mcp_inventory_refresh(reason=reason)
     except Exception:
@@ -111,7 +111,7 @@ def install_mcp_server_config(config: dict[str, Any], *, refresh_reason: str = "
     replaced_servers = sorted(name for name in new_servers if name in next_servers)
     next_servers.update(new_servers)
     storage.save_mcp_config({"mcpServers": next_servers})
-    _request_inventory_refresh(refresh_reason)
+    request_mcp_inventory_refresh(refresh_reason)
     return {
         "status": "success",
         "installedServers": sorted(new_servers),
@@ -134,7 +134,7 @@ def remove_mcp_server_config(server_name: str, *, refresh_reason: str = "mcp_con
     next_servers.pop(normalized_name, None)
     if removed:
         storage.save_mcp_config({"mcpServers": next_servers})
-        _request_inventory_refresh(refresh_reason)
+    request_mcp_inventory_refresh(refresh_reason)
     return {
         "status": "success",
         "removedServer": normalized_name,

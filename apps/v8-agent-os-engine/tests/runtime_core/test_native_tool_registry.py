@@ -24,15 +24,17 @@ def test_registry_builds_current_native_tools_in_order() -> None:
 
     assert exported_names == list(NATIVE_TOOL_NAMES)
     assert exported_names == native_tool_names()
-    assert exported_names[:8] == [
+    assert exported_names[:10] == [
         "run_system_command",
         "command_session_broker",
         "runtime_broker",
         "delegation_broker",
+        "agent_broker",
         "request_peer_help",
         "session_context_broker",
         "session_message_broker",
-        "mcp_server_config",
+        "config_broker",
+        "plugin_broker",
     ]
     assert exported_names[-4:] == ["ask_user", "write_todos", "update_todo", "vision_media_analyzer"]
     assert build_native_tools(vars(native_tools)) == native_tools.NATIVE_TOOLS
@@ -153,12 +155,17 @@ def test_session_message_imports_remain_available() -> None:
 
 
 def test_mcp_config_imports_remain_available() -> None:
+    from core.tools.native.mcp import config_broker as config_broker_from_module
     from core.tools.native.mcp import mcp_server_config as mcp_server_config_from_module
-    from core.native_tools import mcp_server_config
+    from core.native_tools import config_broker, mcp_server_config
 
+    assert config_broker.name == "config_broker"
+    assert config_broker_from_module.name == config_broker.name
+    assert native_tool_family_for_name("config_broker") == "extensions"
     assert mcp_server_config.name == "mcp_server_config"
     assert mcp_server_config_from_module.name == mcp_server_config.name
-    assert native_tool_family_for_name("mcp_server_config") == "extensions"
+    assert native_tool_family_for_name("mcp_server_config") is None
+    assert "mcp_server_config" not in native_tool_names()
 
 
 def test_plugin_broker_import_remains_available() -> None:

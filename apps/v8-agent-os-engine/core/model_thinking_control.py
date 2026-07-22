@@ -68,6 +68,20 @@ def normalize_reasoning_effort(value: Any) -> str:
     return normalized if normalized in _KNOWN_REASONING_LEVELS else "auto"
 
 
+def resolve_session_reasoning_effort_override(session_record: Mapping[str, Any] | None) -> str:
+    """Return the durable per-session override, or ``auto`` to inherit the model default."""
+
+    record = _as_dict(session_record)
+    metadata = record.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    metadata = _as_dict(metadata)
+    return normalize_reasoning_effort(metadata.get("supervisorReasoningEffortOverride"))
+
+
 def _excluded_from_reasoning_effort(model_record: Mapping[str, Any] | None) -> bool:
     record = _as_dict(model_record)
     raw_type = str(record.get("type") or "").strip().lower()

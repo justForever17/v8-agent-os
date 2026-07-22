@@ -1081,15 +1081,41 @@ export type SupervisorReasoningEffortControl = {
     supported?: boolean;
     levels?: string[];
     defaultLevel?: string;
+    modelDefaultLevel?: string;
+    profileDefaultLevel?: string;
+    sessionLevel?: string;
+    effectiveLevel?: string;
+    selectionSource?: "session" | "model_default";
     modelRef?: string;
+    sessionId?: string;
 };
 
-export async function getSupervisorReasoningEffortControl(authorizedFetch: AuthorizedFetch) {
+export async function getSupervisorReasoningEffortControl(authorizedFetch: AuthorizedFetch, sessionId?: string) {
+    const query = String(sessionId || "").trim()
+        ? `?sessionId=${encodeURIComponent(String(sessionId).trim())}`
+        : "";
+    return authorizedJson<SupervisorReasoningEffortControl>(
+        authorizedFetch,
+        `/api/client/models/supervisor-reasoning-effort${query}`,
+        translateCurrent("src.lib.phone_api.text_32"),
+        { cache: "no-store" },
+    );
+}
+
+export async function setSupervisorReasoningEffortControl(
+    authorizedFetch: AuthorizedFetch,
+    sessionId: string,
+    level: string,
+) {
     return authorizedJson<SupervisorReasoningEffortControl>(
         authorizedFetch,
         "/api/client/models/supervisor-reasoning-effort",
         translateCurrent("src.lib.phone_api.text_32"),
-        { cache: "no-store" },
+        {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, level }),
+        },
     );
 }
 

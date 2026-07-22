@@ -207,7 +207,7 @@ export function GovernanceApprovalModal({
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onCancel(); }}>
-            <DialogContent className="max-h-[min(88vh,680px)] w-[min(94vw,620px)] overflow-hidden border border-amber-500/20 bg-background/96 p-0 shadow-2xl backdrop-blur-2xl sm:rounded-3xl">
+            <DialogContent className="max-h-[min(88dvh,680px)] min-h-0 w-[min(94vw,620px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden border border-amber-500/20 bg-background/96 p-0 shadow-2xl backdrop-blur-2xl sm:rounded-3xl">
                 <DialogHeader className="border-b border-border/60 px-4 pb-3 pt-4 sm:px-5">
                     <div className="flex items-start gap-3">
                             <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${specDetails.isSpecApproval ? "bg-violet-500/10 text-violet-600 dark:text-violet-300" : "bg-amber-500/10 text-amber-600 dark:text-amber-300"}`}>
@@ -230,7 +230,8 @@ export function GovernanceApprovalModal({
                     </div>
                 </DialogHeader>
 
-                <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 py-4 sm:px-5">
+                <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+                    <div className="flex flex-col gap-4">
                     {specDetails.isSpecApproval ? (
                         <div className="rounded-2xl border border-violet-500/25 bg-violet-50/80 p-3.5 dark:bg-violet-500/10 sm:p-4">
                             <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-violet-700 dark:text-violet-300">
@@ -357,9 +358,10 @@ export function GovernanceApprovalModal({
                             className="min-h-[112px] resize-none rounded-2xl border-border/70 bg-background/90 text-sm leading-6 focus-visible:ring-amber-500/30"
                         />
                     </div>
+                    </div>
                 </div>
 
-                <DialogFooter className="border-t border-border/60 bg-background/96 px-4 py-3 sm:px-5">
+                <DialogFooter className="shrink-0 border-t border-border/60 bg-background/96 px-4 py-3 sm:px-5">
                     <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                         <div className="text-xs text-muted-foreground">
                             {t("web.generated.194c543166")}

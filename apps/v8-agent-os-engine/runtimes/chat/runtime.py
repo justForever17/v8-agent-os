@@ -31,7 +31,7 @@ from core.llm_factory import llm_factory
 from core.response_normalizer import V8_CANONICAL_TOOL_CALL_PREFIX, is_v8_canonical_tool_call_id
 from core.system_tools.command_presets import read_command_preset
 from core.model_governance_exceptions import ModelGovernanceInterventionRequired
-from core.model_thinking_control import normalize_reasoning_effort
+from core.model_thinking_control import normalize_reasoning_effort, resolve_session_reasoning_effort_override
 from core.models.provider_compatibility import normalize_provider_error
 from core.database import db
 from core.engine_config_resolver import resolve_engine_config_for_model_ref, resolve_engine_config_for_role
@@ -2266,10 +2266,15 @@ class ChatRuntime:
         request.conversation_id = conversation_id
         request.user_id = user_id
         self._resolve_engine_config(request)
-        if request.data:
-            requested_reasoning_effort = getattr(request.data, "supervisor_reasoning_effort", None)
-            if requested_reasoning_effort is not None:
-                request.config.supervisor_reasoning_effort = normalize_reasoning_effort(requested_reasoning_effort)
+        requested_reasoning_effort = (
+            getattr(request.data, "supervisor_reasoning_effort", None)
+            if request.data
+            else None
+        )
+        if requested_reasoning_effort is None:
+            requested_reasoning_effort = resolve_session_reasoning_effort_override(db.get_session(session_id))
+        if requested_reasoning_effort is not None:
+            request.config.supervisor_reasoning_effort = normalize_reasoning_effort(requested_reasoning_effort)
         latest_user_content = self._latest_user_content(request)
         if session_coordination_message:
             latest_user_content = str(

@@ -143,8 +143,16 @@ interface SupervisorReasoningEffortControl {
     supported?: boolean;
     levels?: string[];
     defaultLevel?: string;
+    modelDefaultLevel?: string;
+    profileDefaultLevel?: string;
+    sessionLevel?: string;
+    effectiveLevel?: string;
+    selectionSource?: "session" | "model_default";
     modelRef?: string;
+    sessionId?: string;
 }
+
+type ReasoningEffortLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 type SessionProjectionView = AuthoritativeSessionView & {
     contextGovernance?: Record<string, unknown> | null;
@@ -954,6 +962,7 @@ export default function ChatClient() {
     const [projectsLoading, setProjectsLoading] = useState(false);
     const [runEntries, setRunEntries] = useState<RunRecordView[]>([]);
     const [supervisorReasoningEffortControl, setSupervisorReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
+    const reasoningEffortRequestSeqRef = useRef(0);
     const [sessionProjection, setSessionProjection] = useState<SessionProjectionView | null>(null);
     const [legacyChatUnsupported, setLegacyChatUnsupported] = useState(false);
     const [hasOlderTurns, setHasOlderTurns] = useState(false);
@@ -2667,28 +2676,68 @@ export default function ChatClient() {
         };
     }, [router, status, t]);
 
-    useEffect(() => {
-        if (status !== "authenticated") {
+    const loadSupervisorReasoningEffortControl = useCallback(async () => {
+        const sessionId = String(activeConversationId || "").trim();
+        if (status !== "authenticated" || !sessionId) {
             setSupervisorReasoningEffortControl(null);
             return;
         }
-        let cancelled = false;
-        void fetch("/api/models/supervisor-reasoning-effort", { cache: "no-store" })
-            .then((res) => res.ok ? res.json() : null)
-            .then((payload) => {
-                if (!cancelled) {
-                    setSupervisorReasoningEffortControl(payload && typeof payload === "object" ? payload : null);
-                }
-            })
-            .catch(() => {
-                if (!cancelled) {
-                    setSupervisorReasoningEffortControl(null);
-                }
-            });
-        return () => {
-            cancelled = true;
+        const requestSeq = ++reasoningEffortRequestSeqRef.current;
+        try {
+            const res = await fetch(`/api/models/supervisor-reasoning-effort?sessionId=${encodeURIComponent(sessionId)}`, { cache: "no-store" });
+            const payload = res.ok ? await res.json() : null;
+            if (requestSeq === reasoningEffortRequestSeqRef.current) {
+                setSupervisorReasoningEffortControl(payload && typeof payload === "object" ? payload : null);
+            }
+        } catch {
+            if (requestSeq === reasoningEffortRequestSeqRef.current) {
+                setSupervisorReasoningEffortControl(null);
+            }
+        }
+    }, [activeConversationId, status]);
+
+    useEffect(() => {
+        void loadSupervisorReasoningEffortControl();
+        const refresh = () => void loadSupervisorReasoningEffortControl();
+        const handleVisibility = () => {
+            if (document.visibilityState === "visible") refresh();
         };
-    }, [status]);
+        window.addEventListener("focus", refresh);
+        document.addEventListener("visibilitychange", handleVisibility);
+        return () => {
+            window.removeEventListener("focus", refresh);
+            document.removeEventListener("visibilitychange", handleVisibility);
+        };
+    }, [loadSupervisorReasoningEffortControl]);
+
+    const handleReasoningEffortChange = useCallback(async (level: ReasoningEffortLevel) => {
+        const sessionId = String(activeConversationIdRef.current || "").trim();
+        if (!sessionId) return;
+        const requestSeq = ++reasoningEffortRequestSeqRef.current;
+        setSupervisorReasoningEffortControl((current) => current ? {
+            ...current,
+            sessionId,
+            sessionLevel: level,
+            effectiveLevel: level === "auto" ? (current.modelDefaultLevel || current.defaultLevel || "auto") : level,
+            selectionSource: level === "auto" ? "model_default" : "session",
+        } : current);
+        try {
+            const response = await fetch("/api/models/supervisor-reasoning-effort", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sessionId, level }),
+            });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(String(payload?.detail || payload?.error || "reasoning_effort_update_failed"));
+            if (requestSeq === reasoningEffortRequestSeqRef.current && payload && typeof payload === "object") {
+                setSupervisorReasoningEffortControl(payload);
+            }
+        } catch {
+            if (requestSeq === reasoningEffortRequestSeqRef.current) {
+                void loadSupervisorReasoningEffortControl();
+            }
+        }
+    }, [loadSupervisorReasoningEffortControl]);
 
     useEffect(() => {
         if (activeConversationId) {
@@ -2706,7 +2755,6 @@ export default function ChatClient() {
             return;
         }
 
-        const runtimeTimelineEntry = buildRuntimeTimelineEntryFromEvent(rawEvent);
         const workbenchEventHandled = ingestWorkbenchRuntimeEvent(rawEvent);
         const normalizedEvent = normalizeRealtimeEvent(rawEvent);
         if (!normalizedEvent) {
@@ -2715,6 +2763,17 @@ export default function ChatClient() {
             }
             return;
         }
+        if (normalizedEvent.topic === "session.reasoning_effort.updated") {
+            const payload = normalizedEvent.data && typeof normalizedEvent.data === "object"
+                ? normalizedEvent.data as SupervisorReasoningEffortControl
+                : null;
+            if (!payload?.sessionId || payload.sessionId === conversationId) {
+                reasoningEffortRequestSeqRef.current += 1;
+                setSupervisorReasoningEffortControl(payload);
+            }
+            return;
+        }
+        const runtimeTimelineEntry = buildRuntimeTimelineEntryFromEvent(rawEvent);
         const terminalRunStatus = terminalRunStatusFromTopic(normalizedEvent.topic, normalizedEvent.data);
         if (terminalRunStatus) {
             setSessionProjection((current) => current ? {
@@ -3648,6 +3707,8 @@ export default function ChatClient() {
                                     selectedAgentName={t("web.generated.675df2e7c7")}
                                     shellClassName="w-full"
                                     reasoningEffortControl={supervisorReasoningEffortControl}
+                                    reasoningEffort={(supervisorReasoningEffortControl?.sessionLevel || "auto") as ReasoningEffortLevel}
+                                    onReasoningEffortChange={handleReasoningEffortChange}
                                     contextSessionRefs={pendingContextSessionRefs}
                                     contextUsagePercent={projectionContextUsagePercent}
                                     supervisorWorkMode={supervisorWorkMode}

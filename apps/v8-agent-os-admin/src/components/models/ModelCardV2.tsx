@@ -1,7 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { ReasoningEffortControl } from "@v8/product-ui";
 import { AlertCircle, Brain, CheckCircle2, Copy, Database, Edit2, Eye, Globe2, Image as ImageIcon, ListOrdered, LoaderCircle, MessageCircle, Mic2, Music, PlugZap, Radio, Star, Trash2, Video, Volume2, Wrench, type LucideIcon } from "lucide-react";
 import type { ControlPlaneModel, ModelDefaultCategory } from "@/components/models/control-plane-types";
 import { useT } from "@/components/providers/LocaleProvider";
@@ -322,15 +323,9 @@ export function ModelCardV2({
   const configuredThinkingLevel = noThinkDisabled
     ? "none"
     : String(reasoningEffortControl?.selectedLevel || "auto");
-  const configuredThinkingIndex = Math.max(0, thinkingLevels.indexOf(configuredThinkingLevel));
-  const [thinkingIndex, setThinkingIndex] = useState(configuredThinkingIndex);
   const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
-  useEffect(() => {
-    setThinkingIndex(configuredThinkingIndex);
-  }, [configuredThinkingIndex]);
-  const commitThinkingLevel = async () => {
+  const commitThinkingLevel = async (nextLevel: string) => {
     if (!onSetReasoningLevel || savingThinkingLevel) return;
-    const nextLevel = thinkingLevels[thinkingIndex] || "auto";
     if (nextLevel === configuredThinkingLevel) return;
     setSavingThinkingLevel(true);
     try {
@@ -426,33 +421,15 @@ export function ModelCardV2({
                                         {repairActive ? repairStatus === "success" ? t("components.models.ModelCardV2.reasoningRepairSuccess") : repairStatus === "warning" ? t("components.models.ModelCardV2.reasoningRepairNoField") : repairStatus === "error" ? t("components.models.ModelCardV2.reasoningRepairFailed") : t("components.models.ModelCardV2.reasoningRepairing") : displayStatus === "success" ? t("components.models.ModelCardV2.k40bd808e") : displayStatus === "warning" ? t("components.models.ModelCardV2.connectionWarning") : displayStatus === "error" ? t("components.models.ModelCardV2.k7f8e6bd9") : t("components.models.ModelCardV2.kc9e37984")}
                                     </span>
                                 </div> : thinkingLevels.length > 1 && onSetReasoningLevel ? (
-                                  <div
-                                    className="flex h-5 max-w-[220px] items-center gap-1.5 rounded-full bg-slate-100/80 px-2 text-[10px] text-slate-600 dark:bg-muted/80 dark:text-muted-foreground"
-                                    title={t("components.models.ModelCardV2.thinkingEffortLabel", { level: thinkingLevels[thinkingIndex] || "auto" })}
-                                  >
-                                    <Brain className={`h-3 w-3 shrink-0 ${savingThinkingLevel ? "animate-pulse" : ""}`} aria-hidden="true" />
-                                    <input
-                                      type="range"
-                                      min={0}
-                                      max={thinkingLevels.length - 1}
-                                      step={1}
-                                      value={thinkingIndex}
-                                      disabled={savingThinkingLevel}
-                                      className="h-1 min-w-0 flex-1 cursor-pointer accent-violet-600 disabled:cursor-wait"
-                                      aria-label={t("components.models.ModelCardV2.thinkingEffort")}
-                                      aria-valuetext={thinkingLevels[thinkingIndex] || "auto"}
-                                      onChange={(event) => setThinkingIndex(Number(event.currentTarget.value))}
-                                      onPointerUp={() => void commitThinkingLevel()}
-                                      onKeyUp={(event) => {
-                                        if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-                                          void commitThinkingLevel();
-                                        }
-                                      }}
-                                    />
-                                    <span className="w-10 shrink-0 truncate text-right font-mono" aria-hidden="true">
-                                      {thinkingLevels[thinkingIndex] || "auto"}
-                                    </span>
-                                  </div>
+                                  <ReasoningEffortControl
+                                    variant="track"
+                                    className={savingThinkingLevel ? "animate-pulse" : ""}
+                                    levels={thinkingLevels}
+                                    value={configuredThinkingLevel}
+                                    disabled={savingThinkingLevel}
+                                    ariaLabel={t("components.models.ModelCardV2.thinkingEffort")}
+                                    onValueCommit={commitThinkingLevel}
+                                  />
                                 ) : null}
                         </div>
                     </div>

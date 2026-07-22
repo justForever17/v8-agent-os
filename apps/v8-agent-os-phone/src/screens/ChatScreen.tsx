@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+    AppState,
     ActivityIndicator,
     Alert,
     Animated,
@@ -101,6 +102,7 @@ import {
     getProjectsRegistry,
     getRealtimeSnapshot,
     getSupervisorReasoningEffortControl,
+    setSupervisorReasoningEffortControl,
     getSessionProcesses,
     getSessionScope,
     listWorkspaceFolders,
@@ -192,7 +194,7 @@ type SendComposerOptions = {
     preserveComposer?: boolean;
 };
 
-type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+type ReasoningEffortLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type SafetyApprovalMode = "manual" | "reduced" | "minimal";
 type ContextSessionReference = { sessionId: string; source: "history_menu" };
 const CONTEXT_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{5,180}$/;
@@ -2220,6 +2222,7 @@ export default function ChatScreen() {
     const [safetyApprovalMode, setSafetyApprovalModeState] = useState<SafetyApprovalMode>("reduced");
     const [reasoningEffortControl, setReasoningEffortControl] = useState<SupervisorReasoningEffortControl | null>(null);
     const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffortLevel>("auto");
+    const reasoningEffortRequestSeqRef = useRef(0);
     const [bottomLayerHeight, setBottomLayerHeight] = useState(132);
     const [runtime, setRuntime] = useState<RuntimeSummary>({ status: "idle", latestSeq: 0 });
     const [runtimeTimeline, setRuntimeTimeline] = useState<PhoneRuntimeTimelineEntry[]>([]);
@@ -2276,10 +2279,10 @@ export default function ChatScreen() {
     const skillPickerOpen = activeQueryMode === "skill";
     const reasoningEffortLevels = useMemo<ReasoningEffortLevel[]>(() => {
         const rawLevels = Array.isArray(reasoningEffortControl?.levels) ? reasoningEffortControl.levels : [];
-        const allowed = new Set(rawLevels.map((level) => String(level || "").trim().toLowerCase()));
-        const levels: ReasoningEffortLevel[] = ["auto", "low", "medium", "high"].filter((level): level is ReasoningEffortLevel =>
-            level === "auto" || allowed.has(level)
-        );
+        const known = new Set<ReasoningEffortLevel>(["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+        const levels = rawLevels
+            .map((level) => String(level || "").trim().toLowerCase())
+            .filter((level): level is ReasoningEffortLevel => known.has(level as ReasoningEffortLevel));
         return levels.includes("auto") ? levels : ["auto", ...levels];
     }, [reasoningEffortControl?.levels]);
     const reasoningEffortVisible = Boolean(reasoningEffortControl?.visible && reasoningEffortLevels.length > 1);
@@ -2307,28 +2310,73 @@ export default function ChatScreen() {
             setReasoningEffortControl(null);
             return;
         }
+        const sessionId = String(activeConversationId || "").trim();
+        if (!sessionId) {
+            setReasoningEffortControl(null);
+            setReasoningEffort("auto");
+            return;
+        }
         let cancelled = false;
-        void getSupervisorReasoningEffortControl(authorizedFetch)
-            .then((payload) => {
-                if (!cancelled) {
-                    setReasoningEffortControl(payload && typeof payload === "object" ? payload : null);
-                }
-            })
-            .catch(() => {
-                if (!cancelled) {
-                    setReasoningEffortControl(null);
-                }
-            });
+        const refresh = () => {
+            const requestSeq = ++reasoningEffortRequestSeqRef.current;
+            void getSupervisorReasoningEffortControl(authorizedFetch, sessionId)
+                .then((payload) => {
+                    if (!cancelled && requestSeq === reasoningEffortRequestSeqRef.current) {
+                        setReasoningEffortControl(payload && typeof payload === "object" ? payload : null);
+                        setReasoningEffort(String(payload?.sessionLevel || "auto") as ReasoningEffortLevel);
+                    }
+                })
+                .catch(() => {
+                    if (!cancelled && requestSeq === reasoningEffortRequestSeqRef.current) {
+                        setReasoningEffortControl(null);
+                    }
+                });
+        };
+        refresh();
+        const subscription = AppState.addEventListener("change", (nextState) => {
+            if (nextState === "active") refresh();
+        });
         return () => {
             cancelled = true;
+            subscription.remove();
         };
-    }, [authorizedFetch, status]);
+    }, [activeConversationId, authorizedFetch, status]);
 
     useEffect(() => {
         if (!reasoningEffortVisible || !reasoningEffortLevels.includes(reasoningEffort)) {
             setReasoningEffort("auto");
         }
     }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
+
+    const handleReasoningEffortChange = useCallback(async (level: ReasoningEffortLevel) => {
+        const sessionId = String(activeConversationIdRef.current || "").trim();
+        if (!sessionId) return;
+        const requestSeq = ++reasoningEffortRequestSeqRef.current;
+        setReasoningEffort(level);
+        setReasoningEffortControl((current) => current ? {
+            ...current,
+            sessionId,
+            sessionLevel: level,
+            effectiveLevel: level === "auto" ? (current.modelDefaultLevel || current.defaultLevel || "auto") : level,
+            selectionSource: level === "auto" ? "model_default" : "session",
+        } : current);
+        try {
+            const payload = await setSupervisorReasoningEffortControl(authorizedFetch, sessionId, level);
+            if (requestSeq === reasoningEffortRequestSeqRef.current) {
+                setReasoningEffortControl(payload);
+                setReasoningEffort(String(payload.sessionLevel || "auto") as ReasoningEffortLevel);
+            }
+        } catch {
+            if (requestSeq === reasoningEffortRequestSeqRef.current) {
+                void getSupervisorReasoningEffortControl(authorizedFetch, sessionId)
+                    .then((payload) => {
+                        setReasoningEffortControl(payload);
+                        setReasoningEffort(String(payload?.sessionLevel || "auto") as ReasoningEffortLevel);
+                    })
+                    .catch(() => undefined);
+            }
+        }
+    }, [authorizedFetch]);
     const contextUsage = useMemo(() => resolveContextUsagePercent(contextGovernance), [contextGovernance]);
     const specCommands = useMemo<CommandPresetSummary[]>(
         () => [
@@ -3918,6 +3966,18 @@ export default function ChatScreen() {
         }
         if (normalized.seq) {
             latestSeqRef.current = Math.max(latestSeqRef.current, normalized.seq);
+        }
+        if (normalized.topic === "session.reasoning_effort.updated") {
+            const payload = normalized.data && typeof normalized.data === "object"
+                ? normalized.data as SupervisorReasoningEffortControl
+                : null;
+            const currentSessionId = String(activeConversationIdRef.current || "").trim();
+            if (payload && (!payload.sessionId || payload.sessionId === currentSessionId)) {
+                reasoningEffortRequestSeqRef.current += 1;
+                setReasoningEffortControl(payload);
+                setReasoningEffort(String(payload.sessionLevel || "auto") as ReasoningEffortLevel);
+            }
+            return;
         }
         let streamMetricKey = "";
         if (__DEV__ && (normalized.type === "text_chunk" || normalized.type === "reasoning_chunk")) {
@@ -6398,7 +6458,6 @@ export default function ChatScreen() {
                         composerPresentation: pendingComposerPresentation,
                         fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                         attachments: buildUploadedFileAttachments(pendingFiles),
-                        supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
                         safetyApprovalMode: pendingSafetyApprovalMode,
                     },
                 );
@@ -6552,7 +6611,6 @@ export default function ChatScreen() {
                     composerPresentation: pendingComposerPresentation,
                     fileUrls: pendingFiles.map((file) => file.url || file.publicUrl || "").filter(Boolean),
                     attachments: buildUploadedFileAttachments(pendingFiles),
-                    supervisorReasoningEffort: reasoningEffortVisible ? reasoningEffort : undefined,
                     safetyApprovalMode: pendingSafetyApprovalMode,
                 },
             );
@@ -6695,8 +6753,6 @@ export default function ChatScreen() {
         projection.runControlState.status,
         pendingContextSessionRefs,
         queuedMessages.length,
-        reasoningEffort,
-        reasoningEffortVisible,
         safetyApprovalMode,
         selectedCommand,
         selectedSkills,
@@ -7044,7 +7100,7 @@ export default function ChatScreen() {
                     reasoningEffortVisible={reasoningEffortVisible}
                     reasoningEffortLevels={reasoningEffortLevels}
                     reasoningEffort={reasoningEffort}
-                    onChangeReasoningEffort={setReasoningEffort}
+                    onChangeReasoningEffort={handleReasoningEffortChange}
                     uploadedFiles={uploadedFiles}
                     onRemoveUploadedFile={(file) => setUploadedFiles((current) => removeUploadedWorkspaceFile(current, file))}
                     adminBaseUrl={adminBaseUrl}

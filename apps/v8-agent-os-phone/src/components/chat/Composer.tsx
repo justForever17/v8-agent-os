@@ -8,9 +8,11 @@ import {
     StyleSheet,
     Text,
     TextInput,
+    useWindowDimensions,
     View,
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Gauge } from "lucide-react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
     Easing,
@@ -30,8 +32,9 @@ import { useUiPrefs } from "@/src/providers/ui-prefs";
 import { radii } from "@/src/theme/tokens";
 import { normalizeRenderableWorkspaceUrl } from "@/src/lib/workspace-links";
 import type { CommandPresetSummary, PluginReferenceSummary, SkillReferenceSummary, SubagentFamilySummary, UploadedWorkspaceFile } from "@/src/types/admin";
+import { PhoneReasoningEffortControl } from "./ReasoningEffortControl";
 
-type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+type ReasoningEffortLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type SafetyApprovalMode = "manual" | "reduced" | "minimal";
 type ContextSessionReference = { sessionId: string; source: "history_menu" };
 
@@ -312,7 +315,7 @@ export const Composer = memo(function Composer({
     reasoningEffortVisible?: boolean;
     reasoningEffortLevels?: ReasoningEffortLevel[];
     reasoningEffort?: ReasoningEffortLevel;
-    onChangeReasoningEffort?: (level: ReasoningEffortLevel) => void;
+    onChangeReasoningEffort?: (level: ReasoningEffortLevel) => void | Promise<void>;
     uploadedFiles: UploadedWorkspaceFile[];
     onRemoveUploadedFile: (file: UploadedWorkspaceFile) => void;
     adminBaseUrl: string;
@@ -324,8 +327,10 @@ export const Composer = memo(function Composer({
 }) {
     const { colors, t, themeMode } = useUiPrefs();
     const safeAreaInsets = useSafeAreaInsets();
+    const { width: windowWidth } = useWindowDimensions();
     const [isFocused, setIsFocused] = useState(false);
     const [safetyApprovalOpen, setSafetyApprovalOpen] = useState(false);
+    const [reasoningEffortOpen, setReasoningEffortOpen] = useState(false);
     const [pluginSheetId, setPluginSheetId] = useState("");
     const [editorScrollY, setEditorScrollY] = useState(0);
     const bodyInputRef = useRef<TextInput | null>(null);
@@ -342,10 +347,14 @@ export const Composer = memo(function Composer({
     const commandColor = themeMode === "dark" ? "#C4B5FD" : "#7C3AED";
     const mentionColor = themeMode === "dark" ? "#FDBA74" : "#F97316";
     const reasoningEffortLabelMap: Record<ReasoningEffortLevel, string> = {
-        auto: t("src.components.chat.composer.reasoning_effort_auto_short"),
-        low: t("src.components.chat.composer.reasoning_effort_low_short"),
-        medium: t("src.components.chat.composer.reasoning_effort_medium_short"),
-        high: t("src.components.chat.composer.reasoning_effort_high_short"),
+        auto: t("src.components.chat.composer.reasoning_effort_auto"),
+        none: "None",
+        minimal: "Minimal",
+        low: t("src.components.chat.composer.reasoning_effort_low"),
+        medium: t("src.components.chat.composer.reasoning_effort_medium"),
+        high: t("src.components.chat.composer.reasoning_effort_high"),
+        xhigh: "X-High",
+        max: "Max",
     };
     const safetyApprovalOptions: Array<{
         mode: SafetyApprovalMode;
@@ -377,12 +386,6 @@ export const Composer = memo(function Composer({
         },
     ];
     const activeSafetyApproval = safetyApprovalOptions.find((option) => option.mode === safetyApprovalMode) || safetyApprovalOptions[1]!;
-    const cycleReasoningEffort = () => {
-        if (!reasoningEffortVisible || !onChangeReasoningEffort) return;
-        const levels: ReasoningEffortLevel[] = reasoningEffortLevels.length > 0 ? reasoningEffortLevels : ["auto"];
-        const index = Math.max(0, levels.indexOf(reasoningEffort));
-        onChangeReasoningEffort(levels[(index + 1) % levels.length] || "auto");
-    };
     const actionMode: "send" | "queue" | "stop" | "busy" = canQueue
         ? "queue"
         : stopAvailable
@@ -604,33 +607,25 @@ export const Composer = memo(function Composer({
                                 <Pressable
                                     accessibilityRole="button"
                                     accessibilityLabel={t("src.components.chat.composer.reasoning_effort")}
+                                    accessibilityState={{ expanded: reasoningEffortOpen }}
                                     style={[
                                         styles.reasoningEffortButton,
                                         {
                                             backgroundColor: reasoningEffort === "auto"
                                                 ? "transparent"
-                                                : themeMode === "dark" ? "rgba(245,158,11,0.18)" : "rgba(251,191,36,0.16)",
+                                                : themeMode === "dark" ? "rgba(139,92,246,0.18)" : "rgba(124,58,237,0.12)",
                                             borderColor: reasoningEffort === "auto"
                                                 ? "transparent"
-                                                : themeMode === "dark" ? "rgba(245,158,11,0.28)" : "rgba(217,119,6,0.22)",
+                                                : themeMode === "dark" ? "rgba(167,139,250,0.42)" : "rgba(124,58,237,0.3)",
                                         },
                                     ]}
-                                    onPress={cycleReasoningEffort}
+                                    onPress={() => setReasoningEffortOpen(true)}
                                 >
-                                    <MaterialCommunityIcons
-                                        name="head-lightbulb-outline"
-                                        size={14}
-                                        color={reasoningEffort === "auto" ? colors.textMuted : colors.warning}
+                                    <Gauge
+                                        size={18}
+                                        strokeWidth={1.75}
+                                        color={reasoningEffort === "auto" ? colors.textMuted : colors.primary}
                                     />
-                                    <Text
-                                        style={[
-                                            styles.reasoningEffortText,
-                                            { color: reasoningEffort === "auto" ? colors.textMuted : colors.warning },
-                                        ]}
-                                        numberOfLines={1}
-                                    >
-                                        {t("src.components.chat.composer.reasoning_effort_prefix")}·{reasoningEffortLabelMap[reasoningEffort] || reasoningEffortLabelMap.auto}
-                                    </Text>
                                 </Pressable>
                             ) : null}
 
@@ -728,6 +723,46 @@ export const Composer = memo(function Composer({
                 </View>
             </View>
         </View>
+        <Modal
+            visible={reasoningEffortOpen && reasoningEffortVisible}
+            transparent
+            animationType="fade"
+            statusBarTranslucent
+            onRequestClose={() => setReasoningEffortOpen(false)}
+        >
+            <View style={styles.reasoningEffortOverlay}>
+                <Pressable
+                    style={StyleSheet.absoluteFill}
+                    onPress={() => setReasoningEffortOpen(false)}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("src.components.chat.mediaviewerlightbox.cancel")}
+                />
+                <View
+                    style={[
+                        styles.reasoningEffortPopover,
+                        {
+                            width: Math.min(352, Math.max(288, windowWidth - 24)),
+                            marginBottom: Math.max(safeAreaInsets.bottom + 78, 92),
+                        },
+                    ]}
+                >
+                    <PhoneReasoningEffortControl
+                        levels={reasoningEffortLevels}
+                        value={reasoningEffort}
+                        onValueCommit={async (level) => {
+                            await onChangeReasoningEffort?.(level);
+                        }}
+                        colors={colors}
+                        themeMode={themeMode}
+                        label={t("src.components.chat.composer.reasoning_effort_label")}
+                        fasterLabel={t("src.components.chat.composer.reasoning_effort_faster")}
+                        smarterLabel={t("src.components.chat.composer.reasoning_effort_smarter")}
+                        ariaLabel={t("src.components.chat.composer.reasoning_effort")}
+                        labelFormatter={(level) => reasoningEffortLabelMap[level] || level}
+                    />
+                </View>
+            </View>
+        </Modal>
         <Modal
             visible={safetyApprovalOpen}
             transparent
@@ -1028,20 +1063,21 @@ const styles = StyleSheet.create({
         fontWeight: "600",
     },
     reasoningEffortButton: {
+        width: 32,
         height: 32,
-        maxWidth: 74,
-        paddingHorizontal: 8,
         borderRadius: 14,
         borderWidth: 1,
-        flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        gap: 4,
     },
-    reasoningEffortText: {
-        fontSize: 11,
-        lineHeight: 14,
-        fontWeight: "800",
+    reasoningEffortOverlay: {
+        flex: 1,
+        alignItems: "center",
+        justifyContent: "flex-end",
+        backgroundColor: "rgba(2,6,23,0.28)",
+    },
+    reasoningEffortPopover: {
+        maxWidth: 352,
     },
     inlineButton: {
         width: 32,

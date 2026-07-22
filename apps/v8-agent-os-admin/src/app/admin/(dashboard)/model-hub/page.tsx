@@ -563,6 +563,20 @@ function modelMatchesTab(model: AIModel, tab: string) {
     return type.toLowerCase() === tab;
 }
 
+function preserveModelOrder(current: AIModel[], incoming: AIModel[]): AIModel[] {
+    if (!current.length || !incoming.length) return incoming;
+    const identity = (model: AIModel) => model.modelRef || `${model.providerId}:${model.id}`;
+    const incomingByIdentity = new Map(incoming.map((model) => [identity(model), model]));
+    const ordered = current
+        .map((model) => incomingByIdentity.get(identity(model)))
+        .filter((model): model is AIModel => Boolean(model));
+    const known = new Set(ordered.map(identity));
+    for (const model of incoming) {
+        if (!known.has(identity(model))) ordered.push(model);
+    }
+    return ordered;
+}
+
 function providerMatchesPurpose(provider: CatalogProvider, purpose: CatalogPurpose) {
     const authType = provider.auth?.type;
     if (authType === "oauth_file") return purpose === "chat";
@@ -704,12 +718,13 @@ export default function ModelHubPage() {
     const [ttsClonePreviewText, setTtsClonePreviewText] = useState("");
     const [isTtsCloning, setIsTtsCloning] = useState(false);
     const [isTtsClonePanelOpen, setIsTtsClonePanelOpen] = useState(false);
-    const fetchData = async (force = false) => {
+    const fetchData = async (force = false, keepModelOrder = false) => {
         setIsLoading(true);
         try {
             const payload = await fetchAdminJson<ModelHubBootstrapPayload>("/api/model-hub/bootstrap", { force, ttlMs: 30_000 });
             setProviders(Array.isArray(payload.providers) ? payload.providers : []);
-            setModels(Array.isArray(payload.models) ? payload.models : []);
+            const nextModels = Array.isArray(payload.models) ? payload.models : [];
+            setModels((current) => keepModelOrder ? preserveModelOrder(current, nextModels) : nextModels);
             setHubEnvelope(payload.hubEnvelope || null);
             setAudioConfig(mergeAudioConfig(payload.audioConfig || null));
             const defaultData = payload.defaultModel || {};
@@ -979,7 +994,7 @@ export default function ModelHubPage() {
             title: disabled ? t("app.admin.dashboard.model.hub.page.thinkingDisabled") : t("app.admin.dashboard.model.hub.page.thinkingDefaultRestored"),
             description: model.modelId,
         });
-        await fetchData(true);
+        await fetchData(true, true);
     };
     const handleSetReasoningLevel = async (model: AIModel, controlMeta: ControlPlaneModel | null, level: string) => {
         const supportsNoThink = Boolean(controlMeta?.thinkingControl?.supportsNoThink);
@@ -1023,7 +1038,7 @@ export default function ModelHubPage() {
             title: t("app.admin.dashboard.model.hub.page.reasoningEffortSaved"),
             description: `${model.modelId} · ${level}`,
         });
-        await fetchData(true);
+        await fetchData(true, true);
     };
     const handleToggleProviderHostedTools = async (model: AIModel, controlMeta: ControlPlaneModel | null, enabled: boolean) => {
         const endpointBinding = {

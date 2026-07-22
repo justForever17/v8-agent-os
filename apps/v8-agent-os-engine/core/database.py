@@ -1912,6 +1912,34 @@ class DatabaseManager:
             conn.commit()
         return self.get_session(session_id)
 
+    def update_session_reasoning_effort_override(self, session_id: str, level: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Persist a per-session reasoning override without changing chat activity ordering."""
+
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT metadata FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if not row:
+                return None
+
+            metadata: Dict[str, Any] = {}
+            if row["metadata"]:
+                try:
+                    metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+                except Exception:
+                    metadata = {}
+
+            normalized = str(level or "").strip().lower()
+            if normalized and normalized != "auto":
+                metadata["supervisorReasoningEffortOverride"] = normalized
+            else:
+                metadata.pop("supervisorReasoningEffortOverride", None)
+
+            conn.execute(
+                "UPDATE sessions SET metadata = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False), session_id),
+            )
+            conn.commit()
+        return self.get_session(session_id)
+
     def _is_internal_runtime_title(self, title: str | None) -> bool:
         normalized = str(title or "").strip()
         return normalized.startswith((

@@ -1633,6 +1633,7 @@ def test_openai_kwargs_apply_supervisor_reasoning_effort_after_no_think():
     )
 
     assert kwargs["reasoning"] == {"effort": "high"}
+    assert "reasoning_effort" not in kwargs
 
 
 def test_anthropic_kwargs_apply_reasoning_effort_controls_with_budget_headroom():

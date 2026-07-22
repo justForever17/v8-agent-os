@@ -5,7 +5,7 @@ import logging
 from urllib.parse import urlparse
 import uuid
 
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from .models import ModelConnectionTestPayload, ModelReasoningRepairPayload
@@ -21,7 +21,11 @@ from core.model_provider_catalog import model_provider_catalog
 from core.model_provider_channels import resolve_provider_channel
 from core.model_protocol_registry import suggest_model_protocol
 from core.model_role_doctor import diagnose_models
-from core.model_thinking_control import resolve_reasoning_effort_control_for_metadata
+from core.model_thinking_control import (
+    normalize_reasoning_effort,
+    resolve_reasoning_effort_control_for_metadata,
+    resolve_session_reasoning_effort_override,
+)
 from core.prompt_cache_gateway import prompt_cache_profile_id_for_provider
 from core.model_telemetry import model_telemetry_service
 from core.mcp_config_service import McpConfigValidationError, validate_mcp_server_map
@@ -1143,47 +1147,135 @@ async def remove_model_binding(data: dict = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/models/supervisor-reasoning-effort")
-async def get_supervisor_reasoning_effort_control():
-    try:
-        config = model_control_plane.get_config()
-        resolution = model_control_plane.resolve_model_for_role("supervisor", config)
-        provider_id = str(resolution.get("resolvedProviderId") or "").strip()
-        model_id = str(resolution.get("resolvedModelId") or "").strip()
-        model_ref = str(resolution.get("resolvedModelRef") or "").strip()
-        model_record = dict(resolution.get("resolvedModel") or {})
-        provider_record = dict(resolution.get("resolvedProvider") or {})
-        control = resolve_reasoning_effort_control_for_metadata(
-            {
-                "provider_id": provider_id,
-                "model_id": model_id,
-                "model_ref": model_ref,
-                "provider_record": provider_record,
-                "model_record": model_record,
-                "api_standard": provider_record.get("api_standard") or provider_record.get("apiStandard") or "openai",
-                "capabilities": dict(model_record.get("capabilities") or {}),
-                "capability_class": model_record.get("capabilityClass") or model_record.get("capability_class") or "",
-            }
-        )
-        supported = bool(control.get("supportsReasoningEffort"))
-        reason = ""
-        if not model_id:
-            reason = "supervisor_model_unbound"
-        elif not supported:
-            reason = "supervisor_model_does_not_support_normalized_reasoning_effort"
-        return {
-            "role": "supervisor",
-            "modelRef": model_ref,
-            "modelId": model_id,
-            "providerId": provider_id,
-            "bindingState": resolution.get("bindingState") or "",
-            "supported": supported,
-            "visible": supported,
-            "defaultLevel": control.get("defaultLevel") or "auto",
-            "levels": list(control.get("levels") or []),
-            "requestStyle": control.get("requestStyle") or "",
-            "reason": reason,
+def _supervisor_reasoning_effort_payload(*, session_id: str = "", request_user_id: str = "") -> dict[str, Any]:
+    config = model_control_plane.get_config()
+    resolution = model_control_plane.resolve_model_for_role("supervisor", config)
+    provider_id = str(resolution.get("resolvedProviderId") or "").strip()
+    model_id = str(resolution.get("resolvedModelId") or "").strip()
+    model_ref = str(resolution.get("resolvedModelRef") or "").strip()
+    model_record = dict(resolution.get("resolvedModel") or {})
+    provider_record = dict(resolution.get("resolvedProvider") or {})
+    control = resolve_reasoning_effort_control_for_metadata(
+        {
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "model_ref": model_ref,
+            "provider_record": provider_record,
+            "model_record": model_record,
+            "api_standard": provider_record.get("api_standard") or provider_record.get("apiStandard") or "openai",
+            "capabilities": dict(model_record.get("capabilities") or {}),
+            "capability_class": model_record.get("capabilityClass") or model_record.get("capability_class") or "",
         }
+    )
+    supported = bool(control.get("supportsReasoningEffort"))
+    reason = ""
+    if not model_id:
+        reason = "supervisor_model_unbound"
+    elif not supported:
+        reason = "supervisor_model_does_not_support_normalized_reasoning_effort"
+
+    session = db.get_session(session_id) if session_id else None
+    if session_id and session is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    session_user_id = str((session or {}).get("user_id") or (session or {}).get("userId") or "").strip()
+    if (
+        request_user_id
+        and session_user_id
+        and session_user_id != "anonymous"
+        and request_user_id != session_user_id
+    ):
+        raise HTTPException(status_code=403, detail="session_owner_mismatch")
+
+    session_level = resolve_session_reasoning_effort_override(session)
+    allowed_levels = {
+        normalize_reasoning_effort(item)
+        for item in control.get("levels") or []
+    }
+    if session_level != "auto" and session_level not in allowed_levels:
+        session_level = "auto"
+    model_default_level = normalize_reasoning_effort(control.get("selectedLevel") or "auto")
+    effective_level = session_level if session_level != "auto" else model_default_level
+    return {
+        "role": "supervisor",
+        "modelRef": model_ref,
+        "modelId": model_id,
+        "providerId": provider_id,
+        "bindingState": resolution.get("bindingState") or "",
+        "supported": supported,
+        "visible": supported,
+        # Compatibility: this is the administrator-configured model default,
+        # not the profile recommendation.
+        "defaultLevel": model_default_level,
+        "modelDefaultLevel": model_default_level,
+        "profileDefaultLevel": normalize_reasoning_effort(control.get("defaultLevel") or "auto"),
+        "sessionLevel": session_level,
+        "effectiveLevel": effective_level,
+        "selectionSource": "session" if session_level != "auto" else "model_default",
+        "levels": list(control.get("levels") or []),
+        "requestStyle": control.get("requestStyle") or "",
+        "reason": reason,
+        "sessionId": session_id or None,
+    }
+
+
+@router.get("/models/supervisor-reasoning-effort")
+async def get_supervisor_reasoning_effort_control(
+    request: Request,
+    session_id: str = Query(default="", alias="sessionId"),
+):
+    try:
+        return _supervisor_reasoning_effort_payload(
+            session_id=str(session_id or "").strip(),
+            request_user_id=str(request.headers.get("x-v8-agent-os-user-email") or "").strip(),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/models/supervisor-reasoning-effort")
+async def patch_supervisor_reasoning_effort_control(request: Request, data: dict = Body(...)):
+    try:
+        session_id = str(data.get("sessionId") or data.get("session_id") or "").strip()
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id_required")
+        current = _supervisor_reasoning_effort_payload(
+            session_id=session_id,
+            request_user_id=str(request.headers.get("x-v8-agent-os-user-email") or "").strip(),
+        )
+        level = normalize_reasoning_effort(data.get("level"))
+        allowed_levels = {
+            normalize_reasoning_effort(item)
+            for item in current.get("levels") or []
+        }
+        allowed_levels.add("auto")
+        if level not in allowed_levels:
+            raise HTTPException(status_code=422, detail="reasoning_effort_level_unsupported")
+
+        updated = db.update_session_reasoning_effort_override(session_id, None if level == "auto" else level)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="session_not_found")
+        payload = _supervisor_reasoning_effort_payload(
+            session_id=session_id,
+            request_user_id=str(request.headers.get("x-v8-agent-os-user-email") or "").strip(),
+        )
+        db.add_runtime_event(
+            build_runtime_event(
+                topic="session.reasoning_effort.updated",
+                session_id=session_id,
+                payload=payload,
+                source={
+                    "plane": "engine",
+                    "component": "model_control_plane",
+                    "node": "session_reasoning_effort",
+                    "agent_id": None,
+                },
+            )
+        )
+        return payload
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -12,6 +12,7 @@ import {
     type ComposerInlineReference,
 } from "@v8/session-realtime/composer-inline-references";
 import type { PluginReferenceSummary } from "@v8/session-realtime";
+import { ReasoningEffortControl } from "@v8/product-ui";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -180,6 +181,8 @@ interface InputAreaProps {
     selectedAgentName?: string;
     shellClassName?: string;
     reasoningEffortControl?: ReasoningEffortControl | null;
+    reasoningEffort?: ReasoningEffortLevel;
+    onReasoningEffortChange?: (level: ReasoningEffortLevel) => void | Promise<void>;
     contextSessionRefs?: ContextSessionReference[];
     onRemoveContextSessionRef?: (sessionId: string) => void;
     contextUsagePercent?: number | null;
@@ -199,7 +202,7 @@ interface ContextSessionReference {
     source: "history_menu";
 }
 
-type ReasoningEffortLevel = "auto" | "low" | "medium" | "high";
+type ReasoningEffortLevel = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type SafetyApprovalMode = "manual" | "reduced" | "minimal";
 type SpecCommandAction = "new" | "continue" | "list" | "approve" | "clarify" | "analyze" | "annex";
 const SAFETY_APPROVAL_MODE_STORAGE_KEY = "v8-web-safety-approval-mode";
@@ -209,7 +212,13 @@ interface ReasoningEffortControl {
     supported?: boolean;
     levels?: string[];
     defaultLevel?: string;
+    modelDefaultLevel?: string;
+    profileDefaultLevel?: string;
+    sessionLevel?: string;
+    effectiveLevel?: string;
+    selectionSource?: "session" | "model_default";
     modelRef?: string;
+    sessionId?: string;
 }
 
 interface VoiceAudioMessageData {
@@ -334,6 +343,8 @@ export function InputArea({
     selectedAgentName,
     shellClassName,
     reasoningEffortControl,
+    reasoningEffort = "auto",
+    onReasoningEffortChange,
     contextSessionRefs = [],
     onRemoveContextSessionRef,
     contextUsagePercent = null,
@@ -356,7 +367,6 @@ export function InputArea({
     const [selectedSubagentFamilies, setSelectedSubagentFamilies] = React.useState<SubagentFamilySummary[]>([]);
     const [selectedPlugins, setSelectedPlugins] = React.useState<PluginReferenceSummary[]>([]);
     const [specModeEnabled, setSpecModeEnabled] = React.useState(false);
-    const [reasoningEffort, setReasoningEffort] = React.useState<ReasoningEffortLevel>("auto");
     const [reasoningEffortOpen, setReasoningEffortOpen] = React.useState(false);
     const [safetyApprovalMode, setSafetyApprovalMode] = React.useState<SafetyApprovalMode>("reduced");
     const [safetyApprovalModeOpen, setSafetyApprovalModeOpen] = React.useState(false);
@@ -451,22 +461,23 @@ export function InputArea({
     const [viewerStartingIndex, setViewerStartingIndex] = React.useState(0);
     const reasoningEffortLevels = React.useMemo<ReasoningEffortLevel[]>(() => {
         const rawLevels = Array.isArray(reasoningEffortControl?.levels) ? reasoningEffortControl.levels : [];
-        const allowed = new Set(rawLevels.map((level) => String(level || "").trim().toLowerCase()));
-        const levels: ReasoningEffortLevel[] = ["auto", "low", "medium", "high"].filter((level): level is ReasoningEffortLevel =>
-            level === "auto" || allowed.has(level)
-        );
+        const known = new Set<ReasoningEffortLevel>(["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+        const levels = rawLevels
+            .map((level) => String(level || "").trim().toLowerCase())
+            .filter((level): level is ReasoningEffortLevel => known.has(level as ReasoningEffortLevel));
         return levels.includes("auto") ? levels : ["auto", ...levels];
     }, [reasoningEffortControl?.levels]);
     const reasoningEffortVisible = Boolean(reasoningEffortControl?.visible && reasoningEffortLevels.length > 1);
-    const reasoningEffortLabel = React.useMemo(() => {
-        const labels: Record<ReasoningEffortLevel, string> = {
+    const reasoningEffortLabels = React.useMemo<Record<ReasoningEffortLevel, string>>(() => ({
             auto: t("web.generated.ad302baaf1"),
+            none: "None",
+            minimal: "Minimal",
             low: t("web.generated.1638d14b43"),
             medium: t("web.generated.5ea71d390a"),
             high: t("web.generated.29b755916c"),
-        };
-        return labels[reasoningEffort] || labels.auto;
-    }, [reasoningEffort, t]);
+            xhigh: "X-High",
+            max: "Max",
+    }), [t]);
     const specCommandPresets = React.useMemo<CommandPresetSummary[]>(() => ([
         { name: "spec new", summary: t("web.composer.spec.new"), specCommandAction: "new" },
         { name: "spec continue", summary: t("web.composer.spec.continue"), specCommandAction: "continue" },
@@ -737,7 +748,6 @@ export function InputArea({
 
     React.useEffect(() => {
         if (!reasoningEffortVisible || !reasoningEffortLevels.includes(reasoningEffort)) {
-            setReasoningEffort("auto");
             setReasoningEffortOpen(false);
         }
     }, [reasoningEffort, reasoningEffortLevels, reasoningEffortVisible]);
@@ -1301,9 +1311,6 @@ export function InputArea({
                 if (contextMentions.length > 0) {
                     nextData.contextMentions = contextMentions;
                 }
-                if (reasoningEffortVisible) {
-                    nextData.supervisorReasoningEffort = reasoningEffort;
-                }
                 if (pendingSpecMode) {
                     nextData.specMode = true;
                 }
@@ -1679,45 +1686,30 @@ export function InputArea({
                                     type="button"
                                     onClick={() => setReasoningEffortOpen((current) => !current)}
                                     className={cn(
-                                        "group inline-flex h-[28px] items-center gap-1 rounded-full border px-2 text-[10px] font-semibold tracking-[0.04em] transition-all",
+                                        "group inline-flex h-[28px] w-[28px] items-center justify-center rounded-full border p-0 transition-[color,background-color,border-color,transform,box-shadow] duration-160 active:scale-[0.92]",
                                         reasoningEffort === "auto"
-                                            ? "border-zinc-200/70 bg-white/55 text-zinc-500 hover:border-amber-300/60 hover:text-zinc-700 dark:border-zinc-700/60 dark:bg-zinc-900/40 dark:text-zinc-400 dark:hover:border-amber-400/35"
-                                            : "border-amber-300/60 bg-amber-100/70 text-amber-800 shadow-[0_4px_18px_rgba(245,158,11,0.16)] hover:bg-amber-100 dark:border-amber-400/35 dark:bg-amber-500/12 dark:text-amber-100"
+                                            ? "border-zinc-200/70 bg-white/55 text-zinc-500 hover:border-violet-300/70 hover:text-zinc-800 dark:border-zinc-700/60 dark:bg-zinc-900/40 dark:text-zinc-400 dark:hover:border-violet-400/45 dark:hover:text-zinc-100"
+                                            : "border-violet-400/70 bg-violet-100/70 text-violet-800 shadow-[0_4px_18px_rgba(124,58,237,0.16)] hover:bg-violet-100 dark:border-violet-400/45 dark:bg-violet-500/14 dark:text-violet-100"
                                     )}
                                     title={t("web.generated.9d1e18be56")}
+                                    aria-label={t("web.generated.9d1e18be56")}
+                                    aria-expanded={reasoningEffortOpen}
                                 >
-                                    <Gauge className="h-3.5 w-3.5" />
-                                    <span>{t("web.generated.97372606ee")}·{reasoningEffortLabel}</span>
+                                    <Gauge className="h-4 w-4" aria-hidden="true" />
                                 </button>
                                 {reasoningEffortOpen ? (
-                                    <div className="absolute bottom-full left-0 z-30 mb-2 flex overflow-hidden rounded-2xl border border-zinc-200/70 bg-white/95 p-1 shadow-[0_14px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl dark:border-zinc-700/70 dark:bg-zinc-950/95">
-                                        {reasoningEffortLevels.map((level) => {
-                                            const active = level === reasoningEffort;
-                                            const labels: Record<ReasoningEffortLevel, string> = {
-                                                auto: t("web.generated.0f2b6402a6"),
-                                                low: t("web.generated.1638d14b43"),
-                                                medium: t("web.generated.c3c3788ddb"),
-                                                high: t("web.generated.29b755916c"),
-                                            };
-                                            return (
-                                                <button
-                                                    key={level}
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setReasoningEffort(level);
-                                                        setReasoningEffortOpen(false);
-                                                    }}
-                                                    className={cn(
-                                                        "h-7 rounded-xl px-2.5 text-[11px] font-medium transition",
-                                                        active
-                                                            ? "bg-amber-500 text-white shadow-sm"
-                                                            : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-                                                    )}
-                                                >
-                                                    {labels[level]}
-                                                </button>
-                                            );
-                                        })}
+                                    <div className="absolute bottom-full left-0 z-50 mb-2 w-[min(352px,calc(100vw-32px))]">
+                                        <ReasoningEffortControl
+                                            levels={reasoningEffortLevels}
+                                            value={reasoningEffort}
+                                            label={t("web.chat.reasoningEffort.label")}
+                                            fasterLabel={t("web.chat.reasoningEffort.faster")}
+                                            smarterLabel={t("web.chat.reasoningEffort.smarter")}
+                                            helpLabel={t("web.generated.9d1e18be56")}
+                                            ariaLabel={t("web.generated.9d1e18be56")}
+                                            labelFormatter={(level) => reasoningEffortLabels[level as ReasoningEffortLevel] || level}
+                                            onValueCommit={(level) => onReasoningEffortChange?.(level as ReasoningEffortLevel)}
+                                        />
                                     </div>
                                 ) : null}
                             </div>

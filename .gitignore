@@ -41,6 +41,7 @@ test-results/
 # Node / Next artifacts
 **/node_modules/
 **/.next/
+**/.next-*-stale/
 .next-v8os-home/
 **/dist/
 **/build/

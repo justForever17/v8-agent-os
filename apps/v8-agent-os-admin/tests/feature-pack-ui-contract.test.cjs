@@ -53,6 +53,26 @@ test("feature pack installer retries official PyPI through trusted zh mirrors wi
   assert.doesNotMatch(topbarSource, /stdout|stderr/);
 });
 
+test("image analysis feature pack uses a pinned asset transaction and never a silent runtime download", () => {
+  const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
+  const engineSource = fs.readFileSync(path.join(adminRoot, "..", "v8-agent-os-engine", "core", "runtime", "feature_packs.py"), "utf8");
+  const manifest = JSON.parse(fs.readFileSync(path.join(adminRoot, "..", "v8-agent-os-engine", "requirements", "feature-packs", "creative-media-image-analysis.manifest.json"), "utf8"));
+
+  assert.equal(manifest.id, "creative_media_image_analysis");
+  assert.equal(manifest.assets[0].size, 178648008);
+  assert.equal(String(manifest.assets[0].sha256).toLowerCase(), "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a");
+  assert.match(installerSource, /runTransactionalAssetPackInstall/);
+  assert.match(installerSource, /staging/);
+  assert.match(installerSource, /receipt\.json/);
+  assert.match(installerSource, /sha256File/);
+  assert.match(installerSource, /backup/);
+  assert.match(installerSource, /FEATURE_PACK_ASSET_HOSTS/);
+  assert.match(installerSource, /assertTrustedFeaturePackAssetUrl\(response\.url\)/);
+  assert.match(installerSource, /normalizeStatus\(existing\.status\) === "installing"/);
+  assert.match(installerSource, /本次请求未重复启动下载/);
+  assert.doesNotMatch(engineSource, /requests\.(get|post)|urlopen|httpx\.(get|post)/);
+});
+
 test("dependency-gated runtime pages open the feature pack panel when pack is missing", () => {
   const desktopSource = fs.readFileSync(path.join(adminRoot, "src", "app", "admin", "(dashboard)", "desktop-automation", "page.tsx"), "utf8");
   const rpaSource = fs.readFileSync(path.join(adminRoot, "src", "app", "admin", "(dashboard)", "rpa", "page.tsx"), "utf8");

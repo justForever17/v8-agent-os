@@ -1,7 +1,10 @@
 import fs from "fs";
+import crypto from "crypto";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 
 import {
     canonicalConfigPath,
@@ -44,6 +47,9 @@ export type RuntimeFeaturePack = {
     lastError: string | null;
     updatedAt: string | null;
     installable: boolean;
+    version?: string | null;
+    assetRoot?: string | null;
+    receiptRef?: string | null;
 };
 
 export type RuntimeFeaturePackState = {
@@ -70,6 +76,34 @@ type FeaturePackDefinition = {
     recommendedOrder: number;
     runtimeFamilies: string[];
     requirementsFile: string;
+    assetManifestFile?: string;
+};
+
+type FeaturePackAsset = {
+    id: string;
+    target: string;
+    url: string;
+    size: number;
+    sha256: string;
+};
+
+type FeaturePackAssetManifest = {
+    id: string;
+    version: string;
+    license?: { name?: string; source?: string };
+    assets: FeaturePackAsset[];
+};
+
+type FeaturePackConfigRecord = {
+    status?: string;
+    targetDir?: string;
+    logRef?: string | null;
+    lastError?: string | null;
+    updatedAt?: string | null;
+    restartRequired?: boolean;
+    version?: string | null;
+    assetRoot?: string | null;
+    receiptRef?: string | null;
 };
 
 const FEATURE_PACK_DEFINITIONS: FeaturePackDefinition[] = [
@@ -102,6 +136,17 @@ const FEATURE_PACK_DEFINITIONS: FeaturePackDefinition[] = [
         recommendedOrder: 3,
         runtimeFamilies: [],
         requirementsFile: "local-asr-ocr.txt",
+    },
+    {
+        id: "creative_media_image_analysis",
+        productName: "图像分析增强包",
+        shortName: "图像分析",
+        description: "为多媒体创作提供本地主体分割、透明度核验和跨图构图比较。",
+        hover: "安装后可离线复用已验签的 IS-Net 模型；仅在复杂不透明背景需要主体分割时使用。",
+        recommendedOrder: 4,
+        runtimeFamilies: [],
+        requirementsFile: "creative-media-image-analysis.txt",
+        assetManifestFile: "creative-media-image-analysis.manifest.json",
     },
 ];
 
@@ -143,6 +188,12 @@ const RECOVERABLE_PIP_FAILURE_PATTERNS = [
     /Gateway Timeout/i,
 ];
 
+const FEATURE_PACK_ASSET_HOSTS = new Set([
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+]);
+
 function v8Home() {
     return process.env.V8_AGENT_OS_HOME || path.join(os.homedir(), ".v8-agent-os");
 }
@@ -182,6 +233,27 @@ function requirementsPathFor(definition: FeaturePackDefinition) {
     return path.join(resolveEngineRoot(), "requirements", "feature-packs", definition.requirementsFile);
 }
 
+function assetManifestPathFor(definition: FeaturePackDefinition) {
+    return definition.assetManifestFile
+        ? path.join(resolveEngineRoot(), "requirements", "feature-packs", definition.assetManifestFile)
+        : null;
+}
+
+function readAssetManifest(definition: FeaturePackDefinition): FeaturePackAssetManifest | null {
+    const manifestPath = assetManifestPathFor(definition);
+    if (!manifestPath || !fs.existsSync(manifestPath)) return null;
+    const payload = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as FeaturePackAssetManifest;
+    if (payload.id !== definition.id || !payload.version || !Array.isArray(payload.assets)) {
+        throw new Error(`Invalid feature pack asset manifest: ${manifestPath}`);
+    }
+    return payload;
+}
+
+function definitionInstallable(definition: FeaturePackDefinition) {
+    const manifestPath = assetManifestPathFor(definition);
+    return fs.existsSync(requirementsPathFor(definition)) && (!manifestPath || fs.existsSync(manifestPath));
+}
+
 function normalizeStatus(value: unknown): FeaturePackStatus {
     const normalized = String(value || "").trim();
     if (normalized === "installed" || normalized === "installing" || normalized === "failed") return normalized;
@@ -193,11 +265,14 @@ function nowIso() {
 }
 
 function normalizeFeaturePackFromConfig(definition: FeaturePackDefinition, config: CanonicalConfig): RuntimeFeaturePack {
-    const raw = config.runtimeRegistry?.featurePacks?.[definition.id] || {};
+    const raw = (config.runtimeRegistry?.featurePacks?.[definition.id] || {}) as FeaturePackConfigRecord;
     const targetDir = String(raw.targetDir || targetDirFor(definition.id));
     const status = normalizeStatus(raw.status);
     const targetExists = fs.existsSync(targetDir);
-    const installed = status === "installed" && targetExists;
+    const assetRoot = raw.assetRoot ? String(raw.assetRoot) : path.join(featurePackRoot(), definition.id, "assets");
+    const manifest = readAssetManifest(definition);
+    const assetsExist = !manifest || manifest.assets.every((asset) => fs.existsSync(path.join(assetRoot, asset.target)));
+    const installed = status === "installed" && targetExists && assetsExist;
     return {
         ...definition,
         requirementsFile: requirementsPathFor(definition),
@@ -208,7 +283,10 @@ function normalizeFeaturePackFromConfig(definition: FeaturePackDefinition, confi
         logRef: raw.logRef || null,
         lastError: raw.lastError || null,
         updatedAt: raw.updatedAt || null,
-        installable: fs.existsSync(requirementsPathFor(definition)),
+        installable: definitionInstallable(definition),
+        version: raw.version ? String(raw.version) : null,
+        assetRoot: manifest ? assetRoot : null,
+        receiptRef: raw.receiptRef ? String(raw.receiptRef) : null,
     };
 }
 
@@ -224,7 +302,10 @@ function normalizeFeaturePackFromEngine(definition: FeaturePackDefinition, raw: 
         logRef: raw.logRef ? String(raw.logRef) : null,
         lastError: raw.lastError ? String(raw.lastError) : null,
         updatedAt: raw.updatedAt ? String(raw.updatedAt) : null,
-        installable: fs.existsSync(requirementsPathFor(definition)),
+        installable: definitionInstallable(definition),
+        version: raw.version ? String(raw.version) : null,
+        assetRoot: raw.assetRoot ? String(raw.assetRoot) : null,
+        receiptRef: raw.receiptRef ? String(raw.receiptRef) : null,
     };
 }
 
@@ -412,6 +493,242 @@ function runPipAttempt(
     });
 }
 
+async function installPipDependencies(
+    pythonExe: string,
+    targetDir: string,
+    requirementsFile: string,
+    output: fs.WriteStream,
+) {
+    const attempts: PipAttemptSummary[] = [];
+    for (const [index, source] of PIP_SOURCE_STRATEGY.entries()) {
+        const args = buildPipInstallArgs(targetDir, requirementsFile, source);
+        output.write(`\n[Source] ${source.label}\n[Command] ${formatCommandSummary(pythonExe, args)}\n\n`);
+        const result = await runPipAttempt(pythonExe, args, output);
+        const ok = result.exitCode === 0;
+        const recoverable = ok ? false : isRecoverablePipFailure(result.outputPreview);
+        attempts.push({
+            sourceId: source.id,
+            sourceLabel: source.label,
+            exitCode: result.exitCode,
+            recoverable,
+            error: result.error,
+        });
+        output.write(`\n[Exit code] ${result.exitCode ?? "unknown"}\n`);
+        if (ok) return attempts;
+        if (!recoverable || index === PIP_SOURCE_STRATEGY.length - 1) break;
+        output.write(`[Fallback] Retrying via ${PIP_SOURCE_STRATEGY[index + 1].label}.\n`);
+    }
+    throw new Error(buildInstallFailureMessage(attempts));
+}
+
+function sha256File(filePath: string) {
+    const hash = crypto.createHash("sha256");
+    const descriptor = fs.openSync(filePath, "r");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    try {
+        let bytesRead = 0;
+        do {
+            bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+            if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+        } while (bytesRead > 0);
+    } finally {
+        fs.closeSync(descriptor);
+    }
+    return hash.digest("hex");
+}
+
+function assertTrustedFeaturePackAssetUrl(rawUrl: string) {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:" || !FEATURE_PACK_ASSET_HOSTS.has(parsed.hostname.toLowerCase())) {
+        throw new Error(`Feature pack asset host is not allowed: ${parsed.hostname || "unknown"}`);
+    }
+}
+
+async function downloadFeaturePackAsset(asset: FeaturePackAsset, modelRoot: string, output: fs.WriteStream) {
+    assertTrustedFeaturePackAssetUrl(asset.url);
+    const target = path.resolve(modelRoot, asset.target);
+    const root = path.resolve(modelRoot);
+    if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+        throw new Error(`Asset target escapes feature pack root: ${asset.target}`);
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const partial = `${target}.part`;
+    let offset = fs.existsSync(partial) ? fs.statSync(partial).size : 0;
+    if (offset > asset.size) {
+        fs.rmSync(partial, { force: true });
+        offset = 0;
+    }
+    const request = async (resumeOffset: number) => fetch(asset.url, {
+        headers: resumeOffset > 0 ? { Range: `bytes=${resumeOffset}-` } : undefined,
+        redirect: "follow",
+        cache: "no-store",
+    });
+    let response = await request(offset);
+    if (offset > 0 && response.status !== 206) {
+        fs.rmSync(partial, { force: true });
+        offset = 0;
+        response = await request(0);
+    }
+    if (!response.ok || !response.body) {
+        throw new Error(`Asset download failed (${response.status}): ${asset.id}`);
+    }
+    assertTrustedFeaturePackAssetUrl(response.url);
+    output.write(`[Asset] ${asset.id} ${offset ? `resuming at ${offset}` : "starting"}\n`);
+    await pipeline(
+        Readable.fromWeb(response.body as never),
+        fs.createWriteStream(partial, { flags: offset > 0 ? "a" : "w" }),
+    );
+    const actualSize = fs.statSync(partial).size;
+    if (actualSize !== asset.size) {
+        throw new Error(`Asset size mismatch for ${asset.id}: expected ${asset.size}, received ${actualSize}`);
+    }
+    const actualHash = sha256File(partial);
+    if (actualHash.toLowerCase() !== asset.sha256.toLowerCase()) {
+        throw new Error(`Asset SHA-256 mismatch for ${asset.id}`);
+    }
+    fs.renameSync(partial, target);
+    output.write(`[Asset verified] ${asset.id} sha256=${actualHash}\n`);
+    return { ...asset, path: target, verifiedSha256: actualHash };
+}
+
+function runAssetSmokeCheck(pythonExe: string, pythonRoot: string, modelPath: string, output: fs.WriteStream) {
+    return new Promise<void>((resolve, reject) => {
+        const script = [
+            "import sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "import onnxruntime as ort",
+            "session = ort.InferenceSession(sys.argv[2], providers=['CPUExecutionProvider'])",
+            "assert session.get_inputs() and session.get_outputs()",
+            "print(session.get_inputs()[0].name)",
+        ].join("; ");
+        const child = spawn(pythonExe, ["-c", script, pythonRoot, modelPath], {
+            windowsHide: true,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+        });
+        let diagnostic = "";
+        child.stdout?.on("data", (chunk) => {
+            const value = String(chunk);
+            diagnostic += value;
+            output.write(value);
+        });
+        child.stderr?.on("data", (chunk) => {
+            const value = String(chunk);
+            diagnostic += value;
+            output.write(value);
+        });
+        child.on("error", reject);
+        child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`ONNX smoke check failed (${code}): ${diagnostic.slice(-500)}`)));
+    });
+}
+
+async function runTransactionalAssetPackInstall(input: {
+    definition: FeaturePackDefinition;
+    manifest: FeaturePackAssetManifest;
+    pythonExe: string;
+    targetDir: string;
+    requirementsFile: string;
+    logRef: string;
+    output: fs.WriteStream;
+}) {
+    const { definition, manifest, pythonExe, targetDir, requirementsFile, logRef, output } = input;
+    const packRoot = path.dirname(targetDir);
+    const stagingBase = path.join(featurePackRoot(), ".staging");
+    const stagingRoot = path.join(stagingBase, `${definition.id}-${Date.now()}`);
+    const stagingPython = path.join(stagingRoot, "python");
+    const stagingModels = path.join(stagingRoot, "models");
+    const backupRoot = `${packRoot}.backup-${Date.now()}`;
+    const previousReceiptPath = path.join(packRoot, "receipt.json");
+    const hadInstalledPack = fs.existsSync(targetDir) && fs.existsSync(previousReceiptPath);
+    let previousReceipt: Record<string, unknown> = {};
+    if (hadInstalledPack) {
+        try {
+            previousReceipt = JSON.parse(fs.readFileSync(previousReceiptPath, "utf-8")) as Record<string, unknown>;
+        } catch {
+            previousReceipt = {};
+        }
+    }
+    let swapped = false;
+    fs.mkdirSync(stagingPython, { recursive: true });
+    fs.mkdirSync(stagingModels, { recursive: true });
+    try {
+        await installPipDependencies(pythonExe, stagingPython, requirementsFile, output);
+        const verifiedAssets = [];
+        for (const asset of manifest.assets) {
+            verifiedAssets.push(await downloadFeaturePackAsset(asset, stagingModels, output));
+        }
+        const primaryModel = verifiedAssets[0]?.path;
+        if (!primaryModel) throw new Error("Feature pack manifest has no model asset");
+        await runAssetSmokeCheck(pythonExe, stagingPython, primaryModel, output);
+        const receipt = {
+            version: 1,
+            packId: definition.id,
+            packVersion: manifest.version,
+            installedAt: nowIso(),
+            license: manifest.license || null,
+            assets: verifiedAssets.map((asset) => ({
+                id: asset.id,
+                target: asset.target,
+                size: asset.size,
+                sha256: asset.verifiedSha256,
+                url: asset.url,
+            })),
+        };
+        fs.writeFileSync(path.join(stagingRoot, "receipt.json"), JSON.stringify(receipt, null, 2), "utf-8");
+        if (fs.existsSync(packRoot)) fs.renameSync(packRoot, backupRoot);
+        try {
+            fs.renameSync(stagingRoot, packRoot);
+            swapped = true;
+        } catch (error) {
+            if (fs.existsSync(backupRoot) && !fs.existsSync(packRoot)) fs.renameSync(backupRoot, packRoot);
+            throw error;
+        }
+        updateFeaturePackConfig(definition.id, {
+            status: "installed",
+            targetDir: path.join(packRoot, "python"),
+            assetRoot: path.join(packRoot, "models"),
+            receiptRef: path.join(packRoot, "receipt.json"),
+            version: manifest.version,
+            logRef,
+            lastError: null,
+            restartRequired: true,
+        });
+        fs.rmSync(backupRoot, { recursive: true, force: true });
+        output.end();
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.write(`\n[Transactional install error] ${message}\n`);
+        if (swapped && fs.existsSync(packRoot)) {
+            fs.rmSync(packRoot, { recursive: true, force: true });
+        }
+        if (fs.existsSync(backupRoot) && !fs.existsSync(packRoot)) {
+            fs.renameSync(backupRoot, packRoot);
+        }
+        fs.rmSync(stagingRoot, { recursive: true, force: true });
+        try {
+            updateFeaturePackConfig(definition.id, hadInstalledPack ? {
+                status: "installed",
+                targetDir,
+                assetRoot: path.join(packRoot, "models"),
+                receiptRef: previousReceiptPath,
+                version: previousReceipt.packVersion || null,
+                logRef,
+                lastError: message,
+                restartRequired: true,
+            } : {
+                status: "failed",
+                targetDir,
+                logRef,
+                lastError: message,
+                restartRequired: true,
+            });
+        } catch (configError) {
+            output.write(`[Config recovery error] ${configError instanceof Error ? configError.message : String(configError)}\n`);
+        }
+        output.end();
+    }
+}
+
 async function runFeaturePackInstallSequence(input: {
     definition: FeaturePackDefinition;
     pythonExe: string;
@@ -421,6 +738,19 @@ async function runFeaturePackInstallSequence(input: {
     output: fs.WriteStream;
 }) {
     const { definition, pythonExe, targetDir, requirementsFile, logRef, output } = input;
+    const assetManifest = readAssetManifest(definition);
+    if (assetManifest) {
+        await runTransactionalAssetPackInstall({
+            definition,
+            manifest: assetManifest,
+            pythonExe,
+            targetDir,
+            requirementsFile,
+            logRef,
+            output,
+        });
+        return;
+    }
     const attempts: PipAttemptSummary[] = [];
     try {
         for (const [index, source] of PIP_SOURCE_STRATEGY.entries()) {
@@ -489,6 +819,7 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
         throw new Error(`Feature pack requirements file not found: ${requirementsFile}`);
     }
     const targetDir = targetDirFor(definition.id);
+    const assetManifest = readAssetManifest(definition);
     const pythonExe = resolvePythonExecutable(config);
     const firstAttemptArgs = buildPipInstallArgs(targetDir, requirementsFile, PIP_SOURCE_STRATEGY[0]);
     const commandSummary = formatCommandSummary(pythonExe, firstAttemptArgs);
@@ -500,11 +831,33 @@ export async function triggerFeaturePackInstall(packId: string, dryRun = false) 
             sourceStrategy: sourceStrategyForResponse(),
             targetDir,
             requirementsFile,
+            assetManifest: assetManifest ? {
+                version: assetManifest.version,
+                license: assetManifest.license || null,
+                assets: assetManifest.assets.map((asset) => ({ id: asset.id, size: asset.size, sha256: asset.sha256 })),
+            } : null,
             restartRequired: true,
         };
     }
 
-    fs.mkdirSync(targetDir, { recursive: true });
+    const existing = (config.runtimeRegistry?.featurePacks?.[definition.id] || {}) as FeaturePackConfigRecord;
+    if (normalizeStatus(existing.status) === "installing") {
+        return {
+            status: "installing",
+            packId: definition.id,
+            commandSummary,
+            sourceStrategy: sourceStrategyForResponse(),
+            targetDir: String(existing.targetDir || targetDir),
+            requirementsFile,
+            logRef: existing.logRef || null,
+            restartRequired: true,
+            message: "能力包正在安装，本次请求未重复启动下载。",
+        };
+    }
+
+    if (!definition.assetManifestFile) {
+        fs.mkdirSync(targetDir, { recursive: true });
+    }
     fs.mkdirSync(featurePackLogRoot(), { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const logRef = path.join(featurePackLogRoot(), `${definition.id}-${timestamp}.log`);

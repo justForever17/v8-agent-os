@@ -157,6 +157,10 @@ function creativeMediaStatusLabel(t: ReturnType<typeof useT>, status: unknown) {
         rendering: "app.admin.dashboard.creativeMedia.status.rendering",
         completed: "app.admin.dashboard.creativeMedia.status.completed",
         failed: "app.admin.dashboard.creativeMedia.status.failed",
+        passed: "app.admin.dashboard.creativeMedia.status.passed",
+        repairable: "app.admin.dashboard.creativeMedia.status.repairable",
+        review_required: "app.admin.dashboard.creativeMedia.status.review_required",
+        warning: "app.admin.dashboard.creativeMedia.status.warning",
         pending_quality_review: "app.admin.dashboard.creativeMedia.status.pending_quality_review",
         running: "app.admin.dashboard.creativeMedia.status.running",
         paused: "app.admin.dashboard.creativeMedia.status.paused",
@@ -177,6 +181,17 @@ function listOfStrings(value: unknown): string[] {
 function nestedText(value: unknown, key: string) {
     if (!value || typeof value !== "object") return "";
     return text((value as Record<string, unknown>)[key], "");
+}
+
+function qualityRepairLabel(t: ReturnType<typeof useT>, quality: Record<string, unknown>) {
+    const repairs = Array.isArray(quality.repairAttempts) ? quality.repairAttempts.length : 0;
+    if (repairs > 0) {
+        return t("app.admin.dashboard.creativeMedia.qualityRepairCount", { count: repairs });
+    }
+    if (quality.requiredFeaturePackId) {
+        return t("app.admin.dashboard.creativeMedia.qualityNeedsEnhancementPack");
+    }
+    return t("app.admin.dashboard.creativeMedia.qualityNoRepair");
 }
 
 function productionTitle(workOrder: Record<string, unknown>) {
@@ -879,17 +894,20 @@ export default function CreativeMediaPage() {
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableId")}</TableHead>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableJob")}</TableHead>
-                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableStatus")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableQualityProfile")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableQualityResult")}</TableHead>
+                                    <TableHead>{t("app.admin.dashboard.creativeMedia.tableQualityRepair")}</TableHead>
                                 </TableRow>
                             </TableHeader>
                             <TableBody>
                                 {data.qualityJobs.length ? data.qualityJobs.slice(0, 6).map((quality) => (
                                     <TableRow key={text(quality.qualityJobId)}>
-                                        <TableCell className="max-w-32 truncate font-mono text-xs">{text(quality.qualityJobId)}</TableCell>
-                                        <TableCell className="max-w-32 truncate font-mono text-xs">{text(quality.jobId)}</TableCell>
-                                        <TableCell>{creativeMediaStatusLabel(t, quality.status)}</TableCell>
+                                        <TableCell className="max-w-36 truncate">{text(quality.qualityProfile, t("app.admin.dashboard.creativeMedia.qualityProfileDefault"))}</TableCell>
+                                        <TableCell className="max-w-56">
+                                            <div className="font-medium">{creativeMediaStatusLabel(t, quality.status)}</div>
+                                            <div className="line-clamp-2 text-xs text-muted-foreground">{text(quality.summary)}</div>
+                                        </TableCell>
+                                        <TableCell className="max-w-36 text-sm text-muted-foreground">{qualityRepairLabel(t, quality)}</TableCell>
                                     </TableRow>
                                 )) : <EmptyRow colSpan={3} label={t("app.admin.dashboard.creativeMedia.emptyQualityJobs")} />}
                             </TableBody>

@@ -2538,6 +2538,22 @@ class SafetyGuardian:
         if action_type_lower == "hotkey":
             sequence = str((target or {}).get("sequence") or target_values).lower()
             if any(token in sequence for token in ["%{f4}", "^+{esc}", "^{esc}", "#{l}", "#{r}"]):
+                shortcut_id = str((target or {}).get("shortcut_id") or "").strip().lower()
+                shortcut_preconditions = dict((target or {}).get("shortcut_preconditions") or {})
+                if (
+                    shortcut_id == "window.close"
+                    and shortcut_preconditions.get("windowBound")
+                    and shortcut_preconditions.get("windowFocused")
+                    and shortcut_preconditions.get("taskAuthorizesClose")
+                ):
+                    return self._decision(
+                        verdict="allow",
+                        reason="registered_window_close_authorized_by_task_contract",
+                        risk_code="computer_use_registered_window_close",
+                        governance_target="external_mutation",
+                        posture=posture,
+                        details={"action_type": action_type, "target": target or {}, "runtime_context": runtime_context},
+                    )
                 return self._decision(
                     verdict=config["computerUseRules"]["hotkeyLifecycleVerdict"],
                     reason="该热键可能影响系统或窗口生命周期，需要人工确认。",

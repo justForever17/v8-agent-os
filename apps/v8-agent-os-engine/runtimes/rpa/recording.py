@@ -340,7 +340,7 @@ class RPARecordingManager:
             runtime_kind="computer_use",
             step=step,
             metadata={
-                "traceSchemaVersion": 2,
+                "traceSchemaVersion": 3,
                 "recordedBy": "human",
                 "recordingSessionId": session["recordingSessionId"],
                 "recordingTargetMode": session.get("targetMode"),
@@ -519,6 +519,13 @@ class RPARecordingManager:
             params.setdefault("prefer_sendinput_click", True)
 
         metadata = _coerce_dict(event.get("metadata"))
+        shortcut_resolution = _coerce_dict(
+            event.get("shortcutResolution")
+            or params.get("shortcut_resolution")
+            or metadata.get("shortcutResolution")
+        )
+        if shortcut_resolution:
+            params["shortcut_resolution"] = shortcut_resolution
         metadata.update(
             {
                 "recordedBy": "human",
@@ -540,6 +547,7 @@ class RPARecordingManager:
                 "mergeGroupId": event.get("mergeGroupId") or metadata.get("mergeGroupId"),
                 "captureBackend": event.get("captureBackend") or metadata.get("captureBackend"),
                 "nativeHotkey": _coerce_dict(event.get("nativeHotkey") or metadata.get("nativeHotkey")),
+                "shortcutResolution": shortcut_resolution,
                 "targetWindow": _coerce_dict(event.get("targetWindow") or metadata.get("targetWindow")),
                 "hoverSample": _coerce_dict(event.get("hoverSample") or metadata.get("hoverSample")),
                 "coordinateFallback": has_coordinate_fallback,

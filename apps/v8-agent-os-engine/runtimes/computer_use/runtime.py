@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 try:  # pragma: no cover - environment dependent
     import psutil
@@ -1611,7 +1611,9 @@ class ComputerUseRuntime:
     ) -> bool:
         if action_type in {"open_app", "focus_window", "wait_for_element"}:
             return True
-        if action_type == "scroll":
+        if action_type in {"click", "double_click", "right_click", "hover", "drag", "scroll"}:
+            return True
+        if action_type == "hotkey" and isinstance(action_payload.get("shortcut_resolution"), dict):
             return True
         if action_type == "type_text" and (
             isinstance(action_payload.get("point"), list)
@@ -1621,6 +1623,101 @@ class ComputerUseRuntime:
         ):
             return True
         return False
+
+    def _capture_window_visual_frame(
+        self,
+        *,
+        action_payload: Dict[str, Any],
+    ) -> Image.Image | None:
+        descriptor, raw_path = tempfile.mkstemp(prefix="v8os-shortcut-", suffix=".png")
+        os.close(descriptor)
+        path = Path(raw_path)
+        try:
+            self.driver.capture_screenshot(
+                str(path),
+                window_title=action_payload.get("window_title"),
+                window_handle=action_payload.get("window_handle"),
+            )
+            if not path.exists() or path.stat().st_size <= 0:
+                return None
+            with Image.open(path) as image:
+                return image.convert("RGB").copy()
+        except Exception:
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _point_visual_verification_config(action_payload: Dict[str, Any]) -> Dict[str, Any]:
+        point = action_payload.get("point")
+        if not isinstance(point, list) or len(point) != 2:
+            return {}
+        try:
+            x, y = float(point[0]), float(point[1])
+        except (TypeError, ValueError):
+            return {}
+        if not (0 <= x <= 1 and 0 <= y <= 1):
+            return {}
+        return {
+            "normalizedRegion": [
+                max(0.0, x - 0.14),
+                max(0.0, y - 0.04),
+                min(1.0, x + 0.14),
+                min(1.0, y + 0.04),
+            ],
+            "pixelDeltaThreshold": 18,
+            "minimumChangedPixelRatio": 0.002,
+        }
+
+    @staticmethod
+    def _shortcut_visual_change_evidence(
+        *,
+        before: Image.Image | None,
+        after: Image.Image | None,
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if before is None or after is None:
+            return {"available": False, "passed": False, "reason": "visual_frame_unavailable"}
+        if before.size != after.size:
+            return {
+                "available": False,
+                "passed": False,
+                "reason": "visual_frame_size_changed",
+                "beforeSize": list(before.size),
+                "afterSize": list(after.size),
+            }
+        raw_region = list(config.get("normalizedRegion") or [])
+        if len(raw_region) != 4:
+            return {"available": False, "passed": False, "reason": "visual_region_missing"}
+        try:
+            left, top, right, bottom = [float(item) for item in raw_region]
+        except (TypeError, ValueError):
+            return {"available": False, "passed": False, "reason": "visual_region_invalid"}
+        if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+            return {"available": False, "passed": False, "reason": "visual_region_invalid"}
+        box = (
+            int(round(before.width * left)),
+            int(round(before.height * top)),
+            int(round(before.width * right)),
+            int(round(before.height * bottom)),
+        )
+        before_region = before.crop(box)
+        after_region = after.crop(box)
+        difference = ImageChops.difference(before_region, after_region).convert("L")
+        histogram = difference.histogram()
+        pixel_count = max(1, sum(histogram))
+        delta_threshold = max(1, min(int(config.get("pixelDeltaThreshold") or 24), 254))
+        changed_ratio = sum(histogram[delta_threshold + 1 :]) / pixel_count
+        minimum_ratio = max(0.0001, min(float(config.get("minimumChangedPixelRatio") or 0.005), 1.0))
+        return {
+            "available": True,
+            "passed": changed_ratio >= minimum_ratio,
+            "normalizedRegion": [left, top, right, bottom],
+            "pixelDeltaThreshold": delta_threshold,
+            "changedPixelRatio": round(changed_ratio, 6),
+            "minimumChangedPixelRatio": minimum_ratio,
+            "regionSize": list(before_region.size),
+        }
 
     def _pre_action_scene_assessment(
         self,
@@ -2423,7 +2520,22 @@ class ComputerUseRuntime:
             },
         )
         try:
-            self.driver.hotkey("^l", window_title=current_title or None, window_handle=int(window_handle))
+            from runtimes.computer_use.shortcut_registry import shortcut_registry
+
+            explorer_app = self.app_catalog.resolve_app(
+                explicit_app_id="explorer",
+                window_title=current_title or None,
+                include_running=True,
+            )
+            focus_shortcut = shortcut_registry.resolve(
+                "app.focus_location",
+                app=explorer_app,
+            )
+            self.driver.hotkey(
+                str(focus_shortcut.get("driverSequence") or ""),
+                window_title=current_title or None,
+                window_handle=int(window_handle),
+            )
             time.sleep(0.08)
             self.driver.type_text_in_window(
                 text=normalized_target_path,
@@ -6115,6 +6227,8 @@ class ComputerUseRuntime:
             scene_payload=scene_payload,
             binding_decision=binding_decision,
         )
+        shortcut_resolution = dict(result_metadata.get("shortcutResolution") or {})
+        shortcut_verification = dict(verification.get("details") or {})
         return {
             "binding": {
                 "requestedAppId": getattr(binding_decision, "requested_app_id", None),
@@ -6153,6 +6267,17 @@ class ComputerUseRuntime:
                     else "semantic_path"
                 ),
                 "fallbackOrder": list(recovery.fallback_order),
+            },
+            "shortcut": {
+                "registered": bool(shortcut_resolution.get("id")),
+                "shortcutId": shortcut_resolution.get("id"),
+                "guideId": shortcut_resolution.get("guideId"),
+                "platform": shortcut_resolution.get("platform"),
+                "driverSequence": shortcut_resolution.get("driverSequence"),
+                "stateChangeRequired": bool(shortcut_resolution.get("stateChangeRequired")),
+                "stateChanged": bool(shortcut_verification.get("stateChanged")),
+                "preconditionEvidence": dict(shortcut_resolution.get("preconditionEvidence") or {}),
+                "visualEvidence": dict(shortcut_verification.get("visualEvidence") or {}),
             },
             "failureCategory": failure_category,
         }
@@ -6293,6 +6418,7 @@ class ComputerUseRuntime:
                 "updateRequest": dict(result.metadata.get("updateRequest") or {}) if isinstance(result.metadata, dict) else {},
                 "learnedInteraction": dict(result.metadata.get("learnedInteraction") or {}) if isinstance(result.metadata, dict) else {},
                 "visualGuardSkipped": dict(result.metadata.get("visualGuardSkipped") or {}) if isinstance(result.metadata, dict) else {},
+                "shortcutResolution": dict(result.metadata.get("shortcutResolution") or {}) if isinstance(result.metadata, dict) else {},
             },
         )
         trace_payload = self.trace_store.append_step(
@@ -6302,7 +6428,7 @@ class ComputerUseRuntime:
             runtime_kind="computer_use",
             step=step,
             metadata={
-                "traceSchemaVersion": 2,
+                "traceSchemaVersion": 3,
                 "appId": app_id,
                 "invocationSource": getattr(invocation, "invocation_source", None),
                 "executionIntent": getattr(invocation, "execution_intent", None),
@@ -7421,6 +7547,23 @@ class ComputerUseRuntime:
             prefer_sendinput_click=prefer_sendinput_click,
         ).as_dict()
 
+    @staticmethod
+    def _resolve_sendinput_text_preference(
+        payload: Dict[str, Any],
+        text: str,
+        *,
+        platform_name: str | None = None,
+    ) -> bool:
+        explicit = (
+            payload.get("prefer_sendinput_text")
+            if payload.get("prefer_sendinput_text") is not None
+            else payload.get("preferSendInputText")
+        )
+        if explicit is not None:
+            return bool(explicit)
+        effective_platform = str(platform_name or os.name).strip().lower()
+        return effective_platform == "nt" and bool(text) and not text.isascii()
+
     def _type_target_from_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         clipboard_payload = normalize_clipboard_payload(
             payload=payload,
@@ -7429,17 +7572,40 @@ class ComputerUseRuntime:
             file_paths=payload.get("file_paths"),
             attachment_paths=payload.get("attachment_paths"),
         )
+        text_value = str(clipboard_payload.get("text") or "")
         focus_hotkey_sequence = str(
             payload.get("focus_hotkey_sequence") or payload.get("focusHotkeySequence") or ""
         ).strip()
+        focus_shortcut_id = str(
+            payload.get("focus_shortcut_id") or payload.get("focusShortcutId") or ""
+        ).strip()
+        focus_shortcut_resolution: Dict[str, Any] | None = None
+        if focus_shortcut_id and not focus_hotkey_sequence:
+            try:
+                from runtimes.computer_use.shortcut_registry import shortcut_registry
+
+                app = self.app_catalog.resolve_app(
+                    explicit_app_id=payload.get("app_id"),
+                    app_name=payload.get("app_name"),
+                    window_title=payload.get("window_title"),
+                    include_running=True,
+                )
+                focus_shortcut_resolution = shortcut_registry.resolve(
+                    focus_shortcut_id,
+                    app=app,
+                )
+                focus_hotkey_sequence = str(focus_shortcut_resolution.get("driverSequence") or "").strip()
+            except Exception as exc:
+                raise DesktopDriverError(
+                    f"无法解析输入焦点快捷键 {focus_shortcut_id}: {exc}"
+                ) from exc
         window_typing_focus_mode = self._window_typing_focus_mode(payload)
         file_paste_strategy = str(
             payload.get("file_paste_strategy") or payload.get("filePasteStrategy") or ""
         ).strip().lower()
-        prefer_sendinput_text = bool(
-            payload.get("prefer_sendinput_text")
-            if payload.get("prefer_sendinput_text") is not None
-            else payload.get("preferSendInputText")
+        prefer_sendinput_text = self._resolve_sendinput_text_preference(
+            payload,
+            text_value,
         )
         focus_hotkey_metadata: Dict[str, Any] | None = None
         if focus_hotkey_sequence:
@@ -7451,12 +7617,15 @@ class ComputerUseRuntime:
                 )
                 focus_hotkey_metadata = {
                     "sequence": focus_hotkey_sequence,
+                    "shortcutId": focus_shortcut_id or None,
+                    "shortcutResolution": dict(focus_shortcut_resolution or {}),
                     "status": "applied",
                     "target": focused,
                 }
             except Exception as exc:
                 focus_hotkey_metadata = {
                     "sequence": focus_hotkey_sequence,
+                    "shortcutId": focus_shortcut_id or None,
                     "status": "failed",
                     "error": str(exc),
                 }
@@ -7465,7 +7634,6 @@ class ComputerUseRuntime:
             action_payload=payload,
         )
         preflight = None
-        text_value = str(clipboard_payload.get("text") or "")
         target_input_kind = classify_target_input_kind(
             action_payload=payload,
             text=text_value,
@@ -7949,6 +8117,75 @@ class ComputerUseRuntime:
                 },
                 level="executed_only",
             )
+        shortcut_resolution = dict(action_payload.get("shortcut_resolution") or {})
+        if action_type == "hotkey" and shortcut_resolution.get("id"):
+            before_tree = (before_observation or {}).get("treeHash")
+            after_tree = (after_observation or {}).get("treeHash")
+            before_screen = (before_observation or {}).get("screenHash")
+            after_screen = (after_observation or {}).get("screenHash")
+            visual_evidence = dict(result.metadata.get("shortcutVisualEvidence") or {})
+            state_changed = bool(
+                (before_tree and after_tree and before_tree != after_tree)
+                or (before_screen and after_screen and before_screen != after_screen)
+                or visual_evidence.get("passed")
+            )
+            precondition_evidence = dict(shortcut_resolution.get("preconditionEvidence") or {})
+            window_bound = bool(
+                precondition_evidence.get("windowBound")
+                and (
+                    result.target.get("windowHandle")
+                    or result.target.get("handle")
+                    or result.target.get("windowTitle")
+                    or result.target.get("title")
+                    or action_payload.get("window_handle")
+                    or action_payload.get("window_title")
+                )
+            )
+            details = {
+                "shortcutId": shortcut_resolution.get("id"),
+                "guideId": shortcut_resolution.get("guideId"),
+                "platform": shortcut_resolution.get("platform"),
+                "displaySequence": shortcut_resolution.get("displaySequence"),
+                "driverSequence": shortcut_resolution.get("driverSequence"),
+                "source": dict(shortcut_resolution.get("source") or {}),
+                "preconditions": list(shortcut_resolution.get("preconditions") or []),
+                "preconditionEvidence": precondition_evidence,
+                "windowBound": window_bound,
+                "stateChangeRequired": bool(shortcut_resolution.get("stateChangeRequired")),
+                "stateChanged": state_changed,
+                "visualEvidence": visual_evidence,
+                "beforeTreeHash": before_tree,
+                "afterTreeHash": after_tree,
+                "beforeScreenHash": before_screen,
+                "afterScreenHash": after_screen,
+            }
+            if not window_bound:
+                return ComputerUseVerification(
+                    passed=False,
+                    status="registered_shortcut_window_unconfirmed",
+                    reason="已发送注册快捷键，但目标窗口绑定证据不足。",
+                    details=details,
+                    level="review_required",
+                )
+            if bool(shortcut_resolution.get("stateChangeRequired")) and not state_changed:
+                return ComputerUseVerification(
+                    passed=False,
+                    status="registered_shortcut_state_unconfirmed",
+                    reason="已发送注册快捷键，但前后界面没有提供可验证的状态变化。",
+                    details=details,
+                    level="review_required",
+                )
+            return ComputerUseVerification(
+                passed=True,
+                status="registered_shortcut_verified" if state_changed else "registered_shortcut_dispatched",
+                reason=(
+                    "注册快捷键已在绑定窗口执行，并观察到界面状态变化。"
+                    if state_changed
+                    else "注册快捷键已在绑定窗口执行；该快捷键不要求界面状态变化。"
+                ),
+                details=details,
+                level="verified" if state_changed else "soft_verified",
+            )
         text_input_status = str(((target_metadata.get("textInputCapability") or {}).get("status")) or "").strip().lower()
         payload_file_paths = list(action_payload.get("file_paths") or action_payload.get("attachment_paths") or [])
         if not payload_file_paths and action_payload.get("file_path"):
@@ -7978,6 +8215,7 @@ class ComputerUseRuntime:
         if action_type == "type_text" and (
             bool(target_metadata.get("coordinateFallback")) or text_input_status == "coordinate_window_target"
         ):
+            visual_evidence = dict(result.metadata.get("inputVisualEvidence") or {})
             details = {
                 "clickedPoint": result.target.get("clickedPoint"),
                 "coordinateSource": target_metadata.get("coordinateSource"),
@@ -7987,6 +8225,7 @@ class ComputerUseRuntime:
                 "afterTreeHash": (after_observation or {}).get("treeHash"),
                 "beforeScreenHash": (before_observation or {}).get("screenHash"),
                 "afterScreenHash": (after_observation or {}).get("screenHash"),
+                "visualEvidence": visual_evidence,
             }
             return ComputerUseVerification(
                 passed=True,
@@ -8445,6 +8684,11 @@ class ComputerUseRuntime:
             "sequence": payload.get("sequence"),
             "amount": payload.get("amount"),
         }
+        shortcut_resolution = dict(payload.get("shortcut_resolution") or {})
+        if shortcut_resolution:
+            target["shortcut_id"] = shortcut_resolution.get("id")
+            target["shortcut_scope"] = shortcut_resolution.get("scope")
+            target["shortcut_preconditions"] = dict(shortcut_resolution.get("preconditionEvidence") or {})
         if str(action_type or "").strip().lower() == "type_text":
             target["text_preview"] = str(payload.get("text") or "")[:80]
         return {key: value for key, value in target.items() if value not in (None, "", [])}
@@ -9857,6 +10101,9 @@ class ComputerUseRuntime:
                 or (visual_guard_requested and requested_action not in {"open_app"})
                 else 1
             )
+            if action_type == "hotkey" and isinstance(normalized_payload.get("shortcut_resolution"), dict):
+                # Toggle shortcuts are not idempotent; a blind retry can undo the first action.
+                max_attempts = 1
             if action_type in {"click", "double_click", "right_click", "hover"} and (
                 self._has_explicit_visual_locator(normalized_payload)
                 or normalized_payload.get("point_candidates")
@@ -9878,6 +10125,7 @@ class ComputerUseRuntime:
             before_observation = None
             before_observed: ComputerUseObservation | None = None
             for attempt_index in range(1, max_attempts + 1):
+                shortcut_visual_before: Image.Image | None = None
                 try:
                     self._raise_if_controlled(run_handle=run_handle)
                     if attempt_index == 1 and isinstance(window_binding_block, dict):
@@ -10145,6 +10393,19 @@ class ComputerUseRuntime:
                                 ),
                             )
                             break
+                    shortcut_resolution = dict(normalized_payload.get("shortcut_resolution") or {})
+                    shortcut_visual_config = dict(shortcut_resolution.get("visualVerification") or {})
+                    point_visual_config = (
+                        self._point_visual_verification_config(normalized_payload)
+                        if action_type in {"type_text", "click", "double_click"}
+                        else {}
+                    )
+                    action_visual_config = shortcut_visual_config or point_visual_config
+                    action_visual_before = (
+                        self._capture_window_visual_frame(action_payload=normalized_payload)
+                        if action_visual_config
+                        else None
+                    )
                     result = runner(run_handle, normalized_payload)
                     if high_risk_action and action_side_effect_receipt is not None:
                         side_effect_idempotency_service.complete(
@@ -10244,9 +10505,23 @@ class ComputerUseRuntime:
                         post_observation = observed.as_dict()
                     except Exception:
                         result.observation = result.observation
+                    if action_visual_before is not None and action_visual_config:
+                        action_visual_after = self._capture_window_visual_frame(
+                            action_payload=normalized_payload,
+                        )
+                        visual_evidence = self._shortcut_visual_change_evidence(
+                            before=action_visual_before,
+                            after=action_visual_after,
+                            config=action_visual_config,
+                        )
+                        if shortcut_visual_config:
+                            result.metadata["shortcutVisualEvidence"] = visual_evidence
+                        elif point_visual_config:
+                            evidence_key = "inputVisualEvidence" if action_type == "type_text" else "targetVisualEvidence"
+                            result.metadata[evidence_key] = visual_evidence
                     observation_policy = self._observation_policy_config()
                     if bool(observation_policy.get("frameSequenceEnabled", True)):
-                        result.metadata["observationBundle"] = build_observation_bundle(
+                        observation_bundle = build_observation_bundle(
                             action_type=action_type,
                             action_payload=normalized_payload,
                             route=str(
@@ -10258,6 +10533,21 @@ class ComputerUseRuntime:
                             after_observation=post_observation,
                             desktop_live_context=self._desktop_live_observation_context(),
                         )
+                        target_visual_evidence = dict(
+                            result.metadata.get("inputVisualEvidence")
+                            or result.metadata.get("targetVisualEvidence")
+                            or {}
+                        )
+                        if target_visual_evidence:
+                            pre_to_post = dict((observation_bundle.get("diff") or {}).get("preToPost") or {})
+                            pre_to_post["visualRegionChanged"] = bool(target_visual_evidence.get("passed"))
+                            observation_bundle["diff"]["preToPost"] = pre_to_post
+                            observation_bundle["diff"]["stateAdvanced"] = bool(
+                                observation_bundle["diff"].get("stateAdvanced")
+                                or target_visual_evidence.get("passed")
+                            )
+                            observation_bundle["targetVisualEvidence"] = target_visual_evidence
+                        result.metadata["observationBundle"] = observation_bundle
                     verification = self._verify_action_result(
                         action_type=action_type,
                         action_payload=normalized_payload,
@@ -10943,6 +11233,9 @@ class ComputerUseRuntime:
                     window_title=runtime_payload.get("window_title"),
                     window_handle=runtime_payload.get("window_handle"),
                 ),
+                metadata={
+                    "shortcutResolution": dict(runtime_payload.get("shortcut_resolution") or {}),
+                },
             ),
         )
 
@@ -11428,6 +11721,7 @@ class ComputerUseRuntime:
                     else merged_step.get("preferSendInputText")
                 ),
                 focus_hotkey_sequence=merged_step.get("focus_hotkey_sequence") or merged_step.get("focusHotkeySequence"),
+                focus_shortcut_id=merged_step.get("focus_shortcut_id") or merged_step.get("focusShortcutId"),
                 window_typing_focus_mode=merged_step.get("window_typing_focus_mode") or merged_step.get("windowTypingFocusMode"),
                 file_paste_strategy=merged_step.get("file_paste_strategy") or merged_step.get("filePasteStrategy"),
                 window_typing=bool(merged_step.get("window_typing", False)),

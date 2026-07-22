@@ -171,7 +171,7 @@ class ComputerUseTraceStore:
             existing["goal"] = normalized_goal
         merged_metadata = dict(existing.get("metadata") or {})
         merged_metadata.update(incoming_metadata)
-        merged_metadata["traceSchemaVersion"] = 2
+        merged_metadata["traceSchemaVersion"] = 3
         source_goals = [
             str(item).strip()
             for item in list(merged_metadata.get("sourceGoals") or [])

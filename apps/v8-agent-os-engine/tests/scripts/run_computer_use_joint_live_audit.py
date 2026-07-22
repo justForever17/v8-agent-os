@@ -171,23 +171,89 @@ def _qqmusic_brief(stamp: str) -> dict[str, Any]:
         "taskBriefId": f"qqmusic-{stamp}",
         "goal": (
             "启动 QQ音乐，使用应用顶部搜索框搜索‘晴天 周杰伦’，点击第一条歌曲结果，"
-            "进入播放页并点击播放控件，确认歌曲处于播放状态；"
+            "进入播放页后优先使用当前应用已绑定的播放/暂停快捷键，确认歌曲处于播放状态；"
             "最后关闭 QQ音乐窗口并关闭本轮启动的全部 QQMusic 进程。"
         ),
         "context": (
             "这是用户明确授权的真实 Computer Use 联合验收。QQ音乐是自绘界面，测试开始前必须没有 QQMusic 进程。"
             "进入搜索结果后，先定位第一行‘晴天 - 周杰伦’，再点击该行或行内绿色播放控件；"
-            "播放页底部播放器栏的绿色播放/暂停控件必须依据当前截图定位，不得沿用旧坐标。"
+            "播放页必须先读取快捷键档案并使用 media.play_pause；只有快捷键验证失败后才可移动鼠标显露控件，"
+            "不得依赖人工移动鼠标维持控件显示，也不得沿用旧坐标。"
         ),
         "writeSet": [],
         "expectedOutputs": ["搜索结果截图", "播放状态截图", "QQMusic 进程清零"],
         "acceptanceContract": [
             "必须实际输入搜索词‘晴天 周杰伦’并提交。",
             "必须点击第一条歌曲结果并进入播放页。",
-            "必须点击播放控件，并从新鲜截图确认歌曲处于播放状态。",
+            "必须通过 media.play_pause 完成播放动作，并从新鲜截图确认应用状态发生变化。",
             "必须关闭窗口并终止本轮启动的全部 QQMusic 进程。",
         ],
         "constraints": ["不得操作 QQ 聊天应用。", "不得使用 shell 或 RPA。", "每一步只能依据当前新鲜截图。"],
+    }
+
+
+def _qqmusic_shortcut_replay_evidence(*, run_id: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    from runtimes.computer_use.trace_store import trace_store
+    from runtimes.rpa.compiler import rpa_trace_compiler
+
+    verified_episode_actions: list[dict[str, Any]] = []
+    coordinate_play_actions: list[dict[str, Any]] = []
+    for item in actions:
+        if not isinstance(item, dict) or not item.get("ok"):
+            continue
+        args = dict(item.get("args") or {})
+        tool_name = str(item.get("tool") or "")
+        if tool_name == "desktop_shortcut" and str(args.get("shortcut_id") or "") == "media.play_pause":
+            evidence = dict(item.get("evidence") or {})
+            verification = dict(evidence.get("verification") or {})
+            if bool(verification.get("passed")) and bool(evidence.get("stateChanged")):
+                verified_episode_actions.append(item)
+        if tool_name == "desktop_click":
+            target = str(args.get("target") or "").lower()
+            if any(token in target for token in ("底部播放器", "播放器栏", "bottom player", "player bar")) and any(
+                token in target for token in ("播放", "play")
+            ):
+                coordinate_play_actions.append(item)
+
+    trace = trace_store.get_trace(run_id) or {}
+    trace_shortcuts = [
+        dict(step)
+        for step in list(trace.get("steps") or [])
+        if isinstance(step, dict)
+        and str(dict(dict(step.get("signals") or {}).get("shortcut") or {}).get("shortcutId") or "")
+        == "media.play_pause"
+    ]
+    draft: dict[str, Any] = {}
+    compile_error = ""
+    try:
+        draft = rpa_trace_compiler.compile_run_to_draft(run_id, save=False)
+    except Exception as exc:  # noqa: BLE001 - live evidence must preserve the actual failure.
+        compile_error = f"{type(exc).__name__}: {exc}"
+    replay_steps = [
+        dict(step)
+        for step in list(draft.get("steps") or [])
+        if isinstance(step, dict)
+        and str(dict(step.get("params") or {}).get("shortcut_resolution", {}).get("id") or "")
+        == "media.play_pause"
+    ]
+    replay_ready = any(
+        bool(dict(dict(step.get("assessment") or {}).get("signals") or {}).get("shortcutReplayReady"))
+        for step in replay_steps
+    )
+    return {
+        "runId": run_id,
+        "episodeShortcutVerified": bool(verified_episode_actions),
+        "coordinatePlayFallbackUsed": bool(coordinate_play_actions),
+        "traceFound": bool(trace),
+        "traceSchemaVersion": dict(trace.get("metadata") or {}).get("traceSchemaVersion"),
+        "traceShortcutStepCount": len(trace_shortcuts),
+        "rpaDraftCompiled": bool(draft),
+        "shortcutReplayReady": replay_ready,
+        "compileError": compile_error or None,
+        "passed": bool(verified_episode_actions)
+        and not coordinate_play_actions
+        and bool(trace_shortcuts)
+        and replay_ready,
     }
 
 
@@ -206,10 +272,11 @@ def _run_direct_case(
     else:
         output_relative = ""
         brief = _qqmusic_brief(stamp)
+    run_id = f"run-computer-use-direct-{case_id}-{stamp}"
     result = execute_task(
         episode_id=f"episode_direct_{case_id}_{stamp}",
         session_id=f"computer-use-direct-{case_id}-{stamp}",
-        run_id=f"run-computer-use-direct-{case_id}-{stamp}",
+        run_id=run_id,
         user_id="local-owner",
         project_id=binding["projectId"],
         workspace_id=binding["workspaceId"],
@@ -223,7 +290,13 @@ def _run_direct_case(
     if evidence is not None:
         passed = passed and bool(evidence.get("ok"))
     if case_id == "qqmusic":
-        passed = passed and not process_state
+        shortcut_replay = _qqmusic_shortcut_replay_evidence(
+            run_id=run_id,
+            actions=[dict(item) for item in list(result.get("actions") or []) if isinstance(item, dict)],
+        )
+        passed = passed and not process_state and bool(shortcut_replay.get("passed"))
+    else:
+        shortcut_replay = None
     return {
         "case": case_id,
         "mode": "direct_runtime",
@@ -237,6 +310,7 @@ def _run_direct_case(
         "actionJournal": str(workspace / ".v8-agent-os" / "artifacts" / "computer-use-episode" / f"episode_direct_{case_id}_{stamp}" / "actions.jsonl"),
         "imageEvidence": evidence,
         "remainingQQMusic": process_state,
+        "shortcutReplayEvidence": shortcut_replay,
     }
 
 
@@ -375,7 +449,20 @@ def _wait_supervisor_case(
     if image_evidence is not None:
         passed = passed and bool(image_evidence.get("ok"))
     if case_id == "qqmusic":
-        passed = passed and not process_state
+        episode_run_id = str(episode.get("runId") or episode.get("run_id") or "").strip()
+        task_actions = [
+            dict(action)
+            for item in task_results
+            for action in list(item.get("actions") or [])
+            if isinstance(action, dict)
+        ]
+        shortcut_replay = _qqmusic_shortcut_replay_evidence(
+            run_id=episode_run_id,
+            actions=task_actions,
+        )
+        passed = passed and not process_state and bool(shortcut_replay.get("passed"))
+    else:
+        shortcut_replay = None
     return {
         "case": case_id,
         "mode": "supervisor_live",
@@ -392,6 +479,7 @@ def _wait_supervisor_case(
         "unexpectedSupervisorTools": unexpected_supervisor_tools,
         "imageEvidence": image_evidence,
         "remainingQQMusic": process_state,
+        "shortcutReplayEvidence": shortcut_replay,
     }
 
 

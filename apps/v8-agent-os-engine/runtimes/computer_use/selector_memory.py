@@ -664,7 +664,7 @@ class ComputerUseSelectorMemory:
             if not patch:
                 continue
             item_selector_key = str(match.get("selectorKey") or "").strip()
-            if selector_key_value and item_selector_key and item_selector_key != selector_key_value:
+            if selector_key_value and item_selector_key != selector_key_value:
                 continue
             item_action_name = str(match.get("actionName") or "").strip().lower()
             if action_name_value and item_action_name and item_action_name != action_name_value:
@@ -676,7 +676,7 @@ class ComputerUseSelectorMemory:
             if window_class_value and item_window_class and item_window_class != window_class_value:
                 continue
             item_target_text = str(match.get("targetText") or "").strip()
-            if target_text_key and item_target_text and item_target_text != target_text_key:
+            if target_text_key and item_target_text != target_text_key:
                 continue
 
             score = int(item.get("weight") or 0)
@@ -697,8 +697,6 @@ class ComputerUseSelectorMemory:
             if target_text_key:
                 if item_target_text == target_text_key:
                     score += 22
-                elif not item_target_text:
-                    score += 4
             elif item_target_text:
                 score -= 4
             item_source = str(item.get("source") or "").strip().lower()

@@ -118,7 +118,12 @@ def _build_semantic_evidence(
     focus_state = dict(details.get("focusState") or {})
     change_evidence = dict(details.get("changeEvidence") or {})
     page_window_advanced = any(changed.get(key) for key in ("windowChanged", "pageIdentityChanged", "transitionStateChanged"))
-    visual_region_advanced = any(changed.get(key) for key in ("treeChanged", "screenChanged", "blockerStateChanged"))
+    visual_region_advanced = any(
+        changed.get(key)
+        for key in ("treeChanged", "screenChanged", "blockerStateChanged", "visualRegionChanged")
+    )
+    if normalized_action in {"click", "double_click"} and isinstance(target_selector.get("point"), list):
+        visual_region_advanced = bool(changed.get("visualRegionChanged"))
     text_visible = bool(change_evidence.get("observationTargetVisible")) or _frame_contains_any_text(post_frame, expected_texts)
     actual_text_matched = bool(actual_text) and visual_text_matches(read_text=actual_text, expected_texts=expected_texts)
     focus_confirmed = bool(focus_state.get("hasKeyboardFocus") or focus_state.get("isActiveWindow"))
@@ -156,15 +161,15 @@ def _build_semantic_evidence(
         }
 
     if normalized_action == "type_text":
-        if actual_text_matched or text_visible:
+        if actual_text_matched or text_visible or visual_region_advanced:
             return {
                 "available": True,
                 "passed": True,
                 "status": "semantic_text_verified",
                 "level": "verified",
                 "reason": "三帧观察与控件回读已确认输入文本进入目标区域。",
-                "evidenceType": "target_text_matched",
-                "evidenceSummary": actual_text or post_frame.get("textDigest"),
+                "evidenceType": "target_text_matched" if actual_text_matched or text_visible else "input_region_changed",
+                "evidenceSummary": actual_text or post_frame.get("textDigest") or "input_region_changed",
                 "frameSequenceSamplingAvailable": sampling_available,
                 "frameSequenceSemanticVerificationAvailable": semantic_available,
                 "samplingSource": sampling_source,

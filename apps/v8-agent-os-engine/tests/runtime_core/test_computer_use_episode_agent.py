@@ -9,6 +9,7 @@ import pytest
 
 from core.runtime_episode_runner import RuntimeEpisodeRunner
 from core.storage import StorageManager
+from runtimes.computer_use.app_profiles import ComputerUseAppProfiles
 from runtimes.computer_use.episode_agent import ComputerUseEpisodeAgent
 
 
@@ -188,11 +189,230 @@ def test_episode_agent_keeps_bottom_player_click_available_before_desktop_cleanu
     )
     verification = agent._validate_completion()
     assert "play_action_not_identified" not in verification["missing"]
-    assert [item.name for item in agent._tools_for_next_round()] == [
-        "desktop_reveal_controls",
-        "desktop_click",
-        "desktop_close",
+    assert [item.name for item in agent._tools_for_next_round()] == ["desktop_close"]
+
+
+def test_episode_preserves_song_identity_when_compact_result_is_truncated(tmp_path: Path) -> None:
+    agent = ComputerUseEpisodeAgent(
+        episode_id="episode_song_evidence",
+        session_id="session_test",
+        run_id="run_test",
+        user_id="user_test",
+        project_id="project_test",
+        workspace_id="workspace_test",
+        workspace_path=str(tmp_path),
+        task_brief=_brief(goal="启动 QQ音乐，搜索晴天 周杰伦，播放后关闭进程"),
+        runtime=_FakeRuntime(),
+    )
+    agent.active_app_query = "QQ音乐"
+    agent.active_app = {"launchCandidates": [{"executableName": "QQMusic.exe"}]}
+    agent.app_closed = True
+    agent._process_snapshot = lambda _names: set()
+    agent.actions = [
+        {"index": 1, "tool": "desktop_launch", "args": {"app": "QQ音乐"}, "ok": True},
+        {
+            "index": 2,
+            "tool": "desktop_input",
+            "args": {"text": "晴天 周杰伦", "submit": True},
+            "ok": True,
+        },
     ]
+    click = agent._record_action(
+        name="desktop_click",
+        args={"target": "第一条歌曲结果 晴天 - 周杰伦"},
+        result={
+            "noise": "x" * 5000,
+            "afterWindowTitle": "晴天 - 周杰伦",
+            "expectedMediaIdentityMatched": True,
+            "expectedMediaTerms": ["晴天", "周杰伦"],
+            "target": {"title": "晴天 - 周杰伦", "clickedPoint": [492, 545]},
+            "verification": {"passed": True, "status": "semantic_click_verified"},
+        },
+        ok=True,
+    )
+    agent.actions.extend(
+        [
+            {
+                "index": 4,
+                "tool": "desktop_shortcut",
+                "args": {"shortcut_id": "media.play_pause"},
+                "ok": True,
+                "evidence": {"afterWindowTitle": "晴天 - 周杰伦"},
+            },
+            {"index": 5, "tool": "desktop_close", "args": {"terminate_process": True}, "ok": True},
+        ]
+    )
+
+    assert "afterWindowTitle" not in str(click["result"])
+    assert agent._decode_action_result(click)["afterWindowTitle"] == "晴天 - 周杰伦"
+    assert agent._validate_completion()["passed"] is True
+
+
+def test_episode_blocks_liked_list_during_verified_search_result_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent = ComputerUseEpisodeAgent(
+        episode_id="episode_wrong_search_surface",
+        session_id="session_test",
+        run_id="run_test",
+        user_id="user_test",
+        project_id="project_test",
+        workspace_id="workspace_test",
+        workspace_path=str(tmp_path),
+        task_brief=_brief(goal="启动 QQ音乐，搜索晴天 周杰伦并播放"),
+        runtime=_FakeRuntime(),
+    )
+    agent.actions = [
+        {
+            "index": 1,
+            "tool": "desktop_input",
+            "args": {"text": "晴天 周杰伦", "submit": True},
+            "ok": True,
+        }
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_desktop_action_app",
+        lambda _requested: ("QQ音乐", {"appId": "app_qqmusic"}, "QQ音乐", 42),
+    )
+
+    with pytest.raises(RuntimeError, match="喜欢/收藏"):
+        agent._dispatch_desktop_click({"app": "QQ音乐", "target": "左侧喜欢列表", "x": 0.04, "y": 0.25})
+
+
+def test_episode_corrects_result_point_and_rejects_wrong_song_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict = {}
+
+    class _ClickRuntime(_FakeRuntime):
+        app_profiles = ComputerUseAppProfiles()
+
+        def click(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "result": {
+                    "status": "completed",
+                    "target": {"title": "喜欢", "clickedPoint": [50, 250]},
+                    "verification": {"passed": True, "status": "semantic_click_verified"},
+                }
+            }
+
+    agent = ComputerUseEpisodeAgent(
+        episode_id="episode_wrong_song",
+        session_id="session_test",
+        run_id="run_test",
+        user_id="user_test",
+        project_id="project_test",
+        workspace_id="workspace_test",
+        workspace_path=str(tmp_path),
+        task_brief=_brief(goal="启动 QQ音乐，搜索晴天 周杰伦并播放"),
+        runtime=_ClickRuntime(),
+    )
+    agent.actions = [
+        {
+            "index": 1,
+            "tool": "desktop_input",
+            "args": {"text": "晴天 周杰伦", "submit": True},
+            "ok": True,
+        }
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_desktop_action_app",
+        lambda _requested: ("QQ音乐", {"appId": "app_qqmusic"}, "搜索结果", 42),
+    )
+    monkeypatch.setattr(agent, "_current_window_title", lambda: "喜欢")
+    monkeypatch.setattr(agent, "_visual_locator_available", lambda: False)
+    monkeypatch.setattr("runtimes.computer_use.episode_agent.time.sleep", lambda _seconds: None)
+
+    result = agent._dispatch_desktop_click(
+        {"app": "QQ音乐", "target": "第一条歌曲结果 晴天 - 周杰伦", "x": 0.04, "y": 0.25}
+    )
+
+    assert captured["point"] == [0.195, 0.40]
+    assert captured["double"] is True
+    assert captured["selector_key"] == "search_result_first_song"
+    assert captured["target_text"] == "晴天 周杰伦"
+    assert result["profilePointCorrected"] is True
+    assert result["profileActivation"] == "double_click"
+    assert result["expectedMediaIdentityMatched"] is False
+    assert result["verification"]["status"] == "expected_media_identity_not_observed"
+    assert ComputerUseEpisodeAgent._tool_result_ok(result) is False
+
+
+def test_episode_rejects_play_shortcut_before_expected_song_is_visible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent = ComputerUseEpisodeAgent(
+        episode_id="episode_play_too_early",
+        session_id="session_test",
+        run_id="run_test",
+        user_id="user_test",
+        project_id="project_test",
+        workspace_id="workspace_test",
+        workspace_path=str(tmp_path),
+        task_brief=_brief(goal="启动 QQ音乐，搜索晴天 周杰伦并播放"),
+        runtime=_FakeRuntime(),
+    )
+    agent.actions = [
+        {
+            "index": 1,
+            "tool": "desktop_input",
+            "args": {"text": "晴天 周杰伦", "submit": True},
+            "ok": True,
+        }
+    ]
+    monkeypatch.setattr(
+        agent,
+        "_desktop_action_app",
+        lambda _requested: ("QQ音乐", {"appId": "app_qqmusic"}, "喜欢", 42),
+    )
+
+    with pytest.raises(RuntimeError, match="尚未显示本轮搜索歌曲"):
+        agent._dispatch_desktop_shortcut({"app": "QQ音乐", "shortcut_id": "media.play_pause"})
+
+
+def test_episode_verified_update_requested_result_remains_successful() -> None:
+    assert ComputerUseEpisodeAgent._tool_result_ok(
+        {"status": "update_requested", "verification": {"passed": True}}
+    ) is True
+    assert ComputerUseEpisodeAgent._tool_result_ok(
+        {"status": "update_requested", "verification": {"passed": False}}
+    ) is False
+
+
+def test_episode_profile_pointer_failure_does_not_trigger_shortcut_research(tmp_path: Path) -> None:
+    agent = ComputerUseEpisodeAgent(
+        episode_id="episode_profile_retry",
+        session_id="session_test",
+        run_id="run_test",
+        user_id="user_test",
+        project_id="project_test",
+        workspace_id="workspace_test",
+        workspace_path=str(tmp_path),
+        task_brief=_brief(goal="启动 QQ音乐，搜索晴天 周杰伦并播放"),
+        runtime=_FakeRuntime(),
+    )
+    agent.actions = [
+        {
+            "index": 1,
+            "tool": "desktop_click",
+            "args": {"target": "第一条歌曲结果"},
+            "ok": False,
+            "evidence": {"profileSelectorKey": "search_result_first_song"},
+        }
+    ]
+    guidance = agent._shortcut_recovery_guidance(
+        {"applicationProfile": {"researchOnMissingAction": True}}
+    )
+
+    assert guidance["status"] == "profile_retry_recommended"
+    assert guidance["profileSelectorKey"] == "search_result_first_song"
+    assert "do not run shortcut research" in guidance["instruction"]
 
 
 def test_episode_agent_accepts_explicit_blocked_finish_without_false_success(tmp_path: Path) -> None:
@@ -319,7 +539,7 @@ def test_episode_reveal_controls_moves_pointer_without_clicking(
     assert result["method"] == "pointer_move"
 
 
-def test_episode_rejects_close_semantics_through_printable_hotkey(
+def test_episode_routes_registered_close_shortcut_to_desktop_close(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -341,7 +561,7 @@ def test_episode_rejects_close_semantics_through_printable_hotkey(
     )
 
     with pytest.raises(RuntimeError, match="desktop_close"):
-        agent._dispatch_desktop_hotkey({"app": "播放器", "sequence": "ALT+F4"})
+        agent._dispatch_desktop_shortcut({"app": "播放器", "shortcut_id": "window.close"})
 
 
 def test_episode_restores_interrupted_action_journal_without_replaying_from_round_one(

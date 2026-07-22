@@ -105,6 +105,8 @@ class RPATraceCompiler:
         "window_handle",
         "process_name",
         "class_name",
+        "sequence",
+        "shortcut_resolution",
     }
 
     def __init__(
@@ -179,7 +181,12 @@ class RPATraceCompiler:
             action_name = str(params.get("action_name") or params.get("toolbar_action_name") or "").strip().lower()
             selector_key = str(params.get("selector_key") or selector.get("selectorKey") or "").strip().lower()
             control_type = str(selector.get("controlType") or "").strip().lower()
-            parts.append(f"{compiled_use}:{action_name}:{selector_key}:{control_type}")
+            shortcut = dict(params.get("shortcut_resolution") or {})
+            shortcut_id = str(shortcut.get("id") or "").strip().lower()
+            shortcut_sequence = str(shortcut.get("driverSequence") or params.get("sequence") or "").strip().lower()
+            parts.append(
+                f"{compiled_use}:{action_name}:{selector_key}:{control_type}:{shortcut_id}:{shortcut_sequence}"
+            )
         digest = hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()[:12]
         return f"fp.{self._slug(app_id, 'desktop')}.{digest}"
 
@@ -679,6 +686,7 @@ class RPATraceCompiler:
         preflight = dict(signals.get("preflight") or {})
         verification_signal = dict(signals.get("verification") or {})
         recovery_signal = dict(signals.get("recovery") or {})
+        shortcut_signal = dict(signals.get("shortcut") or {})
         failure_category = str(signals.get("failureCategory") or "").strip().lower() or "unknown"
         return {
             "binding": {
@@ -742,6 +750,16 @@ class RPATraceCompiler:
                 "visualLocator": bool(execution.get("visualLocator")),
                 "coordinateFallback": bool(execution.get("coordinateFallback")),
                 "humanApprovalRequired": bool(execution.get("humanApprovalRequired")),
+            },
+            "shortcut": {
+                "registered": bool(shortcut_signal.get("registered")),
+                "shortcutId": shortcut_signal.get("shortcutId"),
+                "guideId": shortcut_signal.get("guideId"),
+                "platform": shortcut_signal.get("platform"),
+                "driverSequence": shortcut_signal.get("driverSequence"),
+                "stateChangeRequired": bool(shortcut_signal.get("stateChangeRequired")),
+                "stateChanged": bool(shortcut_signal.get("stateChanged")),
+                "preconditionEvidence": dict(shortcut_signal.get("preconditionEvidence") or {}),
             },
             "failureCategory": failure_category,
         }
@@ -977,6 +995,23 @@ class RPATraceCompiler:
         signals["preflightWindowBound"] = bool(trace_signals["preflight"].get("windowBound"))
         signals["recoveryVisualFallbackTried"] = bool(trace_signals["recovery"].get("visualFallbackTried"))
         signals["failureCategory"] = trace_signals.get("failureCategory")
+        shortcut_signal = dict(trace_signals.get("shortcut") or {})
+        shortcut_preconditions = dict(shortcut_signal.get("preconditionEvidence") or {})
+        shortcut_replay_ready = bool(
+            compiled_use == "hotkey"
+            and shortcut_signal.get("registered")
+            and shortcut_signal.get("shortcutId")
+            and shortcut_signal.get("driverSequence")
+            and signals["preflightWindowBound"]
+            and shortcut_preconditions.get("windowFocused")
+            and (
+                not shortcut_signal.get("stateChangeRequired")
+                or shortcut_signal.get("stateChanged")
+            )
+        )
+        signals["shortcutId"] = shortcut_signal.get("shortcutId")
+        signals["shortcutRegistered"] = bool(shortcut_signal.get("registered"))
+        signals["shortcutReplayReady"] = shortcut_replay_ready
 
         if compiled_use in {"open_app", "focus_window", "find_and_type", "scroll_list", "click_toolbar_action", "wait_for_element", "double_click"}:
             score += 0.08
@@ -1023,6 +1058,15 @@ class RPATraceCompiler:
             score += 0.03
         elif execution_route == "native_command":
             score += 0.04
+        if compiled_use == "hotkey":
+            if shortcut_replay_ready:
+                score += 0.08
+            elif shortcut_signal.get("registered"):
+                score -= 0.24
+                reasons.append("注册快捷键缺少窗口焦点或状态变化证据，不能稳定复现")
+            else:
+                score -= 0.18
+                reasons.append("原始热键未绑定受审快捷键 ID，不能稳定复现")
 
         if status in {"completed", "success"}:
             score += 0.05
@@ -1109,6 +1153,7 @@ class RPATraceCompiler:
             or verification_passed is False
             or verification_level == "review_required"
             or soft_verified_needs_review
+            or (compiled_use == "hotkey" and not shortcut_replay_ready)
         )
         assessment_status = "excluded" if excluded else ("review_required" if review_required else "accepted")
         decision = self._step_decision_explainer(
@@ -2014,6 +2059,9 @@ class RPATraceCompiler:
         control_type = str(selector.get("controlType") or "").strip().lower()
         class_name = str(selector.get("className") or window.get("className") or "").strip().lower()
         process_name = str(window.get("processName") or "").strip().lower()
+        shortcut = dict(params.get("shortcut_resolution") or {})
+        shortcut_id = str(shortcut.get("id") or "").strip().lower()
+        shortcut_sequence = str(shortcut.get("driverSequence") or params.get("sequence") or "").strip().lower()
         return "|".join(
             [
                 app_id,
@@ -2024,6 +2072,8 @@ class RPATraceCompiler:
                 control_type,
                 class_name,
                 process_name,
+                shortcut_id,
+                shortcut_sequence,
             ]
         )
 
@@ -3003,7 +3053,10 @@ class RPATraceCompiler:
             action_name = str(params.get("action_name") or params.get("toolbar_action_name") or "").strip().lower()
             selector_key = str(params.get("selector_key") or selector.get("selectorKey") or "").strip().lower()
             control_type = str(selector.get("controlType") or "").strip().lower()
-            parts.append(f"{use}:{action_name}:{selector_key}:{control_type}")
+            shortcut = dict(params.get("shortcut_resolution") or {})
+            shortcut_id = str(shortcut.get("id") or "").strip().lower()
+            shortcut_sequence = str(shortcut.get("driverSequence") or params.get("sequence") or "").strip().lower()
+            parts.append(f"{use}:{action_name}:{selector_key}:{control_type}:{shortcut_id}:{shortcut_sequence}")
         digest = hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()[:12]
         return f"fp.{self._slug(app_id, 'desktop')}.{digest}"
 

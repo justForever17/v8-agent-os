@@ -99,6 +99,38 @@ class ComputerUseAppProfiles:
                 bind_process_ids=False,
                 notes="适合验证输入类动作和窗口绑定。",
             ),
+            "app_qqmusic": ComputerUseAppProfile(
+                app_id="app_qqmusic",
+                display_name="QQ音乐",
+                process_names=["qqmusic.exe"],
+                scenario_tags=["media_player", "custom_drawn", "text_input"],
+                title_patterns=["QQ音乐", "QQMusic"],
+                class_names=["TXGuiFoundation"],
+                app_names=["QQ音乐", "QQ Music", "qqmusic"],
+                selectors={
+                    "search_box": {
+                        "point_rect": [0.20, 0.012, 0.45, 0.065],
+                        "target_hints": ["search", "搜索", "查找歌曲", "搜索音乐"],
+                        "window_typing_focus_mode": "application_surface",
+                        "prefer_sendinput_click": True,
+                        "prefer_sendinput_text": True,
+                    },
+                    "search_result_first_song": {
+                        "point_rect": [0.145, 0.36, 0.43, 0.47],
+                        "preferred_point": [0.195, 0.40],
+                        "activation": "double_click",
+                        "target_hints": ["first result", "song result", "第一条", "搜索结果", "歌曲结果"],
+                        "prefer_sendinput_click": True,
+                    }
+                },
+                visual_expectations={
+                    "find_and_type": "搜索框附近应出现查询文本或搜索结果页面。",
+                },
+                visual_guard_actions=["find_and_type"],
+                transient_selectors=["search_box"],
+                bind_process_ids=True,
+                notes="QQ音乐 21.96 本机实测搜索框区域；播放控制使用独立快捷键目录。",
+            ),
             "explorer": ComputerUseAppProfile(
                 app_id="explorer",
                 display_name="文件资源管理器",
@@ -129,7 +161,7 @@ class ComputerUseAppProfiles:
                         "point_rect": [0.18, 0.065, 0.82, 0.115],
                         "point_bias": [0.06, 0.0],
                         "point_biases": [[0.1, 0.0]],
-                        "focus_hotkey_sequence": "%d",
+                        "focus_shortcut_id": "app.focus_location",
                         "window_typing": True,
                         "prefer_sendinput_click": True,
                     },
@@ -221,7 +253,7 @@ class ComputerUseAppProfiles:
                     "address_bar": {
                         "control_type": "Edit",
                         "class_name": "OmniboxViewViews",
-                        "focus_hotkey_sequence": "^l",
+                        "focus_shortcut_id": "browser.focus_location",
                         "window_typing": True,
                         "prefer_sendinput_click": True,
                     }
@@ -246,7 +278,7 @@ class ComputerUseAppProfiles:
                     "address_bar": {
                         "control_type": "Edit",
                         "class_name": "OmniboxViewViews",
-                        "focus_hotkey_sequence": "^l",
+                        "focus_shortcut_id": "browser.focus_location",
                         "window_typing": True,
                         "prefer_sendinput_click": True,
                     }
@@ -271,7 +303,7 @@ class ComputerUseAppProfiles:
                     "address_bar": {
                         "control_type": "Edit",
                         "class_name": "OmniboxViewViews",
-                        "focus_hotkey_sequence": "^l",
+                        "focus_shortcut_id": "browser.focus_location",
                         "window_typing": True,
                         "prefer_sendinput_click": True,
                     }
@@ -295,7 +327,7 @@ class ComputerUseAppProfiles:
                 selectors={
                     "address_bar": {
                         "control_type": "Edit",
-                        "focus_hotkey_sequence": "^l",
+                        "focus_shortcut_id": "browser.focus_location",
                         "window_typing": True,
                         "prefer_sendinput_click": True,
                     }
@@ -323,7 +355,7 @@ class ComputerUseAppProfiles:
                         "point_rect": [0.14, 0.045, 0.8, 0.105],
                         "point_bias": [0.08, 0.0],
                         "point_biases": [[0.12, 0.0], [0.16, 0.0]],
-                        "focus_hotkey_sequence": "^l",
+                        "focus_shortcut_id": "browser.focus_location",
                         "window_typing": True,
                         "prefer_sendinput_click": True,
                     },
@@ -446,6 +478,17 @@ class ComputerUseAppProfiles:
         if profile is None:
             return {}
         return profile.selector_for(selector_key)
+
+    def selector_for_target(self, app_id: str | None, target: str | None) -> Dict[str, Any]:
+        profile = self.get(app_id)
+        normalized_target = str(target or "").strip().lower()
+        if profile is None or not normalized_target:
+            return {}
+        for selector_key, selector in profile.selectors.items():
+            hints = [str(item or "").strip().lower() for item in list(selector.get("target_hints") or [])]
+            if any(hint and hint in normalized_target for hint in hints):
+                return {"selector_key": selector_key, **dict(selector)}
+        return {}
 
     def toolbar_selector_for(self, app_id: str | None, action_name: str | None) -> Dict[str, Any]:
         profile = self.get(app_id)

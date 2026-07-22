@@ -66,14 +66,21 @@ def _change_flags(
     before_summary: Dict[str, Any],
     after_summary: Dict[str, Any],
 ) -> Dict[str, bool]:
+    def _changed(key: str) -> bool:
+        before_value = before_summary.get(key)
+        after_value = after_summary.get(key)
+        if before_value in (None, "") or after_value in (None, ""):
+            return False
+        return before_value != after_value
+
     return {
-        "windowChanged": before_summary.get("windowHandle") != after_summary.get("windowHandle"),
-        "pageIdentityChanged": before_summary.get("pageIdentity") != after_summary.get("pageIdentity"),
-        "treeChanged": before_summary.get("treeHash") != after_summary.get("treeHash"),
-        "screenChanged": before_summary.get("screenHash") != after_summary.get("screenHash"),
-        "focusChanged": before_summary.get("focusedElementId") != after_summary.get("focusedElementId"),
-        "transitionStateChanged": before_summary.get("transitionState") != after_summary.get("transitionState"),
-        "blockerStateChanged": before_summary.get("blockerState") != after_summary.get("blockerState"),
+        "windowChanged": _changed("windowHandle"),
+        "pageIdentityChanged": _changed("pageIdentity"),
+        "treeChanged": _changed("treeHash"),
+        "screenChanged": _changed("screenHash"),
+        "focusChanged": _changed("focusedElementId"),
+        "transitionStateChanged": _changed("transitionState"),
+        "blockerStateChanged": _changed("blockerState"),
     }
 
 

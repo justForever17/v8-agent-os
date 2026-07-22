@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "applications": [
+    {
+      "guideId": "qqmusic.desktop",
+      "displayName": "QQ Music",
+      "match": {
+        "appIds": ["app_qqmusic", "qqmusic"],
+        "processNames": ["qqmusic.exe"],
+        "titlePatterns": ["QQMusic", "QQ Music", "QQ\u97f3\u4e50"]
+      },
+      "platforms": {
+        "windows": {
+          "testedVersions": ["21.96"],
+          "shortcuts": [
+            {
+              "id": "media.play_pause",
+              "action": "play_pause",
+              "displaySequence": "Space",
+              "driverSequence": "{SPACE}",
+              "preconditions": ["media_surface", "window_focused", "not_text_input", "lock_screen_absent"],
+              "intentHints": ["play", "pause", "playback", "\u64ad\u653e", "\u6682\u505c", "\u7ee7\u7eed\u64ad\u653e"],
+              "coordinatePriorityHints": ["bottom player", "player bar", "playback control", "\u5e95\u90e8\u64ad\u653e\u5668", "\u64ad\u653e\u5668\u680f", "\u64ad\u653e\u63a7\u5236"],
+              "coordinateExclusionHints": ["next", "previous", "seek", "volume", "\u4e0b\u4e00\u9996", "\u4e0a\u4e00\u9996", "\u8fdb\u5ea6", "\u97f3\u91cf"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": true,
+              "visualVerification": {
+                "normalizedRegion": [0.535, 0.88, 0.58, 0.955],
+                "pixelDeltaThreshold": 24,
+                "minimumChangedPixelRatio": 0.005
+              },
+              "confidence": "locally_verified",
+              "source": {
+                "kind": "local_application_validation",
+                "reference": "QQ Music 21.96 Windows playback surface"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "guideId": "explorer.desktop",
+      "displayName": "Windows File Explorer",
+      "match": {
+        "appIds": ["explorer", "app_explorer"],
+        "processNames": ["explorer.exe"],
+        "titlePatterns": ["File Explorer", "Windows Explorer", "\u6587\u4ef6\u8d44\u6e90\u7ba1\u7406\u5668"]
+      },
+      "platforms": {
+        "windows": {
+          "shortcuts": [
+            {
+              "id": "app.focus_location",
+              "action": "focus_location",
+              "displaySequence": "Alt+D",
+              "driverSequence": "%d",
+              "preconditions": ["window_focused", "lock_screen_absent"],
+              "intentHints": ["address bar", "location", "path", "\u5730\u5740\u680f", "\u8def\u5f84"],
+              "coordinatePriorityHints": ["address bar", "location", "path field", "\u5730\u5740\u680f", "\u8def\u5f84\u680f"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": false,
+              "confidence": "official",
+              "source": {
+                "kind": "official_platform_guide",
+                "url": "https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "guideId": "chromium.desktop",
+      "displayName": "Chromium browsers",
+      "match": {
+        "appIds": ["chrome", "edge", "brave", "chromium"],
+        "processNames": ["chrome.exe", "msedge.exe", "brave.exe", "chromium.exe"],
+        "titlePatterns": ["Google Chrome", "Microsoft Edge", "Brave", "Chromium"]
+      },
+      "platforms": {
+        "windows": {
+          "shortcuts": [
+            {
+              "id": "browser.focus_location",
+              "action": "focus_location",
+              "displaySequence": "Ctrl+L",
+              "driverSequence": "^l",
+              "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+              "intentHints": ["address bar", "location bar", "url", "\u5730\u5740\u680f", "\u7f51\u5740"],
+              "coordinatePriorityHints": ["address bar", "location bar", "url field", "\u5730\u5740\u680f", "\u7f51\u5740\u680f"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": false,
+              "confidence": "official",
+              "source": {
+                "kind": "official_browser_guide",
+                "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+              }
+            }
+          ]
+        },
+        "linux": {
+          "shortcuts": [
+            {
+              "id": "browser.focus_location",
+              "action": "focus_location",
+              "displaySequence": "Ctrl+L",
+              "driverSequence": "^l",
+              "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+              "intentHints": ["address bar", "location bar", "url", "\u5730\u5740\u680f", "\u7f51\u5740"],
+              "coordinatePriorityHints": ["address bar", "location bar", "url field", "\u5730\u5740\u680f", "\u7f51\u5740\u680f"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": false,
+              "confidence": "official",
+              "source": {
+                "kind": "official_browser_guide",
+                "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+              }
+            }
+          ]
+        },
+        "macos": {
+          "shortcuts": [
+            {
+              "id": "browser.focus_location",
+              "action": "focus_location",
+              "displaySequence": "Command+L",
+              "driverSequence": "^l",
+              "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+              "intentHints": ["address bar", "location bar", "url", "\u5730\u5740\u680f", "\u7f51\u5740"],
+              "coordinatePriorityHints": ["address bar", "location bar", "url field", "\u5730\u5740\u680f", "\u7f51\u5740\u680f"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": false,
+              "confidence": "official",
+              "source": {
+                "kind": "official_browser_guide",
+                "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "guideId": "firefox.desktop",
+      "displayName": "Firefox",
+      "match": {
+        "appIds": ["firefox"],
+        "processNames": ["firefox.exe", "firefox"],
+        "titlePatterns": ["Mozilla Firefox", "Firefox"]
+      },
+      "platforms": {
+        "windows": {
+          "shortcuts": [
+            {
+              "id": "browser.focus_location",
+              "action": "focus_location",
+              "displaySequence": "Ctrl+L",
+              "driverSequence": "^l",
+              "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+              "intentHints": ["address bar", "location bar", "url", "\u5730\u5740\u680f", "\u7f51\u5740"],
+              "coordinatePriorityHints": ["address bar", "location bar", "url field", "\u5730\u5740\u680f", "\u7f51\u5740\u680f"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": false,
+              "confidence": "official",
+              "source": {
+                "kind": "official_browser_guide",
+                "url": "https://support.mozilla.org/en-US/kb/keyboard-shortcuts-perform-firefox-tasks-quickly"
+              }
+            }
+          ]
+        },
+        "linux": {
+          "shortcuts": [
+            {
+              "id": "browser.focus_location",
+              "action": "focus_location",
+              "displaySequence": "Ctrl+L",
+              "driverSequence": "^l",
+              "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+              "intentHints": ["address bar", "location bar", "url", "\u5730\u5740\u680f", "\u7f51\u5740"],
+              "coordinatePriorityHints": ["address bar", "location bar", "url field", "\u5730\u5740\u680f", "\u7f51\u5740\u680f"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": false,
+              "confidence": "official",
+              "source": {
+                "kind": "official_browser_guide",
+                "url": "https://support.mozilla.org/en-US/kb/keyboard-shortcuts-perform-firefox-tasks-quickly"
+              }
+            }
+          ]
+        },
+        "macos": {
+          "shortcuts": [
+            {
+              "id": "browser.focus_location",
+              "action": "focus_location",
+              "displaySequence": "Command+L",
+              "driverSequence": "^l",
+              "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+              "intentHints": ["address bar", "location bar", "url", "\u5730\u5740\u680f", "\u7f51\u5740"],
+              "coordinatePriorityHints": ["address bar", "location bar", "url field", "\u5730\u5740\u680f", "\u7f51\u5740\u680f"],
+              "preferBeforeCoordinates": true,
+              "stateChangeRequired": false,
+              "confidence": "official",
+              "source": {
+                "kind": "official_browser_guide",
+                "url": "https://support.mozilla.org/en-US/kb/keyboard-shortcuts-perform-firefox-tasks-quickly"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

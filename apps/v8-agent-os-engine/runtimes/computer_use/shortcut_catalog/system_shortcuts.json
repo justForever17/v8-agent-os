@@ -1,0 +1,347 @@
+{
+  "schemaVersion": 1,
+  "priorityOrder": [
+    "registered_shortcut",
+    "semantic_control",
+    "visual_locator",
+    "coordinate"
+  ],
+  "platforms": {
+    "windows": [
+      {
+        "id": "navigation.cancel",
+        "action": "cancel",
+        "displaySequence": "Esc",
+        "driverSequence": "{ESC}",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["cancel", "dismiss", "back", "close overlay", "取消", "返回", "关闭弹层"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec"
+        }
+      },
+      {
+        "id": "navigation.confirm",
+        "action": "confirm",
+        "displaySequence": "Enter",
+        "driverSequence": "{ENTER}",
+        "preconditions": ["window_focused", "focused_control_verified", "lock_screen_absent"],
+        "intentHints": ["confirm", "submit", "open selected", "确认", "提交", "打开选中项"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec"
+        }
+      },
+      {
+        "id": "navigation.focus_next",
+        "action": "focus_next",
+        "displaySequence": "Tab",
+        "driverSequence": "{TAB}",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["next control", "move focus", "下一个控件", "移动焦点"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec"
+        }
+      },
+      {
+        "id": "content.find",
+        "action": "find",
+        "displaySequence": "Ctrl+F",
+        "driverSequence": "^f",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["find", "search current", "查找", "页内搜索", "当前内容搜索"],
+        "coordinatePriorityHints": ["find in page", "search current page", "页内搜索", "当前片段搜索"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec"
+        }
+      },
+      {
+        "id": "browser.focus_location",
+        "action": "focus_location",
+        "displaySequence": "Ctrl+L",
+        "driverSequence": "^l",
+        "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+        "intentHints": ["address bar", "location bar", "url", "地址栏", "网址"],
+        "coordinatePriorityHints": ["address bar", "location bar", "url field", "地址栏", "网址栏"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_browser_guide",
+          "url": "https://support.microsoft.com/en-us/microsoft-edge/keyboard-shortcuts-in-microsoft-edge-50d3edab-30d9-c7e4-21ce-37fe2713cfad"
+        }
+      },
+      {
+        "id": "media.play_pause",
+        "action": "play_pause",
+        "displaySequence": "Space",
+        "driverSequence": "{SPACE}",
+        "preconditions": ["media_surface", "window_focused", "not_text_input", "lock_screen_absent"],
+        "intentHints": ["play", "pause", "playback", "播放", "暂停", "继续播放"],
+        "coordinatePriorityHints": ["bottom player", "player bar", "playback control", "底部播放器", "播放器栏", "播放控制"],
+        "coordinateExclusionHints": ["next", "previous", "seek", "volume", "下一首", "上一首", "进度", "音量"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "reviewed",
+        "source": {
+          "kind": "cross_app_media_convention",
+          "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+        }
+      },
+      {
+        "id": "window.close",
+        "action": "close",
+        "displaySequence": "Alt+F4",
+        "driverSequence": "%{F4}",
+        "dispatchTool": "desktop_close",
+        "preconditions": ["window_focused", "task_authorizes_close"],
+        "intentHints": ["close window", "exit app", "关闭窗口", "退出应用"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.microsoft.com/en-us/windows/keyboard-shortcuts-in-windows-dcc61a57-8ff0-cffe-9796-cb9706c75eec"
+        }
+      }
+    ],
+    "linux": [
+      {
+        "id": "navigation.cancel",
+        "action": "cancel",
+        "displaySequence": "Esc",
+        "driverSequence": "{ESC}",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["cancel", "dismiss", "back", "取消", "返回"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_desktop_guide",
+          "url": "https://help.gnome.org/users/gnome-help/stable/keyboard-nav.html.en"
+        }
+      },
+      {
+        "id": "navigation.confirm",
+        "action": "confirm",
+        "displaySequence": "Enter",
+        "driverSequence": "{ENTER}",
+        "preconditions": ["window_focused", "focused_control_verified", "lock_screen_absent"],
+        "intentHints": ["confirm", "submit", "open selected", "确认", "提交"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "official",
+        "source": {
+          "kind": "official_desktop_guide",
+          "url": "https://help.gnome.org/users/gnome-help/stable/keyboard-nav.html.en"
+        }
+      },
+      {
+        "id": "navigation.focus_next",
+        "action": "focus_next",
+        "displaySequence": "Tab",
+        "driverSequence": "{TAB}",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["next control", "move focus", "下一个控件", "移动焦点"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_desktop_guide",
+          "url": "https://help.gnome.org/users/gnome-help/stable/keyboard-nav.html.en"
+        }
+      },
+      {
+        "id": "content.find",
+        "action": "find",
+        "displaySequence": "Ctrl+F",
+        "driverSequence": "^f",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["find", "search current", "查找", "页内搜索"],
+        "coordinatePriorityHints": ["find in page", "search current page", "页内搜索", "当前片段搜索"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_browser_guide",
+          "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+        }
+      },
+      {
+        "id": "browser.focus_location",
+        "action": "focus_location",
+        "displaySequence": "Ctrl+L",
+        "driverSequence": "^l",
+        "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+        "intentHints": ["address bar", "location bar", "url", "地址栏", "网址"],
+        "coordinatePriorityHints": ["address bar", "location bar", "url field", "地址栏", "网址栏"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_browser_guide",
+          "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+        }
+      },
+      {
+        "id": "media.play_pause",
+        "action": "play_pause",
+        "displaySequence": "Space",
+        "driverSequence": "{SPACE}",
+        "preconditions": ["media_surface", "window_focused", "not_text_input", "lock_screen_absent"],
+        "intentHints": ["play", "pause", "playback", "播放", "暂停", "继续播放"],
+        "coordinatePriorityHints": ["bottom player", "player bar", "playback control", "底部播放器", "播放器栏", "播放控制"],
+        "coordinateExclusionHints": ["next", "previous", "seek", "volume", "下一首", "上一首", "进度", "音量"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "reviewed",
+        "source": {
+          "kind": "cross_app_media_convention",
+          "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+        }
+      },
+      {
+        "id": "window.close",
+        "action": "close",
+        "displaySequence": "Alt+F4",
+        "driverSequence": "%{F4}",
+        "dispatchTool": "desktop_close",
+        "preconditions": ["window_focused", "task_authorizes_close"],
+        "intentHints": ["close window", "exit app", "关闭窗口", "退出应用"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "official",
+        "source": {
+          "kind": "official_desktop_guide",
+          "url": "https://help.gnome.org/users/gnome-help/stable/shell-keyboard-shortcuts.html.en"
+        }
+      }
+    ],
+    "macos": [
+      {
+        "id": "navigation.cancel",
+        "action": "cancel",
+        "displaySequence": "Esc",
+        "driverSequence": "{ESC}",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["cancel", "dismiss", "back", "取消", "返回"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.apple.com/en-us/102650"
+        }
+      },
+      {
+        "id": "navigation.confirm",
+        "action": "confirm",
+        "displaySequence": "Return",
+        "driverSequence": "{ENTER}",
+        "preconditions": ["window_focused", "focused_control_verified", "lock_screen_absent"],
+        "intentHints": ["confirm", "submit", "open selected", "确认", "提交"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.apple.com/en-us/102650"
+        }
+      },
+      {
+        "id": "navigation.focus_next",
+        "action": "focus_next",
+        "displaySequence": "Tab",
+        "driverSequence": "{TAB}",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["next control", "move focus", "下一个控件", "移动焦点"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.apple.com/en-us/102650"
+        }
+      },
+      {
+        "id": "content.find",
+        "action": "find",
+        "displaySequence": "Command+F",
+        "driverSequence": "^f",
+        "preconditions": ["window_focused", "lock_screen_absent"],
+        "intentHints": ["find", "search current", "查找", "页内搜索"],
+        "coordinatePriorityHints": ["find in page", "search current page", "页内搜索", "当前片段搜索"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.apple.com/en-us/102650"
+        }
+      },
+      {
+        "id": "browser.focus_location",
+        "action": "focus_location",
+        "displaySequence": "Command+L",
+        "driverSequence": "^l",
+        "preconditions": ["browser_window", "window_focused", "lock_screen_absent"],
+        "intentHints": ["address bar", "location bar", "url", "地址栏", "网址"],
+        "coordinatePriorityHints": ["address bar", "location bar", "url field", "地址栏", "网址栏"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": false,
+        "confidence": "official",
+        "source": {
+          "kind": "official_browser_guide",
+          "url": "https://support.google.com/chrome/answer/157179?hl=en&co=GENIE.Platform%3DDesktop"
+        }
+      },
+      {
+        "id": "media.play_pause",
+        "action": "play_pause",
+        "displaySequence": "Space",
+        "driverSequence": "{SPACE}",
+        "preconditions": ["media_surface", "window_focused", "not_text_input", "lock_screen_absent"],
+        "intentHints": ["play", "pause", "playback", "播放", "暂停", "继续播放"],
+        "coordinatePriorityHints": ["bottom player", "player bar", "playback control", "底部播放器", "播放器栏", "播放控制"],
+        "coordinateExclusionHints": ["next", "previous", "seek", "volume", "下一首", "上一首", "进度", "音量"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "reviewed",
+        "source": {
+          "kind": "cross_app_media_convention",
+          "url": "https://support.apple.com/en-us/102650"
+        }
+      },
+      {
+        "id": "window.close",
+        "action": "close",
+        "displaySequence": "Command+Q",
+        "driverSequence": "#{Q}",
+        "dispatchTool": "desktop_close",
+        "preconditions": ["window_focused", "task_authorizes_close"],
+        "intentHints": ["close window", "exit app", "关闭窗口", "退出应用"],
+        "preferBeforeCoordinates": true,
+        "stateChangeRequired": true,
+        "confidence": "official",
+        "source": {
+          "kind": "official_platform_guide",
+          "url": "https://support.apple.com/en-us/102650"
+        }
+      }
+    ]
+  }
+}

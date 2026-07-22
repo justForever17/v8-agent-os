@@ -4257,7 +4257,7 @@ class RPARuntime:
                 "runtimeKind": "computer_use",
                 "goal": script.get("goal") or script.get("name") or script.get("id"),
                 "metadata": {
-                    "traceSchemaVersion": 2,
+                    "traceSchemaVersion": 3,
                     "appId": script.get("appId") or "desktop",
                     "syntheticRepairTrace": True,
                 },

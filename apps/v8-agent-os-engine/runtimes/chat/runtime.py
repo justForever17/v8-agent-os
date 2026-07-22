@@ -2702,6 +2702,13 @@ class ChatRuntime:
                 prepared.task_shape_hint,
                 user_query=prepared.latest_user_content,
             )
+            boundary_decision = (
+                prepared.task_shape_hint.get("boundaryDecision")
+                if isinstance(prepared.task_shape_hint.get("boundaryDecision"), dict)
+                else {}
+            )
+            boundary_primary_runtime = str(boundary_decision.get("primaryRuntime") or "").strip()
+            runtime_owned_primary = boundary_primary_runtime in {"computer_use", "rpa"}
             primary_shape = str(prepared.task_shape_hint.get("primaryTaskShape") or "").strip()
             shape_reason = str(prepared.task_shape_hint.get("reason") or "").strip()
             secondary_shapes = {
@@ -2716,7 +2723,7 @@ class ChatRuntime:
                     primary_shape == "project_coding"
                     and ("research" in secondary_shapes or shape_reason == "research_plus_project_build_intent")
                 )
-            )
+            ) and (not runtime_owned_primary or bool(prepared.explicit_engineering_requested))
             writing_route_current = (
                 prepared.task_shape_hint.get("writingRoute")
                 if isinstance(prepared.task_shape_hint.get("writingRoute"), dict)
@@ -2732,14 +2739,19 @@ class ChatRuntime:
                 and bool(writing_route_current.get("requiresResearch"))
                 and primary_shape == "writing"
             )
-            if prepared.explicit_engineering_requested or engineering_required:
+            if runtime_owned_primary and not prepared.explicit_engineering_requested and not continuation_context.get("active"):
+                prepared.engineering_mode = "auto"
+            elif prepared.explicit_engineering_requested or engineering_required:
                 prepared.engineering_mode = "force"
             if (
-                skill_subagent_required
-                or source_backed_writing_required
-                or prepared.explicit_engineering_requested
-                or primary_shape == "project_coding"
-                or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"})
+                not runtime_owned_primary
+                and (
+                    skill_subagent_required
+                    or source_backed_writing_required
+                    or prepared.explicit_engineering_requested
+                    or primary_shape == "project_coding"
+                    or (primary_shape and "research" in secondary_shapes and primary_shape in {"creative_media", "automation"})
+                )
             ):
                 prepared.engineering_mode = "force" if primary_shape == "project_coding" else prepared.engineering_mode
             if prepared.spec_mode and self._runtime_execution_allowed_by_spec(prepared.spec_brief):
@@ -4984,6 +4996,11 @@ class ChatRuntime:
         if prepared is None:
             return False
         task_shape = dict(getattr(prepared, "task_shape_hint", None) or {})
+        boundary = task_shape.get("boundaryDecision") if isinstance(task_shape.get("boundaryDecision"), dict) else {}
+        boundary_primary = str(boundary.get("primaryRuntime") or "").strip()
+        explicit_engineering = bool(getattr(prepared, "explicit_engineering_requested", False))
+        if boundary_primary in {"computer_use", "rpa"} and not explicit_engineering:
+            return False
         primary = str(task_shape.get("primaryTaskShape") or "").strip()
         secondary = {
             str(item or "").strip()
@@ -4992,7 +5009,7 @@ class ChatRuntime:
         }
         trigger = dict(getattr(prepared, "engineering_trigger_decision", None) or {})
         return bool(
-            getattr(prepared, "explicit_engineering_requested", False)
+            explicit_engineering
             or str(getattr(prepared, "engineering_mode", "auto") or "").strip() == "force"
             or primary == "project_coding"
             or ("research" in secondary and primary in {"creative_media", "automation"})
@@ -9116,10 +9133,7 @@ class ChatRuntime:
             context["specRevision"] = dict(spec_revision)
         if chat_run.prepared.live_audit_context:
             context["live_audit"] = dict(chat_run.prepared.live_audit_context)
-        engineering_active = bool(
-            dict(getattr(chat_run.prepared, "engineering_trigger_decision", {}) or {}).get("active")
-            or str(getattr(chat_run.prepared, "engineering_mode", "") or "").strip() == "force"
-        )
+        engineering_active = self._supervisor_direct_scope_requires_engineering_route(chat_run)
         supports_managed_workspace = hasattr(chat_run, "engineering_workspace")
         if engineering_active and context.get("workspace_path") and supports_managed_workspace:
             if not getattr(chat_run, "engineering_workspace", None):

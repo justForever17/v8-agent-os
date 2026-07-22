@@ -77,12 +77,12 @@ E:\Projects\v8chat\v8-agent-os\apps\v8-agent-os-engine\.venv\Scripts\python.exe 
 
 | 脚本 | 用途 | 关键开关 |
 | --- | --- | --- |
-| `run_computer_use_github_star_live.py` | Computer Use GitHub star live smoke。 | `--live-github-star --allow-real-click --repo TurixAI/TuriX-CUA` |
-| `run_computer_use_real_host_matrix.py` | Computer Use 真机/宿主矩阵。 | `--live` |
+| `run_computer_use_real_host_matrix.py` | Computer Use 真机/宿主矩阵。 | `--real-host`；需要真实输入探针时显式增加 `--allow-input`。 |
+| `run_computer_use_joint_live_audit.py` | Computer Use 联合验收：Agent 浏览器秘塔图片下载、QQ音乐自绘界面动作，以及 Supervisor → Computer Use episode/handoff 闭环。 | `--live --phase direct|supervisor|all --case metaso|qqmusic|all`；真实测试环境可显式加 `--cleanup-test-processes`。 |
 | `run_phone_long_task_perf_live_audit.py` | Phone 长任务卡顿 / APK / SSE / projection live audit。 | `--live`；支持 manual phone 观察。 |
 | `test_phone_long_task_perf_live_audit.py` | Phone perf audit 脚本 parser/fixture 自测。 | pytest 可跑。 |
 
-Computer Use GitHub star 首次运行通常需要在专用浏览器 profile 中人工登录；未登录应返回 `needs_human_login`，不得假装成功。
+Computer Use 联合验收使用 V8OS 专用 Agent 浏览器 profile；未登录或遇到 CAPTCHA 时必须报告 blocked，不得绕过或假装成功。
 
 ## Benchmark / Eval
 

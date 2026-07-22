@@ -56,6 +56,7 @@ from .windows_hotkeys import (
     ParsedHotkeyStroke,
     VK_MENU,
     analyze_hotkey_support,
+    normalize_hotkey_sequence,
 )
 
 
@@ -1426,7 +1427,14 @@ class WindowsUIADriver:
         focus_probes: List[Dict[str, Any]] = []
         normalized_focus_mode = str(focus_probe_mode or "").strip().lower() or None
         expects_file_receiver_focus = bool(list(file_paths or [])) and normalized_focus_mode == "content_receiver"
-        focus_requirement_label = "文件接收区焦点" if expects_file_receiver_focus else "可编辑焦点"
+        expects_application_surface_focus = normalized_focus_mode == "application_surface"
+        focus_requirement_label = (
+            "文件接收区焦点"
+            if expects_file_receiver_focus
+            else "应用表面焦点"
+            if expects_application_surface_focus
+            else "可编辑焦点"
+        )
         focus_confirmed = False
         initial_probe = self._window_typing_probe(root_handle=int(root_handle) if root_handle not in (None, 0) else None)
         initial_probe["candidatePoint"] = None
@@ -1532,7 +1540,13 @@ class WindowsUIADriver:
             "sendInputTextPreferred": bool(prefer_sendinput_text),
             "focusProbeMode": normalized_focus_mode,
             "focusProbeAccepted": focus_confirmed,
-            "focusRequirement": "content_receiver" if expects_file_receiver_focus else "editable_text",
+            "focusRequirement": (
+                "content_receiver"
+                if expects_file_receiver_focus
+                else "application_surface"
+                if expects_application_surface_focus
+                else "editable_text"
+            ),
             "filePasteStrategy": str(file_paste_strategy or "").strip().lower() or None,
             "inputPointCandidates": [list(item) for item in candidate_points],
             "inputFocusProbes": focus_probes,
@@ -1582,16 +1596,20 @@ class WindowsUIADriver:
             target_handle_for_focus = getattr(getattr(target, "element_info", None), "handle", None) or window_handle
             if target_handle_for_focus not in (None, 0):
                 self._focus_message_window(int(target_handle_for_focus))
-        support_plan = analyze_hotkey_support(sequence)
-        strategy = "send_keys"
+        requested_sequence = str(sequence or "").strip()
+        canonical_sequence = normalize_hotkey_sequence(requested_sequence)
+        support_plan = analyze_hotkey_support(canonical_sequence)
+        strategy = "sendinput"
         try:
-            send_keys(sequence, with_spaces=True, pause=0.01)
+            if not support_plan.supports_sendinput or not self._sendinput_click_engine.is_available():
+                raise WindowsUIADriverError("当前快捷键序列不可通过 SendInput 执行。")
+            self._sendinput_click_engine.send_hotkey_sequence(canonical_sequence, settle_ms=20)
         except Exception:
             try:
-                if not support_plan.supports_sendinput:
-                    raise WindowsUIADriverError("当前快捷键序列不支持 SendInput 回退。")
-                self._sendinput_click_engine.send_hotkey_sequence(sequence, settle_ms=20)
-                strategy = "sendinput"
+                if send_keys is None:
+                    raise WindowsUIADriverError("当前环境缺少 pywinauto keyboard fallback。")
+                send_keys(canonical_sequence, with_spaces=True, pause=0.01)
+                strategy = "send_keys"
             except Exception:
                 if not support_plan.supports_window_message:
                     raise WindowsUIADriverError(
@@ -1599,13 +1617,15 @@ class WindowsUIADriver:
                     )
                 if not self._message_hotkey(
                     window_handle=getattr(getattr(target, "element_info", None), "handle", None),
-                    sequence=sequence,
+                    sequence=canonical_sequence,
                 ):
                     raise
                 strategy = "window_message"
         payload = self._window_dict(target)
         payload["metadata"] = {
             "hotkeyStrategy": strategy,
+            "requestedSequence": requested_sequence,
+            "canonicalSequence": canonical_sequence,
             "hotkeySupport": {
                 "supportsSendInput": support_plan.supports_sendinput,
                 "supportsWindowMessage": support_plan.supports_window_message,
@@ -3855,6 +3875,8 @@ class WindowsUIADriver:
         normalized_mode = str(focus_mode or probe.get("focusProbeMode") or "").strip().lower()
         if bool(probe.get("caretWithinRoot")):
             return True
+        if normalized_mode == "application_surface":
+            return bool(probe.get("foregroundWithinRoot"))
         if not bool(probe.get("focusWithinRoot")):
             if normalized_mode != "content_receiver" or not bool(probe.get("foregroundWithinRoot")):
                 return False

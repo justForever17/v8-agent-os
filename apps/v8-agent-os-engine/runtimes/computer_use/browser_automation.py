@@ -800,6 +800,16 @@ class BrowserAutomationProvider:
         launch_command: List[str] | str | None = None,
         window_title: str | None = None,
     ) -> str | None:
+        app_key = _normalize_browser_key(app_id)
+        app_name_key = _normalize_browser_key(app_name)
+        if app_key in _GENERIC_BROWSER_APP_IDS or app_name_key in _GENERIC_BROWSER_APP_IDS:
+            return "chromium"
+        if app_key in _CHROME_APP_IDS or app_name_key in _CHROME_APP_IDS:
+            return "chromium"
+        if app_key in _EDGE_APP_IDS or app_name_key in _EDGE_APP_IDS:
+            return "chromium"
+        if app_key in _CHROMIUM_APP_IDS or app_name_key in _CHROMIUM_APP_IDS:
+            return "chromium"
         tokens = {
             _basename(process_name),
             _basename(app_name),
@@ -1595,6 +1605,122 @@ class BrowserAutomationProvider:
         except Exception as exc:
             return {"closed": False, "targetId": normalized_target, "error": str(exc)}
 
+    def close_managed_browser(
+        self,
+        *,
+        target_port: int | None = None,
+        wait_seconds: float = 3.0,
+    ) -> Dict[str, Any]:
+        """Close V8OS Agent Browser tabs and only terminate processes launched by this provider."""
+
+        resolved_port = int(target_port or self._target_port)
+        with self._lock:
+            alive_owned = {
+                key: process
+                for key, process in self._managed_browser_processes.items()
+                if process.poll() is None
+            }
+        port_reachable = self._is_debug_port_reachable(resolved_port)
+        if not port_reachable and not alive_owned:
+            self._invalidate_availability_health_cache()
+            return {
+                "closed": True,
+                "closedTargetIds": [],
+                "terminatedOwnedProcesses": [],
+                "remainingTargetCount": 0,
+                "remainingOwnedProcesses": [],
+                "errors": [],
+                "reason": "agent_browser_not_running",
+            }
+
+        closed_targets: List[str] = []
+        close_errors: List[Dict[str, Any]] = []
+        proxy_ready = False
+        targets: List[Dict[str, Any]] = []
+        if port_reachable:
+            try:
+                self._ensure_proxy(target_port=resolved_port)
+                proxy_ready = True
+                targets = self._list_targets()
+            except Exception as exc:
+                close_errors.append({"stage": "list_targets", "error": str(exc)})
+        for item in targets:
+            target_id = str(item.get("targetId") or item.get("id") or "").strip()
+            if not target_id:
+                continue
+            result = self.close_tab(target_id=target_id, target_port=resolved_port)
+            if result.get("closed"):
+                closed_targets.append(target_id)
+            else:
+                close_errors.append(
+                    {
+                        "stage": "close_target",
+                        "targetId": target_id,
+                        "error": result.get("error") or result.get("reason"),
+                    }
+                )
+
+        deadline = time.time() + max(float(wait_seconds or 0.0), 0.1)
+        while time.time() < deadline:
+            with self._lock:
+                alive = {
+                    key: process
+                    for key, process in self._managed_browser_processes.items()
+                    if process.poll() is None
+                }
+            if not alive:
+                break
+            time.sleep(0.1)
+
+        terminated_processes: List[Dict[str, Any]] = []
+        with self._lock:
+            owned_processes = list(self._managed_browser_processes.items())
+        for key, process in owned_processes:
+            if process.poll() is not None:
+                with self._lock:
+                    self._managed_browser_processes.pop(key, None)
+                    self._managed_launches.pop(key, None)
+                continue
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+                terminated_processes.append({"browserKind": key, "pid": process.pid, "mode": "terminate"})
+            except Exception:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                    terminated_processes.append({"browserKind": key, "pid": process.pid, "mode": "kill_after_timeout"})
+                except Exception as exc:
+                    close_errors.append({"stage": "terminate_owned_process", "browserKind": key, "pid": process.pid, "error": str(exc)})
+            finally:
+                if process.poll() is not None:
+                    with self._lock:
+                        self._managed_browser_processes.pop(key, None)
+                        self._managed_launches.pop(key, None)
+
+        if proxy_ready and self._is_debug_port_reachable(resolved_port):
+            try:
+                remaining_targets = self._list_targets()
+            except Exception:
+                remaining_targets = []
+        else:
+            remaining_targets = []
+        with self._lock:
+            remaining_owned = [
+                {"browserKind": key, "pid": process.pid}
+                for key, process in self._managed_browser_processes.items()
+                if process.poll() is None
+            ]
+        self._invalidate_availability_health_cache()
+        return {
+            "closed": not remaining_targets and not remaining_owned,
+            "closedTargetIds": closed_targets,
+            "terminatedOwnedProcesses": terminated_processes,
+            "remainingTargetCount": len(remaining_targets),
+            "remainingOwnedProcesses": remaining_owned,
+            "errors": close_errors,
+        }
+
     def _evaluate(self, *, target_id: str, expression: str) -> Dict[str, Any]:
         return self._request_json("POST", "/eval", params={"target": target_id}, body=expression)
 
@@ -1647,9 +1773,16 @@ class BrowserAutomationProvider:
             "  if (!editable(target)) return { ok: false, error: '未找到可编辑 DOM 输入目标' };\n"
             "  target.focus();\n"
             f"  const nextValue = {text_json};\n"
-            "  if (target.isContentEditable) target.textContent = nextValue;\n"
-            "  else target.value = nextValue;\n"
-            "  target.dispatchEvent(new Event('input', { bubbles: true }));\n"
+            "  if (target.isContentEditable) {\n"
+            "    target.textContent = nextValue;\n"
+            "  } else {\n"
+            "    const prototype = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : target.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;\n"
+            "    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;\n"
+            "    if (setter) setter.call(target, nextValue);\n"
+            "    else target.value = nextValue;\n"
+            "  }\n"
+            "  const inputEvent = typeof InputEvent === 'function' ? new InputEvent('input', { bubbles: true, inputType: 'insertText', data: nextValue }) : new Event('input', { bubbles: true });\n"
+            "  target.dispatchEvent(inputEvent);\n"
             "  target.dispatchEvent(new Event('change', { bubbles: true }));\n"
             "  return { ok: true, tag: target.tagName, id: target.id || null, name: target.name || null, selector: selector || null };\n"
             "})()"

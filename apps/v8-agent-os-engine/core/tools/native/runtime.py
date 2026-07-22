@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 from typing import Annotated, Any, Literal, Optional
@@ -620,10 +621,9 @@ def _spec_id_from_route_need(need: dict[str, Any], inputs: dict[str, Any], state
     return ""
 
 
-def _workspace_path_from_route(inputs: dict[str, Any], state: dict[str, Any] | None) -> str:
+def _bound_workspace_path_from_state(state: dict[str, Any] | None) -> str:
     runtime_context = get_runtime_context()
     for source in (
-        inputs,
         dict((state or {}).get("current_route_context") or {}),
         dict(state or {}),
         runtime_context,
@@ -631,7 +631,29 @@ def _workspace_path_from_route(inputs: dict[str, Any], state: dict[str, Any] | N
         workspace = str(source.get("workspacePath") or source.get("workspace_path") or "").strip()
         if workspace:
             return workspace
+        binding = source.get("workspaceBinding") or source.get("workspace_binding")
+        if isinstance(binding, dict):
+            workspace = str(binding.get("workspacePath") or binding.get("workspace_path") or "").strip()
+            if workspace:
+                return workspace
     return ""
+
+
+def _workspace_path_from_route(inputs: dict[str, Any], state: dict[str, Any] | None) -> str:
+    bound_workspace = _bound_workspace_path_from_state(state)
+    if bound_workspace:
+        return bound_workspace
+    workspace = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip()
+    if workspace:
+        return workspace
+    return ""
+
+
+def _same_workspace_path(left: str, right: str) -> bool:
+    try:
+        return os.path.normcase(str(Path(left).resolve())) == os.path.normcase(str(Path(right).resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return left.strip().casefold() == right.strip().casefold()
 
 
 def _spec_workspace_path_from_route(inputs: dict[str, Any], state: dict[str, Any] | None) -> str:
@@ -2022,6 +2044,7 @@ def _enrich_route_need_for_episode(
     inputs = dict(enriched.get("inputs") or {}) if isinstance(enriched.get("inputs"), dict) else {}
     spec_bundle = _approved_spec_execution_bundle(enriched, inputs, state=state)
     requested_spec_task_refs = _requested_spec_task_refs(enriched, inputs)
+    spec_workspace_applied = False
     if spec_bundle:
         inputs["specExecutionBundle"] = spec_bundle
         enriched.setdefault("specId", spec_bundle.get("specId"))
@@ -2029,10 +2052,25 @@ def _enrich_route_need_for_episode(
             authoritative_workspace = str(spec_bundle.get("workspacePath") or "").strip()
             if authoritative_workspace:
                 inputs["workspacePath"] = authoritative_workspace
+                inputs.pop("workspace_path", None)
+                spec_workspace_applied = True
             spec_groups = _required_runtime_access_from_spec_bundle(spec_bundle, kind)
             if spec_groups:
                 existing_groups = list(enriched.get("requiredRuntimeAccess") or [])
                 enriched["requiredRuntimeAccess"] = list(dict.fromkeys([*existing_groups, *spec_groups]))
+
+    if not spec_workspace_applied:
+        bound_workspace = _bound_workspace_path_from_state(state)
+        if bound_workspace:
+            requested_workspace = str(inputs.get("workspacePath") or inputs.get("workspace_path") or "").strip()
+            if requested_workspace and not _same_workspace_path(requested_workspace, bound_workspace):
+                inputs["workspaceBindingCorrection"] = {
+                    "requestedWorkspacePath": requested_workspace,
+                    "effectiveWorkspacePath": bound_workspace,
+                    "reason": "current_session_binding_is_authoritative",
+                }
+            inputs["workspacePath"] = bound_workspace
+            inputs.pop("workspace_path", None)
 
     if kind in {"engineering", "delegation"}:
         explicit_route_tasks = _explicit_task_briefs_from_inputs(inputs)
@@ -2347,7 +2385,7 @@ def runtime_broker(
     Use `mode='route'` with the canonical `need.kind`, `need.reason`, and `need.inputs.taskBriefs` contract when strengthened execution is useful: deep evidence, multi-file coding, media/provider generation, desktop/RPA operation, or concrete subagent collaboration. Minimal valid shape: `{"mode":"route","need":{"kind":"engineering","reason":"continue and verify","inputs":{"taskBriefs":[{"taskBriefId":"task-1","goal":"fix and verify","writeSet":[],"expectedOutputs":["verified result"],"acceptanceContract":["verification passes"]}]}}}`. Replace values without changing JSON types. Omit optional arrays when empty; for multi-task routes use `dependencies:["upstream-task-id"]`.
     `taskBriefs` is the only field new calls should use. `workerBriefs` and `tasks` remain read-compatible legacy aliases but are intentionally omitted from the advertised schema.
     Product words for user-facing replies: `research`=深度调研, `engineering`=编程模式, `creative_media`=多媒体创作, `computer_use`=桌面操作, `rpa`=自动流程, `delegation`=子代理协作. Do not tell ordinary users "runtime_broker"; that is only the internal tool name.
-    `need` is a typed Supervisor-owned contract. Every write-capable task must declare writeRequired, a bounded writeSet, expectedOutputs, and acceptance/acceptanceContract. Missing fields block dispatch; the workspace root and prose hints are never inferred as write grants.
+    `need` is a typed Supervisor-owned contract. Every write-capable task must declare writeRequired, a bounded writeSet, expectedOutputs, and acceptance/acceptanceContract. Missing fields block dispatch; the workspace root and prose hints are never inferred as write grants. Omit need.inputs.workspacePath or copy the current runtime workspace exactly; never infer a nested project path. Engine keeps the current session binding authoritative and records any correction.
     Do not route ordinary passive support through this tool unless the task explicitly needs it. Memory is usually queried with `memory_broker`; cron/hooks are configured with `manage_cron`/`manage_hook`; Extensions、插件管理中心和 Network Supervisor 是 support/discovery surfaces。@插件是强提示；Supervisor 也可通过 `plugin_broker` 为当前 run 创建最小插件授权。
     Use `mode='list'` only as a compact route menu; capability details already live in `<capability_registry>`.
     Use `mode='grant'` only for explicit run-scoped tool group access, not as a substitute for execution.

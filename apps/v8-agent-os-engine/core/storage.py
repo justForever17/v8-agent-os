@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1492,7 +1493,7 @@ class StorageManager:
             f.flush()
             os.fsync(f.fileno())
         try:
-            os.replace(temp_path, filepath)
+            self._replace_computer_use_file(temp_path, filepath)
         finally:
             if temp_path.exists():
                 try:
@@ -1506,13 +1507,24 @@ class StorageManager:
                 backup_file.write(serialized)
                 backup_file.flush()
                 os.fsync(backup_file.fileno())
-            os.replace(backup_temp_path, backup_path)
+            self._replace_computer_use_file(backup_temp_path, backup_path)
         finally:
             if backup_temp_path.exists():
                 try:
                     backup_temp_path.unlink()
                 except OSError:
                     pass
+
+    @staticmethod
+    def _replace_computer_use_file(source: Path, target: Path) -> None:
+        for attempt in range(6):
+            try:
+                os.replace(source, target)
+                return
+            except PermissionError:
+                if attempt >= 5:
+                    raise
+                time.sleep(0.04 * (2 ** attempt))
 
     def _migrate_computer_use_storage(self):
         default_payload = self._default_computer_use_payload()
@@ -1984,6 +1996,7 @@ class StorageManager:
                         temp_path.unlink()
                     except OSError:
                         pass
+
             backup_path = self._json_backup_path(filepath)
             backup_temp_path = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
             try:

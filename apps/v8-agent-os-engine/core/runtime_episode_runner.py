@@ -2832,12 +2832,110 @@ class RuntimeEpisodeRunner:
             )
 
     async def _execute_computer_use(self, episode: dict[str, Any]) -> dict[str, Any]:
-        self._heartbeat(str(episode.get("episodeId")), "computer_use: observe")
+        episode_id = str(episode.get("episodeId") or episode.get("id") or "")
         need = dict(episode.get("need") or {})
         inputs = dict(episode.get("inputs") or {})
+        nested_inputs = dict(need.get("inputs") or {}) if isinstance(need.get("inputs"), dict) else {}
+        task_briefs = [
+            dict(item)
+            for item in list(inputs.get("taskBriefs") or nested_inputs.get("taskBriefs") or [])
+            if isinstance(item, dict)
+        ]
+        if task_briefs:
+            self._heartbeat(episode_id, "computer_use: execute task brief")
+            from runtimes.computer_use.episode_agent import execute_computer_use_task_brief
+
+            workspace_path = str(
+                inputs.get("workspacePath")
+                or inputs.get("workspace_path")
+                or nested_inputs.get("workspacePath")
+                or nested_inputs.get("workspace_path")
+                or ""
+            ).strip()
+            if not workspace_path:
+                return build_handoff_ref(
+                    producer_episode_id=episode_id,
+                    kind="computer_use",
+                    compact_summary="Computer Use task brief is missing a bound workspace.",
+                    status="failed",
+                    confidence="high",
+                    consumer_hint="Bind and trust a workspace, then retry the Computer Use task.",
+                    extra={"errorCode": "computer_use_workspace_missing"},
+                )
+
+            results: list[dict[str, Any]] = []
+            for task_brief in task_briefs:
+                task_brief_id = str(task_brief.get("taskBriefId") or "task").strip() or "task"
+                result = await self._await_with_heartbeat(
+                    episode_id,
+                    asyncio.to_thread(
+                        execute_computer_use_task_brief,
+                        episode_id=episode_id,
+                        session_id=str(episode.get("session_id") or "") or None,
+                        run_id=str(episode.get("run_id") or "") or None,
+                        user_id=str(inputs.get("userId") or inputs.get("user_id") or "system"),
+                        project_id=str(inputs.get("projectId") or inputs.get("project_id") or "").strip() or None,
+                        workspace_id=str(inputs.get("workspaceId") or inputs.get("workspace_id") or "").strip() or None,
+                        workspace_path=workspace_path,
+                        task_brief=task_brief,
+                        heartbeat=lambda progress: self._heartbeat(episode_id, progress),
+                        max_rounds=int(inputs.get("maxRounds") or inputs.get("max_rounds") or 30),
+                    ),
+                    progress=f"computer_use: executing {task_brief_id}",
+                    interval_seconds=10.0,
+                )
+                results.append(dict(result or {}))
+                if not result.get("ok"):
+                    break
+
+            completed = bool(results) and all(bool(item.get("ok")) for item in results) and len(results) == len(task_briefs)
+            artifact_refs = list(
+                dict.fromkeys(
+                    str(ref)
+                    for item in results
+                    for ref in list(item.get("artifactRefs") or [])
+                    if str(ref).strip()
+                )
+            )
+            proof_refs = list(
+                dict.fromkeys(
+                    str(ref)
+                    for item in results
+                    for ref in list(item.get("proofRefs") or [])
+                    if str(ref).strip()
+                )
+            )
+            failed = next((item for item in results if not item.get("ok")), None)
+            summary = (
+                f"Computer Use completed {len(results)} governed task brief(s)."
+                if completed
+                else str((failed or {}).get("summary") or "Computer Use task stopped before acceptance was satisfied.")
+            )
+            return build_handoff_ref(
+                producer_episode_id=episode_id,
+                kind="computer_use",
+                compact_summary=_preview(summary),
+                status="ready" if completed else "failed",
+                confidence="high" if completed else "medium",
+                consumer_hint=(
+                    "Use artifactRefs and verificationResults as the Computer Use completion proof."
+                    if completed
+                    else "Inspect verificationResults and retry only the missing Computer Use acceptance items."
+                ),
+                extra={
+                    "taskBriefResults": results,
+                    "artifactRefs": artifact_refs,
+                    "proofRefs": proof_refs,
+                    "verificationResults": [dict(item.get("verification") or {}) for item in results],
+                    "requiresContinuation": False,
+                    "errorCode": None if completed else str((failed or {}).get("errorCode") or "computer_use_task_failed"),
+                },
+            )
+
+        self._heartbeat(episode_id, "computer_use: observe")
         if not bool(inputs.get("observe", True)):
             return build_handoff_ref(
-                producer_episode_id=str(episode.get("episodeId") or ""),
+                producer_episode_id=episode_id,
                 kind="computer_use",
                 compact_summary="Computer Use episode routed; no observation requested.",
                 status="ready",
@@ -2856,13 +2954,13 @@ class RuntimeEpisodeRunner:
         )
         observation = dict(result.get("observation") or {})
         return build_handoff_ref(
-            producer_episode_id=str(episode.get("episodeId") or ""),
+            producer_episode_id=episode_id,
             kind="computer_use",
             compact_summary=_preview(result.get("message") or observation.get("windowTitle") or "Computer Use observation completed."),
             status="ready" if result.get("ok", True) else "failed",
             confidence=str(observation.get("confidence") or "medium"),
             consumer_hint="Use observationRefs/traceRefs to continue desktop/browser task.",
-            extra={"observationRefs": [f"computer_use_observation:{episode.get('episodeId')}"]},
+            extra={"observationRefs": [f"computer_use_observation:{episode_id}"]},
         )
 
     async def _execute_rpa(self, episode: dict[str, Any]) -> dict[str, Any]:

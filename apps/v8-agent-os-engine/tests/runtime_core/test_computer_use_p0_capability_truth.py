@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from runtimes.computer_use.browser_automation import BrowserAutomationProvider
 from runtimes.computer_use.capability_truth import build_capability_truth
 from runtimes.computer_use.coordinate_anchor import resolve_absolute_click_point, spatial_anchor_compatibility
 from runtimes.computer_use.playbooks import built_in_playbook_seeds
 from runtimes.computer_use.runtime import ComputerUseRuntime
+from runtimes.computer_use.drivers.windows_uia import WindowsUIADriver
+from runtimes.computer_use.drivers.windows_hotkeys import (
+    VK_CONTROL,
+    VK_MENU,
+    normalize_hotkey_sequence,
+    parse_hotkey_sequence,
+)
 from erc.capability_registry import capability_registry
 
 
@@ -189,6 +197,118 @@ def test_capability_truth_blocks_a_cdp_endpoint_outside_the_v8os_profile():
 
     assert truth["browserLaneTruth"]["status"] == "blocked_by_profile_mismatch"
     assert any(gap["code"] == "agent_browser_profile_mismatch" for gap in truth["knownGaps"])
+
+
+def test_explicit_bound_coordinate_input_uses_application_surface_focus_mode():
+    payload = {
+        "window_typing": True,
+        "point": [640, 48],
+        "_binding_mode": "explicit",
+        "_binding_confidence": 1.0,
+        "_resolved_app_id": "app_custom_drawn",
+    }
+
+    assert ComputerUseRuntime._window_typing_focus_mode(payload) == "application_surface"
+    assert ComputerUseRuntime._window_typing_focus_mode({**payload, "_binding_confidence": 0.8}) == ""
+    assert ComputerUseRuntime._window_typing_focus_mode({**payload, "window_typing_focus_mode": "content_receiver"}) == "content_receiver"
+
+
+def test_application_surface_focus_requires_the_verified_root_to_remain_foreground():
+    driver = object.__new__(WindowsUIADriver)
+
+    assert driver._accept_window_typing_probe(
+        {"foregroundWithinRoot": True, "focusWithinRoot": False, "caretWithinRoot": False},
+        focus_mode="application_surface",
+    ) is True
+    assert driver._accept_window_typing_probe(
+        {"foregroundWithinRoot": False, "focusWithinRoot": True, "caretWithinRoot": False},
+        focus_mode="application_surface",
+    ) is False
+
+
+def test_human_hotkey_chords_normalize_before_keyboard_injection():
+    assert normalize_hotkey_sequence("ALT+F4") == "%{F4}"
+    assert normalize_hotkey_sequence("CTRL+L") == "^l"
+    assert normalize_hotkey_sequence("%{F4}") == "%{F4}"
+
+    close_stroke = parse_hotkey_sequence("ALT+F4")[0]
+    address_stroke = parse_hotkey_sequence("CTRL+L")[0]
+    assert close_stroke.token == "F4"
+    assert close_stroke.modifiers == (VK_MENU,)
+    assert address_stroke.token == "l"
+    assert address_stroke.modifiers == (VK_CONTROL,)
+
+
+def test_windows_hotkey_prefers_sendinput_and_never_types_human_chord(monkeypatch):
+    driver = object.__new__(WindowsUIADriver)
+    sent: list[str] = []
+    target = SimpleNamespace(element_info=SimpleNamespace(handle=42))
+    driver._resolve_root_resilient = lambda **_kwargs: target
+    driver._focus_wrapper = lambda _target: None
+    driver._window_dict = lambda _target: {"handle": 42}
+    driver._sendinput_click_engine = SimpleNamespace(
+        is_available=lambda: True,
+        send_hotkey_sequence=lambda sequence, **_kwargs: sent.append(sequence),
+    )
+    monkeypatch.setattr(
+        "runtimes.computer_use.drivers.windows_uia.send_keys",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("text fallback must not run")),
+    )
+
+    result = driver.hotkey("ALT+F4", window_handle=42)
+
+    assert sent == ["%{F4}"]
+    assert result["metadata"]["hotkeyStrategy"] == "sendinput"
+    assert result["metadata"]["requestedSequence"] == "ALT+F4"
+    assert result["metadata"]["canonicalSequence"] == "%{F4}"
+
+
+def test_explicit_coordinate_click_is_not_replaced_by_a_learned_window_selector():
+    runtime = object.__new__(ComputerUseRuntime)
+    clicked: list[list[int]] = []
+
+    class _BrowserDecision:
+        available = False
+
+    class _CoordinateDriver:
+        def click_point(self, *, point, **_kwargs):
+            clicked.append(list(point))
+            return {"handle": 42, "metadata": {}}
+
+        def click_element(self, **_kwargs):
+            raise AssertionError("learned window selector must not replace an explicit coordinate")
+
+    runtime.driver = _CoordinateDriver()
+    runtime._browser_lane_decision = lambda **_kwargs: _BrowserDecision()
+    runtime._resolve_runtime_click_points = lambda _payload: ([[320, 180]], None, [[0.5, 0.5]], None)
+
+    result = runtime._click_target_from_payload(
+        {
+            "point": [0.5, 0.5],
+            "class_name": "TXGuiFoundation",
+            "_explicit_coordinate_target": True,
+            "window_handle": 42,
+            "prefer_sendinput_click": True,
+        }
+    )
+
+    assert clicked == [[320, 180]]
+    assert result["metadata"]["coordinateFallback"] is True
+
+
+def test_explicit_coordinate_payload_can_be_restored_after_learned_patches():
+    explicit_coordinates = {"point": [0.2, 0.4], "point_candidates": [[0.3, 0.5]]}
+    patched = {
+        "point": [0.9, 0.9],
+        "point_rect": [0.0, 0.0, 1.0, 1.0],
+        "class_name": "TXGuiFoundation",
+    }
+    restored = ComputerUseRuntime._restore_explicit_coordinate_payload(patched, explicit_coordinates)
+
+    assert restored["point"] == [0.2, 0.4]
+    assert restored["point_candidates"] == [[0.3, 0.5]]
+    assert "point_rect" not in restored
+    assert restored["class_name"] == "TXGuiFoundation"
 
 
 def test_github_star_playbook_seed_is_runtime_native_and_source_tracked():

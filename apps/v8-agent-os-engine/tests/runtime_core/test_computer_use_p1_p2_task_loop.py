@@ -30,6 +30,16 @@ def test_fact_resolver_maps_turix_to_canonical_github_repo():
     assert facts[0]["source"] == "built_in_alias"
 
 
+def test_fact_resolver_keeps_compound_browser_download_out_of_settings_mode():
+    intent = normalize_intent(
+        "打开 https://metaso.cn，提问后下载页面图片，最后关闭浏览器。"
+    )
+
+    assert intent["explicitUrl"] == "https://metaso.cn"
+    assert intent["operation"] == "download_and_open"
+    assert intent["domain"] == "web"
+
+
 def test_task_loop_requires_fact_resolution_before_gui_for_unknown_repo():
     loop = prepare_task_loop(
         "去 GitHub 给完全不存在的某个项目点星标",
@@ -130,6 +140,13 @@ def test_browser_managed_launch_uses_dedicated_reusable_profile(tmp_path: Path):
     assert f"--user-data-dir={tmp_path / 'chrome'}" in command
     assert metadata["profilePersistenceMode"] == "dedicated_debug_profile"
     assert metadata["browserUserDataDir"] == str(tmp_path / "chrome")
+
+
+def test_browser_family_recognizes_managed_agent_browser_ids():
+    provider = BrowserAutomationProvider()
+
+    assert provider.infer_family(app_id="browser_checkout", app_name="Agent Browser") == "chromium"
+    assert provider.infer_family(app_id="agent_browser") == "chromium"
 
 
 def test_browser_lane_auto_starts_managed_debug_browser_when_no_existing_port(monkeypatch, tmp_path: Path):

@@ -492,6 +492,45 @@ def test_runtime_broker_route_creates_episode_and_grants_access():
     assert command.update["runtime_dispatch_status"]["nextAction"] == "wait_episode"
 
 
+def test_runtime_route_uses_current_session_workspace_instead_of_model_guess(monkeypatch):
+    monkeypatch.setattr(
+        native_runtime,
+        "get_runtime_context",
+        lambda: {"workspace_path": r"E:\Projects\test6"},
+    )
+
+    enriched = native_runtime._enrich_route_need_for_episode(
+        {
+            "kind": "computer_use",
+            "reason": "download a governed artifact",
+            "inputs": {
+                "workspacePath": r"E:\Projects\test6\stale-project",
+                "taskBriefs": [
+                    {
+                        "taskBriefId": "download-image",
+                        "goal": "Download the requested image.",
+                        "writeRequired": True,
+                        "writeSet": ["artifacts/image.jpg"],
+                        "expectedOutputs": ["artifacts/image.jpg"],
+                        "acceptanceContract": ["The image exists and has valid magic bytes."],
+                    }
+                ],
+            },
+        },
+        kind="computer_use",
+        state={"current_route_context": {}},
+    )
+
+    inputs = enriched["inputs"]
+    assert inputs["workspacePath"] == r"E:\Projects\test6"
+    assert inputs["workspaceBindingCorrection"] == {
+        "requestedWorkspacePath": r"E:\Projects\test6\stale-project",
+        "effectiveWorkspacePath": r"E:\Projects\test6",
+        "reason": "current_session_binding_is_authoritative",
+    }
+    assert inputs["routeBriefQuality"]["status"] == "ready"
+
+
 def _ready_engineering_handoff_state() -> dict:
     artifact_ref = "git://repo_demo/commit_verified"
     handoff = {

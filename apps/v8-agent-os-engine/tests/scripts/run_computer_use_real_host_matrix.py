@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import platform
 import subprocess
@@ -15,6 +16,13 @@ if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
 from core.multimodal_payload_adapter import utc_now_iso
+from core.runtime.startup_profile import get_runtime_registry_state
+
+
+# Match Engine startup: installed feature-pack paths must be active before the
+# Computer Use runtime imports optional desktop drivers.
+get_runtime_registry_state()
+
 from runtimes.computer_use.real_host_matrix import (
     build_real_host_matrix_payload,
     write_real_host_matrix,
@@ -145,10 +153,17 @@ def _clipboard_text() -> str:
     system = platform.system().lower()
     if system.startswith("win"):
         completed = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if completed.returncode != 0:
@@ -172,10 +187,26 @@ def _clipboard_text() -> str:
 def _set_clipboard_text(value: str) -> None:
     system = platform.system().lower()
     if system.startswith("win"):
+        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        command = (
+            "Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::Clear()"
+            if not value
+            else (
+                "$value=[Text.Encoding]::UTF8.GetString("
+                f"[Convert]::FromBase64String('{encoded}')); "
+                "Set-Clipboard -Value $value"
+            )
+        )
         subprocess.run(
-            ["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
-            input=value,
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                command,
+            ],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=5,
@@ -208,6 +239,33 @@ def _clipboard_probe_result() -> dict[str, Any]:
         return _failed(exc)
 
 
+def _window_capture_target(runtime: Any) -> dict[str, Any]:
+    foreground = runtime.driver.foreground_window() or {}
+    candidates = [foreground, *(runtime.driver.list_windows(limit=30) or [])]
+    usable: list[tuple[int, dict[str, Any]]] = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        bounds = item.get("bounds")
+        if not isinstance(bounds, list) or len(bounds) != 4:
+            continue
+        width = max(0, int(bounds[2]) - int(bounds[0]))
+        height = max(0, int(bounds[3]) - int(bounds[1]))
+        if width < 320 or height < 180:
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        usable.append((width * height, item))
+    if not usable:
+        raise RuntimeError("no_meaningful_window_available_for_screenshot_probe")
+    foreground_handle = foreground.get("handle") if isinstance(foreground, dict) else None
+    for _area, item in usable:
+        if foreground_handle and item.get("handle") == foreground_handle:
+            return item
+    return max(usable, key=lambda entry: entry[0])[1]
+
+
 def _collect_safe_probe_results(*, allow_input: bool) -> dict[str, dict[str, Any]]:
     runtime = computer_use_runtime
     results: dict[str, dict[str, Any]] = {}
@@ -223,8 +281,31 @@ def _collect_safe_probe_results(*, allow_input: bool) -> dict[str, dict[str, Any
         results["foreground_focus"] = _failed(exc)
     try:
         output = Path(tempfile.gettempdir()) / f"v8_computer_use_probe_{utc_now_iso().replace(':', '').replace('-', '')}.png"
-        screenshot = runtime.driver.capture_screenshot(output)
-        results["screenshot"] = _passed(path=str(output), size=screenshot.get("size"), bounds=screenshot.get("bounds"))
+        target = _window_capture_target(runtime)
+        screenshot = runtime.driver.capture_screenshot(
+            output,
+            window_handle=target.get("handle"),
+            window_title=target.get("title"),
+        )
+        size = screenshot.get("size") if isinstance(screenshot, dict) else None
+        width = int((size or {}).get("width") or 0)
+        height = int((size or {}).get("height") or 0)
+        file_size = output.stat().st_size if output.exists() else 0
+        if width < 320 or height < 180 or file_size < 2048:
+            raise RuntimeError(
+                f"screenshot_not_meaningful:width={width},height={height},bytes={file_size}"
+            )
+        results["screenshot"] = _passed(
+            path=str(output),
+            size=size,
+            bounds=screenshot.get("bounds"),
+            fileSize=file_size,
+            window={
+                "handle": target.get("handle"),
+                "title": target.get("title"),
+                "processName": target.get("processName"),
+            },
+        )
     except Exception as exc:
         results["screenshot"] = _failed(exc)
     try:

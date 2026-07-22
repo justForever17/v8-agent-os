@@ -11,6 +11,7 @@ from graph.agent_factories import _format_delegated_task_contract
 from graph.parallel_support import _compact_transcript, _extract_tool_names
 from langchain_core.messages import AIMessage, ToolMessage
 from runtimes.chat.runtime import ChatRuntime
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -163,6 +164,25 @@ def test_visible_gui_terminal_request_routes_to_computer_use() -> None:
 
     assert hint["boundaryDecision"]["primaryRuntime"] == "computer_use"
     assert hint["boundaryDecision"]["executionMode"] == "gui_terminal_session"
+
+
+def test_explicit_computer_use_contract_ignores_negated_shell_rpa_and_skips_engineering_workspace() -> None:
+    hint = classify_task_shape(
+        "这是 Computer Use runtime 验收：启动 QQ音乐，搜索‘晴天 周杰伦’，点击播放并关闭进程。"
+        "不得使用 shell 或 RPA，不要用测试说明替代真实桌面操作。"
+    )
+    prepared = SimpleNamespace(
+        task_shape_hint=hint,
+        explicit_engineering_requested=False,
+        engineering_mode="force",
+        engineering_trigger_decision={"active": True},
+    )
+    chat_run = SimpleNamespace(prepared=prepared)
+
+    assert hint["boundaryDecision"]["primaryRuntime"] == "computer_use"
+    assert hint["boundaryDecision"]["executionMode"] == "agent_browser_or_desktop_gui"
+    assert "rpa_explicitly_excluded" in hint["boundaryDecision"]["forbiddenRoutes"]
+    assert ChatRuntime._supervisor_direct_scope_requires_engineering_route(chat_run) is False
 
 
 def test_safety_eval_language_does_not_trigger_engineering_or_media_from_single_cjk_terms() -> None:

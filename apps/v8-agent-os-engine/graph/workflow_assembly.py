@@ -253,6 +253,9 @@ def build_runtime_episode_wait_node():
             if depth > 8 or not isinstance(value, dict):
                 return []
             collected = [item for item in list(value.get("results") or []) if isinstance(item, dict)]
+            collected.extend(
+                item for item in list(value.get("taskBriefResults") or []) if isinstance(item, dict)
+            )
             nested = value.get("delegationHandoff")
             if isinstance(nested, dict):
                 collected.extend(_collect_results(nested, depth=depth + 1))
@@ -286,6 +289,8 @@ def build_runtime_episode_wait_node():
             verification_evidence = (
                 dict(item.get("verificationEvidence"))
                 if isinstance(item.get("verificationEvidence"), dict)
+                else dict(item.get("verification"))
+                if isinstance(item.get("verification"), dict)
                 else {}
             )
             verification_passed = bool(verification_evidence.get("passed")) or any(
@@ -315,6 +320,32 @@ def build_runtime_episode_wait_node():
             result_text = _string_value(item.get("resultText"), item.get("summary"), item.get("localSelfCheck"))[:1800]
             if verification_lines:
                 result_text = ("; ".join(verification_lines) + (f"; {result_text}" if result_text else ""))[:1800]
+            verification_summary: list[str] = []
+            if evidence_source:
+                verification_summary.append(f"passed={bool(evidence_source.get('passed'))}")
+                for file_item in list(evidence_source.get("files") or [])[:3]:
+                    if not isinstance(file_item, dict):
+                        continue
+                    file_label = _string_value(
+                        file_item.get("workspacePath"),
+                        file_item.get("path"),
+                        file_item.get("artifactRef"),
+                    )
+                    details = [file_label] if file_label else []
+                    if file_item.get("mime"):
+                        details.append(f"mime={file_item.get('mime')}")
+                    if file_item.get("magic"):
+                        details.append(f"magic={file_item.get('magic')}")
+                    if file_item.get("sha256"):
+                        details.append(f"sha256={str(file_item.get('sha256'))[:16]}…")
+                    if details:
+                        verification_summary.append("file=" + "; ".join(details))
+                for flag in ("browserClosed", "applicationClosed"):
+                    if flag in evidence_source:
+                        verification_summary.append(f"{flag}={bool(evidence_source.get(flag))}")
+                missing = [str(value) for value in list(evidence_source.get("missing") or []) if str(value).strip()]
+                if missing:
+                    verification_summary.append("missing=" + ", ".join(missing[:4]))
             compact_results.append(
                 {
                     "taskBriefId": _string_value(item.get("taskBriefId"), item.get("taskId")),
@@ -329,6 +360,7 @@ def build_runtime_episode_wait_node():
                     "proofRefs": proof_refs,
                     "toolsUsed": list(item.get("toolsUsed") or [])[:12],
                     "verificationResults": verification_results,
+                    "verificationSummary": "; ".join(verification_summary)[:1200],
                     "verificationPassed": verification_passed,
                     "blockers": list(item.get("blockers") or item.get("residualRisks") or [])[:6],
                     "evidenceComplete": evidence_complete,
@@ -383,6 +415,21 @@ def build_runtime_episode_wait_node():
                             f"    evidence: {evidence_state}; artifacts={artifact_count}, proofRefs={proof_count}, "
                             f"semanticVerification={bool(result.get('verificationPassed'))}"
                         )
+                    artifact_labels = []
+                    for ref in list(result.get("artifactRefs") or [])[:4]:
+                        if isinstance(ref, dict):
+                            label = _string_value(
+                                ref.get("ref"), ref.get("workspacePath"), ref.get("path"), ref.get("artifactId")
+                            )
+                        else:
+                            label = str(ref or "").strip()
+                        if label:
+                            artifact_labels.append(label)
+                    if artifact_labels:
+                        lines.append("    artifacts: " + ", ".join(artifact_labels))
+                    verification_summary = _string_value(result.get("verificationSummary"))
+                    if verification_summary:
+                        lines.append("    verification: " + verification_summary)
         else:
             lines.append("Episodes:")
             for episode in episodes[:8]:

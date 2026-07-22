@@ -201,6 +201,19 @@ def test_agent_browser_proxy_waits_until_playwright_is_connected(monkeypatch):
     assert all(timeout is not None and timeout <= 1.0 for timeout in health_calls)
 
 
+def test_browser_dom_input_uses_native_setter_for_controlled_fields():
+    provider = BrowserAutomationProvider()
+
+    script = provider._browser_input_script(
+        text="controlled input",
+        payload={"browser_selector": "textarea"},
+    )
+
+    assert "Object.getOwnPropertyDescriptor(prototype, 'value')?.set" in script
+    assert "new InputEvent('input'" in script
+    assert "setter.call(target, nextValue)" in script
+
+
 def test_browser_discovery_does_not_scan_arbitrary_debug_ports(monkeypatch):
     provider = BrowserAutomationProvider()
     monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: True)
@@ -211,6 +224,22 @@ def test_browser_discovery_does_not_scan_arbitrary_debug_ports(monkeypatch):
     )
 
     assert provider._discover_existing_debug_port(app_id="agent_browser") is None
+
+
+def test_close_managed_browser_is_idempotent_when_no_browser_is_running(monkeypatch):
+    provider = BrowserAutomationProvider()
+    monkeypatch.setattr(provider, "_is_debug_port_reachable", lambda _port: False)
+    monkeypatch.setattr(
+        provider,
+        "_ensure_proxy",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("cleanup must not start the proxy")),
+    )
+
+    result = provider.close_managed_browser()
+
+    assert result["closed"] is True
+    assert result["reason"] == "agent_browser_not_running"
+    assert result["errors"] == []
 
 
 def test_debug_port_ownership_requires_the_exact_v8os_profile_and_port(monkeypatch, tmp_path):

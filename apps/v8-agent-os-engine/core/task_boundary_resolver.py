@@ -25,6 +25,7 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 
 _NEGATION_TERMS = (
     "不要",
+    "不得",
     "不含",
     "不包含",
     "不包括",
@@ -80,8 +81,15 @@ def _explicitly_excludes_runtime(text: str, runtime_terms: tuple[str, ...]) -> b
                 break
             prefix = text[max(0, index - 28):index]
             suffix = text[index + len(term): index + len(term) + 12]
-            if any(negation in prefix for negation in _NEGATION_TERMS):
-                return True
+            for negation in _NEGATION_TERMS:
+                negation_index = prefix.rfind(negation)
+                if negation_index < 0:
+                    continue
+                between = prefix[negation_index + len(negation):]
+                if any(marker in between for marker in ("替代", "代替", "instead of")):
+                    continue
+                if len(between.strip()) <= 18:
+                    return True
             if suffix.strip().startswith(("除外", "除去", "排除")):
                 return True
             start = index + len(term)
@@ -322,6 +330,16 @@ def resolve_task_boundary(
     if "delegation" in secondary_shapes and primary_runtime != "delegation":
         supporting.append("delegation")
 
+    explicit_computer_use = (
+        _contains_positive_any(text, _COMPUTER_USE_RUNTIME_TERMS)
+        and not excluded_computer_use
+    )
+    if explicit_computer_use:
+        primary_runtime = "computer_use"
+        execution_mode = "agent_browser_or_desktop_gui"
+        reason = "explicit_computer_use_runtime_request"
+        signals.append("desktop:explicit_computer_use")
+
     has_video = _contains_any(text, _VIDEO_TERMS)
     if has_video and _contains_any(text, _CODE_VIDEO_TERMS):
         primary_runtime = "engineering"
@@ -351,7 +369,11 @@ def resolve_task_boundary(
         supporting.append("engineering")
         signals.append("video:ambiguous_output_only")
 
-    if _contains_any(text, _TERMINAL_TERMS) and _contains_any(text, _TERMINAL_ACTION_TERMS):
+    if (
+        not explicit_computer_use
+        and _contains_positive_any(text, _TERMINAL_TERMS)
+        and _contains_positive_any(text, _TERMINAL_ACTION_TERMS)
+    ):
         if _contains_any(text, _GUI_TERMINAL_TERMS) and not excluded_computer_use:
             primary_runtime = "computer_use"
             execution_mode = "gui_terminal_session"
@@ -372,7 +394,7 @@ def resolve_task_boundary(
             )
             signals.append("terminal:native_command_preferred")
 
-    if _contains_positive_any(text, _RPA_TERMS) and not excluded_rpa:
+    if _contains_positive_any(text, _RPA_TERMS) and not excluded_rpa and not explicit_computer_use:
         primary_runtime = "rpa"
         execution_mode = "rpa_workflow_or_template"
         reason = "repeatable_workflow_or_object_library_request"

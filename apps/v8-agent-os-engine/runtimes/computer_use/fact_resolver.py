@@ -110,11 +110,11 @@ def classify_goal(goal: str) -> dict[str, Any]:
         domain = "web"
         target_type = "form_page"
         risk = "form_submit_side_effect"
-    elif settingish:
-        operation = "toggle_option"
-        domain = "settings"
-        target_type = "setting_target"
-        risk = "settings_mutation"
+    elif downloadish:
+        operation = "download_and_open"
+        domain = "web"
+        target_type = "download_page"
+        risk = "download_side_effect"
     elif search_openish:
         operation = "search_and_open_result"
         domain = "web"
@@ -125,11 +125,11 @@ def classify_goal(goal: str) -> dict[str, Any]:
         domain = "browser"
         target_type = "login_boundary"
         risk = "credential_boundary"
-    elif downloadish:
-        operation = "download_and_open"
-        domain = "web"
-        target_type = "download_page"
-        risk = "download_side_effect"
+    elif settingish and not explicit_url:
+        operation = "toggle_option"
+        domain = "settings"
+        target_type = "setting_target"
+        risk = "settings_mutation"
     elif explicit_url:
         operation = "search_and_open_result"
         domain = "web"
@@ -240,7 +240,7 @@ def resolve_goal_facts(
 
 
 def _first_url(value: str | None) -> str | None:
-    match = re.search(r"https?://[^\s<>)\"']+", str(value or ""))
+    match = re.search(r"https?://[^\s<>)\]\[\"'，。；、]+", str(value or ""))
     if not match:
         return None
     return match.group(0).rstrip(".,;，。)")

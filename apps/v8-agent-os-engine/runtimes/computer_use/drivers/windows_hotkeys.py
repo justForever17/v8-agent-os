@@ -215,9 +215,52 @@ class HotkeyParseError(ValueError):
 
 VALID_EVENT_TYPES = {"press", "down", "up"}
 
+_HUMAN_MODIFIER_TOKENS = {
+    "CTRL": "^",
+    "CONTROL": "^",
+    "ALT": "%",
+    "OPTION": "%",
+    "SHIFT": "+",
+    "WIN": "#",
+    "WINDOWS": "#",
+    "META": "#",
+}
+
+
+def normalize_hotkey_sequence(sequence: str) -> str:
+    """Normalize human chord notation without changing the legacy send_keys grammar.
+
+    Model-facing tools naturally produce ``CTRL+L`` and ``ALT+F4`` while the
+    desktop drivers historically consumed pywinauto-style ``^l`` and
+    ``%{F4}``. Passing the human form directly to ``send_keys`` types the
+    letters into the focused control, which is especially visible when an IME
+    is active. Only unambiguous modifier chords are rewritten; existing
+    send_keys expressions remain untouched.
+    """
+
+    raw = str(sequence or "").strip()
+    if not raw or raw[0] in MODIFIER_TOKEN_MAP or raw.startswith("{") or raw == "~":
+        return raw
+    parts = [part.strip() for part in raw.split("+")]
+    if len(parts) < 2 or not all(parts):
+        return raw
+    modifiers = parts[:-1]
+    if not all(part.upper() in _HUMAN_MODIFIER_TOKENS for part in modifiers):
+        return raw
+    prefix = "".join(_HUMAN_MODIFIER_TOKENS[part.upper()] for part in modifiers)
+    key = parts[-1]
+    upper_key = key.upper()
+    if upper_key in NAMED_KEY_VKS or len(key) != 1:
+        key_token = "{" + upper_key + "}"
+    else:
+        # Modifier state is explicit in the prefix; avoid an accidental Shift
+        # generated merely because a model wrote the letter in uppercase.
+        key_token = key.lower() if key.isalpha() else key
+    return prefix + key_token
+
 
 def parse_hotkey_sequence(sequence: str) -> list[ParsedHotkeyStroke]:
-    parser = _HotkeyParser(str(sequence or ""))
+    parser = _HotkeyParser(normalize_hotkey_sequence(sequence))
     strokes = parser.parse()
     if not strokes:
         raise HotkeyParseError("快捷键序列为空。")

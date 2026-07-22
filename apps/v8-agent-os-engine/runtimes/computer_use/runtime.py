@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -4768,18 +4769,24 @@ class ComputerUseRuntime:
             return
         source = "learned_search_result_strategy" if is_result_selector_key(selector_key) else "learned_search_strategy"
         weight = 64 if verification.level == "verified" else 54
-        memory.remember_target_strategy(
-            app_id=app_id,
-            strategy=normalized_strategy,
-            source=source,
-            reason=verification.status or action_type,
-            weight=weight,
-            action_name=context.get("action_name"),
-            selector_key=selector_key,
-            target_text=target_text,
-            window_class=context.get("window_class"),
-            window_title=context.get("window_title"),
-        )
+        try:
+            memory.remember_target_strategy(
+                app_id=app_id,
+                strategy=normalized_strategy,
+                source=source,
+                reason=verification.status or action_type,
+                weight=weight,
+                action_name=context.get("action_name"),
+                selector_key=selector_key,
+                target_text=target_text,
+                window_class=context.get("window_class"),
+                window_title=context.get("window_title"),
+            )
+        except Exception:
+            # Selector learning is derived evidence. A transient persistence
+            # failure must not turn an already executed desktop action into a
+            # false failure.
+            return
 
     def _apply_learned_interaction_patch(
         self,
@@ -4931,19 +4938,25 @@ class ComputerUseRuntime:
         elif bool(metadata.get("sendInputPreferred")):
             source = "learned_sendinput_interaction"
         weight = 66 if verification.level == "verified" else 56
-        memory.remember_interaction(
-            app_id=app_id,
-            patch=patch,
-            source=source,
-            reason=verification.status or action_type,
-            weight=weight,
-            action_name=context.get("action_name"),
-            selector_key=context.get("selector_key"),
-            target_text=context.get("target_text"),
-            control_type=context.get("control_type"),
-            window_class=context.get("window_class"),
-            window_title=context.get("window_title"),
-        )
+        try:
+            memory.remember_interaction(
+                app_id=app_id,
+                patch=patch,
+                source=source,
+                reason=verification.status or action_type,
+                weight=weight,
+                action_name=context.get("action_name"),
+                selector_key=context.get("selector_key"),
+                target_text=context.get("target_text"),
+                control_type=context.get("control_type"),
+                window_class=context.get("window_class"),
+                window_title=context.get("window_title"),
+            )
+        except Exception:
+            # Interaction memory is an optional derived projection. The
+            # governed action result remains authoritative when it cannot be
+            # persisted.
+            return
 
     def _refresh_snapshot(self, *, run_handle, observation: ComputerUseObservation | None = None, action: Dict[str, Any] | None = None) -> Dict[str, Any]:
         snapshot = {
@@ -7301,6 +7314,7 @@ class ComputerUseRuntime:
             or isinstance(spatial_anchor, dict)
         )
         has_structured_selector = self._has_structured_click_selector(payload)
+        explicit_coordinate_target = bool(payload.get("_explicit_coordinate_target"))
         target_text = str(payload.get("target_text") or "").strip() or None
         selector_error: str | None = None
         if has_visual_locator:
@@ -7326,7 +7340,7 @@ class ComputerUseRuntime:
             clicked["windowHandle"] = clicked.get("handle") or payload.get("window_handle")
             clicked["role"] = clicked.get("role") or "CoordinatePoint"
             return clicked
-        if has_structured_selector:
+        if has_structured_selector and not explicit_coordinate_target:
             try:
                 clicked = self.driver.click_element(
                     element_id=payload.get("element_id"),
@@ -7418,9 +7432,7 @@ class ComputerUseRuntime:
         focus_hotkey_sequence = str(
             payload.get("focus_hotkey_sequence") or payload.get("focusHotkeySequence") or ""
         ).strip()
-        window_typing_focus_mode = str(
-            payload.get("window_typing_focus_mode") or payload.get("windowTypingFocusMode") or ""
-        ).strip().lower()
+        window_typing_focus_mode = self._window_typing_focus_mode(payload)
         file_paste_strategy = str(
             payload.get("file_paste_strategy") or payload.get("filePasteStrategy") or ""
         ).strip().lower()
@@ -7701,6 +7713,49 @@ class ComputerUseRuntime:
             focus_hotkey_metadata=focus_hotkey_metadata,
             preflight=preflight,
         )
+
+    @staticmethod
+    def _window_typing_focus_mode(payload: Dict[str, Any]) -> str:
+        explicit = str(
+            payload.get("window_typing_focus_mode") or payload.get("windowTypingFocusMode") or ""
+        ).strip().lower()
+        if explicit:
+            return explicit
+        has_coordinate_target = any(
+            (
+                isinstance(payload.get(key), (list, tuple, dict))
+                and bool(payload.get(key))
+            )
+            for key in ("point", "point_candidates", "pointCandidates", "point_rect", "spatial_anchor", "spatialAnchor")
+        )
+        if (
+            bool(payload.get("window_typing"))
+            and has_coordinate_target
+            and str(payload.get("_binding_mode") or "").strip().lower() == "explicit"
+            and float(payload.get("_binding_confidence") or 0.0) >= 0.95
+            and str(payload.get("_resolved_app_id") or "").strip()
+        ):
+            return "application_surface"
+        return ""
+
+    @staticmethod
+    def _restore_explicit_coordinate_payload(
+        payload: Dict[str, Any],
+        explicit_coordinates: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        coordinate_keys = (
+            "point",
+            "point_candidates",
+            "pointCandidates",
+            "point_rect",
+            "spatial_anchor",
+            "spatialAnchor",
+        )
+        restored = dict(payload)
+        for key in coordinate_keys:
+            restored.pop(key, None)
+        restored.update(copy.deepcopy(explicit_coordinates))
+        return restored
 
     def _finalize_type_result(
         self,
@@ -9638,6 +9693,20 @@ class ComputerUseRuntime:
         self._ensure_runtime_ready()
         invocation = self._classify_invocation(invocation_metadata, default_trigger_source="computer_use_api")
         normalized_payload = dict(action_payload or {})
+        coordinate_keys = (
+            "point",
+            "point_candidates",
+            "pointCandidates",
+            "point_rect",
+            "spatial_anchor",
+            "spatialAnchor",
+        )
+        explicit_coordinates = {
+            key: copy.deepcopy(normalized_payload[key])
+            for key in coordinate_keys
+            if normalized_payload.get(key)
+        }
+        normalized_payload["_explicit_coordinate_target"] = bool(explicit_coordinates) and not self._has_structured_click_selector(normalized_payload)
         binding_decision = self._resolve_app_binding(
             explicit_app_id=normalized_payload.get("app_id") or normalized_payload.get("resolved_app_id"),
             window_title=normalized_payload.get("window_title"),
@@ -9658,6 +9727,11 @@ class ComputerUseRuntime:
             action_type=action_type,
             action_payload=normalized_payload,
         )
+        if normalized_payload.get("_explicit_coordinate_target"):
+            normalized_payload = self._restore_explicit_coordinate_payload(
+                normalized_payload,
+                explicit_coordinates,
+            )
         run_handle = self.begin_or_attach_run(
             session_id=session_id,
             run_id=run_id,

@@ -12,6 +12,7 @@ Desktop.ini
 
 # Root bootstrap workspace
 .bootstrap-workspace/
+/.agents/
 
 # Logs and coverage
 *.log
@@ -22,6 +23,7 @@ htmlcov/
 playwright-report/
 test-results/
 .tmp_metaso_chunks/
+**/.playwright-browsers/
 
 # Python artifacts
 **/__pycache__/
@@ -32,6 +34,7 @@ test-results/
 **/.tox/
 **/.venv/
 **/venv/
+**/.python/
 *.pyc
 *.pyo
 

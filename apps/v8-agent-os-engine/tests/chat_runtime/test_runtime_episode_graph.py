@@ -521,6 +521,64 @@ def test_runtime_episode_wait_node_projects_recursive_grandchild_verification_tr
     assert projected["evidenceComplete"] is True
 
 
+def test_runtime_episode_wait_node_projects_computer_use_task_brief_proof() -> None:
+    node = build_runtime_episode_wait_node()
+    episode_id = f"episode_wait_computer_use_{uuid4().hex}"
+    episode = build_runtime_episode(
+        need={"episodeId": episode_id, "kind": "computer_use", "reason": "download and close browser"},
+        kind="computer_use",
+        state="queued",
+        continuation_target="runtime_episode_runner",
+    )
+    db.upsert_runtime_episode_record(episode, enqueue=True, priority=999)
+    artifact_ref = "workspace:computer-use-acceptance/image.jpg"
+    handoff = build_handoff_ref(
+        producer_episode_id=episode_id,
+        kind="computer_observation_bundle",
+        compact_summary="Computer Use completed one governed task.",
+        status="ready",
+        extra={
+            "taskBriefResults": [
+                {
+                    "taskBriefId": "download-image",
+                    "status": "completed",
+                    "summary": "Downloaded a content image and closed Agent Browser.",
+                    "artifactRefs": [artifact_ref],
+                    "proofRefs": ["workspace:.v8-agent-os/proof/frame-04.jpg"],
+                    "verification": {
+                        "passed": True,
+                        "missing": [],
+                        "files": [
+                            {
+                                "workspacePath": "computer-use-acceptance/image.jpg",
+                                "mime": "image/jpeg",
+                                "magic": "FFD8FFE000104A46",
+                                "sha256": "27b9a8cc870f3fa7c143c898a35405d448624df99bed32facf50bed0208e4360",
+                            }
+                        ],
+                        "browserClosed": True,
+                        "applicationClosed": False,
+                    },
+                }
+            ]
+        },
+    )
+    db.add_runtime_episode_handoff(episode_id=episode_id, handoff=handoff)
+    db.complete_runtime_episode(episode_id, state="completed", result_ref=handoff["handoffRefId"])
+
+    command = asyncio.run(node({"current_route_context": {"capabilityEpisodes": [episode]}}))
+
+    message = command.update["messages"][0]
+    content = str(message.content)
+    projected = message.additional_kwargs["v8_runtime_handoffs"][0]["results"][0]
+    assert artifact_ref in content
+    assert "magic=FFD8FFE000104A46" in content
+    assert "browserClosed=True" in content
+    assert "evidence: complete" in content
+    assert projected["verificationPassed"] is True
+    assert projected["evidenceComplete"] is True
+
+
 def test_runtime_episode_wait_node_reports_failed_handoff_as_recoverable_failure() -> None:
     node = build_runtime_episode_wait_node()
     episode_id = f"episode_wait_failed_{uuid4().hex}"

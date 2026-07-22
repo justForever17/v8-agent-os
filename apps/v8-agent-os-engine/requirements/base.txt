@@ -17,6 +17,7 @@ langchain-google-genai
 mcp
 langchain-mcp-adapters
 httpx
+mutagen>=1.47,<2
 websockets>=15,<16
 psutil
 aiohttp

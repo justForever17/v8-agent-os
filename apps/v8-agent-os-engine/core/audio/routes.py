@@ -14,7 +14,7 @@ from core.system_base import get_internal_secret
 from .audio_config import AudioConfigManager
 from .stt_provider import STTManager
 from .tts_provider import TTSManager
-from .voice_manager import MAX_VOICE_SAMPLE_BYTES, VoiceManagerError, minimax_voice_manager
+from .voice_manager import MAX_VOICE_SAMPLE_BYTES, VoiceManagerError, voice_customization_manager
 
 router = APIRouter(prefix="/v1/audio", tags=["Audio"])
 
@@ -29,9 +29,18 @@ def _require_voice_manager_secret(provided: str | None) -> None:
 
 
 def _voice_manager_error(error: VoiceManagerError) -> JSONResponse:
+    diagnostics = {
+        key: value
+        for key, value in {
+            "provider": error.provider,
+            "providerCode": error.provider_code,
+            "traceId": error.trace_id,
+        }.items()
+        if value
+    }
     return JSONResponse(
         status_code=error.status_code,
-        content={"ok": False, "error": str(error), "errorCode": error.code},
+        content={"ok": False, "error": str(error), "errorCode": error.code, **diagnostics},
     )
 
 
@@ -261,7 +270,7 @@ async def manage_model_ref_voices(
     request: Request,
     x_v8_agent_os_secret: str | None = Header(default=None),
 ):
-    """Run fixed MiniMax voice-management operations without exposing Provider credentials."""
+    """Run model-declared voice customization without exposing Provider credentials."""
     _require_voice_manager_secret(x_v8_agent_os_secret)
     try:
         content_type = str(request.headers.get("content-type") or "").lower()
@@ -274,7 +283,7 @@ async def manage_model_ref_voices(
             if file is None or not hasattr(file, "read"):
                 raise VoiceManagerError("Sample audio file is required.", code="sample_required")
             audio_bytes = await file.read(MAX_VOICE_SAMPLE_BYTES + 1)
-            return await minimax_voice_manager.clone_voice(
+            return await voice_customization_manager.clone_voice(
                 str(form.get("modelRef") or ""),
                 voice_id=str(form.get("voiceId") or ""),
                 preview_text=str(form.get("previewText") or ""),
@@ -292,17 +301,11 @@ async def manage_model_ref_voices(
         action = str(body.get("action") or "list").strip()
         model_ref = str(body.get("modelRef") or "")
         if action == "capabilities":
-            minimax_voice_manager.resolve_context(model_ref)
-            return {
-                "ok": True,
-                "provider": "minimax_tts",
-                "capabilities": minimax_voice_manager.capabilities(),
-                "voices": [],
-            }
+            return voice_customization_manager.capabilities(model_ref)
         if action == "list":
-            return await minimax_voice_manager.list_voices(model_ref)
+            return await voice_customization_manager.list_voices(model_ref)
         if action == "delete":
-            return await minimax_voice_manager.delete_voice(
+            return await voice_customization_manager.delete_voice(
                 model_ref,
                 str(body.get("voiceId") or ""),
                 str(body.get("voiceType") or ""),

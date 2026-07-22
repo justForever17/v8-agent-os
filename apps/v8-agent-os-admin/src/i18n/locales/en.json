@@ -4410,6 +4410,7 @@
   "app.admin.dashboard.model.hub.audio.voiceCloneIdPlaceholder": "New voice_id, e.g. v8_custom_voice",
   "app.admin.dashboard.model.hub.audio.voiceCloneMissing": "Choose a sample audio file and enter a voice_id",
   "app.admin.dashboard.model.hub.audio.voiceClonePreviewPlaceholder": "Optional preview text",
+  "app.admin.dashboard.model.hub.audio.voiceCloneSampleHint": "Use a sample of at least {seconds} seconds. Its duration is checked before upload.",
   "app.admin.dashboard.model.hub.audio.voiceCloneSuccess": "Voice cloned",
   "app.admin.dashboard.model.hub.audio.voiceCloneTitle": "Clone custom voice",
   "app.admin.dashboard.model.hub.audio.voiceCloneUpload": "Upload sample and clone",

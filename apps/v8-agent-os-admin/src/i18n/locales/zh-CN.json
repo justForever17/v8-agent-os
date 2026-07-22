@@ -4413,6 +4413,7 @@
   "app.admin.dashboard.model.hub.audio.voiceCloneIdPlaceholder": "新 voice_id，如 v8_custom_voice",
   "app.admin.dashboard.model.hub.audio.voiceCloneMissing": "请选择样音并填写 voice_id",
   "app.admin.dashboard.model.hub.audio.voiceClonePreviewPlaceholder": "可选试听文本",
+  "app.admin.dashboard.model.hub.audio.voiceCloneSampleHint": "建议样音至少 {seconds} 秒，上传前会先检查时长。",
   "app.admin.dashboard.model.hub.audio.voiceCloneSuccess": "音色已克隆",
   "app.admin.dashboard.model.hub.audio.voiceCloneTitle": "克隆个性音色",
   "app.admin.dashboard.model.hub.audio.voiceCloneUpload": "上传样音并克隆",

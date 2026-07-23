@@ -10,6 +10,7 @@ on:
       - "apps/v8-agent-os-shell/**"
       - "apps/v8-agent-os-web/**"
       - "apps/v8-agent-os-desktop-pet/**"
+      - "packages/product-ui/**"
       - "packages/session-realtime/**"
       - "scripts/desktop/**"
       - "scripts/release/**"
@@ -25,6 +26,7 @@ on:
       - "apps/v8-agent-os-shell/**"
       - "apps/v8-agent-os-web/**"
       - "apps/v8-agent-os-desktop-pet/**"
+      - "packages/product-ui/**"
       - "packages/session-realtime/**"
       - "scripts/desktop/**"
       - "scripts/release/**"
@@ -54,6 +56,13 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Build and verify shared Product UI package
+        working-directory: packages/product-ui
+        run: npm ci --include=dev --workspaces=false
+
+      - name: Verify shared Product UI archive
+        run: node scripts/desktop/verify-product-ui-package.mjs --verify-build
+
       - name: Desktop release contract tests
         shell: bash
         run: |
@@ -78,6 +87,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: |
+            packages/product-ui/package-lock.json
             packages/session-realtime/package-lock.json
             apps/v8-agent-os-admin/package-lock.json
             apps/v8-agent-os-web/package-lock.json
@@ -92,6 +102,17 @@ jobs:
         shell: pwsh
         timeout-minutes: 3
         run: node scripts/release/verify-release-manifest.mjs --product desktop --tag "$env:GITHUB_REF_NAME"
+
+      - name: Build shared Product UI package
+        shell: pwsh
+        working-directory: packages/product-ui
+        timeout-minutes: 8
+        run: npm ci --include=dev --workspaces=false
+
+      - name: Verify shared Product UI archive
+        shell: pwsh
+        timeout-minutes: 3
+        run: node scripts/desktop/verify-product-ui-package.mjs --verify-build
 
       - name: Install shared realtime package dependencies
         shell: pwsh

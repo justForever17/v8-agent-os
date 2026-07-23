@@ -151,6 +151,10 @@ test('desktop workflow exists and publishes checksummed Windows artifacts', () =
   const workflow = fs.readFileSync(workflowPath, 'utf8');
   assert.match(workflow, /windows-latest/);
   assert.match(workflow, /packages\/session-realtime\/package-lock\.json/);
+  assert.match(workflow, /packages\/product-ui\/\*\*/);
+  assert.match(workflow, /packages\/product-ui\/package-lock\.json/);
+  assert.match(workflow, /Build and verify shared Product UI package/);
+  assert.match(workflow, /verify-product-ui-package\.mjs --verify-build/);
   assert.match(workflow, /Install shared realtime package dependencies/);
   assert.match(workflow, /Build native engineering sandbox host/);
   assert.match(workflow, /build-sandbox-host\.mjs --force/);

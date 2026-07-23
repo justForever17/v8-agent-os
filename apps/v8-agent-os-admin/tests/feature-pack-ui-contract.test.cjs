@@ -7,10 +7,15 @@ const adminRoot = path.resolve(__dirname, "..");
 
 test("Topbar uses feature pack API instead of legacy runtime install API", () => {
   const topbarSource = fs.readFileSync(path.join(adminRoot, "src", "components", "layout", "Topbar.tsx"), "utf8");
+  const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
 
   assert.match(topbarSource, /\/api\/runtime-feature-packs/);
   assert.doesNotMatch(topbarSource, /\/api\/runtime-install/);
   assert.match(topbarSource, /v8os:open-feature-packs/);
+  assert.match(topbarSource, /loadInstallState = useCallback\(async \(force = false, silent = false\)/);
+  assert.match(topbarSource, /loadInstallState\(false, true\)/);
+  assert.match(topbarSource, /installLoading && !installState/);
+  assert.match(installerSource, /productName: "可选本地识别包"/);
 });
 
 test("feature pack API exposes GET/POST and legacy runtime install is deprecated", () => {

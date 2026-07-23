@@ -39,6 +39,7 @@ def test_feature_pack_contract_order_and_runtime_mapping():
     assert definitions[0].runtime_families == ("computer_use", "desktop_live")
     assert definitions[1].runtime_families == ("rpa",)
     assert definitions[2].runtime_families == ()
+    assert definitions[2].product_name == "可选本地识别包"
     assert definitions[3].runtime_families == ()
     assert definitions[3].asset_manifest_file == "creative-media-image-analysis.manifest.json"
     assert definitions[3].python_path_priority == "fallback"

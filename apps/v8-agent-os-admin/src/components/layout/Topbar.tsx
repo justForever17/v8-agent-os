@@ -128,20 +128,26 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
         [inboxItems, seenInboxIds],
     );
 
-    const loadInstallState = useCallback(async (force = false) => {
-        setInstallLoading(true);
+    const loadInstallState = useCallback(async (force = false, silent = false) => {
+        if (!silent) {
+            setInstallLoading(true);
+        }
         try {
             const payload = await fetchAdminJson<RuntimeFeaturePackState>("/api/runtime-feature-packs", { force });
             setInstallState(payload);
         } catch (error) {
             console.error("Failed to load runtime feature pack state:", error);
-            toast({
-                title: t("components.layout.Topbar.featurePacksLoadFailedTitle"),
-                description: t("components.layout.Topbar.featurePacksLoadFailedDescription"),
-                variant: "destructive",
-            });
+            if (!silent) {
+                toast({
+                    title: t("components.layout.Topbar.featurePacksLoadFailedTitle"),
+                    description: t("components.layout.Topbar.featurePacksLoadFailedDescription"),
+                    variant: "destructive",
+                });
+            }
         } finally {
-            setInstallLoading(false);
+            if (!silent) {
+                setInstallLoading(false);
+            }
         }
     }, [t, toast]);
 
@@ -187,17 +193,17 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
 
     useEffect(() => {
         void loadInbox(true);
-        void loadInstallState();
+        void loadInstallState(false, true);
         const intervalId = window.setInterval(() => {
             if (document.visibilityState === "visible") {
                 void loadInbox(true);
-                void loadInstallState();
+                void loadInstallState(false, true);
             }
         }, 45000);
         const handleVisible = () => {
             if (document.visibilityState === "visible") {
                 void loadInbox(true);
-                void loadInstallState();
+                void loadInstallState(false, true);
             }
         };
         document.addEventListener("visibilitychange", handleVisible);
@@ -292,23 +298,29 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
     }, [loadInbox]);
 
     const toggleInstallPanel = useCallback(() => {
-        setActivePanel((currentPanel) => {
-            const nextPanel = currentPanel === "install" ? null : "install";
-            if (nextPanel === "install") {
-                void loadInstallState();
-            }
-            return nextPanel;
-        });
-    }, [loadInstallState]);
+        const opening = activePanel !== "install";
+        setActivePanel(opening ? "install" : null);
+        if (opening) {
+            void loadInstallState(false, installState !== null);
+        }
+    }, [activePanel, installState, loadInstallState]);
 
     useEffect(() => {
         const openFeaturePacks = () => {
             setActivePanel("install");
-            void loadInstallState(true);
+            void loadInstallState(true, installState !== null);
         };
         window.addEventListener("v8os:open-feature-packs", openFeaturePacks);
         return () => window.removeEventListener("v8os:open-feature-packs", openFeaturePacks);
-    }, [loadInstallState]);
+    }, [installState, loadInstallState]);
+
+    useEffect(() => {
+        if (!installState?.packs.some((pack) => pack.status === "installing")) return;
+        const timeoutId = window.setTimeout(() => {
+            void loadInstallState(true, true);
+        }, 1500);
+        return () => window.clearTimeout(timeoutId);
+    }, [installState, loadInstallState]);
 
     const handleInstallFeaturePack = useCallback(async (packId: string) => {
         setInstallSubmittingPackId(packId);
@@ -326,7 +338,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                 title: t("components.layout.Topbar.featurePackInstallStartedTitle"),
                 description: String(payload.message || t("components.layout.Topbar.featurePackInstallStartedDescription")),
             });
-            void loadInstallState(true);
+            void loadInstallState(true, true);
         } catch (error) {
             console.error("Failed to start feature pack install:", error);
             toast({
@@ -394,7 +406,7 @@ export function AdminTopbar({ windowControls }: { windowControls?: ReactNode }) 
                         </TopbarGlowActionButton>
                         {activePanel === "install" ? (
                             <Card className="absolute right-0 top-full z-50 mt-2 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3xl border-border bg-card/95 p-4 shadow-2xl dark:border-white/10 dark:bg-zinc-950/95">
-                                {installLoading ? (
+                                {installLoading && !installState ? (
                                     <div className="flex h-28 items-center justify-center">
                                         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                                     </div>

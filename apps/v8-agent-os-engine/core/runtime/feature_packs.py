@@ -56,7 +56,7 @@ FEATURE_PACK_DEFINITIONS: tuple[FeaturePackDefinition, ...] = (
     ),
     FeaturePackDefinition(
         id="local_asr_ocr",
-        product_name="本地识别增强包",
+        product_name="可选本地识别包",
         short_name="本地识别",
         description="为高性能本机提供本地语音转写、OCR 和媒体理解增强。",
         hover="适合电脑性能较高且不想依赖云供应商的用户；安装后按需接入本地语音转写、OCR、媒体/附件理解增强。",

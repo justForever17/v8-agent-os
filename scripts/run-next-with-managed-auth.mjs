@@ -138,6 +138,8 @@ const child = spawn(process.execPath, args, {
     HOME: mode === "build" ? buildHome : process.env.HOME,
     APPDATA: mode === "build" ? buildAppData : process.env.APPDATA,
     LOCALAPPDATA: mode === "build" ? buildLocalAppData : process.env.LOCALAPPDATA,
+    V8_AGENT_OS_REPO_ROOT: repoRoot,
+    V8_ENGINE_DIR: path.join(repoRoot, "apps", "v8-agent-os-engine"),
     NODE_OPTIONS: mode === "build" ? buildNodeOptions : process.env.NODE_OPTIONS,
     NEXT_TELEMETRY_DISABLED: "1",
   },

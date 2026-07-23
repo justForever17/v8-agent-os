@@ -55,6 +55,7 @@ test("feature pack installer retries official PyPI through trusted zh mirrors wi
 
 test("image analysis feature pack uses a pinned asset transaction and never a silent runtime download", () => {
   const installerSource = fs.readFileSync(path.join(adminRoot, "src", "lib", "server", "runtime-feature-packs.ts"), "utf8");
+  const managedNextSource = fs.readFileSync(path.join(adminRoot, "..", "..", "scripts", "run-next-with-managed-auth.mjs"), "utf8");
   const engineSource = fs.readFileSync(path.join(adminRoot, "..", "v8-agent-os-engine", "core", "runtime", "feature_packs.py"), "utf8");
   const manifest = JSON.parse(fs.readFileSync(path.join(adminRoot, "..", "v8-agent-os-engine", "requirements", "feature-packs", "creative-media-image-analysis.manifest.json"), "utf8"));
 
@@ -70,6 +71,8 @@ test("image analysis feature pack uses a pinned asset transaction and never a si
   assert.match(installerSource, /assertTrustedFeaturePackAssetUrl\(response\.url\)/);
   assert.match(installerSource, /normalizeStatus\(existing\.status\) === "installing"/);
   assert.match(installerSource, /本次请求未重复启动下载/);
+  assert.match(managedNextSource, /V8_AGENT_OS_REPO_ROOT:\s*repoRoot/);
+  assert.match(managedNextSource, /V8_ENGINE_DIR:\s*path\.join\(repoRoot, "apps", "v8-agent-os-engine"\)/);
   assert.doesNotMatch(engineSource, /requests\.(get|post)|urlopen|httpx\.(get|post)/);
 });
 

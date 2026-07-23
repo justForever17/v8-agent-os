@@ -103,6 +103,12 @@ def _platform_name() -> str:
     return "linux"
 
 
+def _background_process_creation_flags() -> int:
+    if os.name != "nt":
+        return 0
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
 def _safe_owned_path(path: Path) -> bool:
     resolved = path.expanduser().resolve()
     roots = [PLUGIN_MANAGER_ROOT.resolve(), PLUGIN_MANAGER_BIN_ROOT.resolve(), AGENT_SKILLS_ROOT.resolve()]
@@ -286,6 +292,7 @@ class PluginManagerService:
                 errors="replace",
                 timeout=timeout_seconds,
                 check=False,
+                creationflags=_background_process_creation_flags(),
             )
             return {
                 "returnCode": int(completed.returncode),

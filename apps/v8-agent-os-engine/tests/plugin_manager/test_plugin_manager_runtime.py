@@ -142,6 +142,31 @@ def _mark_ready(service: PluginManagerService, plugin_id: str) -> None:
         conn.commit()
 
 
+def test_skills_cli_runs_without_a_console_window_on_windows(
+    runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = runtime
+    captured: dict[str, object] = {}
+    create_no_window = 0x08000000
+
+    monkeypatch.setattr(service_module.shutil, "which", lambda _command, path=None: "C:/npm/npx.cmd")
+    monkeypatch.setattr(service_module, "_background_process_creation_flags", lambda: create_no_window)
+
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return type("Completed", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
+
+    monkeypatch.setattr(service_module.subprocess, "run", fake_run)
+
+    result = service._run_skills_cli(["list", "--global"])
+
+    assert result["returnCode"] == 0
+    assert captured["kwargs"]["creationflags"] == create_no_window
+    assert captured["kwargs"]["capture_output"] is True
+
+
 def test_builtin_catalog_has_17_signed_curated_plugins(runtime) -> None:
     service, _, _ = runtime
     catalog = plugin_catalog_service.load()

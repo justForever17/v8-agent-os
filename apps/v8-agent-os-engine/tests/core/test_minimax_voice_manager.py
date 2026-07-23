@@ -108,6 +108,49 @@ def test_list_voices_uses_engine_materialized_credential_and_groups(monkeypatch:
     assert "configured-secret" not in str(result)
 
 
+def test_minimax_list_keeps_provider_confirmed_clone_while_activation_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("core.audio.voice_manager.model_control_plane.get_model_record", lambda _ref: _model_record())
+    monkeypatch.setattr(
+        "core.audio.voice_manager._ledger_voices",
+        lambda _context, **_kwargs: [
+            {
+                "value": "v8_pending_voice",
+                "label": "v8_pending_voice",
+                "group": "custom",
+                "deletable": True,
+                "source": "local_ledger",
+                "availability": "pending_activation",
+            }
+        ],
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "system_voice": [],
+                "voice_cloning": [],
+                "voice_generation": [],
+                "base_resp": {"status_code": 0},
+            },
+        )
+
+    result = asyncio.run(VoiceCustomizationManager(transport=httpx.MockTransport(handler)).list_voices(MODEL_REF))
+
+    assert result["voices"] == [
+        {
+            "value": "v8_pending_voice",
+            "label": "v8_pending_voice",
+            "group": "custom",
+            "deletable": True,
+            "source": "local_ledger",
+            "availability": "pending_activation",
+        }
+    ]
+
+
 def test_provider_error_projects_business_code_and_trace_id(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("core.audio.voice_manager.model_control_plane.get_model_record", lambda _ref: _model_record())
 
@@ -215,6 +258,12 @@ def test_engine_error_response_keeps_sanitized_provider_diagnostics() -> None:
 def test_clone_keeps_minimax_file_id_as_integer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("core.audio.voice_manager.model_control_plane.get_model_record", lambda _ref: _model_record())
     requests: list[httpx.Request] = []
+    confirmed_voice_ids: list[str] = []
+
+    async def capture_confirmed_clone(_context, voice_id: str) -> None:
+        confirmed_voice_ids.append(voice_id)
+
+    monkeypatch.setattr("core.audio.voice_manager._upsert_ledger_entry", capture_confirmed_clone)
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -250,8 +299,10 @@ def test_clone_keeps_minimax_file_id_as_integer(monkeypatch: pytest.MonkeyPatch)
 
     assert len(requests) == 2
     assert result["fileId"] == 12345
+    assert result["availability"] == "pending_activation"
     assert result["sampleDurationSeconds"] == 10.0
     assert result["previewAudioUrl"] == "https://example.test/preview.mp3"
+    assert confirmed_voice_ids == ["V8_custom_voice"]
 
 
 def test_clone_rejects_audio_shorter_than_ten_seconds_before_network(monkeypatch: pytest.MonkeyPatch) -> None:

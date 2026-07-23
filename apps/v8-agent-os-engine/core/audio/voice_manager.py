@@ -389,7 +389,11 @@ async def _remove_ledger_entry(context: VoiceAdapterContext, voice_id: str) -> N
         )
 
 
-def _ledger_voices(context: VoiceAdapterContext) -> list[dict[str, Any]]:
+def _ledger_voices(
+    context: VoiceAdapterContext,
+    *,
+    availability: str = "confirmed",
+) -> list[dict[str, Any]]:
     return [
         {
             "value": _text(item.get("voiceId")),
@@ -397,6 +401,7 @@ def _ledger_voices(context: VoiceAdapterContext) -> list[dict[str, Any]]:
             "group": _text(item.get("group")) or "custom",
             "deletable": context.capabilities.delete,
             "source": "local_ledger",
+            "availability": availability,
         }
         for item in _read_ledger()
         if _text(item.get("provider")) == context.adapter_id
@@ -476,6 +481,7 @@ def _flatten_minimax_voices(payload: Any) -> list[dict[str, Any]]:
                     "group": group,
                     "deletable": deletable,
                     "source": "remote",
+                    "availability": "available",
                 }
             )
     return _dedupe_voices(voices)
@@ -558,7 +564,14 @@ class MiniMaxVoiceAdapter(VoiceCustomizationAdapter):
             )
         payload = _response_json(response, self.adapter_id)
         _assert_minimax_success(response, payload)
-        return {"voices": _flatten_minimax_voices(payload)}
+        return {
+            "voices": _dedupe_voices(
+                [
+                    *_flatten_minimax_voices(payload),
+                    *_ledger_voices(context, availability="pending_activation"),
+                ]
+            )
+        }
 
     async def delete_voice(self, context: VoiceAdapterContext, voice_id: str, voice_type: str) -> dict[str, Any]:
         normalized_type = _text(voice_type) or "voice_cloning"
@@ -572,6 +585,7 @@ class MiniMaxVoiceAdapter(VoiceCustomizationAdapter):
             )
         payload = _response_json(response, self.adapter_id)
         _assert_minimax_success(response, payload)
+        await _remove_ledger_entry(context, voice_id)
         return {"voiceId": voice_id}
 
     async def clone_voice(
@@ -620,7 +634,12 @@ class MiniMaxVoiceAdapter(VoiceCustomizationAdapter):
             )
         clone_payload = _response_json(clone_response, self.adapter_id)
         _assert_minimax_success(clone_response, clone_payload)
-        result: dict[str, Any] = {"voiceId": voice_id, "fileId": file_id}
+        await _upsert_ledger_entry(context, voice_id)
+        result: dict[str, Any] = {
+            "voiceId": voice_id,
+            "fileId": file_id,
+            "availability": "pending_activation",
+        }
         preview_url = _text(clone_payload.get("demo_audio"))
         if preview_url.startswith(("http://", "https://")):
             result["previewAudioUrl"] = preview_url

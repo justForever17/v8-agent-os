@@ -1,6 +1,10 @@
 import inspect
+import asyncio
+import json
 
-from core.audio.audio_config import _normalize_audio_config
+from core.audio import audio_config as audio_config_module
+from core.audio import routes as audio_routes
+from core.audio.audio_config import AudioConfigManager, _normalize_audio_config
 from core.audio.stt_provider import CustomSTTProvider, ModelRefSTTProvider, STTManager
 from core.audio.tts_provider import (
     CustomTTSProvider,
@@ -43,6 +47,90 @@ def test_audio_config_preserves_model_ref_sections():
     assert normalized["stt"]["model_ref"]["language"] == "auto"
     assert normalized["tts"]["model_ref"]["modelRef"] == "google_gemini_tts::gemini-3.1-flash-tts-preview"
     assert normalized["tts"]["model_ref"]["voice"] == "Kore"
+
+
+def test_audio_config_save_returns_the_canonical_persisted_config(monkeypatch, tmp_path):
+    persisted = {}
+    monkeypatch.setattr(audio_config_module, "AUDIO_CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(audio_config_module.storage, "write_json", lambda name, value: persisted.update({name: value}))
+
+    result = AudioConfigManager.save_config(
+        {
+            "tts": {
+                "active_provider": "model_ref",
+                "model_ref": {
+                    "modelRef": "minimax-cn::t2a_v2%2Fspeech-2.8-hd",
+                    "voice": "v8_lly-com",
+                    "format": "mp3",
+                },
+            }
+        }
+    )
+
+    assert result["tts"]["active_provider"] == "model_ref"
+    assert result["tts"]["model_ref"]["voice"] == "v8_lly-com"
+    assert persisted["audio_config.json"] == result
+
+
+def test_audio_config_route_returns_saved_config_instead_of_status_envelope(monkeypatch):
+    expected = {"stt": {"active_provider": "baidu"}, "tts": {"active_provider": "model_ref"}}
+    monkeypatch.setattr(audio_routes.AudioConfigManager, "save_config", lambda _config: expected)
+
+    assert asyncio.run(audio_routes.set_audio_config({"tts": {"active_provider": "model_ref"}})) == expected
+
+
+def test_tts_preview_uses_unsaved_config_without_persisting(monkeypatch):
+    observed = {}
+
+    class PreviewProvider:
+        async def synthesize_stream(self, text: str):
+            observed["text"] = text
+            yield b"preview-audio"
+
+    def get_provider(config):
+        observed["config"] = config
+        return PreviewProvider()
+
+    monkeypatch.setattr(audio_routes.TTSManager, "get_provider", get_provider)
+    response = asyncio.run(
+        audio_routes.tts_preview(
+            audio_routes.TTSPreviewRequest(
+                text="试听",
+                config={"tts": {"active_provider": "model_ref", "model_ref": {"format": "mp3"}}},
+            )
+        )
+    )
+
+    assert response.body == b"preview-audio"
+    assert response.media_type == "audio/mpeg"
+    assert observed["text"] == "试听"
+    assert observed["config"]["tts"]["active_provider"] == "model_ref"
+
+
+def test_tts_preview_projects_provider_diagnostics(monkeypatch):
+    class FailedProvider:
+        async def synthesize_stream(self, _text: str):
+            raise audio_routes.TTSProviderError(
+                "voice id unavailable",
+                provider_code="2013",
+                trace_id="trace-preview",
+            )
+            yield b""  # pragma: no cover
+
+    monkeypatch.setattr(audio_routes.TTSManager, "get_provider", lambda _config: FailedProvider())
+    response = asyncio.run(
+        audio_routes.tts_preview(
+            audio_routes.TTSPreviewRequest(
+                text="试听",
+                config={"tts": {"active_provider": "model_ref"}},
+            )
+        )
+    )
+    payload = json.loads(response.body)
+
+    assert response.status_code == 502
+    assert payload["providerCode"] == "2013"
+    assert payload["traceId"] == "trace-preview"
 
 
 def test_audio_config_keeps_legacy_custom_api_url_mapping():

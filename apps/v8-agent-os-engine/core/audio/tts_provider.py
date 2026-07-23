@@ -9,6 +9,22 @@ from core.model_ref import parse_model_ref
 
 from .audio_config import AudioConfigManager
 
+
+class TTSProviderError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider_code: str = "",
+        trace_id: str = "",
+        status_code: int = 502,
+    ) -> None:
+        super().__init__(message)
+        self.provider_code = provider_code
+        self.trace_id = trace_id
+        self.status_code = status_code
+
+
 class TTSProvider(ABC):
     """
     通用语音合成 (Text-to-Speech) 接口类
@@ -87,6 +103,16 @@ class CustomTTSProvider(TTSProvider):
                                     yield audio_bytes
                         elif self.response_audio_path or self.protocol in {"minimax_t2a_v2", "aliyun_cosyvoice_tts"}:
                             response_json = await response.json(content_type=None)
+                            if self.protocol == "minimax_t2a_v2":
+                                base_resp = response_json.get("base_resp") if isinstance(response_json, dict) else None
+                                base_resp = base_resp if isinstance(base_resp, dict) else {}
+                                provider_code = str(base_resp.get("status_code") or "")
+                                if provider_code not in {"", "0"}:
+                                    raise TTSProviderError(
+                                        str(base_resp.get("status_msg") or "MiniMax TTS synthesis failed."),
+                                        provider_code=provider_code,
+                                        trace_id=str(response_json.get("trace_id") or ""),
+                                    )
                             audio_value = _extract_first_json_path(response_json, _audio_response_paths_for_protocol(self.protocol, self.response_audio_path))
                             if isinstance(audio_value, str) and audio_value.startswith(("http://", "https://")):
                                 async with session.get(audio_value) as audio_response:
@@ -94,18 +120,34 @@ class CustomTTSProvider(TTSProvider):
                                         async for chunk in audio_response.content.iter_any():
                                             if chunk:
                                                 yield chunk
+                                    else:
+                                        raise TTSProviderError(
+                                            f"TTS audio download returned HTTP {audio_response.status}.",
+                                            status_code=502,
+                                        )
                             else:
                                 audio_bytes = _decode_audio_value(audio_value)
                                 if audio_bytes:
                                     yield audio_bytes
+                                else:
+                                    trace_id = str(response_json.get("trace_id") or "") if isinstance(response_json, dict) else ""
+                                    raise TTSProviderError(
+                                        "The TTS provider returned no playable audio.",
+                                        trace_id=trace_id,
+                                    )
                         else:
                             async for chunk in response.content.iter_any():
                                 if chunk:
                                     yield chunk
                     else:
-                        print(f"[CustomTTS] Failed with status {response.status}")
-        except Exception as e:
-            print(f"[CustomTTS] Stream Exception: {e}")
+                        raise TTSProviderError(
+                            f"TTS provider returned HTTP {response.status}.",
+                            status_code=502,
+                        )
+        except TTSProviderError:
+            raise
+        except Exception as error:
+            raise TTSProviderError(f"TTS request failed: {error}") from error
 
     def _build_headers(self) -> dict[str, str]:
         headers = dict(self.extra_headers)
@@ -484,8 +526,12 @@ def _model_ref_tts_provider_from_config(
 
 class TTSManager:
     @staticmethod
-    def get_provider() -> TTSProvider:
-        config = AudioConfigManager.get_config()
+    def get_provider(config: dict | None = None) -> TTSProvider:
+        config = (
+            AudioConfigManager.get_config()
+            if config is None
+            else AudioConfigManager.normalize_config(config)
+        )
         tts_conf = config.get("tts", {})
         active = tts_conf.get("active_provider", "edge-tts")
         

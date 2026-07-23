@@ -3,7 +3,7 @@ import hmac
 from typing import Any
 
 from fastapi import APIRouter, UploadFile, File, Form, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 import io
 
@@ -13,13 +13,17 @@ from core.system_base import get_internal_secret
 
 from .audio_config import AudioConfigManager
 from .stt_provider import STTManager
-from .tts_provider import TTSManager
+from .tts_provider import TTSManager, TTSProviderError
 from .voice_manager import MAX_VOICE_SAMPLE_BYTES, VoiceManagerError, voice_customization_manager
 
 router = APIRouter(prefix="/v1/audio", tags=["Audio"])
 
 class TTSRequest(BaseModel):
     text: str
+
+
+class TTSPreviewRequest(TTSRequest):
+    config: dict[str, Any]
 
 
 def _require_voice_manager_secret(provided: str | None) -> None:
@@ -261,8 +265,7 @@ async def get_audio_input_status():
 @router.post("/config")
 async def set_audio_config(config: dict):
     """更新 Audio 配置"""
-    AudioConfigManager.save_config(config)
-    return {"status": "success", "message": "Audio config saved successfully"}
+    return AudioConfigManager.save_config(config)
 
 
 @router.post("/model-ref-voices")
@@ -330,6 +333,63 @@ async def tts_stream(request: TTSRequest):
         provider.synthesize_stream(request.text),
         media_type="audio/mpeg"
     )
+
+
+@router.post("/tts/preview")
+async def tts_preview(request: TTSPreviewRequest):
+    """Synthesize a bounded preview with an unsaved Audio config."""
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+    if len(text) > 300:
+        raise HTTPException(status_code=400, detail="Preview text must be 300 characters or fewer")
+
+    try:
+        provider = TTSManager.get_provider(request.config)
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in provider.synthesize_stream(text):
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > 8 * 1024 * 1024:
+                raise TTSProviderError("TTS preview exceeded the 8 MB safety limit.")
+            chunks.append(chunk)
+        if not chunks:
+            raise TTSProviderError("The TTS provider returned no playable audio.")
+    except TTSProviderError as error:
+        diagnostics = {
+            key: value
+            for key, value in {
+                "providerCode": error.provider_code,
+                "traceId": error.trace_id,
+            }.items()
+            if value
+        }
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"ok": False, "error": str(error), "errorCode": "tts_preview_failed", **diagnostics},
+        )
+    except Exception as error:
+        return JSONResponse(
+            status_code=502,
+            content={"ok": False, "error": str(error), "errorCode": "tts_preview_failed"},
+        )
+
+    tts_config = request.config.get("tts") if isinstance(request.config, dict) else {}
+    tts_config = tts_config if isinstance(tts_config, dict) else {}
+    active_provider = str(tts_config.get("active_provider") or "edge-tts")
+    active_config = tts_config.get("model_ref") if active_provider == "model_ref" else tts_config.get("custom")
+    active_config = active_config if isinstance(active_config, dict) else {}
+    audio_format = str(active_config.get("format") or "mp3").strip().lower()
+    media_type = {
+        "wav": "audio/wav",
+        "ogg": "audio/ogg",
+        "opus": "audio/ogg",
+        "aac": "audio/aac",
+        "flac": "audio/flac",
+    }.get(audio_format, "audio/mpeg")
+    return Response(content=b"".join(chunks), media_type=media_type, headers={"Cache-Control": "no-store"})
 
 @router.post("/stt/transcribe")
 async def stt_transcribe(

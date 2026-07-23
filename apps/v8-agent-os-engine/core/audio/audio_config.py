@@ -111,7 +111,13 @@ def _normalize_audio_config(config: dict | None) -> dict:
 
     return normalized
 
+
 class AudioConfigManager:
+    @staticmethod
+    def normalize_config(config: dict) -> dict:
+        """Return the canonical runtime shape without persisting it."""
+        return _normalize_audio_config(config)
+
     @staticmethod
     def get_config() -> dict:
         """读取当前的 Audio 配置对象，如果不存在则写入默认对象"""
@@ -130,7 +136,9 @@ class AudioConfigManager:
             return DEFAULT_AUDIO_CONFIG
             
     @staticmethod
-    def save_config(config: dict):
+    def save_config(config: dict) -> dict:
         """保存配置对象到本地磁盘"""
         AUDIO_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        storage.write_json("audio_config.json", _normalize_audio_config(config))
+        normalized = AudioConfigManager.normalize_config(config)
+        storage.write_json("audio_config.json", normalized)
+        return normalized
